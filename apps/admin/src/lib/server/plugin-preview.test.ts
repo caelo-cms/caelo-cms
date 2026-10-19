@@ -44,3 +44,19 @@ test("style text cannot break out of <style> via malformed </style sequences", (
   expect(html).not.toContain("<script>");
   expect(html).not.toContain("</style\t>");
 });
+
+// PR #863 (L-05) — `<style>` text is written back raw. Whatever the parser
+// left inside it (here a `</style` it did not treat as an end tag), the only
+// `</style` in the output is the sanitizer's own close tag, so no browser
+// end-tag rule that differs from htmlparser2's can reopen markup.
+test("style text never carries a </style sequence of its own", () => {
+  for (const input of [
+    "<style>a{}</style\u000b><b>x</b>",
+    "<style>a{}</style\u0000><b>x</b>",
+    "<style>a{}</STYLE",
+  ]) {
+    const html = sanitizePluginPreview(input);
+    expect(html.match(/<\/style/gi)).toHaveLength(1);
+    expect(html.endsWith("</style>")).toBe(true);
+  }
+});

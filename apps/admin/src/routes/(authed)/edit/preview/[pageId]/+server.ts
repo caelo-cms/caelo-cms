@@ -17,12 +17,10 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
-import { INJECT_SCRIPT } from "#lib/components/edit/inject-script.js";
+import { injectEditOverlay } from "#lib/server/edit-overlay.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
-
-const BODY_CLOSE_RE = /<\/body\s*>/i;
 
 export const GET: RequestHandler = async ({ params, url, locals }) => {
   requirePermission(locals, "content.write");
@@ -46,10 +44,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
     throw error(500, `Preview render failed: ${message}`);
   }
   const composed = result.value as { html: string };
-  const scriptTag = `<script data-caelo-edit-overlay>${INJECT_SCRIPT}</script>`;
-  const html = BODY_CLOSE_RE.test(composed.html)
-    ? composed.html.replace(BODY_CLOSE_RE, () => `${scriptTag}</body>`)
-    : composed.html + scriptTag;
+  const html = injectEditOverlay(composed.html);
 
   return new Response(html, {
     headers: {
