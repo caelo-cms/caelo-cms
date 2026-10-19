@@ -38,6 +38,7 @@ import {
   extractThemeFontRequests,
   type FontAxisPolicy,
   type FontRequest,
+  fontFaceProblem,
   fontFamilySlug,
   fontWeightDescriptor,
   googleFontsCssUrl,
@@ -110,12 +111,15 @@ export interface ResolvedThemeFonts {
   readonly unresolved: readonly string[];
 }
 
-/** family|w1;w2 → manifest. Process-lifetime; safe because a cache entry
- *  is content-addressed and never rewritten in place. */
+/** cacheDir|family|w1;w2 → manifest. Process-lifetime; safe because a cache
+ *  entry is content-addressed and never rewritten in place. Keyed by the
+ *  cache dir too: the manifest only promises files under the dir it was
+ *  written to, so a second build with another root (tests, or a process
+ *  building several roots) must not inherit paths that do not exist. */
 const memo = new Map<string, FamilyManifest>();
 
-function requestKey(req: FontRequest): string {
-  return `${fontFamilySlug(req.family)}|${req.weights.join(";")}`;
+function requestKey(cacheDir: string, req: FontRequest): string {
+  return `${cacheDir}|${fontFamilySlug(req.family)}|${req.weights.join(";")}`;
 }
 
 function manifestPath(cacheDir: string, req: FontRequest): string {
@@ -298,7 +302,7 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
       unresolved.push(req.family);
       continue;
     }
-    const key = requestKey(req);
+    const key = requestKey(args.cacheDir, req);
     let manifest = memo.get(key) ?? null;
     if (manifest === null) {
       const mPath = manifestPath(args.cacheDir, req);
@@ -316,14 +320,22 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
       memo.set(key, manifest);
     }
     const slug = fontFamilySlug(req.family);
+    const familyFaces: ResolvedFontFace[] = manifest.faces.map((face) => ({
+      family: face.family,
+      style: face.style,
+      weight: face.weight,
+      unicodeRange: face.unicodeRange,
+      publicUrl: `${args.publicBasePath}/${slug}/${face.fileName}`,
+    }));
+    // The descriptors come from the remote fonts CSS; one outside the
+    // descriptor grammar makes the whole family unresolved (loud), never
+    // a scrubbed rule.
+    if (familyFaces.some((face) => fontFaceProblem(face) !== null)) {
+      unresolved.push(`${req.family}:InvalidFontFace`);
+      continue;
+    }
+    resolvedFaces.push(...familyFaces);
     for (const face of manifest.faces) {
-      resolvedFaces.push({
-        family: face.family,
-        style: face.style,
-        weight: face.weight,
-        unicodeRange: face.unicodeRange,
-        publicUrl: `${args.publicBasePath}/${slug}/${face.fileName}`,
-      });
       files.push({
         cachePath: join(args.cacheDir, slug, face.fileName),
         relPath: `${slug}/${face.fileName}`,

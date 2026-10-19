@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { claudeMcpAddCommand } from "./mcp-command.js";
+import {
+  claudeMcpAddCommand,
+  mcpAddCommand,
+  mcpConfigJson,
+  mcpServerSpec,
+  shellWord,
+} from "./mcp-command.js";
 
 const base = { adminUrl: "https://admin.example.com", token: "tok_123" };
 
@@ -48,5 +54,81 @@ describe("claudeMcpAddCommand", () => {
     const iap = cmd.indexOf("--env CAELO_IAP_SERVICE_ACCOUNT=caelo-mcp@p.iam.gserviceaccount.com");
     expect(iap).toBeGreaterThan(0);
     expect(iap).toBeLessThan(cmd.indexOf(" -- bunx"));
+  });
+});
+
+describe("mcpAddCommand", () => {
+  it("renders Codex CLI with the same options-then-`--` shape as Claude Code", () => {
+    const args = { ...base, scope: "admin", iapServiceAccount: "sa@p.iam.gserviceaccount.com" };
+    expect(mcpAddCommand("codex", args)).toBe(
+      claudeMcpAddCommand(args).replace(/^claude /, "codex "),
+    );
+  });
+});
+
+describe("shellWord", () => {
+  it("leaves plain URL, token and service-account values unquoted", () => {
+    for (const v of [
+      "CAELO_ADMIN_URL=https://admin.example.com:8443",
+      "sa@p.iam.gserviceaccount.com",
+    ]) {
+      expect(shellWord(v)).toBe(v);
+    }
+  });
+
+  it("single-quotes anything a shell would interpret, escaping embedded quotes", () => {
+    expect(shellWord("CAELO_ADMIN_URL=https://a$(id)&b")).toBe(
+      "'CAELO_ADMIN_URL=https://a$(id)&b'",
+    );
+    expect(shellWord("it's")).toBe(`'it'\\''s'`);
+  });
+
+  it("is applied to every --env value of the add command", () => {
+    const cmd = mcpAddCommand("claude", {
+      ...base,
+      adminUrl: "https://a;b.example.com",
+      scope: "admin",
+      iapServiceAccount: null,
+    });
+    expect(cmd).toContain("--env 'CAELO_ADMIN_URL=https://a;b.example.com'");
+  });
+});
+
+describe("mcpConfigJson", () => {
+  const iapArgs = { ...base, scope: "admin", iapServiceAccount: "sa@p.iam.gserviceaccount.com" };
+
+  it("renders the mcpServers shape (Claude Desktop, Cursor, Gemini CLI) from the same spec", () => {
+    expect(JSON.parse(mcpConfigJson("mcpServers", iapArgs))).toEqual({
+      mcpServers: {
+        "caelo-admin": {
+          command: "bunx",
+          args: ["--package", "@caelo-cms/mcp-server@latest", "caelo-admin-mcp"],
+          env: {
+            CAELO_ADMIN_URL: "https://admin.example.com",
+            CAELO_MCP_TOKEN: "tok_123",
+            CAELO_IAP_SERVICE_ACCOUNT: "sa@p.iam.gserviceaccount.com",
+          },
+        },
+      },
+    });
+  });
+
+  it("renders VS Code's `servers` key with an explicit stdio type", () => {
+    const cfg = JSON.parse(
+      mcpConfigJson("vscode", { ...base, scope: "chat", iapServiceAccount: null }),
+    );
+    expect(cfg.mcpServers).toBeUndefined();
+    expect(cfg.servers.caelo).toEqual({
+      type: "stdio",
+      command: "bunx",
+      args: ["@caelo-cms/mcp-server@latest"],
+      env: { CAELO_ADMIN_URL: "https://admin.example.com", CAELO_MCP_TOKEN: "tok_123" },
+    });
+  });
+
+  it("keeps server names free of underscores (Gemini CLI rejects them)", () => {
+    for (const scope of ["admin", "chat"]) {
+      expect(mcpServerSpec({ ...base, scope, iapServiceAccount: null }).name).not.toContain("_");
+    }
   });
 });

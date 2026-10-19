@@ -193,7 +193,25 @@ jobs:
             exit 1
           fi
           echo "waiting for run $run: ${GITHUB_SERVER_URL}/${REPO}/actions/runs/$run"
-          gh run watch "$run" --repo "$REPO" --interval 60 >/dev/null || true
+          # Poll until both the run and its AI job have finished. `gh run
+          # watch` exits early on a transient API error (an HTTP 502 failed
+          # the v0.10.54 cut while the suite was still running), and the run
+          # can report "completed" before its job does (or the reverse), so
+          # neither alone is trusted. An API error is retried on the next
+          # poll, never a verdict. The deadline sits inside the step's
+          # timeout-minutes so the failure names the run.
+          deadline=$(( $(date +%s) + 70 * 60 ))
+          while :; do
+            run_state=$(gh api "repos/$REPO/actions/runs/$run" --jq .status 2>/dev/null) || run_state="api-error"
+            job_state=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" \
+              --jq "[.jobs[] | select(.name == \"$JOB_NAME\") | .status] | first // \"missing\"" 2>/dev/null) || job_state="api-error"
+            [ "$run_state" = "completed" ] && [ "$job_state" = "completed" ] && break
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::run ${GITHUB_SERVER_URL}/${REPO}/actions/runs/$run did not finish within 70 minutes (run: $run_state, AI job: $job_state). Check the run, then re-run release-cut."
+              exit 1
+            fi
+            sleep 60
+          done
           if ! ai_job_ok >/dev/null; then
             echo "::error::the real-AI live-edit suite did not pass on $SHA (run ${GITHUB_SERVER_URL}/${REPO}/actions/runs/$run). Fix main, then re-run release-cut."
             exit 1

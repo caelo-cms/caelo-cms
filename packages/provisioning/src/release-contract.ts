@@ -50,6 +50,9 @@ export const INFRA_CONTRACT_PATHS: readonly string[] = [
   // The in-cloud upgrader job's service account, custom roles and bucket
   // grants (#799 added one without the checks noticing).
   "packages/provisioning/src/upgrader-setup.ts",
+  // #875 — the quality-audit job, its service account, results bucket and
+  // grants.
+  "packages/provisioning/src/audit-job-setup.ts",
   // #819 — the converge job, its database login and the admin's grant on it.
   "packages/provisioning/src/converge-job-setup.ts",
 ];

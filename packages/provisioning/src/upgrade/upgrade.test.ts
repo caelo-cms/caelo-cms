@@ -65,7 +65,9 @@ const serviceJson = (image: string, env: unknown[]) =>
     },
   });
 
-const ADMIN_JSON = serviceJson("registry/admin@sha256:old", [
+/** The admin image the install runs before the upgrade (digest-pinned, as deployed). */
+const OLD_ADMIN_IMAGE = `registry/admin@sha256:${"0".repeat(64)}`;
+const ADMIN_JSON = serviceJson(OLD_ADMIN_IMAGE, [
   { name: "CAELO_FIREBASE_SITE", value: "caelo-production-site-abc123" },
   {
     name: "ADMIN_DATABASE_URL",
@@ -103,6 +105,10 @@ function fakeInstall(events: string[], overrides: [RegExp, Answer][] = []) {
     [new RegExp(`describe ${ADMIN} .*--format=json`), ok(ADMIN_JSON)],
     [new RegExp(`describe ${GATEWAY} .*--format=json`), ok(GATEWAY_JSON)],
     [/describe (\S+) .*status\.url/, (l) => ok(`https://${l.split(" ")[3]}-xyz.a.run.app\n`)],
+    [
+      /^run jobs describe caelo-production-audit .*containers\[0\]\.image/,
+      ok(`${OLD_ADMIN_IMAGE}\n`),
+    ],
     [/^sql instances list/, ok(`${SQL}\n`)],
     [/^sql backups list/, ok(`${BACKUP_ID}\n`)],
     [
@@ -228,7 +234,7 @@ const CONVERGE_WRITE =
   /add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|service-accounts create|secrets create|secrets versions add|services enable|roles create|roles update|roles undelete|firewall-rules delete|users assign-roles/;
 /** Calls that move a service or run migrations — app-roll-only. */
 const APP_ROLL_WRITE =
-  /^run services update |^run services update-traffic|jobs execute caelo-migrate/;
+  /^run services update |^run services update-traffic|jobs execute caelo-migrate|^run jobs update caelo-production-audit /;
 /** Any gcloud call that changes something. */
 const ANY_WRITE =
   /\b(create|update|update-traffic|delete|add-iam-policy-binding|remove-iam-policy-binding|set-iam-policy|execute|enable|add|restore)\b/;
@@ -288,6 +294,69 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(events[opAccess]).toContain(
       "CAELO_OPERATOR_ACCESS_MCP_SIGNERS=serviceAccount:caelo-production-upgrader@acme.iam.gserviceaccount.com",
     );
+  });
+
+  it("sets up the quality-audit job on the CURRENT admin image before the roll, then moves it with the admin (#875)", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const deploy = indexOf(events, /^gcloud run jobs deploy caelo-production-audit /);
+    const adminRoll = indexOf(events, new RegExp(`^gcloud run services update ${ADMIN} `));
+    const move = indexOf(events, /^gcloud run jobs update caelo-production-audit /);
+    const deep = indexOf(events, /^health deep/);
+    expect(events[deploy]).toContain(`--image=${OLD_ADMIN_IMAGE}`);
+    expect(deploy < adminRoll && adminRoll < move && move < deep).toBe(true);
+    expect(events[move]).toContain(`--image=${IMAGES.admin.imageRef}`);
+    expect(lines).toContain("done: Quality-audit job ready (Stage audits run in parallel)");
+  });
+
+  it("a failed audit-job setup leaves the converge incomplete and the admin's audit env untouched", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events, {
+      overrides: [[/^run jobs deploy caelo-production-audit/, fail("PERMISSION_DENIED")]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(recorded.contract).toEqual([]);
+    expect(lines.some((l) => l.includes("Quality-audit job not set up"))).toBe(true);
+    expect(
+      events.some((e) => /services update caelo-production-admin.*CAELO_AUDIT_JOB=/.test(e)),
+    ).toBe(false);
+  });
+
+  it("an unreadable audit job is reported as an error, not as a missing job, and is not moved", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events, {
+      overrides: [
+        [
+          /^run jobs describe caelo-production-audit .*containers\[0\]\.image/,
+          fail("PERMISSION_DENIED"),
+        ],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(
+      lines.some((l) => l.includes("Could not read the quality-audit job (PERMISSION_DENIED)")),
+    ).toBe(true);
+    expect(lines.some((l) => l.includes("has no quality-audit job yet"))).toBe(false);
+    expect(events.some((e) => /^gcloud run jobs update caelo-production-audit /.test(e))).toBe(
+      false,
+    );
+  });
+
+  it("a missing audit job is reported as missing", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events, {
+      overrides: [
+        [
+          /^run jobs describe caelo-production-audit .*containers\[0\]\.image/,
+          fail(
+            "ERROR: (gcloud.run.jobs.describe) Cannot find job [caelo-production-audit]. NOT_FOUND",
+          ),
+        ],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(lines.some((l) => l.includes("has no quality-audit job yet"))).toBe(true);
   });
 
   it("without an ops image the upgrader step fails, the roll goes on, the converge is incomplete", async () => {
@@ -383,6 +452,11 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
         `${ADMIN} --region europe-west1 --project acme --to-revisions ${ADMIN}-00001-old=100`,
       ),
     ]);
+    // The audit job follows the admin back to its prior image (#875).
+    const jobBack = events
+      .slice(deep)
+      .filter((e) => e.startsWith("gcloud run jobs update caelo-production-audit "));
+    expect(jobBack).toEqual([expect.stringContaining(`--image=${OLD_ADMIN_IMAGE}`)]);
     expect(recorded.digests).toEqual([]);
     expect(recorded.contract).toEqual([]);
     const restore = `gcloud sql backups restore ${BACKUP_ID} --restore-instance=${SQL} --project=acme`;

@@ -464,7 +464,7 @@ function ownResponsivePair(html: string, at: number): { srcset: string; sizes: s
 function insertPreload(html: string, imagesrcset: string, imagesizes: string): string {
   const tag = `<link rel="preload" as="image" imagesrcset="${imagesrcset}" imagesizes="${imagesizes}" />`;
   if (html.includes("</head>")) {
-    return html.replace("</head>", `  ${tag}\n  </head>`);
+    return html.replace("</head>", () => `  ${tag}\n  </head>`);
   }
   return tag + html;
 }

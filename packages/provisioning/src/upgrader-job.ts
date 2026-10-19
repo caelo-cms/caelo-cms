@@ -26,7 +26,11 @@
  *   -- only now take the install's state lock (#815), confirm install.json
  *      is unchanged since step 2, and write step 2's correction. Everything
  *      above only reads, so no lock problem can hide the verdict; a stop
- *      verdict still corrects the records when the lock is free;
+ *      verdict still corrects the records when the lock is free. Only a
+ *      verdict judged on drift asks for the lock even when it stops: the
+ *      serving images were read without it, and a run that holds it may be
+ *      half-way through its own roll — then the answer is "another install
+ *      operation is running", never a drift or Cloud Shell verdict;
  *   5. take a Cloud SQL backup — no backup, no change;
  *   6. app-roll (upgrade/app-roll.ts) with no converge hooks: migrations
  *      with the new admin image, admin then gateway, deep health check,
@@ -188,6 +192,13 @@ type LockOutcome = { readonly ok: true } | ({ readonly ok: false } & Blocked);
 
 const ROLLED_PHASES = new Set(["roll", "health"]);
 
+/**
+ * Lock outcomes that mean another run is changing the install right now
+ * (#815): a verdict judged from serving images read without the lock may
+ * describe that run's half-finished roll, so it is not reported.
+ */
+const STALE_VERDICT: ReadonlySet<string> = new Set(["state-locked", "install-state-changed"]);
+
 /** Attempts at recording a request's end state before the run fails. */
 const FINISH_ATTEMPTS = 3;
 
@@ -304,35 +315,6 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     /** The corrected records (#860), when install.json is stale; written under the lock. */
     let heal: InstallMetadata | null = null;
 
-    // install.json must describe what actually serves: if a previous run
-    // rolled but could not record it, the recorded version is stale and
-    // the downgrade / minFromVersion checks would judge against it.
-    const serving = await servingDigests(deps);
-    if (!serving.ok) {
-      return stopWith("failed", ["lookup"], `Nothing was changed: ${serving.error}.`);
-    }
-    if (!recordMatchesServing(meta.imageDigests, serving.digests)) {
-      // #860 — re-record the serving release ourselves, but only one whose
-      // admin AND gateway images a signed release manifest names.
-      const found = await findServingRelease(meta, serving.digests, deps);
-      if (!found.ok) {
-        if (found.retryable) return stopWith("failed", ["registry"], found.reason);
-        return stopWith("needs_cloud_shell", ["install-state-drift"], found.reason);
-      }
-      // The manifest's digests, not the serving ones: the signed form is the
-      // one every later comparison and deploy uses (gcp-lookup.ts ServingImage).
-      meta = {
-        ...meta,
-        imageDigests: {
-          admin: found.manifest.digests.admin,
-          gateway: found.manifest.digests.gateway,
-        },
-        releaseVersion: found.manifest.version,
-      };
-      // Judged against now, written under the lock once decided (#815).
-      heal = meta;
-    }
-
     /**
      * Take the lock, confirm install.json is still what was judged, and
      * write the pending correction. Returns null when all of that held.
@@ -378,6 +360,43 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       return null;
     };
 
+    // install.json must describe what actually serves: if a previous run
+    // rolled but could not record it, the recorded version is stale and
+    // the downgrade / minFromVersion checks would judge against it.
+    const serving = await servingDigests(deps);
+    if (!serving.ok) {
+      return stopWith("failed", ["lookup"], `Nothing was changed: ${serving.error}.`);
+    }
+    if (!recordMatchesServing(meta.imageDigests, serving.digests)) {
+      // #860 — re-record the serving release ourselves, but only one whose
+      // admin AND gateway images a signed release manifest names.
+      const found = await findServingRelease(meta, serving.digests, deps);
+      if (!found.ok) {
+        if (found.retryable) return stopWith("failed", ["registry"], found.reason);
+        // #815 — the serving images were read without the lock: a run that
+        // holds it may be half-way through its roll, and that is not drift.
+        // Only once this run holds the lock (or cannot take it at all) is
+        // the mismatch the install's real state.
+        const blocked = lockAndHeal();
+        if (blocked && STALE_VERDICT.has(blocked.codes[0] ?? "")) {
+          return stopWith(blocked.status, blocked.codes, blocked.reason);
+        }
+        return stopWith("needs_cloud_shell", ["install-state-drift"], found.reason);
+      }
+      // The manifest's digests, not the serving ones: the signed form is the
+      // one every later comparison and deploy uses (gcp-lookup.ts ServingImage).
+      meta = {
+        ...meta,
+        imageDigests: {
+          admin: found.manifest.digests.admin,
+          gateway: found.manifest.digests.gateway,
+        },
+        releaseVersion: found.manifest.version,
+      };
+      // Judged against now, written under the lock once decided (#815).
+      heal = meta;
+    }
+
     // 3 + 4. The signed manifest decides.
     const manifest = await deps.fetchManifest(request.targetVersion);
     const decision = assessUpgradeRequest({
@@ -402,7 +421,14 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       if (heal) {
         // The records still get corrected, but the verdict is the answer:
         // a lock or write problem here must not replace it (#815).
+        // Except when another run holds the lock or changed the records:
+        // then the drift this verdict was judged on may be that run's
+        // half-finished work, and "try again once it has finished" is the
+        // true answer.
         const blocked = lockAndHeal();
+        if (blocked && STALE_VERDICT.has(blocked.codes[0] ?? "")) {
+          return stopWith(blocked.status, blocked.codes, blocked.reason);
+        }
         if (blocked) {
           r.warn(`The install's records could not be corrected this time: ${blocked.reason}`);
         }

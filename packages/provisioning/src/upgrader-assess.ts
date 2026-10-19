@@ -195,7 +195,18 @@ export function assessUpgradeRequest(input: {
       manifest,
     );
   }
-  if (compareSemver(target, installed.version) <= 0) {
+  const order = compareSemver(target, installed.version);
+  if (order === 0) {
+    // Reached after a run that rolled but could not record it (#860): the
+    // next run re-records the serving release, which then is the target.
+    return stop(
+      "refused",
+      "not-newer",
+      `v${target} already serves on this install, so there is nothing to install. Nothing was changed.`,
+      manifest,
+    );
+  }
+  if (order < 0) {
     return stop(
       "refused",
       "not-newer",

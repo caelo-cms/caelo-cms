@@ -36,6 +36,7 @@
 
 import type { SupportedProvider } from "./adapter.js";
 import {
+  auditJobResource,
   convergeJobResource,
   gatewayServiceAccountEmail,
   gcpBucketName,
@@ -176,6 +177,15 @@ export const UPGRADER_JOB_ENV_VAR = "CAELO_UPGRADER_JOB";
  * untouched when it could not set the job up.
  */
 export const CONVERGE_JOB_ENV_VAR = "CAELO_CONVERGE_JOB";
+
+/**
+ * #875 — the admin env vars naming the parallel quality-audit job and the
+ * bucket its tasks write results into (admin-core quality/
+ * gcp-audit-launcher.ts). `upgrade` leaves them untouched when it could not
+ * set the job up.
+ */
+export const AUDIT_JOB_ENV_VAR = "CAELO_AUDIT_JOB";
+export const AUDIT_RESULTS_BUCKET_ENV_VAR = "CAELO_AUDIT_RESULTS_BUCKET";
 
 /** Where the admin image ships the static-generator CLI. */
 const GENERATOR_CLI = "/app/apps/static-generator/src/cli.ts";
@@ -453,6 +463,10 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     // #819 — the job "Install update" starts for a release that changes the
     // cloud setup (converge-job-setup.ts); start-only as well.
     { name: CONVERGE_JOB_ENV_VAR, value: convergeJobResource(projectId, inputs.region, env) },
+    // #875 — the job the quality audit fans its Lighthouse runs out to, and
+    // where the tasks write their results (audit-job-setup.ts).
+    { name: AUDIT_JOB_ENV_VAR, value: auditJobResource(projectId, inputs.region, env) },
+    { name: AUDIT_RESULTS_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "audit-results") },
   ];
   if (inputs.provider === "gcp") {
     // v0.2.78 — the GCS StaticPublisher: Stage uploads to staging,

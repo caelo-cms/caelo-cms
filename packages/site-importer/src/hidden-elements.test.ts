@@ -5,8 +5,8 @@
  * knowledge, so the pass only exists inside a real render: this suite
  * launches the repo's Playwright Chromium (present in the workspace tree
  * for the admin's e2e) against a local Bun.serve fixture. When Chromium is
- * not installed the suite skips LOUDLY via console.warn — same degrade
- * contract as `createPlaywrightScreenshotter` itself.
+ * not installed the suite skips LOUDLY via console.warn locally, and FAILS
+ * under CI (`process.env.CI`), whose test job installs Chromium.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -42,6 +42,13 @@ beforeAll(async () => {
   process.env.CAELO_IMPORTER_ALLOWED_HOSTS = "127.0.0.1";
   screenshotter = await createPlaywrightScreenshotter({ allowedHosts: ["127.0.0.1"] });
   if (screenshotter === null) {
+    // CI installs Chromium for the test job; a missing browser there
+    // means these assertions would pass without running.
+    if (process.env.CI) {
+      throw new Error(
+        "[hidden-elements.test] Playwright Chromium unavailable in CI — the live hidden-element assertions cannot run. The CI test job must install it (`bun node_modules/playwright/cli.js install chromium --with-deps`).",
+      );
+    }
     console.warn(
       "[hidden-elements.test] Playwright Chromium unavailable — SKIPPING the live hidden-element pass assertions. Install with `bun node_modules/playwright/cli.js install chromium`.",
     );

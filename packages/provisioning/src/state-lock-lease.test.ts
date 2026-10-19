@@ -14,6 +14,7 @@ import {
   LEASE_SKEW_MS,
   type LocalHost,
   lockBody,
+  machineId,
   PROCESS_LEASE_MS,
   parseExecutionState,
   parseLockBody,
@@ -121,6 +122,37 @@ describe("judgeHeldLock — a CLI process holder (#815 review)", () => {
     const v = judgeHeldLock(cli("cs-1", 9999), never, at(LEASE + 1), HERE);
     expect(v.kind).toBe("break");
     expect(v.why).toContain("stopped renewing");
+  });
+
+  it("#815 review: a dead pid is only judged on the machine that took the lock", () => {
+    const at1 = at(START.getTime() + 1);
+    const withMachine = (machine: string | null) =>
+      JSON.stringify({ ...JSON.parse(cli("localhost", 9999)), machine });
+    const here = (machine: string | null): LocalHost => ({
+      host: "localhost",
+      machine,
+      alive: () => false,
+    });
+    // Same host name, another machine (two Cloud Run containers, two
+    // laptops called alike): the pid is someone else's, the lease decides.
+    expect(judgeHeldLock(withMachine("m-a"), never, at1, here("m-b")).kind).toBe("held");
+    // A lock from Cloud Run names no machine: never judged by its pid.
+    expect(judgeHeldLock(withMachine(null), never, at1, here("m-b")).kind).toBe("held");
+    // A judge in Cloud Run has no machine id: it never trusts a pid, not
+    // even one of a lock written before machine ids.
+    expect(judgeHeldLock(cli("localhost", 9999), never, at1, here(null)).kind).toBe("held");
+    // The same machine: the dead pid ends it at once.
+    expect(judgeHeldLock(withMachine("m-a"), never, at1, here("m-a")).kind).toBe("break");
+    // Whatever the machine, the lease still ends it.
+    expect(judgeHeldLock(withMachine("m-a"), never, at(LEASE + 1), here("m-b")).kind).toBe("break");
+  });
+
+  it("#815 review: machineId is null inside Cloud Run and stable outside", () => {
+    expect(machineId({ CLOUD_RUN_EXECUTION: "caelo-upgrader-abc" })).toBeNull();
+    expect(machineId({ K_SERVICE: "caelo-production-admin" })).toBeNull();
+    expect(machineId({})).toBe(machineId({}));
+    const body = parseLockBody(lockBody("cms-provision upgrade", START, { leaseMs: 1 }));
+    expect(body && "machine" in body).toBe(true);
   });
 
   it("an unreadable lease is held for a person to remove", () => {

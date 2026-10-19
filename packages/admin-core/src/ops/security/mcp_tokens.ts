@@ -13,7 +13,7 @@
  * typed in the browser chat.
  */
 
-import type { DatabaseAdapter } from "@caelo-cms/query-api";
+import type { DatabaseAdapter, TransactionRunner } from "@caelo-cms/query-api";
 import { defineOperation, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import {
   CAELO_VERSION,
@@ -54,15 +54,46 @@ const tokenRow = z.object({
   expiresAt: z.string(),
 });
 
+/**
+ * Whose tokens the caller sees, decided by the mcp_tokens RLS policy
+ * (migration 0315): `all` for an Owner (settings.write) or system, `own`
+ * for everyone else. The UI words its empty state and actions from it.
+ */
+export const mcpTokenVisibility = z.enum(["all", "own"]);
+
+/**
+ * The refusal for a token id the caller cannot see. RLS makes another
+ * user's token and a nonexistent id indistinguishable to a non-Owner, so
+ * one message covers both and names the way forward.
+ */
+export function mcpTokenNotVisibleMessage(tokenId: string): string {
+  return (
+    `MCP token ${tokenId} was not found among the MCP tokens you can manage. ` +
+    "Only an Owner (settings.write) sees and revokes other users' tokens; everyone else manages " +
+    "only their own. Check the id against your tokens at /settings/mcp, or ask an Owner to " +
+    "revoke this one."
+  );
+}
+
+/** Whether the current actor manages every user's tokens (the RLS rule, read back). */
+async function managesAllMcpTokens(tx: TransactionRunner): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT caelo_mcp_tokens_manage_all() AS manage_all
+  `)) as unknown as { manage_all: boolean }[];
+  return rows[0]?.manage_all === true;
+}
+
 export const listMcpTokensOp = defineOperation({
   name: "mcp_tokens.list",
-  // Why human-only: token registry is Owner-controlled — AI shouldn't
-  // be able to enumerate active bearers.
+  // Why human-only: AI shouldn't be able to enumerate bearers. Rows are
+  // scoped by RLS (migration 0315): an Owner (settings.write) sees every
+  // user's tokens, everyone else only their own.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
-  output: z.object({ tokens: z.array(tokenRow) }),
+  output: z.object({ visibility: mcpTokenVisibility, tokens: z.array(tokenRow) }),
   handler: async (_ctx, _input, tx) => {
+    const visibility = (await managesAllMcpTokens(tx)) ? "all" : "own";
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, actor_id::text AS actor_id, display_name, scope,
              ai_cost_cap_microcents, allow_caelo_ai, last_used_at, revoked_at,
@@ -92,6 +123,7 @@ export const listMcpTokensOp = defineOperation({
     const toS = (v: string | Date | null): string | null =>
       v === null ? null : v instanceof Date ? v.toISOString() : String(v);
     return ok({
+      visibility,
       tokens: rows.map((r) => ({
         id: r.id,
         actorId: r.actor_id,
@@ -184,12 +216,23 @@ export const createMcpTokenOp = defineOperation({
 export const revokeMcpTokenOp = defineOperation({
   name: "mcp_tokens.revoke",
   // Why human-only: credential lifecycle; the AI reaches it only through propose_revoke_mcp_token
-  // (Owner-approved).
+  // (Owner-approved). RLS (migration 0315) limits a non-Owner to their own tokens.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ id: z.string().uuid() }).strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    const visible = (await tx.execute(sql`
+      SELECT 1 FROM mcp_tokens WHERE id = ${input.id}::uuid
+    `)) as unknown as unknown[];
+    if (visible.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "mcp_tokens.revoke",
+        message: mcpTokenNotVisibleMessage(input.id),
+      });
+    }
+    // Revoking an already-revoked token stays a no-op success.
     await tx.execute(sql`
       UPDATE mcp_tokens SET revoked_at = now()
       WHERE id = ${input.id}::uuid AND revoked_at IS NULL
@@ -206,9 +249,38 @@ export const revokeMcpTokenOp = defineOperation({
   },
 });
 
+/** Why {@link resolveMcpToken} refused a bearer. */
+export type McpTokenFailure =
+  | "not_found"
+  | "expired"
+  | "revoked"
+  | "user_deleted"
+  | "user_has_no_role";
+
+/**
+ * The `auth_error:` message every MCP surface returns for a refused bearer
+ * (the HTTP shell maps the prefix to 401). The first three keep their
+ * historic wording because MCP shims match on it; the user-state failures
+ * name the fix, since the token itself looks fine to whoever holds it.
+ */
+export function mcpTokenAuthErrorMessage(failure: McpTokenFailure): string {
+  switch (failure) {
+    case "user_deleted":
+      return "auth_error: token user_deleted — the Caelo user this token belongs to was deleted or no longer exists. An Owner must mint a new token for an active user at /settings/mcp.";
+    case "user_has_no_role":
+      return "auth_error: token user_has_no_role — the Caelo user this token belongs to holds no role. An Owner must assign a role at /settings/users, or mint a token for another user at /settings/mcp.";
+    default:
+      return `auth_error: token ${failure}`;
+  }
+}
+
 /**
  * Token resolution helper. Trades a bearer for an actor + cap. Returns
- * a structured failure when the token is absent / expired / revoked.
+ * a structured failure when the token is absent / expired / revoked, or
+ * when its user is soft-deleted or holds no role. The user checks run on
+ * every resolution (not only at revoke time) because a role can be
+ * removed without touching the token, and a token minted before a user
+ * lost access must stop working the moment access is gone.
  *
  * NOT an op: the bearer would otherwise appear in audit input. The
  * `mcp.send_chat` op above audits the resolved actor's chat write, not
@@ -232,7 +304,7 @@ export async function resolveMcpToken(
       /** #741 — the token's agent may spend the install's AI (Power-MCP only). */
       allowCaeloAi: boolean;
     },
-    "not_found" | "expired" | "revoked"
+    McpTokenFailure
   >
 > {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(plaintextToken));
@@ -247,10 +319,13 @@ export async function resolveMcpToken(
     },
     async (tx) => {
       const rows = (await tx.execute(sql`
-        SELECT id::text AS id, actor_id::text AS actor_id, scope, display_name,
-               ai_cost_cap_microcents, allow_caelo_ai, expires_at, revoked_at
-        FROM mcp_tokens
-        WHERE token_hash = ${tokenHash}
+        SELECT t.id::text AS id, t.actor_id::text AS actor_id, t.scope, t.display_name,
+               t.ai_cost_cap_microcents, t.allow_caelo_ai, t.expires_at, t.revoked_at,
+               (u.id IS NOT NULL AND u.deleted_at IS NULL) AS user_active,
+               EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = t.actor_id) AS user_has_role
+        FROM mcp_tokens t
+        LEFT JOIN users u ON u.id = t.actor_id
+        WHERE t.token_hash = ${tokenHash}
       `)) as unknown as Array<{
         id: string;
         actor_id: string;
@@ -260,12 +335,16 @@ export async function resolveMcpToken(
         allow_caelo_ai: boolean;
         expires_at: string | Date;
         revoked_at: string | Date | null;
+        user_active: boolean;
+        user_has_role: boolean;
       }>;
       const r = rows[0];
       if (!r) return err("not_found" as const);
       if (r.revoked_at) return err("revoked" as const);
       const expires = r.expires_at instanceof Date ? r.expires_at : new Date(String(r.expires_at));
       if (expires.getTime() < Date.now()) return err("expired" as const);
+      if (!r.user_active) return err("user_deleted" as const);
+      if (!r.user_has_role) return err("user_has_no_role" as const);
       await tx.execute(sql`
         UPDATE mcp_tokens SET last_used_at = now() WHERE id = ${r.id}::uuid
       `);
@@ -402,7 +481,7 @@ export const mcpSendChatOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "mcp.send_chat",
-        message: `auth_error: token ${resolved.error}`,
+        message: mcpTokenAuthErrorMessage(resolved.error),
       });
     }
     const { actorId, aiCostCapMicrocents, tokenId } = resolved.value;
@@ -616,7 +695,7 @@ export const mcpAuthorizeUploadOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "mcp.authorize_upload",
-        message: `auth_error: token ${resolved.error}`,
+        message: mcpTokenAuthErrorMessage(resolved.error),
       });
     const actorId = resolved.value.actorId;
     const rows = (await tx.execute(sql`
@@ -666,7 +745,7 @@ export const mcpGetVersionOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "mcp.get_version",
-        message: `auth_error: token ${resolved.error}`,
+        message: mcpTokenAuthErrorMessage(resolved.error),
       });
     return ok({ version: CAELO_VERSION });
   },

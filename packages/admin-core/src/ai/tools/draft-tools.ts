@@ -25,6 +25,7 @@ import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeDraftPages } from "../../deploy/draft-pages.js";
+import { describeUnpublishedLinks } from "../../deploy/unpublished-links.js";
 import type { AffectedChat } from "../../draft.js";
 import { stageChatSessions } from "../../stage/stage-chats.js";
 import { describeError } from "./_describe-error.js";
@@ -109,7 +110,10 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
     // #678 — a draft page is never built: name them and the next step, so
     // a "successful" Stage does not hide pages the operator expects.
     const draftNote = describeDraftPages(v.draftPages);
-    const drafts = draftNote ? ` ${draftNote}` : "";
+    // #724 — a link to such a page leads nowhere on staging (a warning
+    // now; Publish live blocks on it).
+    const unpublishedNote = describeUnpublishedLinks(v.unpublishedLinks);
+    const drafts = `${draftNote ? ` ${draftNote}` : ""}${unpublishedNote ? ` ${unpublishedNote}` : ""}`;
     if (v.mergedEntityCount === 0) {
       return {
         ok: true,

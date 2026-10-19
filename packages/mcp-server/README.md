@@ -27,9 +27,19 @@ In your Caelo install:
 2. Click **New token**, give it a name (`claude-code`, `laptop`, `ci`,
    etc.), optionally set an AI-spend cap (microcents), and copy the
    bearer that's shown ONCE.
-3. The page renders the exact `claude mcp add` snippet — copy + run it.
+3. The page shows ready-to-copy setup for Claude Code, Claude Desktop,
+   Codex CLI, Cursor, VS Code and Gemini CLI — a terminal command or a
+   JSON config entry, plus how the client picks it up.
 
-Manual setup if your client isn't Claude Code:
+Desktop apps (Claude Desktop, Cursor, VS Code) don't inherit your
+terminal's PATH: put the full path of `bunx` (`which bunx`) into their
+config instead of the bare name.
+
+ChatGPT and claude.ai in the browser can't use this server: they only
+connect to MCP servers hosted on the internet (Streamable HTTP + OAuth),
+and this one runs on your machine over stdio. Tracked in #806.
+
+Manual setup for any other MCP-aware client:
 
 ```bash
 # stdio server invoked by your MCP-aware client
@@ -46,7 +56,7 @@ with these env vars set:
 |---|---|---|
 | `CAELO_ADMIN_URL` | yes | `https://admin.example.com` — point at your install. Must be `https://` (plain `http://` only for localhost). |
 | `CAELO_MCP_TOKEN` | yes | Bearer minted at `/settings/mcp`. |
-| `CAELO_IAP_SERVICE_ACCOUNT` | on GCP installs | The admin's MCP service account. `/settings/mcp` includes it in the `claude mcp add` command when the admin is behind Google IAP. |
+| `CAELO_IAP_SERVICE_ACCOUNT` | on GCP installs | The admin's MCP service account. `/settings/mcp` includes it in every client snippet when the admin is behind Google IAP. |
 
 ### Installs behind Google IAP (GCP)
 

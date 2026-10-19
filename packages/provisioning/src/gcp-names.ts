@@ -69,7 +69,7 @@ export function staticPublisherServiceAccountId(env: string): string {
 export function gcpBucketName(
   projectId: string,
   env: string,
-  bucket: "media" | "static" | "staging",
+  bucket: "media" | "static" | "staging" | "audit-results",
 ): string {
   return `${projectId}-${gcpNamePrefix(env)}-${bucket}`;
 }
@@ -133,6 +133,33 @@ export function convergeJobName(env: string): string {
 /** Full resource name of the converge job, as the admin's env carries it. */
 export function convergeJobResource(projectId: string, region: string, env: string): string {
   return `projects/${projectId}/locations/${region}/jobs/${convergeJobName(env)}`;
+}
+
+/**
+ * #875 — Cloud Run job that runs the quality audit's Lighthouse runs in
+ * parallel, one task per run (audit-job-setup.ts).
+ */
+export function auditJobName(env: string): string {
+  return `${gcpNamePrefix(env)}-audit`;
+}
+
+/** Full resource name of the audit job, as the admin's env carries it. */
+export function auditJobResource(projectId: string, region: string, env: string): string {
+  return `projects/${projectId}/locations/${region}/jobs/${auditJobName(env)}`;
+}
+
+/**
+ * Account id of the audit job's own service account: reads the staged
+ * build, creates audit results, writes logs — nothing else
+ * (audit-job-setup.ts).
+ */
+export function auditServiceAccountId(env: string): string {
+  return `${gcpNamePrefix(env)}-audit`;
+}
+
+/** Email of the audit job's service account. */
+export function auditServiceAccountEmail(projectId: string, env: string): string {
+  return `${auditServiceAccountId(env)}@${projectId}.iam.gserviceaccount.com`;
 }
 
 /**

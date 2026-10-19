@@ -106,6 +106,7 @@ const ROWS: readonly Row[] = [
     name: "same version",
     installed: { version: "0.11.0", infraContractVersion: 2 },
     expect: "refused/not-newer",
+    reasonContains: "v0.11.0 already serves on this install",
   },
   {
     name: "downgrade",
