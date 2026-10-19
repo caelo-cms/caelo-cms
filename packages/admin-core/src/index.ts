@@ -75,6 +75,11 @@ export {
 } from "./deploy/staged-build-files.js";
 // #650 — which installs serve staging at a protected staging.<domain>.
 export { providerHasStagingDomain } from "./deploy/staging-domain.js";
+// #724 — the Stage warning for links to pages a build does not contain.
+export {
+  describeUnpublishedLinks,
+  type UnpublishedLinkTarget,
+} from "./deploy/unpublished-links.js";
 // P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
 export {
   _domainEventGcOnceForTests,
