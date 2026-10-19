@@ -35,53 +35,132 @@ describe("listTarEntries", () => {
   });
 
   it("refuses a truncated archive instead of skipping members", () => {
-    const header = new Uint8Array(512);
-    header.set(new TextEncoder().encode("a.txt"), 0);
-    header.set(new TextEncoder().encode("00000001000\0"), 124); // 512 bytes of data, none present
-    header[156] = "0".charCodeAt(0);
-    expect(() => listTarEntries(header)).toThrow(/truncated/);
+    expect(() => listTarEntries(header("a.txt", "0", { sizeField: 512 }))).toThrow(/truncated/);
   });
 
-  it("rejects PAX global extended headers ('g') and merges consecutive 'x' headers", () => {
-    const gBlock = makeBlock("PaxHeader", "g", paxLine("path=/etc/passwd"));
-    expect(() => listTarEntries(gBlock)).toThrow(/pax global extended header/);
+  it("rejects PAX global extended headers ('g')", () => {
+    const g = member("PaxHeader", "g", paxLine("path=/etc/passwd"));
+    expect(() => listTarEntries(concat(g, member("safe.txt", "0"), END))).toThrow(
+      /pax global extended header/,
+    );
+  });
 
-    const x1 = makeBlock("PaxHeader", "x", paxLine("path=../../etc/passwd"));
-    const x2 = makeBlock("PaxHeader", "x", paxLine("mtime=1234567890"));
-    const fileBlock = makeBlock("safe.txt", "0", "");
-    const entries = listTarEntries(concat(x1, x2, fileBlock));
-    expect(entries).toHaveLength(1);
-    expect(entries[0]?.name).toBe("../../etc/passwd");
+  it("refuses a member named by two pax headers — GNU tar keeps the last, bsdtar drops the second", () => {
+    // Both tars extract `../../evil` here (the second header carries no
+    // path); reading the first header's path would have checked `safe.txt`.
+    const archive = concat(
+      member("PaxHeader", "x", paxLine("path=srv/caelo/safe.txt")),
+      member("PaxHeader", "x", paxLine("mtime=1")),
+      member("../../evil", "0"),
+      END,
+    );
+    expect(() => listTarEntries(archive)).toThrow(/several extension headers \(xx\)/);
+  });
+
+  it("refuses a GNU long name next to a pax path, and two long names", () => {
+    // bsdtar extracts the `L` name (`../../evil`), GNU tar the pax path.
+    const mixed = concat(
+      member("././@LongLink", "L", "../../evil\0"),
+      member("PaxHeader", "x", paxLine("path=srv/caelo/safe.txt")),
+      member("x", "0"),
+      END,
+    );
+    expect(() => listTarEntries(mixed)).toThrow(/several extension headers \(Lx\)/);
+    const twice = concat(
+      member("././@LongLink", "L", "../../evil\0"),
+      member("././@LongLink", "L", "safe.txt\0"),
+      member("x", "0"),
+      END,
+    );
+    expect(() => listTarEntries(twice)).toThrow(/several extension headers \(LL\)/);
+  });
+
+  it("still reads a GNU long name together with a long link", () => {
+    const archive = concat(
+      member("././@LongLink", "K", "target\0"),
+      member("././@LongLink", "L", `${"a".repeat(120)}\0`),
+      member("short", "2", "", { link: "ignored" }),
+      END,
+    );
+    expect(listTarEntries(archive)).toEqual([
+      { name: "a".repeat(120), type: "symlink", linkTarget: "target" },
+    ]);
+  });
+
+  it("refuses a header whose checksum does not match — GNU tar would skip it and read its body as headers", () => {
+    const archive = concat(
+      header("srv/caelo/safe.txt", "0", { sizeField: 512, badChecksum: true }),
+      header("../../evil", "0"),
+      END,
+    );
+    expect(() => listTarEntries(archive)).toThrow(/checksum mismatch/);
+  });
+
+  it("refuses a directory or symlink with a body — bsdtar reads the next block as a header", () => {
+    for (const [name, type] of [
+      ["srv/caelo/link", "2"],
+      ["srv/caelo/dir/", "5"],
+    ] as const) {
+      const archive = concat(
+        header(name, type, { sizeField: 512, link: "a" }),
+        header("../../evil", "0"),
+        END,
+      );
+      expect(() => listTarEntries(archive)).toThrow(/with a body/);
+    }
   });
 
   it("walks a member's body by its pax size, so a member hidden behind the header size is seen", () => {
     // tar -x reads `safe.txt` as empty (pax size=0) and then extracts the
     // `../../evil` header that the ustar size field claims is file data.
-    const pax = makeBlock("PaxHeader", "x", paxLine("size=0"));
-    const hidden = makeBlock("../../evil", "0", "");
-    const file = makeBlock("safe.txt", "0", "");
-    file.set(new TextEncoder().encode(`${(512).toString(8).padStart(11, "0")}\0`), 124);
-    const archive = concat(pax, file.subarray(0, 512), hidden);
+    const archive = concat(
+      member("PaxHeader", "x", paxLine("size=0")),
+      header("safe.txt", "0", { sizeField: 512 }),
+      member("../../evil", "0"),
+      END,
+    );
     expect(listTarEntries(archive).map((e) => e.name)).toEqual(["safe.txt", "../../evil"]);
   });
 
   it("rejects GNU sparse pax records and an unreadable pax size", () => {
-    const sparse = makeBlock("PaxHeader", "x", paxLine("GNU.sparse.name=../../evil"));
-    expect(() => listTarEntries(concat(sparse, makeBlock("safe.txt", "0")))).toThrow(/GNU sparse/);
-    const badSize = makeBlock("PaxHeader", "x", paxLine("size=-1"));
-    expect(() => listTarEntries(concat(badSize, makeBlock("safe.txt", "0")))).toThrow(
+    const sparse = member("PaxHeader", "x", paxLine("GNU.sparse.name=../../evil"));
+    expect(() => listTarEntries(concat(sparse, member("safe.txt", "0")))).toThrow(/GNU sparse/);
+    const badSize = member("PaxHeader", "x", paxLine("size=-1"));
+    expect(() => listTarEntries(concat(badSize, member("safe.txt", "0")))).toThrow(
       /unreadable pax size/,
     );
   });
 });
 
-function makeBlock(name: string, typeflag: string, bodyText = ""): Uint8Array {
+const END = new Uint8Array(1024);
+
+/**
+ * One ustar header block with a valid checksum (unless `badChecksum`).
+ * `sizeField` is what the header claims, independent of any body after it.
+ */
+function header(
+  name: string,
+  typeflag: string,
+  opts: { sizeField?: number; link?: string; badChecksum?: boolean } = {},
+): Uint8Array {
+  const enc = new TextEncoder();
+  const h = new Uint8Array(512);
+  h.set(enc.encode(name), 0);
+  h.set(enc.encode(`${(opts.sizeField ?? 0).toString(8).padStart(11, "0")}\0`), 124);
+  h[156] = typeflag.charCodeAt(0);
+  if (opts.link) h.set(enc.encode(opts.link), 157);
+  h.set(enc.encode("ustar\0"), 257);
+  h.fill(0x20, 148, 156);
+  const sum = h.reduce((n, b) => n + b, 0) + (opts.badChecksum ? 1 : 0);
+  h.set(enc.encode(`${sum.toString(8).padStart(6, "0")}\0 `), 148);
+  return h;
+}
+
+/** A header plus its padded body. */
+function member(name: string, typeflag: string, bodyText = "", opts: { link?: string } = {}) {
   const body = new TextEncoder().encode(bodyText);
-  const paddedLen = Math.ceil(body.length / 512) * 512;
-  const out = new Uint8Array(512 + paddedLen);
-  out.set(new TextEncoder().encode(name), 0);
-  out.set(new TextEncoder().encode(`${body.length.toString(8).padStart(11, "0")}\0`), 124);
-  out[156] = typeflag.charCodeAt(0);
+  const out = new Uint8Array(512 + Math.ceil(body.length / 512) * 512);
+  out.set(header(name, typeflag, { sizeField: body.length, link: opts.link }), 0);
   out.set(body, 512);
   return out;
 }
