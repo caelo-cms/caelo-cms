@@ -13,7 +13,7 @@
  * typed in the browser chat.
  */
 
-import type { DatabaseAdapter } from "@caelo-cms/query-api";
+import type { DatabaseAdapter, TransactionRunner } from "@caelo-cms/query-api";
 import { defineOperation, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import {
   CAELO_VERSION,
@@ -54,15 +54,46 @@ const tokenRow = z.object({
   expiresAt: z.string(),
 });
 
+/**
+ * Whose tokens the caller sees, decided by the mcp_tokens RLS policy
+ * (migration 0315): `all` for an Owner (settings.write) or system, `own`
+ * for everyone else. The UI words its empty state and actions from it.
+ */
+export const mcpTokenVisibility = z.enum(["all", "own"]);
+
+/**
+ * The refusal for a token id the caller cannot see. RLS makes another
+ * user's token and a nonexistent id indistinguishable to a non-Owner, so
+ * one message covers both and names the way forward.
+ */
+export function mcpTokenNotVisibleMessage(tokenId: string): string {
+  return (
+    `MCP token ${tokenId} was not found among the MCP tokens you can manage. ` +
+    "Only an Owner (settings.write) sees and revokes other users' tokens; everyone else manages " +
+    "only their own. Check the id against your tokens at /settings/mcp, or ask an Owner to " +
+    "revoke this one."
+  );
+}
+
+/** Whether the current actor manages every user's tokens (the RLS rule, read back). */
+async function managesAllMcpTokens(tx: TransactionRunner): Promise<boolean> {
+  const rows = (await tx.execute(sql`
+    SELECT caelo_mcp_tokens_manage_all() AS manage_all
+  `)) as unknown as { manage_all: boolean }[];
+  return rows[0]?.manage_all === true;
+}
+
 export const listMcpTokensOp = defineOperation({
   name: "mcp_tokens.list",
-  // Why human-only: token registry is Owner-controlled — AI shouldn't
-  // be able to enumerate active bearers.
+  // Why human-only: AI shouldn't be able to enumerate bearers. Rows are
+  // scoped by RLS (migration 0315): an Owner (settings.write) sees every
+  // user's tokens, everyone else only their own.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
-  output: z.object({ tokens: z.array(tokenRow) }),
+  output: z.object({ visibility: mcpTokenVisibility, tokens: z.array(tokenRow) }),
   handler: async (_ctx, _input, tx) => {
+    const visibility = (await managesAllMcpTokens(tx)) ? "all" : "own";
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, actor_id::text AS actor_id, display_name, scope,
              ai_cost_cap_microcents, allow_caelo_ai, last_used_at, revoked_at,
@@ -92,6 +123,7 @@ export const listMcpTokensOp = defineOperation({
     const toS = (v: string | Date | null): string | null =>
       v === null ? null : v instanceof Date ? v.toISOString() : String(v);
     return ok({
+      visibility,
       tokens: rows.map((r) => ({
         id: r.id,
         actorId: r.actor_id,
@@ -184,12 +216,23 @@ export const createMcpTokenOp = defineOperation({
 export const revokeMcpTokenOp = defineOperation({
   name: "mcp_tokens.revoke",
   // Why human-only: credential lifecycle; the AI reaches it only through propose_revoke_mcp_token
-  // (Owner-approved).
+  // (Owner-approved). RLS (migration 0315) limits a non-Owner to their own tokens.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({ id: z.string().uuid() }).strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    const visible = (await tx.execute(sql`
+      SELECT 1 FROM mcp_tokens WHERE id = ${input.id}::uuid
+    `)) as unknown as unknown[];
+    if (visible.length === 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "mcp_tokens.revoke",
+        message: mcpTokenNotVisibleMessage(input.id),
+      });
+    }
+    // Revoking an already-revoked token stays a no-op success.
     await tx.execute(sql`
       UPDATE mcp_tokens SET revoked_at = now()
       WHERE id = ${input.id}::uuid AND revoked_at IS NULL
