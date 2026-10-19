@@ -28,6 +28,7 @@ import {
 import { fetchChatApprovalState, resumeChat, sendChat } from "./chat-bridge.js";
 import { resolveTimeoutMs } from "./http.js";
 import { UPLOAD_IMAGES_TOOL, uploadedImageSchema, uploadImages } from "./image-upload.js";
+import { ownVersion } from "./version-handshake.js";
 
 export interface StartOpts {
   readonly adminUrl: string;
@@ -125,6 +126,41 @@ function chatResult(first: SendChatResult | null, settled: SettleResult, chatSes
   };
 }
 
+const CHAT_TOOL = {
+  name: "caelo_chat",
+  description:
+    "Talk to your Caelo CMS install's AI agent. Same agent that powers the live-edit chat overlay — it can read pages, propose edits, queue Owner-approval proposals, summarise plugin data. Continues an existing chat session (when chatSessionId is supplied) or starts a fresh one. Returns the agent's reply text plus structured tool-call summaries.",
+  inputSchema: {
+    type: "object",
+    required: ["message"],
+    properties: {
+      attachments: {
+        type: "array",
+        maxItems: 4,
+        description: "Attachments returned by caelo_upload_images.",
+        items: z.toJSONSchema(uploadedImageSchema),
+      },
+      message: {
+        type: "string",
+        description: "What you want to say to the Caelo agent.",
+      },
+      chatSessionId: {
+        type: "string",
+        description:
+          "Optional. Chat session UUID to continue. Omit to start a fresh page-unbound chat.",
+      },
+      pageId: {
+        type: "string",
+        description:
+          "Optional. Bind a NEW chat to one page so the agent's page-context block is populated. Same shape as /edit?page=<id>.",
+      },
+    },
+  },
+};
+
+/** The chat server's whole tool list — static, so it also serves the credential-less listing (#841). */
+export const CHAT_TOOLS = [UPLOAD_IMAGES_TOOL, AWAIT_APPROVAL_TOOL, CHAT_TOOL] as const;
+
 const caeloChatInputSchema = z
   .object({
     attachments: z.array(uploadedImageSchema).max(4).optional(),
@@ -138,7 +174,7 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
   const server = new Server(
     {
       name: "caelo-mcp-server",
-      version: "0.1.0",
+      version: ownVersion(),
     },
     {
       capabilities: { tools: {} },
@@ -146,43 +182,7 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
     },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      UPLOAD_IMAGES_TOOL,
-      AWAIT_APPROVAL_TOOL,
-      {
-        name: "caelo_chat",
-        description:
-          "Talk to your Caelo CMS install's AI agent. Same agent that powers the live-edit chat overlay — it can read pages, propose edits, queue Owner-approval proposals, summarise plugin data. Continues an existing chat session (when chatSessionId is supplied) or starts a fresh one. Returns the agent's reply text plus structured tool-call summaries.",
-        inputSchema: {
-          type: "object",
-          required: ["message"],
-          properties: {
-            attachments: {
-              type: "array",
-              maxItems: 4,
-              description: "Attachments returned by caelo_upload_images.",
-              items: z.toJSONSchema(uploadedImageSchema),
-            },
-            message: {
-              type: "string",
-              description: "What you want to say to the Caelo agent.",
-            },
-            chatSessionId: {
-              type: "string",
-              description:
-                "Optional. Chat session UUID to continue. Omit to start a fresh page-unbound chat.",
-            },
-            pageId: {
-              type: "string",
-              description:
-                "Optional. Bind a NEW chat to one page so the agent's page-context block is populated. Same shape as /edit?page=<id>.",
-            },
-          },
-        },
-      },
-    ],
-  }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...CHAT_TOOLS] }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     // Progress notifications keep progress-aware clients from timing the

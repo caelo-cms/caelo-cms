@@ -8,23 +8,16 @@
  */
 
 import { startAdminMcpServer } from "./admin-server.js";
+import { missingCredentials, startUnconfiguredServer } from "./unconfigured.js";
 import { ensureAdminRelease } from "./version-handshake.js";
 
 const adminUrl = process.env.CAELO_ADMIN_URL;
 const token = process.env.CAELO_MCP_TOKEN;
 
-if (!adminUrl) {
-  console.error(
-    "CAELO_ADMIN_URL not set — point me at your admin install (e.g. https://admin.example.com)",
-  );
-  process.exit(2);
+if (!adminUrl || !token) {
+  // #841 — answer tools/list for MCP directories; every call names the fix.
+  await startUnconfiguredServer({ mode: "admin", missing: missingCredentials(process.env) });
+} else {
+  await ensureAdminRelease({ adminUrl, token, bin: "caelo-admin-mcp" });
+  await startAdminMcpServer({ adminUrl, token });
 }
-if (!token) {
-  console.error(
-    "CAELO_MCP_TOKEN not set — mint an ADMIN-scoped token at /settings/mcp on your admin install",
-  );
-  process.exit(2);
-}
-
-await ensureAdminRelease({ adminUrl, token, bin: "caelo-admin-mcp" });
-await startAdminMcpServer({ adminUrl, token });

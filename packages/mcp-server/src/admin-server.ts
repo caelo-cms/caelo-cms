@@ -43,6 +43,7 @@ import {
 } from "./approval-wait.js";
 import { postAdmin, resolveTimeoutMs } from "./http.js";
 import { UPLOAD_IMAGES_TOOL, uploadImages } from "./image-upload.js";
+import { ownVersion } from "./version-handshake.js";
 
 export interface StartAdminOpts {
   readonly adminUrl: string;
@@ -204,6 +205,17 @@ const GET_CONTEXT_TOOL = {
   inputSchema: { type: "object", properties: {} },
 } as const;
 
+/**
+ * The tools this process adds in front of the admin's live catalogue —
+ * also the whole list when credentials are missing (#841).
+ */
+export const ADMIN_LOCAL_TOOLS = [
+  UPLOAD_IMAGES_TOOL,
+  OPEN_SESSION_TOOL,
+  GET_CONTEXT_TOOL,
+  AWAIT_APPROVAL_TOOL,
+] as const;
+
 export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   const fetchCatalogue = () =>
     postAdmin<{ tools: RemoteTool[] }>({
@@ -225,7 +237,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   // changes it while this process runs. `listChanged` tells the client to
   // re-list when we say so, instead of the operator reconnecting (/mcp).
   const server = new Server(
-    { name: "caelo-admin-mcp", version: "0.1.0" },
+    { name: "caelo-admin-mcp", version: ownVersion() },
     { capabilities: { tools: { listChanged: true } }, instructions: ADMIN_MCP_INSTRUCTIONS },
   );
 
@@ -267,10 +279,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      UPLOAD_IMAGES_TOOL,
-      OPEN_SESSION_TOOL,
-      GET_CONTEXT_TOOL,
-      AWAIT_APPROVAL_TOOL,
+      ...ADMIN_LOCAL_TOOLS,
       ...catalogue.tools.map((t) => ({
         name: t.name,
         description: t.description,

@@ -1,5 +1,6 @@
 {
   "name": "@caelo-cms/mcp-server",
+  "mcpName": "io.github.caelo-cms/caelo",
   "version": "0.10.53",
   "private": false,
   "license": "MPL-2.0",
@@ -27,6 +28,7 @@
   },
   "files": [
     "dist/",
+    "power-catalogue.json",
     "README.md",
     "package.json"
   ],
