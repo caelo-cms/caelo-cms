@@ -555,6 +555,53 @@ describe("runUpgraderJob", () => {
     ).toBe(true);
   });
 
+  it("#815: drift + a stop verdict: a failed re-read under the lock keeps the verdict", async () => {
+    const drift = setup({
+      meta: { ...META, imageDigests: { admin: D("9"), gateway: D("2") }, infraContractVersion: 1 },
+      manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+    });
+    let reads = 0;
+    const r = await runUpgraderJob({
+      ...drift.deps,
+      readInstall: () => {
+        reads += 1;
+        if (reads > 1) throw new Error("storage.objects.get timed out");
+        return {
+          ...META,
+          imageDigests: { admin: D("9"), gateway: D("2") },
+          infraContractVersion: 1,
+        };
+      },
+    });
+    expect(r.status).toBe("needs_cloud_shell");
+    expect(drift.q.end()?.codes).toEqual(["infra-contract"]);
+    expect(drift.written).toEqual([]);
+    expect(drift.order).toContain("unlock");
+    expect(
+      drift.q.events.some(
+        (e) => e.level === "warn" && e.message.includes("storage.objects.get timed out"),
+      ),
+    ).toBe(true);
+  });
+
+  it("#815: a failed re-read under the lock before the backup stops as install-state-read", async () => {
+    const { deps, order, q, written } = setup();
+    let reads = 0;
+    const r = await runUpgraderJob({
+      ...deps,
+      readInstall: () => {
+        reads += 1;
+        if (reads > 1) throw new Error("storage.objects.get timed out");
+        return META;
+      },
+    });
+    expect(r.status).toBe("failed");
+    expect(q.end()?.codes).toEqual(["install-state-read"]);
+    expect(written).toEqual([]);
+    expect(order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
+    expect(order).toContain("unlock");
+  });
+
   it("drift where the recorded version is the serving one needs no tag lookup", async () => {
     const { deps, order, written } = setup({
       meta: { ...META, imageDigests: { admin: D("9"), gateway: D("2") } },

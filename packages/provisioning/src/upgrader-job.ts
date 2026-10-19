@@ -340,7 +340,19 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       if (!locked.ok) return locked;
       // Another writer may have changed the records between our read and
       // the lock; everything above was judged against the old ones.
-      const now = deps.readInstall();
+      // A failed re-read is a Blocked like any other, never a throw: on the
+      // stop-verdict path a throw here would replace the verdict with
+      // failed/internal.
+      let now: InstallMetadata | null;
+      try {
+        now = deps.readInstall();
+      } catch (e) {
+        return {
+          status: "failed",
+          codes: ["install-state-read"],
+          reason: `Nothing was changed: the install's records (install.json) could not be read again once the lock was held (${errorText(e)}). Try again.`,
+        };
+      }
       if (JSON.stringify(now) !== JSON.stringify(read)) {
         return {
           status: "failed",
