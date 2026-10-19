@@ -152,8 +152,25 @@ describe("apiTargetFor", () => {
   });
 
   it("leaves everything else to the build and never leaves the origin or /api/", () => {
-    for (const path of ["/", "/apixyz", "/about/api/x", "//evil.example/api/x", "/api/../admin"]) {
+    for (const path of [
+      "/",
+      "/apixyz",
+      "/about/api/x",
+      "//evil.example/api/x",
+      "/api/../admin",
+      "/api/%2e%2e/admin",
+    ]) {
       expect(apiTargetFor(path, api)).toBeNull();
+    }
+  });
+
+  it("keeps a host-looking part of the request on the configured origin", () => {
+    for (const path of [
+      "/api//evil.example/x",
+      "/api/@evil.example/x",
+      "/api/x?u=https://evil.example",
+    ]) {
+      expect(new URL(apiTargetFor(path, api) ?? "").origin).toBe("https://example.com");
     }
   });
 });
