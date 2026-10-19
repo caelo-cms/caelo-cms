@@ -360,12 +360,11 @@ export const deleteUserOp = defineOperation({
       return ok({});
     }
     await tx.execute(sql`UPDATE users SET deleted_at = now() WHERE id = ${input.userId}::uuid`);
-    // Revoke active sessions so a soft-deleted user is signed out immediately.
+    // Revoke active sessions AND MCP bearer tokens so a soft-deleted user is
+    // signed out everywhere at once — a token outlived its user before
+    // (PR #863, M-09). resolveMcpToken also refuses a deleted user's token.
     await tx.execute(sql`DELETE FROM sessions WHERE user_id = ${input.userId}::uuid`);
-    // MCP tokens are bearer sessions too. Token resolution already refuses a
-    // deleted user's bearer; revoking here makes the registry at
-    // /settings/mcp show the truth instead of live-looking dead tokens.
-    const revokedTokens = (await tx.execute(sql`
+    const revoked = (await tx.execute(sql`
       UPDATE mcp_tokens SET revoked_at = now()
       WHERE actor_id = ${input.userId}::uuid AND revoked_at IS NULL
       RETURNING id
@@ -377,7 +376,7 @@ export const deleteUserOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.userId,
-      resultSummary: `soft-deleted; revoked ${revokedTokens.length} mcp token(s)`,
+      resultSummary: `soft-deleted; mcp-tokens-revoked=${revoked.length}`,
     });
     return ok({});
   },
