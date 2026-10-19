@@ -938,7 +938,7 @@ test("Automatic updates: collapsed with a summary; each change confirmed with th
   await confirmPolicy(page);
 
   await expect(summary).toContainText("Installed automatically: bug fixes.");
-  await expect(summary).toContainText("Google Cloud project still need you for now");
+  await expect(summary).toContainText("Google Cloud project install automatically too");
   await expect(summary).toContainText("Only between 02:00 and 05:00 (Europe/Berlin).");
   await expect(summary).toContainText("waits 48 hours");
   await expect(line).toContainText("Installs bug-fix releases automatically.");
