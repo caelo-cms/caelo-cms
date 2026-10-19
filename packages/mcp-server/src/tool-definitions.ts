@@ -277,3 +277,21 @@ export const GET_CONTEXT_TOOL = {
     "Load this once before working; load individual skills on demand via the load_skill tool.",
   inputSchema: { type: "object" as const, properties: {} },
 };
+
+/**
+ * The chat server's whole tool list (stdio flavour). Static, so it also
+ * serves the credential-less listing MCP directories inspect (#841); the
+ * remote surface swaps in its own upload tool.
+ */
+export const CHAT_TOOLS = [UPLOAD_IMAGES_TOOL, CHAT_AWAIT_APPROVAL_TOOL, CAELO_CHAT_TOOL] as const;
+
+/**
+ * The tools Power-MCP adds in front of the admin's catalogue (stdio
+ * flavour) — also the head of the credential-less listing (#841).
+ */
+export const ADMIN_LOCAL_TOOLS = [
+  UPLOAD_IMAGES_TOOL,
+  OPEN_SESSION_TOOL,
+  GET_CONTEXT_TOOL,
+  ADMIN_AWAIT_APPROVAL_TOOL,
+] as const;

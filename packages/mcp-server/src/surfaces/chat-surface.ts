@@ -34,6 +34,7 @@ import {
   type CaeloChatInput,
   CHAT_AWAIT_APPROVAL_TOOL,
   CHAT_MCP_INSTRUCTIONS,
+  CHAT_TOOLS,
   caeloChatInputSchema,
   chatAwaitApprovalInput,
   UPLOAD_IMAGES_TOOL,
@@ -50,6 +51,12 @@ export interface ChatSurfaceBackend {
 }
 
 export interface ChatSurfaceOptions {
+  /**
+   * serverInfo.version — the release this server belongs to (#841): the
+   * package's own version for the stdio bins, CAELO_VERSION for the admin's
+   * remote endpoint. Required so no surface reports a made-up version.
+   */
+  readonly serverVersion: string;
   /** The caelo_upload_images definition (local vs remote description). */
   readonly uploadImagesTool?: { name: string; description: string; inputSchema: object };
   /** The bounded wait on the operator (read per call). */
@@ -119,12 +126,12 @@ function chatResult(
 export function createChatMcpServer(backend: ChatSurfaceBackend, opts: ChatSurfaceOptions): Server {
   const uploadTool = opts.uploadImagesTool ?? UPLOAD_IMAGES_TOOL;
   const server = new Server(
-    { name: "caelo-mcp-server", version: "0.1.0" },
+    { name: "caelo-mcp-server", version: opts.serverVersion },
     { capabilities: { tools: {} }, instructions: CHAT_MCP_INSTRUCTIONS },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [uploadTool, CHAT_AWAIT_APPROVAL_TOOL, CAELO_CHAT_TOOL],
+    tools: CHAT_TOOLS.map((t) => (t === UPLOAD_IMAGES_TOOL ? uploadTool : t)),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req, extra): Promise<CallToolResult> => {

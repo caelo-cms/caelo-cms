@@ -15,6 +15,7 @@ import { fetchChatApprovalState, resumeChat, sendChat } from "./chat-bridge.js";
 import { resolveTimeoutMs } from "./http.js";
 import { uploadImages } from "./image-upload.js";
 import { createChatMcpServer } from "./surfaces/chat-surface.js";
+import { ownVersion } from "./version-handshake.js";
 
 export interface StartOpts {
   readonly adminUrl: string;
@@ -46,6 +47,7 @@ export async function startMcpServer(opts: StartOpts): Promise<void> {
       uploadImages: (args) => uploadImages(target, args),
     },
     {
+      serverVersion: ownVersion(),
       approvalWaitMs: resolveApprovalWaitMs,
       resumeTimeoutMs,
       ...(opts.approvalPollMs !== undefined ? { approvalPollMs: opts.approvalPollMs } : {}),
