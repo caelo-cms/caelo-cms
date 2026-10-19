@@ -491,7 +491,7 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
 
 /**
  * The automatic-update policy in one line. Takes the shared policy mode
- * type, so a change to the modes (#862 drops "off") is a type error here.
+ * type: "notify" is the only mode besides "auto" since #862 dropped "off".
  */
 export function autoUpdateModeLine(policy: {
   readonly mode: UpdatePolicyMode;
@@ -514,8 +514,7 @@ export function autoUpdateModeLine(policy: {
       kinds.length === 1 ? kinds[0] : `${kinds.slice(0, -1).join(", ")} and ${kinds.at(-1)}`;
     return `Installs ${list} automatically.${paused}`;
   }
-  if (policy.mode === "notify") return `You're notified and install updates yourself.${paused}`;
-  return `Off: you see new releases only on this page.${paused}`;
+  return `You're notified and install updates yourself.${paused}`;
 }
 
 /** The history in one line: the last attempt and how it ended, plus the count. */

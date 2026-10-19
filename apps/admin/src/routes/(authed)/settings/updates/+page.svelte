@@ -42,7 +42,7 @@
     statusDisplay,
     updatePageState,
   } from "#lib/updates-display.js";
-  import { releaseNotesExcerpt } from "#lib/upgrade-path.js";
+  import { hasOwnerNotes, ownerReleaseNotes } from "#lib/owner-release-notes.js";
 
   let { data, form } = $props();
 
@@ -105,8 +105,16 @@
 
   /** "Check now" runs a GitHub request; the control says so while it does. */
   let checking = $state(false);
-  const notes = $derived(
-    status.releaseNotes ? releaseNotesExcerpt(status.releaseNotes) : null,
+  /** The release notes in Owner words (#862): no hashes, issue numbers or "BREAKING". */
+  const notes = $derived(status.releaseNotes ? ownerReleaseNotes(status.releaseNotes) : null);
+  const noteGroups = $derived(
+    notes
+      ? [
+          { title: "New", items: notes.added },
+          { title: "Fixed", items: notes.fixed },
+          { title: "Security", items: notes.security },
+        ].filter((g) => g.items.length > 0)
+      : [],
   );
   let copied = $state(false);
 
@@ -348,11 +356,24 @@
         {/if}
       </CardHeader>
       <CardContent class="space-y-3 text-sm">
-        {#if notes}
-          <div
-            class="max-h-80 overflow-y-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs"
-            data-testid="release-notes"
-          >{notes.text}</div>
+        {#if notes && hasOwnerNotes(notes)}
+          <div class="max-h-80 space-y-3 overflow-y-auto rounded-md bg-muted p-3" data-testid="release-notes">
+            {#if notes.breaking}
+              <p data-testid="release-notes-breaking">
+                <span class="font-medium">Before you update:</span> {notes.breaking}
+              </p>
+            {/if}
+            {#each noteGroups as group (group.title)}
+              <div>
+                <p class="font-medium">{group.title}</p>
+                <ul class="list-disc space-y-0.5 pl-5">
+                  {#each group.items as item, i (i)}
+                    <li>{item}</li>
+                  {/each}
+                </ul>
+              </div>
+            {/each}
+          </div>
         {/if}
         {#if status.releaseUrl}
           <a
@@ -361,7 +382,7 @@
             rel="noopener noreferrer"
             class="text-sm font-medium underline underline-offset-4"
           >
-            {notes?.truncated ? "Read the full release notes" : "Release notes"} on GitHub →
+            All changes on GitHub →
           </a>
         {/if}
       </CardContent>

@@ -61,6 +61,7 @@ describe("autoInstallRefusal", () => {
     autoSecurity: true,
     autoPatch: false,
     autoMinor: false,
+    autoConverge: false,
     channel: "stable",
     windowStart: null,
     windowEnd: null,
@@ -123,6 +124,7 @@ describe("updatePolicySchema", () => {
     autoSecurity: true,
     autoPatch: false,
     autoMinor: false,
+    autoConverge: false,
     channel: "stable",
     windowStart: "02:00",
     windowEnd: "04:00",
@@ -140,6 +142,9 @@ describe("updatePolicySchema", () => {
       { ...base, soakHours: 1000 },
       { ...base, securitySoakHours: 48 },
       { ...base, extra: true },
+      // "Don't tell me" is gone (#862): security releases are always announced.
+      { ...base, mode: "off" },
+      { ...base, autoConverge: undefined },
     ]) {
       expect(updatePolicySchema.safeParse(bad).success).toBe(false);
     }

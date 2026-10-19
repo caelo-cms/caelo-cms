@@ -23,7 +23,8 @@ import {
 export const E2E_FAKE_RELEASE = {
   tag_name: "v99.0.0",
   html_url: "https://github.com/caelo-cms/caelo-cms/releases",
-  body: "## Highlights\n\nA release reported by the e2e release-check stand-in.",
+  // The shape scripts/release.ts writes; the page shows it in Owner words.
+  body: "### Fixes\n- 0a1b2c3d a fix reported by the e2e release-check stand-in (#1)\n",
   published_at: "2026-10-01T00:00:00Z",
 } as const;
 

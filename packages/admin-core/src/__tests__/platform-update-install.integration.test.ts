@@ -482,6 +482,7 @@ describe("platform_update_policy", () => {
     autoSecurity: true,
     autoPatch: true,
     autoMinor: false,
+    autoConverge: true,
     channel: "stable",
     windowStart: "02:00",
     windowEnd: "05:00",
@@ -491,12 +492,12 @@ describe("platform_update_policy", () => {
   };
 
   it("is readable by the AI and writable only by the Owner with a step-up", async () => {
-    const before = await okValue<{ mode: string; soakHours: number }>(
+    const before = await okValue<{ mode: string; soakHours: number; autoConverge: boolean }>(
       AI,
       "platform_update_policy.get",
       {},
     );
-    expect(before).toMatchObject({ mode: "notify", soakHours: 24 });
+    expect(before).toMatchObject({ mode: "notify", soakHours: 24, autoConverge: false });
     const noStepUp = await run(owner, "platform_update_policy.set", {
       policy,
       sessionHash: ownerSession,
@@ -508,12 +509,12 @@ describe("platform_update_policy", () => {
     });
     expect(message(editorTry)).toContain("platform.update");
     await stepUp(owner, ownerSession, { purpose: "update_policy" });
-    const after = await okValue<{ mode: string; windowStart: string }>(
+    const after = await okValue<{ mode: string; windowStart: string; autoConverge: boolean }>(
       owner,
       "platform_update_policy.set",
       { policy, sessionHash: ownerSession },
     );
-    expect(after).toMatchObject({ mode: "auto", windowStart: "02:00" });
+    expect(after).toMatchObject({ mode: "auto", windowStart: "02:00", autoConverge: true });
   });
 
   it("one step-up authorizes one change, even when two race", async () => {
@@ -537,6 +538,8 @@ describe("platform_update_policy", () => {
       { ...policy, channel: "rc" },
       { ...policy, windowEnd: null },
       { ...policy, windowTimezone: "Mars/Olympus" },
+      // "Don't tell me" is gone (#862, migration 0301).
+      { ...policy, mode: "off" },
     ]) {
       const r = await run(owner, "platform_update_policy.set", {
         policy: bad,
@@ -544,6 +547,16 @@ describe("platform_update_policy", () => {
       });
       expect(r.ok === false && r.error.kind).toBe("ValidationFailed");
     }
+  });
+
+  it("the table itself refuses mode 'off' (migration 0301)", async () => {
+    const refused = await adapter
+      .withAdminTransaction(SYSTEM, async (tx) => {
+        await tx.execute(sql`UPDATE platform_update_policy SET mode = 'off' WHERE id = 1`);
+        return "stored";
+      })
+      .catch((e: unknown) => String((e as { cause?: unknown }).cause ?? e));
+    expect(refused).toContain("platform_update_policy_mode_check");
   });
 });
 

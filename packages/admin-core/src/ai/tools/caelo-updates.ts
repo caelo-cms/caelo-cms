@@ -84,7 +84,7 @@ export const getCaeloUpdateTool = makeReadTool<{ requestId?: string }>({
 export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
   name: "get_caelo_update_policy",
   description:
-    "Whether Caelo updates install automatically on this site and which kinds (security fixes, patch, minor; never major), the maintenance window, the soak periods, and whether automatic installs are paused (by the Owner, or after a failure). " +
+    "Whether Caelo updates install automatically on this site or the Owner is only notified (new releases, security fixes included, are always announced), and which kinds (security fixes, patch, minor; never major), the maintenance window, the soak periods, and whether automatic installs are paused (by the Owner, or after a failure). " +
     "For what the scheduler last decided about the newest release and which update emails went out, use get_caelo_auto_update_status. Read-only.",
   opName: "platform_update_policy.get",
   input: z.object({}).strict(),
@@ -94,6 +94,7 @@ export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
       autoSecurity: boolean;
       autoPatch: boolean;
       autoMinor: boolean;
+      autoConverge: boolean;
       windowStart: string | null;
       windowEnd: string | null;
       windowTimezone: string;
@@ -112,9 +113,12 @@ export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
     const lines = [
       p.mode === "auto"
         ? `Automatic installs: on for ${kinds.length ? kinds.join(", ") : "nothing yet (no kind switched on)"}; major releases never; releases that change the cloud setup or the database destructively never (the Owner is emailed instead).`
-        : p.mode === "notify"
-          ? "Automatic installs: off — the Owner is notified and installs by hand."
-          : "Automatic installs and update notices: off.",
+        : "Automatic installs: off — the Owner is notified and installs by hand.",
+      ...(p.mode === "auto" && p.autoConverge
+        ? [
+            "The Owner also allowed releases that change the Google Cloud project to install automatically; that takes effect once Caelo can run them itself (not yet), so they are still announced only.",
+          ]
+        : []),
       p.windowStart
         ? `Maintenance window: ${p.windowStart}–${p.windowEnd} (${p.windowTimezone}).`
         : "Maintenance window: any time.",
