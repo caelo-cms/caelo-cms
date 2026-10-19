@@ -193,12 +193,15 @@ const DROPPED_RESPONSE_HEADERS = new Set([
  * The gateway URL a loopback `/api/*` request goes to, or null when the
  * path is not a plain `/api/` path on that origin. Pure (exported for tests).
  */
-export function apiTargetFor(requestPath: string, apiOrigin: string): URL | null {
+export function apiTargetFor(requestPath: string, apiOrigin: string): string | null {
   if (!requestPath.startsWith("/api/")) return null;
-  const origin = new URL(apiOrigin);
-  const target = new URL(requestPath, origin);
+  const origin = new URL(apiOrigin).origin;
+  const parsed = new URL(requestPath, origin);
   // `new URL` resolves dot segments: `/api/../x` must not leave `/api/`.
-  return target.origin === origin.origin && target.pathname.startsWith("/api/") ? target : null;
+  if (parsed.origin !== origin || !parsed.pathname.startsWith("/api/")) return null;
+  // Rebuilt on the fixed origin and the literal `/api/` prefix, so the
+  // request can only ever reach the gateway's `/api/` tree.
+  return `${origin}/api/${parsed.pathname.slice("/api/".length)}${parsed.search}`;
 }
 
 async function readBody(req: IncomingMessage): Promise<Buffer | null> {
@@ -215,7 +218,7 @@ async function readBody(req: IncomingMessage): Promise<Buffer | null> {
 async function forwardToGateway(
   req: IncomingMessage,
   res: ServerResponse,
-  target: URL,
+  target: string,
 ): Promise<void> {
   const headers = new Headers();
   for (const name of FORWARDED_REQUEST_HEADERS) {

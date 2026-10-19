@@ -146,7 +146,7 @@ describe("apiTargetFor", () => {
   const api = "https://example.com";
 
   it("maps /api/ paths onto the gateway origin", () => {
-    expect(apiTargetFor("/api/plugin/ratings/summary?x=1", api)?.href).toBe(
+    expect(apiTargetFor("/api/plugin/ratings/summary?x=1", api)).toBe(
       "https://example.com/api/plugin/ratings/summary?x=1",
     );
   });
