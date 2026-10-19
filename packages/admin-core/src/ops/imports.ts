@@ -71,6 +71,7 @@ import {
   normalizeStoredCrawlScope,
   refineCrawlScopeAgainstSourceUrl,
 } from "./imports-crawl-scope.js";
+import { finaliseImportLinks } from "./links-import.js";
 import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
@@ -2328,6 +2329,20 @@ export const getImportRunReportOp = defineOperation({
         createdAt: z.string().nullable(),
       }),
     ),
+    /**
+     * Epic #724 (rollout E) — the run's internal links: written to a
+     * planned page before it was built (`pending` until the run's links
+     * are resolved), converted to page references (`resolved`), or
+     * matching no page (`unresolved`, from the rebuild or from
+     * compose_from_run). Never guessed.
+     */
+    internalLinks: z.object({
+      pending: z.number(),
+      resolved: z.number(),
+      unresolved: z.array(
+        z.object({ value: z.string(), source: z.enum(["build", "compose"]), location: z.string() }),
+      ),
+    }),
   }),
   handler: async (_ctx, input, tx) => {
     const runRows = (await tx.execute(sql`
@@ -2520,9 +2535,37 @@ export const getImportRunReportOp = defineOperation({
       })),
       eventCounts,
       events,
+      internalLinks: await loadImportRunLinks(tx, input.runId),
     });
   },
 });
+
+/** Epic #724 (rollout E) — the run's recorded internal links, for the report. */
+async function loadImportRunLinks(
+  tx: TransactionRunner,
+  runId: string,
+): Promise<{
+  pending: number;
+  resolved: number;
+  unresolved: { value: string; source: "build" | "compose"; location: string }[];
+}> {
+  const rows = (await tx.execute(sql`
+    SELECT value, status, source, location FROM import_run_links
+     WHERE run_id = ${runId}::uuid ORDER BY value
+  `)) as unknown as {
+    value: string;
+    status: "pending" | "resolved" | "unresolved";
+    source: "build" | "compose";
+    location: string;
+  }[];
+  return {
+    pending: rows.filter((r) => r.status === "pending").length,
+    resolved: rows.filter((r) => r.status === "resolved").length,
+    unresolved: rows
+      .filter((r) => r.status === "unresolved")
+      .map((r) => ({ value: r.value, source: r.source, location: r.location })),
+  };
+}
 
 /**
  * issue #280 — record the operator-confirmed money ceiling for a run. The
@@ -3102,6 +3145,11 @@ export const cleanupImportRunOp = defineOperation({
     droppedScreenshotKeys: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
+    // Epic #724 rollout E — the run's last chance to turn links to its
+    // planned pages into references (main and the run's chat); what is
+    // left stays in the run report. After this the run is no longer
+    // active, so a link to an unbuilt page is refused again.
+    await finaliseImportLinks(tx, ctx, input.runId, true);
     await tx.execute(sql`
       UPDATE import_runs SET status = 'completed' WHERE id = ${input.runId}::uuid
     `);
@@ -3868,6 +3916,15 @@ export const composeFromImportRunOp = defineOperation({
       [...composedModuleIds],
       run.source_url,
     );
+    // Rollout E — the run report lists them (get_import_run_report).
+    for (const u of unresolvedLinks) {
+      await tx.execute(sql`
+        INSERT INTO import_run_links (run_id, value, status, source, location)
+        VALUES (${input.runId}::uuid, ${u.value}, 'unresolved', 'compose', ${`module ${u.moduleId}`})
+        ON CONFLICT (run_id, value) DO UPDATE SET
+          status = 'unresolved', source = 'compose', location = EXCLUDED.location, updated_at = now()
+      `);
+    }
 
     await recordAudit(tx, {
       actorId: ctx.actorId,

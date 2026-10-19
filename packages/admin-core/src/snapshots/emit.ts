@@ -78,7 +78,10 @@ export type SnapshotOpKind =
   // v0.11.4 (issue #76 follow-up) — meta-only edit (description /
   // displayName) emits its own kind so the history view can
   // distinguish a token rewrite from a metadata change.
-  | "themes.update_meta";
+  | "themes.update_meta"
+  // Epic #724 rollout E — the literal-link → reference migration (0293).
+  | "links.migrate_to_references"
+  | "links.revert_migration";
 
 export type SnapshotEntity =
   | { readonly kind: "module"; readonly entityId: string; readonly state: ModuleState }

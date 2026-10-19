@@ -21,6 +21,11 @@
  * Internal copies (fork, duplicate, chat merge, snapshot revert) copy
  * stored references verbatim and are not re-canonicalised. Undo restores
  * whatever was stored, references included.
+ *
+ * Rollout E: inside a chat that rebuilds an active site import, a link to
+ * one of that run's planned-but-unbuilt pages is kept literal and
+ * recorded against the run (`import-targets.ts`) instead of refused;
+ * `imports.resolve_links` converts it once the page exists.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
@@ -35,6 +40,7 @@ import {
   normaliseLinkPath,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { loadActiveImportTargets, recordPendingImportLinks } from "./import-targets.js";
 import { type LinkTargets, loadLinkTargets } from "./link-targets.js";
 
 /**
@@ -53,11 +59,14 @@ export function mayContainInternalLink(input: unknown): boolean {
  * @param extraOwnHosts hosts that count as this site besides the base
  *   URL and the public domains — an import passes the migrated site's
  *   host, whose absolute self-links mean its (now imported) pages.
+ * @param pendingPagePaths planned pages of an active import that do not
+ *   exist yet (rollout E, see `import-targets.ts`).
  */
 export async function loadLinkTargetLookup(
   tx: TransactionRunner,
   chatBranchId: string | null,
   extraOwnHosts: readonly string[] = [],
+  pendingPagePaths?: ReadonlySet<string>,
 ): Promise<LinkTargetLookup & { readonly targets: LinkTargets }> {
   const targets = await loadLinkTargets(tx, chatBranchId);
   const byPath = new Map<string, string>();
@@ -105,6 +114,9 @@ export async function loadLinkTargetLookup(
     pageExists: (id) => pageIds.has(id),
     mediaExists: (id) => mediaIds.has(id),
     isOwnHost: (host) => hosts.has(host),
+    ...(pendingPagePaths && pendingPagePaths.size > 0
+      ? { isPendingPagePath: (path: string) => pendingPagePaths.has(path) }
+      : {}),
   };
 }
 
@@ -138,7 +150,15 @@ export async function canonicaliseLinksForWrite<T>(
   if (!mayContainInternalLink(input)) {
     return { ok: true, value: apply(passthroughRun()), issues: [] };
   }
-  const lookup = await loadLinkTargetLookup(tx, ctx.chatBranchId ?? null);
+  // Rollout E: inside a chat that rebuilds an import, links to that
+  // run's planned-but-unbuilt pages are kept literal and recorded.
+  const imports = ctx.chatBranchId ? await loadActiveImportTargets(tx, ctx.chatBranchId) : null;
+  const lookup = await loadLinkTargetLookup(
+    tx,
+    ctx.chatBranchId ?? null,
+    imports?.sourceHosts ?? [],
+    imports ? new Set(imports.runsByPath.keys()) : undefined,
+  );
   const run = linkCanonicaliseRun(lookup, {
     mode: opts.mode ?? "strict",
     grandfathered: opts.previous === undefined ? new Set() : collectLinkLiterals(opts.previous),
@@ -146,6 +166,9 @@ export async function canonicaliseLinksForWrite<T>(
   const value = apply(run);
   if (run.mode === "strict" && run.issues.length > 0) {
     return { ok: false, message: describeLinkIssues(run.issues), issues: run.issues };
+  }
+  if (imports && run.pending.length > 0) {
+    await recordPendingImportLinks(tx, imports, run.pending);
   }
   return { ok: true, value, issues: run.issues };
 }

@@ -54,6 +54,23 @@ export interface LinkTargetLookup {
   mediaExists(mediaId: string): boolean;
   /** True when `host` (lowercase, may carry a port) is the site's own. */
   isOwnHost(host: string): boolean;
+  /**
+   * True when `path` names a page that does not exist YET but is planned:
+   * a page of an active site import that has not been rebuilt so far
+   * (#724, rollout E). Such a link keeps its literal path and lands in
+   * {@link LinkCanonicaliseRun.pending} instead of being an issue; the
+   * import converts it once the page exists.
+   */
+  isPendingPagePath?(path: string): boolean;
+}
+
+/** A link to a planned (not yet built) page, kept literal for now. */
+export interface PendingLinkTarget {
+  /** The link exactly as written. */
+  readonly value: string;
+  /** Its normalised path: the planned page's path. */
+  readonly path: string;
+  readonly where: string;
 }
 
 /** One link the canonicaliser could not turn into a reference. */
@@ -82,18 +99,33 @@ export interface LinkCanonicaliseRun {
   /** Link literals already present in the stored state; see file header. */
   readonly grandfathered: ReadonlySet<string>;
   readonly issues: LinkCanonicaliseIssue[];
+  /** Links to planned pages (see {@link LinkTargetLookup.isPendingPagePath}). */
+  readonly pending: PendingLinkTarget[];
+  /**
+   * When set, only these literals are looked at; every other link stays
+   * exactly as stored and is never reported. An import's link
+   * finalisation (#724, rollout E) converts the links it recorded and
+   * nothing else on the site.
+   */
+  readonly only?: ReadonlySet<string>;
 }
 
 /** Start a run. */
 export function linkCanonicaliseRun(
   lookup: LinkTargetLookup,
-  opts: { mode?: "strict" | "report"; grandfathered?: ReadonlySet<string> } = {},
+  opts: {
+    mode?: "strict" | "report";
+    grandfathered?: ReadonlySet<string>;
+    only?: ReadonlySet<string>;
+  } = {},
 ): LinkCanonicaliseRun {
   return {
     lookup,
     mode: opts.mode ?? "strict",
     grandfathered: opts.grandfathered ?? new Set(),
     issues: [],
+    pending: [],
+    ...(opts.only ? { only: opts.only } : {}),
   };
 }
 
@@ -194,6 +226,7 @@ export function canonicaliseUrl(
 ): string {
   const v = value.trim();
   if (v.length === 0 || v.includes("{{")) return value;
+  if (run.only && !run.only.has(v)) return value;
 
   const ref = parseLinkRef(v);
   if (ref) {
@@ -229,9 +262,14 @@ export function canonicaliseUrl(
   const lastSegment = path.slice(path.lastIndexOf("/") + 1);
   if (FILE_EXT_RE.test(lastSegment)) return value;
 
-  const pageId = run.lookup.pageIdForPath(normaliseLinkPath(path));
+  const normalised = normaliseLinkPath(path);
+  const pageId = run.lookup.pageIdForPath(normalised);
   if (pageId === null) {
-    if (!run.grandfathered.has(v)) issue(run, "unknown-page-path", v, where);
+    if (run.lookup.isPendingPagePath?.(normalised)) {
+      run.pending.push({ value: v, path: normalised, where });
+    } else if (!run.grandfathered.has(v)) {
+      issue(run, "unknown-page-path", v, where);
+    }
     return value;
   }
   if ((query !== null && !QUERY_OK.test(query)) || (anchor !== null && !ANCHOR_OK.test(anchor))) {

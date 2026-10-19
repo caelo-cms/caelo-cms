@@ -448,6 +448,46 @@ export const linkResolvePageVariant = z
 
 export type LinkResolvePageVariant = z.infer<typeof linkResolvePageVariant>;
 
+/**
+ * Epic #724 (rollout E) — one place in a plugin's private storage that
+ * holds internal links: a column of one row. Core converts literal links
+ * there (`/about`) into references (`caelo:page/<id>`) with the same
+ * canonicaliser it uses for its own content, inside its own migration
+ * transaction and snapshot, so a plugin never re-implements link
+ * parsing and the conversion reverts with everything else.
+ *
+ * How the column's value is read:
+ *   - `fields` (or `moduleId`, whose fields core loads): the value is a
+ *     module content-values object; a `url` / `link` / `image` field's
+ *     whole value is a link, every string is scanned for HTML links;
+ *   - neither: the value is any JSON (or text) — keys named `href`,
+ *     `url`, `link`, `*_href`, … carry links, strings carrying markup are
+ *     scanned for `href` / `src`.
+ */
+export const pluginLinkLocation = z
+  .object({
+    /** A table declared in the plugin's `adminSchema`. */
+    table: z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/),
+    rowId: z.string().uuid(),
+    /** A `jsonb` or `text` column declared on that table. */
+    column: z.string().regex(/^[a-z_][a-z0-9_]{0,62}$/),
+    /** Operator-facing: what this is ("German footer — layout main"). */
+    label: z.string().min(1).max(300),
+    moduleId: z.string().uuid().optional(),
+    fields: z
+      .array(z.object({ name: z.string().min(1), kind: z.string().min(1) }).strict())
+      .max(500)
+      .optional(),
+  })
+  .strict();
+
+export type PluginLinkLocation = z.infer<typeof pluginLinkLocation>;
+
+/** What a `linkLocationsOperation` returns. */
+export const pluginLinkLocations = z
+  .object({ locations: z.array(pluginLinkLocation).max(10_000) })
+  .strict();
+
 export const pluginManifest = z
   .object({
     // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
@@ -1402,6 +1442,19 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    *   }),
    */
   readonly linkResolveOperation?: string;
+  /**
+   * Epic #724 (rollout E) — where this plugin's private storage holds
+   * internal links, so core's link migration converts them to
+   * references together with core content. An operation in `operations`
+   * taking `{}` and returning `{locations: PluginLinkLocation[]}` (see
+   * {@link pluginLinkLocation}). Core calls it as a render (read-only)
+   * invocation: once on main and once per chat branch with pending work,
+   * so the plugin's normal branch-aware reads return what each scope
+   * sees. Core then reads, converts and writes the named columns itself,
+   * snapshotted with the migration and reverted with it. Return every
+   * row that MAY carry a link; rows without one cost nothing.
+   */
+  readonly linkLocationsOperation?: string;
   /**
    * The I/O half of `dataLists`: an operation in `operations` taking
    * `{pageIds: string[], pageUrlStyle: PageUrlStyle}` (page links come

@@ -93,6 +93,7 @@ import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectDesignDraftTool } from "./inspect-design-draft.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
+import { getLinkMigrationReportTool, resolveImportLinksTool } from "./link-migration-tools.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
 import { listImportPagesTool } from "./list-import-pages.js";
 import { listLayoutsTool } from "./list-layouts.js";
@@ -331,6 +332,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #197 — rebuild notes + the migration's closing report.
   registry.register(addImportPageNotesTool);
   registry.register(getImportRunReportTool);
+  // Epic #724 rollout E — import link finalisation + the link migration report.
+  registry.register(resolveImportLinksTool);
+  registry.register(getLinkMigrationReportTool);
   // issue #280 — migration cost gate: record the operator's budget +
   // check cumulative spend against it (pause-and-ask, not auto-stop).
   registry.register(setMigrationBudgetTool);

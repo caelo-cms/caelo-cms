@@ -209,3 +209,24 @@ describe("grandfathering + messages", () => {
     expect(msg).toContain("create it first");
   });
 });
+
+describe("rollout E — planned pages and scoped runs", () => {
+  it("keeps a link to a planned page literal and records it instead of an issue", () => {
+    const r = linkCanonicaliseRun({ ...lookup, isPendingPagePath: (p) => p === "/pricing" });
+    expect(canonicaliseUrl("/pricing/#plans", r, "values.cta_href")).toBe("/pricing/#plans");
+    expect(canonicaliseUrl("/typo", r, "values.other")).toBe("/typo");
+    expect(r.pending).toEqual([
+      { value: "/pricing/#plans", path: "/pricing", where: "values.cta_href" },
+    ]);
+    expect(r.issues.map((i) => i.value)).toEqual(["/typo"]);
+  });
+
+  it("an `only` run looks at the listed literals and nothing else", () => {
+    const r = linkCanonicaliseRun(lookup, { mode: "report", only: new Set(["/company/about"]) });
+    const html = '<a href="/company/about">a</a><a href="/">h</a><a href="/nowhere">n</a>';
+    expect(canonicaliseHtmlLinks(html, r, "html")).toBe(
+      `<a href="caelo:page/${ABOUT}">a</a><a href="/">h</a><a href="/nowhere">n</a>`,
+    );
+    expect(r.issues).toEqual([]);
+  });
+});
