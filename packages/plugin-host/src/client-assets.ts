@@ -38,6 +38,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { escapeStyleText, scriptNeedsEncoding } from "@caelo-cms/shared";
 import {
   isPluginDisabled,
   loadedPlugins,
@@ -185,7 +186,7 @@ export function injectPluginAssets(
           ? `<link rel="stylesheet" href="${escapeAttr(a.publicPath)}" data-caelo-plugin="${escapeAttr(a.pluginSlug)}" />`
           : // `<\/style` means what `</style` means wherever CSS can hold it
             // (strings, url(), comments), so this escape keeps the CSS intact.
-            `<style data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${a.content.replace(/<\/style/gi, "<\\/style")}\n</style>`,
+            `<style data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${escapeStyleText(a.content)}\n</style>`,
       )
       .join("\n");
     // A function replacer: a string one would expand `$&` / `$'` inside
@@ -207,14 +208,15 @@ export function injectPluginAssets(
 
 /**
  * The preview's inline form of a JS asset. Verbatim when the source cannot
- * close the element; otherwise a base64 `data:` URL, because no textual
+ * close the element (no `</script`, no `<!--` script-data escape);
+ * otherwise a base64 `data:` URL, because no textual
  * rewrite of `</script` keeps every JavaScript program's meaning (a regex
  * literal or `String.raw` observes an inserted backslash). Both forms run
  * the identical bytes the deploy links.
  */
 function inlineScriptTag(asset: PluginClientAsset): string {
   const slug = escapeAttr(asset.pluginSlug);
-  if (!/<\/script/i.test(asset.content)) {
+  if (!scriptNeedsEncoding(asset.content)) {
     return `<script defer data-caelo-plugin="${slug}">\n${asset.content}\n</script>`;
   }
   const encoded = Buffer.from(asset.content, "utf8").toString("base64");

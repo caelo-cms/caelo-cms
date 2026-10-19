@@ -111,4 +111,12 @@ describe("plugin client assets — page injection", () => {
     expect(Buffer.from(src?.[1] ?? "", "base64").toString("utf8")).toBe(content);
     expect(html).not.toContain("0</script/");
   });
+
+  it("encodes a JS asset holding <!-- too (script-data escape would swallow the close)", () => {
+    const content = "var s = '<!--<script>';";
+    const html = injectPluginAssets(DOC, [asset({ kind: "js", content })], "inline");
+    const src = /<script defer src="data:text\/javascript;charset=utf-8;base64,([^"]+)"/.exec(html);
+    expect(src).not.toBeNull();
+    expect(Buffer.from(src?.[1] ?? "", "base64").toString("utf8")).toBe(content);
+  });
 });

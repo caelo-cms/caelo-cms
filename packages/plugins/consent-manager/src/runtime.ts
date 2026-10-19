@@ -228,8 +228,9 @@ function apply() {
  * inside it can reach the network. The module's CSS rides along as a
  * <style>; its JS is parked as type="text/plain" and run here, once per
  * module, AFTER the markup it queries is in the DOM. A script whose
- * source could end its own <script> element (a "</script" or "<!--")
- * is parked base64-encoded (data-caelo-encoding="base64") and decoded
+ * source could end its own script element (a closing script tag or an
+ * HTML comment opener; spelled out here they would trip that very check
+ * on this runtime) is parked base64-encoded (data-caelo-encoding="base64") and decoded
  * here back to the exact bytes.
  */
 var ranModuleScripts = {};
