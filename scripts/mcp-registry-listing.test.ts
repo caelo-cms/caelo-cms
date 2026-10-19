@@ -13,6 +13,9 @@
  * L2: the npm side matches: the registry only accepts the entry when the
  *     published package.json carries `mcpName` == server.json `name`, and the
  *     version it names must be the one npm just published.
+ * L2b: release.ts bumps server.json and regenerates the catalogue snapshot
+ *     before every release commit, and the snapshot's stamped version is the
+ *     package's — so a release commit that left either behind fails here.
  * L3: the namespace is the one GitHub OIDC grants (`io.github.<repo owner>/*`).
  * L4: the environment variables the listing advertises are the ones the bins
  *     actually read, with the token marked secret.
@@ -121,6 +124,32 @@ describe("#841 MCP Registry listing", () => {
     expect(entry?.transport.type).toBe("stdio");
     // The package must actually be one release.yml publishes to npm.
     expect(release.jobs["publish-npm"]?.strategy?.matrix?.package).toContain("mcp-server");
+  });
+
+  it("L2b: a release commit cannot leave server.json or the catalogue snapshot behind", () => {
+    // The shipped snapshot is stamped with the release that generated it;
+    // release.ts rewrites it next to every package.json bump.
+    const catalogue = readJson<{ version: string }>(resolve(PKG_DIR, "power-catalogue.json"));
+    expect(catalogue.version).toBe(pkg.version);
+
+    // ...and release.ts does so before it commits, every run (not behind a
+    // flag), so the release commit carries both files at the new version.
+    const releaseSrc = readFileSync(resolve(REPO_ROOT, "scripts/release.ts"), "utf8");
+    const mainBody = releaseSrc.slice(releaseSrc.indexOf("async function main()"));
+    const at = (call: string) => mainBody.indexOf(call);
+    expect(at("bumpJsonVersions(newVersion, dryRun)")).toBeGreaterThan(0);
+    expect(at("bumpMcpServerJson(newVersion, dryRun)")).toBeGreaterThan(0);
+    expect(at("writePowerCatalogue(newVersion, dryRun)")).toBeGreaterThan(0);
+    expect(at("maybeGitCommitTag(newVersion, dryRun)")).toBeGreaterThan(
+      Math.max(
+        at("bumpMcpServerJson(newVersion, dryRun)"),
+        at("writePowerCatalogue(newVersion, dryRun)"),
+      ),
+    );
+    // The lockstep check (ci.yml on every PR, release.yml's gate) covers server.json.
+    expect(releaseSrc.slice(releaseSrc.indexOf("function checkLockstep"))).toContain(
+      "MCP_SERVER_JSON",
+    );
   });
 
   it("L3: the name sits in the namespace GitHub OIDC grants this repository's owner", () => {
