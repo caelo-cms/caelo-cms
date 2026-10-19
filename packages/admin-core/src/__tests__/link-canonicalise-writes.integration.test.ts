@@ -16,13 +16,20 @@
  *     AI-actionable message and writes nothing;
  *   - grandfathering: a literal already stored stays editable around;
  *   - reads humanise: the AI and the editor see paths, never ids, and a
- *     read-modify-write round trip stores the same reference again.
+ *     read-modify-write round trip stores the same reference again;
+ *   - review fixes: a link padded with whitespace or hidden in a srcset
+ *     candidate is canonicalised (the old string pre-check let it slip
+ *     into a lookup-less run); only PERMANENT redirects pin a link; layout
+ *     HTML is canonicalised; snapshot rows carry the reference form;
+ *     content written in a chat reads the module's fields and pages as
+ *     that chat's branch has them; bulk refusals name the failing entry.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { createDefaultToolRegistry, type ToolContext } from "../ai/tools/index.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -46,6 +53,7 @@ let pricingId = "";
 let mediaId = "";
 let mediaSlug = "";
 let savedBaseUrl: string | null = null;
+const SESSION_PREFIX = `${PFX}-chat-`;
 
 async function asSystem<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL as string);
@@ -61,6 +69,9 @@ async function asSystem<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
 
 async function wipe(): Promise<void> {
   await asSystem(async (tx) => {
+    await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${SESSION_PREFIX}%`}`;
+    await tx`DELETE FROM layout_blocks WHERE layout_id IN (SELECT id FROM layouts WHERE slug LIKE ${`${PFX}%`})`;
+    await tx`DELETE FROM layouts WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM structured_sets WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`%${PFX}%`} OR to_path LIKE ${`%${PFX}%`}`;
@@ -135,6 +146,9 @@ async function storedModule(moduleId: string): Promise<{ html: string; fields: u
   if (!r) throw new Error(`module ${moduleId} not stored`);
   return { html: r.html, fields: typeof r.fields === "string" ? JSON.parse(r.fields) : r.fields };
 }
+
+/** One explicit field, so modules.create keeps authored HTML as written. */
+const NOTE_FIELD = [{ name: "note", kind: "text", label: "Note", default: "n" }];
 
 const CTA_FIELDS = [
   { name: "cta_label", kind: "text", label: "CTA label" },
@@ -371,5 +385,228 @@ describe("structured sets", () => {
       items: [{ label: "Nope", href: `/${PFX}-void` }],
     });
     expect(message).toContain(`items[0].href: "/${PFX}-void"`);
+  });
+});
+
+describe("review fixes (#873)", () => {
+  it("canonicalises links padded with whitespace and media in a srcset candidate", async () => {
+    const moduleId = await makeModule(
+      "padded",
+      `<a href=" /${PFX}-about">About</a><img src="hero.jpg" srcset="hero.jpg 1x, /_caelo/media/${mediaSlug}/webp-800 2x" alt="">{{note}}`,
+      NOTE_FIELD,
+    );
+    const stored = await storedModule(moduleId);
+    expect(stored.html).toContain(`href="caelo:page/${aboutId}"`);
+    expect(stored.html).toContain(`srcset="hero.jpg 1x, caelo:media/${mediaId}/webp-800 2x"`);
+
+    await run("structured_sets.set", {
+      kind: "link-list",
+      slug: `${PFX}-padded`,
+      displayName: `${PFX} padded`,
+      items: [{ label: "About", href: ` /${PFX}-about` }],
+    });
+    const rows = await asSystem(
+      (tx) => tx`SELECT items FROM structured_sets WHERE slug = ${`${PFX}-padded`}`,
+    );
+    const raw = (rows as { items: unknown }[])[0]?.items;
+    const items = (typeof raw === "string" ? JSON.parse(raw) : raw) as { href: string }[];
+    expect(items[0]?.href).toBe(`caelo:page/${aboutId}`);
+
+    // A padded link to no page is checked too (it used to slip through).
+    const ctaModule = await makeModule("padded-cta", '<a href="{{cta_href}}">x</a>', CTA_FIELDS);
+    const message = await refused("content_instances.create", {
+      moduleId: ctaModule,
+      values: { cta_href: ` /${PFX}-padded-nowhere` },
+    });
+    expect(message).toContain(`/${PFX}-padded-nowhere`);
+  });
+
+  it("follows permanent redirects only", async () => {
+    await run("redirects.create", {
+      fromPath: `/${PFX}-moved-for-now`,
+      toPath: `/${PFX}-about`,
+      statusCode: 302,
+    });
+    await run("redirects.create", {
+      fromPath: `/${PFX}-moved-for-good`,
+      toPath: `/${PFX}-about`,
+      statusCode: 308,
+    });
+    const moduleId = await makeModule("redir", '<a href="{{cta_href}}">x</a>', CTA_FIELDS);
+    const message = await refused("content_instances.create", {
+      moduleId,
+      values: { cta_href: `/${PFX}-moved-for-now` },
+    });
+    expect(message).toContain(`"/${PFX}-moved-for-now" is not the path of any page`);
+    const { contentInstanceId } = await run<{ contentInstanceId: string }>(
+      "content_instances.create",
+      { moduleId, values: { cta_href: `/${PFX}-moved-for-good` } },
+    );
+    expect((await storedValues(contentInstanceId)).cta_href).toBe(`caelo:page/${aboutId}`);
+  });
+
+  it("canonicalises layout HTML on create and update, and refuses a link to no page", async () => {
+    const { layoutId } = await run<{ layoutId: string }>("layouts.create", {
+      slug: `${PFX}-layout`,
+      displayName: `${PFX} layout`,
+      html: `<body><a href="/${PFX}-about">About</a><caelo-slot name="content">_</caelo-slot></body>`,
+      blocks: [{ name: "content", displayName: "Content", position: 0 }],
+    });
+    const html = async () =>
+      (
+        (await asSystem((tx) => tx`SELECT html FROM layouts WHERE id = ${layoutId}::uuid`)) as {
+          html: string;
+        }[]
+      )[0]?.html;
+    expect(await html()).toContain(`href="caelo:page/${aboutId}"`);
+
+    await run("layouts.update", {
+      layoutId,
+      html: `<body><a href="/${PFX}-pricing#plans">Pricing</a><caelo-slot name="content">_</caelo-slot></body>`,
+    });
+    expect(await html()).toContain(`href="caelo:page/${pricingId}#plans"`);
+
+    const message = await refused("layouts.update", {
+      layoutId,
+      html: `<body><a href="/${PFX}-layout-ghost">x</a><caelo-slot name="content">_</caelo-slot></body>`,
+    });
+    expect(message).toContain(`/${PFX}-layout-ghost`);
+    expect(await html()).toContain(`caelo:page/${pricingId}#plans`);
+  });
+
+  it("stores the reference form in snapshot rows, so undo restores references", async () => {
+    const moduleId = await makeModule(
+      "snap",
+      `<a href="/${PFX}-about">About</a>{{note}}`,
+      NOTE_FIELD,
+    );
+    const rows = (await asSystem(
+      (tx) =>
+        tx`SELECT state->>'html' AS html FROM module_snapshots WHERE module_id = ${moduleId}::uuid`,
+    )) as { html: string }[];
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) {
+      expect(r.html).toContain(`caelo:page/${aboutId}`);
+      expect(r.html).not.toContain(`href="/${PFX}-about"`);
+    }
+  });
+
+  it("names the failing entry in bulk refusals (build_page, create_many)", async () => {
+    const built = await refused("pages.build_page", {
+      page: { slug: `${PFX}-bulk`, title: "Bulk", templateId },
+      modules: [
+        {
+          blockName: "content",
+          displayName: "Bulk CTA",
+          description: "CTA.",
+          kind: "cta",
+          html: '<a href="{{cta_href}}">go</a>',
+          fields: [{ name: "cta_href", kind: "url", label: "Link" }],
+          content: { source: "inline", values: { cta_href: `/${PFX}-bulk-ghost` } },
+        },
+      ],
+    });
+    expect(built).toContain('modules[0] ("Bulk CTA")');
+    expect(built).toContain(`values.cta_href: "/${PFX}-bulk-ghost"`);
+
+    const moduleId = await makeModule("bulk", '<a href="{{cta_href}}">x</a>', CTA_FIELDS);
+    const many = await refused("content_instances.create_many", {
+      instances: [
+        { moduleId, values: { cta_href: `/${PFX}-about` } },
+        { moduleId, values: { cta_href: `/${PFX}-bulk-void` } },
+      ],
+    });
+    expect(many).toContain("instances[1]");
+    expect(many).toContain(`/${PFX}-bulk-void`);
+  });
+
+  it("edit_content on the humanised body keeps the stored reference", async () => {
+    const tools = createDefaultToolRegistry();
+    const toolCtx: ToolContext = { adapter, registry };
+    const moduleId = await makeModule(
+      "roundtrip",
+      `<p class="lead">Read <a href="/${PFX}-about#team">about us</a>{{note}}</p>`,
+      NOTE_FIELD,
+    );
+    const before = (await storedModule(moduleId)).html;
+    expect(before).toContain(`caelo:page/${aboutId}#team`);
+
+    const read = await tools.dispatch(
+      "read_content",
+      { entityKind: "module", entityId: moduleId, field: "html" },
+      SYSTEM,
+      toolCtx,
+    );
+    expect(read.ok).toBe(true);
+    expect(read.content).toContain(`/${PFX}-about#team`);
+    expect(read.content).not.toContain("caelo:page/");
+
+    // The AI copies text from what it read — the humanised path included.
+    const edit = await tools.dispatch(
+      "edit_content",
+      {
+        entityKind: "module",
+        entityId: moduleId,
+        field: "html",
+        edits: [
+          {
+            oldString: `Read <a href="/${PFX}-about#team">about us</a>`,
+            newString: `Meet <a href="/${PFX}-about#team">the team</a>`,
+          },
+        ],
+      },
+      SYSTEM,
+      toolCtx,
+    );
+    expect(edit.ok).toBe(true);
+    expect((await storedModule(moduleId)).html).toBe(
+      `<p class="lead">Meet <a href="caelo:page/${aboutId}#team">the team</a>{{note}}</p>`,
+    );
+  });
+
+  it("in a chat, uses the branch's module fields and pages", async () => {
+    const moduleId = await makeModule("branchy", "<p>{{target}}</p>", [
+      { name: "target", kind: "text", label: "Link" },
+    ]);
+    const session = await run<{ chatSessionId: string; chatBranchId: string }>(
+      "chat.create_session",
+      { isolation: "experiment", title: `${SESSION_PREFIX}branch` },
+    );
+    const chat: ExecutionContext = {
+      actorId: "00000000-0000-0000-0000-000000000a1a",
+      actorKind: "ai",
+      requestId: `${PFX}-chat`,
+      chatBranchId: session.chatBranchId,
+      chatTaskId: session.chatSessionId,
+    };
+    const inChat = async <T>(op: string, input: unknown): Promise<T> => {
+      const r = await execute(registry, adapter, chat, op, input);
+      if (!r.ok) throw new Error(`${op}: ${JSON.stringify(r.error)}`);
+      return r.value as T;
+    };
+    // The chat turns the field into a link field (a branched module edit:
+    // main's row still says `text`) and creates the page it links to.
+    await inChat("modules.update", {
+      moduleId,
+      html: '<a href="{{target}}">go</a>',
+      fields: [{ name: "target", kind: "url", label: "Link" }],
+    });
+    const page = await inChat<{ pageId: string }>("pages.create", {
+      slug: `${PFX}-branch-only`,
+      title: "Branch only",
+      templateId,
+    });
+    const { contentInstanceId } = await inChat<{ contentInstanceId: string }>(
+      "content_instances.create",
+      { moduleId, values: { target: `/${PFX}-branch-only` } },
+    );
+    expect((await storedValues(contentInstanceId)).target).toBe(`caelo:page/${page.pageId}`);
+
+    // A module that does not exist is a loud refusal, not "no fields".
+    const r = await execute(registry, adapter, chat, "content_instances.create", {
+      moduleId: "00000000-0000-4000-8000-0000000000aa",
+      values: { cta_href: `/${PFX}-about` },
+    });
+    expect(r.ok).toBe(false);
   });
 });

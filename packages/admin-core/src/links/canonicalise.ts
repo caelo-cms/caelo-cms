@@ -15,8 +15,15 @@
  *                         everything routed through them: create_many,
  *                         set_values_many, page_module_content.*, build_page)
  *   - module HTML + field defaults   modules.create / .update (and update_many)
+ *   - layout HTML         layouts.create / .update
  *   - structured sets     structured_sets.set
  *   - imports             imports.compose_from_run, in report mode
+ *
+ * NOT covered (deliberately, out of scope for rollout C): CSS `url(...)`
+ * media references — in inline `style` attributes and in the module /
+ * layout `css` columns. They stay literal `/_caelo/media/<slug>` URLs,
+ * resolved at build time as before; a renamed or deleted asset there is
+ * caught by the media usage guards, not by a stored reference.
  *
  * Internal copies (fork, duplicate, chat merge, snapshot revert) copy
  * stored references verbatim and are not re-canonicalised. Undo restores
@@ -38,13 +45,36 @@ import { sql } from "drizzle-orm";
 import { type LinkTargets, loadLinkTargets } from "./link-targets.js";
 
 /**
- * Cheap pre-check over a write's raw input: can it contain anything the
- * canonicaliser would touch? Most content edits carry no link at all and
- * skip the site lookup entirely.
+ * Does `apply` reach the site lookup at all? Most content edits carry no
+ * link and skip loading pages / media / redirects. The probe runs the
+ * canonicaliser itself against a lookup that only records being asked,
+ * so "is there a link here" is decided by exactly the positions, trimming
+ * and srcset splitting the real run uses — a hand-written string test
+ * drifted from those (` /about` with a leading space slipped past it).
+ *
+ * When the lookup is never asked, the canonicaliser cannot have recorded
+ * an issue or produced a reference (both need an answer), so `value` is
+ * the final result.
  */
-export function mayContainInternalLink(input: unknown): boolean {
-  const s = typeof input === "string" ? input : JSON.stringify(input ?? null);
-  return s.includes('"/') || s.includes("'/") || s.includes("caelo:") || /https?:\/\//i.test(s);
+export function probeLinkLookup<T>(apply: (run: LinkCanonicaliseRun) => T): {
+  readonly needsLookup: boolean;
+  readonly value: T;
+} {
+  let asked = false;
+  const ask = (): null => {
+    asked = true;
+    return null;
+  };
+  const value = apply(
+    linkCanonicaliseRun({
+      pageIdForPath: ask,
+      mediaIdForSlug: ask,
+      pageExists: () => ask() ?? false,
+      mediaExists: () => ask() ?? false,
+      isOwnHost: () => ask() ?? false,
+    }),
+  );
+  return { needsLookup: asked, value };
 }
 
 /**
@@ -66,10 +96,12 @@ export async function loadLinkTargetLookup(
   const bySlug = new Map(targets.media.map((m) => [m.slug, m.id]));
   const mediaIds = new Set(targets.media.map((m) => m.id));
 
-  // An old URL that 301s to a page IS that page (a rename left the
-  // redirect behind; links written with the old path mean the page).
+  // An old URL that PERMANENTLY redirects to a page IS that page (a
+  // rename left the 301 behind; links written with the old path mean the
+  // page). A temporary redirect (302 / 307) says the old URL comes back,
+  // so pinning a link to its current destination would be a guess.
   const redirects = (await tx.execute(sql`
-    SELECT from_path, to_path FROM redirects WHERE status_code IN (301, 302, 307, 308)
+    SELECT from_path, to_path FROM redirects WHERE status_code IN (301, 308)
   `)) as unknown as { from_path: string; to_path: string }[];
   const redirectTo = new Map(
     redirects.map((r) => [normaliseLinkPath(r.from_path), normaliseLinkPath(r.to_path)]),
@@ -120,8 +152,9 @@ export type CanonicaliseOutcome<T> =
 /**
  * Canonicalise one write's link-carrying input.
  *
- * @param input the raw input, for the cheap pre-check only.
- * @param apply runs the shared canonicalise functions against the run.
+ * @param apply runs the shared canonicalise functions against the run;
+ *   pure — it runs once as a probe (see {@link probeLinkLookup}) and once
+ *   more against the real lookup when the input carries a link.
  * @param opts.previous the stored state this write replaces; its link
  *   literals are grandfathered (see shared `link-canonicalise.ts`).
  * @param opts.mode `strict` refuses on any issue with an AI-actionable
@@ -131,13 +164,11 @@ export type CanonicaliseOutcome<T> =
 export async function canonicaliseLinksForWrite<T>(
   tx: TransactionRunner,
   ctx: ExecutionContext,
-  input: unknown,
   apply: (run: LinkCanonicaliseRun) => T,
   opts: { readonly previous?: unknown; readonly mode?: "strict" | "report" } = {},
 ): Promise<CanonicaliseOutcome<T>> {
-  if (!mayContainInternalLink(input)) {
-    return { ok: true, value: apply(passthroughRun()), issues: [] };
-  }
+  const probe = probeLinkLookup(apply);
+  if (!probe.needsLookup) return { ok: true, value: probe.value, issues: [] };
   const lookup = await loadLinkTargetLookup(tx, ctx.chatBranchId ?? null);
   const run = linkCanonicaliseRun(lookup, {
     mode: opts.mode ?? "strict",
@@ -148,21 +179,4 @@ export async function canonicaliseLinksForWrite<T>(
     return { ok: false, message: describeLinkIssues(run.issues), issues: run.issues };
   }
   return { ok: true, value, issues: run.issues };
-}
-
-/**
- * A run for input the pre-check proved link-free: nothing in it reaches
- * the lookup, so the lookup never answers (it would be a bug if it did).
- */
-function passthroughRun(): LinkCanonicaliseRun {
-  const unreachable = (): never => {
-    throw new Error("link canonicaliser: link-free input reached the site lookup");
-  };
-  return linkCanonicaliseRun({
-    pageIdForPath: unreachable,
-    mediaIdForSlug: unreachable,
-    pageExists: unreachable,
-    mediaExists: unreachable,
-    isOwnHost: unreachable,
-  });
 }
