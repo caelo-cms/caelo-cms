@@ -57,7 +57,12 @@
  */
 
 import type { ModuleFieldKind } from "./content.js";
-import { LINK_RESOLVER_UNAVAILABLE, LINK_TARGET_MISSING, type LinkResolver } from "./link-refs.js";
+import {
+  LINK_REF_MALFORMED,
+  LINK_RESOLVER_UNAVAILABLE,
+  LINK_TARGET_MISSING,
+  type LinkResolver,
+} from "./link-refs.js";
 import { caeloMissingComment, renderTemplate, type TemplateField } from "./template-engine.js";
 
 const MAX_RECURSION_DEPTH = 8;
@@ -166,6 +171,7 @@ interface RenderContext {
 function isLinkMarker(marker: string): boolean {
   return (
     marker.startsWith(`${LINK_TARGET_MISSING}:`) ||
+    marker.startsWith(`${LINK_REF_MALFORMED}:`) ||
     marker.startsWith(`${LINK_RESOLVER_UNAVAILABLE}:`)
   );
 }

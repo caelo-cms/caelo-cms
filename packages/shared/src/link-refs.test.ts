@@ -12,11 +12,13 @@ import {
   collectLinkRefsDeep,
   createSiteLinkIndex,
   findLinkRefs,
+  findMalformedLinkRefs,
   formatLinkRef,
   humaniseLinkRefs,
   type LinkRef,
   linkIssueSeverity,
   linkRefTargetKey,
+  mapLinkRefsDeep,
   pageHrefForStyle,
   parseLinkRef,
   resolveLinkRefsInHtml,
@@ -296,6 +298,201 @@ describe("composer — nav-menu sets and pre-rendered modules", () => {
       },
     ]);
   });
+});
+
+describe("grammar edge cases — boundaries, contexts, malformed references", () => {
+  const resolveIn = (html: string, resolver = index().forPage(null)) => {
+    const missing: string[] = [];
+    return { html: resolveLinkRefsInHtml(html, resolver, missing), missing };
+  };
+
+  it("formatLinkRef refuses a reference that would not parse back", () => {
+    expect(() =>
+      formatLinkRef({ kind: "page", pageId: "About", query: null, anchor: null }),
+    ).toThrow(/not a valid internal reference/);
+    expect(() =>
+      formatLinkRef({ kind: "page", pageId: PAGE, query: "a b", anchor: null }),
+    ).toThrow();
+    expect(() =>
+      formatLinkRef({ kind: "page", pageId: PAGE, query: null, anchor: "x#y" }),
+    ).toThrow();
+    expect(() => formatLinkRef({ kind: "media", mediaId: MEDIA, variant: "WEBP" })).toThrow();
+    expect(formatLinkRef({ kind: "media", mediaId: MEDIA, variant: "webp-800" })).toBe(
+      `caelo:media/${MEDIA}/webp-800`,
+    );
+  });
+
+  it("does not treat `caelo:` inside another scheme or word as a reference", () => {
+    for (const text of [`xcaelo:page/${PAGE}`, `my-caelo:page/${PAGE}`, `a.caelo:media/${MEDIA}`]) {
+      expect(findLinkRefs(text)).toEqual([]);
+      expect(findMalformedLinkRefs(text)).toEqual([]);
+      expect(resolveIn(text)).toEqual({ html: text, missing: [] });
+    }
+  });
+
+  it("leaves prose that mentions the grammar alone, but flags malformed refs in every link position", () => {
+    const prose = "<p>Stored as <code>caelo:page/&lt;id&gt;</code> or caelo:media/&lt;id&gt;.</p>";
+    expect(resolveIn(prose)).toEqual({ html: prose, missing: [] });
+    const positions: [string, string][] = [
+      [`<a href='caelo:page/oops'>x</a>`, "caelo:page/oops"],
+      ["<a href=caelo:page/oops>x</a>", "caelo:page/oops"],
+      [
+        `<img srcset="caelo:media/${MEDIA} 1x, caelo:media/${MEDIA}/BAD 2x">`,
+        `caelo:media/${MEDIA}/BAD`,
+      ],
+      [`<img srcset="caelo:media/${MEDIA} 1x,caelo:media/x 2x">`, "caelo:media/x"],
+      ["caelo:page/oops", "caelo:page/oops"],
+    ];
+    for (const [html, raw] of positions) {
+      expect(resolveIn(html).missing).toEqual([`link-ref-malformed:${raw}`]);
+    }
+  });
+
+  it("resolves references in every quoting and text context", () => {
+    const cases: [string, string][] = [
+      [`<a href="caelo:page/${PAGE}">x</a>`, '<a href="/company/about/">x</a>'],
+      [`<a href='caelo:page/${PAGE}#t'>x</a>`, "<a href='/company/about/#t'>x</a>"],
+      [`<a href=caelo:page/${PAGE}>x</a>`, "<a href=/company/about/>x</a>"],
+      [`<p>See caelo:page/${PAGE}.</p>`, "<p>See /company/about/.</p>"],
+      [`(caelo:page/${PAGE})`, "(/company/about/)"],
+      [
+        `<script type="application/ld+json">{"url":"caelo:page/${PAGE}"}</script>`,
+        '<script type="application/ld+json">{"url":"/company/about/"}</script>',
+      ],
+      [`&quot;caelo:page/${PAGE}&quot;`, "&quot;/company/about/&quot;"],
+      [
+        `<img srcset="caelo:media/${MEDIA}/webp-400 400w,caelo:media/${MEDIA} 800w">`,
+        '<img srcset="/_caelo/media/hero-shot/webp-400 400w,/_caelo/media/hero-shot 800w">',
+      ],
+    ];
+    for (const [input, expected] of cases)
+      expect(resolveIn(input)).toEqual({ html: expected, missing: [] });
+  });
+
+  it("carries query and anchor verbatim, including characters outside the classes", () => {
+    expect(resolveIn(`caelo:page/${PAGE}?x=[1]#a`).html).toBe("/company/about/?x=[1]#a");
+    expect(resolveIn(`caelo:page/${PAGE}?`).html).toBe("/company/about/?");
+    expect(resolveIn(`caelo:page/${PAGE}#`).html).toBe("/company/about/#");
+    const longQuery = "a".repeat(700);
+    expect(resolveIn(`caelo:page/${PAGE}?${longQuery}#end`).html).toBe(
+      `/company/about/?${longQuery}#end`,
+    );
+  });
+
+  it("flags text that starts like a reference but breaks the grammar, and leaves it raw", () => {
+    const malformed = [
+      "caelo:page/not-a-uuid",
+      `caelo:page/${PAGE.slice(0, 30)}`,
+      "caelo:page/ABCDEF01-1111-4111-8111-111111111111",
+      `caelo:page/${PAGE}abc`,
+      `caelo:page/${PAGE}/team`,
+      `caelo:page/${PAGE}_x`,
+      `caelo:media/${MEDIA}/WEBP`,
+      `caelo:media/${MEDIA}/webp-800/x`,
+      `caelo:media/${MEDIA}/`,
+      "caelo:media/",
+    ];
+    for (const raw of malformed) {
+      const html = `<a href="${raw}">x</a>`;
+      expect(findLinkRefs(html)).toEqual([]);
+      expect(resolveIn(html)).toEqual({ html, missing: [`link-ref-malformed:${raw}`] });
+      // Loud without a resolver too: the marker names the real problem.
+      const noResolver: string[] = [];
+      resolveLinkRefsInHtml(html, undefined, noResolver);
+      expect(noResolver).toEqual([`link-ref-malformed:${raw}`]);
+    }
+  });
+
+  it("bounds the malformed snippet so a marker never carries a whole document", () => {
+    const { missing } = resolveIn(`caelo:page/${"x".repeat(5000)}`);
+    expect(missing).toHaveLength(1);
+    expect((missing[0] as string).length).toBeLessThan(140);
+  });
+
+  it("is idempotent: a resolved render holds no reference to resolve again", () => {
+    const once = resolveIn(`<a href="caelo:page/${PAGE}#a">x</a><img src="caelo:media/${MEDIA}">`);
+    expect(findLinkRefs(once.html)).toEqual([]);
+    expect(resolveIn(once.html)).toEqual({ html: once.html, missing: [] });
+  });
+
+  it("returns the same object from mapLinkRefsDeep when nothing changed", () => {
+    const value = { a: ["/about", { b: 1, c: null }], d: "text" };
+    expect(mapLinkRefsDeep(value, () => "/x")).toBe(value);
+    const changed = mapLinkRefsDeep({ a: [`caelo:page/${PAGE}`] }, () => "/x");
+    expect(changed).toEqual({ a: ["/x"] });
+  });
+
+  it("treats an unpublished target as a blocker only in production builds", () => {
+    const ref: LinkRef = { kind: "page", pageId: DRAFT, query: null, anchor: null };
+    expect(index("production").forPage(null).resolve(ref).status).toBe("unpublished");
+    // Not a render failure — the environment policy decides.
+    const missing: string[] = [];
+    expect(
+      resolveLinkRefsInHtml(`caelo:page/${DRAFT}`, index("production").forPage(null), missing),
+    ).toBe("/pricing/");
+    expect(missing).toEqual([]);
+  });
+
+  it("reports a malformed reference in a nested module once", () => {
+    const CHILD_MOD = "77777777-7777-4777-8777-777777777777";
+    const CHILD_CI = "88888888-8888-4888-8888-888888888888";
+    const r = renderPlacedModule(
+      {
+        html: "<section>{{>card}}</section>",
+        fields: [{ name: "card", kind: "module" }],
+        values: { card: { moduleId: CHILD_MOD, contentInstanceId: CHILD_CI } },
+      },
+      {
+        getModule: (id) =>
+          id === CHILD_MOD
+            ? {
+                moduleId: CHILD_MOD,
+                slug: "card",
+                html: '<a href="{{href}}">x</a>',
+                css: "",
+                js: "",
+                fields: [{ name: "href", kind: "url" }],
+              }
+            : null,
+        getContentInstance: (id) =>
+          id === CHILD_CI
+            ? { id, moduleId: CHILD_MOD, values: { href: "caelo:page/oops" }, deletedAt: null }
+            : null,
+      },
+      { linkResolver: index().forPage(null) },
+    );
+    expect(r.failures).toEqual([{ field: "card", reason: "link-ref-malformed:caelo:page/oops" }]);
+  });
+});
+
+describe("scanner stays linear on adversarial input (CodeQL js/polynomial-redos)", () => {
+  // Same budget rationale as __tests__/redos-hardening.test.ts: a
+  // polynomial regression costs seconds on 100k chars, linear costs ms.
+  const BUDGET_MS = 250;
+  const time = (fn: () => void) => {
+    const t0 = performance.now();
+    fn();
+    return performance.now() - t0;
+  };
+  const inputs = [
+    "caelo:page/".repeat(10_000),
+    "caelo:media/".repeat(10_000),
+    `caelo:media/${MEDIA}/${"a".repeat(100_000)}`,
+    `caelo:page/${PAGE}?${"a".repeat(100_000)}`,
+    `caelo:page/${PAGE}#${"a".repeat(100_000)}`,
+    `${"caelo:page/11111111-1111-4111-8111-".repeat(3_000)}`,
+    `${`caelo:page/${PAGE}`.repeat(2_000)}`,
+  ];
+  for (const [i, input] of inputs.entries()) {
+    it(`input ${i} (${input.length} chars) completes under budget`, () => {
+      expect(
+        time(() => {
+          resolveLinkRefsInHtml(input, index().forPage(null), []);
+          findLinkRefs(input);
+        }),
+      ).toBeLessThan(BUDGET_MS);
+    });
+  }
 });
 
 describe("humanise — reads show paths, never ids", () => {

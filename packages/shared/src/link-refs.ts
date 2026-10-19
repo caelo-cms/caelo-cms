@@ -24,10 +24,10 @@
  * field value.
  *
  * Who sees the grammar: nobody who authors content. Humans and the AI
- * keep writing `/about`; the write path canonicalises to a reference
- * (admin-core `links/canonicalise.ts`), and every read that shows
- * content back (tool results, editor fields) turns references into
- * human paths again ({@link humaniseLinkRefs}). The grammar is a
+ * keep writing `/about`; the write path canonicalises it to a reference
+ * (rollout C — until then nothing writes references), and every read
+ * that shows content back (tool results, editor fields) turns references
+ * into human paths again ({@link humaniseLinkRefs}). The grammar is a
  * storage form, not an authoring form (CLAUDE.md §1A).
  *
  * Resolution is ONE interface ({@link LinkResolver}) used by the
@@ -54,6 +54,7 @@
 
 import { buildMediaUrl } from "./media.js";
 import type { PageUrlStyle } from "./seo.js";
+import { trimSlashes } from "./url.js";
 
 /** The scheme every internal reference starts with. */
 export const LINK_REF_SCHEME = "caelo:";
@@ -79,9 +80,23 @@ export interface MediaLinkRef {
 /** Any internal reference. */
 export type LinkRef = PageLinkRef | MediaLinkRef;
 
+/**
+ * `missingSlots` marker for a link value that starts like a reference
+ * (`caelo:page/`, `caelo:media/`) but does not match the grammar — a
+ * truncated or uppercased id, an id followed by stray characters
+ * (`caelo:page/<id>/team`), an unknown media variant form. Reported as
+ * `link-ref-malformed:<the text as written>` and left raw: a guessed
+ * target would be a silent fallback (CLAUDE.md §2), and ignoring it
+ * would ship a dead `caelo:` href. Only link positions count (a whole
+ * value, an attribute value, a srcset entry); prose that mentions the
+ * grammar is left alone.
+ */
+export const LINK_REF_MALFORMED = "link-ref-malformed";
+
 // Pieces of the grammar. Every quantifier is bounded or runs over a
-// character class that cannot overlap its neighbour, so scanning is
-// linear (CodeQL js/polynomial-redos).
+// character class that cannot overlap its neighbour, and every
+// alternative starts with a literal, so scanning is linear (CodeQL
+// js/polynomial-redos; the budget tests in link-refs.test.ts pin it).
 const UUID_SRC = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 // Query: URL query characters, `&amp;`-escaped ampersands included; no
 // quote, space, angle bracket, `#` or comma (a comma ends a srcset entry).
@@ -89,26 +104,47 @@ const QUERY_SRC = "[A-Za-z0-9_\\-.~%=&;+/:@!$()*]{1,512}";
 // Fragment: what an HTML id / URL fragment realistically carries.
 const ANCHOR_SRC = "[A-Za-z0-9_\\-.~%:]{1,256}";
 const VARIANT_SRC = "[a-z][a-z0-9-]{0,63}";
+// `caelo:` is a scheme only where a scheme can start: `xcaelo:page/…`
+// is some other scheme's text, not a reference.
+const REF_START_SRC = "(?<![A-Za-z0-9+.\\-])caelo:";
+// An id (or media variant) must END where the grammar says: a following
+// id or path character (`<id>abc`, `<id>/team`, `/webp-800/x`) makes the
+// whole thing malformed instead of resolving the prefix and gluing the
+// rest onto the URL.
+const ID_END_SRC = "(?![A-Za-z0-9_/\\-])";
+// Fallback alternative: tried only where both grammar alternatives fail
+// at the same position, and only in LINK positions — the start of the
+// string (a whole field value), of an attribute value (after a quote or
+// `=`) or of a srcset entry (after a comma). Prose that talks about the
+// grammar (`<code>caelo:page/&lt;id&gt;</code>` in a docs page) is text,
+// not a broken link. Captures a bounded snippet for the marker.
+const MALFORMED_SRC = "(?<=^|[\"'=,]|, )caelo:(?:page|media)/[^\\s\"'<>,]{0,96}";
 
-const PAGE_REF_SRC = `caelo:page/(${UUID_SRC})(?:\\?(${QUERY_SRC}))?(?:#(${ANCHOR_SRC}))?`;
-const MEDIA_REF_SRC = `caelo:media/(${UUID_SRC})(?:/(${VARIANT_SRC}))?`;
+const PAGE_BODY_SRC = `page/(${UUID_SRC})${ID_END_SRC}(?:\\?(${QUERY_SRC}))?(?:#(${ANCHOR_SRC}))?`;
+const MEDIA_BODY_SRC = `media/(${UUID_SRC})(?:/(${VARIANT_SRC}))?${ID_END_SRC}`;
 
-/** Global scanner for references embedded anywhere in a string. */
+/**
+ * Global scanner for references embedded anywhere in a string. Groups:
+ * 1-3 page (id, query, anchor), 4-5 media (id, variant); a match with
+ * neither is malformed.
+ */
 function linkRefScanner(): RegExp {
   // A fresh RegExp per call: global regexes carry `lastIndex` state.
-  // Neither alternative accepts a quote, so scanning an HTML attribute
-  // value stops at its boundary.
-  return new RegExp(`${PAGE_REF_SRC}|${MEDIA_REF_SRC}`, "g");
+  // No alternative accepts a quote, so scanning an HTML attribute value
+  // stops at its boundary.
+  return new RegExp(`${REF_START_SRC}(?:${PAGE_BODY_SRC}|${MEDIA_BODY_SRC})|${MALFORMED_SRC}`, "g");
 }
 
-const PAGE_REF_EXACT = new RegExp(`^${PAGE_REF_SRC}$`);
-const MEDIA_REF_EXACT = new RegExp(`^${MEDIA_REF_SRC}$`);
+const PAGE_REF_EXACT = new RegExp(`^caelo:${PAGE_BODY_SRC}$`);
+const MEDIA_REF_EXACT = new RegExp(`^caelo:${MEDIA_BODY_SRC}$`);
 
-function refFromMatch(m: RegExpExecArray | RegExpMatchArray): LinkRef {
+/** The reference a scanner match denotes, or null for a malformed one. */
+function refFromMatch(m: ArrayLike<string | undefined>): LinkRef | null {
   if (m[1] !== undefined) {
     return { kind: "page", pageId: m[1], query: m[2] ?? null, anchor: m[3] ?? null };
   }
-  return { kind: "media", mediaId: m[4] as string, variant: m[5] ?? null };
+  if (m[4] !== undefined) return { kind: "media", mediaId: m[4], variant: m[5] ?? null };
+  return null;
 }
 
 /**
@@ -132,16 +168,28 @@ export function parseLinkRef(value: string): LinkRef | null {
   return null;
 }
 
-/** Serialise a reference to its stored string form. */
+/**
+ * Serialise a reference to its stored string form.
+ *
+ * @throws when the result would not parse back (an id that is not a
+ *   lowercase UUID, a query / anchor / variant outside the grammar's
+ *   character classes): storing it would write a link no render can
+ *   resolve. Callers validate author input before building a ref.
+ */
 export function formatLinkRef(ref: LinkRef): string {
-  if (ref.kind === "media") {
-    return `${LINK_REF_SCHEME}media/${ref.mediaId}${ref.variant ? `/${ref.variant}` : ""}`;
+  const out =
+    ref.kind === "media"
+      ? `${LINK_REF_SCHEME}media/${ref.mediaId}${ref.variant ? `/${ref.variant}` : ""}`
+      : `${LINK_REF_SCHEME}page/${ref.pageId}` +
+        (ref.query ? `?${ref.query}` : "") +
+        (ref.anchor ? `#${ref.anchor}` : "");
+  if (parseLinkRef(out) === null) {
+    throw new Error(
+      `formatLinkRef: ${JSON.stringify(out)} is not a valid internal reference ` +
+        "(ids are lowercase UUIDs; query, anchor and variant must use the grammar's characters, see link-refs.ts)",
+    );
   }
-  return (
-    `${LINK_REF_SCHEME}page/${ref.pageId}` +
-    (ref.query ? `?${ref.query}` : "") +
-    (ref.anchor ? `#${ref.anchor}` : "")
-  );
+  return out;
 }
 
 /**
@@ -158,19 +206,41 @@ export function mayContainLinkRef(text: string): boolean {
   return text.includes(LINK_REF_SCHEME);
 }
 
-/** Every reference embedded in `text`, in order (duplicates kept). */
+/**
+ * Every well-formed reference embedded in `text`, in order (duplicates
+ * kept). Malformed ones are not references; see
+ * {@link findMalformedLinkRefs}.
+ */
 export function findLinkRefs(text: string): LinkRef[] {
   if (!mayContainLinkRef(text)) return [];
   const out: LinkRef[] = [];
-  for (const m of text.matchAll(linkRefScanner())) out.push(refFromMatch(m));
+  for (const m of text.matchAll(linkRefScanner())) {
+    const ref = refFromMatch(m);
+    if (ref) out.push(ref);
+  }
   return out;
 }
 
 /**
- * Replace every reference embedded in `text` with `replacer`'s answer.
- * `raw` is the reference exactly as it appeared, so a replacer can leave
- * it in place (return `raw`) — the loud-raw convention for a target that
- * cannot be resolved.
+ * Every piece of `text` that starts like a reference (`caelo:page/`,
+ * `caelo:media/`) but breaks the grammar, exactly as written (bounded
+ * snippet), in order.
+ */
+export function findMalformedLinkRefs(text: string): string[] {
+  if (!mayContainLinkRef(text)) return [];
+  const out: string[] = [];
+  for (const m of text.matchAll(linkRefScanner())) {
+    if (refFromMatch(m) === null) out.push(m[0]);
+  }
+  return out;
+}
+
+/**
+ * Replace every well-formed reference embedded in `text` with
+ * `replacer`'s answer. `raw` is the reference exactly as it appeared, so
+ * a replacer can leave it in place (return `raw`) — the loud-raw
+ * convention for a target that cannot be resolved. Malformed references
+ * are left untouched.
  */
 export function replaceLinkRefs(
   text: string,
@@ -179,8 +249,8 @@ export function replaceLinkRefs(
   if (!mayContainLinkRef(text)) return text;
   return text.replace(linkRefScanner(), (...args: unknown[]) => {
     const raw = args[0] as string;
-    const groups = args.slice(0, 6) as unknown as RegExpMatchArray;
-    return replacer(refFromMatch(groups), raw);
+    const ref = refFromMatch(args.slice(0, 6) as (string | undefined)[]);
+    return ref ? replacer(ref, raw) : raw;
   });
 }
 
@@ -289,6 +359,9 @@ export const LINK_RESOLVER_UNAVAILABLE = "link-resolver-unavailable";
  * push a marker onto `missing`; `unpublished` ones render their URL and
  * push nothing — that is a per-environment policy, not a render failure.
  *
+ * Text that starts like a reference but breaks the grammar stays raw
+ * and pushes {@link LINK_REF_MALFORMED}, with or without a resolver.
+ *
  * @param resolver undefined = the caller has no resolver; every
  *   reference then fails with {@link LINK_RESOLVER_UNAVAILABLE}.
  */
@@ -297,6 +370,7 @@ export function resolveLinkRefsInHtml(
   resolver: LinkResolver | undefined,
   missing: string[],
 ): string {
+  for (const raw of findMalformedLinkRefs(html)) missing.push(`${LINK_REF_MALFORMED}:${raw}`);
   return replaceLinkRefs(html, (ref, raw) => {
     if (!resolver) {
       missing.push(`${LINK_RESOLVER_UNAVAILABLE}:${linkRefTargetKey(ref)}`);
@@ -387,11 +461,7 @@ export interface SiteLinkIndex {
  * the path half of `resolveCanonicalUrl`.
  */
 export function pageHrefForStyle(path: string, style: PageUrlStyle): string {
-  let start = 0;
-  let end = path.length;
-  while (start < end && path.charCodeAt(start) === 47) start += 1;
-  while (end > start && path.charCodeAt(end - 1) === 47) end -= 1;
-  const trimmed = path.slice(start, end);
+  const trimmed = trimSlashes(path);
   if (trimmed.length === 0) return "/";
   return style === "no-extension" ? `/${trimmed}` : `/${trimmed}/`;
 }
