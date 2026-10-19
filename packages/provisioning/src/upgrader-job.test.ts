@@ -496,7 +496,10 @@ describe("runUpgraderJob", () => {
       },
       manifests: {
         "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
-        "0.10.45": { ok: false, error: { code: "registry", message: "503 Service Unavailable" } },
+        "0.10.45": {
+          ok: false,
+          error: { code: "registry", message: "503 Service Unavailable", transient: true },
+        },
       },
       gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
     });
@@ -509,6 +512,30 @@ describe("runUpgraderJob", () => {
     expect(end?.reason).not.toContain("Cloud Shell");
     expect(written).toEqual([]);
     expect(order).not.toContain("manifest 0.11.0");
+  });
+
+  it("regression #865: drift whose candidate manifest does not exist (404) ends in install-state-drift, not a retry", async () => {
+    const { deps, q, written } = setup({
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("8") },
+        releaseVersion: "0.10.44",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": {
+          ok: false,
+          error: { code: "registry", message: "no release manifest for v0.10.45 (HTTP 404)" },
+        },
+      },
+      gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    const end = q.end();
+    expect(end?.codes).toEqual(["install-state-drift"]);
+    expect(end?.reason).toContain("HTTP 404");
+    expect(end?.reason).not.toContain("Try again later");
+    expect(written).toEqual([]);
   });
 
   it("drift with a signature-rejected candidate still ends in install-state-drift", async () => {

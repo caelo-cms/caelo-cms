@@ -48,9 +48,11 @@ export type ServingRelease =
       readonly ok: false;
       /**
        * True when no release matched but a candidate's manifest could not be
-       * fetched from the registry (an outage, not a verdict): the run must
-       * end `failed` and be retried, not send the operator to Cloud Shell —
-       * the same classification as the target manifest (upgrader-assess.ts).
+       * fetched because the registry was unreachable or failing (5xx, 429,
+       * network): an outage, not a verdict, so the run must end `failed` and
+       * be retried, not send the operator to Cloud Shell. A manifest the
+       * registry says does not exist (404) never appears on retry, so it
+       * counts as rejected like a bad signature.
        */
       readonly retryable: boolean;
       readonly reason: string;
@@ -82,7 +84,7 @@ export async function findServingRelease(
     tried.push(version);
     const fetched = await deps.fetchManifest(version);
     if (!fetched.ok) {
-      if (fetched.error.code === "registry") {
+      if (fetched.error.code === "registry" && fetched.error.transient) {
         unreachable.push(`v${version} (${fetched.error.message.slice(0, 200)})`);
         continue;
       }
