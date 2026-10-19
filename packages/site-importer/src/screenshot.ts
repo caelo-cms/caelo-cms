@@ -19,6 +19,12 @@
  * abstraction + a thin Playwright-backed factory.
  */
 
+import {
+  type BlackholeProxy,
+  lockedDownContextOptions,
+  NO_UNPROXIED_WEBRTC_UDP_ARG,
+  startBlackholeProxy,
+} from "./browser-egress.js";
 import { COLLECT_STYLE_SAMPLES_SCRIPT, type ElementStyleSample } from "./design-tokens.js";
 import { REMOVE_HIDDEN_ELEMENTS_SCRIPT } from "./hidden-elements.js";
 import {
@@ -232,7 +238,8 @@ export type BundledChromiumLaunch =
  * the network in tests), and with it Lighthouse's `bf-cache` audit failed
  * on every page of every site ("Back/forward cache is disabled by flags /
  * by the command line", #667). The audit browser drops that one default;
- * the screenshotter keeps Playwright's defaults untouched.
+ * the screenshotter keeps Playwright's defaults and adds only the WebRTC
+ * UDP lock it needs to render untrusted pages (browser-egress.ts).
  */
 export function bundledChromiumLaunchOptions(remoteDebuggingPort?: number): {
   readonly headless: true;
@@ -244,7 +251,11 @@ export function bundledChromiumLaunchOptions(remoteDebuggingPort?: number): {
   // rather than the stripped chromium-headless-shell: the image installs
   // only the full build (#428), which also speaks the complete DevTools
   // protocol the Lighthouse audit needs (#553).
-  if (remoteDebuggingPort === undefined) return { headless: true, channel: "chromium" };
+  // The screenshotter renders untrusted pages: WebRTC must not send UDP
+  // around the black-hole proxy (see browser-egress.ts).
+  if (remoteDebuggingPort === undefined) {
+    return { headless: true, channel: "chromium", args: [NO_UNPROXIED_WEBRTC_UDP_ARG] };
+  }
   return {
     headless: true,
     channel: "chromium",
@@ -401,6 +412,13 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     return null;
   }
   const browser = launched.browser;
+  let blackhole: BlackholeProxy;
+  try {
+    blackhole = await startBlackholeProxy();
+  } catch (e) {
+    await browser.close();
+    throw e;
+  }
   const allowedHosts = (guardOpts?.allowedHosts ?? []).map((h) => h.toLowerCase());
 
   /**
@@ -427,9 +445,9 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     }
     const ctx = await browser.newContext({
       viewport: { width: opts.width ?? 1280, height: opts.height ?? 800 },
-      // A service worker's own fetches are not seen by `ctx.route`, so an
-      // external page must not get to install one.
-      ...(opts.external ? { serviceWorkers: "block" } : {}),
+      // Non-routed egress (navigation preconnects, WebRTC) goes to the
+      // black hole and service workers are blocked — see browser-egress.ts.
+      ...(opts.external ? lockedDownContextOptions(blackhole.server) : {}),
     });
     if (opts.sameOriginHeaders) {
       // Deliberately NOT `newContext({ extraHTTPHeaders })`: that would send
@@ -623,11 +641,18 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       );
     },
     async query(html, opts) {
-      const ctx = await browser.newContext();
+      // The HTML is a cached third-party DOM: no script runs (a script
+      // could open a WebSocket or WebRTC session `ctx.route` never sees),
+      // and every other egress path is black-holed like an external capture.
+      const ctx = await browser.newContext({
+        javaScriptEnabled: false,
+        ...lockedDownContextOptions(blackhole.server),
+      });
       try {
         // Structure only — block every subresource (SSRF + speed). The
         // document itself is set directly, so there is no navigation.
         await ctx.route("**/*", (route: PlaywrightRoute) => route.abort());
+        await ctx.routeWebSocket(/.*/, (ws: { close(): Promise<void> }) => ws.close());
         const page = await ctx.newPage();
         await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 10_000 });
         const selector = opts.cssSelector
@@ -651,6 +676,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     },
     async dispose() {
       await browser.close();
+      await blackhole.close();
     },
   };
 }

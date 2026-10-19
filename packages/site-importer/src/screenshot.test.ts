@@ -20,8 +20,15 @@ describe("bundledChromiumLaunchOptions", () => {
     expect(opts.args?.some((a) => a.includes("back-forward-cache"))).toBe(false);
   });
 
-  it("leaves Playwright's defaults alone without a DevTools port (screenshots)", () => {
-    expect(bundledChromiumLaunchOptions()).toEqual({ headless: true, channel: "chromium" });
+  it("keeps Playwright's defaults without a DevTools port and locks WebRTC UDP to the proxy (screenshots)", () => {
+    // PR #869: a rendered page's RTCPeerConnection sent STUN over UDP to a
+    // page-chosen internal address; only this switch stops it. The
+    // look-alike `--force-webrtc-ip-handling-policy` does NOT.
+    expect(bundledChromiumLaunchOptions()).toEqual({
+      headless: true,
+      channel: "chromium",
+      args: ["--webrtc-ip-handling-policy=disable_non_proxied_udp"],
+    });
   });
 });
 
