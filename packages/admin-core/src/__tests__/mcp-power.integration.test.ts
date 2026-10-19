@@ -331,6 +331,30 @@ describe("Power-MCP surface (admin token)", () => {
     expect("message" in r.error ? r.error.message : "").toContain("not available over MCP");
   });
 
+  it("exposes check_links (#724 rollout F) and runs it in the session's draft", async () => {
+    const listed = await execute(registry, adapter, systemCtx, "mcp.list_tools", {
+      plaintextToken: adminToken,
+    });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const tool = (
+      listed.value as { tools: { name: string; description: string; gated?: boolean }[] }
+    ).tools.find((t) => t.name === "check_links");
+    expect(tool?.description).toContain("BLOCK");
+    expect(tool?.gated).toBeUndefined();
+    const r = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
+      plaintextToken: adminToken,
+      chatSessionId,
+      toolName: "check_links",
+      args: { for: "stage", blockingOnly: true },
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as { ok: boolean; content: string };
+    expect(v.ok).toBe(true);
+    expect(v.content).toMatch(/for Stage/);
+  });
+
   it("executes screenshot_page headless and returns the image in the tool result (issue #412)", async () => {
     // The Playwright browser is faked through the shared seam; the REAL
     // pieces under test are the Power-MCP dispatch (no pushClientEvent →

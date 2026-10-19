@@ -89,6 +89,7 @@ const INPUT = {
   layouts: [LAYOUT],
   redirects: [] as RedirectRow[],
   siteUrls: ["https://example.com", "www.example.com"],
+  unpublishedPagePaths: [] as string[],
 };
 
 const HOME = page(1, "/", mod(TEXT, '<a href="/team">Team</a>'));
@@ -97,12 +98,13 @@ const TEAM = page(3, "/team", mod(TEXT, "<p>The team.</p>"));
 
 async function findingsOf(
   pages: readonly StagedPage[],
-  opts: { files?: string[]; redirects?: RedirectRow[] } = {},
+  opts: { files?: string[]; redirects?: RedirectRow[]; unpublished?: string[] } = {},
 ) {
   const build = buildWith(opts.files ?? []);
   const findings = await linkFindings(pages, build, {
     ...INPUT,
     redirects: opts.redirects ?? [],
+    unpublishedPagePaths: opts.unpublished ?? [],
   });
   for (const f of findings) expect(findingSchema.safeParse(f).success).toBe(true);
   return { findings, probed: build.probed };
@@ -124,6 +126,18 @@ describe("links/broken-internal", () => {
     expect(broken[0]?.message).toContain("nothing is served at /pricng");
     expect(broken[0]?.fix?.tool).toBe("set_page_module_content");
     expect(broken[0]?.fix?.hint).toContain("bulk_create_redirects");
+  });
+
+  it("#724 F — a link to an unpublished page is left to the references check (one finding per defect)", async () => {
+    const about = page(
+      2,
+      "/about",
+      mod(TEXT, '<a href="/coming-soon/">Soon</a> <a href="/gone">x</a>'),
+    );
+    const { findings } = await findingsOf([HOME, about, TEAM], { unpublished: ["/coming-soon"] });
+    const broken = findings.filter((f) => f.ruleId === "links/broken-internal");
+    expect(broken).toHaveLength(1);
+    expect(broken[0]?.message).toContain('"/gone"');
   });
 
   it("pages answer to every form: trailing slash, index.html, query, fragment, relative", async () => {
@@ -448,6 +462,7 @@ describe("createLinksCheck", () => {
       layouts: async () => INPUT.layouts,
       redirects: async () => [],
       siteUrls: async () => INPUT.siteUrls,
+      unpublishedPagePaths: async () => [],
     });
     expect(check.id).toBe(LINKS_CHECK_ID);
     const about = page(2, "/about", mod(TEXT, '<a href="/nope">x</a>'));
@@ -462,6 +477,7 @@ describe("createLinksCheck", () => {
       layouts: async () => [],
       redirects: async () => [],
       siteUrls: async () => [],
+      unpublishedPagePaths: async () => [],
     });
     const failing: StagedBuild = {
       baseUrl: BASE,

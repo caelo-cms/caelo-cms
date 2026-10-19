@@ -16,6 +16,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { describeError } from "../../ai/tools/_describe-error.js";
 import type { LinkSources } from "./links.js";
 import type { RedirectRow } from "./links-analysis.js";
+import type { ReferenceCheckIssue, ReferenceSources } from "./references.js";
 import { structureSourcesFromOps } from "./structure-sources.js";
 
 /** Rows per `redirects.list` page (the op's maximum). */
@@ -53,6 +54,12 @@ export function linkSourcesFromOps(
         if (page.redirects.length < REDIRECT_PAGE || rows.length >= page.totalCount) return rows;
       }
     },
+    async unpublishedPagePaths() {
+      const list = (await run("pages.list", {})) as {
+        pages: { currentPath: string; status: string }[];
+      };
+      return list.pages.filter((p) => p.status !== "published").map((p) => p.currentPath);
+    },
     async siteUrls() {
       const seo = (await run("site_defaults.get_seo", {})) as { siteBaseUrl: string | null };
       const domains = (await run("domains.list", {})) as {
@@ -63,6 +70,29 @@ export function linkSourcesFromOps(
         // The admin domain is not the site: a link there is not a page of it.
         ...domains.domains.filter((d) => d.kind === "public").map((d) => d.hostname),
       ];
+    },
+  };
+}
+
+/**
+ * #724 (rollout F) — the `references` check's source: `links.check_references`
+ * as the worker's system actor (no chat branch, so main — what the staged
+ * build was rendered from), with the Publish-live policy.
+ */
+export function referenceSourcesFromOps(
+  registry: OperationRegistry,
+  adapter: DatabaseAdapter,
+  ctx: ExecutionContext,
+): ReferenceSources {
+  return {
+    async issues(limit) {
+      const r = await execute(registry, adapter, ctx, "links.check_references", {
+        for: "publish",
+        includeWarnings: true,
+        limit,
+      });
+      if (!r.ok) throw new Error(`links.check_references failed: ${describeError(r.error)}`);
+      return r.value as { issues: ReferenceCheckIssue[]; truncated: boolean };
     },
   };
 }

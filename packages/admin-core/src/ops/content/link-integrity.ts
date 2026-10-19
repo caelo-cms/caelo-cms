@@ -1,334 +1,285 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Internal-link integrity scan, run at stage/publish.
+ * Epic #724 (rollout F) — reference integrity at the Stage boundary and
+ * as a read op.
  *
- * Migrations (and ordinary editing) routinely author internal links —
- * `<a href="/pricing">`, a `link_href` content value of `/about` — that
- * point at pages which were never built, were renamed, or were deleted.
- * A dead internal link ships a 404 to a real visitor and strands SEO
- * authority. There is no compile step that would catch it, so we scan at
- * the stage/publish boundary: collect every internal href in the pages
- * being shipped and resolve each against the set of pages that will
- * exist, returning the ones that resolve to NO page.
+ * Replaces the literal-path scan (`scanBranchInternalLinks`, #846): links
+ * are references now, so the question is no longer "does this path match a
+ * slug" but "does the referenced page exist, is it published, and does it
+ * have a version in the rendering page's language" — answered by the same
+ * resolver the render uses (links/reference-integrity.ts).
  *
- * Loud-honesty (CLAUDE.md §2, §11): the scan NEVER blocks staging — it
- * surfaces a `brokenInternalLinks` list in the op result so the operator
- * (and the AI) see dead links BEFORE they reach production, rather than
- * silently letting them through OR hard-failing a publish over them.
- *
- * Content values are scanned by the module's declared field kinds (#846):
- * only link-bearing fields (`link`, `url`, `link-list` hrefs, `richtext`
- * hrefs) count, so image paths and path-shaped copy are never reported.
- *
- * Bounded by design: page slugs + home flag, one pass over placed
- * modules, then one batched query per nested-module level (capped at the
- * renderer's depth limit) — independent of site size, never per row.
+ *   - {@link stageReferenceGate}: run by the Stage merge right after its
+ *     replay, inside the merge transaction. A missing target (or a target
+ *     without a same-language version) refuses the merge, so nothing
+ *     reaches main; the static build would refuse it anyway, and here the
+ *     refusal names every place and the tool that fixes it. Draft targets
+ *     and legacy literal paths come back as warnings.
+ *   - `links.check_references`: the read op behind the AI's `check_links`
+ *     tool (chat and Power-MCP) and the Publish-live quality check
+ *     (quality/checks/references.ts).
  */
 
-import type { defineOperation } from "@caelo-cms/query-api";
+import { hasLinkResolveContributors, resolveLinkVariants } from "@caelo-cms/plugin-host";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
+import { createSiteLinkIndex, err, normaliseLinkPath, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
-import { jsonbParam } from "../../sql-helpers.js";
+import { z } from "zod";
+import { loadLinkTargetLookup } from "../../links/canonicalise.js";
+import { loadActiveImportTargets } from "../../links/import-targets.js";
+import {
+  type ReferenceCheckEnv,
+  type ReferenceIssue,
+  scanReferenceIntegrity,
+} from "../../links/reference-integrity.js";
+import { loadReferenceSources } from "../../links/reference-sources.js";
+import { loadPublishPageUrlStyle } from "./public-urls.js";
 
-type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
-
-/** Result of {@link scanBranchInternalLinks}. */
-export interface LinkIntegrityResult {
-  /**
-   * Distinct internal hrefs (as authored, e.g. `/pricing`) that resolve
-   * to no existing page. Sorted for stable output. Empty when clean.
-   */
-  readonly brokenInternalLinks: string[];
-  /** Total distinct internal hrefs examined — for a summary line. */
-  readonly scannedCount: number;
-}
-
-/** Declared field as stored in `modules.fields` — only what the scan reads. */
-interface DeclaredField {
-  readonly name: string;
-  readonly kind: string;
-  readonly default?: unknown;
-}
-
-/** A `{ moduleId, contentInstanceId }` nested-module reference (module / module-list values). */
-interface NestedRef {
-  readonly moduleId: string;
-  readonly contentInstanceId: string;
-}
-
-/** One rendered module unit: its HTML template, field schema, and bound values. */
-interface ScanUnitRow {
-  readonly module_html: string | null;
-  readonly module_fields: unknown;
-  readonly ci_values: unknown;
-}
+/** Thrown when the site has no default deploy target (no URL style). */
+export class ReferenceCheckUnavailable extends Error {}
 
 /**
- * Mirrors `MAX_RECURSION_DEPTH` in `@caelo-cms/shared`'s nested-module
- * renderer: nothing deeper than this ever renders, so nothing deeper can
- * ship a link. It also caps the nested pass at this many queries.
- */
-const NESTED_SCAN_MAX_DEPTH = 8;
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * An internal link is a same-site path reference: starts with a single
- * `/` (not `//`, which is protocol-relative → external) and carries no
- * whitespace or angle brackets. Fragments (`#…`), `mailto:`/`tel:`, and
- * absolute `http(s)://` URLs are deliberately excluded — they can't be a
- * broken *internal* page link.
- */
-function isInternalHref(href: string): boolean {
-  return href.startsWith("/") && !href.startsWith("//") && /^\/[^\s"'<>]*$/.test(href);
-}
-
-/**
- * Reduce an internal href to a slug-comparable path: drop the query +
- * fragment, then strip leading/trailing slashes. `/` and `/about/` both
- * normalize cleanly (`""` and `"about"`).
- */
-function normalizePath(href: string): string {
-  const noFragment = href.split("#", 1)[0] ?? "";
-  const noQuery = noFragment.split("?", 1)[0] ?? "";
-  return noQuery.replace(/^\/+/, "").replace(/\/+$/, "");
-}
-
-/** Pull every `href="…"` / `href='…'` target out of raw module HTML. */
-function extractHtmlHrefs(html: string): string[] {
-  const out: string[] = [];
-  const re = /href\s*=\s*["']([^"']+)["']/gi;
-  let m: RegExpExecArray | null = re.exec(html);
-  while (m !== null) {
-    if (m[1]) out.push(m[1]);
-    m = re.exec(html);
-  }
-  return out;
-}
-
-/** Narrow a jsonb `modules.fields` column to the declared fields it holds. */
-function parseFields(raw: unknown): DeclaredField[] {
-  const parsed = typeof raw === "string" ? safeParse(raw) : raw;
-  if (!Array.isArray(parsed)) return [];
-  const out: DeclaredField[] = [];
-  for (const f of parsed) {
-    if (f === null || typeof f !== "object") continue;
-    const { name, kind } = f as { name?: unknown; kind?: unknown };
-    if (typeof name !== "string" || typeof kind !== "string") continue;
-    out.push(f as DeclaredField);
-  }
-  return out;
-}
-
-/**
- * Narrow one nested-module reference. Anything not uuid-shaped is not a
- * ref the renderer could resolve — and must not reach the `::uuid` cast in
- * the nested query, where it would abort the publish tx.
- */
-function asNestedRef(value: unknown): NestedRef | null {
-  if (value === null || typeof value !== "object") return null;
-  const { moduleId, contentInstanceId } = value as Record<string, unknown>;
-  if (typeof moduleId !== "string" || typeof contentInstanceId !== "string") return null;
-  if (!UUID_RE.test(moduleId) || !UUID_RE.test(contentInstanceId)) return null;
-  return { moduleId, contentInstanceId };
-}
-
-/**
- * Collect the internal hrefs a content_instance's `values` will render,
- * driven by the module's DECLARED field kinds (#846). Only link-bearing
- * kinds contribute: `link` / `url` values, `link-list` item `href`s, and
- * `href` attributes inside `richtext`. `image` (`/media/...`), `text`,
- * `text-list`, `number`, and `boolean` are never links, even when the
- * string happens to start with `/` — counting them produced a wall of
- * false "broken link" warnings that buried the real ones.
+ * Check every stored link of one scope.
  *
- * A value with no declared field is never rendered, so it is not a link —
- * there is no "any path-shaped string" fallback (CLAUDE.md §2). Lookup
- * mirrors the template engine: the instance's value wins, else the field's
- * `default` (which is what the page then renders); keys compare
- * case-insensitively.
- *
- * `module` / `module-list` values go onto `nestedRefs`: nested modules are
- * not `page_modules` placements, so the caller scans them separately.
+ * @param opts.branchId the scope (null = main line).
+ * @param opts.pluginScopeBranchId the scope plugins answer in, when it
+ *   differs (the Stage merge: main read in-transaction, plugins asked as
+ *   the merged branch — see loadReferenceSources).
  */
-function collectValueHrefs(
-  values: unknown,
-  fields: readonly DeclaredField[],
-  out: string[],
-  nestedRefs: NestedRef[],
-): void {
-  const byName = new Map<string, unknown>();
-  if (values !== null && typeof values === "object" && !Array.isArray(values)) {
-    for (const [k, v] of Object.entries(values as Record<string, unknown>)) {
-      byName.set(k.toLowerCase(), v);
-    }
+export async function checkReferences(
+  tx: TransactionRunner,
+  opts: {
+    readonly branchId: string | null;
+    readonly env: ReferenceCheckEnv;
+    readonly pluginScopeBranchId?: string | null;
+  },
+): Promise<ReferenceIssue[]> {
+  const pageUrlStyle = await loadPublishPageUrlStyle(tx);
+  if (pageUrlStyle === null) {
+    throw new ReferenceCheckUnavailable(
+      "no default deploy target — the link check needs the page URL style of the target Publish serves. " +
+        "Next step: run the cms_admin migrations (they seed the production target) or mark a deploy target as default under Ops → Deploy.",
+    );
   }
-  const pushIfInternal = (href: unknown): void => {
-    if (typeof href === "string" && isInternalHref(href)) out.push(href);
-  };
-
-  for (const field of fields) {
-    const key = field.name.toLowerCase();
-    const raw = byName.has(key) ? byName.get(key) : field.default;
-    switch (field.kind) {
-      case "link":
-      case "url":
-        pushIfInternal(raw);
-        break;
-      case "link-list":
-        if (Array.isArray(raw)) {
-          for (const item of raw) {
-            if (item !== null && typeof item === "object") {
-              pushIfInternal((item as { href?: unknown }).href);
-            }
-          }
-        }
-        break;
-      case "richtext":
-        if (typeof raw === "string") {
-          for (const h of extractHtmlHrefs(raw)) pushIfInternal(h);
-        }
-        break;
-      case "module": {
-        const ref = asNestedRef(raw);
-        if (ref) nestedRefs.push(ref);
-        break;
-      }
-      case "module-list":
-        if (Array.isArray(raw)) {
-          for (const item of raw) {
-            const ref = asNestedRef(item);
-            if (ref) nestedRefs.push(ref);
-          }
-        }
-        break;
-      default:
-        // image / text / text-list / number / boolean: never a page link.
-        break;
-    }
-  }
-}
-
-/** Add every internal href one module unit renders; queue its nested refs. */
-function collectUnitHrefs(row: ScanUnitRow, hrefs: Set<string>, nestedRefs: NestedRef[]): void {
-  if (typeof row.module_html === "string") {
-    for (const h of extractHtmlHrefs(row.module_html)) {
-      if (isInternalHref(h)) hrefs.add(h);
-    }
-  }
-  const values = typeof row.ci_values === "string" ? safeParse(row.ci_values) : row.ci_values;
-  const collected: string[] = [];
-  collectValueHrefs(values, parseFields(row.module_fields), collected, nestedRefs);
-  for (const h of collected) hrefs.add(h);
+  const pluginScope =
+    opts.pluginScopeBranchId === undefined ? opts.branchId : opts.pluginScopeBranchId;
+  const lookup = await loadLinkTargetLookup(
+    tx,
+    opts.branchId,
+    [],
+    await activeImportPagePaths(tx, pluginScope),
+  );
+  const model = await loadReferenceSources(tx, opts.branchId, {
+    pluginScopeBranchId: pluginScope,
+  });
+  const pageVariants =
+    lookup.targets.pages.length > 0 && hasLinkResolveContributors()
+      ? await resolveLinkVariants(
+          lookup.targets.pages.map((p) => p.id),
+          { chatBranchId: pluginScope },
+        )
+      : undefined;
+  const index = createSiteLinkIndex({
+    pages: lookup.targets.pages,
+    media: lookup.targets.media,
+    env: opts.env,
+    pageUrlStyle,
+    ...(pageVariants ? { pageVariants } : {}),
+  });
+  return scanReferenceIntegrity({ model, lookup, targets: lookup.targets, index, env: opts.env });
 }
 
 /**
- * Scan every internal link in the pages visible to `chatBranchId` (its
- * branched pages + published main pages) and return the hrefs that
- * resolve to no page. Call it AFTER the branch has been merged to the
- * live tables (so it reads post-merge state), inside the same tx.
+ * Rollout E — pages an active site import has planned but not built yet.
+ * While the run is active, a link to one stays literal on purpose
+ * (`import_run_links`) and must not block a Stage; it is reported as
+ * `pending-import-link`. Once the run finalises its links
+ * (`imports.resolve_links`, or its cleanup) it is no longer active and
+ * anything still unresolved follows the normal rules.
  *
- * @param tx           Active admin-DB transaction.
- * @param chatBranchId The publishing chat's branch, or null for a
- *                     main-only scan. Branched pages of this chat are
- *                     included in both the link source and the slug set.
+ * @param branchId the scope's branch; null = the main line, which sees
+ *   every active run's planned pages (the quality check reads main).
  */
-export async function scanBranchInternalLinks(
-  tx: Tx,
-  chatBranchId: string | null,
-): Promise<LinkIntegrityResult> {
-  const branchFilter = chatBranchId
-    ? sql`AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${chatBranchId}::uuid)`
-    : sql`AND p.chat_branch_id IS NULL`;
-
-  // (1) The path universe every link resolves against (#390): the
-  // COMPOSED public paths of pages visible to the branch — plugin
-  // prefixes included — plus the slug shape as a legacy alias so
-  // pre-composition content that links "/<slug>" doesn't false-flag.
-  const pageRows = (await tx.execute(sql`
-    SELECT DISTINCT p.slug AS slug, p.current_path AS current_path,
-           (p.parent_page_id IS NOT NULL) AS nested
-    FROM pages p
-    WHERE p.deleted_at IS NULL ${branchFilter}
-  `)) as unknown as { slug: string; current_path: string; nested: boolean }[];
-  const validSlugs = new Set<string>();
-  for (const r of pageRows) {
-    validSlugs.add(normalizePath(r.current_path));
-    // The legacy alias is a top-level shape only: "/<slug>" is not where
-    // a nested page lives (0263), so a link there must not count as valid.
-    if (!r.nested) validSlugs.add(normalizePath(`/${r.slug}`));
+async function activeImportPagePaths(
+  tx: TransactionRunner,
+  branchId: string | null,
+): Promise<Set<string>> {
+  const branches = branchId
+    ? [branchId]
+    : (
+        (await tx.execute(sql`
+          SELECT DISTINCT cs.chat_branch_id::text AS branch_id
+            FROM import_runs r
+            JOIN chat_sessions cs ON cs.id = r.chat_session_id
+           WHERE r.status NOT IN ('completed', 'failed') AND cs.chat_branch_id IS NOT NULL
+        `)) as unknown as { branch_id: string }[]
+      ).map((r) => r.branch_id);
+  const paths = new Set<string>();
+  for (const b of branches) {
+    const targets = await loadActiveImportTargets(tx, b);
+    for (const p of targets?.runsByPath.keys() ?? []) paths.add(p);
   }
-
-  const homeRows = (await tx.execute(sql`
-    SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1
-  `)) as unknown as { home_page_id: string | null }[];
-  const hasHomepage = (homeRows[0]?.home_page_id ?? null) !== null;
-
-  // (2) One pass over placed modules: raw module HTML + its declared
-  // fields (they decide which values are links) + the bound
-  // content_instance values, for every placement on a visible page.
-  const placementRows = (await tx.execute(sql`
-    SELECT DISTINCT m.html AS module_html, m.fields AS module_fields, ci."values" AS ci_values
-    FROM page_modules pm
-    JOIN pages p ON p.id = pm.page_id AND p.deleted_at IS NULL ${branchFilter}
-    JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
-    JOIN content_instances ci ON ci.id = pm.content_instance_id
-  `)) as unknown as ScanUnitRow[];
-
-  const hrefs = new Set<string>();
-  let pending: NestedRef[] = [];
-  for (const row of placementRows) collectUnitHrefs(row, hrefs, pending);
-
-  // (3) Nested modules (`module` / `module-list` values) render inside
-  // their parent but have no placement of their own, so step (2) never
-  // sees their HTML or values. Walk them breadth-first — one batched
-  // query per nesting level, capped at the renderer's depth limit — and
-  // visit each (module, instance) pair once so reference cycles terminate.
-  const visited = new Set<string>();
-  for (let depth = 0; depth < NESTED_SCAN_MAX_DEPTH && pending.length > 0; depth += 1) {
-    const level: NestedRef[] = [];
-    for (const ref of pending) {
-      const key = `${ref.moduleId}:${ref.contentInstanceId}`;
-      if (visited.has(key)) continue;
-      visited.add(key);
-      level.push(ref);
-    }
-    pending = [];
-    if (level.length === 0) break;
-    const nestedRows = (await tx.execute(sql`
-      SELECT m.html AS module_html, m.fields AS module_fields, ci."values" AS ci_values
-      FROM jsonb_to_recordset(${jsonbParam(level)}) AS r("moduleId" uuid, "contentInstanceId" uuid)
-      JOIN modules m ON m.id = r."moduleId" AND m.deleted_at IS NULL
-      JOIN content_instances ci ON ci.id = r."contentInstanceId" AND ci.deleted_at IS NULL
-    `)) as unknown as ScanUnitRow[];
-    for (const row of nestedRows) collectUnitHrefs(row, hrefs, pending);
-  }
-
-  /**
-   * A path resolves if it's a known slug or the site root (when a
-   * homepage exists). Leniency is deliberate — this warns, it doesn't
-   * block, so a false positive is worse than missing an edge case
-   * (CLAUDE.md §2 loud-but-honest).
-   */
-  const resolves = (path: string): boolean => {
-    if (path === "") return hasHomepage; // bare `/`
-    return validSlugs.has(path);
-  };
-
-  const broken: string[] = [];
-  for (const href of hrefs) {
-    if (!resolves(normalizePath(href))) broken.push(href);
-  }
-  broken.sort();
-
-  return { brokenInternalLinks: broken, scannedCount: hrefs.size };
+  return paths;
 }
 
-/** Parse a jsonb-as-text column; tolerate a malformed blob. */
-function safeParse(raw: string): unknown {
+/** Most blocking issues one Stage refusal lists (check_links has them all). */
+const STAGE_MESSAGE_ISSUES = 8;
+/** Most warnings a merge result carries. */
+const STAGE_WARNINGS = 50;
+
+/** What the Stage merge learns from the check. */
+export type StageReferenceGate =
+  | { readonly ok: true; readonly warnings: string[] }
+  | { readonly ok: false; readonly message: string };
+
+/**
+ * The Stage gate: main line after the merge's replay, Stage policy.
+ * Call inside the merge transaction, after the replay.
+ */
+export async function stageReferenceGate(
+  tx: TransactionRunner,
+  mergedBranchId: string,
+): Promise<StageReferenceGate> {
+  let issues: ReferenceIssue[];
   try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
+    issues = await checkReferences(tx, {
+      branchId: null,
+      env: "staging",
+      pluginScopeBranchId: mergedBranchId,
+    });
+  } catch (e) {
+    if (e instanceof ReferenceCheckUnavailable) return { ok: false, message: e.message };
+    throw e;
   }
+  const blocking = issues.filter((i) => i.severity === "block");
+  if (blocking.length > 0) {
+    const listed = blocking
+      .slice(0, STAGE_MESSAGE_ISSUES)
+      .map((i, n) => `(${n + 1}) ${i.message}`)
+      .join(" ");
+    const more =
+      blocking.length > STAGE_MESSAGE_ISSUES
+        ? ` …and ${blocking.length - STAGE_MESSAGE_ISSUES} more (check_links lists every one).`
+        : "";
+    return {
+      ok: false,
+      message: `Stage refused — ${blocking.length} stored link(s) point at a page or file that does not exist (or has no version in the page's language), so the build would ship broken links: ${listed}${more} Fix each one with the tool it names, then Stage again.`,
+    };
+  }
+  return {
+    ok: true,
+    warnings: issues.slice(0, STAGE_WARNINGS).map((i) => i.message),
+  };
 }
+
+const placeSchema = z.looseObject({ kind: z.string() });
+
+const issueSchema = z.object({
+  problem: z.enum([
+    "missing-target",
+    "variant-missing",
+    "unpublished-target",
+    "literal-link",
+    "broken-literal",
+    "pending-import-link",
+  ]),
+  severity: z.enum(["block", "warning"]),
+  target: z.string(),
+  variant: z.string().nullable(),
+  where: z.string(),
+  place: placeSchema,
+  pageIds: z.array(z.string()),
+  pagePaths: z.array(z.string()),
+  shipped: z.boolean(),
+  message: z.string(),
+  fix: z.object({ tool: z.string(), hint: z.string() }),
+});
+
+export const checkReferencesInput = z
+  .object({
+    /**
+     * Which gate to check for: `stage` (a draft target is a warning) or
+     * `publish` (Publish live / promote: a draft target blocks).
+     */
+    for: z.enum(["stage", "publish"]).default("publish"),
+    /** Only issues on this page (plus site-wide chrome: sets, plugin data). */
+    pageId: z.string().uuid().optional(),
+    /** Same as pageId, by the page's path (`/about`). */
+    pagePath: z.string().min(1).max(2000).optional(),
+    /** False = blocking issues only. */
+    includeWarnings: z.boolean().default(true),
+    limit: z.number().int().min(1).max(500).default(100),
+  })
+  .strict();
+
+export const checkReferencesOp = defineOperation({
+  name: "links.check_references",
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: checkReferencesInput,
+  output: z.object({
+    env: z.enum(["staging", "production"]),
+    /** `draft` = the caller's chat branch as its preview shows it; `main` = what is staged. */
+    scope: z.enum(["main", "draft"]),
+    blocking: z.number().int().nonnegative(),
+    warnings: z.number().int().nonnegative(),
+    issues: z.array(issueSchema),
+    /** True when more issues matched than `limit` returned (blocks come first). */
+    truncated: z.boolean(),
+  }),
+  handler: async (ctx, input, tx) => {
+    const branchId = ctx.chatBranchId ?? null;
+    const env: ReferenceCheckEnv = input.for === "stage" ? "staging" : "production";
+    let issues: ReferenceIssue[];
+    try {
+      issues = await checkReferences(tx, { branchId, env });
+    } catch (e) {
+      if (e instanceof ReferenceCheckUnavailable) {
+        return err({
+          kind: "HandlerError",
+          operation: "links.check_references",
+          message: e.message,
+        });
+      }
+      throw e;
+    }
+    const lookup = await loadLinkTargetLookup(tx, branchId);
+    const paths = new Map(lookup.targets.pages.map((p) => [p.id, p.path]));
+    let pageFilter: string | null = input.pageId ?? null;
+    if (input.pagePath !== undefined) {
+      const id = lookup.pageIdForPath(
+        normaliseLinkPath(input.pagePath.startsWith("/") ? input.pagePath : `/${input.pagePath}`),
+      );
+      if (id === null) {
+        return err({
+          kind: "HandlerError",
+          operation: "links.check_references",
+          message: `no page has the path "${input.pagePath}". Next step: list_pages shows every page's path; or call check_links without a page filter.`,
+        });
+      }
+      pageFilter = id;
+    }
+    const matching = issues.filter(
+      (i) =>
+        (input.includeWarnings || i.severity === "block") &&
+        (pageFilter === null ||
+          i.pageIds.includes(pageFilter) ||
+          // Site-wide places (plugin data) render on every page.
+          (i.pageIds.length === 0 && i.shipped)),
+    );
+    return ok({
+      env,
+      scope: branchId ? ("draft" as const) : ("main" as const),
+      blocking: matching.filter((i) => i.severity === "block").length,
+      warnings: matching.filter((i) => i.severity === "warning").length,
+      issues: matching.slice(0, input.limit).map((i) => ({
+        ...i,
+        place: { ...i.place },
+        pageIds: [...i.pageIds],
+        pagePaths: i.pageIds.map((id) => paths.get(id) ?? id),
+      })),
+      truncated: matching.length > input.limit,
+    });
+  },
+});

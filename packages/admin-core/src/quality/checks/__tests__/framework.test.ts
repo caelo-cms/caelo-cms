@@ -79,16 +79,20 @@ describe("CheckRegistry", () => {
         layouts: async () => [],
         redirects: async () => [],
         siteUrls: async () => [],
+        unpublishedPagePaths: async () => [],
       },
+      references: { issues: async () => ({ issues: [], truncated: false }) },
     });
     expect(r.list().map((e) => [e.id, e.kind])).toEqual([
       [LIGHTHOUSE_CHECK_ID, "lighthouse"],
       ["structure", "findings"],
       ["links", "findings"],
+      ["references", "findings"],
     ]);
     expect(r.findingChecks().map((e) => [e.id, e.scope, e.source])).toEqual([
       ["structure", "site", { kind: "core" }],
       ["links", "site", { kind: "core" }],
+      ["references", "site", { kind: "core" }],
     ]);
     expect(r.lighthouse()?.id).toBe("lighthouse");
   });

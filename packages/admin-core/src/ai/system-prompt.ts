@@ -517,6 +517,8 @@ const STAGING_BLOCK = [
   "",
   "Exception — experiments and migrations: when the user explicitly wants to TRY something (a redesign, an alternative version) or you start a site migration, call `start_isolated_branch` FIRST, so that work stays out of the draft until it is staged.",
   "",
+  "Internal links point at pages, so a Stage refuses links to deleted pages (and to pages with no version in the linking page's language), and Publish live blocks links to unpublished pages. After deleting, unpublishing or translating pages, run `check_links` and fix what it names before you stage.",
+  "",
   "Before a page is staged for the first time it needs a meta description: write it from the page's content (in a migration, carry over the source page's) with `autofill_page_seo_many` — one call for every new page. A Stage refuses published pages without one and names them.",
   "",
   "When the requested work is done, Stage it yourself with `stage_changes`: it merges this chat's changes into the site, rebuilds the staging site (noindex) and runs the quality check. Then finish your turn: tell the user staging is ready to review and the check is running. The check's result appears in the chat; when it finds problems the user is asked whether you should fix them, and the fix request you then get lists the findings. **Publish live is always the user's click** — you never publish, and nothing you stage goes live automatically. Don't claim a change is live.",

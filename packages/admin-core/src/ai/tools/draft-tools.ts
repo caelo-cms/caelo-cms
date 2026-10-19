@@ -125,8 +125,8 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
         ? ` Also staged, because they changed the same things: ${describeAffected(v.alsoIncludes)}.`
         : "";
     const links =
-      v.brokenInternalLinks.length > 0
-        ? ` Broken internal links found: ${v.brokenInternalLinks.slice(0, 10).join(", ")} — fix them before publishing.`
+      v.linkWarnings.length > 0
+        ? ` Link warnings (${v.linkWarnings.length}; a link to an unpublished page blocks Publish live — fix those now): ${v.linkWarnings.slice(0, 5).join(" | ")}${v.linkWarnings.length > 5 ? " | … (check_links lists all)" : ""}`
         : "";
     return {
       ok: true,

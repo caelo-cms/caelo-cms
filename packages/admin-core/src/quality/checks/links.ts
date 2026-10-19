@@ -70,6 +70,13 @@ export interface LinkSources {
   redirects(): Promise<readonly RedirectRow[]>;
   /** The site base URL and the public domains: absolute links there are same-site. */
   siteUrls(): Promise<readonly string[]>;
+  /**
+   * #724 (rollout F) — paths of pages that exist but are not published. A
+   * link there is reported by the `references` check at the place it is
+   * stored (a draft target blocks Publish live), so this check does not
+   * report the same defect a second time as `links/broken-internal`.
+   */
+  unpublishedPagePaths(): Promise<readonly string[]>;
 }
 
 /** What one same-site URL resolved to. */
@@ -105,13 +112,20 @@ export function createLinksCheck(sources: LinkSources): SiteCheck {
     scope: "site",
     timeoutMs: LINKS_CHECK_TIMEOUT_MS,
     async run({ pages, build }) {
-      const [modules, layouts, redirects, siteUrls] = await Promise.all([
+      const [modules, layouts, redirects, siteUrls, unpublishedPagePaths] = await Promise.all([
         sources.modules(),
         sources.layouts(),
         sources.redirects(),
         sources.siteUrls(),
+        sources.unpublishedPagePaths(),
       ]);
-      return linkFindings(pages, build, { modules, layouts, redirects, siteUrls });
+      return linkFindings(pages, build, {
+        modules,
+        layouts,
+        redirects,
+        siteUrls,
+        unpublishedPagePaths,
+      });
     },
   };
 }
@@ -125,6 +139,7 @@ export async function linkFindings(
     readonly layouts: readonly LinkLayout[];
     readonly redirects: readonly RedirectRow[];
     readonly siteUrls: readonly string[];
+    readonly unpublishedPagePaths: readonly string[];
   },
 ): Promise<Finding[]> {
   const hosts = siteHostsOf([build.baseUrl, build.displayBaseUrl, ...input.siteUrls]);
@@ -159,7 +174,12 @@ export async function linkFindings(
     layouts: input.layouts,
   };
   const findings = [
-    ...linkProblems(occurrences, resolutions, ctx),
+    ...linkProblems(
+      occurrences,
+      resolutions,
+      ctx,
+      new Set(input.unpublishedPagePaths.map(pathKey)),
+    ),
     ...orphanPages(pages, occurrences, resolutions),
   ];
   if (limits.length > 0) {
@@ -252,12 +272,21 @@ function linkProblems(
   occurrences: readonly Occurrence[],
   resolutions: ReadonlyMap<string, Resolution>,
   ctx: OriginContext,
+  unpublishedKeys: ReadonlySet<string>,
 ): Finding[] {
   const groups = new Map<string, { first: Occurrence; ruleId: string; count: number }>();
   for (const o of occurrences) {
     const r = resolutions.get(o.target.requestPath);
     const ruleId = r ? ruleOf(o.kind, r) : null;
     if (!ruleId) continue;
+    // A link to a draft page is the `references` check's finding (#724 F).
+    if (
+      ruleId === "links/broken-internal" &&
+      r?.kind === "missing" &&
+      unpublishedKeys.has(pathKey(r.path))
+    ) {
+      continue;
+    }
     const key = `${o.page.pageId}\u0000${ruleId}\u0000${o.target.requestPath}`;
     const g = groups.get(key);
     if (g) g.count++;

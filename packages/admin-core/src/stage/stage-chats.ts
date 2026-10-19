@@ -68,7 +68,7 @@ export interface StagedChats {
   /** Provider-supplied preview URL (Firebase); absent elsewhere. */
   readonly previewUrl?: string;
   readonly mergedEntityCount: number;
-  readonly brokenInternalLinks: readonly string[];
+  readonly linkWarnings: readonly string[];
   /**
    * One entry per merge: the shared draft's selected chats together, each
    * isolated chat on its own.
@@ -193,11 +193,11 @@ export async function enqueueStagingAudit(
 export function finalLinkWarnings(
   merges: readonly {
     readonly entityCount: number;
-    readonly brokenInternalLinks: readonly string[];
+    readonly linkWarnings: readonly string[];
   }[],
 ): string[] {
   const last = [...merges].reverse().find((m) => m.entityCount > 0);
-  return last ? [...last.brokenInternalLinks] : [];
+  return last ? [...last.linkWarnings] : [];
 }
 
 /**
@@ -302,7 +302,7 @@ export async function stageChatSessions(
     entityCount: number;
     mergedAt: string;
     mergedHeaderIds: string[];
-    brokenInternalLinks: string[];
+    linkWarnings: string[];
     alsoIncludes: AffectedChat[];
   }[] = [];
   for (const entry of classified) {
@@ -358,7 +358,7 @@ export async function stageChatSessions(
         entityCount: number;
         mergedAt: string;
         mergedHeaderIds: string[];
-        brokenInternalLinks: string[];
+        linkWarnings: string[];
         alsoIncludes?: AffectedChat[];
       };
       merged.push({ unit, ...v, alsoIncludes: v.alsoIncludes ?? [] });
@@ -451,7 +451,7 @@ export async function stageChatSessions(
       fileCount: summary.fileCount,
       ...(summary.previewUrl ? { previewUrl: summary.previewUrl } : {}),
       mergedEntityCount: merged.reduce((n, m) => n + m.entityCount, 0),
-      brokenInternalLinks: finalLinkWarnings(merged),
+      linkWarnings: finalLinkWarnings(merged),
       chats: merged.map((m) => ({
         chatSessionIds: m.unit.chatSessionIds,
         entityCount: m.entityCount,

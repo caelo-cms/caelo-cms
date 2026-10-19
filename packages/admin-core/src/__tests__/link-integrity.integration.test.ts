@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Internal-link integrity scan (`scanBranchInternalLinks`) — the check
- * wired into chat.publish / chat.merge_to_main. It collects every
- * internal href in the shipped pages (raw module HTML + content_instance
- * values) and flags the ones that resolve to no existing page. Runs
- * against real Postgres through the op layer to seed pages, then invokes
- * the helper inside an admin tx (the same view the publish op uses).
+ * Reference integrity (#724 rollout F) over LEGACY literal links: content
+ * written before #724 stores `/about`, not `caelo:page/<id>`. The check
+ * reports a working literal as a warning (the link migration converts it)
+ * and one that matches no page as `broken-literal` — scanned by declared
+ * field kind (#846), so image paths and path-shaped copy are never links.
+ * Seeds through the op layer, writes the legacy literals underneath it,
+ * and runs the check inside an admin tx (the same view the Stage merge uses).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { scanBranchInternalLinks } from "../ops/content/link-integrity.js";
+import { checkReferences } from "../ops/content/link-integrity.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -222,26 +223,44 @@ afterAll(async () => {
   await adapter.close();
 });
 
-describe("scanBranchInternalLinks", () => {
+/** The legacy literals the check reports: `broken-literal` targets, unquoted. */
+async function brokenLiterals(): Promise<string[]> {
+  const issues = await adapter.withAdminTransaction(systemCtx, (tx) =>
+    checkReferences(tx, { branchId: null, env: "staging" }),
+  );
+  return issues.filter((i) => i.problem === "broken-literal").map((i) => i.target.slice(1, -1));
+}
+
+describe("reference integrity over legacy literal links (#846 field kinds)", () => {
   it("flags internal links (HTML + content values) that resolve to no page, and NOT valid ones", async () => {
-    const result = await adapter.withAdminTransaction(systemCtx, (tx) =>
-      scanBranchInternalLinks(tx, null),
-    );
+    const broken = await brokenLiterals();
     // Broken: the hardcoded /does-not-exist and the /also-missing content value.
-    expect(result.brokenInternalLinks).toContain("/does-not-exist");
-    expect(result.brokenInternalLinks).toContain("/also-missing");
+    expect(broken).toContain("/does-not-exist");
+    expect(broken).toContain("/also-missing");
     // Not broken: the link to the existing target page.
-    expect(result.brokenInternalLinks).not.toContain(`/${TARGET_SLUG}`);
+    expect(broken).not.toContain(`/${TARGET_SLUG}`);
     // Fragments + absolute URLs are not internal-page links — never flagged.
-    expect(result.brokenInternalLinks).not.toContain("#top");
-    expect(result.brokenInternalLinks).not.toContain("https://example.com");
+    expect(broken).not.toContain("#top");
+    expect(broken).not.toContain("https://example.com");
+  });
+
+  it("a working legacy literal is a warning that names its conversion, never a block", async () => {
+    const issues = await adapter.withAdminTransaction(systemCtx, (tx) =>
+      checkReferences(tx, { branchId: null, env: "production" }),
+    );
+    const literal = issues.find(
+      (i) => i.problem === "literal-link" && i.target === `"/${TARGET_SLUG}"`,
+    );
+    expect(literal?.severity).toBe("warning");
+    expect(literal?.message).toContain("get_link_migration_report");
+    // Legacy literals never block: the staged-build check owns broken ones.
+    expect(
+      issues.filter((i) => i.problem === "broken-literal" || i.problem === "literal-link"),
+    ).not.toContainEqual(expect.objectContaining({ severity: "block" }));
   });
 
   it("#846: scans content values by declared field kind — image/text paths are never links", async () => {
-    const result = await adapter.withAdminTransaction(systemCtx, (tx) =>
-      scanBranchInternalLinks(tx, null),
-    );
-    const broken = result.brokenInternalLinks;
+    const broken = await brokenLiterals();
     // Not links: image paths, plain text / text-list copy that starts with
     // `/`, and a stored value with no declared field.
     for (const notALink of [
