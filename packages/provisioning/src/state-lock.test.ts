@@ -150,9 +150,11 @@ describe("acquireBucketStateLock", () => {
           holder: jobHolder("x2"),
           now: () => T0,
         }),
-      ).toThrow(/without a generation/);
-      // Taken blind is given back at once, not held.
-      expect(cloud.objects.size).toBe(0);
+      ).toThrow(/without a generation.*expires with its lease/);
+      // Never deleted blind: an unverifiable generation leaves the lock to
+      // its lease (#872 review), and the error says so.
+      expect(cloud.objects.size).toBe(1);
+      expect(cloud.calls.some((c) => c.startsWith("storage rm"))).toBe(false);
     }
   });
 
