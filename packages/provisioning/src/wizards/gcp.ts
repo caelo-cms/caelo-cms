@@ -33,6 +33,7 @@ import { join } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { checkAdcImpersonation } from "../adc-impersonation.js";
+import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
 import { CERT_WAIT_TIMEOUT_MS, lbCertProbe, waitForCert } from "../cert-wait.js";
 import { redactCredentials } from "../checkpoint-secrets.js";
 import { removeDefaultFirewallRules } from "../default-firewall.js";
@@ -455,6 +456,10 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   }
 
   phase("Finishing: operator access, welcome page");
+
+  // === 11.3. The quality-audit job: parallel Lighthouse runs (#875) ===
+  // Before the upgrader, which gets actAs on the job's service account.
+  await stepAuditJob(projectId, region, provider);
 
   // === 11.4. The upgrader job: Settings → Updates → Install update (#696) ===
   // Before operator access, which keeps the upgrader's caelo-mcp grant.
@@ -983,6 +988,38 @@ async function stepUpgraderJob(
   }
   s.stop(green(`Upgrader job ready (${r.done.length} steps)`));
   return true;
+}
+
+/**
+ * Set up the quality-audit job (audit-job-setup.ts) on the deployed admin's
+ * image. A failure stops the wizard: without the job every Stage audit
+ * fails. Idempotent, so it runs on every wizard pass.
+ */
+async function stepAuditJob(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+): Promise<void> {
+  const s = spinner();
+  s.start("Setting up the quality-audit job (parallel Lighthouse runs)...");
+  const image = await resolveAdminImage({ projectId, region, env: GCP_STACK_ENV });
+  const r = image.ok
+    ? await ensureAuditJob({
+        provider,
+        projectId,
+        region,
+        env: GCP_STACK_ENV,
+        adminImageRef: image.imageRef,
+        parallelism: GCP_STACK_KNOB_DEFAULTS.auditParallelism,
+      })
+    : { ok: false as const, done: [], error: image.error };
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.error}`));
+    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green(`Quality-audit job ready (${r.done.length} steps)`));
 }
 
 /**

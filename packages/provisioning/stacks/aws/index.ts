@@ -349,6 +349,14 @@ new aws.cloudwatch.LogDelivery(
 //
 // Each Caelo service runs as its own Fargate service; sharing a cluster
 // keeps the per-month Fargate-cluster fee at zero (clusters are free).
+//
+// FIXME(issue #749): no quality-audit task definition yet. On GCP every
+// Lighthouse run of a Stage audit runs in its own container (#875,
+// src/audit-job-setup.ts); the AWS equivalent is a Fargate task per run
+// (admin-core quality/parallel-runner.ts `AuditTaskLauncher`). Until it
+// exists the admin records every Lighthouse audit as failed with that gap
+// (quality/lighthouse-runner-select.ts) instead of measuring on its own
+// shared CPU. Nothing is staged on AWS before #749 either.
 const cluster = new aws.ecs.Cluster(`${namePrefix}-ecs`, {
   settings: [{ name: "containerInsights", value: "enabled" }],
 });

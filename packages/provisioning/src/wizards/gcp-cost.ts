@@ -101,10 +101,10 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
           : `${inputs.adminMinInstances} min-instance${inputs.adminMinInstances > 1 ? "s" : ""} (no cold start)`,
     },
     {
-      name: "Quality checks (Lighthouse on the admin)",
-      monthlyUsd: 1,
+      name: "Quality checks (Cloud Run audit job)",
+      monthlyUsd: 2,
       notes:
-        "~1-3 min of admin CPU per audited Stage (up to 5 pages x 3 runs); ~$1/mo at a few Stages a day",
+        "one container per Lighthouse run, all in parallel (up to 5 pages x 3 runs, ~90 s at 2 vCPU each): ~$0.05 per audited Stage, partly in the free tier; results bucket ~$0",
     },
     {
       name: "Cloud Run gateway",

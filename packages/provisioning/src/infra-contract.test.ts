@@ -20,14 +20,14 @@ describe("infrastructure contract steps", () => {
     );
   });
 
-  it("is at 9: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5), ops-bucket list (6), gateway proxy hops (7), converge job (8), remote MCP (9)", () => {
+  it("is at 9: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5), ops-bucket list (6), gateway proxy hops (7), quality-audit job (8), remote MCP (9)", () => {
     expect(INFRA_CONTRACT_VERSION).toBe(9);
     expect(INFRA_CONTRACT_STEPS[3]).toContain("#633");
     expect(INFRA_CONTRACT_STEPS[4]).toContain("#587");
     expect(INFRA_CONTRACT_STEPS[5]).toContain("#635");
     expect(INFRA_CONTRACT_STEPS[6]).toContain("#799");
     expect(INFRA_CONTRACT_STEPS[7]).toContain("#845");
-    expect(INFRA_CONTRACT_STEPS[8]).toContain("#819");
+    expect(INFRA_CONTRACT_STEPS[8]).toContain("#875");
     expect(INFRA_CONTRACT_STEPS[9]).toContain("#806");
   });
 
