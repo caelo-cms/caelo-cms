@@ -76,6 +76,7 @@ import {
   type PublishSummary,
   type StaticPublisher,
 } from "../deploy/static-publisher.js";
+import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { jsonbParam } from "../sql-helpers.js";
 import {
@@ -315,13 +316,19 @@ interface SubprocessProgress {
   pagesDone: number;
   pagesTotal: number;
 }
-interface SubprocessDone {
-  kind: "done";
-  pageCount: number;
-  fileCount: number;
-  durationMs: number;
-  buildDir: string;
-}
+/**
+ * The generator's final event. Parsed (not cast) — it crosses a process
+ * boundary, and its link report feeds the Stage warning (#724).
+ */
+const subprocessDoneSchema = z.object({
+  kind: z.literal("done"),
+  pageCount: z.number().int(),
+  fileCount: z.number().int(),
+  durationMs: z.number(),
+  buildDir: z.string(),
+  unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
+});
+type SubprocessDone = z.infer<typeof subprocessDoneSchema>;
 interface SubprocessError {
   kind: "error";
   message: string;
@@ -433,7 +440,15 @@ async function runGenerator(
             pagesDone: ev.pagesDone,
             pagesTotal: ev.pagesTotal,
           });
-        } else if (ev.kind === "done" || ev.kind === "error") {
+        } else if (ev.kind === "done") {
+          const done = subprocessDoneSchema.safeParse(ev);
+          finalEvent = done.success
+            ? done.data
+            : {
+                kind: "error",
+                message: `generator reported a malformed done event: ${done.error.message}`,
+              };
+        } else if (ev.kind === "error") {
           finalEvent = ev;
         }
       }
@@ -526,6 +541,11 @@ export const triggerDeployOp = defineOperation({
      * build never hides missing pages.
      */
     draftPages: draftPagesSummary,
+    /**
+     * #724 — pages this build links to that it does not contain (drafts).
+     * A Stage warning; Publish live blocks on them (rollout F).
+     */
+    unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
   }),
   handler: async (ctx, input, tx) => {
     const targetRows = (await tx.execute(
@@ -886,6 +906,7 @@ export const triggerDeployOp = defineOperation({
       buildId: runId,
       ...(previewUrl ? { previewUrl } : {}),
       draftPages: await mainDraftPages(tx),
+      unpublishedLinkTargets: subprocess.result.unpublishedLinkTargets,
     });
   },
 });

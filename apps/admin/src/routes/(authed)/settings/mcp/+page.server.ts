@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { execute } from "@caelo-cms/query-api";
-import { fail } from "@sveltejs/kit";
+import { error, fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
@@ -24,14 +24,17 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   requirePermission(locals, "settings.read");
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "mcp_tokens.list", {});
-  const tokens: TokenRow[] = r.ok ? ((r.value as { tokens: TokenRow[] }).tokens ?? []) : [];
+  if (!r.ok) throw error(500, `Could not list MCP tokens: ${JSON.stringify(r.error)}`);
+  // RLS (migration 0315) scopes the rows: an Owner (settings.write) gets
+  // every user's tokens, everyone else only their own.
+  const { tokens, visibility } = r.value as { tokens: TokenRow[]; visibility: "all" | "own" };
   // The admin install's public URL — surfaces in the `claude mcp add`
   // snippet the create-flow shows. Best-effort: derive from request URL.
   const adminUrl = `${url.protocol}//${url.host}`;
   // Issue #37 — set by the provisioner on IAP-protected installs; the MCP
   // shim needs it to get through IAP.
   const iapServiceAccount = process.env.CAELO_MCP_IAP_SERVICE_ACCOUNT?.trim() || null;
-  return { tokens, adminUrl, iapServiceAccount };
+  return { tokens, visibility, adminUrl, iapServiceAccount };
 };
 
 export const actions: Actions = {
@@ -66,13 +69,19 @@ export const actions: Actions = {
     return { ok: true, id: v.id, plaintextToken: v.plaintextToken, displayName, scope: scopeRaw };
   },
   revoke: async ({ request, locals }) => {
-    requirePermission(locals, "settings.write");
+    // Anyone who can open this page may revoke a token they can see: RLS
+    // (migration 0315) limits a non-Owner to their own tokens, so this only
+    // ever narrows access. Revoking another user's token needs settings.write.
+    requirePermission(locals, "settings.read");
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const id = String(form.get("id") ?? "");
     const r = await execute(registry, adapter, locals.ctx, "mcp_tokens.revoke", { id });
-    if (!r.ok) return fail(400, { error: "could not revoke token" });
+    if (!r.ok) {
+      const message = "message" in r.error ? r.error.message : "could not revoke token";
+      return fail(400, { error: message });
+    }
     return { ok: true, revoked: id };
   },
 };

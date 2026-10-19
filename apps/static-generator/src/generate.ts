@@ -52,6 +52,7 @@ import {
 } from "./content-variants-pass.js";
 import { loadSiteFontUsage } from "./font-usage-sources.js";
 import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
+import { loadBuildLinkIndex } from "./link-index.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import {
   assertNoRenderFailures,
@@ -109,6 +110,24 @@ export interface GenerateResult {
   readonly durationMs: number;
   /** Absolute path to the build dir under builds/<runId>. */
   readonly buildDir: string;
+  /**
+   * Epic #724 — internal links whose target page exists but is not
+   * published, so this build does not contain it. Per the #724 decision
+   * a warning at Stage; the blocking check for Publish live / promote
+   * consumes the same list (rollout F). Missing targets never get here:
+   * they fail the build in the render gate.
+   */
+  readonly unpublishedLinkTargets: readonly UnpublishedLinkTarget[];
+}
+
+/** One page linking to a page this build does not ship. */
+export interface UnpublishedLinkTarget {
+  /** The page carrying the link. */
+  readonly pageSlug: string;
+  readonly pagePath: string;
+  /** The linked page and the path its link renders as. */
+  readonly targetPageId: string;
+  readonly targetUrl: string;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -903,6 +922,8 @@ export async function generateSite(args: {
     ),
   );
   const renderedForGate: RenderedPageForGate[] = [];
+  const linkIndex = await loadBuildLinkIndex(tx, target.env, pageUrlStyle);
+  const unpublishedLinkTargets: UnpublishedLinkTarget[] = [];
 
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
@@ -915,6 +936,7 @@ export async function generateSite(args: {
     // it with the page slug so the deploy operator can locate the
     // offending row, rather than silently emitting a body-less page.
     let composed: ReturnType<typeof composePageWithLayout>;
+    const linkResolver = linkIndex.forPage(page.page_id);
     try {
       composed = composePageWithLayout({
         templateHtml: page.template_html,
@@ -931,6 +953,7 @@ export async function generateSite(args: {
         dormantDataLists: dormantLists,
         deferredModules,
         nestedModules,
+        linkResolver,
       });
     } catch (e) {
       if (e instanceof ComposeError) {
@@ -951,6 +974,18 @@ export async function generateSite(args: {
       html: composed.html,
       moduleFailures: composed.moduleFailures,
     });
+    const seenTargets = new Set<string>();
+    for (const o of linkResolver.observed) {
+      if (o.ref.kind !== "page" || o.resolution.status !== "unpublished") continue;
+      if (seenTargets.has(o.ref.pageId)) continue;
+      seenTargets.add(o.ref.pageId);
+      unpublishedLinkTargets.push({
+        pageSlug: page.slug,
+        pagePath: page.current_path,
+        targetPageId: o.ref.pageId,
+        targetUrl: o.resolution.url,
+      });
+    }
     // P13 — record per-page bake target for the plugin render pass.
     bakeTargets.set(page.page_id, {
       pageId: page.page_id,
@@ -1172,7 +1207,13 @@ export async function generateSite(args: {
   // serving target (which is `current/`).
   await pruneOldBuilds(buildsDir, runId, 5);
 
-  return { pageCount: pageRows.length, fileCount, durationMs: Date.now() - start, buildDir };
+  return {
+    pageCount: pageRows.length,
+    fileCount,
+    durationMs: Date.now() - start,
+    buildDir,
+    unpublishedLinkTargets,
+  };
 }
 
 async function pruneOldBuilds(buildsDir: string, keepRunId: string, retain: number): Promise<void> {
