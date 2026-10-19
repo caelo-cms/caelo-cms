@@ -207,9 +207,7 @@ describe("Settings → MCP → Remote flows (configure.ts)", () => {
         const last = JSON.parse(payloads.at(-1) ?? "{}") as { client_id?: string };
         if (path === "/api/mcp/oauth/status") {
           return Response.json(
-            last.client_id
-              ? { configured: true, clientId: last.client_id }
-              : { configured: false },
+            last.client_id ? { configured: true, clientId: last.client_id } : { configured: false },
           );
         }
         if (path === "/.well-known/oauth-authorization-server/api/mcp/oauth") {
