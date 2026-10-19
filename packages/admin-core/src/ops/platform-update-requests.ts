@@ -7,6 +7,9 @@
  *   platform_updates.cancel          …and withdraws it before the job ran
  *   platform_updates.record_trigger  the admin notes whether it could start
  *                                    the upgrader job
+ *   platform_updates.supersede_stale at admin boot: closes requests that
+ *                                    asked the Owner to act but no longer
+ *                                    apply (#817)
  *   platform_updates.list / .get     history + one run's timeline (AI-readable)
  *
  * The admin never installs anything itself. A request is a row the upgrader
@@ -202,6 +205,55 @@ export async function endStaleRuns(tx: TransactionRunner): Promise<string[]> {
   return stale.map((s) => s.id);
 }
 
+/** Why a superseded request no longer asks for anything (its timeline's last line). */
+export const SUPERSEDED_INSTALLED = (installed: string) =>
+  `No longer needed: this install runs v${installed} now.`;
+export const SUPERSEDED_NEWER = "No longer needed: a newer update was requested after this one.";
+
+/**
+ * Close the requests that asked the Owner to act (`needs_cloud_shell`) but
+ * no longer apply (#817): their target is installed by now (e.g. the Owner
+ * ran the upgrade from Cloud Shell, which never touches this database), or
+ * a newer request exists. They become `superseded` and stay in the history
+ * with a timeline line saying why; Settings → Updates no longer offers a
+ * step for a release the install already runs.
+ *
+ * Only `needs_cloud_shell` is closed: every other end state records what
+ * happened (installed, rolled back, failed) and stays true.
+ *
+ * @param installedVersion the release this admin runs (CAELO_VERSION)
+ * @returns the ids it closed
+ */
+export async function supersedeRequests(
+  tx: TransactionRunner,
+  installedVersion: string,
+): Promise<string[]> {
+  const open = (await tx.execute(sql`
+    SELECT r.id::text AS id, r.target_version,
+           EXISTS (SELECT 1 FROM platform_update_requests n
+                    WHERE n.requested_at > r.requested_at) AS has_newer
+      FROM platform_update_requests r
+     WHERE r.status = 'needs_cloud_shell'
+  `)) as unknown as { id: string; target_version: string; has_newer: boolean }[];
+  const closed: string[] = [];
+  for (const r of open) {
+    // SemVer order, not text order: 0.10.9 < 0.10.10.
+    const installed = !isNewerVersion(r.target_version, installedVersion);
+    if (!installed && !r.has_newer) continue;
+    const reason = installed ? SUPERSEDED_INSTALLED(installedVersion) : SUPERSEDED_NEWER;
+    const rows = (await tx.execute(sql`
+      UPDATE platform_update_requests
+         SET status = 'superseded', status_reason = ${reason}
+       WHERE id = ${r.id}::uuid AND status = 'needs_cloud_shell'
+       RETURNING id
+    `)) as unknown as { id: string }[];
+    if (rows.length === 0) continue;
+    await appendEvent(tx, r.id, "finish", "info", reason);
+    closed.push(r.id);
+  }
+  return closed;
+}
+
 export const platformUpdatesRequestOp = defineOperation({
   name: "platform_updates.request",
   // Why human-only: installing a Caelo release is a deployment (CLAUDE.md
@@ -275,6 +327,8 @@ export const platformUpdatesRequestOp = defineOperation({
       "info",
       `Update to ${input.targetVersion} requested (confirmed with the Owner's password).`,
     );
+    // The new request answers any older one that asked for a Cloud Shell step.
+    await supersedeRequests(tx, CAELO_VERSION);
     await consumeStepUp(tx, ctx.actorId, input.sessionHash);
     await recordAuditFromCtx(tx, ctx, {
       operation: op,
@@ -396,6 +450,30 @@ export const platformUpdatesRecordTriggerOp = defineOperation({
       entityId: input.requestId,
     });
     return ok({ recorded: true as const });
+  },
+});
+
+export const platformUpdatesSupersedeStaleOp = defineOperation({
+  name: "platform_updates.supersede_stale",
+  // Why system-only: the admin's own bookkeeping at boot (#817) — after an
+  // upgrade from Cloud Shell the new admin closes the request that asked
+  // for it. Nothing for the Owner or the AI to decide.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({ superseded: z.array(z.string()) }),
+  handler: async (ctx, _input, tx) => {
+    const superseded = await supersedeRequests(tx, CAELO_VERSION);
+    for (const id of superseded) {
+      await recordAuditFromCtx(tx, ctx, {
+        operation: "platform_updates.supersede_stale",
+        input: { requestId: id },
+        succeeded: true,
+        entityId: id,
+        resultSummary: `superseded (v${CAELO_VERSION} runs)`,
+      });
+    }
+    return ok({ superseded });
   },
 });
 

@@ -11,6 +11,8 @@
  *     the fifth signs the session out, a right one resets the count;
  *   - request rules: only the newest known release, one at a time, cancel
  *     only while pending, a failed job start ends the request;
+ *   - superseded (#817): a Cloud Shell step for a release that runs now, or
+ *     answered by a newer request, is closed — at boot and on a new request;
  *   - list/get/policy.get are open to the AI (it informs, never installs);
  *   - the `platform_updater` database role the upgrader job runs as can do
  *     exactly its job and nothing else (migration 0267).
@@ -18,9 +20,10 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { CAELO_VERSION, type ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
+import { SUPERSEDED_INSTALLED, SUPERSEDED_NEWER } from "../ops/platform-update-requests.js";
 import { STEP_UP_MAX_FAILURES } from "../ops/step-up.js";
 import { registerAdminOps } from "../register.js";
 import { sessionHashOf } from "../security/step-up/gate.js";
@@ -402,6 +405,74 @@ describe("platform_updates.request rules", () => {
       outcome: { started: true, execution: "x" },
     });
     expect(message(other)).toContain("No such update request of yours");
+  });
+});
+
+/** A finished request that asked for a Cloud Shell step, `minutesAgo` back. */
+async function needsShell(target: string, minutesAgo: number): Promise<string> {
+  const rows = await admin(
+    (tx) => tx`
+      INSERT INTO platform_update_requests
+        (target_version, from_version, trigger, requested_by, requested_at, status,
+         status_reason, started_at, finished_at)
+      VALUES (${target}, '0.0.1', 'manual', ${owner.actorId}::uuid,
+              now() - make_interval(mins => ${minutesAgo}), 'needs_cloud_shell',
+              'changes the cloud setup', now(), now())
+      RETURNING id::text AS id`,
+  );
+  return (rows as unknown as { id: string }[])[0]?.id as string;
+}
+
+describe("superseded requests (#817)", () => {
+  it("closes a Cloud Shell step for a release that runs now, keeps one still ahead", async () => {
+    const installed = await needsShell("0.0.2", 60);
+    const ahead = await needsShell(NEWEST, 30);
+    const r = await okValue<{ superseded: string[] }>(
+      SYSTEM,
+      "platform_updates.supersede_stale",
+      {},
+    );
+    expect(r.superseded).toEqual([installed]);
+    const got = await okValue<{
+      request: { status: string; statusReason: string };
+      events: { phase: string; message: string }[];
+    }>(AI, "platform_updates.get", { requestId: installed });
+    expect(got.request.status).toBe("superseded");
+    expect(got.request.statusReason).toBe(SUPERSEDED_INSTALLED(CAELO_VERSION));
+    expect(got.events.at(-1)?.message).toBe(SUPERSEDED_INSTALLED(CAELO_VERSION));
+    const still = await okValue<{ request: { status: string } }>(AI, "platform_updates.get", {
+      requestId: ahead,
+    });
+    expect(still.request.status).toBe("needs_cloud_shell");
+    // Idempotent: nothing left to close.
+    expect(
+      (await okValue<{ superseded: string[] }>(SYSTEM, "platform_updates.supersede_stale", {}))
+        .superseded,
+    ).toEqual([]);
+  });
+
+  it("a new request closes an older Cloud Shell step", async () => {
+    const older = await needsShell(NEWEST, 30);
+    await stepUp(owner, ownerSession);
+    await okValue(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+    });
+    const got = await okValue<{ request: { status: string; statusReason: string } }>(
+      AI,
+      "platform_updates.get",
+      { requestId: older },
+    );
+    expect(got.request.status).toBe("superseded");
+    expect(got.request.statusReason).toBe(SUPERSEDED_NEWER);
+  });
+
+  it("is system-only", async () => {
+    for (const ctx of [AI, owner]) {
+      const r = await run(ctx, "platform_updates.supersede_stale", {});
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.kind).toBe("ActorScopeRejected");
+    }
   });
 });
 

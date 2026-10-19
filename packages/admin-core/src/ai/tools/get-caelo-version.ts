@@ -26,6 +26,11 @@ export function formatCaeloVersion(s: PlatformUpdateStatus): string {
       `Newest release: ${s.latestVersion}${s.publishedAt ? ` (published ${s.publishedAt.slice(0, 10)})` : ""} — an update is available.`,
     );
     if (s.releaseUrl) lines.push(`Release notes: ${s.releaseUrl}`);
+    if (s.infraChange === true) {
+      lines.push(
+        "This release changes this install's Google Cloud setup, which Caelo cannot do from the admin yet: the Owner installs it once from Google Cloud Shell, and Settings → Updates walks them through it.",
+      );
+    }
   } else {
     lines.push(`Newest release: ${s.latestVersion} — this install is up to date.`);
   }

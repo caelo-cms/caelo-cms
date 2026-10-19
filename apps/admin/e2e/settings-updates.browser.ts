@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #696 — Settings → Caelo updates. Pins:
+ * #696, #861 — Settings → Caelo updates. The page shows ONE state in a
+ * status card on top (data-state = updatePageState's kind) with one
+ * sentence and exactly one primary action; one flow below per state:
+ * no_permission, in_progress, interrupted, rolled_back, break_glass (a
+ * refused run, and a release predicted to change the cloud setup, #817),
+ * update_available, scheduled, up_to_date, unknown — plus a stale Cloud
+ * Shell request that stays in the history. Also pins:
  *   - an Owner sees the newest release and the exact, version-pinned upgrade
  *     command for this install, and the copy button puts it on the clipboard;
  *   - a role without settings.write (Reviewer) sees the versions but no
@@ -60,6 +66,7 @@ const FIXTURE_SCRIPT = `
                release_url = 'https://github.com/caelo-cms/caelo-cms/releases',
                release_notes = '## Highlights\n\nA release seeded by the e2e suite.',
                published_at = now(),
+               latest_infra_change = NULL, infra_change_from = NULL,
                fetched_at = now()
          WHERE id = 1\`;
       const { hashPassword } = await import("@caelo-cms/admin-core");
@@ -77,6 +84,50 @@ const FIXTURE_SCRIPT = `
         SELECT \${actorId}::uuid, r.id FROM roles r WHERE r.name = 'reviewer'\`;
     } else if (op === "reset-install") {
       await tx\`DELETE FROM platform_update_requests\`;
+      await tx\`UPDATE release_check_cache SET latest_version = \${process.env.E2E_LATEST || "99.0.0"},
+                 latest_infra_change = NULL, infra_change_from = NULL, fetched_at = now() WHERE id = 1\`;
+      await tx\`UPDATE platform_update_scheduler SET last_action = NULL, last_version = NULL,
+                 last_wait_until = NULL, last_reason = NULL\`;
+    } else if (op === "ended-run") {
+      // A finished run for the newest release, as the upgrader job leaves it:
+      // E2E_STATUS, the phases it reached (E2E_PHASES, comma-separated).
+      await tx\`DELETE FROM platform_update_requests\`;
+      const [owner] = await tx\`SELECT id FROM users WHERE email = 'dev-owner@example.com'\`;
+      const [r] = await tx\`INSERT INTO platform_update_requests
+                 (target_version, from_version, trigger, requested_by, status, status_reason,
+                  started_at, finished_at)
+               VALUES (\${process.env.E2E_LATEST}, '0.10.52', 'manual', \${owner.id},
+                 \${process.env.E2E_STATUS}, \${process.env.E2E_REASON || null}, now(), now())
+               RETURNING id\`;
+      for (const phase of (process.env.E2E_PHASES ?? "").split(",").filter(Boolean)) {
+        await tx\`INSERT INTO platform_update_events (request_id, phase, level, message)
+                 VALUES (\${r.id}, \${phase}, 'info', \${"Reached " + phase + "."})\`;
+      }
+    } else if (op === "converge-predicted") {
+      // What the release check notes when the newest release's manifest
+      // raises the infrastructure contract over the running release (#817).
+      const { CAELO_VERSION } = await import("@caelo-cms/shared");
+      await tx\`DELETE FROM platform_update_requests\`;
+      await tx\`UPDATE release_check_cache SET latest_infra_change = true,
+                 infra_change_from = \${CAELO_VERSION} WHERE id = 1\`;
+    } else if (op === "stale-shell") {
+      // A Cloud Shell request for a release older than what runs, and one
+      // the admin already closed (#817): history only.
+      await tx\`DELETE FROM platform_update_requests\`;
+      const [owner] = await tx\`SELECT id FROM users WHERE email = 'dev-owner@example.com'\`;
+      await tx\`INSERT INTO platform_update_requests
+                 (target_version, from_version, trigger, requested_by, requested_at, status,
+                  status_reason, started_at, finished_at)
+               VALUES ('0.0.2', '0.0.1', 'manual', \${owner.id}, now() - interval '2 days',
+                 'superseded', 'No longer needed: this install runs a newer release now.', now(), now()),
+                      ('0.0.3', '0.0.2', 'manual', \${owner.id}, now() - interval '1 day',
+                 'needs_cloud_shell', 'The release that serves now is not the one install.json names.',
+                 now(), now())\`;
+    } else if (op === "latest-is-installed") {
+      const { CAELO_VERSION } = await import("@caelo-cms/shared");
+      await tx\`DELETE FROM platform_update_requests\`;
+      await tx\`UPDATE release_check_cache SET latest_version = \${CAELO_VERSION}, fetched_at = now()
+                WHERE id = 1\`;
     } else if (op === "job-progress") {
       // What the upgrader job writes while it runs (platform-updater ops).
       const [r] = await tx\`SELECT id FROM platform_update_requests ORDER BY requested_at DESC LIMIT 1\`;
@@ -102,7 +153,12 @@ const FIXTURE_SCRIPT = `
                   refusal_codes, started_at, finished_at)
                VALUES (\${process.env.E2E_LATEST}, '0.10.45', 'manual', \${owner.id}, 'needs_cloud_shell',
                  'v99.0.0 changes this install''s cloud setup (infrastructure contract 1 → 2).',
-                 ARRAY['infra-contract'], now(), now())\`;
+                 ARRAY['infra-contract'], now(), now()) RETURNING id\`
+        .then(async ([r]) => {
+          await tx\`INSERT INTO platform_update_events (request_id, phase, level, message)
+                   VALUES (\${r.id}, 'verify', 'success', 'Release information verified.'),
+                          (\${r.id}, 'finish', 'warn', 'Stopped: needs one step by hand.')\`;
+        });
     } else if (op === "auto-reset") {
       await tx\`DELETE FROM platform_update_notifications\`;
       await tx\`UPDATE platform_update_scheduler SET lease_holder = NULL, last_run_at = NULL,
@@ -138,7 +194,12 @@ const FIXTURE_SCRIPT = `
                   refusal_codes, started_at, finished_at)
                VALUES (\${process.env.E2E_LATEST}, '0.10.45', 'manual', \${owner.id}, 'needs_cloud_shell',
                  'This install has not recorded which Caelo release it runs yet. Upgrade it once with the upgrade command on the server.',
-                 ARRAY['install-version-unknown'], now(), now())\`;
+                 ARRAY['install-version-unknown'], now(), now()) RETURNING id\`
+        .then(async ([r]) => {
+          await tx\`INSERT INTO platform_update_events (request_id, phase, level, message)
+                   VALUES (\${r.id}, 'verify', 'success', 'Release information verified.'),
+                          (\${r.id}, 'finish', 'warn', 'Stopped: needs one step by hand.')\`;
+        });
     } else if (op === "checked-ago") {
       // What the hourly release check leaves behind, E2E_MINUTES ago; no
       // E2E_LATEST = that check failed (it reached no release).
@@ -158,7 +219,8 @@ const FIXTURE_SCRIPT = `
       await tx\`
         UPDATE release_check_cache
            SET latest_version = NULL, release_url = NULL, release_notes = NULL,
-               published_at = NULL, fetched_at = '1970-01-01T00:00:00Z'
+               published_at = NULL, latest_infra_change = NULL, infra_change_from = NULL,
+               fetched_at = '1970-01-01T00:00:00Z'
          WHERE id = 1\`;
       await tx\`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE email = \${email})\`;
       await tx\`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email = \${email})\`;
@@ -198,28 +260,63 @@ async function login(page: Page, email: string, password: string): Promise<void>
   await expect(page).not.toHaveURL(/\/login/, { timeout: 15_000 });
 }
 
-test("an Owner sees the pinned upgrade command and copies it", async ({ page, context }) => {
+/** The page's status card (#861) and the state it shows. */
+const card = (page: Page) => page.getByTestId("update-status-card");
+
+/** Open one of the collapsed sections by its title. */
+async function openSection(page: Page, testid: string): Promise<void> {
+  const section = page.getByTestId(testid);
+  if ((await section.getAttribute("open")) === null) await section.locator("summary").click();
+}
+
+/** Exactly one primary action on the page: none of the others render in the card. */
+async function expectOnlyAction(
+  page: Page,
+  action: "open-install-dialog" | "open-cloud-shell" | "upgrade-command" | "none",
+): Promise<void> {
+  for (const id of ["open-install-dialog", "open-cloud-shell", "upgrade-command"] as const) {
+    await expect(card(page).getByTestId(id)).toHaveCount(id === action ? 1 : 0);
+  }
+}
+
+test("update_available: one Install button on top; the command is under Other ways", async ({
+  page,
+  context,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await login(page, "dev-owner@example.com", OWNER_PASSWORD);
   await page.goto("/settings/updates");
   await expect(page.getByRole("heading", { level: 1, name: "Caelo updates" })).toBeVisible();
-  await expect(page.getByTestId("latest-version")).toHaveText(`v${LATEST}`);
+  await expect(card(page)).toHaveAttribute("data-state", "update_available");
+  await expect(card(page).getByTestId("target-version")).toHaveText(`v${LATEST}`);
+  await expect(page.getByTestId("update-state-sentence")).toHaveText(`v${LATEST} is available.`);
+  await expect(page.getByTestId("open-install-dialog")).toHaveText(`Install v${LATEST}…`);
+  await expectOnlyAction(page, "open-install-dialog");
   await expect(page.getByTestId("release-notes")).toContainText("seeded by the e2e suite");
-  // The Owner installs from the admin; the command is the alternative.
-  await page.getByText("Install from a terminal instead").click();
-  await expect(page.getByTestId("upgrade-command")).toHaveText(COMMAND);
+  // Evidence for the PR: the status card on top.
+  await card(page).screenshot({ path: test.info().outputPath("status-card-update-available.png") });
 
+  // The terminal and Cloud Shell are reference, collapsed.
+  await openSection(page, "section-other-ways");
+  await expect(page.getByTestId("upgrade-command")).toHaveText(COMMAND);
+  await expect(
+    page.getByTestId("section-other-ways").getByTestId("open-cloud-shell"),
+  ).toBeVisible();
   await page.getByTestId("copy-upgrade-command").click();
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(COMMAND);
 });
 
-test("a Reviewer sees the versions but no command", async ({ page }) => {
+test("no_permission: a Reviewer is told an Owner installs, with no action", async ({ page }) => {
   await login(page, REVIEWER_EMAIL, REVIEWER_PASSWORD);
   await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "no_permission");
+  await expect(page.getByTestId("update-state-sentence")).toContainText(
+    "An Owner of this site installs Caelo updates",
+  );
+  await expectOnlyAction(page, "none");
+  await expect(page.getByTestId("section-other-ways")).toHaveCount(0);
   await expect(page.getByTestId("latest-version")).toHaveText(`v${LATEST}`);
-  await expect(page.getByTestId("upgrade-ask-owner")).toBeVisible();
-  await expect(page.getByTestId("upgrade-command")).toHaveCount(0);
-  await expect(page.getByTestId("copy-upgrade-command")).toHaveCount(0);
 });
 
 test("the bell's release notice opens Settings → Caelo updates", async ({ page }) => {
@@ -231,11 +328,12 @@ test("the bell's release notice opens Settings → Caelo updates", async ({ page
   await expect(notice).toHaveAttribute("href", "/settings/updates");
   await notice.click();
   await expect(page).toHaveURL("/settings/updates");
-  await page.getByText("Install from a terminal instead").click();
-  await expect(page.getByTestId("upgrade-command")).toHaveText(COMMAND);
+  await expect(card(page)).toBeVisible();
 });
 
-test("Install update: confirm with the password, live timeline", async ({ page }) => {
+test("in_progress: confirm with the password; the timeline replaces the card body", async ({
+  page,
+}) => {
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
   await login(page, "dev-owner@example.com", OWNER_PASSWORD);
   await page.goto("/settings/updates");
@@ -256,11 +354,14 @@ test("Install update: confirm with the password, live timeline", async ({ page }
   await dialog.getByTestId("install-dialog-password").fill(OWNER_PASSWORD);
   await dialog.getByTestId("install-dialog-submit").click();
 
-  // The request is queued and the (stand-in) upgrader started.
-  const timeline = page.getByTestId("update-timeline");
+  // The request is queued and the (stand-in) upgrader started: the card is the timeline.
+  await expect(card(page)).toHaveAttribute("data-state", "in_progress");
+  const timeline = card(page).getByTestId("update-timeline");
   await expect(timeline).toContainText(`→ v${LATEST}`);
   await expect(page.getByTestId("update-status")).toHaveText("Waiting to start");
+  await expect(page.getByTestId("update-progress")).toContainText("as soon as the upgrader starts");
   await expect(timeline).toContainText("Upgrader started (run e2e-upgrader-");
+  await expectOnlyAction(page, "none");
   // Cancelling asks for the password again (the confirmation was used up).
   await page.getByTestId("cancel-update").click();
   await expect(page.getByTestId("cancel-dialog-password")).toBeVisible();
@@ -269,18 +370,28 @@ test("Install update: confirm with the password, live timeline", async ({ page }
   // The job reports progress; the page follows without a reload.
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "job-progress", E2E_EMAIL: REVIEWER_EMAIL });
   await expect(page.getByTestId("update-status")).toHaveText("Installing", { timeout: 15_000 });
+  await expect(page.getByTestId("update-progress")).toHaveText(
+    `Caelo is installing v${LATEST}. Step 3 of 5: updating the database. You can leave this page.`,
+  );
   await expect(timeline.locator('[data-phase="migrations"]')).toContainText(
     "Updating the database",
   );
   await expect(timeline.locator('[data-phase="backup"]')).toContainText("Backup 1760000000000");
+  await expect(page.getByTestId("cancel-update")).toHaveCount(0);
 
+  // The job ends; the page reloads its state (this stand-in install keeps
+  // its version, so the release is still on offer) and keeps the run in
+  // the history, which survives a reload (it is in the database).
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "job-finish", E2E_EMAIL: REVIEWER_EMAIL });
-  await expect(page.getByTestId("update-status")).toHaveText("Installed", { timeout: 15_000 });
-
-  // History survives a reload (it is in the database, like the timeline).
+  await expect(card(page)).not.toHaveAttribute("data-state", "in_progress", { timeout: 15_000 });
   await page.reload();
+  await expect(page.getByTestId("history-line")).toContainText("installed · 1 entry");
+  await openSection(page, "section-history");
   await expect(page.getByTestId("update-history")).toContainText(`→ v${LATEST}`);
   await expect(page.getByTestId("update-history")).toContainText("Installed");
+  await expect(page.getByTestId("section-history").locator('[data-phase="finish"]')).toContainText(
+    "Installed",
+  );
 });
 
 test("five wrong passwords for an update action sign the session out", async ({ page }) => {
@@ -300,7 +411,58 @@ test("five wrong passwords for an update action sign the session out", async ({ 
   await expect(page).toHaveURL(/\/login/);
 });
 
-test("a release that changes the cloud setup explains the Cloud Shell step", async ({ page }) => {
+test("interrupted: a run refused before any change says so and never reads 'Finished'", async ({
+  page,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "ended-run",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: LATEST,
+    E2E_STATUS: "refused",
+    E2E_REASON: "The release information could not be verified.",
+    E2E_PHASES: "queued,start,verify,finish",
+  });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "interrupted");
+  await expect(page.getByTestId("update-state-sentence")).toContainText(
+    `The update to v${LATEST} stopped before it changed anything.`,
+  );
+  await expect(page.getByTestId("update-state-detail")).toHaveText(
+    "The release information could not be verified.",
+  );
+  await expect(page.getByTestId("open-install-dialog")).toHaveText("Try again…");
+  await expectOnlyAction(page, "open-install-dialog");
+  await page.getByTestId("last-attempt").locator("summary").click();
+  const finish = page.getByTestId("last-attempt").locator('[data-phase="finish"]');
+  await expect(finish).toContainText("Stopped before changing anything");
+  await expect(page.getByTestId("last-attempt")).not.toContainText("Finished");
+});
+
+test("rolled_back: the release failed its test; the site is unchanged, Try again", async ({
+  page,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "ended-run",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: LATEST,
+    E2E_STATUS: "rolled_back",
+    E2E_REASON: "The new admin did not answer its health check.",
+    E2E_PHASES: "verify,backup,migrations,roll,health,rollback,finish",
+  });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "rolled_back");
+  await expect(page.getByTestId("update-state-sentence")).toContainText(
+    `v${LATEST} did not pass its test. Caelo switched back to`,
+  );
+  await expect(page.getByTestId("open-install-dialog")).toHaveText("Try again…");
+  await expectOnlyAction(page, "open-install-dialog");
+});
+
+test("break_glass: a run that needs Cloud Shell shows only the Cloud Shell step", async ({
+  page,
+}) => {
   runBunInline(FIXTURE_SCRIPT, {
     E2E_OP: "needs-shell",
     E2E_EMAIL: REVIEWER_EMAIL,
@@ -308,14 +470,87 @@ test("a release that changes the cloud setup explains the Cloud Shell step", asy
   });
   await login(page, "dev-owner@example.com", OWNER_PASSWORD);
   await page.goto("/settings/updates");
-  const card = page.getByTestId("cloud-shell-upgrade");
-  await expect(card).toBeVisible();
-  await expect(page.getByTestId("cloud-shell-reason")).toContainText("infrastructure contract");
+  await expect(card(page)).toHaveAttribute("data-state", "break_glass");
+  await expect(page.getByTestId("update-state-sentence")).toContainText("Google Cloud Shell");
+  await expect(page.getByTestId("update-state-detail")).toContainText("infrastructure contract");
+  // Never an Install button next to the Cloud Shell step for the same release.
+  await expectOnlyAction(page, "open-cloud-shell");
   await expect(page.getByTestId("open-cloud-shell")).toHaveAttribute(
     "href",
     /^https:\/\/(shell|console)\.cloud\.google\.com\//,
   );
-  await expect(page.getByTestId("cloud-shell-command").last()).toHaveText(COMMAND);
+  await expect(card(page).getByTestId("cloud-shell-command").last()).toHaveText(COMMAND);
+  // The refused run never reads "Finished".
+  await page.getByTestId("last-attempt").locator("summary").click();
+  await expect(page.getByTestId("last-attempt").locator('[data-phase="finish"]')).toContainText(
+    "Stopped before changing anything",
+  );
+});
+
+test("break_glass: a release that changes the cloud setup is recognised before the click (#817)", async ({
+  page,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "converge-predicted", E2E_EMAIL: REVIEWER_EMAIL });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "break_glass");
+  await expect(page.getByTestId("update-state-sentence")).toContainText(
+    `v${LATEST} also changes settings in your Google Cloud project`,
+  );
+  await expectOnlyAction(page, "open-cloud-shell");
+  // No job was started: nothing in the history.
+  await expect(page.getByTestId("section-history")).toHaveCount(0);
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+});
+
+test("a stale Cloud Shell request for an older release stays in the history (#817)", async ({
+  page,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "stale-shell", E2E_EMAIL: REVIEWER_EMAIL });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "update_available");
+  await expectOnlyAction(page, "open-install-dialog");
+  await expect(page.getByTestId("history-line")).toContainText("2 entries");
+  await openSection(page, "section-history");
+  await expect(page.getByTestId("update-history")).toContainText("No longer needed");
+  await expect(page.getByTestId("update-history")).toContainText("Needs Cloud Shell");
+});
+
+test("scheduled: names when it installs by itself, and offers Install now", async ({ page }) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "auto-status",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: LATEST,
+  });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "scheduled");
+  await expect(page.getByTestId("update-state-sentence")).toContainText(
+    `v${LATEST} installs automatically on`,
+  );
+  await expect(page.getByTestId("open-install-dialog")).toHaveText("Install now…");
+  await expectOnlyAction(page, "open-install-dialog");
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
+});
+
+test("up_to_date: no action, Check now as a small link", async ({ page }) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "latest-is-installed", E2E_EMAIL: REVIEWER_EMAIL });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "up_to_date");
+  await expect(page.getByTestId("update-state-badge")).toHaveText("Up to date");
+  await expect(page.getByTestId("update-state-sentence")).toHaveText(
+    "Your site runs the newest version of Caelo.",
+  );
+  await expectOnlyAction(page, "none");
+  await expect(page.getByTestId("check-releases-now")).toHaveText("Check now");
+  await expect(page.getByTestId("section-other-ways")).toHaveCount(0);
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
 });
 
 /** Show this browser a self-hosted install (test-only cookie, lib/server/upgrader.ts). */
@@ -348,8 +583,9 @@ test("self-hosted without a running update agent: agent setup + the server comma
     `bunx @caelo-cms/provisioning@${installed} agent install`,
   );
   await expect(page.getByTestId("install-update")).toHaveCount(0);
-  // The hand-run upgrade: on the server, no --install (the folder names the install).
-  await expect(page.getByTestId("upgrade-command")).toHaveText(SELF_HOSTED_COMMAND);
+  // The hand-run upgrade is the card's one action: on the server, no --install.
+  await expectOnlyAction(page, "upgrade-command");
+  await expect(card(page).getByTestId("upgrade-command")).toHaveText(SELF_HOSTED_COMMAND);
   await expect(page.getByTestId("upgrade-instructions")).toContainText("holds .caelo/");
 
   // An agent that stopped checking in, or reports a problem, gets no button either.
@@ -395,7 +631,7 @@ test("self-hosted with the agent checking in: Install update queues the request 
   await dialog.getByTestId("install-dialog-submit").click();
 
   // Queued for the agent; nothing was started by the admin itself.
-  const timeline = page.getByTestId("update-timeline");
+  const timeline = card(page).getByTestId("update-timeline");
   await expect(timeline).toContainText(`→ v${LATEST}`);
   await expect(page.getByTestId("update-status")).toHaveText("Waiting to start");
   await expect(timeline).toContainText("Upgrader started (run agent@e2e-box)");
@@ -413,10 +649,13 @@ test("self-hosted: a release the agent cannot install shows the server step", as
   await asSelfHosted(page, baseURL);
   await login(page, "dev-owner@example.com", OWNER_PASSWORD);
   await page.goto("/settings/updates");
-  await expect(page.getByTestId("server-upgrade")).toBeVisible();
-  await expect(page.getByTestId("server-upgrade-reason")).toContainText(
+  await expect(card(page)).toHaveAttribute("data-state", "break_glass");
+  await expect(page.getByTestId("update-state-sentence")).toContainText("on your server");
+  await expect(page.getByTestId("update-state-detail")).toContainText(
     "upgrade command on the server",
   );
+  await expectOnlyAction(page, "upgrade-command");
+  await page.getByTestId("last-attempt").locator("summary").click();
   await expect(page.getByTestId("update-status")).toHaveText("Needs a manual upgrade");
   await expect(page.getByTestId("cloud-shell-upgrade")).toHaveCount(0);
 });
@@ -428,7 +667,7 @@ async function confirmPolicy(page: Page, password = OWNER_PASSWORD): Promise<voi
   await dialog.getByTestId("policy-dialog-submit").click();
 }
 
-test("Automatic updates: each change confirmed with the password; status and emails shown", async ({
+test("Automatic updates: collapsed with a summary; each change confirmed with the password", async ({
   page,
 }) => {
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
@@ -436,46 +675,58 @@ test("Automatic updates: each change confirmed with the password; status and ema
   await login(page, "dev-owner@example.com", OWNER_PASSWORD);
   await page.goto("/settings/updates");
 
-  const card = page.getByTestId("auto-update-policy");
-  await expect(card.getByTestId("auto-update-summary")).toContainText("install them yourself");
-  await card.getByLabel("When a new Caelo release comes out").selectOption("auto");
-  await card.getByTestId("policy-auto-patch").check();
-  await card.getByTestId("policy-window-enabled").check();
-  await card.getByLabel("From", { exact: true }).fill("02:00");
-  await card.getByLabel("To", { exact: true }).fill("05:00");
-  await card.getByLabel("Time zone").fill("Europe/Berlin");
-  await card.getByLabel("Wait after a release (hours)").fill("48");
-  await card.getByLabel("Wait for security fixes (hours)").fill("4");
-  await card.getByTestId("save-policy").click();
+  // The one-line summary: mode + the missing email service, with its link.
+  const line = page.getByTestId("auto-update-line");
+  await expect(line).toContainText("You're notified and install updates yourself.");
+  await expect(line).toContainText("Email not set up");
+  await expect(page.getByTestId("setup-email")).toHaveAttribute("href", "/settings/email");
+
+  await openSection(page, "section-auto-updates");
+  const policyCard = page.getByTestId("auto-update-policy");
+  await expect(policyCard.getByTestId("auto-update-summary")).toContainText(
+    "install them yourself",
+  );
+  await policyCard.getByLabel("When a new Caelo release comes out").selectOption("auto");
+  await policyCard.getByTestId("policy-auto-patch").check();
+  await policyCard.getByTestId("policy-window-enabled").check();
+  await policyCard.getByLabel("From", { exact: true }).fill("02:00");
+  await policyCard.getByLabel("To", { exact: true }).fill("05:00");
+  await policyCard.getByLabel("Time zone").fill("Europe/Berlin");
+  await policyCard.getByLabel("Wait after a release (hours)").fill("48");
+  await policyCard.getByLabel("Wait for security fixes (hours)").fill("4");
+  await policyCard.getByTestId("save-policy").click();
 
   // A wrong password is refused in the dialog and keeps what was typed.
   await confirmPolicy(page, "not the password");
   await expect(page.getByTestId("policy-dialog-error")).toContainText("Wrong password");
-  await expect(card.getByLabel("Wait after a release (hours)")).toHaveValue("48");
-  await expect(card.getByTestId("auto-update-summary")).toContainText("install them yourself");
+  await expect(policyCard.getByLabel("Wait after a release (hours)")).toHaveValue("48");
+  await expect(policyCard.getByTestId("auto-update-summary")).toContainText(
+    "install them yourself",
+  );
   await confirmPolicy(page);
 
-  await expect(card.getByTestId("auto-update-summary")).toContainText(
+  await expect(policyCard.getByTestId("auto-update-summary")).toContainText(
     "Installed automatically: patch releases.",
   );
-  await expect(card.getByTestId("auto-update-summary")).toContainText(
+  await expect(line).toContainText("Installs bug-fix releases automatically.");
+  await expect(policyCard.getByTestId("auto-update-summary")).toContainText(
     "Only between 02:00 and 05:00 (Europe/Berlin).",
   );
-  await expect(card.getByTestId("auto-update-summary")).toContainText("waits 48 hours");
+  await expect(policyCard.getByTestId("auto-update-summary")).toContainText("waits 48 hours");
 
   // Pause for a week, with a reason — its own password confirmation.
-  await card.getByLabel("Pause automatic updates", { exact: true }).selectOption("7");
-  await card.getByLabel("Why (optional)").fill("Launch week");
-  await card.getByTestId("pause-auto-updates").click();
+  await policyCard.getByLabel("Pause automatic updates", { exact: true }).selectOption("7");
+  await policyCard.getByLabel("Why (optional)").fill("Launch week");
+  await policyCard.getByTestId("pause-auto-updates").click();
   await confirmPolicy(page);
-  const paused = card.getByTestId("auto-update-paused");
+  const paused = policyCard.getByTestId("auto-update-paused");
   await expect(paused).toContainText("Automatic updates paused until");
   await expect(paused).toContainText("Launch week");
 
   // Resume: again its own confirmation.
-  await card.getByTestId("resume-auto-updates").click();
+  await policyCard.getByTestId("resume-auto-updates").click();
   await confirmPolicy(page);
-  await expect(card.getByTestId("auto-update-paused")).toHaveCount(0);
+  await expect(policyCard.getByTestId("auto-update-paused")).toHaveCount(0);
 
   // What the scheduler decided, and the emails it could not send.
   runBunInline(FIXTURE_SCRIPT, {
@@ -484,25 +735,28 @@ test("Automatic updates: each change confirmed with the password; status and ema
     E2E_LATEST: LATEST,
   });
   await page.reload();
-  await expect(card.getByTestId("auto-update-status")).toContainText("waiting");
-  await expect(card.getByTestId("auto-update-status")).toContainText("out for 48 hours");
-  await expect(card.getByTestId("update-email-missing")).toBeVisible();
-  await expect(card.getByTestId("update-emails")).toContainText(
+  await openSection(page, "section-auto-updates");
+  await expect(policyCard.getByTestId("auto-update-status")).toContainText("waiting");
+  await expect(policyCard.getByTestId("auto-update-status")).toContainText("out for 48 hours");
+  await expect(policyCard.getByTestId("update-email-missing")).toBeVisible();
+  await expect(policyCard.getByTestId("update-emails")).toContainText(
     "Caelo v99.0.0 will install automatically",
   );
-  await expect(card.getByTestId("update-emails")).toContainText("Not sent: no email set up");
+  await expect(policyCard.getByTestId("update-emails")).toContainText("Not sent: no email set up");
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
 });
 
 test("a Reviewer reads the automatic-update policy but cannot change it", async ({ page }) => {
   await login(page, REVIEWER_EMAIL, REVIEWER_PASSWORD);
   await page.goto("/settings/updates");
-  const card = page.getByTestId("auto-update-policy");
-  await expect(card.getByTestId("auto-update-summary")).toBeVisible();
-  await expect(card.getByTestId("policy-form")).toHaveCount(0);
-  await expect(card.getByTestId("save-policy")).toHaveCount(0);
+  await openSection(page, "section-auto-updates");
+  const policyCard = page.getByTestId("auto-update-policy");
+  await expect(policyCard.getByTestId("auto-update-summary")).toBeVisible();
+  await expect(policyCard.getByTestId("policy-form")).toHaveCount(0);
+  await expect(policyCard.getByTestId("save-policy")).toHaveCount(0);
 });
 
-test("the release check: when it ran, a failed one, and Check now", async ({ page }) => {
+test("unknown: a failed check is never 'Up to date'; Check now refreshes it", async ({ page }) => {
   // A failed hourly check 5 minutes ago: never "Up to date".
   runBunInline(FIXTURE_SCRIPT, {
     E2E_OP: "checked-ago",
@@ -513,10 +767,13 @@ test("the release check: when it ran, a failed one, and Check now", async ({ pag
   // A Reviewer may read the page, so may refresh what it shows.
   await login(page, REVIEWER_EMAIL, REVIEWER_PASSWORD);
   await page.goto("/settings/updates");
-  await expect(page.getByText("Last check failed", { exact: true })).toBeVisible();
+  await expect(card(page)).toHaveAttribute("data-state", "unknown");
+  await expect(page.getByTestId("update-state-badge")).toHaveText("Last check failed");
   await expect(page.getByText("Up to date", { exact: true })).toHaveCount(0);
-  await expect(page.getByTestId("release-checked-at")).toHaveText("· checked 5 min ago");
-  await expect(page.getByTestId("release-check-explainer")).toContainText("couldn't reach GitHub");
+  await expect(page.getByTestId("release-checked-at")).toHaveText("checked 5 min ago");
+  await expect(page.getByTestId("update-state-sentence")).toContainText("couldn't reach GitHub");
+  // Check now is this state's one primary action (a button, not the small link).
+  await expect(page.getByTestId("check-releases-now")).toHaveCount(1);
 
   // The hourly check found the release 40 minutes ago.
   runBunInline(FIXTURE_SCRIPT, {
@@ -526,14 +783,14 @@ test("the release check: when it ran, a failed one, and Check now", async ({ pag
     E2E_LATEST: LATEST,
   });
   await page.reload();
-  await expect(page.getByTestId("release-checked-at")).toHaveText("· checked 40 min ago");
+  await expect(page.getByTestId("release-checked-at")).toHaveText("checked 40 min ago");
 
-  // Check now: asks (the stand-in for) GitHub right away.
+  // Check now (the small link): asks (the stand-in for) GitHub right away.
   await page.getByTestId("check-releases-now").click();
   await expect(
     page.getByText(`Checked GitHub just now: the newest release is v${LATEST}.`),
   ).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByTestId("release-checked-at")).toHaveText("· checked just now");
+  await expect(page.getByTestId("release-checked-at")).toHaveText("checked just now");
   await expect(page.getByTestId("latest-version")).toHaveText(`v${LATEST}`);
   await expect(page.getByTestId("release-notes")).toContainText("release-check stand-in");
 
