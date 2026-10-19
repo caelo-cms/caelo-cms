@@ -204,8 +204,8 @@ const auditPageSchema = z.object({
   previousScores: z.partialRecord(categorySchema, z.number().int()).nullable(),
   performanceRuns: z.array(z.number().int()),
   failingAudits: z.array(failingAuditSchema),
-  /** Lighthouse's Performance metrics (FCP, LCP, TBT, CLS, SI: medians
-   *  over the runs, the LCP element, layout shifts). Data, not problems.
+  /** Lighthouse's Performance metrics (FCP, LCP, TBT, CLS, SI: the best
+   *  run's values, the LCP element, layout shifts). Data, not problems.
    *  Null when Lighthouse did not audit the page in this run. */
   metrics: performanceMetricsSchema.nullable(),
   /** Everything off target in this audit, as measured. */

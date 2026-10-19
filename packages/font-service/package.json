@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/font-service",
-  "version": "0.10.53",
+  "version": "0.10.54",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
@@ -16,6 +16,6 @@
     "drizzle-orm": "0.45.4",
     "fontverter": "2.0.0",
     "subset-font": "2.9.0",
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   }
 }

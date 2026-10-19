@@ -19,11 +19,11 @@
  *   ratchets up), except where noise makes "better" meaningless (below).
  *
  * Measurement noise, handled explicitly and nowhere else:
- * - Performance is the median of several runs (`medianScore`), and an
- *   audit that belongs only to Performance counts when it fails in a
- *   majority of the runs (lighthouse-extract.ts). Nothing else is smoothed:
- *   no "good enough" bar, no consecutive-audit guard.
- * - Even the median jitters by a point or two between audits of an
+ * - Performance is the page's best of several runs (`bestRunIndex`,
+ *   lighthouse-extract.ts, #874), and its Performance-only findings are the
+ *   ones that fail in that run. Nothing else is smoothed: no "good enough"
+ *   bar, no consecutive-audit guard.
+ * - Even the best run moves by a point or two between audits of an
  *   unchanged page. So when — and ONLY when — a Performance value is
  *   compared with an editor's acceptance, it may be up to
  *   ACCEPTED_PERFORMANCE_TOLERANCE points below the accepted value before
@@ -57,7 +57,7 @@ export const QUALITY_TARGET = 100;
  * Points a Performance value (category score, or the score of an audit
  * that belongs only to Performance) may fall below an editor's ACCEPTED
  * value before it counts as worse. Measurement noise of the Performance
- * median, observed at 1–2 points; never applied against the target.
+ * score, observed at 1–2 points; never applied against the target.
  */
 export const ACCEPTED_PERFORMANCE_TOLERANCE = 2;
 
@@ -253,16 +253,4 @@ export function lighthouseAcceptanceUpdates(
     if (value > a.accepted) updates.push({ id: a.id, action: "tighten", value });
   }
   return updates;
-}
-
-/** Median of a non-empty list of scores (mean of the middle pair for an
- *  even count, rounded). Throws on an empty list: an audit without a
- *  Performance run is an infrastructure failure, never a score. */
-export function medianScore(values: readonly number[]): number {
-  if (values.length === 0)
-    throw new Error("medianScore: no Performance runs to take the median of");
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) return sorted[mid] as number;
-  return Math.round(((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2);
 }

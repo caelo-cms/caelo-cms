@@ -3,6 +3,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   type CaddyfileSpec,
+  caddyTokenProblem,
   generateCaddyfile,
   selfHostedAdminHost,
   selfHostedSeedDomains,
@@ -104,5 +105,34 @@ describe("Caddyfile TLS", () => {
   it("issues every certificate from Caddy's local CA with tls internal", () => {
     const out = generateCaddyfile({ ...spec, tls: "internal" });
     expect(out.startsWith("{\n  email owner@example.com\n  local_certs\n}\n")).toBe(true);
+  });
+
+  it("rejects unsafe characters in ownerEmail and domain hostnames", () => {
+    expect(() => generateCaddyfile({ ...spec, ownerEmail: "owner@example.com\n  debug" })).toThrow(
+      /invalid ownerEmail/,
+    );
+    expect(() =>
+      generateCaddyfile({
+        ...spec,
+        domains: [
+          { hostname: "evil.example.com {\n  respond 200\n}", kind: "public", env: "production" },
+        ],
+      }),
+    ).toThrow(/invalid hostname/);
+  });
+
+  it("refuses a comma in a site address — it would add a second address to the block", () => {
+    // `admin.example.com,:80` would serve the admin on every host on port 80.
+    expect(() =>
+      generateCaddyfile({
+        ...spec,
+        domains: [{ hostname: "admin.example.com,:80", kind: "admin", env: "production" }],
+      }),
+    ).toThrow(/invalid hostname/);
+    // A comma is harmless inside a token like the email.
+    expect(caddyTokenProblem("a,b@example.com", "token")).toBeNull();
+    expect(caddyTokenProblem("a,b.example.com", "address")).toMatch(/','/);
+    expect(caddyTokenProblem("", "token")).toBe("it is empty");
+    expect(caddyTokenProblem("192.168.1.10", "address")).toBeNull();
   });
 });

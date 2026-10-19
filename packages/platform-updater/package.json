@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/platform-updater",
-  "version": "0.10.53",
+  "version": "0.10.54",
   "private": true,
   "license": "MPL-2.0",
   "description": "The upgrader job's entry point (`caelo-ops upgrader`, epic #696): the provisioning package's runUpgraderJob wired to the database through the Query API as the platform_updater role.",
@@ -19,6 +19,6 @@
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
     "drizzle-orm": "0.45.4",
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   }
 }

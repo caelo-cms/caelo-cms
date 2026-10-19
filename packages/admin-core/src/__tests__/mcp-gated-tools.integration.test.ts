@@ -160,6 +160,13 @@ beforeAll(async () => {
       await tx`INSERT INTO actors (id, kind, display_name)
                VALUES (${id}::uuid, 'human', ${name}) ON CONFLICT (id) DO NOTHING`;
     }
+    // The token's owner: a token only resolves for a live user holding a role.
+    await tx`INSERT INTO users (id, email, password_hash)
+             VALUES (${ownerCtx.actorId}::uuid, 'owner@mcp-gated.test', 'test-only')
+             ON CONFLICT DO NOTHING`;
+    await tx`INSERT INTO user_roles (user_id, role_id)
+             SELECT ${ownerCtx.actorId}::uuid, id FROM roles WHERE name = 'editor'
+             ON CONFLICT DO NOTHING`;
     await tx`INSERT INTO users (id, email, password_hash)
              VALUES (${approverCtx.actorId}::uuid, ${`approver-${approverCtx.actorId.slice(0, 8)}@mcp-gated.test`}, 'test-only')
              ON CONFLICT DO NOTHING`;

@@ -27,6 +27,14 @@ describe("applyStringEdits", () => {
     }
   });
 
+  it("inserts $-patterns in newString verbatim (no String.replace expansion)", () => {
+    const r = applyStringEdits("<p>Price: TBD</p>", [
+      { oldString: "TBD", newString: "$$5 or $& or $` or $' or $1" },
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.content).toBe("<p>Price: $$5 or $& or $` or $' or $1</p>");
+  });
+
   it("rejects a not-found oldString with a re-read hint", () => {
     const r = applyStringEdits("abc", [{ oldString: "xyz", newString: "q" }]);
     expect(r.ok).toBe(false);

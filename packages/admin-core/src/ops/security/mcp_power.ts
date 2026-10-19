@@ -64,6 +64,7 @@ import { annotateExcludedToolMentions } from "./mcp_power_prose.js";
 import {
   getMcpBridge,
   type McpTokenScope,
+  mcpTokenAuthErrorMessage,
   resolveMcpToken,
   type SendChatBridgeOpts,
 } from "./mcp_tokens.js";
@@ -240,7 +241,7 @@ async function resolveAdminScopedToken(
 > {
   const resolved = await resolveMcpToken(adapter, plaintextToken);
   if (!resolved.ok) {
-    return { ok: false, message: `auth_error: token ${resolved.error}` };
+    return { ok: false, message: mcpTokenAuthErrorMessage(resolved.error) };
   }
   if (resolved.value.scope !== "admin") {
     return {

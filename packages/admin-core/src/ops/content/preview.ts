@@ -42,6 +42,7 @@ import {
   fontUnresolvableMarker,
   type ImageVariantInfo,
   injectSeoIntoHead,
+  linkMarkersOf,
   listThemeCssVarNames,
   type ModuleFieldKind,
   type NestedContentInstanceResource,
@@ -65,6 +66,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { pendingSnapshotSql } from "../../draft.js";
+import { loadLinkTargets, siteLinkIndexFrom } from "../../links/link-targets.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 import { resolvePreviewContentVariants } from "./preview-variants.js";
 import { loadPublishPageUrlStyle } from "./public-urls.js";
@@ -740,6 +742,15 @@ export const renderPagePreviewOp = defineOperation({
           "production target) or mark a deploy target as default under Ops → Deploy.",
       });
     }
+    // Epic #724 — internal references (`caelo:page/<id>`, `caelo:media/<id>`)
+    // resolve against the chat's view of the site (its renames, moves and
+    // new pages included) in the publish target's URL style, so a link in
+    // the iframe navigates to the same path `preview-by-path` looks up.
+    const linkResolver = siteLinkIndexFrom(
+      await loadLinkTargets(tx, chatBranchId ?? null),
+      "preview",
+      pageUrlStyle,
+    ).forPage(input.pageId);
     const resolvedLists = await resolveDataLists([input.pageId], renderScope, pageUrlStyle);
     const pluginLists = {
       dataLists: resolvedLists.get(input.pageId) ?? {},
@@ -833,6 +844,9 @@ export const renderPagePreviewOp = defineOperation({
     }
 
     const nestedCssJsByModuleId = new Map<string, NestedModuleResource>();
+    // Epic #724 — broken internal references of the page's modules; the
+    // layout modules' and nav menus' join from the composer's failures.
+    const pageLinkMarkers: string[] = [];
     for (const m of modRows) {
       const binding = placementBindings.get(`${m.block_name}#${m.position}`);
       if (!binding) {
@@ -845,8 +859,10 @@ export const renderPagePreviewOp = defineOperation({
         resolver,
         renderThemeAssets,
         pluginLists,
+        linkResolver,
       );
       m.html = result.html;
+      pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
       // CSS/JS dedup: emit CSS/JS for every module the recursion touched
       // (in addition to this top-level module). The existing composer
       // dedupes by slug, so we just need to ensure every nested module's
@@ -1097,6 +1113,7 @@ export const renderPagePreviewOp = defineOperation({
         layoutCss: pageRow.layout_css,
         layoutBlocks,
         layoutSlug: pageRow.layout_slug,
+        linkResolver,
       });
     } catch (e) {
       if (e instanceof ComposeError) {
@@ -1340,6 +1357,11 @@ export const renderPagePreviewOp = defineOperation({
         ...fontMarkers,
         ...cssVarMarkers,
         ...seoMarkers,
+        // Epic #724 — `link-target-missing:<kind>/<id>`, once per target.
+        ...new Set([
+          ...pageLinkMarkers,
+          ...linkMarkersOf(composed.moduleFailures.map((f) => f.reason)),
+        ]),
       ],
       pageSlug: pageRow.slug,
     });

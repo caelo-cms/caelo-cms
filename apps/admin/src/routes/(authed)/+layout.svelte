@@ -35,6 +35,7 @@
         draftPageCount?: number;
         draftPageTitles?: string[];
         alsoIncludes?: string[];
+        unpublishedLinkWarning?: string | null;
       };
       // Run #9 R10 — say what is NOT in the staged build. Staging ships
       // published pages only; a success toast that hides "your 92 draft
@@ -57,6 +58,8 @@
           `${s.draftPageCount} draft page(s) are NOT in this build${named} — set them to published and Stage again to include them.`,
         );
       }
+      // #724 — links to pages the build does not contain lead nowhere.
+      if (typeof s.unpublishedLinkWarning === "string") parts.push(s.unpublishedLinkWarning);
       toast.success("Staged.", {
         description: parts.length > 0 ? parts.join(" — ") : undefined,
       });

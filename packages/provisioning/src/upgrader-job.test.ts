@@ -85,6 +85,7 @@ const POLICY: StoredUpdatePolicy = {
   autoSecurity: false,
   autoPatch: false,
   autoMinor: false,
+  autoConverge: false,
   channel: "stable",
   windowStart: null,
   windowEnd: null,

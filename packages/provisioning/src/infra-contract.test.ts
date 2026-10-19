@@ -20,8 +20,8 @@ describe("infrastructure contract steps", () => {
     );
   });
 
-  it("is at 7: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5), ops-bucket list (6), gateway proxy hops (7)", () => {
-    expect(INFRA_CONTRACT_VERSION).toBe(7);
+  it("is at 8: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5), ops-bucket list (6), gateway proxy hops (7), quality-audit job (8)", () => {
+    expect(INFRA_CONTRACT_VERSION).toBe(8);
     expect(INFRA_CONTRACT_STEPS[3]).toContain("#633");
     expect(INFRA_CONTRACT_STEPS[4]).toContain("#587");
     expect(INFRA_CONTRACT_STEPS[5]).toContain("#635");
@@ -37,6 +37,6 @@ describe("infrastructure contract steps", () => {
   });
 
   it("names a version a newer release added by number", () => {
-    expect(infraStepsText(7, 8)).toBe("infrastructure step 8 (see that release's notes)");
+    expect(infraStepsText(8, 9)).toBe("infrastructure step 9 (see that release's notes)");
   });
 });

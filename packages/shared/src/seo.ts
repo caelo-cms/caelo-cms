@@ -344,7 +344,7 @@ export function injectSeoIntoHead(html: string, headBlock: string): string {
   // the headBlock at the right position.
   const titleStripped = html.replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, "");
   if (titleStripped.includes("</head>")) {
-    return titleStripped.replace("</head>", `${headBlock}\n</head>`);
+    return titleStripped.replace("</head>", () => `${headBlock}\n</head>`);
   }
   // No closing head tag — prepend the block to the document.
   return `${headBlock}\n${titleStripped}`;
