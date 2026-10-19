@@ -268,11 +268,14 @@ jobs:
           PGHOST: localhost
         run: bun run db:migrate
 
-      # `@caelo-cms/shared` ships a compiled dist/ — the admin's SSR
-      # build can't resolve it otherwise. Same #36/#51 lesson as the
-      # `e2e` job in ci.yml.
-      - name: Build @caelo-cms/shared (admin SSR dep)
-        run: bun run --filter '@caelo-cms/shared' build
+      # `@caelo-cms/shared` and `@caelo-cms/mcp-server` (the remote MCP
+      # surfaces, #806) ship a compiled dist/ — the admin's SSR build can't
+      # resolve them otherwise. Same #36/#51 lesson as the `e2e` job in
+      # ci.yml.
+      - name: Build @caelo-cms/shared + mcp-server (admin SSR deps)
+        run: |
+          bun run --filter '@caelo-cms/shared' build
+          bun run --filter '@caelo-cms/mcp-server' build
 
       - name: Install Playwright chromium
         run: bun x playwright install chromium --with-deps
