@@ -544,16 +544,64 @@ describe("runUpgraderJob", () => {
     expect(free.order.indexOf("lock")).toBeGreaterThan(step(free.order, /^manifest 0\.11\.0/));
     expect(free.order).toContain("unlock");
 
-    // A held lock only defers the correction; it never replaces the verdict.
-    const busy = setup({ ...drift, locked: true });
-    expect((await runUpgraderJob(busy.deps)).status).toBe("needs_cloud_shell");
-    expect(busy.q.end()?.codes).toEqual(["infra-contract"]);
-    expect(busy.written).toEqual([]);
+    // A lock that cannot be taken (no access) only defers the correction;
+    // it never replaces the verdict.
+    const denied = setup({ ...drift, lockDenied: true });
+    expect((await runUpgraderJob(denied.deps)).status).toBe("needs_cloud_shell");
+    expect(denied.q.end()?.codes).toEqual(["infra-contract"]);
+    expect(denied.written).toEqual([]);
     expect(
-      busy.q.events.some(
+      denied.q.events.some(
         (e) => e.level === "warn" && e.message.includes("could not be corrected this time"),
       ),
     ).toBe(true);
+  });
+
+  it("#815 review: drift + a stop verdict while another run holds the lock ends state-locked", async () => {
+    // The serving images were read without the lock; the run holding it may
+    // be half-way through its own roll (or be the very Cloud Shell upgrade
+    // the verdict would ask for). Its half-finished state is no verdict.
+    const busy = setup({
+      meta: { ...META, imageDigests: { admin: D("9"), gateway: D("2") }, infraContractVersion: 1 },
+      manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+      locked: true,
+    });
+    expect((await runUpgraderJob(busy.deps)).status).toBe("failed");
+    expect(busy.q.end()?.codes).toEqual(["state-locked"]);
+    expect(busy.written).toEqual([]);
+  });
+
+  it("#815 review: images no release vouches for, while another run holds the lock, are not drift", async () => {
+    // A run mid-roll serves the new admin next to the old gateway for a
+    // moment: read without the lock that looks exactly like a mixed install.
+    const mixed = {
+      gcloud: [
+        servingAs(D("9"), D("2")),
+        releaseTags("admin", { "0.10.44": D("9") }),
+        releaseTags("gateway", { "0.10.45": D("2") }),
+      ],
+      meta: {
+        ...META,
+        imageDigests: { admin: D("1"), gateway: D("2") },
+        releaseVersion: "0.10.45",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": manifestOf("0.10.45", D("1"), D("2")),
+      },
+    };
+    const busy = setup({ ...mixed, locked: true });
+    expect((await runUpgraderJob(busy.deps)).status).toBe("failed");
+    expect(busy.q.end()?.codes).toEqual(["state-locked"]);
+    expect(busy.written).toEqual([]);
+
+    // With the lock free (no run is rolling), it is drift.
+    const free = setup(mixed);
+    expect((await runUpgraderJob(free.deps)).status).toBe("needs_cloud_shell");
+    expect(free.q.end()?.codes).toEqual(["install-state-drift"]);
+    expect(free.order).toContain("lock");
+    expect(free.order).toContain("unlock");
+    expect(free.written).toEqual([]);
   });
 
   it("#815: drift + a stop verdict: a failed re-read under the lock keeps the verdict", async () => {
