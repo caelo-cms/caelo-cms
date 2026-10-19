@@ -4,7 +4,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sendChat } from "./chat-bridge.js";
-import { uploadedImageSchema, uploadImages, uploadImagesInput } from "./image-upload.js";
+import { uploadImages } from "./image-upload.js";
+import { uploadedImageSchema, uploadImagesInput } from "./tool-definitions.js";
 
 const png = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF9sAAAAASUVORK5CYII=",

@@ -133,6 +133,19 @@ export {
   type PluginUninstallFinalizer,
 } from "./ops/plugins/uninstall.js";
 export * from "./ops/roles.js";
+// Issue #806 — remote MCP: the credential an /api/mcp/remote/* request
+// carries into the mcp.* ops, and its request-time resolution.
+export {
+  type McpRemoteCredential,
+  type McpRemoteSurface,
+  mcpRemoteSurface,
+} from "./ops/security/mcp_credential.js";
+export {
+  type McpPrincipal,
+  type RemoteMcpRefusal,
+  resolveRemoteMcpPrincipal,
+} from "./ops/security/mcp_principal.js";
+export type { McpRemoteConnectionRow } from "./ops/security/mcp_remote_connections.js";
 // P17 PR4 — MCP bridge wiring helper.
 export { configureMcpBridge } from "./ops/security/mcp_tokens.js";
 export { STEP_UP_SIGNED_OUT } from "./ops/step-up.js";
@@ -169,6 +182,17 @@ export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit
 export * from "./rate-limit.js";
 export * from "./register.js";
 export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";
+export {
+  createIapVerifier,
+  IAP_ASSERTION_HEADER,
+  type IapKeyProvider,
+  type IapVerifier,
+  setIapVerifierForTests,
+} from "./security/iap-assertion.js";
+export {
+  iapTestKeyPair as iapTestKeyPairForTests,
+  signIapTestAssertion as signIapTestAssertionForTests,
+} from "./security/iap-assertion.test-helpers.js";
 // P12+ at-rest secret encryption (project KEK + AES-GCM).
 export {
   decryptSecret,
