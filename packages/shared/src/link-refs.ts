@@ -488,6 +488,14 @@ export function createSiteLinkIndex(input: SiteLinkIndexInput): SiteLinkIndex {
   for (const [pageId, v] of variants) {
     if (v.group === null || !pages.has(pageId)) continue;
     const members = siblings.get(v.group) ?? new Map<string, string>();
+    const clash = members.get(v.variant);
+    if (clash !== undefined) {
+      // Two versions of one page in one variant: a link could go to
+      // either, and picking one silently hides the broken partition.
+      throw new Error(
+        `link index: pages ${clash} and ${pageId} are both the "${v.variant}" version in variant group ${v.group}. A group holds at most one page per variant — unlink one of them from the group.`,
+      );
+    }
     members.set(v.variant, pageId);
     siblings.set(v.group, members);
   }

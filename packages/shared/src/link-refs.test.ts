@@ -357,6 +357,24 @@ describe("page variants (link-resolve) — links go to the rendering page's vari
     expect(en.resolve(pageRef(EN_ABOUT))).toEqual({ status: "resolved", url: "/about/" });
   });
 
+  it("refuses two pages claiming the same variant in one group", () => {
+    expect(() =>
+      createSiteLinkIndex({
+        env: "staging",
+        pageUrlStyle: "directory",
+        pages: [
+          { id: EN_ABOUT, path: "/about", status: "published" },
+          { id: DE_ABOUT, path: "/de/ueber", status: "published" },
+        ],
+        media: [],
+        pageVariants: new Map([
+          [EN_ABOUT, { variant: "de", group: "g-about" }],
+          [DE_ABOUT, { variant: "de", group: "g-about" }],
+        ]),
+      }),
+    ).toThrow(/both the "de" version in variant group g-about/);
+  });
+
   it("applies the environment policy to the SIBLING (an unpublished German version)", () => {
     expect(variantIndex("staging").forPage(DE_HOME).resolve(pageRef(EN_PRICING))).toEqual({
       status: "unpublished",
