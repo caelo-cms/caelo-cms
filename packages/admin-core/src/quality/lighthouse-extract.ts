@@ -271,23 +271,25 @@ export function failingAudits(lhr: LhrLike): FailingAudit[] {
  *
  * @param performanceScores - each run's 0..100 Performance score, in run order.
  * @param perfOnlyFailures - each run's count of failing Performance-only audits.
- * @throws when there is no run (an infrastructure failure, never a score).
+ * @throws when there is no run (an infrastructure failure, never a score)
+ *   or the two lists do not describe the same runs.
  */
 export function bestRunIndex(
   performanceScores: readonly number[],
   perfOnlyFailures: readonly number[],
 ): number {
   if (performanceScores.length === 0) throw new Error("bestRunIndex: no Performance runs");
+  if (perfOnlyFailures.length !== performanceScores.length) {
+    throw new Error(
+      `bestRunIndex: ${performanceScores.length} Performance score(s) but ${perfOnlyFailures.length} finding count(s); both must list every run`,
+    );
+  }
   let best = 0;
   for (let i = 1; i < performanceScores.length; i += 1) {
     const score = performanceScores[i] as number;
     const bestScore = performanceScores[best] as number;
-    if (
-      score > bestScore ||
-      (score === bestScore && (perfOnlyFailures[i] ?? 0) < (perfOnlyFailures[best] ?? 0))
-    ) {
-      best = i;
-    }
+    const fewerFindings = (perfOnlyFailures[i] as number) < (perfOnlyFailures[best] as number);
+    if (score > bestScore || (score === bestScore && fewerFindings)) best = i;
   }
   return best;
 }
@@ -316,15 +318,26 @@ export function measurementFromRuns(
     scores.performance,
     ...extraPerformanceRuns.map((r) => categoryScores(r, ["performance"]).performance),
   ];
-  const isPerformanceOnly = (f: FailingAudit) => f.categories.every((c) => c === "performance");
+  // Which audits belong only to Performance is read from the full run: an
+  // extra run carries the Performance category alone, so an audit shared
+  // with another category would look Performance-only there and be listed
+  // twice (once from the full run, once from the best run).
+  const sharedWithOtherCategories = new Set(
+    QUALITY_CATEGORIES.filter((c) => c !== "performance").flatMap((c) =>
+      (fullRun.categories[c]?.auditRefs ?? []).map((r) => r.id),
+    ),
+  );
+  const isPerformanceOnly = (f: FailingAudit) =>
+    !sharedWithOtherCategories.has(f.id) && f.categories.every((c) => c === "performance");
   const perfOnlyByRun = runs.map((r) => failingAudits(r).filter(isPerformanceOnly));
   const best = bestRunIndex(
     performanceRuns,
     perfOnlyByRun.map((f) => f.length),
   );
+  const bestPerfOnly = perfOnlyByRun[best] as FailingAudit[];
   const findings = [
     ...failingAudits(fullRun).filter((f) => !isPerformanceOnly(f)),
-    ...(perfOnlyByRun[best] ?? []),
+    ...bestPerfOnly,
   ].sort((a, b) => a.id.localeCompare(b.id));
   return {
     measurement: {
