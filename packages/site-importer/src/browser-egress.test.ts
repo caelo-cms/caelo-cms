@@ -9,7 +9,8 @@
  * canary saw a navigation preconnect for iframes and meta refresh,
  * STUN datagrams from WebRTC, and a full WebSocket `GET` from
  * `query()`. No external host is contacted. When Chromium is not
- * installed the live suite skips LOUDLY, same contract as
+ * installed the live suite skips LOUDLY locally and FAILS under CI
+ * (`process.env.CI`), whose test job installs Chromium — same contract as
  * hidden-elements.test.ts.
  */
 
@@ -84,6 +85,13 @@ describe("external capture egress (live Chromium)", () => {
     });
     screenshotter = await createPlaywrightScreenshotter({ allowedHosts: ["127.0.0.1"] });
     if (screenshotter === null) {
+      // CI installs Chromium for the test job; a missing browser there
+      // means these regression tests would pass without running.
+      if (process.env.CI) {
+        throw new Error(
+          "[browser-egress.test] Playwright Chromium unavailable in CI — the live egress regression tests cannot run. The CI test job must install it (`bun node_modules/playwright/cli.js install chromium --with-deps`).",
+        );
+      }
       console.warn(
         "[browser-egress.test] Playwright Chromium unavailable — SKIPPING the live egress assertions. Install with `bun node_modules/playwright/cli.js install chromium`.",
       );
