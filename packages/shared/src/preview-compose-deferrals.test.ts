@@ -14,6 +14,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { Parser } from "htmlparser2";
 import { type ComposeDeferral, composePageWithLayout } from "./preview-compose.js";
 
 const LAYOUT = '<html><head></head><body><caelo-slot name="content">_</caelo-slot></body></html>';
@@ -158,13 +159,8 @@ describe("composer — withheld modules", () => {
       layoutBlocks: [],
       deferredModules: { [VIDEO.moduleId]: DEFERRAL },
     });
-    // Raw-text bodies end at their own first close tag (a `</template` in
-    // them is text), so drop them the way the tokenizer reads them; what
-    // remains may close a template exactly once: the wrapper.
-    const tokenized = html
-      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "<style></style>")
-      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "<script></script>");
-    expect([...tokenized.matchAll(/<\/template>/gi)]).toHaveLength(1);
+    // None of the module's scripts may end up outside the inert template.
+    expect(liveScripts(html).filter((s) => s.includes("alert"))).toEqual([]);
     expect(html).toContain("&lt;/template><script>alert(1)</script></div>");
   });
 
@@ -182,3 +178,33 @@ describe("composer — withheld modules", () => {
     expect(html).toContain("<template id=row><li>x</li></template></ul></template></div>");
   });
 });
+
+/**
+ * The text of every `<script>` a browser would run because it sits outside
+ * any `<template>` — tokenized like a browser (style / script bodies are
+ * raw text, so a `</template` inside them is not a tag).
+ */
+function liveScripts(html: string): string[] {
+  const scripts: string[] = [];
+  let templateDepth = 0;
+  let current: string | null = null;
+  const parser = new Parser({
+    onopentag(name) {
+      if (name === "template") templateDepth++;
+      if (name === "script" && templateDepth === 0) current = "";
+    },
+    ontext(text) {
+      if (current !== null) current += text;
+    },
+    onclosetag(name) {
+      if (name === "template") templateDepth--;
+      if (name === "script" && current !== null) {
+        scripts.push(current);
+        current = null;
+      }
+    },
+  });
+  parser.write(html);
+  parser.end();
+  return scripts;
+}
