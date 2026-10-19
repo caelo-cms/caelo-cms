@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { claudeMcpAddCommand, mcpAddCommand, mcpConfigJson, mcpServerSpec } from "./mcp-command.js";
+import {
+  claudeMcpAddCommand,
+  mcpAddCommand,
+  mcpConfigJson,
+  mcpServerSpec,
+  shellWord,
+} from "./mcp-command.js";
 
 const base = { adminUrl: "https://admin.example.com", token: "tok_123" };
 
@@ -57,6 +63,34 @@ describe("mcpAddCommand", () => {
     expect(mcpAddCommand("codex", args)).toBe(
       claudeMcpAddCommand(args).replace(/^claude /, "codex "),
     );
+  });
+});
+
+describe("shellWord", () => {
+  it("leaves plain URL, token and service-account values unquoted", () => {
+    for (const v of [
+      "CAELO_ADMIN_URL=https://admin.example.com:8443",
+      "sa@p.iam.gserviceaccount.com",
+    ]) {
+      expect(shellWord(v)).toBe(v);
+    }
+  });
+
+  it("single-quotes anything a shell would interpret, escaping embedded quotes", () => {
+    expect(shellWord("CAELO_ADMIN_URL=https://a$(id)&b")).toBe(
+      "'CAELO_ADMIN_URL=https://a$(id)&b'",
+    );
+    expect(shellWord("it's")).toBe(`'it'\\''s'`);
+  });
+
+  it("is applied to every --env value of the add command", () => {
+    const cmd = mcpAddCommand("claude", {
+      ...base,
+      adminUrl: "https://a;b.example.com",
+      scope: "admin",
+      iapServiceAccount: null,
+    });
+    expect(cmd).toContain("--env 'CAELO_ADMIN_URL=https://a;b.example.com'");
   });
 });
 

@@ -149,6 +149,6 @@
 
   <p class="text-sm text-muted-foreground">
     ChatGPT and claude.ai in the browser can't connect yet: they only reach servers hosted on the
-    internet, and this one runs on your computer (tracked in issue #806). Claude Desktop works today.
+    internet, and this one runs on your computer. Claude Desktop works today.
   </p>
 </div>

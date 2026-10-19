@@ -60,6 +60,15 @@ export function mcpServerSpec(args: McpCommandArgs): McpServerSpec {
 }
 
 /**
+ * One shell word for the copy-paste command. The admin URL is derived from
+ * the request's Host, so a value outside the plain URL/email charset is
+ * single-quoted instead of trusted to be inert in the operator's shell.
+ */
+export function shellWord(value: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/**
  * `claude mcp add` / `codex mcp add` — both CLIs share the syntax:
  * options first, the server command after `--` (there is no --command
  * flag). Runs in a terminal, not inside the agent.
@@ -68,7 +77,7 @@ export function mcpAddCommand(cli: "claude" | "codex", args: McpCommandArgs): st
   const spec = mcpServerSpec(args);
   const lines = [
     `${cli} mcp add ${spec.name}`,
-    ...Object.entries(spec.env).map(([k, v]) => `--env ${k}=${v}`),
+    ...Object.entries(spec.env).map(([k, v]) => `--env ${shellWord(`${k}=${v}`)}`),
     `-- ${[spec.command, ...spec.args].join(" ")}`,
   ];
   return lines.join(" \\\n  ");
