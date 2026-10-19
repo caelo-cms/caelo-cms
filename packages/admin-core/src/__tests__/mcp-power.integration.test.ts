@@ -60,7 +60,14 @@ async function ensureActor(actorId: string, displayName: string): Promise<void> 
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`INSERT INTO actors (id, kind, display_name)
                VALUES (${actorId}::uuid, 'human', ${displayName})
-               ON CONFLICT (id) DO NOTHING`;
+             ON CONFLICT (id) DO NOTHING`;
+      // A token only resolves for a live user holding a role.
+      await tx`INSERT INTO users (id, email, password_hash)
+               VALUES (${actorId}::uuid, ${`${actorId}@mcp-power.test`}, 'test-only')
+               ON CONFLICT DO NOTHING`;
+      await tx`INSERT INTO user_roles (user_id, role_id)
+               SELECT ${actorId}::uuid, id FROM roles WHERE name = 'editor'
+               ON CONFLICT DO NOTHING`;
     });
   } finally {
     await sql.end();
