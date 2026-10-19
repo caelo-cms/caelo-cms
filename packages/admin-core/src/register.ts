@@ -358,6 +358,7 @@ import {
   platformUpdatesListOp,
   platformUpdatesRecordTriggerOp,
   platformUpdatesRequestOp,
+  platformUpdatesSupersedeStaleOp,
 } from "./ops/platform-update-requests.js";
 import {
   platformUpdatesNotificationClaimOp,
@@ -1146,6 +1147,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(platformUpdatesRecordTriggerOp);
   registry.register(platformUpdatesListOp);
   registry.register(platformUpdatesGetOp);
+  registry.register(platformUpdatesSupersedeStaleOp);
   registry.register(platformUpdatesAgentStatusOp);
   registry.register(platformUpdatePolicyGetOp);
   registry.register(platformUpdatePolicySetOp);

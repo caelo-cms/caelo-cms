@@ -155,7 +155,7 @@ export {
   RELEASE_CHECK_COOLDOWN_MS,
   type ReleaseFetch,
 } from "./platform-updates/release-check.js";
-export { registryManifestReader } from "./platform-updates/release-facts.js";
+export { type ManifestReader, registryManifestReader } from "./platform-updates/release-facts.js";
 export {
   runAutoUpdateTick,
   startAutoUpdateScheduler,
