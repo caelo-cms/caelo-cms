@@ -15,7 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { resolveMcpToken } from "../ops/security/mcp_tokens.js";
+import { mcpTokenAuthErrorMessage, resolveMcpToken } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -296,7 +296,11 @@ describe("M-09 — a deleted user's MCP tokens stop working", () => {
     await asSystem((tx) => tx`UPDATE users SET deleted_at = now() WHERE id = ${userId}::uuid`);
     const resolved = await resolveMcpToken(adapter, token);
     expect(resolved.ok).toBe(false);
-    // #889 names this refusal `user_deleted`; either code refuses the bearer.
-    if (!resolved.ok) expect(["revoked", "user_deleted"]).toContain(resolved.error);
+    if (resolved.ok) return;
+    expect(resolved.error).toBe("user_deleted");
+    // The holder sees a live-looking token refused, so the message names the fix.
+    expect(mcpTokenAuthErrorMessage(resolved.error)).toMatch(
+      /^auth_error: token user_deleted — .*\/settings\/mcp/,
+    );
   });
 });
