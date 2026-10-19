@@ -28,6 +28,42 @@ import {
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
 const D = (c: string) => `sha256:${c.repeat(64)}`;
+/**
+ * The linux/amd64 platform manifest inside release index `D(c)`. Cloud Run
+ * reports this one as a revision's `status.imageDigest` while the release
+ * manifest and install.json name the index (#860 root cause).
+ */
+const P = (c: string) => `sha256:${"f".repeat(63)}${c}`;
+
+const MIRROR = "europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/x";
+
+/** `gcloud run revisions describe --format=json` of a revision deployed as `deployed` (null: by tag). */
+const revisionJson = (deployed: string | null, resolved: string) =>
+  JSON.stringify({
+    spec: { containers: [{ image: deployed ? `${MIRROR}@${deployed}` : `${MIRROR}:0.10.45` }] },
+    status: { imageDigest: `${MIRROR}@${resolved}` },
+  });
+
+/** Serving revisions deployed as `admin` / `gateway` (index digests). */
+const servingAs = (admin: string, gateway: string): [RegExp, Answer] => [
+  /^run revisions describe (\S+)/,
+  (l) =>
+    ok(
+      l.includes("-admin-")
+        ? revisionJson(admin, `sha256:${"e".repeat(64)}`)
+        : revisionJson(gateway, `sha256:${"d".repeat(64)}`),
+    ),
+];
+
+/** `gcloud artifacts docker tags list` of the mirror: `tags` maps release version → digest. */
+const releaseTags = (slug: "admin" | "gateway", tags: Record<string, string>): [RegExp, Answer] => [
+  new RegExp(`^artifacts docker tags list \\S+/${slug} `),
+  ok(
+    Object.entries(tags)
+      .map(([v, d]) => `projects/p/locations/l/repositories/r/packages/${slug}/tags/${v}\t${d}`)
+      .join("\n"),
+  ),
+];
 
 const ADMIN = "caelo-production-admin-aaa";
 const GATEWAY = "caelo-production-gateway-bbb";
@@ -77,6 +113,11 @@ const META: InstallMetadata = {
   infraContractVersion: 2,
 };
 
+const manifestOf = (version: string, admin: string, gateway: string): ReleaseManifestResult => ({
+  ok: true,
+  manifest: { ...MANIFEST, version, digests: { admin, gateway, ops: D("c") } },
+});
+
 const serviceJson = (image: string, env: unknown[]) =>
   JSON.stringify({ spec: { template: { spec: { containers: [{ image, env }] } } } });
 const secretRef = (name: string, secret: string) => ({
@@ -106,7 +147,8 @@ function fakeGcloud(events: string[], overrides: [RegExp, Answer][] = []) {
     [/describe (\S+) .*status\.url/, (l) => ok(`https://${l.split(" ")[3]}-xyz.a.run.app\n`)],
     [
       /^run revisions describe (\S+)/,
-      (l) => ok(`registry/x@${l.includes("-admin-") ? D("1") : D("2")}\n`),
+      (l) =>
+        ok(l.includes("-admin-") ? revisionJson(D("1"), P("1")) : revisionJson(D("2"), P("2"))),
     ],
     [/^sql instances list/, ok("caelo-production-pg-abc\n")],
     [/^sql backups list/, ok("1760000000000\n")],
@@ -159,6 +201,8 @@ function setup(
   opts: {
     request?: Partial<ClaimedUpdate>;
     manifest?: ReleaseManifestResult;
+    /** Manifests of other versions than the target (the serving release's). */
+    manifests?: Record<string, ReleaseManifestResult>;
     meta?: InstallMetadata | null;
     gcloud?: [RegExp, Answer][];
     deep?: HealthOutcome;
@@ -187,6 +231,11 @@ function setup(
     execution: "caelo-production-upgrader-x1",
     fetchManifest: async (v) => {
       order.push(`manifest ${v}`);
+      const other = opts.manifests?.[v];
+      if (other) return other;
+      if (v !== MANIFEST.version) {
+        return { ok: false, error: { code: "registry", message: `no release manifest for v${v}` } };
+      }
       return opts.manifest ?? { ok: true, manifest: MANIFEST };
     },
     lockState: () => {
@@ -354,25 +403,270 @@ describe("runUpgraderJob", () => {
     expect(q.end()?.codes).toEqual(["install-state"]);
   });
 
-  it("refuses when the serving release is not the recorded one (a lost install.json write)", async () => {
-    const { deps, order, q } = setup({
+  it("regression #860: Cloud Run's platform digest of the recorded index is no drift", async () => {
+    // The fake reports status.imageDigest = P(…) (the platform manifest) and
+    // the revision spec = D(…) (the index install.json and the manifest name).
+    const { deps, order, q, written } = setup();
+    expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+    expect(q.events.some((e) => e.message.includes("refreshed its install records"))).toBe(false);
+    expect(order.filter((l) => l.startsWith("manifest"))).toEqual(["manifest 0.11.0"]);
+    expect(order.some((l) => l.includes("artifacts docker tags list"))).toBe(false);
+    expect(written).toHaveLength(1);
+  });
+
+  it("a revision deployed by tag matches by the digest Cloud Run resolved", async () => {
+    const { deps, written } = setup({
+      meta: { ...META, imageDigests: { admin: P("1"), gateway: D("2") } },
+      gcloud: [
+        [
+          /^run revisions describe (\S+)/,
+          (l) =>
+            ok(l.includes("-admin-") ? revisionJson(null, P("1")) : revisionJson(D("2"), P("2"))),
+        ],
+      ],
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+    expect(written).toHaveLength(1);
+  });
+
+  it("drift to a signed release: refreshes install.json, says so, installs judged against it", async () => {
+    // Recorded: 0.10.44 (digests 9/8). Serving: 0.10.45 (digests 1/2).
+    const { deps, order, q, written } = setup({
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("8") },
+        releaseVersion: "0.10.44",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": manifestOf("0.10.45", D("1"), D("2")),
+      },
+      gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
+    });
+    const r = await runUpgraderJob(deps);
+    expect(r).toMatchObject({ exitCode: 0, status: "succeeded" });
+    expect(written[0]).toMatchObject({
+      releaseVersion: "0.10.45",
+      imageDigests: { admin: D("1"), gateway: D("2") },
+      domain: "acme.com",
+      infraContractVersion: 2,
+    });
+    expect(q.events).toContainEqual({
+      phase: "verify",
+      level: "success",
+      message: "Caelo refreshed its install records: v0.10.45 serves.",
+    });
+    // Refreshed before the target's manifest is judged, and judged against it.
+    expect(step(order, /^manifest 0\.10\.45/)).toBeLessThan(step(order, /^manifest 0\.11\.0/));
+    expect(q.events.some((e) => e.message.startsWith("0.10.45 → 0.11.0"))).toBe(true);
+    expect(written.at(-1)).toMatchObject({ releaseVersion: "0.11.0" });
+  });
+
+  it("drift where the recorded version is the serving one needs no tag lookup", async () => {
+    const { deps, order, written } = setup({
       meta: { ...META, imageDigests: { admin: D("9"), gateway: D("2") } },
+      manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+    expect(order.some((l) => l.includes("artifacts docker tags list"))).toBe(false);
+    expect(written[0]).toMatchObject({ imageDigests: { admin: D("1"), gateway: D("2") } });
+  });
+
+  it("drift to images of no signed release is refused, says so, and changes nothing", async () => {
+    const { deps, order, q, written } = setup({
+      gcloud: [servingAs(D("7"), D("6"))],
+      manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+    });
+    const r = await runUpgraderJob(deps);
+    expect(r.status).toBe("needs_cloud_shell");
+    const end = q.end();
+    expect(end?.codes).toEqual(["install-state-drift"]);
+    expect(end?.reason).toContain("do not belong to one signed Caelo release");
+    expect(end?.reason).toContain(`admin ${D("7")}`);
+    expect(written).toEqual([]);
+    expect(order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
+    expect(order).not.toContain("manifest 0.11.0");
+  });
+
+  it("regression #865: drift whose release manifest the registry cannot serve fails retryably, not install-state-drift", async () => {
+    const { deps, order, q, written } = setup({
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("8") },
+        releaseVersion: "0.10.44",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": {
+          ok: false,
+          error: { code: "registry", message: "503 Service Unavailable", transient: true },
+        },
+      },
+      gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
+    });
+    const r = await runUpgraderJob(deps);
+    expect(r.status).toBe("failed");
+    const end = q.end();
+    expect(end?.codes).toEqual(["registry"]);
+    expect(end?.reason).toContain("503 Service Unavailable");
+    expect(end?.reason).toContain("Try again later");
+    expect(end?.reason).not.toContain("Cloud Shell");
+    expect(written).toEqual([]);
+    expect(order).not.toContain("manifest 0.11.0");
+  });
+
+  it("regression #865: drift whose candidate manifest does not exist (404) ends in install-state-drift, not a retry", async () => {
+    const { deps, q, written } = setup({
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("8") },
+        releaseVersion: "0.10.44",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": {
+          ok: false,
+          error: { code: "registry", message: "no release manifest for v0.10.45 (HTTP 404)" },
+        },
+      },
+      gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    const end = q.end();
+    expect(end?.codes).toEqual(["install-state-drift"]);
+    expect(end?.reason).toContain("HTTP 404");
+    expect(end?.reason).not.toContain("Try again later");
+    expect(written).toEqual([]);
+  });
+
+  it("drift with a signature-rejected candidate still ends in install-state-drift", async () => {
+    const { deps, q, written } = setup({
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("8") },
+        releaseVersion: "0.10.44",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": { ok: false, error: { code: "signature", message: "not signed" } },
+      },
+      gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
     });
     expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
     expect(q.end()?.codes).toEqual(["install-state-drift"]);
-    expect(order.some((l) => l.startsWith("manifest"))).toBe(false);
+    expect(written).toEqual([]);
   });
 
-  it("a failed install.json write still ends succeeded, and the next run catches the drift", async () => {
-    const { deps, q } = setup();
+  it("partial match (the admin of a release, the gateway not) is refused", async () => {
+    const { deps, q, written } = setup({
+      gcloud: [servingAs(D("1"), D("6"))],
+      meta: { ...META, imageDigests: { admin: D("9"), gateway: D("8") } },
+      manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    expect(q.end()?.reason).toContain("The admin serves v0.10.45's image, the gateway does not");
+    expect(written).toEqual([]);
+  });
+
+  it("admin and gateway of two different signed releases are refused, naming both", async () => {
+    // Each image is genuinely signed, but no ONE release names both: a mixed
+    // deployment no release vouches for.
+    const { deps, q, written } = setup({
+      gcloud: [
+        servingAs(D("9"), D("2")),
+        releaseTags("admin", { "0.10.44": D("9") }),
+        releaseTags("gateway", { "0.10.45": D("2") }),
+      ],
+      meta: {
+        ...META,
+        imageDigests: { admin: D("1"), gateway: D("2") },
+        releaseVersion: "0.10.45",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": manifestOf("0.10.45", D("1"), D("2")),
+      },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    const end = q.end();
+    expect(end?.codes).toEqual(["install-state-drift"]);
+    expect(end?.reason).toContain("The gateway serves v0.10.45's image, the admin does not");
+    expect(end?.reason).toContain("the admin serves v0.10.44's image, the gateway does not");
+    expect(written).toEqual([]);
+  });
+
+  it("an older signed release serving is recorded as what it is, and the target judged from it", async () => {
+    // install.json says 0.10.45, but someone put 0.10.44 back: the heal must
+    // record the OLDER version, never keep claiming the newer one.
+    const { deps, q, written } = setup({
+      gcloud: [servingAs(D("9"), D("8")), releaseTags("admin", { "0.10.44": D("9") })],
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": manifestOf("0.10.45", D("1"), D("2")),
+      },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+    expect(written[0]).toMatchObject({
+      releaseVersion: "0.10.44",
+      imageDigests: { admin: D("9"), gateway: D("8") },
+    });
+    expect(q.events.some((e) => e.message.startsWith("0.10.44 → 0.11.0"))).toBe(true);
+  });
+
+  it("a release whose manifest does not verify is never recorded", async () => {
+    const { deps, q, written } = setup({
+      meta: { ...META, imageDigests: { admin: D("9"), gateway: D("8") } },
+      manifests: {
+        "0.10.45": { ok: false, error: { code: "signature", message: "cert identity mismatch" } },
+      },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    expect(q.end()?.reason).toContain("could not be verified: v0.10.45 (cert identity mismatch)");
+    expect(written).toEqual([]);
+  });
+
+  it("an install.json without digests is refreshed the same way", async () => {
+    const { imageDigests: _none, ...bare } = META;
+    const { deps, written } = setup({
+      meta: bare,
+      manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+    expect(written[0]).toMatchObject({ imageDigests: { admin: D("1"), gateway: D("2") } });
+  });
+
+  it("a refresh that cannot be written stops before anything changes", async () => {
+    const { deps, order, q } = setup({
+      meta: { ...META, imageDigests: { admin: D("9"), gateway: D("2") } },
+      manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+    });
     const r = await runUpgraderJob({
       ...deps,
       writeInstall: () => {
         throw new Error("403 on the ops bucket");
       },
     });
-    expect(r.status).toBe("succeeded");
-    expect(q.events.some((e) => e.phase === "record" && e.level === "warn")).toBe(true);
+    expect(r).toMatchObject({ exitCode: 1, status: "failed" });
+    expect(q.end()?.codes).toEqual(["install-state-write"]);
+    expect(q.end()?.reason).toContain("403 on the ops bucket");
+    expect(order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
+  });
+
+  it("a failed install.json write after the roll fails the run instead of ending succeeded", async () => {
+    const { deps, order, q } = setup();
+    const r = await runUpgraderJob({
+      ...deps,
+      writeInstall: () => {
+        throw new Error("403 on the ops bucket");
+      },
+    });
+    expect(r).toMatchObject({ exitCode: 1, status: "failed" });
+    expect(q.end()?.codes).toEqual(["record"]);
+    expect(q.end()?.reason).toContain("0.11.0 serves");
+    expect(q.events.some((e) => e.phase === "record" && e.level === "error")).toBe(true);
+    // The new release keeps serving: no rollback, no self-update.
+    expect(order.some((l) => /--to-revisions/.test(l))).toBe(false);
+    expect(order.some((l) => /jobs update caelo-production-upgrader/.test(l))).toBe(false);
   });
 
   it("a failed backup stops before migrations", async () => {
