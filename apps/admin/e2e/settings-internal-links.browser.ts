@@ -19,7 +19,10 @@ test("Owner reads the link conversion report and runs a dry run", async ({ page 
   await expect(page).toHaveURL(/\/edit/);
 
   await page.goto("/settings");
-  await page.getByRole("link", { name: /Internal links/ }).first().click();
+  await page
+    .getByRole("link", { name: /Internal links/ })
+    .first()
+    .click();
   await expect(page).toHaveURL(/\/settings\/links/);
   await expect(page.getByRole("heading", { name: "Internal links" })).toBeVisible();
 
