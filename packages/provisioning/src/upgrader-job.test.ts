@@ -208,6 +208,8 @@ function setup(
     migrate?: { ok: boolean; error?: string };
     locked?: boolean;
     lockDenied?: boolean;
+    /** The lock broke a dead run's lock on the way, with this message. */
+    brokeStaleLock?: string;
   } = {},
 ) {
   const order: string[] = [];
@@ -237,10 +239,11 @@ function setup(
       }
       return opts.manifest ?? { ok: true, manifest: MANIFEST };
     },
-    lockState: () => {
+    lockState: (onBreak) => {
       order.push("lock");
       if (opts.locked) throw new StateLockHeldError("held by caelo installer");
       if (opts.lockDenied) throw new Error("storage.objects.list denied");
+      if (opts.brokeStaleLock) onBreak(opts.brokeStaleLock);
       return () => order.push("unlock");
     },
     readInstall: () => (opts.meta === undefined ? META : opts.meta),
@@ -323,10 +326,12 @@ describe("runUpgraderJob", () => {
     ]);
   });
 
-  it("holds the install's state lock for the whole run, and stops when another run holds it", async () => {
+  it("#815: decides first, locks right before the backup, holds the lock to the end", async () => {
     const ok = setup();
     await runUpgraderJob(ok.deps);
-    expect(ok.order[0]).toBe("lock");
+    const lock = ok.order.indexOf("lock");
+    expect(lock).toBeGreaterThan(step(ok.order, /^manifest 0\.11\.0/));
+    expect(lock).toBeLessThan(step(ok.order, /^gcloud sql backups create/));
     expect(ok.order.indexOf("unlock")).toBeGreaterThan(
       step(ok.order, /jobs update caelo-production-upgrader/),
     );
@@ -335,7 +340,18 @@ describe("runUpgraderJob", () => {
     const r = await runUpgraderJob(busy.deps);
     expect(r.status).toBe("failed");
     expect(busy.q.end()?.codes).toEqual(["state-locked"]);
-    expect(busy.order.some((l) => l.startsWith("manifest") || l.startsWith("gcloud"))).toBe(false);
+    expect(busy.order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
+    expect(busy.order).not.toContain("unlock");
+  });
+
+  it("#815: a release that needs Cloud Shell says so even when the lock is held or denied", async () => {
+    for (const lock of [{ locked: true }, { lockDenied: true }]) {
+      const { deps, order, q } = setup({ meta: { ...META, infraContractVersion: 1 }, ...lock });
+      expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+      expect(q.end()?.codes).toEqual(["infra-contract"]);
+      // A verdict that changes nothing never even asks for the lock.
+      expect(order).not.toContain("lock");
+    }
   });
 
   it("does not call a lock it cannot take 'busy': an access failure asks for Cloud Shell", async () => {
@@ -346,9 +362,61 @@ describe("runUpgraderJob", () => {
     expect(end?.codes).toEqual(["state-access"]);
     expect(end?.reason).not.toContain("another install operation");
     expect(end?.reason).toContain("storage.objects.list denied");
-    expect(denied.order.some((l) => l.startsWith("manifest") || l.startsWith("gcloud"))).toBe(
-      false,
-    );
+    expect(denied.order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
+  });
+
+  it("#815: a dead run's lock broken on the way lands on the timeline", async () => {
+    const { deps, q } = setup({
+      brokeStaleLock: "Removed a stale state lock: caelo upgrader job (run x0) has failed.",
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+    expect(q.events).toContainEqual({
+      phase: "assess",
+      level: "info",
+      message: "Removed a stale state lock: caelo upgrader job (run x0) has failed.",
+    });
+  });
+
+  it("#815: install.json changed by another writer before the lock: stops, writes nothing", async () => {
+    const { deps, order, q, written } = setup();
+    let reads = 0;
+    const r = await runUpgraderJob({
+      ...deps,
+      readInstall: () => {
+        reads += 1;
+        return reads === 1 ? META : { ...META, releaseVersion: "0.10.46" };
+      },
+    });
+    expect(r.status).toBe("failed");
+    expect(q.end()?.codes).toEqual(["install-state-changed"]);
+    expect(written).toEqual([]);
+    expect(order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
+    expect(order).toContain("unlock");
+  });
+
+  it("adversarial #815: two runs at once — one installs, the other finds the lock held", async () => {
+    let holder: string | null = null;
+    const runOf = (id: string) => {
+      const s = setup({ request: { id } });
+      const lockState = () => {
+        if (holder) throw new StateLockHeldError(`held by ${holder}`);
+        holder = id;
+        return () => {
+          holder = null;
+        };
+      };
+      return { ...s, deps: { ...s.deps, lockState } };
+    };
+    const a = runOf("req-a");
+    const b = runOf("req-b");
+    const [ra, rb] = await Promise.all([runUpgraderJob(a.deps), runUpgraderJob(b.deps)]);
+    const statuses = [ra.status, rb.status].sort();
+    expect(statuses).toEqual(["failed", "succeeded"]);
+    const loser = ra.status === "failed" ? a : b;
+    expect(loser.q.end()?.codes).toEqual(["state-locked"]);
+    expect(loser.order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
+    expect(loser.written).toEqual([]);
+    expect(holder).toBeNull();
   });
 
   it("retries recording the end, and fails the run when it cannot", async () => {
@@ -451,14 +519,40 @@ describe("runUpgraderJob", () => {
       infraContractVersion: 2,
     });
     expect(q.events).toContainEqual({
-      phase: "verify",
+      phase: "assess",
       level: "success",
       message: "Caelo refreshed its install records: v0.10.45 serves.",
     });
-    // Refreshed before the target's manifest is judged, and judged against it.
+    // Judged against the serving release, written once the lock is held (#815).
     expect(step(order, /^manifest 0\.10\.45/)).toBeLessThan(step(order, /^manifest 0\.11\.0/));
     expect(q.events.some((e) => e.message.startsWith("0.10.45 → 0.11.0"))).toBe(true);
     expect(written.at(-1)).toMatchObject({ releaseVersion: "0.11.0" });
+  });
+
+  it("#815: drift + a stop verdict: the records are corrected under the lock, the verdict stands", async () => {
+    const drift = {
+      meta: { ...META, imageDigests: { admin: D("9"), gateway: D("2") }, infraContractVersion: 1 },
+      manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+    };
+    const free = setup(drift);
+    expect((await runUpgraderJob(free.deps)).status).toBe("needs_cloud_shell");
+    expect(free.q.end()?.codes).toEqual(["infra-contract"]);
+    expect(free.written).toEqual([
+      expect.objectContaining({ imageDigests: { admin: D("1"), gateway: D("2") } }),
+    ]);
+    expect(free.order.indexOf("lock")).toBeGreaterThan(step(free.order, /^manifest 0\.11\.0/));
+    expect(free.order).toContain("unlock");
+
+    // A held lock only defers the correction; it never replaces the verdict.
+    const busy = setup({ ...drift, locked: true });
+    expect((await runUpgraderJob(busy.deps)).status).toBe("needs_cloud_shell");
+    expect(busy.q.end()?.codes).toEqual(["infra-contract"]);
+    expect(busy.written).toEqual([]);
+    expect(
+      busy.q.events.some(
+        (e) => e.level === "warn" && e.message.includes("could not be corrected this time"),
+      ),
+    ).toBe(true);
   });
 
   it("drift where the recorded version is the serving one needs no tag lookup", async () => {

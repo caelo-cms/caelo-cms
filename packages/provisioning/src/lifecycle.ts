@@ -63,6 +63,7 @@ import {
   type ResolvedBackend,
   resolveBackend,
 } from "./state-backend.js";
+import { acquireStateLock, realSyncGcloud } from "./state-store.js";
 import {
   type AppRollPlan,
   type ReleaseImage,
@@ -491,6 +492,44 @@ async function upgradeInstall(
   const provider = meta.provider;
   const projectId = meta.projectId;
 
+  // #815 — the install's state lock, the one the in-app upgrader job,
+  // `pulumi up` and `state migrate` take: a Cloud Shell upgrade must not
+  // race an Owner-started or automatic job run. The local copy always
+  // names where the state lives (install-state.ts stateStoreFor). A lock
+  // left by a job whose run has ended is broken automatically.
+  const backend = readLocalMetadata(installId)?.stateBackend;
+  let releaseLock: () => void;
+  try {
+    releaseLock = acquireStateLock(
+      backend?.kind === "gcs" ? { kind: "gcs", bucket: backend.bucket } : { kind: "local" },
+      installRoot(installId),
+      "cms-provision upgrade",
+      realSyncGcloud,
+      { onBreak: (message) => log.info(message) },
+    );
+  } catch (e) {
+    log.error(red(`Nothing was changed: ${e instanceof Error ? e.message : String(e)}`));
+    return false;
+  }
+  try {
+    return await upgradeLockedInstall(installId, meta, opts, provider, projectId);
+  } finally {
+    try {
+      releaseLock();
+    } catch (e) {
+      log.warn(yellow(e instanceof Error ? e.message : String(e)));
+    }
+  }
+}
+
+/** {@link upgradeInstall} once it holds the install's state lock. */
+async function upgradeLockedInstall(
+  installId: string,
+  meta: InstallMetadata,
+  opts: UpgradeOpts,
+  provider: "gcp" | "gcp-firebase",
+  projectId: string,
+): Promise<boolean> {
   // #607 — upgrade never moves an install: a `--region` other than the
   // recorded one is refused before anything rolls.
   const region = installRegion(meta, opts.region);

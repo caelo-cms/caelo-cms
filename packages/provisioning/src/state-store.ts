@@ -23,11 +23,17 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { hostname } from "node:os";
 import { join } from "node:path";
 import { assertNoCheckpointSecrets, assertNoSecrets } from "./checkpoint-secrets.js";
 import { type GcloudResult, gcloudEnv } from "./gcloud.js";
 import { OPS_INSTALL_PREFIX } from "./state-backend.js";
+import {
+  describeExecutionArgs,
+  type ExecutionLockHolder,
+  judgeHeldLock,
+  lockBody,
+  parseExecutionState,
+} from "./state-lock-lease.js";
 
 /** The two documents a store holds. */
 export type StateFile = "install.json" | "progress.json";
@@ -176,46 +182,165 @@ export function bucketStateLockUrl(bucket: string): string {
   return `gs://${bucket}/${OPS_INSTALL_PREFIX}/state.lock`;
 }
 
-/** Who holds a lock, for the refusal message. */
-function lockBody(purpose: string): string {
-  return JSON.stringify({
-    purpose,
-    host: hostname(),
-    pid: process.pid,
-    startedAt: new Date().toISOString(),
-  });
+/** gcloud's wording for a failed `--if-generation-match` precondition. */
+const PRECONDITION_FAILED = /PreconditionFailed|412|At least one of the pre-conditions/i;
+
+/** How a bucket lock is taken: who holds it, and the clock to judge leases by. */
+export interface BucketLockOptions {
+  /**
+   * The Cloud Run execution taking the lock (#815). With it the lock
+   * carries a lease, and a later run may break it once Cloud Run says this
+   * execution has finished. Without it (a CLI run) the lock is only ever
+   * removed by its holder or by hand.
+   */
+  readonly holder?: ExecutionLockHolder;
+  /** Told when a dead holder's lock was broken, with why. */
+  readonly onBreak?: (message: string) => void;
+  readonly now?: () => Date;
 }
 
 /**
  * The install's state lock in its ops bucket, created only if absent
  * (`--if-generation-match=0`). Held by every writer of a bucket-backed
- * install's state — an installer run's `pulumi up`, `state migrate` — so
- * none writes a backend another is switching away from. A lock left by a
- * crashed run is reported with the command to remove it, never broken
- * automatically.
+ * install's state — an installer run's `pulumi up`, `state migrate`, the
+ * CLI `upgrade`, the upgrader job — so none writes a backend another is
+ * switching away from.
  *
- * @returns the release function
+ * A lock that is held is judged (state-lock-lease.ts): one whose Cloud Run
+ * execution has finished, or whose execution is gone after its lease, is
+ * broken with a generation-matched delete and taken once more. The
+ * generation is read BEFORE the body, so the delete can only remove the
+ * lock that was judged: if another run replaced it in between, the
+ * delete's precondition fails and nothing is removed. Two runs breaking the
+ * same dead lock cannot both win either — the slower one's create fails
+ * its own precondition and reports the lock as held.
+ *
+ * @returns the release function; it deletes only this lock's generation
+ * @throws StateLockHeldError when another run holds the lock
+ * @throws Error when the lock or its holder cannot be read (no access)
  */
 export function acquireBucketStateLock(
   bucket: string,
   purpose: string,
   run: SyncGcloud = realSyncGcloud,
+  opts: BucketLockOptions = {},
 ): () => void {
   const url = bucketStateLockUrl(bucket);
-  const r = run(["storage", "cp", "-", url, "--if-generation-match=0"], lockBody(purpose));
-  if (!r.ok) {
-    if (/PreconditionFailed|412|At least one of the pre-conditions/i.test(r.stderr)) {
-      const held = run(["storage", "cat", url]);
+  const now = opts.now ?? (() => new Date());
+  const create = () =>
+    run(
+      ["storage", "cp", "-", url, "--if-generation-match=0"],
+      lockBody(purpose, now(), opts.holder),
+    );
+  let r = create();
+  if (!r.ok && PRECONDITION_FAILED.test(r.stderr)) {
+    breakDeadLock(url, run, now(), opts.onBreak);
+    r = create();
+    if (!r.ok && PRECONDITION_FAILED.test(r.stderr)) {
       throw new StateLockHeldError(
-        `Another run is changing this install's state (${held.ok ? held.stdout.trim() : url}). Re-run once it has finished; if none is running, remove the stale lock: gcloud storage rm ${url}`,
+        `Another run took this install's state lock at the same moment (${readLockText(url, run)}). Re-run once it has finished.`,
       );
     }
-    throw new Error(`Could not take the state lock ${url}: ${r.stderr.trim()}`);
+  }
+  if (!r.ok) throw new Error(`Could not take the state lock ${url}: ${r.stderr.trim()}`);
+  const own = lockGeneration(url, run);
+  if (own.kind !== "found") {
+    // Ours, just created; without its generation the release could delete
+    // a successor's lock, so give it back now rather than hold it blind.
+    run(["storage", "rm", url]);
+    throw new Error(
+      `Could not read the generation of the state lock ${url} this run just took${own.kind === "error" ? `: ${own.error}` : ""}`,
+    );
   }
   return () => {
-    const rm = run(["storage", "rm", url]);
-    if (!rm.ok) throw new Error(`Could not release ${url}; remove it: gcloud storage rm ${url}`);
+    const rm = run(["storage", "rm", url, `--if-generation-match=${own.generation}`]);
+    if (rm.ok) return;
+    if (PRECONDITION_FAILED.test(rm.stderr) || NOT_FOUND.test(rm.stderr)) {
+      throw new Error(
+        `The state lock ${url} was no longer this run's when it finished (another run broke it); it was left alone.`,
+      );
+    }
+    throw new Error(`Could not release ${url}; remove it: gcloud storage rm ${url}`);
   };
+}
+
+type LockGeneration =
+  | { readonly kind: "found"; readonly generation: string }
+  | { readonly kind: "absent" }
+  | { readonly kind: "error"; readonly error: string };
+
+/** The lock object's current generation. */
+function lockGeneration(url: string, run: SyncGcloud): LockGeneration {
+  const d = run(["storage", "objects", "describe", url, "--format=json"]);
+  if (!d.ok) {
+    return NOT_FOUND.test(d.stderr)
+      ? { kind: "absent" }
+      : { kind: "error", error: d.stderr.trim() || `gcloud exited ${d.exitCode}` };
+  }
+  try {
+    const g = (JSON.parse(d.stdout) as { generation?: unknown }).generation;
+    if (typeof g === "string" || typeof g === "number") {
+      return { kind: "found", generation: String(g) };
+    }
+  } catch {
+    // Reported below with the same message as a missing field.
+  }
+  return { kind: "error", error: "gcloud described the lock without a generation" };
+}
+
+function readLockText(url: string, run: SyncGcloud): string {
+  const held = run(["storage", "cat", url]);
+  return held.ok ? held.stdout.trim() : url;
+}
+
+/**
+ * Judge the held lock at `url` and break it when its holder is dead.
+ * Returns normally when the lock was broken or vanished meanwhile, so the
+ * caller creates it once more; throws when it is live or cannot be judged.
+ */
+function breakDeadLock(
+  url: string,
+  run: SyncGcloud,
+  now: Date,
+  onBreak: ((message: string) => void) | undefined,
+): void {
+  const found = lockGeneration(url, run);
+  if (found.kind === "absent") return;
+  if (found.kind === "error") {
+    throw new Error(`Could not read the state lock ${url} another run holds: ${found.error}`);
+  }
+  const held = run(["storage", "cat", url]);
+  if (!held.ok) {
+    if (NOT_FOUND.test(held.stderr)) return;
+    throw new Error(`Could not read the state lock ${url}: ${held.stderr.trim()}`);
+  }
+  const verdict = judgeHeldLock(
+    held.stdout,
+    (ref) => parseExecutionState(run(describeExecutionArgs(ref))),
+    now,
+  );
+  if (verdict.kind === "unknown") {
+    // Not contention: retrying will not help, and guessing "dead" could let
+    // two runs write the same state.
+    throw new Error(`The state lock ${url} is held and ${verdict.why}`);
+  }
+  if (verdict.kind === "held") {
+    throw new StateLockHeldError(
+      verdict.manualRemoval
+        ? `Another run is changing this install's state (${verdict.why}). Re-run once it has finished; if none is running, remove the stale lock: gcloud storage rm ${url}`
+        : `Another run is changing this install's state: ${verdict.why}. Re-run once it has finished.`,
+    );
+  }
+  const rm = run(["storage", "rm", url, `--if-generation-match=${found.generation}`]);
+  if (!rm.ok && !NOT_FOUND.test(rm.stderr)) {
+    if (PRECONDITION_FAILED.test(rm.stderr)) {
+      throw new StateLockHeldError(
+        `Another run took this install's state lock while this one removed a stale one (${readLockText(url, run)}). Re-run once it has finished.`,
+      );
+    }
+    throw new Error(`Could not remove the stale state lock ${url}: ${rm.stderr.trim()}`);
+  }
+  onBreak?.(`Removed a stale state lock: ${verdict.why}.`);
 }
 
 /**
@@ -227,7 +352,7 @@ export function acquireBucketStateLock(
 export function acquireLocalStateLock(root: string, purpose: string): () => void {
   const path = join(root, "state.lock");
   try {
-    writeFileSync(path, lockBody(purpose), { flag: "wx", mode: 0o600 });
+    writeFileSync(path, lockBody(purpose, new Date()), { flag: "wx", mode: 0o600 });
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EEXIST") {
       throw new StateLockHeldError(
@@ -245,8 +370,9 @@ export function acquireStateLock(
   root: string,
   purpose: string,
   run: SyncGcloud = realSyncGcloud,
+  opts: BucketLockOptions = {},
 ): () => void {
   return backend.kind === "gcs"
-    ? acquireBucketStateLock(backend.bucket, purpose, run)
+    ? acquireBucketStateLock(backend.bucket, purpose, run, opts)
     : acquireLocalStateLock(root, purpose);
 }

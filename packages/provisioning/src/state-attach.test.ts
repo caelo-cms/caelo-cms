@@ -186,6 +186,12 @@ describe("state locks", () => {
       }
       if (args[1] === "cat")
         return objects.has(url) ? ok(objects.get(url)) : fail("matched no objects");
+      if (args[1] === "objects") {
+        const target = args[3] ?? "";
+        return objects.has(target)
+          ? ok(JSON.stringify({ generation: "1" }))
+          : fail("matched no objects");
+      }
       if (args[1] === "rm") return objects.delete(url) ? ok() : fail("matched no objects");
       return fail("unexpected");
     };
