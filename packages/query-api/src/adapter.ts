@@ -424,6 +424,9 @@ export class DatabaseAdapter {
    * the activate path returns the error before any cms_admin mutation.
    */
   async provisionPluginPublicSchema(opts: { pluginId: string; sql: string }): Promise<void> {
+    if (!/^[0-9a-f-]{36}$/i.test(opts.pluginId)) {
+      throw new Error(`provisionPluginPublicSchema: pluginId "${opts.pluginId}" is not a UUID`);
+    }
     if (!this.#skipVerify) await this.verifyRoles();
     await this.#public.transaction(async (tx) => {
       await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
@@ -458,11 +461,14 @@ export class DatabaseAdapter {
    * pool.
    */
   async provisionPluginAdminSchema(opts: { pluginId: string; sql: string }): Promise<void> {
+    if (!/^[0-9a-f-]{36}$/i.test(opts.pluginId)) {
+      throw new Error(`provisionPluginAdminSchema: pluginId "${opts.pluginId}" is not a UUID`);
+    }
     const admin = this.#adminDb("provisionPluginAdminSchema");
     if (!this.#skipVerify) await this.verifyRoles();
     await admin.transaction(async (tx) => {
       await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
-      await tx.execute(sql.raw(`SELECT set_config('caelo.plugin_id', '${opts.pluginId}', true)`));
+      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${opts.pluginId}, true)`);
       await tx.execute(sql.raw(opts.sql));
     });
   }

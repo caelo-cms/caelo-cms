@@ -45,6 +45,8 @@ test.beforeAll(async () => {
       ADMIN_DATABASE_URL: process.env.ADMIN_DATABASE_URL,
       PUBLIC_ADMIN_DATABASE_URL: process.env.PUBLIC_ADMIN_DATABASE_URL,
       PUBLIC_DATABASE_URL: process.env.PUBLIC_DATABASE_URL,
+      // The browser talks to the fixture directly: no proxy in front.
+      CAELO_TRUSTED_PROXY_HOPS: "0",
     },
     stdio: ["ignore", "pipe", "inherit"],
   });

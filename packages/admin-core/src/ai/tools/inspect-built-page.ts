@@ -31,6 +31,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
+import { readStagedBuildFiles, readStagedObject } from "../../deploy/staged-build-files.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -147,31 +148,37 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
     let contentLength: number;
     let location: string;
     if (input.target === "staging") {
-      const bucket = storage.bucket(stagingBucketName);
-      const file = bucket.file(stagingKey);
-      const [exists] = await file.exists();
-      if (!exists) {
-        // Hash-skip: the file was identical to what's already live,
-        // so it's only in the static bucket. Fall back.
-        const liveBucket = storage.bucket(staticBucketName);
-        const liveFile = liveBucket.file(objectKey);
-        const [liveExists] = await liveFile.exists();
-        if (!liveExists) {
-          return {
-            ok: false,
-            content: `Page not found in staging build ${runId} or live bucket. Page may not exist in this build (incremental Stage filtered it out + it's never been published).`,
-          };
-        }
-        const [liveBody] = await liveFile.download();
-        html = liveBody.toString("utf8");
-        contentLength = liveBody.byteLength;
-        location = `gs://${staticBucketName}/${objectKey} (hash-skipped from staging — file is identical to live)`;
-      } else {
-        const [body] = await file.download();
-        html = body.toString("utf8");
-        contentLength = body.byteLength;
-        location = `gs://${stagingBucketName}/${stagingKey}`;
+      // Resolved above (or returned); TS does not carry that narrowing here.
+      if (!runId) throw new Error("inspect_built_page: staging runId unresolved");
+      // Hash-skipped files are only live; readStagedObject falls back to
+      // live for files the build contains, never for a page it dropped
+      // (#842 — that one is still live until Confirm-publish prunes it).
+      const staging = storage.bucket(stagingBucketName);
+      let object: Awaited<ReturnType<typeof readStagedObject>>;
+      try {
+        object = await readStagedObject({
+          staging,
+          live: storage.bucket(staticBucketName),
+          runId,
+          buildFiles: await readStagedBuildFiles(staging, runId),
+          key: objectKey,
+        });
+      } catch (e) {
+        // A run staged by an older release (no file list) or a live copy
+        // removed after Stage — the message names the fix (Run Stage again).
+        return { ok: false, content: (e as Error).message };
       }
+      if (!object) {
+        return {
+          ok: false,
+          content: `Page not in staging build ${runId} (gs://${stagingBucketName}/${stagingKey}). The page was not published (still a draft) or not part of this build when it was staged — publish it and run Stage again.`,
+        };
+      }
+      html = object.body.toString("utf8");
+      contentLength = object.body.byteLength;
+      location = object.fromLive
+        ? `${object.location} (hash-skipped from staging — file is identical to live)`
+        : object.location;
     } else {
       const bucket = storage.bucket(staticBucketName);
       const file = bucket.file(objectKey);

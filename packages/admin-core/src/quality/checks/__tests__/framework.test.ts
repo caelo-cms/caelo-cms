@@ -15,6 +15,7 @@ import { CheckRegistry, createCoreCheckRegistry, LIGHTHOUSE_CHECK_ID } from "../
 import { runFindingChecks } from "../runner.js";
 import {
   metaDescriptions,
+  NO_PROBE_BUILD,
   PLACEHOLDER_RULE,
   placeholderDescriptionCheck,
 } from "./fixtures/test-checks.js";
@@ -69,12 +70,26 @@ describe("findings shape", () => {
 describe("CheckRegistry", () => {
   const check: PageCheck = { id: "demo", title: "Demo", scope: "page", run: () => [] };
 
-  it("core registers Lighthouse only; findings checks come from plugins", () => {
+  it("core registers Lighthouse and its structure (#820) and links (#849) checks", () => {
     const r = createCoreCheckRegistry({
       lighthouse: async () => ({ ok: true, pages: [], pageErrors: [] }),
+      structure: { modules: async () => [], layouts: async () => [] },
+      links: {
+        modules: async () => [],
+        layouts: async () => [],
+        redirects: async () => [],
+        siteUrls: async () => [],
+      },
     });
-    expect(r.list().map((e) => [e.id, e.kind])).toEqual([[LIGHTHOUSE_CHECK_ID, "lighthouse"]]);
-    expect(r.findingChecks()).toEqual([]);
+    expect(r.list().map((e) => [e.id, e.kind])).toEqual([
+      [LIGHTHOUSE_CHECK_ID, "lighthouse"],
+      ["structure", "findings"],
+      ["links", "findings"],
+    ]);
+    expect(r.findingChecks().map((e) => [e.id, e.scope, e.source])).toEqual([
+      ["structure", "site", { kind: "core" }],
+      ["links", "site", { kind: "core" }],
+    ]);
     expect(r.lighthouse()?.id).toBe("lighthouse");
   });
 
@@ -122,6 +137,7 @@ describe("runFindingChecks", () => {
         },
       }),
       pages,
+      NO_PROBE_BUILD,
     );
     expect(seen).toEqual(["/", "/about"]);
     expect(r.errors).toEqual([]);
@@ -144,6 +160,7 @@ describe("runFindingChecks", () => {
         },
       }),
       pages,
+      NO_PROBE_BUILD,
     );
     expect(calls).toBe(1);
     expect(r.findings.map((f) => f.pageId)).toEqual([P2, undefined]);
@@ -160,6 +177,7 @@ describe("runFindingChecks", () => {
         },
       }),
       pages,
+      NO_PROBE_BUILD,
     );
     expect(throwing.errors[0]?.message).toContain("check 't' failed: boom");
 
@@ -171,6 +189,7 @@ describe("runFindingChecks", () => {
         run: () => [{ ruleId: "m/x", severity: "bad", message: "x" } as unknown as Finding],
       }),
       pages,
+      NO_PROBE_BUILD,
     );
     expect(malformed.errors[0]?.message).toContain("invalid finding (severity");
 
@@ -182,12 +201,14 @@ describe("runFindingChecks", () => {
         run: () => [{ ruleId: "other/x", severity: "info", message: "x" }],
       }),
       pages,
+      NO_PROBE_BUILD,
     );
     expect(foreign.errors[0]?.message).toContain("does not belong to check 'f'");
 
     const notArray = await runFindingChecks(
       entry({ id: "n", title: "n", scope: "site", run: () => ({}) as unknown as Finding[] }),
       pages,
+      NO_PROBE_BUILD,
     );
     expect(notArray.errors[0]?.message).toContain("did not return an array");
   });
@@ -201,6 +222,7 @@ describe("runFindingChecks", () => {
         run: () => [{ ruleId: "o/x", severity: "error", pageId: P2, message: "x" }],
       }),
       [pages[0] as StagedPage],
+      NO_PROBE_BUILD,
     );
     expect(other.errors[0]).toMatchObject({ checkId: "o", pageId: P1 });
     const unknown = await runFindingChecks(
@@ -218,6 +240,7 @@ describe("runFindingChecks", () => {
         ],
       }),
       pages,
+      NO_PROBE_BUILD,
     );
     expect(unknown.errors[0]?.message).toContain("not a page of the staged build");
   });

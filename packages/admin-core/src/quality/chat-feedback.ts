@@ -27,7 +27,9 @@
  * the operator's click (no unbounded AI spend on one click, CLAUDE.md §4).
  * Past either, every further round needs the operator's click again. A
  * picked fix ("leave the others alone") never continues on its own, and the
- * panel's Stop latch (#672) holds it back.
+ * panel's Stop latch (#672) holds it back. Nor does a round during which the
+ * operator accepted or revoked a finding (`operatorDecided`): deciding on
+ * the card is the operator taking over, so the next round is theirs to start.
  *
  * #727 "optimum, not good enough": the target is 100 and zero findings, and
  * the card groups the OPEN problems by rule across pages. Per group the
@@ -127,6 +129,12 @@ export interface ChatAuditSummary {
     readonly now: FixDistance;
     /** AI spend of the chat since the click that started the chain. */
     readonly spentMicrocents: number;
+    /**
+     * #685 — an editor accepted or revoked a quality decision on these
+     * pages after the "Fix all with AI" request of this round: the
+     * operator took over, so the next round waits for their click.
+     */
+    readonly operatorDecided: boolean;
   } | null;
 }
 
@@ -296,6 +304,16 @@ function problemsOffer(audit: ChatAuditSummary): ChatFeedback {
   const groupsCopy = [...audit.groups];
   const chain = audit.fixChain;
   const progressed = chain !== null && madeProgress(chain.before, chain.now);
+  if (chain?.operatorDecided) {
+    return {
+      kind: "offer",
+      text: `${lead} You decided on findings while the AI was fixing (it went from ${describeDistance(chain.before)} to ${describeDistance(chain.now)}), so it does not continue on its own. Publish live stays blocked until each is fixed or accepted — let it keep fixing, or decide per group below.`,
+      actionLabel: "Keep fixing with AI",
+      prompt,
+      groups: groupsCopy,
+      autoContinue: false,
+    };
+  }
   if (chain && progressed && audit.fixRound >= MAX_AUTO_FIX_ROUNDS) {
     return {
       kind: "offer",

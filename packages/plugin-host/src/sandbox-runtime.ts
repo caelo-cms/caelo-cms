@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { validateSource } from "@caelo-cms/plugin-sandbox";
 import type { PluginContext, PluginContextTier1, PluginManifest } from "@caelo-cms/plugin-sdk";
 import { z } from "zod";
-import { sandboxEntrySource } from "./sandbox-entry.js";
+import { sandboxEntrySource, sandboxPreludeSource } from "./sandbox-entry.js";
 import {
   SANDBOX_CALL_LIMIT,
   SANDBOX_MESSAGE_BYTES,
@@ -139,6 +139,9 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
   }
 }
 
+/** The modules `caelo:entry` imports; nothing else may resolve into the namespace. */
+const BOOTSTRAP_IMPORTS: ReadonlySet<string> = new Set(["caelo:prelude", "caelo:plugin"]);
+
 async function bundle(source: string): Promise<string> {
   const failures = validateSource({ source, filename: "external-plugin.ts" });
   if (failures.length)
@@ -166,13 +169,27 @@ export async function buildIsolatedBundle(source: string): Promise<string> {
       {
         name: "isolated-plugin",
         setup(build) {
-          build.onResolve({ filter: /^caelo:/ }, (args) => ({
-            path: args.path,
-            namespace: "caelo",
-          }));
+          // Only the trusted entry may name the bootstrap modules. Plugin
+          // code importing "caelo:prelude" would get the captured stdout
+          // writer; importing "caelo:entry" would re-run the protocol loop.
+          build.onResolve({ filter: /^caelo:/ }, (args) => {
+            const fromEntry = args.importer === "caelo:entry";
+            const isEntrypoint = args.path === "caelo:entry" && args.kind === "entry-point-build";
+            if (!isEntrypoint && !(fromEntry && BOOTSTRAP_IMPORTS.has(args.path))) {
+              throw new Error(
+                `SandboxResolveDenied: plugin code may import only "@caelo-cms/plugin-sdk" (asked for "${args.path}")`,
+              );
+            }
+            return { path: args.path, namespace: "caelo" };
+          });
           build.onLoad({ filter: /.*/, namespace: "caelo" }, (args) => ({
-            contents: args.path === "caelo:entry" ? sandboxEntrySource : source,
-            loader: "ts",
+            contents:
+              args.path === "caelo:entry"
+                ? sandboxEntrySource
+                : args.path === "caelo:prelude"
+                  ? sandboxPreludeSource
+                  : source,
+            loader: args.path === "caelo:plugin" ? "ts" : "js",
           }));
           build.onResolve({ filter: /^@caelo-cms\/plugin-(sdk|component-kit)$/ }, (args) => ({
             path: import.meta.resolve(args.path).replace(/^file:\/\//, ""),
@@ -210,7 +227,21 @@ export async function buildIsolatedBundle(source: string): Promise<string> {
 
 let running = 0;
 /** Execute one operation with no filesystem, network, environment, subprocess or FFI permissions. */
-export async function runSandbox(invocation: SandboxInvocation): Promise<unknown> {
+export function runSandbox(invocation: SandboxInvocation): Promise<unknown> {
+  return runSandboxWithBundler(invocation, bundle);
+}
+
+/**
+ * `runSandbox` with the bundling step supplied by the caller. Production
+ * code calls `runSandbox`, whose bundler runs `validateSource` first; the
+ * runtime-layer tests pass `buildIsolatedBundle` directly so source the
+ * validator would refuse still reaches Deno, proving the second layer
+ * (permissions, prelude, code-generation ban) holds on its own.
+ */
+export async function runSandboxWithBundler(
+  invocation: SandboxInvocation,
+  build: (source: string) => Promise<string>,
+): Promise<unknown> {
   if (running >= 4) throw new Error("SandboxBusy: retry after another invocation completes");
   running++;
   let directory: string | undefined;
@@ -221,7 +252,7 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
   try {
     if (Buffer.byteLength(invocation.source) > 16_000_000) throw new Error("SandboxSourceTooLarge");
     await invocation.authorize();
-    const code = await bundle(invocation.source);
+    const code = await build(invocation.source);
     directory = await mkdtemp(join(tmpdir(), "caelo-plugin-"));
     const entry = join(directory, "entry.mjs");
     await writeFile(entry, code, { mode: 0o600 });
@@ -244,7 +275,9 @@ export async function runSandbox(invocation: SandboxInvocation): Promise<unknown
         "--deny-run",
         "--deny-ffi",
         "--deny-sys",
-        "--v8-flags=--max-old-space-size=256",
+        // eval / Function / the constructor-of-a-function trick all die
+        // here at runtime, whatever spelling slipped past the validator.
+        "--v8-flags=--max-old-space-size=256,--disallow-code-generation-from-strings",
         entry,
       ],
       {

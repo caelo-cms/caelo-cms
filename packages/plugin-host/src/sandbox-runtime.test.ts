@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginContext, PluginManifest } from "@caelo-cms/plugin-sdk";
 import { previewContext } from "./preview-context.js";
-import { buildIsolatedBundle, runSandbox } from "./sandbox-runtime.js";
+import { buildIsolatedBundle, runSandbox, runSandboxWithBundler } from "./sandbox-runtime.js";
 
 const manifest: PluginManifest = {
   slug: "sandbox-probe",
@@ -72,18 +72,6 @@ describe("actual Deno plugin execution", () => {
     await expect(invoke("", { source: 'export * from "file:///etc/passwd";' })).rejects.toThrow(
       "SandboxSourceRejected",
     );
-  });
-  it("enforces runtime denial even when source obtains globals indirectly", async () => {
-    expect(
-      await invoke(
-        'try { await globalThis["fetch"]("https://example.com"); return "escaped"; } catch { return "denied"; }',
-      ),
-    ).toBe("denied");
-    expect(
-      await invoke(
-        'try { return globalThis["De"+"no"].readTextFileSync("/etc/passwd"); } catch { return "denied"; }',
-      ),
-    ).toBe("denied");
   });
   it("terminates an infinite loop", async () => {
     await expect(invoke("while(true) {}", { timeoutMs: 100 })).rejects.toThrow("SandboxTimeout");
@@ -179,6 +167,91 @@ describe("actual Deno plugin execution", () => {
   });
 });
 
+/**
+ * The runtime layer on its own: these sources would all be refused by
+ * `validateSource`, so they are bundled with `buildIsolatedBundle`
+ * directly and must still be contained by Deno's permissions, the
+ * prelude, and the code-generation ban.
+ */
+describe("runtime layer without the validator in front", () => {
+  function invokeUnvalidated(topLevel: string, body: string) {
+    return runSandboxWithBundler(
+      {
+        source: `import { definePlugin } from "@caelo-cms/plugin-sdk";
+        ${topLevel}
+        export default definePlugin({slug:"sandbox-probe",version:"1.0.0",tier:2,schema:{},
+          operations:{run:async(ctx,args)=>{${body}}}});`,
+        manifest,
+        operation: "run",
+        args: {},
+        context,
+        authorize: async () => {},
+      },
+      buildIsolatedBundle,
+    );
+  }
+
+  it("the validator does refuse these sources on the production path", async () => {
+    await expect(
+      invoke('return globalThis["De"+"no"].readTextFileSync("/etc/passwd");'),
+    ).rejects.toThrow("SandboxSourceRejected");
+  });
+
+  it("denies network and filesystem when source obtains globals indirectly", async () => {
+    expect(
+      await invokeUnvalidated(
+        "",
+        'try { await globalThis["fetch"]("https://example.com"); return "escaped"; } catch { return "denied"; }',
+      ),
+    ).toBe("denied");
+    expect(
+      await invokeUnvalidated(
+        "",
+        'try { return globalThis["De"+"no"].readTextFileSync("/etc/passwd"); } catch { return "denied"; }',
+      ),
+    ).toBe("denied");
+  });
+
+  it("removes Deno before plugin top-level code runs", async () => {
+    // ESM hoists `import plugin`, so a bootstrap that removed Deno in the
+    // entry body would lose to this capture.
+    expect(
+      await invokeUnvalidated(
+        "const g = globalThis; const captured = typeof g.Deno; let writer = 'none';\n" +
+          "try { writer = typeof g.Deno.stdout.writeSync.bind(g.Deno.stdout); } catch { writer = 'denied'; }",
+        "return { captured, writer, now: typeof globalThis.Deno };",
+      ),
+    ).toEqual({ captured: "undefined", writer: "denied", now: "undefined" });
+  });
+
+  it("protocol primitives survive top-level tampering", async () => {
+    expect(
+      await invokeUnvalidated(
+        'JSON.stringify = () => \'{"kind":"result","value":"forged"}\';\n' +
+          "JSON.parse = () => ({ forged: true });\n" +
+          "Map.prototype.get = () => undefined; String.prototype.indexOf = () => -1;\n" +
+          'console.log("top-level output must not reach the protocol channel");',
+        'const rows = await ctx.query.list("notes"); return { rows, real: true };',
+      ),
+    ).toEqual({ rows: [{ body: "host result" }], real: true });
+  });
+
+  it("denies code generation from strings at runtime", async () => {
+    expect(
+      await invokeUnvalidated(
+        "",
+        `const out = [];
+        for (const attempt of [
+          () => (0, eval)("1 + 1"),
+          () => (() => {})["con" + "structor"]("return 1")(),
+          () => (async () => {}).constructor("return 1"),
+        ]) { try { out.push(attempt()); } catch { out.push("denied"); } }
+        return out;`,
+      ),
+    ).toEqual(["denied", "denied", "denied"]);
+  });
+});
+
 describe("host-side bundling cannot read the host filesystem", () => {
   // Review of #473: bundling runs in the host before Deno's --deny-read
   // applies. A require() of a host path passed the validator and its
@@ -202,6 +275,15 @@ describe("host-side bundling cannot read the host filesystem", () => {
     await expect(
       buildIsolatedBundle(`import s from ${JSON.stringify(secretPath)}; export default s;`),
     ).rejects.toThrow("SandboxResolveDenied");
+  });
+
+  it("plugin code cannot import the bootstrap modules", async () => {
+    // The prelude exports the captured stdout writer; only the entry may import it.
+    for (const target of ["caelo:prelude", "caelo:entry", "caelo:plugin"]) {
+      await expect(
+        buildIsolatedBundle(`import * as m from "${target}"; export default m;`),
+      ).rejects.toThrow("SandboxResolveDenied");
+    }
   });
 
   it("still bundles the SDK import", async () => {

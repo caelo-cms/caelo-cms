@@ -23,7 +23,17 @@ describe("parseVisitorOpEvents (#635)", () => {
       "row",
     ]);
     expect(rows.map((r) => r.id)).toEqual(["1", "2"]);
-    expect(dropped).toBe(6);
+    expect(dropped).toHaveLength(6);
+  });
+
+  it("reports a forged non-UUID entity_id with its id, op and reason (PR #844)", () => {
+    const { rows, dropped } = parseVisitorOpEvents([
+      { id: "9", operation: "ratings.submit", entity_id: "not-a-uuid'::uuid", succeeded: true },
+    ]);
+    expect(rows).toEqual([]);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toMatchObject({ id: "9", operation: "ratings.submit" });
+    expect(dropped[0]?.reason).toContain("entity_id");
   });
 });
 

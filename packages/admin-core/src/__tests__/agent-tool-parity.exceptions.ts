@@ -53,6 +53,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     by: ["stage_changes"],
     note: "isolated chats' merge step of the Stage flow (stage/stage-chats.ts)",
   },
+  "themes.ensure_favicon_rendition": {
+    kind: "covered",
+    by: ["deploy_staging", "stage_changes"],
+    note: "pre-build step of deploy.trigger: creates the active theme favicon's 64 px rendition when missing",
+  },
   "chat.finalize_stage": {
     kind: "covered",
     by: ["stage_changes"],

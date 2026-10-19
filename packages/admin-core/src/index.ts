@@ -67,6 +67,12 @@ export {
   sweepChatImagesOnce,
 } from "./chat-image-gc-worker.js";
 export * from "./csrf.js";
+// #842 — reading a staged GCS run (admin staging preview).
+export {
+  readStagedBuildFiles,
+  readStagedObject,
+  StagedRunError,
+} from "./deploy/staged-build-files.js";
 // #650 — which installs serve staging at a protected staging.<domain>.
 export { providerHasStagingDomain } from "./deploy/staging-domain.js";
 // P11.5 audit fix #3 — exposed for plugin-host's PluginHostInfra DI.
@@ -92,6 +98,7 @@ export { lockPluginRow } from "./locks.js";
 export { assertDurableMediaRoot, type MediaStorageSetup } from "./media/durable-root.js";
 export * from "./media/pipeline.js";
 export { resolvePrivatePreviewImages } from "./media/private-preview-images.js";
+export { sanitizeSvg } from "./media/sanitize-svg.js";
 export * from "./media/storage.js";
 // #589 — approver permissions declared on the §11.A executor ops.
 export { approverPermissionsOf } from "./ops/_approver-permission.js";

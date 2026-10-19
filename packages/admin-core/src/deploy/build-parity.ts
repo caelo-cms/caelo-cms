@@ -30,6 +30,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { PARITY_REFUSAL_PREFIX, RESTAGE_NEXT_STEP } from "@caelo-cms/shared";
 
 /**
  * Build artefacts that legitimately differ between two builds of the same
@@ -163,10 +164,27 @@ export function manifestsMatch(diff: ManifestDiff): boolean {
 /**
  * The operator/AI-facing refusal for a non-empty diff, naming the first
  * differing files of each kind and the next step; null when they match.
+ *
+ * #834 — the cause is named from the Caelo versions: when the staged build
+ * was rendered by another Caelo version than the one rebuilding it now,
+ * the upgrade is the cause and is said first (the new generator renders
+ * the same content differently). When the staged build predates version
+ * recording (`stagedCaeloVersion` null), the message says the version is
+ * unknown instead of guessing either cause.
+ *
+ * @param args.stagedCaeloVersion `deploy_runs.caelo_version` of the
+ *   staged run; null when it was staged before Caelo recorded it.
+ * @param args.runningCaeloVersion the version rebuilding for live
+ *   (`CAELO_VERSION`).
  */
 export function parityRefusal(
   diff: ManifestDiff,
-  args: { readonly stagingRunId: string; readonly limit?: number },
+  args: {
+    readonly stagingRunId: string;
+    readonly stagedCaeloVersion: string | null;
+    readonly runningCaeloVersion: string;
+    readonly limit?: number;
+  },
 ): string | null {
   if (manifestsMatch(diff)) return null;
   const limit = args.limit ?? 10;
@@ -179,9 +197,25 @@ export function parityRefusal(
     list("only in the live build", diff.added),
     list("missing from the live build", diff.removed),
   ].filter((p): p is string => p !== null);
+  const differs = `the live build differs from staged build ${args.stagingRunId} in more than the host — ${parts.join("; ")}.`;
+  const unreviewed = "Live would get something nobody reviewed on staging.";
+  const { stagedCaeloVersion: staged, runningCaeloVersion: running } = args;
+  if (staged !== null && staged !== running) {
+    return (
+      `${PARITY_REFUSAL_PREFIX} Caelo was updated from ${staged} to ${running} since this Stage, and the new version renders the site differently — ${differs} ` +
+      `${unreviewed} ${RESTAGE_NEXT_STEP}`
+    );
+  }
+  if (staged === null) {
+    return (
+      `${PARITY_REFUSAL_PREFIX} ${differs} ` +
+      `The Caelo version that made this Stage is unknown (it was staged before Caelo recorded versions), so the cause is either a Caelo update to ${running} since then or a site change after that Stage (another edit was merged, a plugin or setting changed). ` +
+      `${unreviewed} ${RESTAGE_NEXT_STEP}`
+    );
+  }
   return (
-    `Publish live stopped: the live build differs from staged build ${args.stagingRunId} in more than the host — ${parts.join("; ")}. ` +
-    "The site changed after that Stage (another edit was merged, a plugin or setting changed), so live would get something nobody reviewed on staging. " +
-    "Next step: Stage again (stage_changes / deploy_staging), check staging, then Publish live."
+    `${PARITY_REFUSAL_PREFIX} ${differs} ` +
+    "The site changed after that Stage (another edit was merged, a plugin or setting changed). " +
+    `${unreviewed} ${RESTAGE_NEXT_STEP}`
   );
 }

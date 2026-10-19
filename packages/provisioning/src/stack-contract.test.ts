@@ -158,10 +158,19 @@ describe("gatewayEnvContract", () => {
       CAELO_PROVIDER: "gcp",
       CAELO_ENV: "production",
       MEDIA_STORAGE_URL: "gs://acme-caelo-production-media",
+      // #845 — gcp: the LB appends <client>,<LB IP>.
+      CAELO_TRUSTED_PROXY_HOPS: "2",
       PUBLIC_DATABASE_URL: "postgresql://public_role@10.20.0.3:5432/cms_public?sslmode=require",
       PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
       CAELO_STAGING_GATE_SECRET: "secret:caelo-production-staging-gate-secret:latest",
     });
+  });
+
+  it("#845 — tells the gateway its provider's proxy hop count", () => {
+    // Firebase Hosting / the domain mapping: Cloud Run's front end only.
+    const fb = asRecord(gatewayEnvContract({ ...base, provider: "gcp-firebase" }));
+    expect(fb.CAELO_TRUSTED_PROXY_HOPS).toBe("1");
+    expect(asRecord(gateway).CAELO_TRUSTED_PROXY_HOPS).toBe("2");
   });
 
   it("#650 — reads the staging host from the database, not its env", () => {
@@ -223,14 +232,13 @@ describe("database role secrets (#613)", () => {
     expect(DATABASE_ROLE_SECRET).toEqual({
       admin_role: "postgres-password",
       public_role: "public-role-password",
-      gateway_role: "gateway-role-password",
     });
   });
 
-  it("the CLI generates the gateway's role passwords (never seeded from admin_role's)", () => {
-    expect(CLI_GENERATED_SECRETS).toEqual(
-      expect.arrayContaining(["public-role-password", "gateway-role-password"]),
-    );
+  it("the CLI generates the gateway's role password (never seeded from admin_role's)", () => {
+    expect(CLI_GENERATED_SECRETS).toContain("public-role-password");
+    // #635 — the former gateway_role is gone; nothing generates its password.
+    expect(CLI_GENERATED_SECRETS as readonly string[]).not.toContain("gateway-role-password");
   });
 
   it("retires the gateway SA's read access to admin_role's password", () => {
@@ -287,11 +295,7 @@ describe("runtime secrets", () => {
   });
 
   it("every CLI-generated secret is read by some service", () => {
-    // gateway-role-password is read by no service since #635: it only keeps
-    // the legacy gateway_role's password set until the contract release
-    // drops the role (the previous release's gateway logs in with it while
-    // an upgrade rolls).
-    for (const s of CLI_GENERATED_SECRETS.filter((x) => x !== "gateway-role-password")) {
+    for (const s of CLI_GENERATED_SECRETS) {
       expect([...serviceSecrets("admin"), ...serviceSecrets("gateway")]).toContain(s);
     }
   });
@@ -302,7 +306,7 @@ describe("self-hosted compose", () => {
     const yaml = generateDockerCompose({
       domain: "acme.com",
       postgresPassword: "p",
-      rolePasswords: { admin: "a", public: "b", gateway: "g" },
+      rolePasswords: { admin: "a", public: "b" },
       caeloSecretKek: "k",
       diskSize: "10G",
       ports: { http: 80, https: 443 },

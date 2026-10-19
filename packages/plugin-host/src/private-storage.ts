@@ -19,7 +19,7 @@
  * main and on a branch (the overlay comes from JSON snapshots).
  */
 
-import { gatewayReadableColumns } from "@caelo-cms/plugin-sandbox";
+import { privateReadColumns } from "@caelo-cms/plugin-sandbox";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -326,9 +326,7 @@ function jsonEqual(a: unknown, b: unknown): boolean {
  * (CMS_REQUIREMENTS §14.5).
  *
  * A read (`access: "read"`) checks the same state without the lock: there
- * is no write for a revocation to wait for, and `FOR SHARE` needs UPDATE
- * privilege on `plugins`, which the API gateway's read-only role — where
- * visitor operations read private storage (#613) — does not have.
+ * is no write for a revocation to wait for.
  *
  * @returns null when allowed, else the reason
  */
@@ -405,15 +403,13 @@ function notFound(operation: string, rowId: string): { ok: false; message: strin
 }
 
 /**
- * A row as JSON built from named columns only — never `to_jsonb(t)`, whose
- * whole-row reference needs SELECT on every physical column. The API
- * gateway's role may read just the declared columns (plugin-sandbox
- * `gatewayReadableColumns`, #613), and a column a plugin update dropped from
- * its spec must not come back in a list either. `jsonb_build_object` takes
+ * A row as JSON built from named columns only — never `to_jsonb(t)`: a
+ * column a plugin update dropped from its spec (plugin-sandbox
+ * `privateReadColumns`) must not come back in a list. `jsonb_build_object` takes
  * at most 100 arguments, so the pairs are built in chunks and merged.
  */
 function declaredRowJson(columns: Readonly<Record<string, string>>) {
-  const names = gatewayReadableColumns(columns);
+  const names = privateReadColumns(columns);
   const chunks: ReturnType<typeof sql>[] = [];
   for (let i = 0; i < names.length; i += 40) {
     const pairs = names.slice(i, i + 40).map((n) => sql`${n}::text, t.${col(n)}`);

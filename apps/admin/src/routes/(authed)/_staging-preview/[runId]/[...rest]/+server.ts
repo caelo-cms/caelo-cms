@@ -23,7 +23,9 @@
  * Stage's hash-skip filtered it out — the file is identical to live),
  * fall back to the static bucket so the staged page still renders
  * complete. Without the fallback an incremental Stage would 404 on
- * every unchanged asset.
+ * every unchanged asset. Only files the staged build contains fall
+ * back (#842): a page the build deleted is still live until
+ * Confirm-publish prunes it, and must 404 here like it will live.
  *
  * Asset URLs in the staged HTML are absolute paths like
  * `/_app/immutable/...` — they hit /_app/... NOT /_staging-preview/<runId>/_app/....
@@ -34,104 +36,16 @@
  * is rewritten to /_staging-preview/<runId>/ before the response is
  * sent. (Future v0.2.79 polish — for v0.2.78 we accept that some
  * intra-page links may resolve against the live site.)
+ *
+ * The request handling (incl. mapping failures to HTTP errors that keep
+ * their message) lives in `#lib/server/staging-preview.ts`; this file only
+ * wires in the real GCS buckets.
  */
 
-import { error } from "@sveltejs/kit";
+import {
+  createStagingPreviewHandler,
+  gcsStagingPreviewBuckets,
+} from "#lib/server/staging-preview.js";
 import type { RequestHandler } from "./$types";
 
-let cachedStorage: {
-  bucket: import("@google-cloud/storage").Bucket;
-  staticBucket: import("@google-cloud/storage").Bucket;
-} | null = null;
-
-async function getBuckets(): Promise<{
-  bucket: import("@google-cloud/storage").Bucket;
-  staticBucket: import("@google-cloud/storage").Bucket;
-}> {
-  if (cachedStorage) return cachedStorage;
-  const stagingBucketName = process.env.CAELO_STAGING_BUCKET;
-  const staticBucketName = process.env.CAELO_STATIC_BUCKET;
-  if (!stagingBucketName) {
-    throw new Error(
-      "_staging-preview: CAELO_STAGING_BUCKET not set. Cloud Run must set this env var (provisioner adds it for GCP installs).",
-    );
-  }
-  if (!staticBucketName) {
-    throw new Error(
-      "_staging-preview: CAELO_STATIC_BUCKET not set. Cloud Run must set this env var.",
-    );
-  }
-  const { Storage } = await import("@google-cloud/storage");
-  const storage = new Storage();
-  cachedStorage = {
-    bucket: storage.bucket(stagingBucketName),
-    staticBucket: storage.bucket(staticBucketName),
-  };
-  return cachedStorage;
-}
-
-export const GET: RequestHandler = async ({ params }) => {
-  const { runId, rest } = params;
-  if (!runId) throw error(400, "runId required");
-  // Provider gate: this route is GCP-specific. Self-hosted installs
-  // serve their staging preview at staging.<domain> (Caddy bind-mount
-  // on the staging out_dir); AWS / Azure adapters will land their
-  // own preview paths. Per CLAUDE.md §2 fail loudly when the
-  // provider mismatch happens.
-  const provider = process.env.CAELO_PROVIDER;
-  if (provider !== "gcp") {
-    throw error(
-      404,
-      `_staging-preview only available on GCP installs (CAELO_PROVIDER='${provider ?? "self-hosted"}'). Self-hosted installs view staged builds at staging.<domain>.`,
-    );
-  }
-  // Default to index.html when the rest path is empty or trailing-slash —
-  // mirrors the static-generator output layout (each page is a directory
-  // containing index.html).
-  let key = rest ?? "";
-  if (key === "" || key.endsWith("/")) key += "index.html";
-  const stagingObjectKey = `${runId}/${key}`;
-
-  const { bucket, staticBucket } = await getBuckets();
-
-  // Try the staging bucket first.
-  const stagedFile = bucket.file(stagingObjectKey);
-  const [stagedExists] = await stagedFile.exists();
-  if (stagedExists) {
-    const [body] = await stagedFile.download();
-    const [meta] = await stagedFile.getMetadata();
-    return new Response(new Uint8Array(body), {
-      status: 200,
-      headers: {
-        "Content-Type": (meta.contentType as string | undefined) ?? "application/octet-stream",
-        // Don't let the operator's browser cache the staging preview —
-        // they may re-Stage and want fresh bytes immediately.
-        "Cache-Control": "private, no-cache, max-age=0, must-revalidate",
-        // Staged pages carry no env-level noindex meta (the generator
-        // renders them env-independently so promote can ship them
-        // verbatim) — the serving layer marks staging non-indexable,
-        // as the Caddy staging vhost does (CMS_REQUIREMENTS §16.5).
-        "X-Robots-Tag": "noindex",
-      },
-    });
-  }
-
-  // Fall back to the live static bucket — for incremental Stages the
-  // unchanged files (hash-skipped) only exist there.
-  const liveFile = staticBucket.file(key);
-  const [liveExists] = await liveFile.exists();
-  if (liveExists) {
-    const [body] = await liveFile.download();
-    const [meta] = await liveFile.getMetadata();
-    return new Response(new Uint8Array(body), {
-      status: 200,
-      headers: {
-        "Content-Type": (meta.contentType as string | undefined) ?? "application/octet-stream",
-        "Cache-Control": "private, no-cache, max-age=0, must-revalidate",
-        "X-Robots-Tag": "noindex",
-      },
-    });
-  }
-
-  throw error(404, `Not in staging build ${runId} or live bucket: ${key}`);
-};
+export const GET: RequestHandler = createStagingPreviewHandler(gcsStagingPreviewBuckets);

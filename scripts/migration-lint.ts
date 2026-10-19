@@ -235,6 +235,58 @@ export function lintMigrationsSince(sinceRef: string | null, repoRoot: string): 
 }
 
 /**
+ * Migrations added after a release that sort BELOW a migration that
+ * release already shipped, as `{ file, head }` (`head`: the newest numbered
+ * migration of that database at the release). The runner applies them on
+ * upgrade (it records file names, not a position), but in a different order
+ * than on a fresh install, where they run before the newer one. Pure:
+ * `shippedAtRelease` and `added` are file names per database directory.
+ */
+export function outOfOrderMigrations(
+  shippedAtRelease: Readonly<Record<string, readonly string[]>>,
+  added: Readonly<Record<string, readonly string[]>>,
+): { file: string; head: string }[] {
+  const numbered = (f: string) => /^\d{4}_.+\.sql$/.test(f) && !f.startsWith("9999_");
+  const out: { file: string; head: string }[] = [];
+  for (const [db, files] of Object.entries(added)) {
+    const head = (shippedAtRelease[db] ?? []).filter(numbered).sort().at(-1);
+    if (!head) continue;
+    for (const f of files.filter(numbered)) {
+      if (f < head) out.push({ file: `${db}/${f}`, head: `${db}/${head}` });
+    }
+  }
+  return out;
+}
+
+/**
+ * {@link outOfOrderMigrations} between `sinceRef` (the previous release)
+ * and HEAD of this repository; empty for a first release.
+ */
+export function outOfOrderMigrationsSince(
+  sinceRef: string | null,
+  repoRoot: string,
+): { file: string; head: string }[] {
+  if (sinceRef === null) return [];
+  const shipped: Record<string, string[]> = {};
+  const added: Record<string, string[]> = {};
+  for (const db of ["cms_admin", "cms_public"]) {
+    const dir = `${MIGRATIONS_DIR}/${db}`;
+    shipped[db] = git(["ls-tree", "--name-only", sinceRef, `${dir}/`], repoRoot)
+      .split("\n")
+      .filter(Boolean)
+      .map((p) => p.split("/").at(-1) ?? p);
+    added[db] = git(
+      ["diff", "--name-only", "--diff-filter=A", `${sinceRef}..HEAD`, "--", dir],
+      repoRoot,
+    )
+      .split("\n")
+      .filter(isMigrationFile)
+      .map((p) => p.split("/").at(-1) ?? p);
+  }
+  return outOfOrderMigrations(shipped, added);
+}
+
+/**
  * Newest cms_admin migration name (without `.sql`), skipping the
  * 9999 RLS catch-all which is not a schema step.
  */

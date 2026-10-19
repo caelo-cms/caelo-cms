@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 6;
+export const INFRA_CONTRACT_VERSION = 7;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -45,6 +45,12 @@ export const INFRA_CONTRACT_VERSION = 6;
 //       into the bucket lists it first; without the binding the in-cloud
 //       upgrader fails at its state lock, so it must not run before the
 //       converge grants it.
+//   7 — #845: the gateway refuses to boot without CAELO_TRUSTED_PROXY_HOPS
+//       (which X-Forwarded-For entry is the visitor). A plain env var, but
+//       the in-cloud upgrader rolls with the env contract of the release it
+//       runs from (the installed one), which does not set it — so the new
+//       gateway would not start. The operator-identity upgrade runs the new
+//       release's contract and sets it.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -58,6 +64,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   4: "the admin's permission to serve redirects from the load balancer (#587)",
   5: "the gateway's cms_admin login removed from its env and IAM (#635)",
   6: "the upgrader's permission to list its ops bucket (#799)",
+  7: "the gateway's trusted proxy hop count, CAELO_TRUSTED_PROXY_HOPS (#845)",
 };
 
 /**

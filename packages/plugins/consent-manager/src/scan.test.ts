@@ -212,6 +212,17 @@ describe("moduleHosts counts only what loads with the page", () => {
       mod("<div></div>", { js: 'const api = "https://api.tracker.example/collect";' }),
     ).toEqual(["api.tracker.example"]);
   });
+
+  it("detects unquoted attribute values and attributes after a quoted '>'", () => {
+    expect(
+      mod('<iframe title="a > b" src={{video_url}}></iframe>', {
+        contentValues: [{ video_url: "https://www.youtube.com/embed/abc" }],
+      }),
+    ).toEqual(["www.youtube.com"]);
+    expect(
+      externalHosts({ html: "<iframe src=https://www.youtube.com/embed/abc></iframe>" }),
+    ).toEqual(["www.youtube.com"]);
+  });
 });
 
 describe("deferralReason (render-time gate)", () => {

@@ -34,7 +34,7 @@ import { groupOpenProblems } from "../../quality/problem-groups.js";
 import { appendChatMessageOp } from "../chat/messages.js";
 import { promoteDeployOp } from "../deploy.js";
 import { actorHasPermission } from "./_permissions.js";
-import { categorySchema } from "./_shared.js";
+import { categorySchema, uuidList } from "./_shared.js";
 import {
   latestSucceededRun,
   loadAcceptances,
@@ -338,24 +338,49 @@ async function fixChainOf(
   open: GateDecision["openProblems"],
 ): Promise<ChatAuditSummary["fixChain"]> {
   const rows = (await tx.execute(sql`
-    SELECT prev.id::text AS id
+    SELECT prev.id::text AS id, prev.fix_requested_at
     FROM quality_audit_runs cur
     JOIN LATERAL (
-      SELECT id, status, fix_scope FROM quality_audit_runs p
+      SELECT id, status, fix_scope, fix_requested_at FROM quality_audit_runs p
       WHERE p.chat_session_id = cur.chat_session_id AND p.created_at < cur.created_at
       ORDER BY p.created_at DESC LIMIT 1
     ) prev ON TRUE
     WHERE cur.id = ${auditRunId}::uuid AND prev.status = 'problems' AND prev.fix_scope = 'all'
-  `)) as unknown as { id: string }[];
-  const prevId = rows[0]?.id;
-  if (prevId === undefined) return null;
-  const prev = await loadGateAuditById(tx, prevId);
-  const acceptances = await loadAcceptances(tx, prev?.pages.map((p) => p.pageId) ?? []);
+  `)) as unknown as { id: string; fix_requested_at: string | Date }[];
+  const prevRow = rows[0];
+  if (prevRow === undefined) return null;
+  const prev = await loadGateAuditById(tx, prevRow.id);
+  const pageIds = prev?.pages.map((p) => p.pageId) ?? [];
+  const acceptances = await loadAcceptances(tx, pageIds);
   return {
     before: fixDistance(decideGate(prev, acceptances).openProblems),
     now: fixDistance(open),
     spentMicrocents: await fixChainSpend(tx, auditRunId),
+    operatorDecided: await decidedSince(tx, pageIds, prevRow.fix_requested_at),
   };
+}
+
+/**
+ * #685 — whether an editor accepted or revoked a quality decision on these
+ * pages (or a site-wide check) after `since`: the "Fix all with AI" request
+ * of the round now settling. Acceptances only apply on an editor's click
+ * (`quality_audits.execute_proposal` / `quality_acceptances.revoke_many` are
+ * human-only), so a decision in that window means the operator took over:
+ * the next round waits for their click instead of continuing on its own.
+ */
+async function decidedSince(
+  tx: Tx,
+  pageIds: readonly string[],
+  since: string | Date,
+): Promise<boolean> {
+  const at = since instanceof Date ? since.toISOString() : since;
+  const rows = (await tx.execute(sql`
+    SELECT 1 AS decided FROM quality_acceptances
+    WHERE (page_id = ANY(${uuidList(pageIds)}) OR page_id IS NULL)
+      AND (accepted_at >= ${at}::timestamptz OR revoked_at >= ${at}::timestamptz)
+    LIMIT 1
+  `)) as unknown as { decided: number }[];
+  return rows.length > 0;
 }
 
 /** The chat's AI spend since the fix-all chain that led to `auditRunId`

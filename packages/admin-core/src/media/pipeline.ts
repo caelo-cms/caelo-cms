@@ -16,12 +16,15 @@
 
 import {
   buildStorageKey,
+  FAVICON_VARIANT,
+  FAVICON_VARIANT_PX,
   MEDIA_VARIANT_TAGS,
   MEDIA_VARIANT_WIDTHS,
   type MediaMime,
   type MediaVariantTag,
 } from "@caelo-cms/shared";
 import sharp from "sharp";
+import { sanitizeSvg } from "./sanitize-svg.js";
 
 export interface PipelineOutputVariant {
   /**
@@ -252,44 +255,41 @@ export async function runMediaPipeline(
   return { variants, width: sourceWidth, height: sourceHeight };
 }
 
-// ---------------------------------------------------------------------
-// SVG sanitiser. Caelo accepts SVG uploads (icon usage), but the format
-// is XML and can carry executable content. Strip every script element +
-// event-handler attribute before persisting. No external XML parser
-// needed for the small surface we accept; if we ever need namespace
-// awareness (xlink:href javascript:...), upgrade to fast-xml-parser.
-// ---------------------------------------------------------------------
-
-// Script element: tempered-dot body (no catastrophic backtracking) and a
-// permissive close tag. HTML treats `</script\t\n bar>` as a valid end tag,
-// so the close must accept any non-`>` run after the name — the old
-// `<\/script\s*>` missed those variants (CodeQL js/bad-tag-filter).
-const SVG_SCRIPT_RE = /<script\b[^>]*>(?:(?!<\/script)[\s\S])*<\/script[^>]*>/gi;
-// Any leftover script start/end tag fragment (unpaired, or revealed after a
-// removal pass) — strip the tag itself so no `<script…>` token survives.
-const SVG_SCRIPT_FRAGMENT_RE = /<\/?script\b[^>]*>?/gi;
-const SVG_ON_ATTR_RE = /\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi;
-const SVG_JS_HREF_RE = /(href|xlink:href)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi;
-
 /**
- * Strip executable content from an uploaded SVG (script elements, inline
- * `on*` handlers, `javascript:` hrefs). Runs to a fixed point: removing one
- * construct can expose or re-create another that a single left-to-right pass
- * would miss (CodeQL js/incomplete-multi-character-sanitization), so the
- * loop repeats until the string stops changing.
+ * The favicon rendition of a raster image (`FAVICON_VARIANT`): a square
+ * `FAVICON_VARIANT_PX` PNG, the whole image letterboxed onto a
+ * transparent square (`contain`) so a wide logo is not cropped. PNG, not
+ * WebP: every browser takes a PNG favicon. Built when the image is bound
+ * as the theme favicon (see ops/media_favicon.ts), not per upload.
+ *
+ * @param sha - content hash of the original (drives the storage key).
+ * @param body - the original's bytes (any raster the pipeline decodes).
  */
-export function sanitizeSvg(svg: string): string {
-  let out = svg;
-  let prev: string;
-  do {
-    prev = out;
-    out = out
-      .replace(SVG_SCRIPT_RE, "")
-      .replace(SVG_SCRIPT_FRAGMENT_RE, "")
-      .replace(SVG_ON_ATTR_RE, "")
-      .replace(SVG_JS_HREF_RE, "");
-  } while (out !== prev);
-  return out;
+export async function renderFaviconRendition(
+  sha: string,
+  body: Uint8Array,
+): Promise<PipelineOutputVariant> {
+  const buf = await sharp(body)
+    .rotate()
+    .resize({
+      width: FAVICON_VARIANT_PX,
+      height: FAVICON_VARIANT_PX,
+      fit: "contain",
+      background: { r: 0, g: 0, b: 0, alpha: 0 },
+    })
+    .png({ compressionLevel: 9 })
+    .toBuffer({ resolveWithObject: true });
+  const out = new Uint8Array(buf.data);
+  return {
+    variant: FAVICON_VARIANT,
+    format: "png",
+    width: buf.info.width,
+    height: buf.info.height,
+    sizeBytes: out.byteLength,
+    storageKey: buildStorageKey(sha, FAVICON_VARIANT, "png"),
+    body: out,
+    contentType: "image/png",
+  };
 }
 
 // ---------------------------------------------------------------------

@@ -68,7 +68,12 @@ export const DELEGATED_MINT_NEEDS_FIELDS =
   "Nothing was created. On this connection you author the module yourself — the install's AI does not moduleize raw HTML for you. " +
   "Re-call with the HTML parametrised ({{field_name}} placeholders, semantic snake_case names like hero_title / primary_cta_href; repeating items as one list field, never label2/label3) " +
   "plus an explicit `fields[]` declaring each placeholder (name, kind, label) and the ORIGINAL copy as `values` (or each field's `default`). " +
-  "Pass `fields: []` only for a module with no editable content.";
+  "Pass `fields: []` only for a module with no editable content. " +
+  // #820 — a worked example, so authoring the module is never costlier
+  // than pasting the same markup into another module's richtext field.
+  'Example for a repeating pattern: html `<div class="chain">{{#steps}}<div class="step"><p>{{.}}</p></div>{{/steps}}</div>`, ' +
+  'fields `[{name: "steps", kind: "text-list", label: "Steps"}]`, values `{steps: ["Crawl", "Diff", "Alert"]}`. ' +
+  "Never paste component markup into a richtext field of another module instead — that is free HTML the structure quality check blocks once it repeats.";
 
 /**
  * Mint a module from HTML: moduleize (when a provider is available) → create.

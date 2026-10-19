@@ -36,6 +36,7 @@ import {
   canonicalManifestBytes,
   generateManifestKeyPair,
   signManifest,
+  validateSource,
   verifyManifestSignature,
 } from "@caelo-cms/plugin-sandbox";
 import { manifestFromDefinition, type PluginDefinition } from "@caelo-cms/plugin-sdk";
@@ -129,6 +130,28 @@ export async function ensureDevSignedManifests(opts: {
       continue;
     }
     try {
+      const distDir = resolvePath(dir, "dist");
+      const jsFiles = readdirSync(distDir, { recursive: true })
+        .map(String)
+        .filter((f) => f.endsWith(".js"));
+      let validationFailure: string | null = null;
+      for (const rel of jsFiles) {
+        const source = readFileSync(resolvePath(distDir, rel), "utf8");
+        const failures = validateSource({
+          filename: `${entry}/dist/${rel}`,
+          source,
+          allowRelativeImports: true,
+        });
+        if (failures.length > 0) {
+          validationFailure = `validator rejected source (${rel}): ${failures.map((f) => f.kind).join(", ")}`;
+          break;
+        }
+      }
+      if (validationFailure) {
+        reports.push({ slug: entry, status: "failed", reason: validationFailure });
+        continue;
+      }
+
       const mod = (await import(`file://${distEntry}`)) as {
         default?: PluginDefinition<never>;
       };
