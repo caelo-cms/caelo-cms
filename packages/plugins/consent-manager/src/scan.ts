@@ -20,8 +20,8 @@
 
 /** Every URL-bearing position that causes a browser request. */
 const URL_PATTERNS: ReadonlyArray<RegExp> = [
-  // src / href / poster / data-src / action, quoted.
-  /(?:src|href|poster|action|data-src|srcset)\s*=\s*["']([^"']+)["']/gi,
+  // src / href / poster / data-src / action, quoted or unquoted.
+  /(?:src|href|poster|action|data-src|srcset)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))/gi,
   // CSS url(...)
   /url\(\s*["']?([^"')]+)["']?\s*\)/gi,
   // fetch / XHR / import with a literal URL.
@@ -76,7 +76,7 @@ export function externalHosts(sources: { html?: string; css?: string; js?: strin
     while (m !== null) {
       // The bare-URL pattern has no capture group; its whole match is
       // the URL.
-      const raw = (m[1] ?? m[0] ?? "").trim();
+      const raw = (m[1] ?? m[2] ?? m[3] ?? m[0] ?? "").trim();
       // srcset holds a comma-separated candidate list.
       for (const candidate of raw.split(",")) {
         const url = candidate.trim().split(/\s+/)[0] ?? "";
@@ -124,8 +124,8 @@ const STANDARD_XML_NAMESPACES: ReadonlySet<string> = new Set([
   "http://www.w3.org/XML/1998/namespace",
 ]);
 
-const TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/g;
-const ATTR_RE = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+const TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)\b((?:"[^"]*"|'[^']*'|[^>"'])*)>/g;
+const ATTR_RE = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
 const PLACEHOLDER_RE = /\{\{\{?\s*[#^/>&]?\s*([a-zA-Z_][a-zA-Z0-9_.-]*)\s*\}?\}\}/g;
 const CSS_URL_RE = /url\(\s*["']?([^"')]+)["']?\s*\)/gi;
 
@@ -225,7 +225,7 @@ export function moduleHosts(module: {
     const tagName = tag[1] ?? "";
     const attrs = new Map<string, string>();
     for (const a of (tag[2] ?? "").matchAll(ATTR_RE)) {
-      attrs.set((a[1] ?? "").toLowerCase(), a[2] ?? a[3] ?? "");
+      attrs.set((a[1] ?? "").toLowerCase(), a[2] ?? a[3] ?? a[4] ?? "");
     }
     for (const [name, value] of attrs) {
       if (name === "style") {

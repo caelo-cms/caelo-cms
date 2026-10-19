@@ -52,6 +52,15 @@ export function makePluginSiteMedia(
     inspect: async (input) =>
       (await run<{ assets: PluginSiteMediaAsset[] }>(SITE_MEDIA_OPS.inspect, input)).assets,
     readChunk: async (input) => {
+      if (
+        !input ||
+        typeof input !== "object" ||
+        typeof input.id !== "string" ||
+        typeof input.sha256 !== "string" ||
+        typeof input.offset !== "number"
+      ) {
+        throw new Error("SiteMediaInputInvalid: id, sha256, and offset are required");
+      }
       if (!Number.isInteger(input.offset) || input.offset < 0 || input.offset % CHUNK !== 0) {
         throw new Error("SiteMediaOffsetInvalid: offsets are multiples of 262144");
       }

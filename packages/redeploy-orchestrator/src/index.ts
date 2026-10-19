@@ -49,7 +49,7 @@ import {
   type Screenshot,
   type Screenshotter,
 } from "@caelo-cms/site-importer";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { parseCrawlScope } from "./crawl-scope.js";
 import { parseExplicitUrls } from "./explicit-urls.js";
@@ -159,6 +159,19 @@ interface Settings {
 }
 
 /**
+ * Where a plugin op came from. `audit` = cms_admin `audit_events`, written
+ * by the admin itself: trusted, so an inconsistency there throws.
+ * `visitor` = cms_public `gateway_plugin_op_events`, writable by anyone
+ * holding public_role: untrusted input, so a row that names no installed,
+ * active plugin is dropped (boundary validation), never thrown on — a
+ * throw would pin the visitor watermark at that row for good.
+ */
+type OpSource = "audit" | "visitor";
+
+/** The page a plugin op touched (null = none), or why a visitor event was dropped. */
+type PluginOpResolution = { pageId: string | null } | { dropped: string };
+
+/**
  * v0.2.16 — resolve a plugin write op + its entity_id to the page_id
  * the operation logically affects, so auto-redeploy can rebuild only
  * that page. Each entry queries the plugin's own cms_public table.
@@ -169,61 +182,116 @@ async function resolvePluginOpPageId(
   adapter: DatabaseAdapter,
   operation: string,
   entityId: string,
-): Promise<string | null> {
+  source: OpSource,
+): Promise<PluginOpResolution> {
+  const read = await readPluginRowPageId(adapter, operation, entityId, source);
+  if ("dropped" in read) return read;
   // The plugin tables live in cms_public: what they say is UNTRUSTED (#635).
   // A page id counts only when it is a uuid naming a page that exists.
-  const pageId = await readPluginRowPageId(adapter, operation, entityId);
-  if (pageId === null || !UUID_RE.test(pageId)) return null;
+  const pageId = read.pageId;
+  if (pageId === null || !UUID_RE.test(pageId)) return { pageId: null };
   const exists = (await adapter.withAdminTransaction(
     SYSTEM_CTX,
     async (tx) =>
       await tx.execute(sql`SELECT 1 AS ok FROM pages WHERE id = ${pageId}::uuid LIMIT 1`),
   )) as unknown as unknown[];
-  return exists.length > 0 ? pageId : null;
+  return { pageId: exists.length > 0 ? pageId : null };
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The plugin row a plugin op's entity names, when that row is bound to a
+ * page: the owning plugin's slug + the lookup. Forms / newsletter ops have
+ * no per-page binding (a submission or signup changes no page's bake), so
+ * they intentionally don't appear here. A future plugin op that should
+ * trigger a per-page rebuild adds a case.
+ */
+function pluginPageLookup(
+  operation: string,
+  entityId: string,
+): { slug: string; query: SQL } | null {
+  // Comments — `comments.moderate` + bulk variant; entity_id is the comment id.
+  if (operation === "comments.moderate" || operation === "comments.bulk_moderate") {
+    return {
+      slug: "comments",
+      query: sql`SELECT page_id::text AS page_id FROM plugin_comments.comments
+                 WHERE id = ${entityId}::uuid LIMIT 1`,
+    };
+  }
+  // Ratings — `ratings.submit` writes a row + updates aggregates; entity_id
+  // is the rating id.
+  if (operation === "ratings.submit") {
+    return {
+      slug: "ratings",
+      query: sql`SELECT page_id::text AS page_id FROM plugin_ratings.ratings
+                 WHERE id = ${entityId}::uuid LIMIT 1`,
+    };
+  }
+  return null;
+}
 
 async function readPluginRowPageId(
   adapter: DatabaseAdapter,
   operation: string,
   entityId: string,
-): Promise<string | null> {
-  // Comments — `comments.moderate` + bulk variant. entity_id is the
-  // comment id; lookup table is cms_public.plugin_comments.comments.
-  if (operation === "comments.moderate" || operation === "comments.bulk_moderate") {
-    try {
-      const pub = adapter.rawPublic();
-      const rows = (await pub`
-        SELECT page_id::text AS page_id FROM plugin_comments.comments
-        WHERE id = ${entityId}::uuid LIMIT 1
-      `) as unknown as { page_id: string | null }[];
-      const v = rows[0]?.page_id;
-      return typeof v === "string" ? v : null;
-    } catch {
-      return null;
+  source: OpSource,
+): Promise<PluginOpResolution> {
+  // Checked before the id reaches any `::uuid` cast: a malformed id must
+  // never make Postgres throw (and, on the visitor path, pin the watermark).
+  if (!UUID_RE.test(entityId)) {
+    if (source === "visitor") return { dropped: "entity_id is not a UUID" };
+    throw new Error(`audit_events entity_id "${entityId}" of op "${operation}" is not a UUID`);
+  }
+  const lookup = pluginPageLookup(operation, entityId);
+  if (!lookup) return { pageId: null };
+  // No catch: a failed lookup (connection, RLS, missing table) throws out
+  // of its pass, which leaves that pass's watermark for the next tick and
+  // logs the failure. A swallowed error here once hid that this read saw
+  // no rows at all.
+  const plugins = (await adapter.withAdminTransaction(
+    SYSTEM_CTX,
+    async (tx) =>
+      await tx.execute(
+        sql`SELECT id::text AS id, status FROM plugins WHERE slug = ${lookup.slug} LIMIT 1`,
+      ),
+  )) as unknown as { id: string; status: string }[];
+  const plugin = plugins[0];
+  if (source === "visitor") {
+    if (!plugin) return { dropped: `the "${lookup.slug}" plugin is not installed` };
+    if (plugin.status !== "active") {
+      return { dropped: `the "${lookup.slug}" plugin is ${plugin.status}, not active` };
     }
   }
-  // Ratings — `ratings.submit` writes a row + updates aggregates.
-  // entity_id is the rating id; lookup is plugin_ratings.ratings.
-  if (operation === "ratings.submit") {
-    try {
-      const pub = adapter.rawPublic();
-      const rows = (await pub`
-        SELECT page_id::text AS page_id FROM plugin_ratings.ratings
-        WHERE id = ${entityId}::uuid LIMIT 1
-      `) as unknown as { page_id: string | null }[];
-      const v = rows[0]?.page_id;
-      return typeof v === "string" ? v : null;
-    } catch {
-      return null;
-    }
+  if (!plugin) throw new PluginNotInstalledError(lookup.slug, operation);
+  // Plugin tables are RLS-scoped to their plugin (FORCEd, so the owner
+  // too): the read runs as that plugin, or it sees no rows at all.
+  const rows = (await adapter.withPublicTransaction(
+    { ...SYSTEM_CTX, pluginId: plugin.id },
+    async (tx) => await tx.execute(lookup.query),
+  )) as unknown as { page_id: string | null }[];
+  const v = rows[0]?.page_id;
+  return { pageId: typeof v === "string" ? v : null };
+}
+
+/**
+ * A plugin op in the trusted `audit_events` stream names a plugin with no
+ * `plugins` row: the install is inconsistent (the plugin was removed while
+ * its op is still allowlisted). Thrown rather than skipped (CLAUDE.md §2,
+ * no fallbacks pre-1.0). Visitor events are untrusted and are dropped
+ * instead (see {@link OpSource}).
+ */
+export class PluginNotInstalledError extends Error {
+  readonly slug: string;
+  readonly operation: string;
+  constructor(slug: string, operation: string) {
+    super(
+      `PluginNotInstalled: op "${operation}" needs the "${slug}" plugin, but cms_admin has no plugins row for slug "${slug}". Install the plugin, or remove "${operation}" from site_settings.auto_redeploy_op_kinds.`,
+    );
+    this.name = "PluginNotInstalledError";
+    this.slug = slug;
+    this.operation = operation;
   }
-  // Forms / newsletter ops have no per-page binding (form submissions
-  // and newsletter signups don't change a particular page's bake), so
-  // they intentionally don't appear here. If a future plugin op should
-  // trigger a per-page rebuild, add a case + the lookup query.
-  return null;
 }
 
 const visitorOpEvent = z.object({
@@ -236,20 +304,45 @@ const visitorOpEvent = z.object({
 /**
  * Validate `gateway_plugin_op_events` rows read from cms_public. Rows are
  * returned in id order; a malformed one is dropped (the watermark still
- * moves past it: see {@link advanceVisitorWatermark}).
+ * moves past it: see {@link advanceVisitorWatermark}) and reported with
+ * its id, op and reason, as far as the row carries them.
  */
 export function parseVisitorOpEvents(raw: readonly unknown[]): {
   rows: z.infer<typeof visitorOpEvent>[];
-  dropped: number;
+  dropped: DroppedVisitorEvent[];
 } {
   const rows: z.infer<typeof visitorOpEvent>[] = [];
-  let dropped = 0;
+  const dropped: DroppedVisitorEvent[] = [];
   for (const r of raw) {
     const parsed = visitorOpEvent.safeParse(r);
-    if (parsed.success) rows.push(parsed.data);
-    else dropped += 1;
+    if (parsed.success) {
+      rows.push(parsed.data);
+      continue;
+    }
+    const rec = (typeof r === "object" && r !== null ? r : {}) as Record<string, unknown>;
+    dropped.push({
+      id: typeof rec.id === "string" ? rec.id : null,
+      operation: typeof rec.operation === "string" ? rec.operation : null,
+      reason: parsed.error.issues
+        .map((i) => `${i.path.join(".") || "row"}: ${i.message}`)
+        .join("; "),
+    });
   }
   return { rows, dropped };
+}
+
+/** A visitor op event the orchestrator skipped, and why. */
+export interface DroppedVisitorEvent {
+  readonly id: string | null;
+  readonly operation: string | null;
+  readonly reason: string;
+}
+
+/** Report a dropped visitor event (once: the watermark moves past it). */
+function warnDroppedVisitorEvent(d: DroppedVisitorEvent): void {
+  console.warn(
+    `[redeploy-orchestrator] dropped visitor op event id=${d.id ?? "?"} op=${d.operation ?? "?"}: ${d.reason}`,
+  );
 }
 
 /** How long an id gap in `gateway_plugin_op_events` may stay open before it counts as settled. */
@@ -314,7 +407,9 @@ export async function readVisitorOpEvents(
   adapter: DatabaseAdapter,
   opKinds: readonly string[],
 ): Promise<{
-  events: { operation: string; entity_id: string | null }[];
+  events: { id: string; operation: string; entity_id: string | null }[];
+  /** Malformed rows the watermark covers; reported once it moves past them. */
+  dropped: DroppedVisitorEvent[];
   lastId: string | null;
 }> {
   try {
@@ -342,16 +437,17 @@ export async function readVisitorOpEvents(
       return { raw: found, sequenceLast: seq[0]?.last ?? null };
     });
     const { covered, watermark } = advanceVisitorWatermark(raw, after, sequenceLast);
-    const { rows } = parseVisitorOpEvents(covered);
+    const { rows, dropped } = parseVisitorOpEvents(covered);
     return {
       events: rows.filter((r) => r.succeeded && opKinds.includes(r.operation)),
+      dropped,
       lastId: watermark,
     };
   } catch (e) {
     console.error(
       `[redeploy-orchestrator] visitor op events unreadable: ${e instanceof Error ? e.message : String(e)}`,
     );
-    return { events: [], lastId: null };
+    return { events: [], dropped: [], lastId: null };
   }
 }
 
@@ -461,9 +557,68 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
     // the timer on every fire, looping indefinitely.
     const safeOpKinds = settings.opKinds.filter((k) => k !== "deploy.trigger");
     if (safeOpKinds.length === 0) return;
-    // Find audit_events newer than lastSeenAt with op IN (...).
-    // P13 ideas-pass — also fetch entity_id so we can pass per-page
-    // changedPageIds to the static generator (incremental rebuild).
+    // Two independent passes, each with its own watermark: a pass that
+    // fails leaves its own events for the next tick but never holds back
+    // the other pass's rebuilds. Failures are rethrown after the timer is
+    // armed so the poll loop logs them.
+    const failures: unknown[] = [];
+    let rebuild = false;
+    try {
+      rebuild = (await visitorPass(safeOpKinds)) || rebuild;
+    } catch (e) {
+      failures.push(e);
+    }
+    try {
+      rebuild = (await auditPass(safeOpKinds)) || rebuild;
+    } catch (e) {
+      failures.push(e);
+    }
+    if (rebuild) {
+      if (pendingTimer) clearTimeout(pendingTimer);
+      pendingTimer = setTimeout(() => {
+        void fireDeploy();
+      }, settings.debounceMs);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "the visitor and the audit pass both failed");
+    }
+  }
+
+  /**
+   * #635 — the untrusted visitor events in cms_public. An event that names
+   * no page schedules nothing; one that cannot be valid (malformed, or its
+   * plugin is not installed / not active) is dropped and reported once.
+   * Returns whether a page was matched (a rebuild is due).
+   */
+  async function visitorPass(opKinds: readonly string[]): Promise<boolean> {
+    const visitor = await readVisitorOpEvents(cfg.adapter, opKinds);
+    const matched = new Set<string>();
+    const dropped = [...visitor.dropped];
+    for (const r of visitor.events) {
+      if (!r.entity_id) continue;
+      const res = await resolvePluginOpPageId(cfg.adapter, r.operation, r.entity_id, "visitor");
+      if ("dropped" in res) dropped.push({ id: r.id, operation: r.operation, reason: res.dropped });
+      else if (res.pageId) matched.add(res.pageId);
+    }
+    // Only now: a failure above leaves the events to the next tick.
+    if (visitor.lastId) await commitVisitorWatermark(cfg.adapter, visitor.lastId);
+    for (const d of dropped) warnDroppedVisitorEvent(d);
+    for (const id of matched) pendingPageIds.add(id);
+    return matched.size > 0;
+  }
+
+  /**
+   * The trusted `audit_events` stream in cms_admin, past `lastSeenAt`.
+   * Operations on `pages.*` carry the page id as `entity_id` directly.
+   * Plugin write ops carry their own entity (e.g. `comments.moderate`'s is
+   * the comment id), resolved to the page it attaches to so an approved
+   * comment rebuilds only that page. Returns whether a rebuild is due
+   * (any matching row, as before: a row naming no page still rebuilds).
+   */
+  async function auditPass(opKinds: readonly string[]): Promise<boolean> {
+    // One bound param per kind: drizzle + bun-sql do not send a JS array
+    // as a Postgres array, so `= ANY(${opKinds})` threw on every tick.
     const rows = await cfg.adapter.withAdminTransaction(
       SYSTEM_CTX,
       async (tx) =>
@@ -471,7 +626,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
         SELECT created_at, entity_id::text AS entity_id, operation
         FROM audit_events
         WHERE created_at > ${lastSeenAt.toISOString()}::timestamptz
-          AND operation = ANY(${safeOpKinds})
+          AND operation IN (${sql.join(
+            opKinds.map((k) => sql`${k}`),
+            sql`, `,
+          )})
           AND succeeded = true
         ORDER BY created_at ASC
         LIMIT 500
@@ -481,46 +639,24 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
           operation: string;
         }>,
     );
-    const visitor = await readVisitorOpEvents(cfg.adapter, safeOpKinds);
-    if (rows.length === 0 && visitor.events.length === 0) {
-      // Rows that were all malformed or of other op kinds: nothing to
-      // rebuild, but the watermark moves past them.
-      if (visitor.lastId) await commitVisitorWatermark(cfg.adapter, visitor.lastId);
-      return;
-    }
-    for (const r of visitor.events) {
-      if (!r.entity_id) continue;
-      const pageId = await resolvePluginOpPageId(cfg.adapter, r.operation, r.entity_id);
-      if (pageId) pendingPageIds.add(pageId);
-    }
-    // Only now: a failure above leaves the events to the next tick.
-    if (visitor.lastId) await commitVisitorWatermark(cfg.adapter, visitor.lastId);
-    // Collect per-page deltas. Operations on `pages.*` carry the page
-    // id as `entity_id` directly. Plugin write ops carry their own
-    // entity (e.g. `comments.moderate.entity_id` is the comment id);
-    // for those we resolve the bound page_id from the plugin's
-    // cms_public table so an approved comment auto-rebuilds only the
-    // page it attaches to. Op-allowlist is intentionally narrow —
-    // adding a new plugin op = one row in the resolver below.
+    if (rows.length === 0) return false;
+    const matched = new Set<string>();
     for (const r of rows) {
-      if (r.entity_id && r.operation.startsWith("pages.")) {
-        pendingPageIds.add(r.entity_id);
+      if (!r.entity_id) continue;
+      if (r.operation.startsWith("pages.")) {
+        matched.add(r.entity_id);
         continue;
       }
-      if (r.entity_id) {
-        const pageId = await resolvePluginOpPageId(cfg.adapter, r.operation, r.entity_id);
-        if (pageId) pendingPageIds.add(pageId);
-      }
+      const res = await resolvePluginOpPageId(cfg.adapter, r.operation, r.entity_id, "audit");
+      if ("pageId" in res && res.pageId) matched.add(res.pageId);
     }
-    const latest = rows.length > 0 ? rows[rows.length - 1]?.created_at : undefined;
+    const latest = rows[rows.length - 1]?.created_at;
     if (latest) {
       lastSeenAt = latest instanceof Date ? latest : new Date(String(latest));
       void persistLastSeen(lastSeenAt);
     }
-    if (pendingTimer) clearTimeout(pendingTimer);
-    pendingTimer = setTimeout(() => {
-      void fireDeploy();
-    }, settings.debounceMs);
+    for (const id of matched) pendingPageIds.add(id);
+    return true;
   }
 
   /**
@@ -756,10 +892,10 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
 
   const pollHandle = setInterval(() => {
     // A failed tick leaves its events (and the watermark) for the next one.
+    // The whole error, not only its message: drizzle's "Failed query"
+    // message leaves out the Postgres cause.
     tick().catch((e: unknown) => {
-      console.error(
-        `[redeploy-orchestrator] tick failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      console.error("[redeploy-orchestrator] tick failed", e);
     });
   }, pollMs);
   const gcHandle = setInterval(() => {

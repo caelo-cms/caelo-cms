@@ -2,7 +2,6 @@
 
 import { describe, expect, it } from "bun:test";
 import {
-  ensureGatewayRolePassword,
   findSqlInstance,
   gatewayMovesPublicRole,
   planPublicRoleSwitch,
@@ -52,7 +51,6 @@ const target = { projectId: "acme", env: "production", sqlInstance: "caelo-produ
 const SECRETS = {
   "postgres-password": "admin-pw",
   "public-role-password": "public-pw",
-  "gateway-role-password": "gateway-pw",
 };
 const secretRef = (secret: string): LiveEnvValue => ({
   kind: "secret",
@@ -66,7 +64,6 @@ const BEFORE_613 = new Map<string, LiveEnvValue>([
 ]);
 const AFTER_613 = new Map<string, LiveEnvValue>([
   ["PUBLIC_DATABASE_PASSWORD", secretRef("public-role-password")],
-  ["GATEWAY_DATABASE_PASSWORD", secretRef("gateway-role-password")],
 ]);
 
 describe("gatewayMovesPublicRole", () => {
@@ -82,32 +79,6 @@ describe("gatewayMovesPublicRole", () => {
       ),
     ).toBe(true);
     expect(gatewayMovesPublicRole(AFTER_613, "production")).toBe(false);
-  });
-});
-
-describe("ensureGatewayRolePassword", () => {
-  it("sets gateway_role from its secret through the API, never on argv", async () => {
-    const { run, lines } = fakeGcloud(SECRETS);
-    const sql = fakeSqlApi();
-    const r = await ensureGatewayRolePassword(target, {
-      run,
-      http: sql.http,
-      sleep: async () => {},
-    });
-    expect(r.status).toBe("applied");
-    expect(sql.set).toEqual(["gateway_role gateway-pw"]);
-    expect(lines.some((l) => l.includes("gateway-pw"))).toBe(false);
-  });
-
-  it("fails, naming the secret, when the secret can't be read", async () => {
-    const { run } = fakeGcloud({});
-    const r = await ensureGatewayRolePassword(target, {
-      run,
-      http: fakeSqlApi().http,
-      sleep: async () => {},
-    });
-    expect(r.status).toBe("failed");
-    expect(r.error).toContain("caelo-production-gateway-role-password");
   });
 });
 

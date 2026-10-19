@@ -987,9 +987,6 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       pluginId,
       slug: def.slug,
       adminSchema: def.adminSchema,
-      // #613 — a visitor operation may read this storage, and visitor
-      // calls run in the API gateway as gateway_role.
-      visitorReadable: (def.publicOperations?.length ?? 0) > 0,
       // #635 — the declared projection's tables republish on every write.
       projectedTables: Object.keys(def.visitorProjection ?? {}),
     });

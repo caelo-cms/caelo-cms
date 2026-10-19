@@ -169,6 +169,27 @@ function post(path: string, body: unknown, cookies: string[] = []): Request {
   });
 }
 
+/** A captcha challenge request from its own client IP, carrying `cookies`. */
+function challengeReq(cookies: string[] = []): Request {
+  clientIp++;
+  const headers: Record<string, string> = { "X-Forwarded-For": `192.0.2.${clientIp % 250}` };
+  if (cookies.length > 0) headers.cookie = cookies.join("; ");
+  return new Request("http://localhost/api/captcha/challenge", { headers });
+}
+
+/** Fetch a challenge as `cookies`' visitor and solve it, as the component kit does. */
+async function solvedProof(cookies: string[]): Promise<{ challenge: string; nonce: string }> {
+  const c = await handleRequest(challengeReq(cookies));
+  await expectStatus(c, 200);
+  const { challenge, target } = (
+    (await c.json()) as { data: { challenge: string; target: string } }
+  ).data;
+  for (let nonce = 0; ; nonce++) {
+    const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+    if (hex.startsWith(target)) return { challenge, nonce: String(nonce) };
+  }
+}
+
 async function expectStatus(r: Response, status: number): Promise<void> {
   if (r.status !== status) {
     throw new Error(`expected HTTP ${status}, got ${r.status}: ${await r.clone().text()}`);
@@ -200,6 +221,8 @@ const DECLINED = consentCookie(["necessary"]);
 const ACCEPTED = consentCookie(["necessary", "functional", "analytics", "marketing"]);
 
 beforeAll(async () => {
+  // Behind one proxy (self-hosted Caddy sets X-Forwarded-For to its peer).
+  process.env.CAELO_TRUSTED_PROXY_HOPS = "1";
   await cleanup();
   savedCaptcha = await asAdmin(async (tx) => {
     const [row] =
@@ -283,7 +306,7 @@ describe("no consent decision yet (#677)", () => {
   it("sets no visitor cookie on a captcha challenge either", async () => {
     await setCaptcha("pow");
     try {
-      const r = await handleRequest(new Request("http://localhost/api/captcha/challenge"));
+      const r = await handleRequest(challengeReq());
       await expectStatus(r, 200);
       expect(r.headers.getSetCookie()).toEqual([]);
     } finally {
@@ -431,6 +454,68 @@ describe("a consent provider that cannot answer (#677)", () => {
                  SELECT * FROM jsonb_populate_record(NULL::plugin_consent_manager.settings, (${saved[0]?.row ?? ""}::text)::jsonb)`;
       }, "consent-manager");
       await publish();
+    }
+  });
+});
+
+describe("a captcha challenge is bound to the consented visitor it was issued to (#845)", () => {
+  /** A consented visitor's signed id cookie, minted on the consent beacon. */
+  async function consentedVisitor(): Promise<string> {
+    const r = await handleRequest(
+      post(
+        RECORD,
+        { granted: ["necessary", "functional", "analytics", "marketing"], policyVersion: 1 },
+        [ACCEPTED],
+      ),
+    );
+    await expectStatus(r, 200);
+    const cookie = mintedVisitorCookie(r);
+    if (!cookie) throw new Error("no visitor cookie minted");
+    return `caelo_visitor_id=${cookie}`;
+  }
+
+  it("redeems for the same visitor; refuses another visitor, or a lost cookie, saying why", async () => {
+    const alice = [ACCEPTED, await consentedVisitor()];
+    const bob = [ACCEPTED, await consentedVisitor()];
+    await setCaptcha("pow");
+    try {
+      const proof = await solvedProof(alice);
+      // Another consented visitor presents Alice's solved challenge.
+      const stolen = await handleRequest(
+        post(RATE, { pageId: "p-bound", score: 4, _caelo_captcha: proof }, bob),
+      );
+      await expectStatus(stolen, 403);
+      const err = ((await stolen.json()) as { error: { kind: string; message: string } }).error;
+      expect(err.kind).toBe("CaptchaFailed");
+      expect(err.message).toContain("issued to a different visitor");
+      // Alice's browser lost the cookie: the gateway mints a new id, so the
+      // challenge is not hers any more, and the message says what happened.
+      const lost = await handleRequest(
+        post(RATE, { pageId: "p-bound", score: 4, _caelo_captcha: proof }, [ACCEPTED]),
+      );
+      await expectStatus(lost, 403);
+      expect(await lost.text()).toContain("did not come back with this submission");
+      // Neither refusal used it up: Alice still can.
+      const own = await handleRequest(
+        post(RATE, { pageId: "p-bound", score: 4, _caelo_captcha: proof }, alice),
+      );
+      await expectStatus(own, 200);
+    } finally {
+      await setCaptcha("off");
+    }
+  });
+
+  it("a challenge issued without a visitor id (no consent) binds to nobody", async () => {
+    const alice = [ACCEPTED, await consentedVisitor()];
+    await setCaptcha("pow");
+    try {
+      const proof = await solvedProof([]);
+      const r = await handleRequest(
+        post(RATE, { pageId: "p-unbound", score: 3, _caelo_captcha: proof }, alice),
+      );
+      await expectStatus(r, 200);
+    } finally {
+      await setCaptcha("off");
     }
   });
 });

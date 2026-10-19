@@ -12,10 +12,18 @@
  */
 
 import { Parser } from "htmlparser2";
-import type { PageCheck } from "../../check.js";
+import type { PageCheck, StagedBuild } from "../../check.js";
 import { CheckRegistry, type LighthouseRunner } from "../../registry.js";
 
 export const PLACEHOLDER_RULE = "test-meta/placeholder-description";
+
+/** A staged build for runner tests whose checks never probe (#849). */
+export const NO_PROBE_BUILD: StagedBuild = {
+  baseUrl: "http://s.test",
+  probe: async (path) => {
+    throw new Error(`this test's checks do not probe the build (asked for ${path})`);
+  },
+};
 
 /** The `content` of every `<meta name="description">` in `<head>`. */
 export function metaDescriptions(html: string): (string | null)[] {

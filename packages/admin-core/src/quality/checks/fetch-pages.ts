@@ -26,6 +26,8 @@ export interface PageToFetch {
   readonly pageId: string;
   readonly path: string;
   readonly url: string;
+  /** #849 — the designated 404 page (served at `/404.html`). */
+  readonly notFoundPage?: true;
 }
 
 export interface PageFetchError {
@@ -66,7 +68,13 @@ async function fetchOne(
         message: `${page.path} is ${html.length} bytes of HTML, more than the ${MAX_PAGE_BYTES} the checks read — shrink the page's inline content`,
       };
     }
-    return { pageId: page.pageId, path: page.path, url: page.url, html };
+    return {
+      pageId: page.pageId,
+      path: page.path,
+      url: page.url,
+      html,
+      ...(page.notFoundPage ? { notFoundPage: true as const } : {}),
+    };
   } catch (e) {
     return {
       pageId: page.pageId,

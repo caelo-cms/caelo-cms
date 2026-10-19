@@ -248,7 +248,8 @@ export async function resolveMcpToken(
     async (tx) => {
       const rows = (await tx.execute(sql`
         SELECT id::text AS id, actor_id::text AS actor_id, scope, display_name,
-               ai_cost_cap_microcents, allow_caelo_ai, expires_at, revoked_at
+               ai_cost_cap_microcents, allow_caelo_ai, expires_at, revoked_at,
+               (SELECT deleted_at FROM users u WHERE u.id = mcp_tokens.actor_id) AS user_deleted_at
         FROM mcp_tokens
         WHERE token_hash = ${tokenHash}
       `)) as unknown as Array<{
@@ -260,10 +261,11 @@ export async function resolveMcpToken(
         allow_caelo_ai: boolean;
         expires_at: string | Date;
         revoked_at: string | Date | null;
+        user_deleted_at: string | Date | null;
       }>;
       const r = rows[0];
       if (!r) return err("not_found" as const);
-      if (r.revoked_at) return err("revoked" as const);
+      if (r.revoked_at || r.user_deleted_at) return err("revoked" as const);
       const expires = r.expires_at instanceof Date ? r.expires_at : new Date(String(r.expires_at));
       if (expires.getTime() < Date.now()) return err("expired" as const);
       await tx.execute(sql`
