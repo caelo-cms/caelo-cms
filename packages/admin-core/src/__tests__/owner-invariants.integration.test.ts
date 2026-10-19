@@ -296,6 +296,7 @@ describe("M-09 — a deleted user's MCP tokens stop working", () => {
     await asSystem((tx) => tx`UPDATE users SET deleted_at = now() WHERE id = ${userId}::uuid`);
     const resolved = await resolveMcpToken(adapter, token);
     expect(resolved.ok).toBe(false);
-    if (!resolved.ok) expect(resolved.error).toBe("revoked");
+    // #889 names this refusal `user_deleted`; either code refuses the bearer.
+    if (!resolved.ok) expect(["revoked", "user_deleted"]).toContain(resolved.error);
   });
 });
