@@ -124,6 +124,26 @@ describe("acquireBucketStateLock", () => {
     expect(cloud.calls.at(-1)).toBe(`storage rm ${URL} --if-generation-match=1000`);
   });
 
+  it("#818: a generation gcloud does not print as a digit string is not trusted for the release", () => {
+    // `gcloud storage objects describe` prints `generation: '1706304784726341'`
+    // (a string); a JSON number past 2^53 would have lost digits.
+    for (const generation of [1000, "", "12a"]) {
+      const cloud = fakeCloud();
+      const run: SyncGcloud = (args, input) =>
+        args[1] === "objects"
+          ? ok(JSON.stringify({ name: "install/state.lock", generation }))
+          : cloud.run(args, input);
+      expect(() =>
+        acquireBucketStateLock(BUCKET, "caelo upgrader job", run, {
+          holder: jobHolder("x2"),
+          now: () => T0,
+        }),
+      ).toThrow(/without a generation/);
+      // Taken blind is given back at once, not held.
+      expect(cloud.objects.size).toBe(0);
+    }
+  });
+
   it("breaks the lock of a finished run and takes it — and says so", () => {
     for (const how of ["succeeded", "cancelled"] as const) {
       const cloud = fakeCloud({ x1: how });
