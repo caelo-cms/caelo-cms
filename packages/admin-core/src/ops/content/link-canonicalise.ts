@@ -23,10 +23,12 @@ import { canonicaliseLinksForWrite } from "../../links/canonicalise.js";
 
 export const canonicaliseLinkValuesOp = defineOperation({
   name: "links.canonicalise_values",
-  // Why plugin + system only: a write-path building block, not an editing
-  // action. Plugins call it from their own write operations (the AI
-  // reaches it through those tools, e.g. set_chrome_variants); core's
-  // write ops canonicalise in-process.
+  // Why system-only: (plugin + system) a write-path building block, not an
+  // editing action. Plugins call it from their own write operations (the
+  // AI reaches it through those tools, e.g. set_chrome_variants, which
+  // own the write and its snapshot); core's write ops canonicalise
+  // in-process. A direct AI tool would transform values without storing
+  // them anywhere.
   actorScope: ["plugin", "system"],
   database: "cms_admin",
   input: z
