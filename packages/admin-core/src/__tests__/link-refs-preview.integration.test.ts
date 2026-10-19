@@ -8,13 +8,18 @@
  * publish target's style (anchor kept); a draft target resolves (the
  * editor shows drafts); a deleted target stays raw and surfaces as
  * `link-target-missing:page/<id>` in `missingSlots` (the editor's
- * missing-content channel the AI reads through inspect_page_render).
+ * missing-content channel the AI reads through inspect_page_render);
+ * a malformed `caelo:` href is flagged as `link-ref-malformed:<raw>`;
+ * a chat's own new and deleted pages resolve against the chat's branch
+ * only; a media reference renders the editor's media URL.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { ToolRegistry } from "../ai/tools/dispatch.js";
+import { inspectPageRenderTool } from "../ai/tools/inspect-page-render.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -28,6 +33,9 @@ const SYSTEM: ExecutionContext = {
 };
 
 const PFX = `lrp-${Date.now().toString(36)}`;
+// media_assets.sha256 of the seeded asset (hex, so it never collides with
+// a real upload's digest pattern by accident).
+const MEDIA_SHA_PREFIX = "7e1f0b02";
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let templateId = "";
@@ -52,6 +60,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM modules WHERE display_name LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${`${PFX}-tpl`})`;
     await tx`DELETE FROM templates WHERE slug = ${`${PFX}-tpl`}`;
+    await tx`DELETE FROM media_assets WHERE sha256 LIKE ${`${MEDIA_SHA_PREFIX}%`}`;
   });
 }
 
@@ -107,6 +116,16 @@ async function preview(pageId: string): Promise<{ html: string; missingSlots: st
   const r = await execute(registry, adapter, SYSTEM, "pages.render_preview", { pageId });
   if (!r.ok) throw new Error(`render_preview: ${JSON.stringify(r.error)}`);
   return r.value as { html: string; missingSlots: string[] };
+}
+
+/** The AI's next step per link marker, as inspect_page_render reports it. */
+async function nextSteps(pageId: string): Promise<Record<string, string>> {
+  const tools = new ToolRegistry();
+  tools.register(inspectPageRenderTool);
+  const r = await tools.dispatch("inspect_page_render", { pageId }, SYSTEM, { adapter, registry });
+  if (!r.ok) throw new Error(`inspect_page_render: ${r.content}`);
+  const out = JSON.parse(r.content) as { slots: { nextSteps?: Record<string, string> } };
+  return out.slots.nextSteps ?? {};
 }
 
 const TEXT = [{ name: "body_text", kind: "text", label: "Body" }];
@@ -193,5 +212,139 @@ describe("pages.render_preview — internal references", () => {
     const out = await preview(page);
     expect(out.html).toContain(`href="caelo:page/${gone}"`);
     expect(out.missingSlots).toContain(`link-target-missing:page/${gone}`);
+    expect((await nextSteps(page))[`link-target-missing:page/${gone}`]).toContain(
+      `grep_content("caelo:page/${gone}")`,
+    );
+  });
+
+  it("flags a malformed caelo: href as link-ref-malformed and keeps it raw", async () => {
+    const target = await buildPage(
+      `${PFX}-mal-target`,
+      "published",
+      "<p>{{body_text}}</p>",
+      { body_text: "M" },
+      TEXT,
+    );
+    const page = await buildPage(
+      `${PFX}-mal`,
+      "published",
+      `<a class="m" href="caelo:page/${target}/team">Team</a>`,
+      {},
+      [],
+    );
+    const out = await preview(page);
+    expect(out.html).toContain(`href="caelo:page/${target}/team"`);
+    expect(out.missingSlots).toContain(`link-ref-malformed:caelo:page/${target}/team`);
+    expect((await nextSteps(page))[`link-ref-malformed:caelo:page/${target}/team`]).toContain(
+      `grep_content("caelo:page/${target}/team")`,
+    );
+  });
+
+  it("resolves the chat's own new page and flags its pending delete, on that branch only", async () => {
+    const kept = await buildPage(
+      `${PFX}-kept`,
+      "published",
+      "<p>{{body_text}}</p>",
+      { body_text: "K" },
+      TEXT,
+    );
+    const session = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      isolation: "experiment",
+      title: `${PFX}-chat2`,
+    });
+    if (!session.ok) throw new Error(`session ${JSON.stringify(session.error)}`);
+    const { chatSessionId, chatBranchId } = session.value as {
+      chatSessionId: string;
+      chatBranchId: string;
+    };
+    const chatCtx: ExecutionContext = { ...SYSTEM, chatBranchId, chatTaskId: chatSessionId };
+    const created = await execute(registry, adapter, chatCtx, "pages.build_page", {
+      page: { slug: `${PFX}-branch-new`, title: `${PFX} new`, templateId, status: "draft" },
+      modules: [
+        {
+          blockName: "content",
+          displayName: `${PFX} branch-new Body`,
+          description: "Page body.",
+          kind: "content",
+          html: "<p>{{body_text}}</p>",
+          fields: TEXT,
+          content: { source: "inline", values: { body_text: "N" } },
+        },
+      ],
+    });
+    if (!created.ok) throw new Error(`branch build_page: ${JSON.stringify(created.error)}`);
+    const fresh = (created.value as { pageId: string }).pageId;
+    const page = await buildPage(
+      `${PFX}-twolinks`,
+      "published",
+      '<a class="n" href="{{fresh_href}}">N</a><a class="k" href="{{kept_href}}">K</a>',
+      { fresh_href: `caelo:page/${fresh}`, kept_href: `caelo:page/${kept}` },
+      [
+        { name: "fresh_href", kind: "url", label: "New" },
+        { name: "kept_href", kind: "url", label: "Kept" },
+      ],
+    );
+    const deleted = await execute(registry, adapter, chatCtx, "pages.delete", { pageId: kept });
+    if (!deleted.ok) throw new Error(`branch delete: ${JSON.stringify(deleted.error)}`);
+
+    const inChat = await execute(registry, adapter, chatCtx, "pages.render_preview", {
+      pageId: page,
+      chatBranchId,
+    });
+    if (!inChat.ok) throw new Error(`render_preview: ${JSON.stringify(inChat.error)}`);
+    const chatOut = inChat.value as { html: string; missingSlots: string[] };
+    expect(chatOut.html).toContain(`<a class="n" href="/${PFX}-branch-new/"`);
+    expect(chatOut.html).toContain(`<a class="k" href="caelo:page/${kept}"`);
+    expect(chatOut.missingSlots.filter((m) => m.startsWith("link-"))).toEqual([
+      `link-target-missing:page/${kept}`,
+    ]);
+
+    // Main sees neither change: the chat's page does not exist there, the
+    // deleted one is still live.
+    const mainOut = await preview(page);
+    expect(mainOut.html).toContain(`<a class="n" href="caelo:page/${fresh}"`);
+    expect(mainOut.html).toContain(`<a class="k" href="/${PFX}-kept/"`);
+    expect(mainOut.missingSlots.filter((m) => m.startsWith("link-"))).toEqual([
+      `link-target-missing:page/${fresh}`,
+    ]);
+    await asSystem((tx) => tx`DELETE FROM chat_sessions WHERE id = ${chatSessionId}::uuid`);
+  });
+
+  it("renders a media reference as the editor's media URL, variant kept", async () => {
+    const sha = `${MEDIA_SHA_PREFIX}${"c".repeat(56)}`;
+    const upload = await execute(registry, adapter, SYSTEM, "media.upload", {
+      sha256: sha,
+      originalName: "brochure.pdf",
+      name: `${PFX} Brochure`,
+      mime: "application/pdf",
+      sizeBytes: 4,
+      width: null,
+      height: null,
+      alt: "",
+      storageKey: `${sha}/orig.pdf`,
+      variants: [
+        {
+          variant: "orig",
+          format: "pdf",
+          width: null,
+          height: null,
+          sizeBytes: 4,
+          storageKey: `${sha}/orig.pdf`,
+        },
+      ],
+    });
+    if (!upload.ok) throw new Error(`media seed: ${JSON.stringify(upload.error)}`);
+    const { assetId, slug } = upload.value as { assetId: string; slug: string };
+    const page = await buildPage(
+      `${PFX}-media`,
+      "published",
+      `<a class="f" href="caelo:media/${assetId}">PDF</a><a class="v" href="caelo:media/${assetId}/thumb-200">T</a>`,
+      {},
+      [],
+    );
+    const out = await preview(page);
+    expect(out.html).toContain(`<a class="f" href="/_caelo/media/${slug}"`);
+    expect(out.html).toContain(`<a class="v" href="/_caelo/media/${slug}/thumb-200"`);
+    expect(out.missingSlots.filter((m) => m.startsWith("link-"))).toEqual([]);
   });
 });

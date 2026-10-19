@@ -7,12 +7,15 @@
  * public path in the target's URL style; a link to a draft page ships
  * its URL and is reported in `unpublishedLinkTargets` (warning at Stage);
  * a link to a deleted page fails the build in the render gate, naming
- * the page, the module and the marker.
+ * the page, the module and the marker; so does a malformed `caelo:`
+ * href; a media reference goes through the media pass like a literal
+ * embed and ships as the content-hashed `/_assets/…` file.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerAdminOps } from "@caelo-cms/admin-core";
@@ -33,6 +36,7 @@ const SYSTEM: ExecutionContext = {
 };
 
 const PFX = `lrb-${Date.now().toString(36)}`;
+const MEDIA_SHA = `7e1f0b03${"d".repeat(56)}`;
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let templateId = "";
@@ -59,6 +63,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM modules WHERE display_name LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${`${PFX}-tpl`})`;
     await tx`DELETE FROM templates WHERE slug = ${`${PFX}-tpl`}`;
+    await tx`DELETE FROM media_assets WHERE sha256 = ${MEDIA_SHA}`;
   });
 }
 
@@ -228,5 +233,92 @@ describe("static build — internal references", () => {
       }),
     );
     await expect(build).rejects.toThrow(`link-target-missing:page/${gone}`);
+  });
+
+  it("refuses to ship a malformed caelo: href and names the marker", async () => {
+    const target = await buildPage(
+      `${PFX}-mal-target`,
+      "published",
+      "<p>{{body_text}}</p>",
+      { body_text: "T" },
+      TEXT,
+    );
+    const linking = await buildPage(
+      `${PFX}-mal`,
+      "published",
+      `<a href="caelo:page/${target}/team">Team</a>`,
+      {},
+      [],
+    );
+    const root = mkdtempSync(join(tmpdir(), "caelo-link-refs-build-"));
+    const build = adapter.withAdminTransaction(SYSTEM, (tx) =>
+      generateSite({
+        tx,
+        adapter,
+        plugins: localBuildPluginServices,
+        target: stagingTarget(),
+        runId: `${PFX}-run3`,
+        repoRoot: root,
+        changedPageIds: [linking],
+      }),
+    );
+    await expect(build).rejects.toThrow(`link-ref-malformed:caelo:page/${target}/team`);
+  });
+
+  it("ships a media reference as the media pass's hashed asset", async () => {
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const upload = await execute(registry, adapter, SYSTEM, "media.upload", {
+      sha256: MEDIA_SHA,
+      originalName: "logo.png",
+      name: `${PFX} Logo`,
+      mime: "image/png",
+      sizeBytes: bytes.length,
+      width: null,
+      height: null,
+      alt: "",
+      storageKey: `${MEDIA_SHA}/orig.png`,
+      variants: [
+        {
+          variant: "orig",
+          format: "png",
+          width: null,
+          height: null,
+          sizeBytes: bytes.length,
+          storageKey: `${MEDIA_SHA}/orig.png`,
+        },
+      ],
+    });
+    if (!upload.ok) throw new Error(`media seed: ${JSON.stringify(upload.error)}`);
+    const { assetId, slug } = upload.value as { assetId: string; slug: string };
+    const page = await buildPage(
+      `${PFX}-media`,
+      "published",
+      `<a class="dl" href="caelo:media/${assetId}">Logo</a>`,
+      {},
+      [],
+    );
+    const root = mkdtempSync(join(tmpdir(), "caelo-link-refs-build-"));
+    // The generator reads media bytes from <repoRoot>/data/media/<storageKey>.
+    await mkdir(join(root, "data", "media", MEDIA_SHA), { recursive: true });
+    await writeFile(join(root, "data", "media", MEDIA_SHA, "orig.png"), bytes);
+    const runId = `${PFX}-run4`;
+    await adapter.withAdminTransaction(SYSTEM, (tx) =>
+      generateSite({
+        tx,
+        adapter,
+        plugins: localBuildPluginServices,
+        target: stagingTarget(),
+        runId,
+        repoRoot: root,
+        changedPageIds: [page],
+      }),
+    );
+    const html = await readFile(
+      join(root, "out", "builds", runId, pageOutputPath(`/${PFX}-media`)),
+      "utf8",
+    );
+    const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 16);
+    expect(html).toContain(`<a class="dl" href="/_assets/${slug}.${hash}.png"`);
+    expect(html).not.toContain("caelo:media/");
   });
 });
