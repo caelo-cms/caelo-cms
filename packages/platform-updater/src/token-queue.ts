@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The upgrader job's database queue over Cloud SQL IAM authentication,
- * reopened before its access token runs out (#815).
+ * The update jobs' database queues over Cloud SQL IAM authentication,
+ * reopened before their access token runs out (#815) — the upgrader job's
+ * {@link tokenRefreshingQueue} and the converge job's (#819)
+ * {@link tokenRefreshingConvergeQueue}, over the same pool logic.
  *
  * The job's password IS a metadata-server access token, which lives about
  * an hour — and the metadata server may hand out one with only minutes
@@ -19,7 +21,7 @@
  * only about connections that do not exist yet.
  */
 
-import type { UpdateQueue } from "@caelo-cms/provisioning";
+import type { ConvergeQueue, UpdateQueue } from "@caelo-cms/provisioning";
 
 /** Reopen when the token has less than this left. */
 export const TOKEN_REFRESH_MARGIN_MS = 5 * 60_000;
@@ -31,23 +33,23 @@ export interface AccessToken {
 }
 
 /** A queue over one pool, and how to close that pool. */
-export interface OpenedQueue {
-  readonly queue: UpdateQueue;
+export interface OpenedQueue<Q = UpdateQueue> {
+  readonly queue: Q;
   close(): Promise<void>;
 }
 
-export interface TokenQueueDeps {
+export interface TokenQueueDeps<Q = UpdateQueue> {
   readonly fetchToken: () => Promise<AccessToken>;
   /** Open a pool whose password is `token`. */
-  readonly open: (token: string) => OpenedQueue;
+  readonly open: (token: string) => OpenedQueue<Q>;
   readonly now: () => number;
   /** Told about a failed close of a retired pool (it does not fail the run). */
   readonly onCloseError?: (e: unknown) => void;
 }
 
-interface Pool {
+interface Pool<Q> {
   readonly token: string;
-  readonly opened: OpenedQueue;
+  readonly opened: OpenedQueue<Q>;
   readonly expiresAt: number;
   inFlight: number;
   retired: boolean;
@@ -73,23 +75,18 @@ export function parseMetadataToken(text: string, fetchedAt: number): AccessToken
 }
 
 /**
- * An {@link UpdateQueue} that opens its pool with a fresh token whenever the
- * current one is about to expire. `close` closes every pool still open.
- *
- * @example
- *   const q = tokenRefreshingQueue({ fetchToken, open: (t) => openPool(t), now: Date.now });
- *   await q.queue.claim(execution);
- *   await q.close();
+ * Runs each queue call on a pool opened with a token that is not about to
+ * expire; `close` closes every pool still open.
  */
-export function tokenRefreshingQueue(deps: TokenQueueDeps): {
-  readonly queue: UpdateQueue;
+function refreshingPools<Q>(deps: TokenQueueDeps<Q>): {
+  call<T>(use: (q: Q) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 } {
-  let current: Pool | null = null;
-  let opening: Promise<Pool> | null = null;
-  const pools = new Set<Pool>();
+  let current: Pool<Q> | null = null;
+  let opening: Promise<Pool<Q>> | null = null;
+  const pools = new Set<Pool<Q>>();
 
-  const closePool = async (pool: Pool): Promise<void> => {
+  const closePool = async (pool: Pool<Q>): Promise<void> => {
     pools.delete(pool);
     try {
       await pool.opened.close();
@@ -98,12 +95,12 @@ export function tokenRefreshingQueue(deps: TokenQueueDeps): {
     }
   };
 
-  const fresh = async (): Promise<Pool> => {
+  const fresh = async (): Promise<Pool<Q>> => {
     const token = await deps.fetchToken();
     // The metadata server rotates its cached token shortly before expiry;
     // until it has, the same token comes back and the pool stays.
     if (current && current.token === token.token) return current;
-    const pool: Pool = {
+    const pool: Pool<Q> = {
       token: token.token,
       opened: deps.open(token.token),
       expiresAt: token.expiresAt,
@@ -120,7 +117,7 @@ export function tokenRefreshingQueue(deps: TokenQueueDeps): {
     return pool;
   };
 
-  const pool = async (): Promise<Pool> => {
+  const pool = async (): Promise<Pool<Q>> => {
     if (current && current.expiresAt - deps.now() > TOKEN_REFRESH_MARGIN_MS) return current;
     // One refresh at a time: concurrent calls share it.
     opening ??= fresh().finally(() => {
@@ -129,7 +126,7 @@ export function tokenRefreshingQueue(deps: TokenQueueDeps): {
     return opening;
   };
 
-  const call = async <T>(use: (q: UpdateQueue) => Promise<T>): Promise<T> => {
+  const call = async <T>(use: (q: Q) => Promise<T>): Promise<T> => {
     const p = await pool();
     p.inFlight += 1;
     try {
@@ -141,15 +138,53 @@ export function tokenRefreshingQueue(deps: TokenQueueDeps): {
   };
 
   return {
+    call,
+    close: async () => {
+      await Promise.all([...pools].map(closePool));
+      current = null;
+    },
+  };
+}
+
+/**
+ * An {@link UpdateQueue} that opens its pool with a fresh token whenever the
+ * current one is about to expire. `close` closes every pool still open.
+ *
+ * @example
+ *   const q = tokenRefreshingQueue({ fetchToken, open: (t) => openPool(t), now: Date.now });
+ *   await q.queue.claim(execution);
+ *   await q.close();
+ */
+export function tokenRefreshingQueue(deps: TokenQueueDeps<UpdateQueue>): {
+  readonly queue: UpdateQueue;
+  close(): Promise<void>;
+} {
+  const { call, close } = refreshingPools(deps);
+  return {
     queue: {
       claim: (execution) => call((q) => q.claim(execution)),
       event: (id, phase, level, message) => call((q) => q.event(id, phase, level, message)),
       record: (id, facts) => call((q) => q.record(id, facts)),
       finish: (id, end) => call((q) => q.finish(id, end)),
     },
-    close: async () => {
-      await Promise.all([...pools].map(closePool));
-      current = null;
+    close,
+  };
+}
+
+/** {@link tokenRefreshingQueue} for the converge job's queue (#819). */
+export function tokenRefreshingConvergeQueue(deps: TokenQueueDeps<ConvergeQueue>): {
+  readonly queue: ConvergeQueue;
+  close(): Promise<void>;
+} {
+  const { call, close } = refreshingPools(deps);
+  return {
+    queue: {
+      claimConverge: (execution) => call((q) => q.claimConverge(execution)),
+      handover: (id, from, to) => call((q) => q.handover(id, from, to)),
+      event: (id, phase, level, message) => call((q) => q.event(id, phase, level, message)),
+      record: (id, facts) => call((q) => q.record(id, facts)),
+      finish: (id, end) => call((q) => q.finish(id, end)),
     },
+    close,
   };
 }

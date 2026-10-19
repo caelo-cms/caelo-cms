@@ -4,7 +4,9 @@
  * Which upgrader this admin can hand an update to (epic #696):
  *
  *   - Google Cloud: the install's Cloud Run job, which the admin may start
- *     (admin-core security/upgrader/job-trigger.ts);
+ *     (admin-core security/upgrader/job-trigger.ts) — the upgrader job, or
+ *     for a release that changes the cloud setup the converge job (#819;
+ *     {@link convergeTrigger}, routed by admin-core update-route.ts);
  *   - self-hosted: the update agent on the server, which polls for the
  *     request the Owner writes (admin-core security/upgrader/agent-trigger.ts);
  *     available only while it checks in;
@@ -13,8 +15,9 @@
  * Test-only stand-ins, honoured outside production only (same gate as
  * CAELO_FAKE_IMAGE_PROVIDER):
  *   - `CAELO_E2E_FAKE_UPGRADER=1` starts no Google Cloud job and reports a
- *     fake run, so the Playwright suite can drive "Install update" and feed
- *     the timeline itself;
+ *     fake run (for both jobs), so the Playwright suite can drive "Install
+ *     update" and feed the timeline itself; release manifests are not
+ *     fetched then (the route falls back to what the last attempt said);
  *   - with it, the `caelo_e2e_updates_provider` cookie switches the page to
  *     another provider for one browser (`self-hosted` / `gcp`), so the same
  *     admin build serves both install kinds to the suite.
@@ -22,6 +25,9 @@
 
 import {
   agentUpgraderTrigger,
+  convergeTriggerFromEnv,
+  type ManifestReader,
+  registryManifestReader,
   type UpgraderTrigger,
   UpgraderTriggerError,
   upgraderTriggerFromEnv,
@@ -68,6 +74,47 @@ export function updatesEnv(cookies: Cookies): UpgradePathEnv {
   return override === "self-hosted" || override === "gcp"
     ? { ...env, CAELO_E2E_UPDATES_PROVIDER: override }
     : env;
+}
+
+/**
+ * The converge job of this install (#819), null when it has none (not
+ * Google Cloud, or set up before the job existed), or the setup problem.
+ */
+export function convergeTrigger(
+  env: UpgradePathEnv,
+):
+  | { readonly ok: true; readonly trigger: UpgraderTrigger | null }
+  | { readonly ok: false; readonly error: string; readonly nextStep: string } {
+  if (updatesProvider(env) === "self-hosted") return { ok: true, trigger: null };
+  if (e2eStandIns()) return { ok: true, trigger: fakeTrigger };
+  try {
+    return {
+      ok: true,
+      trigger: convergeTriggerFromEnv({
+        CAELO_PROVIDER: process.env.CAELO_PROVIDER,
+        CAELO_CONVERGE_JOB: process.env.CAELO_CONVERGE_JOB,
+      }),
+    };
+  } catch (e) {
+    if (e instanceof UpgraderTriggerError) {
+      return { ok: false, error: e.message, nextStep: e.nextStep };
+    }
+    throw e;
+  }
+}
+
+let manifests: ManifestReader | null = null;
+
+/**
+ * Where the update route reads release manifests (#819): the public
+ * registry, cached per process; never the network under the e2e stand-ins.
+ */
+export function routeManifestReader(): ManifestReader {
+  if (e2eStandIns()) {
+    return async () => ({ ok: false, message: "release manifests are not read in e2e runs" });
+  }
+  manifests ??= registryManifestReader({ fetch: (url, init) => fetch(url, init) });
+  return manifests;
 }
 
 /** The upgrader of this install, null when it has none, or the setup problem. */

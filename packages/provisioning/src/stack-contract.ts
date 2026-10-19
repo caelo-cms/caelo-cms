@@ -36,6 +36,7 @@
 
 import type { SupportedProvider } from "./adapter.js";
 import {
+  convergeJobResource,
   gatewayServiceAccountEmail,
   gcpBucketName,
   gcpNamePrefix,
@@ -168,6 +169,13 @@ export const OPERATOR_ACCESS_JOB_ENV_VAR = "CAELO_OPERATOR_ACCESS_JOB";
  * could not set the job up.
  */
 export const UPGRADER_JOB_ENV_VAR = "CAELO_UPGRADER_JOB";
+
+/**
+ * The admin env var naming the converge job (#819) — what "Install update"
+ * starts for a release that changes the cloud setup. `upgrade` leaves it
+ * untouched when it could not set the job up.
+ */
+export const CONVERGE_JOB_ENV_VAR = "CAELO_CONVERGE_JOB";
 
 /** Where the admin image ships the static-generator CLI. */
 const GENERATOR_CLI = "/app/apps/static-generator/src/cli.ts";
@@ -442,6 +450,9 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     // #696 — the job "Install update" starts (upgrader-setup.ts); the admin
     // may only run it, never override it.
     { name: UPGRADER_JOB_ENV_VAR, value: upgraderJobResource(projectId, inputs.region, env) },
+    // #819 — the job "Install update" starts for a release that changes the
+    // cloud setup (converge-job-setup.ts); start-only as well.
+    { name: CONVERGE_JOB_ENV_VAR, value: convergeJobResource(projectId, inputs.region, env) },
   ];
   if (inputs.provider === "gcp") {
     // v0.2.78 — the GCS StaticPublisher: Stage uploads to staging,

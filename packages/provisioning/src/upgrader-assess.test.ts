@@ -326,3 +326,60 @@ describe("assessUpgradeRequest — self-hosted (the host agent, #696 Phase 4c)",
     ).toBe("refused/contract-migrations");
   });
 });
+
+describe("assessUpgradeRequest — the converge route (#819)", () => {
+  const assess = (row: {
+    manifest?: ReleaseManifestResult;
+    installed?: InstalledState;
+    trigger?: "manual" | "auto";
+  }) =>
+    assessUpgradeRequest({
+      request: { targetVersion: "0.11.0", trigger: row.trigger ?? "manual" },
+      manifest: row.manifest ?? verified({ infraContractVersion: 3 }),
+      installed: row.installed ?? INSTALLED,
+      policy: POLICY,
+      now: NOW,
+      route: "converge",
+    });
+  const code = (d: ReturnType<typeof assess>) =>
+    d.kind === "stop" ? `${d.status}/${d.codes.join(",")}` : d.kind;
+
+  it("installs a release that raises the infrastructure contract: that is its job", () => {
+    expect(code(assess({}))).toBe("proceed");
+  });
+
+  it("the contract bump is no reason to warn about destructive migrations", () => {
+    const d = assess({});
+    expect(d.kind === "proceed" ? d.warnings : ["stopped"]).toEqual([]);
+  });
+
+  it("never converges automatically: the policy has no switch for it", () => {
+    expect(code(assess({ trigger: "auto" }))).toBe("refused/policy");
+  });
+
+  it("keeps every other refusal: signature, downgrade, minFromVersion, unknown version", () => {
+    expect(code(assess({ manifest: broken("signature") }))).toBe("refused/signature");
+    expect(code(assess({ manifest: broken("blob-digest") }))).toBe("refused/signature");
+    expect(code(assess({ installed: { version: "0.11.0", infraContractVersion: 2 } }))).toBe(
+      "refused/not-newer",
+    );
+    expect(
+      code(assess({ manifest: verified({ infraContractVersion: 3, minFromVersion: "0.10.50" }) })),
+    ).toBe("refused/min-from-version");
+    expect(code(assess({ installed: { version: null, infraContractVersion: 2 } }))).toBe(
+      "needs_cloud_shell/install-version-unknown",
+    );
+  });
+
+  it("the upgrader's own route still hands the contract bump on, naming the converge job first", () => {
+    const d = assessUpgradeRequest({
+      request: { targetVersion: "0.11.0", trigger: "manual" },
+      manifest: verified({ infraContractVersion: 3 }),
+      installed: INSTALLED,
+      policy: POLICY,
+      now: NOW,
+    });
+    expect(code(d)).toBe("needs_cloud_shell/infra-contract");
+    expect(d.kind === "stop" ? d.reason : "").toContain("converge job");
+  });
+});

@@ -41,6 +41,8 @@
   const inProduct = $derived(data.canInstall && data.upgrader.available);
   let confirmOpen = $state(false);
   let cancelOpen = $state(false);
+  /** #819 — "Continue" for a converge whose run died. */
+  let continueOpen = $state(false);
   /** A wrong or missing password: the dialog it was typed into opens again with the message. */
   const stepUpError = $derived(
     form && "stepUpRequired" in form && form.stepUpRequired && "action" in form
@@ -50,6 +52,7 @@
   $effect(() => {
     if (stepUpError?.action === "install") confirmOpen = true;
     if (stepUpError?.action === "cancel") cancelOpen = true;
+    if (stepUpError?.action === "continueUpdate") continueOpen = true;
   });
 
   const status = $derived(data.status);
@@ -214,9 +217,34 @@
                 target="_blank"
                 rel="noopener noreferrer"
                 class="underline underline-offset-4">the upgrader's log</a
-              >, and run the upgrade once with Cloud Shell if anything misbehaves.
+              >{#if data.deadRun.continuable && data.convergeJob}. Continue the update: Caelo
+                picks up where it stopped, with the backup it took before it started.{:else}, and
+                run the upgrade once with Cloud Shell if anything misbehaves.{/if}
             </AlertDescription>
           </Alert>
+          {#if data.deadRun.continuable && data.convergeJob}
+            <form id="continue-update-form" method="post" action="?/continueUpdate">
+              <input type="hidden" name="_csrf" value={data.csrfToken} />
+              <input type="hidden" name="requestId" value={latestRequest.id} />
+            </form>
+            <Button
+              type="button"
+              size="sm"
+              data-testid="continue-update"
+              onclick={() => (continueOpen = true)}
+            >
+              Continue the update…
+            </Button>
+            <PasswordConfirmDialog
+              bind:open={continueOpen}
+              formId="continue-update-form"
+              title={`Continue the update to v${latestRequest.targetVersion}?`}
+              description="Caelo starts its installer again. It keeps the backup it took before the update began, finishes what is left, tests the new version and goes back automatically if the test fails."
+              submitLabel="Continue the update"
+              error={stepUpError?.action === "continueUpdate" ? stepUpError.error : null}
+              testid="continue-dialog"
+            />
+          {/if}
         {/if}
         {#key latestRequest.id}
           <UpdateTimeline
@@ -423,9 +451,14 @@
         minute; unsaved typing elsewhere in the admin can be lost.
       {:else}
         Takes about 5 to 15 minutes. Your public site stays online. The admin restarts once and may be
-        unreachable for about a minute; unsaved typing elsewhere in the admin can be lost. If this
-        release needs a change to your cloud setup, nothing is installed and this page explains the
-        Cloud Shell step instead.
+        unreachable for about a minute; unsaved typing elsewhere in the admin can be lost.
+        {#if data.convergeJob}
+          If this release also changes settings in your Google Cloud project, Caelo makes those
+          changes too, as part of the same update.
+        {:else}
+          If this release needs a change to your cloud setup, nothing is installed and this page
+          explains the Cloud Shell step instead.
+        {/if}
       {/if}
     </p>
   </PasswordConfirmDialog>

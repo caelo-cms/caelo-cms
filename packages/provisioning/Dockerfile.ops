@@ -14,10 +14,12 @@
 #                    run time; the CI boot smoke runs `gcloud beta`).
 #   - cosign       — verifies the signed release manifest + image digests.
 #
-# Two run modes share this one image (see #696): cloud-shell mode (the
-# operator's own identity; first install + infra-changing releases) and
-# upgrader-job mode (a dedicated identity without IAM write). The image
-# itself is mode-agnostic: it is "the CLI, reproducibly".
+# Several run modes share this one image (see #696, #819): the operator's
+# own terminal (first install, break-glass upgrades), the install job and
+# the converge job (both as the install's caelo-provisioner; the converge
+# job installs releases that change the cloud setup), and the upgrader job
+# (a dedicated identity without IAM write). The image itself is
+# mode-agnostic: it is "the CLI, reproducibly".
 #
 # Every downloaded binary is pinned by version AND sha256, verified at
 # build time; a mismatch fails the build. Bumping a tool = bump the
@@ -156,10 +158,11 @@ COPY --from=builder /opt/caelo-ops /opt/caelo-ops
 # from its own file location (import.meta.dir), which a symlink in
 # /usr/local/bin would point at the wrong directory.
 #
-# `caelo-ops upgrader` runs the upgrader job and passes it NOTHING: the
-# job reads its input from the database only (platform-updater/src/main.ts),
+# `caelo-ops upgrader` runs the upgrader job and `caelo-ops converge-job`
+# the converge job (#819), and passes them NOTHING: both read their input
+# from the database only (platform-updater/src/main.ts, converge-main.ts),
 # so extra arguments are dropped here, not interpreted.
-RUN printf '#!/bin/sh\nif [ "${1:-}" = upgrader ]; then exec bun /opt/caelo-ops/packages/platform-updater/src/main.ts; fi\nexec bun /opt/caelo-ops/packages/provisioning/dist/cli.js "$@"\n' \
+RUN printf '#!/bin/sh\nif [ "${1:-}" = upgrader ]; then exec bun /opt/caelo-ops/packages/platform-updater/src/main.ts; fi\nif [ "${1:-}" = converge-job ]; then exec bun /opt/caelo-ops/packages/platform-updater/src/converge-main.ts; fi\nexec bun /opt/caelo-ops/packages/provisioning/dist/cli.js "$@"\n' \
       > /usr/local/bin/caelo-ops && \
     chmod 0755 /usr/local/bin/caelo-ops && \
     ln -s caelo-ops /usr/local/bin/cms-provision && \

@@ -17,7 +17,14 @@
  *      install's infrastructure contract version
  *
  * Every side effect goes through {@link GcpUpgradeDeps}, so the sequence runs
- * against a fake gcloud in tests. lifecycle.ts wires the real ones.
+ * against a fake gcloud in tests. lifecycle.ts wires the real ones for the
+ * terminal; converge-job-gcp.ts wires them for the converge job (#819),
+ * which runs this same sequence from inside the install's project. The job
+ * may be killed mid-way and started again, so the sequence reports its two
+ * facts a resumed run must not recompute — the pre-upgrade backup and the
+ * revisions that served before ({@link UpgradeCheckpoint}) — and accepts
+ * them back: a resumed run neither backs up the half-migrated database
+ * again nor rolls back onto a revision the interrupted run created.
  */
 
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
@@ -31,7 +38,7 @@ import {
   type RollSlug,
   reportPlan,
 } from "./app-roll.js";
-import { backupFailureHelp, restoreCommand, takeSqlBackup } from "./backup.js";
+import { backupFailureHelp, restoreCommand, type SqlBackup, takeSqlBackup } from "./backup.js";
 import { startConverge } from "./converge.js";
 import type { HealthProbe } from "./health.js";
 import type { UpgradeReporter } from "./reporter.js";
@@ -51,6 +58,21 @@ export interface GcpUpgradeTarget {
   readonly infraContractVersion: number;
   readonly skipVerify: boolean;
   readonly skipHealthCheck: boolean;
+  /**
+   * Whether the release's migrations are contract-type, from the signed
+   * release manifest (the converge job knows it; the terminal does not).
+   */
+  readonly migrationsContract?: boolean | null;
+}
+
+/**
+ * What an upgrade run has fixed that a resumed run must reuse (#819): the
+ * backup taken before anything changed, and the revisions that served
+ * before — the rollback targets.
+ */
+export interface UpgradeCheckpoint {
+  readonly backup?: SqlBackup;
+  readonly priorRevisions?: Readonly<Record<RollSlug, string>>;
 }
 
 export interface GcpUpgradeDeps {
@@ -86,6 +108,10 @@ export interface GcpUpgradeDeps {
   readonly provisionerIdentity?: () => Promise<boolean>;
   /** Today, for the backup's description. */
   readonly now?: () => Date;
+  /** #819 — what an interrupted run of this same upgrade already fixed. */
+  readonly resume?: UpgradeCheckpoint;
+  /** #819 — called once each checkpoint fact is known (before it is relied on). */
+  readonly onCheckpoint?: (checkpoint: UpgradeCheckpoint) => void;
 }
 
 /** Upgrade one install; true on success. See the file comment for the order. */
@@ -121,7 +147,7 @@ export async function upgradeGcpInstall(
     r.error(planned.error);
     return false;
   }
-  const plan = planned.plan;
+  const plan = withPriorRevisions(planned.plan, deps, r);
   sPre.done(`Pre-flight ok — ${plan.services.length} services planned`);
   reportPlan(plan, r);
 
@@ -134,19 +160,31 @@ export async function upgradeGcpInstall(
   }
 
   // 3. The first change: a failure leaves the install exactly as it was.
-  const sBak = r.step("Taking a pre-upgrade Cloud SQL backup...");
-  const backup = await takeSqlBackup(
-    run,
-    { projectId, env: target.env },
-    `pre-upgrade to ${target.targetTag}`,
-    deps.now,
-  );
-  if (!backup.ok) {
-    sBak.failed(`Pre-upgrade backup failed: ${backup.error}`);
-    r.warn(backupFailureHelp({ projectId }));
-    return false;
+  //    A resumed run keeps the interrupted run's backup: a new one could
+  //    already hold the half-migrated schema.
+  let backup: { readonly ok: true; readonly backup: SqlBackup };
+  if (deps.resume?.backup) {
+    backup = { ok: true, backup: deps.resume.backup };
+    r.info(
+      `Continuing an interrupted update: keeping its pre-upgrade backup ${backup.backup.backupId}.`,
+    );
+  } else {
+    const sBak = r.step("Taking a pre-upgrade Cloud SQL backup...");
+    const taken = await takeSqlBackup(
+      run,
+      { projectId, env: target.env },
+      `pre-upgrade to ${target.targetTag}`,
+      deps.now,
+    );
+    if (!taken.ok) {
+      sBak.failed(`Pre-upgrade backup failed: ${taken.error}`);
+      r.warn(backupFailureHelp({ projectId }));
+      return false;
+    }
+    sBak.done(`Pre-upgrade backup ${taken.backup.backupId} of ${taken.backup.instance} taken`);
+    backup = taken;
+    deps.onCheckpoint?.({ backup: taken.backup });
   }
-  sBak.done(`Pre-upgrade backup ${backup.backup.backupId} of ${backup.backup.instance} taken`);
 
   // 4. Converge, the part before the roll. The upgrader job runs the ops
   //    image with rights over the whole app, so it is deployed only when its
@@ -178,8 +216,8 @@ export async function upgradeGcpInstall(
       plan,
       backup: backup.backup,
       targetVersion: /^\d+\.\d+\.\d+/.test(target.targetTag) ? target.targetTag : null,
-      // Unknown until the signed release manifest names it (epic #696).
-      migrationsContract: null,
+      // Unknown on the terminal path until the signed release manifest names it.
+      migrationsContract: target.migrationsContract ?? null,
     },
     converge.hooks,
     {
@@ -213,6 +251,38 @@ export async function upgradeGcpInstall(
     );
   }
   return true;
+}
+
+/**
+ * The plan with the rollback targets an interrupted run recorded (#819): it
+ * may have rolled a service already, so the revision serving NOW would be
+ * the new release's. A fresh run records the planned ones instead.
+ */
+function withPriorRevisions(
+  plan: AppRollPlan,
+  deps: GcpUpgradeDeps,
+  r: UpgradeReporter,
+): AppRollPlan {
+  const recorded = deps.resume?.priorRevisions;
+  if (!recorded) {
+    const prior = Object.fromEntries(plan.services.map((s) => [s.slug, s.priorRevision])) as Record<
+      RollSlug,
+      string
+    >;
+    deps.onCheckpoint?.({ priorRevisions: prior });
+    return plan;
+  }
+  return {
+    ...plan,
+    services: plan.services.map((s) => {
+      const before = recorded[s.slug];
+      if (before === s.priorRevision) return s;
+      r.info(
+        `Continuing an interrupted update: ${s.slug} goes back to ${before} (what served before it started) if the new release fails its checks.`,
+      );
+      return { ...s, priorRevision: before };
+    }),
+  };
 }
 
 /**

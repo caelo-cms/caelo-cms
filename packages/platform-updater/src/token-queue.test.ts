@@ -7,12 +7,13 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import type { UpdateQueue } from "@caelo-cms/provisioning";
+import type { ConvergeQueue, UpdateQueue } from "@caelo-cms/provisioning";
 import {
   type AccessToken,
   type OpenedQueue,
   parseMetadataToken,
   TOKEN_REFRESH_MARGIN_MS,
+  tokenRefreshingConvergeQueue,
   tokenRefreshingQueue,
 } from "./token-queue.js";
 
@@ -195,5 +196,50 @@ describe("parseMetadataToken", () => {
     expect(() => parseMetadataToken(JSON.stringify({ access_token: "ya29.x" }), 0)).toThrow(
       /expires_in/,
     );
+  });
+});
+
+describe("tokenRefreshingConvergeQueue (#819)", () => {
+  it("runs the converge job's calls on a pool whose token is fresh", async () => {
+    let clock = 0;
+    const opened: string[] = [];
+    const calls: string[] = [];
+    const tokens: AccessToken[] = [
+      { token: "t1", expiresAt: 60 * MIN },
+      { token: "t2", expiresAt: 120 * MIN },
+    ];
+    let next = 0;
+    const q = tokenRefreshingConvergeQueue({
+      fetchToken: async () => tokens[Math.min(next++, 1)] as AccessToken,
+      open: (token) => {
+        opened.push(token);
+        const queue: ConvergeQueue = {
+          claimConverge: async (execution) => {
+            calls.push(`${token} claim ${execution}`);
+            return null;
+          },
+          handover: async (_id, from, to) => {
+            calls.push(`${token} handover ${from}→${to}`);
+            return true;
+          },
+          event: async () => {},
+          record: async () => {},
+          finish: async () => {
+            calls.push(`${token} finish`);
+            return true;
+          },
+        };
+        return { queue, close: async () => {} };
+      },
+      now: () => clock,
+    });
+    await q.queue.claimConverge("run-1");
+    await q.queue.handover("r", "run-0", "run-1");
+    // A long converge later, the first token is about to expire.
+    clock = 60 * MIN - TOKEN_REFRESH_MARGIN_MS + 1;
+    await q.queue.finish("r", END);
+    expect(calls).toEqual(["t1 claim run-1", "t1 handover run-0→run-1", "t2 finish"]);
+    expect(opened).toEqual(["t1", "t2"]);
+    await q.close();
   });
 });

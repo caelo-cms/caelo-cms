@@ -121,6 +121,21 @@ export function upgraderJobResource(projectId: string, region: string, env: stri
 }
 
 /**
+ * Cloud Run job that installs releases which change the cloud setup (#819):
+ * a one-shot job from the signed caelo-ops image that runs as the install's
+ * `caelo-provisioner` account. The admin may only start it, without
+ * overrides (converge-job-setup.ts).
+ */
+export function convergeJobName(env: string): string {
+  return `${gcpNamePrefix(env)}-converge`;
+}
+
+/** Full resource name of the converge job, as the admin's env carries it. */
+export function convergeJobResource(projectId: string, region: string, env: string): string {
+  return `projects/${projectId}/locations/${region}/jobs/${convergeJobName(env)}`;
+}
+
+/**
  * Account id of the upgrader job's own service account: may roll the two
  * Cloud Run services, run the migration job and back up Cloud SQL, never
  * change IAM, service accounts or secrets (upgrader-setup.ts).

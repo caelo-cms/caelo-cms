@@ -15,6 +15,7 @@ export const PHASE_LABELS: Readonly<Record<PlatformUpdatePhase, string>> = {
   verify: "Checking the release is genuine",
   assess: "Checking it fits this site",
   backup: "Backing up your database",
+  converge: "Updating your cloud setup",
   "health-baseline": "Making sure the site can be tested",
   migrations: "Updating the database",
   roll: "Switching to the new version",

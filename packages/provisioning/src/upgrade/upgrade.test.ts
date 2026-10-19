@@ -386,6 +386,85 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(calls.some((c) => c.includes("remove-iam-policy-binding"))).toBe(false);
   });
 
+  it("sets up the converge job as the install's provisioner after the upgrader (#819)", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const upgrader = indexOf(events, /^gcloud run jobs deploy caelo-production-upgrader /);
+    const converge = indexOf(events, /^gcloud run jobs deploy caelo-production-converge /);
+    expect(upgrader).toBeLessThan(converge);
+    expect(events[converge]).toContain(
+      "--service-account=caelo-provisioner@acme.iam.gserviceaccount.com",
+    );
+    expect(events[converge]).toContain(`--image=registry/ops@sha256:${"c".repeat(64)}`);
+    expect(lines.some((l) => l.startsWith("done: Converge job ready"))).toBe(true);
+  });
+
+  it("a failed converge-job setup leaves the converge incomplete and CAELO_CONVERGE_JOB as it was", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events, {
+      overrides: [[/^run jobs deploy caelo-production-converge /, fail("PERMISSION_DENIED")]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(recorded.contract).toEqual([]);
+    expect(lines.some((l) => l.includes("Converge job not set up"))).toBe(true);
+    expect(
+      events.some((e) => /services update caelo-production-admin.*CAELO_CONVERGE_JOB=/.test(e)),
+    ).toBe(false);
+  });
+
+  it("reports its backup and rollback targets before relying on them (#819 checkpoint)", async () => {
+    const events: string[] = [];
+    const { deps } = upgradeDeps(events);
+    const seen: string[] = [];
+    expect(
+      await upgradeGcpInstall(TARGET, {
+        ...deps,
+        onCheckpoint: (c) => {
+          if (c.priorRevisions) events.push(`checkpoint revisions ${c.priorRevisions.admin}`);
+          if (c.backup) events.push(`checkpoint backup ${c.backup.backupId}`);
+          seen.push(Object.keys(c).join(","));
+        },
+      }),
+    ).toBe(true);
+    expect(seen).toEqual(["priorRevisions", "backup"]);
+    const revisions = indexOf(events, /^checkpoint revisions caelo-production-admin-aaa-00001-old/);
+    const backup = indexOf(events, /^gcloud sql backups create/);
+    const saved = indexOf(events, new RegExp(`^checkpoint backup ${BACKUP_ID}`));
+    const migrate = indexOf(events, /^migrate /);
+    expect(revisions).toBeLessThan(backup);
+    expect(backup).toBeLessThan(saved);
+    expect(saved).toBeLessThan(migrate);
+  });
+
+  it("a resumed run keeps the interrupted run's backup and rolls back onto what served before it (#819)", async () => {
+    const events: string[] = [];
+    const { deps, lines } = upgradeDeps(events, {
+      deep: { ok: false, error: "unhealthy" },
+    });
+    const before = { admin: `${ADMIN}-00000-before`, gateway: `${GATEWAY}-00000-before` };
+    expect(
+      await upgradeGcpInstall(TARGET, {
+        ...deps,
+        resume: {
+          backup: { projectId: "acme", instance: SQL, backupId: "1759999999999" },
+          priorRevisions: before,
+        },
+        onCheckpoint: () => events.push("checkpoint"),
+      }),
+    ).toBe(false);
+    expect(events.some((e) => /sql backups create/.test(e))).toBe(false);
+    expect(events).not.toContain("checkpoint");
+    expect(lines).toContain(
+      "info: Continuing an interrupted update: keeping its pre-upgrade backup 1759999999999.",
+    );
+    const rollbacks = events.filter((e) => e.includes("--to-revisions"));
+    expect(rollbacks).toEqual([
+      expect.stringContaining(`--to-revisions ${before.gateway}=100`),
+      expect.stringContaining(`--to-revisions ${before.admin}=100`),
+    ]);
+  });
+
   it("revokes public_role's Cloud SQL role memberships before the migrations audit them (#633)", async () => {
     const events: string[] = [];
     const { deps, lines } = upgradeDeps(events);

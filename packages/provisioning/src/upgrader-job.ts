@@ -21,7 +21,8 @@
  *      ever comes from the request, the env or argv;
  *   4. decide (upgrader-assess.ts): refuse a bad signature, a downgrade, a
  *      release below its minFromVersion, an automatic run the policy does
- *      not allow; hand an infrastructure change to Cloud Shell;
+ *      not allow; hand an infrastructure change back (the admin routes
+ *      it to the converge job, #819; Cloud Shell on installs without one);
  *   -- only now take the install's state lock (#815), confirm install.json
  *      is unchanged since step 2, and write step 2's correction. Everything
  *      above only reads, so no lock problem can hide the verdict; a stop
@@ -556,7 +557,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
  * @returns whether the end was written (false after the last attempt failed)
  */
 export async function recordUpdateEnd(
-  queue: UpdateQueue,
+  queue: Pick<UpdateQueue, "finish">,
   requestId: string,
   end: UpdateEnd,
   log: JobLog,

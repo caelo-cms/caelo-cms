@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 7;
+export const INFRA_CONTRACT_VERSION = 8;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -51,6 +51,12 @@ export const INFRA_CONTRACT_VERSION = 7;
 //       runs from (the installed one), which does not set it — so the new
 //       gateway would not start. The operator-identity upgrade runs the new
 //       release's contract and sets it.
+//   8 — #819: the converge job (`caelo-<env>-converge`, converge-job-setup.ts)
+//       that installs contract-bumping releases from Settings → Updates as
+//       the install's caelo-provisioner, its Cloud SQL IAM database login
+//       (platform_updater), the admin's start-only grant on it and
+//       CAELO_CONVERGE_JOB on the admin. Installed by the last converge an
+//       Owner runs by hand; every later one runs from Caelo.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -65,6 +71,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   5: "the gateway's cms_admin login removed from its env and IAM (#635)",
   6: "the upgrader's permission to list its ops bucket (#799)",
   7: "the gateway's trusted proxy hop count, CAELO_TRUSTED_PROXY_HOPS (#845)",
+  8: "the converge job that installs cloud-setup changes from Settings → Updates (#819)",
 };
 
 /**

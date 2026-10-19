@@ -97,6 +97,8 @@ The wizard creates or reuses the project, prints a monthly cost estimate before 
 
 After any install, open the setup link it prints, create the Owner account and pick your AI provider. Everything else happens in the chat.
 
+Updates install from Caelo itself: Settings → Updates, Update, confirm with your password. On Google Cloud that includes releases that change settings in your project (once the install has the converge job, which the install or one upgrade from a terminal sets up); Caelo runs those as a signed job in your project, picks up where it stopped if the job is interrupted, and goes back to the previous release if the new one fails its test. Running `bunx @caelo-cms/provisioning@<version> upgrade` from a terminal does the same upgrade by hand.
+
 ## Drive it from your own agent
 
 `@caelo-cms/mcp-server` connects any MCP client to your install, in one of two modes:

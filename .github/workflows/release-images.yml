@@ -176,6 +176,15 @@ jobs:
           test "${code}" -ne 0 || { echo "::error::caelo-ops upgrader succeeded outside Google Cloud"; exit 1; }
           echo "${up}" | grep -q '"message":"upgrader: ' \
             || { echo "::error::caelo-ops upgrader did not reach its entry point"; exit 1; }
+          # The converge job's entry (#819), the same way.
+          set +e
+          cj="$(docker run --rm caelo-ops:smoke converge-job --ignored-arg 2>&1)"
+          code=$?
+          set -e
+          echo "${cj}"
+          test "${code}" -ne 0 || { echo "::error::caelo-ops converge-job succeeded outside Google Cloud"; exit 1; }
+          echo "${cj}" | grep -q '"message":"converge-job: ' \
+            || { echo "::error::caelo-ops converge-job did not reach its entry point"; exit 1; }
 
       - name: Log in to GHCR
         if: github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'
