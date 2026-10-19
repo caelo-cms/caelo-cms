@@ -100,7 +100,18 @@ export interface ConvergeSetupTarget {
 
 export type ConvergeSetupResult =
   | { readonly ok: true; readonly done: string[] }
-  | { readonly ok: false; readonly done: string[]; readonly error: string };
+  | {
+      readonly ok: false;
+      readonly done: string[];
+      readonly error: string;
+      /**
+       * `no-provisioner`: this install has no caelo-provisioner, which the
+       * job would run as. Not a failure of the converge (#883 review): such
+       * an install keeps installing cloud-setup releases from a terminal,
+       * and its admin, without CAELO_CONVERGE_JOB, says so.
+       */
+      readonly reason?: "no-provisioner";
+    };
 
 /**
  * The `gcloud run jobs deploy` argv of the converge job: the ops image by
@@ -200,6 +211,7 @@ export async function ensureConvergeJob(
     return {
       ok: false,
       done,
+      reason: "no-provisioner",
       error: `this install has no ${provisioner} service account (${describe.stderr.trim()}), which the converge job runs as. Updates that change the cloud setup keep running from a terminal (Settings → Updates shows the command).`,
     };
   }

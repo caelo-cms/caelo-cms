@@ -81,7 +81,7 @@ export function chooseUpdateRoute(input: UpdateRouteInput): UpdateRoute {
   if (!input.convergeAvailable) {
     return {
       ok: false,
-      error: `v${input.targetVersion} also changes settings in your Google Cloud project, and this site cannot do that by itself yet. Install it once from Google Cloud Shell or the computer you installed from (Settings → Updates shows how); that also sets Caelo up to install such updates itself next time.`,
+      error: `v${input.targetVersion} also changes settings in your Google Cloud project, which this site cannot do by itself. Install it from Google Cloud Shell or the computer you installed from (Settings → Updates shows how). On an install with Caelo's provisioner account, that run also sets Caelo up to install such updates itself next time.`,
     };
   }
   return { ok: true, route: "converge", why };

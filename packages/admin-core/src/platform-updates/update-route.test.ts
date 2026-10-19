@@ -68,7 +68,7 @@ describe("chooseUpdateRoute", () => {
 
   it("refuses loudly, with the way out, when this install cannot converge from Caelo", () => {
     expect(route({ infraChange: true, convergeAvailable: false })).toContain(
-      "Install it once from Google Cloud Shell or the computer you installed from",
+      "Install it from Google Cloud Shell or the computer you installed from",
     );
     expect(route({ infraChange: true, provider: "aws" })).toContain(
       "available on Google Cloud installs only so far; on AWS run the upgrade",

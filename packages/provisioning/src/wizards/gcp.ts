@@ -1016,6 +1016,15 @@ async function stepConvergeJob(
   const r = resolved.ok
     ? await ensureConvergeJob(resolved.target)
     : { ok: false as const, done: [], error: resolved.error };
+  if (!r.ok && r.reason === "no-provisioner") {
+    // #883 review — not needed for the contract: such an install installs
+    // cloud-setup releases from a terminal, and its admin says so.
+    s.stop(yellow("No converge job: this install has no caelo-provisioner to run it as"));
+    log.info(
+      "Releases that change the cloud setup install from a terminal; Settings → Updates says so when one comes.",
+    );
+    return true;
+  }
   if (!r.ok) {
     s.stop(yellow(`Converge job not set up: ${r.error}`));
     log.warn(

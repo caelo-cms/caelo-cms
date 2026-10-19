@@ -385,6 +385,20 @@ export function startConverge(
       s.done("Converge job ready (updates that change the cloud setup install from the admin)");
       return;
     }
+    if (cj.reason === "no-provisioner") {
+      // #883 review — optional for contract 8: an install without a
+      // provisioner (installed before it existed) has nothing the job could
+      // run as, and creating one is a privileged identity no update should
+      // mint. It stays fully converged; its admin keeps no
+      // CAELO_CONVERGE_JOB and so routes cloud-setup releases to the
+      // terminal, saying so on Settings → Updates.
+      s.done("No converge job: this install has no caelo-provisioner to run it as");
+      r.info(
+        "Updates that change the cloud setup keep installing from Cloud Shell or the computer you installed from; Settings → Updates says so when one comes.",
+      );
+      leaveUntouched.push(CONVERGE_JOB_ENV_VAR);
+      return;
+    }
     s.warned(`Converge job not set up: ${cj.error}`);
     r.warn(
       "The upgrade continues; releases that change the cloud setup keep installing from a terminal until this succeeds.",

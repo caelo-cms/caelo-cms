@@ -448,6 +448,33 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     ).toBe(false);
   });
 
+  it("#883 review: an install without caelo-provisioner still records the contract; its admin keeps the terminal path", async () => {
+    const events: string[] = [];
+    const { deps, recorded, lines } = upgradeDeps(events, {
+      overrides: [
+        [
+          /^iam service-accounts describe caelo-provisioner@/,
+          fail("ERROR: NOT_FOUND: Unknown service account"),
+        ],
+        // A project without the default network's open rules: nothing
+        // else keeps this converge incomplete.
+        [/^compute firewall-rules list/, ok("[]")],
+      ],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    // Not blocked forever: the converge is complete without the job.
+    expect(recorded.contract).toEqual([TARGET.infraContractVersion]);
+    expect(lines.some((l) => l.includes("no caelo-provisioner"))).toBe(true);
+    expect(lines.some((l) => l.includes("Converge job not set up"))).toBe(false);
+    // No job, so no CAELO_CONVERGE_JOB: the admin routes such releases to the terminal.
+    expect(events.some((e) => /^gcloud run jobs deploy caelo-production-converge /.test(e))).toBe(
+      false,
+    );
+    expect(
+      events.some((e) => /services update caelo-production-admin.*CAELO_CONVERGE_JOB=/.test(e)),
+    ).toBe(false);
+  });
+
   it("reports its backup and rollback targets before relying on them (#819 checkpoint)", async () => {
     const events: string[] = [];
     const { deps } = upgradeDeps(events);
