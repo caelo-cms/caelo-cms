@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.55
+
+### Features
+- f04cfd58 resolve internal references in preview, live-edit and the static build (#724, rollout B) (#871)
+- 30332d2a OAuth broker + streaming proxy for remote MCP (#806, part C) (#890)
+
+### Fixes
+- cd69f096 install Chromium in the release gate; poll the real-AI run instead of gh run watch (#897)
+- 905646c0 scope mcp_tokens to their owner unless the viewer is an Owner (#895)
+
 ## v0.10.54
 
 ### Features
