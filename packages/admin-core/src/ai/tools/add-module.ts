@@ -37,6 +37,7 @@ import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
+import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import {
   findUnrenderableLayoutFields,
   unrenderableLayoutFieldsError,
@@ -264,7 +265,8 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     "Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `## Modules` to place/fan-out a SHARED module without minting a duplicate — a later edit_module then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` is placement-only: if you also pass authoring fields (a different label, new html, …) the call still succeeds but those fields are NOT applied and the result says so — to actually change a shared module, place it by `moduleId` and then call edit_module. " +
     "**The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; edit_module changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. " +
     "`blockName` must be a real block on the target; the handler returns the available block set if it isn't. " +
-    'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `"0"`).',
+    'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `"0"`).' +
+    INTERNAL_LINK_CONTRACT,
   // 2026-07 — STATIC on purpose (prompt-cache): the per-turn describe
   // embedded active-page blocks + layout/template slugs into the tool
   // definition, busting Anthropic's tools-prefix cache on every page

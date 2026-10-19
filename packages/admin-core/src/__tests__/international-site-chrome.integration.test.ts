@@ -361,7 +361,13 @@ describe("#592 — menus and footer per language", () => {
           targetKey: footerKey(),
           localeCode: "de",
           moduleId: ids.altFooterModuleId,
-          values: { nav: [{ label: "Kontakt", href: "/t592-solo" }] },
+          values: {
+            nav: [
+              { label: "Kontakt", href: "/t592-solo" },
+              // A stored reference (#724) is named by its page's path, never its id.
+              { label: "Team", href: `caelo:page/${ids.enSolo}#team` },
+            ],
+          },
         },
       ],
     });
@@ -372,6 +378,10 @@ describe("#592 — menus and footer per language", () => {
     expect(de.missingSlots.join("\n")).toContain(
       'the link "/t592-solo" goes to a page that has no Deutsch version',
     );
+    expect(de.missingSlots.join("\n")).toContain(
+      'the link "/t592-solo#team" goes to a page that has no Deutsch version',
+    );
+    expect(de.missingSlots.join("\n")).not.toContain("caelo:page/");
     // English still shows the source footer.
     expect((await preview(ids.enPricing)).html).toContain('<p class="tag">Made with care</p>');
 
