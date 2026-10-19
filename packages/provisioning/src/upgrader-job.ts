@@ -289,6 +289,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       // admin AND gateway images a signed release manifest names.
       const found = await findServingRelease(meta, serving.digests, deps);
       if (!found.ok) {
+        if (found.retryable) return stopWith("failed", ["registry"], found.reason);
         return stopWith("needs_cloud_shell", ["install-state-drift"], found.reason);
       }
       const v = found.manifest.version;

@@ -44,7 +44,17 @@ export function recordMatchesServing(
 /** What {@link findServingRelease} learned. */
 export type ServingRelease =
   | { readonly ok: true; readonly manifest: ReleaseManifest }
-  | { readonly ok: false; readonly reason: string };
+  | {
+      readonly ok: false;
+      /**
+       * True when no release matched but a candidate's manifest could not be
+       * fetched from the registry (an outage, not a verdict): the run must
+       * end `failed` and be retried, not send the operator to Cloud Shell —
+       * the same classification as the target manifest (upgrader-assess.ts).
+       */
+      readonly retryable: boolean;
+      readonly reason: string;
+    };
 
 export interface ServingReleaseDeps {
   readonly run: GcloudRunner;
@@ -65,12 +75,17 @@ export async function findServingRelease(
 ): Promise<ServingRelease> {
   const partial: string[] = [];
   const unverified: string[] = [];
+  const unreachable: string[] = [];
   const tried: string[] = [];
   for await (const version of candidateVersions(meta, serving, deps.run)) {
     if (tried.includes(version)) continue;
     tried.push(version);
     const fetched = await deps.fetchManifest(version);
     if (!fetched.ok) {
+      if (fetched.error.code === "registry") {
+        unreachable.push(`v${version} (${fetched.error.message.slice(0, 200)})`);
+        continue;
+      }
       unverified.push(`v${version} (${fetched.error.message.slice(0, 200)})`);
       continue;
     }
@@ -85,8 +100,18 @@ export async function findServingRelease(
     }
   }
   const servingText = SLUGS.map((s) => `${s} ${serving[s][0] ?? "(unknown)"}`).join(", ");
+  if (unreachable.length > 0) {
+    // A release we could not read may be the serving one, so this is no
+    // verdict on the images: retry later rather than escalate.
+    return {
+      ok: false,
+      retryable: true,
+      reason: `Nothing was changed: the images that serve now (${servingText}) are not the ones install.json names, and the Caelo release registry could not be reached to check which release they belong to (${unreachable.join("; ")}). Try again later.`,
+    };
+  }
   return {
     ok: false,
+    retryable: false,
     reason: [
       `The images that serve now (${servingText}) are not the ones install.json names, and they do not belong to one signed Caelo release${tried.length === 0 ? " (no release tag could be found for them)" : ""}, so the upgrader cannot tell what this install runs.`,
       ...(partial.length > 0 ? [`${capitalize(partial.join("; "))}.`] : []),

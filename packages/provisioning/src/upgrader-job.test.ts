@@ -487,6 +487,48 @@ describe("runUpgraderJob", () => {
     expect(order).not.toContain("manifest 0.11.0");
   });
 
+  it("regression #865: drift whose release manifest the registry cannot serve fails retryably, not install-state-drift", async () => {
+    const { deps, order, q, written } = setup({
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("8") },
+        releaseVersion: "0.10.44",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": { ok: false, error: { code: "registry", message: "503 Service Unavailable" } },
+      },
+      gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
+    });
+    const r = await runUpgraderJob(deps);
+    expect(r.status).toBe("failed");
+    const end = q.end();
+    expect(end?.codes).toEqual(["registry"]);
+    expect(end?.reason).toContain("503 Service Unavailable");
+    expect(end?.reason).toContain("Try again later");
+    expect(end?.reason).not.toContain("Cloud Shell");
+    expect(written).toEqual([]);
+    expect(order).not.toContain("manifest 0.11.0");
+  });
+
+  it("drift with a signature-rejected candidate still ends in install-state-drift", async () => {
+    const { deps, q, written } = setup({
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("8") },
+        releaseVersion: "0.10.44",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": { ok: false, error: { code: "signature", message: "not signed" } },
+      },
+      gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    expect(q.end()?.codes).toEqual(["install-state-drift"]);
+    expect(written).toEqual([]);
+  });
+
   it("partial match (the admin of a release, the gateway not) is refused", async () => {
     const { deps, q, written } = setup({
       gcloud: [servingAs(D("1"), D("6"))],
