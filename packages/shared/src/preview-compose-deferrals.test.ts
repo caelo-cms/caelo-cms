@@ -164,6 +164,43 @@ describe("composer — withheld modules", () => {
     expect(html).toContain("&lt;/template><script>alert(1)</script></div>");
   });
 
+  it("parks JS that could end its <script> as base64 carrying the exact bytes", () => {
+    // `0</script/.test(v)` is valid JS that any `<\/script` rewrite breaks,
+    // and `<!--` + `<script` would keep the browser from ending the element.
+    const js = "window.r = [0</script/.test('x'), '<!--<script>'];";
+    const { html } = composePageWithLayout({
+      templateHtml: TEMPLATE,
+      templateCss: "",
+      blocks: [{ blockName: "main", modules: [{ ...VIDEO, js }] }],
+      layoutHtml: LAYOUT,
+      layoutCss: "",
+      layoutBlocks: [],
+      deferredModules: { [VIDEO.moduleId]: DEFERRAL },
+    });
+    const m =
+      /<script type="text\/plain" data-caelo-deferred-script="[^"]+" data-caelo-encoding="base64">([^<]*)<\/script>/.exec(
+        html,
+      );
+    expect(m).not.toBeNull();
+    expect(Buffer.from(m?.[1] ?? "", "base64").toString("utf8")).toBe(js);
+  });
+
+  it("escapes </style in live module CSS so it cannot add markup to <head>", () => {
+    const { html } = composePageWithLayout({
+      templateHtml: TEMPLATE,
+      templateCss: "",
+      blocks: [
+        { blockName: "main", modules: [{ ...VIDEO, css: ".v{content:'</STYLE><meta x>'}" }] },
+      ],
+      layoutHtml: LAYOUT,
+      layoutCss: "",
+      layoutBlocks: [],
+    });
+    const head = html.slice(0, html.indexOf("</head>"));
+    expect(head).toContain(".v{content:'<\\/STYLE><meta x>'}");
+    expect(head.toLowerCase()).not.toContain("</style><meta");
+  });
+
   it("keeps a balanced nested <template> inside a withheld module intact", () => {
     const nested = { ...VIDEO, html: "<ul><template id=row><li>x</li></template></ul>" };
     const { html } = composePageWithLayout({

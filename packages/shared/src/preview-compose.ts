@@ -39,6 +39,7 @@ import {
   extractInnerOfTopLevelContentSlot,
   listSlotNames,
 } from "./preview-scanner.js";
+import { escapeStyleText, scriptNeedsEncoding, utf8ToBase64 } from "./raw-text-escape.js";
 import { stripCdataGuards } from "./strip-cdata.js";
 import { balanceTemplateCloses } from "./template-balance.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";
@@ -227,7 +228,7 @@ export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | nul
       return `<link rel="preload" as="font"${format ? ` type="font/${format}"` : ""} crossorigin href="${escapeAttr(href)}">`;
     })
     .join("");
-  const safeCss = fonts.css.replace(/<\/style/gi, "<\\/style");
+  const safeCss = escapeStyleText(fonts.css);
   const style = safeCss.trim().length > 0 ? `<style data-source="fonts">${safeCss}</style>` : "";
   const fragment = links + style;
   return fragment.length > 0 ? fragment : null;
@@ -354,7 +355,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   );
 
   if (allCss.length > 0) {
-    const styleTag = `<style data-source="modules">\n${allCss.join("\n")}\n</style>`;
+    const styleTag = `<style data-source="modules">\n${escapeStyleText(allCss.join("\n"))}\n</style>`;
     html = injectBefore(html, HEAD_CLOSE_RE, styleTag);
   }
   if (allJs.length > 0) {
@@ -637,22 +638,23 @@ function wrapDeferredModule(
   const attr = (v: string): string =>
     v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
   // Inside the inert <template>, only an element's own end tag ends a
-  // <style> / <script>; a `</template` there is text. So CSS and JS need
-  // just their own close escaped, and the markup needs its unmatched
-  // `</template>` closes neutralized (balanced nested templates stay).
-  const safeStyle = (v: string): string => v.replace(/<\/style/gi, "<\\/style");
-  const safeScript = (v: string): string => v.replace(/<\/script/gi, "<\\/script");
+  // <style> / <script>; a `</template` there is text. So CSS needs just
+  // its own close escaped, JS that could end its <script> ships base64
+  // (the runtime decodes it, see consent-manager runtime.ts), and the
+  // markup needs its unmatched `</template>` closes neutralized
+  // (balanced nested templates stay).
   const safeHtml = balanceTemplateCloses(moduleHtml);
   const gated = [module, ...nestedModules];
   const css = gated
     .filter((g) => g.css.trim().length > 0)
-    .map((g) => `<style data-source="module">${safeStyle(g.css)}</style>`)
+    .map((g) => `<style data-source="module">${escapeStyleText(g.css)}</style>`)
     .join("");
   const js = gated
     .filter((g) => g.js.trim().length > 0)
-    .map(
-      (g) =>
-        `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}">${safeScript(g.js)}</script>`,
+    .map((g) =>
+      scriptNeedsEncoding(g.js)
+        ? `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}" data-caelo-encoding="base64">${utf8ToBase64(g.js)}</script>`
+        : `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}">${g.js}</script>`,
     )
     .join("");
   return [
@@ -908,7 +910,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     html = injectBefore(
       html,
       HEAD_CLOSE_RE,
-      `<style data-source="modules">\n${cssParts.join("\n")}\n</style>`,
+      `<style data-source="modules">\n${escapeStyleText(cssParts.join("\n"))}\n</style>`,
     );
   }
   if (jsParts.length > 0) {

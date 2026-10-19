@@ -106,7 +106,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
   const ctx = `window.__caelo=${JSON.stringify({ pageId: page.id, slug: page.slug, path: page.currentPath })};`;
   const scriptTag = `<script data-caelo-edit-overlay>${ctx}${INJECT_SCRIPT}</script>`;
   const html = BODY_CLOSE_RE.test(out.html)
-    ? out.html.replace(BODY_CLOSE_RE, `${scriptTag}</body>`)
+    ? out.html.replace(BODY_CLOSE_RE, () => `${scriptTag}</body>`)
     : out.html + scriptTag;
 
   return new Response(html, {

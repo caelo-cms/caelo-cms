@@ -48,7 +48,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
   const composed = result.value as { html: string };
   const scriptTag = `<script data-caelo-edit-overlay>${INJECT_SCRIPT}</script>`;
   const html = BODY_CLOSE_RE.test(composed.html)
-    ? composed.html.replace(BODY_CLOSE_RE, `${scriptTag}</body>`)
+    ? composed.html.replace(BODY_CLOSE_RE, () => `${scriptTag}</body>`)
     : composed.html + scriptTag;
 
   return new Response(html, {
