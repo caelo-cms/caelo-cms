@@ -65,11 +65,16 @@ export async function finaliseImportLinks(
   if (recorded.length === 0) {
     return { converted: 0, resolved: 0, unresolved: 0, migrationRunId: null };
   }
-  let sourceHost: string[] = [];
+  let sourceHost: string[];
   try {
     sourceHost = [new URL(run.source_url).host.toLowerCase()];
   } catch {
-    // An unparsable source URL only means its absolute links stay literal.
+    // Every run is created through a z.string().url() input, so an
+    // unparsable source URL is corrupt data: without it the run's absolute
+    // self-links would be silently misreported (CLAUDE.md §2).
+    throw new Error(
+      `import run ${runId} has an unparsable source_url ${JSON.stringify(run.source_url)}; its links cannot be finalised`,
+    );
   }
   const only = new Set(recorded.map((r) => r.value));
   const result = await migrateLinksToReferences(tx, {
@@ -127,7 +132,7 @@ export const resolveImportLinksOp = defineOperation({
   name: "imports.resolve_links",
   // Routine: it converts the run's own recorded links on the run's chat
   // branch (snapshotted, undone with the chat); main-line rows only for
-  // human / system callers.
+  // human / system callers, and an AI only from the run's own chat.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ runId: z.string().uuid() }).strict(),
@@ -138,6 +143,27 @@ export const resolveImportLinksOp = defineOperation({
     migrationRunId: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
+    if (ctx.actorKind === "ai") {
+      // The run's links are converted on the run's chat branch. An AI may
+      // only write into its OWN chat's branch, never into another chat's
+      // pending work by naming that chat's run.
+      const owner = (await tx.execute(sql`
+        SELECT cs.chat_branch_id::text AS branch_id
+          FROM import_runs r
+          LEFT JOIN chat_sessions cs ON cs.id = r.chat_session_id AND cs.discarded_at IS NULL
+         WHERE r.id = ${input.runId}::uuid
+      `)) as unknown as { branch_id: string | null }[];
+      const row = owner[0];
+      if (row && (row.branch_id === null || row.branch_id !== ctx.chatBranchId)) {
+        return err({
+          kind: "HandlerError",
+          operation: "imports.resolve_links",
+          message:
+            `import run ${input.runId} is rebuilt in another chat (or its chat was discarded), so its links cannot be resolved from this chat. ` +
+            "Next step: resolve them from the chat that runs the import; the run's cleanup (cleanup_import_run) finalises them too.",
+        });
+      }
+    }
     const out = await finaliseImportLinks(tx, ctx, input.runId, ctx.actorKind !== "ai");
     if (!out) {
       return err({

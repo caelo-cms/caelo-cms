@@ -197,6 +197,24 @@ describe("links to pages an import has not built yet", () => {
         ai,
       )
     ).pageId;
+    // An AI on another branch cannot write into this run's chat branch.
+    const other = await run<{ chatBranchId: string }>("chat.create_session", {
+      title: `${PFX}-other`,
+      isolation: "experiment",
+    });
+    const foreign = await execute(
+      registry,
+      adapter,
+      { ...ai, requestId: "lmi-other", chatBranchId: other.chatBranchId },
+      "imports.resolve_links",
+      { runId },
+    );
+    expect(foreign.ok).toBe(false);
+    expect((foreign as { error: { message: string } }).error.message).toContain(
+      "rebuilt in another chat",
+    );
+    expect((await recorded()).every((r) => r.status === "pending")).toBe(true);
+
     const out = await run<{ converted: number; resolved: number; unresolved: number }>(
       "imports.resolve_links",
       { runId },
