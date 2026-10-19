@@ -2,13 +2,14 @@
 
 import { describe, expect, it } from "bun:test";
 import type { StoredUpdatePolicy } from "@caelo-cms/shared";
-import { autoUpdateSummary, pauseSummary } from "./auto-update-display.js";
+import { AUTO_CONVERGE_PENDING, autoUpdateSummary, pauseSummary } from "./auto-update-display.js";
 
 const POLICY: StoredUpdatePolicy = {
   mode: "auto",
   autoSecurity: true,
   autoPatch: true,
   autoMinor: false,
+  autoConverge: false,
   channel: "stable",
   windowStart: "02:00",
   windowEnd: "05:00",
@@ -24,18 +25,34 @@ const POLICY: StoredUpdatePolicy = {
 };
 
 describe("autoUpdateSummary", () => {
-  it("names the kinds, the window and both soak periods", () => {
+  it("names the kinds in the Owner's words, the window and both waits", () => {
     expect(autoUpdateSummary(POLICY)).toEqual([
-      "Installed automatically: security fixes, patch releases. Everything else you install yourself.",
+      "Installed automatically: security fixes, bug fixes. You are told about everything else and install it yourself.",
       "Only between 02:00 and 05:00 (Europe/Berlin).",
-      "A release waits 24 hours after it comes out; a security fix 2 hours.",
+      "Each update waits 24 hours after it comes out; a security fix 2 hours.",
+    ]);
+  });
+  it("notify only: every release is announced, security fixes included", () => {
+    expect(autoUpdateSummary({ ...POLICY, mode: "notify" })).toEqual([
+      "You are told about every new Caelo release, security fixes included, and install it yourself.",
     ]);
   });
   it("says when nothing installs on its own", () => {
-    expect(autoUpdateSummary({ ...POLICY, mode: "notify" })[0]).toContain("install them yourself");
     expect(autoUpdateSummary({ ...POLICY, autoSecurity: false, autoPatch: false })[0]).toContain(
-      "no kind of release is chosen",
+      "no kind of update is ticked",
     );
+  });
+  it("says the Google Cloud choice is not in effect yet (#819)", () => {
+    expect(autoUpdateSummary({ ...POLICY, autoConverge: true })).toContain(AUTO_CONVERGE_PENDING);
+    expect(autoUpdateSummary(POLICY)).not.toContain(AUTO_CONVERGE_PENDING);
+    // Only relevant while installing automatically.
+    expect(autoUpdateSummary({ ...POLICY, mode: "notify", autoConverge: true })).not.toContain(
+      AUTO_CONVERGE_PENDING,
+    );
+  });
+  it("uses no developer words", () => {
+    const text = autoUpdateSummary({ ...POLICY, autoMinor: true, autoConverge: true }).join(" ");
+    expect(text).not.toMatch(/patch|minor|soak|converge/i);
   });
 });
 

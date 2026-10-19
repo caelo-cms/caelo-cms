@@ -275,6 +275,7 @@ export const actions: Actions = {
         autoSecurity: form.get("autoSecurity") === "on",
         autoPatch: form.get("autoPatch") === "on",
         autoMinor: form.get("autoMinor") === "on",
+        autoConverge: form.get("autoConverge") === "on",
         channel: "stable",
         windowStart: windowOn ? String(form.get("windowStart") ?? "") : null,
         windowEnd: windowOn ? String(form.get("windowEnd") ?? "") : null,
