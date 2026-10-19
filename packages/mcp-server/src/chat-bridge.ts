@@ -15,7 +15,7 @@
 import type { z } from "zod";
 import type { ChatApprovalState, SendChatResult } from "./chat-approval.js";
 import { postAdmin, resolveTimeoutMs } from "./http.js";
-import type { uploadedImageSchema } from "./image-upload.js";
+import type { uploadedImageSchema } from "./tool-definitions.js";
 
 interface AdminTarget {
   readonly adminUrl: string;

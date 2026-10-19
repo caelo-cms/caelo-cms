@@ -24,6 +24,13 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./surfaces": {
+      "types": "./dist/surfaces/index.d.ts",
+      "bun": "./src/surfaces/index.ts",
+      "development": "./src/surfaces/index.ts",
+      "import": "./dist/surfaces/index.js",
+      "default": "./dist/surfaces/index.js"
     }
   },
   "files": [

@@ -19,6 +19,12 @@ export const PLATFORM_UPDATE_STATUSES = [
   "refused",
   "needs_cloud_shell",
   "cancelled",
+  /**
+   * Asked the Owner to act (`needs_cloud_shell`), but the install has since
+   * moved past it: it runs the target release (or a newer one), or a newer
+   * request exists (#817, migration 0300). Shown in the history only.
+   */
+  "superseded",
 ] as const;
 export type PlatformUpdateStatusValue = (typeof PLATFORM_UPDATE_STATUSES)[number];
 

@@ -30,6 +30,7 @@
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { mcpAgentOpFields } from "../../ops/chat/mcp-agent.js";
 
 import type { AIProvider, ChatMessageInput, ProviderStepSummary } from "../provider.js";
 import { capWrapUpNoticeText, shouldWrapUpAtCap } from "../tools/subagent-budget.js";
@@ -866,9 +867,7 @@ export async function* runToolLoop(
         const recorded = await execute(registry, adapter, humanCtx, "chat.record_turn_approvals", {
           chatSessionId,
           source: external ? "mcp_chat" : "live_edit",
-          ...(external && args.options.agentRunMcpTokenId
-            ? { mcpTokenId: args.options.agentRunMcpTokenId }
-            : {}),
+          ...(external ? mcpAgentOpFields(args.options.agentRunMcpAgent) : {}),
           approvals: cards.map(({ req, preview, requiredPermissions }) => ({
             approvalId: req.approvalId,
             toolCallId: req.toolCallId,

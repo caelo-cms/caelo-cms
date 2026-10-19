@@ -6,6 +6,7 @@
  *     it with this build's CAELO_VERSION;
  *   - is open to the AI (it informs; installing is the Owner's, elsewhere);
  *   - "never checked" (the migration's epoch seed) reads as checkedAt=null;
+ *   - the release's predicted route (#817) counts only for the running release;
  *   - `notifications.aggregate` points the release notice at the page.
  */
 
@@ -43,6 +44,9 @@ async function setCache(
     url: string | null;
     notes: string | null;
     publishedAt: string | null;
+    /** The release check's route prediction (#817) and the release it was decided against. */
+    infraChange?: boolean | null;
+    infraChangeFrom?: string | null;
   } | null,
 ): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
@@ -53,13 +57,16 @@ async function setCache(
         await tx`
           UPDATE release_check_cache
              SET latest_version = NULL, release_url = NULL, release_notes = NULL,
-                 published_at = NULL, fetched_at = '1970-01-01T00:00:00Z'
+                 published_at = NULL, latest_infra_change = NULL, infra_change_from = NULL,
+                 fetched_at = '1970-01-01T00:00:00Z'
            WHERE id = 1`;
       } else {
         await tx`
           UPDATE release_check_cache
              SET latest_version = ${row.latest}, release_url = ${row.url},
                  release_notes = ${row.notes}, published_at = ${row.publishedAt},
+                 latest_infra_change = ${row.infraChange ?? null},
+                 infra_change_from = ${row.infraChangeFrom ?? null},
                  fetched_at = '2026-10-13T10:00:00Z'
            WHERE id = 1`;
       }
@@ -102,8 +109,20 @@ describe("platform_updates.status", () => {
       releaseNotes: "## Highlights\n\nFaster everything.",
       publishedAt: "2026-10-12T09:00:00Z",
       checkedAt: "2026-10-13T10:00:00Z",
+      infraChange: null,
       updatesPath: "/settings/updates",
     });
+  });
+
+  it("predicts the Cloud Shell route only when decided against the running release (#817)", async () => {
+    const release = { latest: "99.0.0", url: null, notes: null, publishedAt: null };
+    await setCache({ ...release, infraChange: true, infraChangeFrom: CAELO_VERSION });
+    expect((await status(SYSTEM)).infraChange).toBe(true);
+    await setCache({ ...release, infraChange: false, infraChangeFrom: CAELO_VERSION });
+    expect((await status(SYSTEM)).infraChange).toBe(false);
+    // Decided before this install was upgraded: not known for what runs now.
+    await setCache({ ...release, infraChange: true, infraChangeFrom: "0.0.1" });
+    expect((await status(SYSTEM)).infraChange).toBeNull();
   });
 
   it("is up to date when the newest release is this build", async () => {

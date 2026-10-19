@@ -11,16 +11,19 @@
  *   - within a minute of the last check the click is refused BEFORE any
  *     request goes to GitHub, and the op itself refuses a write that slipped
  *     past (a second click racing the first);
+ *   - the release's route (#817): whether its manifest raises the
+ *     infrastructure contract over the running release's;
  *   - humans only: the AI is rejected by scope; a human without settings.read
  *     is refused (and audited).
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { CAELO_VERSION, type ExecutionContext, type ReleaseManifest } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import type { PlatformUpdateStatus } from "../ops/platform-updates.js";
 import { checkReleasesNow, type ReleaseFetch } from "../platform-updates/release-check.js";
+import type { ManifestReader } from "../platform-updates/release-facts.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -67,7 +70,7 @@ async function lastCheck(minutesAgo: number | null, latest: string | null = null
     (tx) => tx`
       UPDATE release_check_cache
          SET latest_version = ${latest}, release_url = NULL, release_notes = NULL,
-             published_at = NULL,
+             published_at = NULL, latest_infra_change = NULL, infra_change_from = NULL,
              fetched_at = ${
                minutesAgo === null
                  ? new Date(0).toISOString()
@@ -124,6 +127,37 @@ const RELEASE = () =>
     published_at: "2026-10-14T08:00:00Z",
   });
 
+const manifest = (version: string, infraContractVersion: number): ReleaseManifest => ({
+  manifestVersion: 1,
+  version,
+  channel: "stable",
+  digests: {
+    admin: `sha256:${"a".repeat(64)}`,
+    gateway: `sha256:${"b".repeat(64)}`,
+    ops: `sha256:${"c".repeat(64)}`,
+  },
+  minFromVersion: "0.1.0",
+  infraContractVersion,
+  migrations: {
+    contract: false,
+    lastContractVersion: null,
+    head: "0300_platform_update_superseded",
+  },
+  security: false,
+  advisories: [],
+});
+
+/** The registry stand-in for the release's route: the given manifests, nothing else. */
+function manifests(...list: ReleaseManifest[]): ManifestReader {
+  return async (version) => {
+    const m = list.find((x) => x.version === version);
+    return m ? { ok: true, manifest: m } : { ok: false, message: `no manifest for v${version}` };
+  };
+}
+
+/** No registry: the route stays unknown (null). */
+const ROUTE = { readManifest: manifests(), provider: "gcp" } as const;
+
 async function wipeUsers(): Promise<void> {
   await admin(async (tx) => {
     for (const email of [READER_EMAIL, NOBODY_EMAIL]) {
@@ -153,7 +187,13 @@ describe("checkReleasesNow + platform_updates.check_now", () => {
   it("stores the release GitHub names and audits the check", async () => {
     await lastCheck(40, "0.0.1");
     const gh = github(RELEASE);
-    const r = await checkReleasesNow({ registry, adapter, ctx: reader, fetchImpl: gh.fetchImpl });
+    const r = await checkReleasesNow({
+      registry,
+      adapter,
+      ctx: reader,
+      fetchImpl: gh.fetchImpl,
+      ...ROUTE,
+    });
     expect(r).toEqual({ ok: true, latestVersion: "99.1.0" });
     expect(gh.calls()).toBe(1);
 
@@ -168,6 +208,50 @@ describe("checkReleasesNow + platform_updates.check_now", () => {
     expect(rows.at(-1)).toEqual({ succeeded: true, summary: "newest release v99.1.0" });
   });
 
+  it("notes from the manifests whether the release changes the cloud setup (#817)", async () => {
+    await lastCheck(40, "0.0.1");
+    const gh = github(RELEASE);
+    const raised = manifests(manifest(CAELO_VERSION, 6), manifest("99.1.0", 7));
+    await checkReleasesNow({
+      registry,
+      adapter,
+      ctx: reader,
+      fetchImpl: gh.fetchImpl,
+      readManifest: raised,
+      provider: "gcp",
+    });
+    expect((await status()).infraChange).toBe(true);
+
+    // Same contract: the in-admin upgrader installs it.
+    await lastCheck(40, "0.0.1");
+    await checkReleasesNow({
+      registry,
+      adapter,
+      ctx: reader,
+      fetchImpl: gh.fetchImpl,
+      readManifest: manifests(manifest(CAELO_VERSION, 6), manifest("99.1.0", 6)),
+      provider: "gcp",
+    });
+    expect((await status()).infraChange).toBe(false);
+
+    // A self-hosted install has no cloud setup to change.
+    await lastCheck(40, "0.0.1");
+    await checkReleasesNow({
+      registry,
+      adapter,
+      ctx: reader,
+      fetchImpl: gh.fetchImpl,
+      readManifest: raised,
+      provider: "self-hosted",
+    });
+    expect((await status()).infraChange).toBe(false);
+
+    // No manifest: not known; the upgrader job decides.
+    await lastCheck(40, "0.0.1");
+    await checkReleasesNow({ registry, adapter, ctx: reader, fetchImpl: gh.fetchImpl, ...ROUTE });
+    expect((await status()).infraChange).toBeNull();
+  });
+
   it("a failed check clears the release, stamps the time and says why", async () => {
     await lastCheck(40, "0.0.1");
     const gh = github(
@@ -177,7 +261,13 @@ describe("checkReleasesNow + platform_updates.check_now", () => {
           headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1791993600" },
         }),
     );
-    const r = await checkReleasesNow({ registry, adapter, ctx: reader, fetchImpl: gh.fetchImpl });
+    const r = await checkReleasesNow({
+      registry,
+      adapter,
+      ctx: reader,
+      fetchImpl: gh.fetchImpl,
+      ...ROUTE,
+    });
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.kind).toBe("check_failed");
@@ -194,7 +284,13 @@ describe("checkReleasesNow + platform_updates.check_now", () => {
   it("refuses within a minute of the last check without asking GitHub", async () => {
     await lastCheck(0.5, "99.0.0");
     const gh = github(RELEASE);
-    const r = await checkReleasesNow({ registry, adapter, ctx: reader, fetchImpl: gh.fetchImpl });
+    const r = await checkReleasesNow({
+      registry,
+      adapter,
+      ctx: reader,
+      fetchImpl: gh.fetchImpl,
+      ...ROUTE,
+    });
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.kind).toBe("cooldown");
@@ -212,6 +308,7 @@ describe("checkReleasesNow + platform_updates.check_now", () => {
         releaseUrl: null,
         releaseNotes: null,
         publishedAt: null,
+        infraChange: null,
       },
     });
     expect(r.ok).toBe(false);
@@ -237,7 +334,13 @@ describe("checkReleasesNow + platform_updates.check_now", () => {
   it("refuses (and audits) a human without settings.read", async () => {
     await lastCheck(40, "99.0.0");
     const gh = github(RELEASE);
-    const r = await checkReleasesNow({ registry, adapter, ctx: nobody, fetchImpl: gh.fetchImpl });
+    const r = await checkReleasesNow({
+      registry,
+      adapter,
+      ctx: nobody,
+      fetchImpl: gh.fetchImpl,
+      ...ROUTE,
+    });
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.message).toContain("permission_denied");

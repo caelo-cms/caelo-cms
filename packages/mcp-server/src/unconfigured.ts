@@ -27,8 +27,12 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { ADMIN_LOCAL_TOOLS, ADMIN_MCP_INSTRUCTIONS } from "./admin-server.js";
-import { CHAT_MCP_INSTRUCTIONS, CHAT_TOOLS } from "./server.js";
+import {
+  ADMIN_LOCAL_TOOLS,
+  ADMIN_MCP_INSTRUCTIONS,
+  CHAT_MCP_INSTRUCTIONS,
+  CHAT_TOOLS,
+} from "./tool-definitions.js";
 import { ownVersion } from "./version-handshake.js";
 
 const powerCatalogueSchema = z.object({

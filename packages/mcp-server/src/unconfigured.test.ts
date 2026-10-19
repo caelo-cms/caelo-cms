@@ -11,14 +11,14 @@ import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { ADMIN_LOCAL_TOOLS } from "./admin-server.js";
-import { CHAT_TOOLS } from "./server.js";
+import { ADMIN_LOCAL_TOOLS, CHAT_TOOLS } from "./tool-definitions.js";
 import {
   describeMissingCredentials,
   loadPowerCatalogue,
   missingCredentials,
   startUnconfiguredServer,
 } from "./unconfigured.js";
+import { ownVersion } from "./version-handshake.js";
 
 async function connect(mode: "chat" | "admin"): Promise<Client> {
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
@@ -50,6 +50,7 @@ describe("#841 unconfigured server", () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name)).toEqual(CHAT_TOOLS.map((t) => t.name));
     expect(client.getServerVersion()?.name).toBe("caelo-mcp-server");
+    expect(client.getServerVersion()?.version).toBe(ownVersion());
     expect(client.getInstructions()).toContain("caelo_chat");
     await client.close();
   });
@@ -65,6 +66,7 @@ describe("#841 unconfigured server", () => {
     ]);
     expect(tools.map((t) => t.name)).toContain("build_page");
     expect(client.getServerVersion()?.name).toBe("caelo-admin-mcp");
+    expect(client.getServerVersion()?.version).toBe(ownVersion());
     await client.close();
   });
 
