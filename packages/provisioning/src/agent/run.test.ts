@@ -239,9 +239,22 @@ describe("runAgentOnce", () => {
     {
       name: "the registry is unreachable",
       over: {
-        fetchManifest: async () => ({ ok: false, error: { code: "registry", message: "dns" } }),
+        fetchManifest: async () => ({
+          ok: false,
+          error: { code: "registry", message: "dns", transient: true },
+        }),
       },
       expect: "failed/registry",
+    },
+    {
+      name: "the target has no signed manifest (404)",
+      over: {
+        fetchManifest: async () => ({
+          ok: false,
+          error: { code: "registry", message: "no release manifest (HTTP 404)" },
+        }),
+      },
+      expect: "refused/manifest-missing",
     },
     {
       name: "a downgrade",
