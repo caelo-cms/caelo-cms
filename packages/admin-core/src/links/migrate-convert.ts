@@ -16,6 +16,7 @@ import {
   canonicaliseFieldDefaults,
   canonicaliseHtmlLinks,
   canonicaliseJsonLinks,
+  collectLinkRefsDeep,
   isLinkKeyName,
   type LinkCanonicaliseIssue,
   type LinkTargetLookup,
@@ -48,15 +49,9 @@ export interface ConvertContext {
   readonly only?: ReadonlySet<string>;
 }
 
+/** Well-formed references in a value — prose mentioning "caelo:" does not count. */
 function countRefs(v: unknown): number {
-  const s = typeof v === "string" ? v : JSON.stringify(v ?? null);
-  let n = 0;
-  let i = s.indexOf("caelo:");
-  while (i !== -1) {
-    n += 1;
-    i = s.indexOf("caelo:", i + 6);
-  }
-  return n;
+  return collectLinkRefsDeep(v).length;
 }
 
 function convert<T>(

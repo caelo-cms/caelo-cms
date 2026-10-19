@@ -29,6 +29,7 @@ let registry: OperationRegistry;
 let layoutId = "";
 let footerModuleId = "";
 let soloId = "";
+let deSoloId = "";
 
 async function sqlSystem<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL as string);
@@ -92,10 +93,16 @@ async function cleanup(): Promise<void> {
   });
 }
 
-async function variantValues(): Promise<{ nav: { label: string; href: string }[] }> {
+/** A layout slot that does not exist: its variant is orphaned and never renders. */
+const ORPHAN_KEY = "layout:00000000-0000-4000-8000-0000000000e0:footer:0";
+
+async function variantValues(
+  targetKey = `layout:${layoutId}:footer:0`,
+): Promise<{ nav: { label: string; href: string }[] }> {
   const rows = (await asPlugin(
     (tx) =>
-      tx`SELECT "values"::text AS v FROM plugin_international_site.chrome_variants WHERE locale_code = 'de'`,
+      tx`SELECT "values"::text AS v FROM plugin_international_site.chrome_variants
+          WHERE locale_code = 'de' AND target_key = ${targetKey}`,
   )) as { v: string }[];
   return JSON.parse(rows[0]?.v ?? "null");
 }
@@ -156,6 +163,15 @@ beforeAll(async () => {
       { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
     ],
   });
+  // A translated page: its public path carries the locale prefix and its
+  // own slug (`/de/<slug>`), the literal a German menu was written with.
+  deSoloId = (
+    await op<{ pageId: string }>("create_variant", {
+      sourcePageId: soloId,
+      localeCode: "de",
+      slug: `${PFX}-solo-de`,
+    })
+  ).pageId;
   await op("set_chrome_variants", {
     variants: [
       {
@@ -172,8 +188,18 @@ beforeAll(async () => {
                     nav: [
                       { label: "Kontakt", href: `/${PFX}-solo` },
                       { label: "Alt", href: `/${PFX}-gone` },
+                      { label: "Allein", href: `/de/${PFX}-solo-de` },
                     ],
                   })}::text::jsonb
+                WHERE locale_code = 'de'`,
+  );
+  // An orphaned variant (its layout slot is gone) without its own module:
+  // its field kinds are unknown, so it is not converted by guessing.
+  await asPlugin(
+    (tx) => tx`INSERT INTO plugin_international_site.chrome_variants
+                 (target_key, locale_code, mode, "values", translation_status)
+               SELECT ${ORPHAN_KEY}, locale_code, mode, "values", translation_status
+                 FROM plugin_international_site.chrome_variants
                 WHERE locale_code = 'de'`,
   );
 }, 60_000);
@@ -189,14 +215,19 @@ describe("international-site link hook", () => {
       run: { runId: string; counts: Record<string, number> };
       unresolved: { value: string; surface: string; label: string }[];
     }>("links.migrate_to_references", {});
-    expect(out.run.counts["plugin:international-site"]).toBe(1);
+    expect(out.run.counts["plugin:international-site"]).toBe(2);
     expect((await variantValues()).nav).toEqual([
       { label: "Kontakt", href: `caelo:page/${soloId}` },
       { label: "Alt", href: `/${PFX}-gone` },
+      // The locale-prefixed public path of a translated page is that page.
+      { label: "Allein", href: `caelo:page/${deSoloId}` },
     ]);
     const gone = out.unresolved.find((u) => u.value === `/${PFX}-gone`);
     expect(gone?.surface).toBe("plugin:international-site");
     expect(gone?.label).toContain("de version of");
+    // The orphan is left exactly as stored and not reported as converted.
+    expect((await variantValues(ORPHAN_KEY)).nav[0]?.href).toBe(`/${PFX}-solo`);
+    expect(out.unresolved.some((u) => u.label.includes(ORPHAN_KEY))).toBe(false);
 
     await sysOp("links.revert_migration", { runId: out.run.runId });
     expect((await variantValues()).nav[0]?.href).toBe(`/${PFX}-solo`);
