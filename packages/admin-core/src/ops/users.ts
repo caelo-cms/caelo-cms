@@ -365,10 +365,11 @@ export const deleteUserOp = defineOperation({
     // MCP tokens are bearer sessions too. Token resolution already refuses a
     // deleted user's bearer; revoking here makes the registry at
     // /settings/mcp show the truth instead of live-looking dead tokens.
-    await tx.execute(sql`
+    const revokedTokens = (await tx.execute(sql`
       UPDATE mcp_tokens SET revoked_at = now()
       WHERE actor_id = ${input.userId}::uuid AND revoked_at IS NULL
-    `);
+      RETURNING id
+    `)) as unknown as { id: string }[];
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -376,7 +377,7 @@ export const deleteUserOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.userId,
-      resultSummary: "soft-deleted",
+      resultSummary: `soft-deleted; revoked ${revokedTokens.length} mcp token(s)`,
     });
     return ok({});
   },
