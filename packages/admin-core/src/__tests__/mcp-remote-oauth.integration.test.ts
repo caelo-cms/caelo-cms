@@ -23,7 +23,7 @@ import { mcpRemoteOAuthClientForSyncOp } from "../ops/security/mcp_remote_oauth.
 import { registerAdminOps } from "../register.js";
 import type { GoogleDeps } from "../security/operator-access/google-iam.js";
 import { disableRemoteMcp, saveRemoteMcpClient } from "../security/remote-mcp/configure.js";
-import { clientIdDigests, remoteMcpAvailability } from "../security/remote-mcp/setup.js";
+import { remoteMcpAvailability } from "../security/remote-mcp/setup.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -208,7 +208,7 @@ describe("Settings → MCP → Remote flows (configure.ts)", () => {
         if (path === "/api/mcp/oauth/status") {
           return Response.json(
             last.client_id
-              ? { configured: true, clientIdSha256: clientIdDigests(last.client_id).hex }
+              ? { configured: true, clientId: last.client_id }
               : { configured: false },
           );
         }

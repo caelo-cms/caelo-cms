@@ -133,7 +133,7 @@ describe("runSync — programmatic_clients step", () => {
     expect(r.ok).toBe(true);
     expect(current()).toEqual([CLIENT]);
     expect(r.programmaticClients).toEqual({ before: [OTHER], after: [CLIENT], changed: true });
-    expect(logs.some((l) => l.severity === "WARNING" && l.message.includes(OTHER))).toBe(true);
+    expect(logs).toContainEqual(expect.objectContaining({ severity: "WARNING", clientId: OTHER }));
   });
 
   it("clears the list when no client is configured", async () => {

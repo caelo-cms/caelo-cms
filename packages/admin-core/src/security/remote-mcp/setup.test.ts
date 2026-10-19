@@ -12,7 +12,6 @@ import {
   brokerRedirectUri,
   checkAuthorizationServer,
   checkGatewayClient,
-  clientIdDigests,
   createOAuthClientConsoleUrl,
   iapSyncLine,
   oauthClientFile,
@@ -115,34 +114,25 @@ describe("the OAuth client file", () => {
 });
 
 describe("self-check", () => {
-  const { hex } = clientIdDigests(CLIENT);
-
   it("waits for the gateway to pick up the new client, then reports ok", async () => {
     let n = 0;
     const deps = gateway({
       "/api/mcp/oauth/status": () =>
-        ++n < 3 ? { configured: false } : { configured: true, clientIdSha256: hex },
+        ++n < 3 ? { configured: false } : { configured: true, clientId: CLIENT },
     });
     const line = await checkGatewayClient(deps, PUBLIC, CLIENT, 60_000);
     expect(line.ok).toBe(true);
     expect(n).toBe(3);
   });
 
-  it("accepts the digest base64url-encoded too", async () => {
-    const deps = gateway({
-      "/api/mcp/oauth/status": () => ({
-        configured: true,
-        clientIdSha256: clientIdDigests(CLIENT).base64url,
-      }),
-    });
-    expect((await checkGatewayClient(deps, PUBLIC, CLIENT, 0)).ok).toBe(true);
-  });
-
   it("fails with the next step when the gateway keeps serving another client", async () => {
     let t = 0;
     const deps = {
       ...gateway({
-        "/api/mcp/oauth/status": () => ({ configured: true, clientIdSha256: "other" }),
+        "/api/mcp/oauth/status": () => ({
+          configured: true,
+          clientId: "999-zzz.apps.googleusercontent.com",
+        }),
       }),
       now: () => (t += 10_000),
     };
@@ -167,7 +157,7 @@ describe("self-check", () => {
 
   it("runs the chain in order and skips the endpoint checks when turning off", async () => {
     const on = gateway({
-      "/api/mcp/oauth/status": () => ({ configured: true, clientIdSha256: hex }),
+      "/api/mcp/oauth/status": () => ({ configured: true, clientId: CLIENT }),
       "/.well-known/oauth-authorization-server/api/mcp/oauth": () => ({
         issuer: `${PUBLIC}/api/mcp/oauth`,
       }),

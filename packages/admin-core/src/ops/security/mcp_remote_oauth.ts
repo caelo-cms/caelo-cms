@@ -32,7 +32,6 @@ export const googleOAuthClientIdSchema = z
   );
 
 const clientRow = z.object({ clientId: z.string(), configuredAt: z.string() });
-export type McpRemoteOAuthClient = z.infer<typeof clientRow>;
 
 /** `mcp_remote_oauth.get` — the configured client, or null when remote MCP is not set up. */
 export const getMcpRemoteOAuthClientOp = defineOperation({

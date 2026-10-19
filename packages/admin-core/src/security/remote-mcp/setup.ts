@@ -25,7 +25,6 @@
  * install never looks finished.
  */
 
-import { createHash } from "node:crypto";
 import { type GoogleDeps, googleCall } from "../operator-access/google-iam.js";
 
 /** The admin env remote MCP needs (set by the provisioner, stack-contract.ts). */
@@ -157,12 +156,6 @@ export async function addSecretVersion(
   return created.name;
 }
 
-/** SHA-256 of a client ID, as hex and as base64url (the broker reports one of them). */
-export function clientIdDigests(clientId: string): { hex: string; base64url: string } {
-  const digest = createHash("sha256").update(clientId, "utf8").digest();
-  return { hex: digest.toString("hex"), base64url: digest.toString("base64url") };
-}
-
 /** One line of the self-check. */
 export interface SelfCheckLine {
   readonly id: "gateway-client" | "authorization-server" | "protected-resource" | "iap-sync";
@@ -217,7 +210,6 @@ export async function checkGatewayClient(
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = deps.now ?? Date.now;
   const url = `${mcpPublicUrl}/api/mcp/oauth/status`;
-  const want = clientId ? clientIdDigests(clientId) : null;
   const label = clientId
     ? "The gateway signs users in with this client"
     : "The gateway reports remote MCP as off";
@@ -226,10 +218,9 @@ export async function checkGatewayClient(
   for (;;) {
     const r = await getJson(deps, url);
     if (r.ok) {
-      const body = r.body as { configured?: unknown; clientIdSha256?: unknown };
-      const sha = typeof body.clientIdSha256 === "string" ? body.clientIdSha256 : "";
-      const matches = want
-        ? body.configured === true && (sha === want.hex || sha === want.base64url)
+      const body = r.body as { configured?: unknown; clientId?: unknown };
+      const matches = clientId
+        ? body.configured === true && body.clientId === clientId
         : body.configured === false;
       if (matches) return { id: "gateway-client", label, ok: true, detail: url };
       last =
