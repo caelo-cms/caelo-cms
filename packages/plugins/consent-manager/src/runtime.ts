@@ -227,14 +227,26 @@ function apply() {
  * sits in an inert <template>; cloning it is the first moment anything
  * inside it can reach the network. The module's CSS rides along as a
  * <style>; its JS is parked as type="text/plain" and run here, once per
- * module, AFTER the markup it queries is in the DOM.
+ * module, AFTER the markup it queries is in the DOM. A script whose
+ * source could end its own script element (a closing script tag or an
+ * HTML comment opener; spelled out here they would trip that very check
+ * on this runtime) is parked base64-encoded (data-caelo-encoding="base64") and decoded
+ * here back to the exact bytes.
  */
 var ranModuleScripts = {};
+function parkedSource(el) {
+  var text = el.textContent || "";
+  if (el.getAttribute("data-caelo-encoding") !== "base64") return text;
+  var bin = atob(text);
+  var bytes = new Uint8Array(bin.length);
+  for (var b = 0; b < bin.length; b++) bytes[b] = bin.charCodeAt(b);
+  return new TextDecoder().decode(bytes);
+}
 function runDeferredScripts(block) {
   var parked = block.querySelectorAll("script[data-caelo-deferred-script]");
   for (var i = 0; i < parked.length; i++) {
     var moduleId = parked[i].getAttribute("data-caelo-deferred-script");
-    var source = parked[i].textContent || "";
+    var source = parkedSource(parked[i]);
     parked[i].parentNode.removeChild(parked[i]);
     if (!moduleId || ranModuleScripts[moduleId]) continue;
     ranModuleScripts[moduleId] = true;

@@ -82,8 +82,8 @@ No laptop needed: install into your own Google Cloud project from Cloud Shell.
 
 | | |
 |---|---|
-| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.53&cloudshell_tutorial=gcp.md) |
-| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.53&cloudshell_tutorial=gcp-firebase.md) |
+| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.54&cloudshell_tutorial=gcp.md) |
+| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.54&cloudshell_tutorial=gcp-firebase.md) |
 
 Cloud Shell opens a short tutorial: sign in, run `./run.sh`, answer a few questions, confirm the monthly cost. The install then runs as a job in your project, so closing the tab doesn't stop it, and clicking the button again picks it up. The links are pinned to this release; `run.sh` verifies the provisioner's npm provenance and the release's signed manifest before anything runs ([how](https://github.com/caelo-cms/install#what-happens-when-you-click)).
 
@@ -104,7 +104,7 @@ After any install, open the setup link it prints, create the Owner account and p
 - **`caelo_chat`**: you describe an outcome, Caelo's own AI does the work.
 - **Power-MCP**: your agent gets Caelo's full tool catalogue and runs the loop itself; by default Caelo makes no AI calls of its own.
 
-Either way the agent works in the draft, and publishing stays with a human. Mint a token at `/settings/mcp` on your install; the page shows the exact `claude mcp add` command for it.
+Either way the agent works in the draft, and publishing stays with a human. Mint a token at `/settings/mcp` on your install; the page shows the exact setup for it in Claude Code, Claude Desktop, Codex CLI, Cursor, VS Code and Gemini CLI.
 
 With Claude Code, Power-MCP looks like this:
 
@@ -112,7 +112,7 @@ With Claude Code, Power-MCP looks like this:
 claude mcp add caelo-admin \
   --env CAELO_ADMIN_URL=https://admin.example.com \
   --env CAELO_MCP_TOKEN=mcp_<token> \
-  -- bunx --package @caelo-cms/mcp-server@<your Caelo version> caelo-admin-mcp
+  -- bunx --package @caelo-cms/mcp-server@latest caelo-admin-mcp
 ```
 
 Then ask it for an outcome, for example *"Add a pricing page in our design system and stage it for review."* Details: [MCP and Power-MCP docs](https://caelo-cms.com/docs/mcp/).

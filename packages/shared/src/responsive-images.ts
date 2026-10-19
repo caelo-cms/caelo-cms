@@ -137,7 +137,10 @@ export function enrichResponsiveImages(
 
     let out = tag;
     if (options.rewriteSrc) {
-      out = out.replace(srcMatch[0], `src="${options.urlFor(assetId, variant, requestedFormat)}"`);
+      out = out.replace(
+        srcMatch[0],
+        () => `src="${options.urlFor(assetId, variant, requestedFormat)}"`,
+      );
     }
 
     // #667 — an `orig` embed (the default `/_caelo/media/<slug>` form,
@@ -155,7 +158,7 @@ export function enrichResponsiveImages(
         ? origSrcset(variants, assetId, options)
         : null;
     if (origLadder) {
-      out = out.replace(/<img\b/, `<img srcset="${origLadder}"`);
+      out = out.replace(/<img\b/, () => `<img srcset="${origLadder}"`);
     }
 
     if (familyVariants.length >= 2 && !/\bsrcset=/i.test(out)) {
@@ -168,7 +171,7 @@ export function enrichResponsiveImages(
           : "100vw";
       out = out.replace(
         /<img\b/,
-        `<img srcset="${srcset}" sizes="${/\bsizes=/i.test(out) ? "" : sizes}"`,
+        () => `<img srcset="${srcset}" sizes="${/\bsizes=/i.test(out) ? "" : sizes}"`,
       );
       out = out.replace(/\bsizes=""\s*/g, "");
     }

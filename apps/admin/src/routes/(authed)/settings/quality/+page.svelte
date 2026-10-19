@@ -182,7 +182,7 @@
                       </strong>
                     </span>
                   {/each}
-                  <span class="text-muted-foreground">median of {m.runs} run(s)</span>
+                  <span class="text-muted-foreground">best of {m.runs} run(s)</span>
                 </div>
                 {#if m.lcpElement}
                   <div class="text-muted-foreground">

@@ -34,6 +34,7 @@ import {
   forkPlacementContentSchema,
   moduleRefSchema,
   ok,
+  parseLinkRef,
   setPlacementContentSchema,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -217,7 +218,9 @@ async function validateNestedRefs(
           v.startsWith("https://") ||
           v.startsWith("mailto:") ||
           v.startsWith("tel:") ||
-          v.startsWith("#"));
+          v.startsWith("#") ||
+          // Epic #724 — the stored form of an internal link.
+          parseLinkRef(v) !== null);
       if (!ok) {
         return {
           ok: false,

@@ -356,11 +356,41 @@ const SITE_SETTING_NEXT_STEPS: Readonly<Record<string, string>> = {
     "The site language is not set; publishing fails until it is. Call set_site_identity({siteLanguage: '<BCP 47 tag, e.g. de>'}).",
 };
 
+/**
+ * Epic #724 — next step for a broken internal link
+ * (`link-target-missing:page/<id>` / `…:media/<id>`): the page or image
+ * it pointed at was deleted. Reads show such a link as the raw
+ * `caelo:page/<id>` reference (there is no path to show), which is what
+ * the AI searches for.
+ */
+function brokenLinkNextStep(marker: string): string | undefined {
+  if (marker.startsWith("link-ref-malformed:")) {
+    const raw = marker.slice("link-ref-malformed:".length);
+    return (
+      `A link on this page is written as "${raw}", which is not a valid link to a page or file. ` +
+      `Find it with grep_content("${raw}") or get_content_instance, then set it to the path of an existing page (list_pages) ` +
+      "or an existing image (find_media), or remove it. Publishing is blocked until it is fixed."
+    );
+  }
+  const m = /^link-target-missing:(page|media)\/([0-9a-f-]{36})$/.exec(marker);
+  if (!m) return undefined;
+  const what = m[1] === "page" ? "a page" : "an image or file";
+  const fix =
+    m[1] === "page"
+      ? "set it to the path of an existing page (list_pages), or remove the link"
+      : "set it to an existing image (find_media), or remove it";
+  return (
+    `A link on this page points to ${what} that no longer exists (shown as caelo:${m[1]}/${m[2]} ` +
+    `in content reads). Find it with grep_content("caelo:${m[1]}/${m[2]}") or get_content_instance, then ${fix}. ` +
+    "Publishing is blocked until it is fixed."
+  );
+}
+
 /** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
 function siteSettingNextSteps(missing: readonly string[]): { nextSteps?: Record<string, string> } {
   const steps = Object.fromEntries(
     missing.flatMap((m) => {
-      const step = SITE_SETTING_NEXT_STEPS[m];
+      const step = SITE_SETTING_NEXT_STEPS[m] ?? brokenLinkNextStep(m);
       return step ? [[m, step]] : [];
     }),
   );
