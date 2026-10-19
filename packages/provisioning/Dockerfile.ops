@@ -158,11 +158,18 @@ COPY --from=builder /opt/caelo-ops /opt/caelo-ops
 # from its own file location (import.meta.dir), which a symlink in
 # /usr/local/bin would point at the wrong directory.
 #
-# `caelo-ops upgrader` runs the upgrader job and `caelo-ops converge-job`
-# the converge job (#819), and passes them NOTHING: both read their input
-# from the database only (platform-updater/src/main.ts, converge-main.ts),
+# `caelo-ops upgrader` runs the upgrader job and passes it NOTHING: it
+# reads its input from the database only (platform-updater/src/main.ts),
 # so extra arguments are dropped here, not interpreted.
-RUN printf '#!/bin/sh\nif [ "${1:-}" = upgrader ]; then exec bun /opt/caelo-ops/packages/platform-updater/src/main.ts; fi\nif [ "${1:-}" = converge-job ]; then exec bun /opt/caelo-ops/packages/platform-updater/src/converge-main.ts; fi\nexec bun /opt/caelo-ops/packages/provisioning/dist/cli.js "$@"\n' \
+#
+# The converge job (#819) runs as caelo-provisioner, so its entry point is
+# stricter (#883 review): the job is deployed with
+# `--command=caelo-converge-job --args=converge-job`, and that script
+# refuses any other argument and starts the job with a scrubbed
+# environment (packages/provisioning/ops/caelo-converge-job). `caelo-ops
+# converge-job` goes through the same script.
+COPY --chmod=0755 packages/provisioning/ops/caelo-converge-job /usr/local/bin/caelo-converge-job
+RUN printf '#!/bin/sh\nif [ "${1:-}" = upgrader ]; then exec bun /opt/caelo-ops/packages/platform-updater/src/main.ts; fi\nif [ "${1:-}" = converge-job ]; then exec caelo-converge-job "$@"; fi\nexec bun /opt/caelo-ops/packages/provisioning/dist/cli.js "$@"\n' \
       > /usr/local/bin/caelo-ops && \
     chmod 0755 /usr/local/bin/caelo-ops && \
     ln -s caelo-ops /usr/local/bin/cms-provision && \

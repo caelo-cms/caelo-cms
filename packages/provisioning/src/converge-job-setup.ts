@@ -71,7 +71,15 @@ export const CONVERGE_TASK_TIMEOUT_MINUTES = 60;
  */
 export const CONVERGE_ADMIN_ROLES = ["roles/run.jobsExecutor", "roles/run.viewer"] as const;
 
-/** The `caelo-ops` subcommand the job runs (Dockerfile.ops drops any further argument). */
+/**
+ * The job's entry point and its one argument. `caelo-converge-job`
+ * (packages/provisioning/ops/caelo-converge-job, installed by
+ * Dockerfile.ops) refuses every other argument and starts the job with a
+ * scrubbed environment, so even an execution override could not turn the
+ * provisioner's job into `destroy` or point gcloud/Pulumi elsewhere
+ * (#883 review). Nobody holds run.jobs.runWithOverrides on it anyway.
+ */
+export const CONVERGE_JOB_ENTRYPOINT = "caelo-converge-job";
 export const CONVERGE_JOB_COMMAND = "converge-job";
 
 /** Resources: the converge runs gcloud + Pulumi's Node language host for the stack pin. */
@@ -112,8 +120,11 @@ export function convergeJobDeployArgs(target: ConvergeSetupTarget): string[] {
     `--network=${target.network}`,
     `--subnet=${target.subnet}`,
     "--vpc-egress=private-ranges-only",
-    "--command=caelo-ops",
+    `--command=${CONVERGE_JOB_ENTRYPOINT}`,
     `--args=${CONVERGE_JOB_COMMAND}`,
+    // No env and no secrets on the job, whatever an earlier deploy set.
+    "--clear-env-vars",
+    "--clear-secrets",
     "--tasks=1",
     // A retry would start a second converge inside the same execution; a
     // killed run is resumed by starting the job again (checkpointed).

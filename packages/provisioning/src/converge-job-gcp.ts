@@ -71,6 +71,23 @@ export function executionImageDigest(describeJson: string): string | null {
   return DIGEST.exec(image)?.[1] ?? null;
 }
 
+/**
+ * Why `CLOUD_RUN_EXECUTION` cannot name a run of the converge job, or null
+ * when it can. The name keys the state lock's holder and the hand-over
+ * between the job's two stages, so a value that names another job's run
+ * (or is not a Cloud Run name at all) stops the job before it acts
+ * (#883 review). Cloud Run sets it and rejects user values for it; this is
+ * the second line.
+ */
+export function convergeExecutionNameError(execution: string | null): string | null {
+  if (execution === null) return null;
+  const prefix = `${convergeJobName(GCP_STACK_ENV)}-`;
+  if (!/^[a-z0-9-]{1,63}$/.test(execution) || !execution.startsWith(prefix)) {
+    return `CLOUD_RUN_EXECUTION is "${execution.slice(0, 80)}", not a run of ${convergeJobName(GCP_STACK_ENV)}`;
+  }
+  return null;
+}
+
 /** The new execution's name from `gcloud run jobs execute --async`. */
 export function startedExecutionName(stdout: string, stderr: string): string | null {
   const name = stdout.trim().split(/\s+/)[0] || /Execution \[([^\]]+)\]/.exec(stderr)?.[1] || "";

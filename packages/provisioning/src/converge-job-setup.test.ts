@@ -89,10 +89,16 @@ describe("ensureConvergeJob", () => {
     expect(deploy[3]).toBe("caelo-production-converge");
     expect(flag(deploy, "image")).toBe(OPS);
     expect(flag(deploy, "service-account")).toBe(PROVISIONER);
-    expect(flag(deploy, "command")).toBe("caelo-ops");
+    // #883 review: the strict entry point that refuses other arguments and
+    // scrubs the environment (ops/caelo-converge-job), not caelo-ops.
+    expect(flag(deploy, "command")).toBe("caelo-converge-job");
     expect(flag(deploy, "args")).toBe("converge-job");
     expect(flag(deploy, "max-retries")).toBe("0");
-    expect(deploy.some((a) => /env-vars|secrets|env-file/.test(a))).toBe(false);
+    // No env or secrets are set, and any an earlier deploy set are cleared.
+    expect(deploy.filter((a) => /env-vars|secrets|env-file/.test(a))).toEqual([
+      "--clear-env-vars",
+      "--clear-secrets",
+    ]);
   });
 
   it("gives the provisioner the install-job roles and a platform_updater database login only", async () => {

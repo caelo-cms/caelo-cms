@@ -7,11 +7,13 @@
  * (packages/provisioning/src/converge-job-setup.ts).
  *
  * Like the upgrader (main.ts) it takes no input but the database: argv and
- * the environment are ignored on purpose (the admin may start the job but
- * cannot override it, and even an override must not be able to point the
- * job at another registry, signer or install). The one env var read,
- * CLOUD_RUN_EXECUTION, names this run for the timeline, the state lock's
- * lease and the hand-over between the job's two stages.
+ * the environment are ignored on purpose. Nobody holds runWithOverrides on
+ * the job, and it is started through ops/caelo-converge-job, which refuses
+ * other arguments and scrubs the environment (#883 review), so even an
+ * override could not point it at another registry, signer or install. The
+ * one env var read, CLOUD_RUN_EXECUTION, names this run for the timeline,
+ * the state lock's lease and the hand-over between the job's two stages;
+ * it must name a run of the converge job or the job stops.
  *
  * The database connection uses Cloud SQL IAM authentication as the
  * provisioner, whose database login is a member of `platform_updater`
@@ -19,7 +21,12 @@
  * it usable through a long converge.
  */
 
-import { gcpConvergeDeps, runConvergeJob, upgraderDatabaseHost } from "@caelo-cms/provisioning";
+import {
+  convergeExecutionNameError,
+  gcpConvergeDeps,
+  runConvergeJob,
+  upgraderDatabaseHost,
+} from "@caelo-cms/provisioning";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { cloudSqlIamDatabaseUrls } from "@caelo-cms/shared";
 import { createDbConvergeQueue } from "./db-queue.js";
@@ -28,6 +35,8 @@ import { tokenRefreshingConvergeQueue } from "./token-queue.js";
 
 async function main(): Promise<void> {
   const { projectId, region, email, execution } = await jobPlacement();
+  const badExecution = convergeExecutionNameError(execution);
+  if (badExecution) throw new Error(`refused to run: ${badExecution}`);
   const host = await upgraderDatabaseHost({ projectId, region });
   const db = tokenRefreshingConvergeQueue({
     fetchToken: accessToken,

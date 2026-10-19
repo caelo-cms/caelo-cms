@@ -53,7 +53,7 @@ export {
   type ConvergeUpgradeOutcome,
   runConvergeJob,
 } from "./converge-job.js";
-export { gcpConvergeDeps } from "./converge-job-gcp.js";
+export { convergeExecutionNameError, gcpConvergeDeps } from "./converge-job-gcp.js";
 export { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
 export {
   INFRA_CONTRACT_PATHS,
