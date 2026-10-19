@@ -42,6 +42,8 @@ import { z } from "zod";
 import { deriveRunCalibration } from "../ai/import-cost-model.js";
 import { recordAudit } from "../audit.js";
 import { loadChatBinding } from "../draft.js";
+import { canonicaliseImportedModules } from "../links/canonicalise-writes.js";
+import { humaniseForRead } from "../links/humanise.js";
 import {
   loadContentInstanceStateWithBranchOverlay,
   loadModuleStateWithBranchOverlay,
@@ -2058,7 +2060,9 @@ export const checkImportPageInventoryOp = defineOperation({
         for (const s of collectStringValues(ci?.values ?? null)) rebuiltParts.push(s);
       }
     }
-    const rebuiltHtml = rebuiltParts.join("\n");
+    // Epic #724 — stored internal links are references; compare them as
+    // the paths they stand for, the form the source page's links carry.
+    const rebuiltHtml = (await humaniseForRead(tx, ctx, rebuiltParts)).join("\n");
 
     const report = checkInventoryCoverage(sourceInventory, rebuiltHtml);
 
@@ -3215,6 +3219,13 @@ export const composeFromImportRunOp = defineOperation({
       chromeBound: z.array(z.string()),
       /** issue #253 — loud chrome notes (missing layout block, slot already bound). */
       chromeNotes: z.array(z.string()),
+      /**
+       * Epic #724 — internal-looking links in the imported markup that
+       * match no imported page or media asset; kept literal (never
+       * guessed). Fix them (set the link to an existing page's path) or
+       * import the missing pages; the publish link check flags them.
+       */
+      unresolvedInternalLinks: z.array(z.string()),
     }),
   ]),
   handler: async (ctx, input, tx) => {
@@ -3467,6 +3478,9 @@ export const composeFromImportRunOp = defineOperation({
     // html / field defaults (no content_instance binding), so the
     // chrome module carries the crawled markup directly.
     const chromeModules = new Map<"header" | "footer", string>();
+    // Epic #724 — every module this compose writes; their links are
+    // canonicalised once all pages exist (see the end of the handler).
+    const composedModuleIds = new Set<string>();
     const ensureChromeModule = async (
       block: "header" | "footer",
       src: ParsedModule,
@@ -3491,6 +3505,7 @@ export const composeFromImportRunOp = defineOperation({
       const moduleId = modInsert[0]?.id;
       if (!moduleId) return null;
       chromeModules.set(block, moduleId);
+      composedModuleIds.add(moduleId);
       return moduleId;
     };
 
@@ -3712,6 +3727,7 @@ export const composeFromImportRunOp = defineOperation({
               message: `module insert returned no row for '${r.proposed_slug}' block '${m.blockName}' pos ${m.position} — nothing from this compose was applied.`,
             });
           }
+          composedModuleIds.add(moduleId);
           // v0.12.0 — mint a fresh unsynced content_instance per placement
           // so page_modules.content_instance_id NOT NULL is satisfied.
           const ciInsert = (await tx.execute(sql`
@@ -3842,6 +3858,17 @@ export const composeFromImportRunOp = defineOperation({
       });
     }
 
+    // Epic #724 — imports canonicalise at import time (maintainer
+    // decision 3): now that every page and old-URL redirect of the run
+    // exists, internal links in the composed modules become references;
+    // the rest are reported, never guessed.
+    const unresolvedLinks = await canonicaliseImportedModules(
+      tx,
+      ctx,
+      [...composedModuleIds],
+      run.source_url,
+    );
+
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -3849,7 +3876,7 @@ export const composeFromImportRunOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.runId,
-      resultSummary: `theme=${aggregatedTokens.length} layout=${layoutId} template=${templateId} pages=${createdPageIds.length} redirects=${redirectsCreated} skippedAccepted=${skippedAlreadyAccepted} skippedGated=${skippedPages.length}`,
+      resultSummary: `theme=${aggregatedTokens.length} layout=${layoutId} template=${templateId} pages=${createdPageIds.length} redirects=${redirectsCreated} skippedAccepted=${skippedAlreadyAccepted} skippedGated=${skippedPages.length} unresolvedLinks=${unresolvedLinks.length}`,
     });
 
     return ok({
@@ -3872,6 +3899,7 @@ export const composeFromImportRunOp = defineOperation({
       redirectsCreated,
       chromeBound,
       chromeNotes,
+      unresolvedInternalLinks: [...new Set(unresolvedLinks.map((u) => u.value))],
     });
   },
 });

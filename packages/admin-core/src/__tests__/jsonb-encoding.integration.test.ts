@@ -75,7 +75,14 @@ describe("jsonb double-encoding fix (issue #68)", () => {
       html: "<h1>{{headline}}</h1>",
       fields: [
         { name: "headline", kind: "text", label: "Headline", default: "Original headline" },
-        { name: "cta_href", kind: "text", label: "CTA href", default: "/signup" },
+        // External: a `*_href` value is a link, and an internal one must
+        // name an existing page (#724).
+        {
+          name: "cta_href",
+          kind: "text",
+          label: "CTA href",
+          default: "https://example.com/signup",
+        },
       ] as never,
     });
     expect(created.ok).toBe(true);

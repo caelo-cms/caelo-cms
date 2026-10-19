@@ -28,6 +28,7 @@ import {
   normalizePath,
   sourceFingerprint,
   splitHref,
+  splitPageRef,
   translatableStrings,
   validateChromeTranslation,
 } from "./chrome.js";
@@ -337,9 +338,15 @@ async function linkIndex(
 
   return {
     map: (href, locale) => {
-      const parts = splitHref(href);
+      const ref = splitPageRef(href);
+      const literal = ref ? null : splitHref(href);
+      const parts = ref ?? literal;
       if (!parts) return null; // external, mailto:, anchors — not a page link
-      const target = byPath.get(normalizePath(parts.path));
+      const target = ref
+        ? byId.get(ref.pageId)
+        : literal
+          ? byPath.get(normalizePath(literal.path))
+          : undefined;
       if (!target) return null; // an asset or a path no page owns
       if (localeOf(target.id) === locale.code) return null;
       const row = rowByPage.get(target.id);

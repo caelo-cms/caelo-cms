@@ -24,6 +24,8 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
 import { emitDomainEvent } from "../../domain-events.js";
+import { canonicaliseModuleCode } from "../../links/canonicalise-writes.js";
+import { withHumanisedLinks } from "../../links/humanise.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -229,70 +231,74 @@ export const listModulesUsageOp = defineOperation({
   },
 });
 
-export const listModulesOp = defineOperation({
-  name: "modules.list",
-  // CLAUDE.md §11: read surfaces are open to AI. The AI uses this
-  // to plan cross-module changes (e.g. "find every module with a
-  // hero in its slug").
-  //
-  // #453 — plugin actors read too. A plugin that reasons ABOUT modules
-  // rather than about its own rows (consent-manager scanning each one
-  // for third-party hosts) has no other way to see them, and this is a
-  // read: the write path stays closed to plugins.
-  actorScope: ["human", "ai", "plugin", "system"],
-  database: "cms_admin",
-  input: z.object({ includeDeleted: z.boolean().default(false) }),
-  output: z.object({ modules: z.array(moduleRowSchema) }),
-  handler: async (ctx, input, tx) => {
-    // v0.9.0 — branch-aware: chats see main + their own branched
-    // creates; system actors / cross-chat reads see main only.
-    const branchFilter = branchVisibilityFilter(ctx);
-    const rows = (await tx.execute(
-      input.includeDeleted
-        ? sql`
+export const listModulesOp = withHumanisedLinks(
+  defineOperation({
+    name: "modules.list",
+    // CLAUDE.md §11: read surfaces are open to AI. The AI uses this
+    // to plan cross-module changes (e.g. "find every module with a
+    // hero in its slug").
+    //
+    // #453 — plugin actors read too. A plugin that reasons ABOUT modules
+    // rather than about its own rows (consent-manager scanning each one
+    // for third-party hosts) has no other way to see them, and this is a
+    // read: the write path stays closed to plugins.
+    actorScope: ["human", "ai", "plugin", "system"],
+    database: "cms_admin",
+    input: z.object({ includeDeleted: z.boolean().default(false) }),
+    output: z.object({ modules: z.array(moduleRowSchema) }),
+    handler: async (ctx, input, tx) => {
+      // v0.9.0 — branch-aware: chats see main + their own branched
+      // creates; system actors / cross-chat reads see main only.
+      const branchFilter = branchVisibilityFilter(ctx);
+      const rows = (await tx.execute(
+        input.includeDeleted
+          ? sql`
             SELECT id::text AS id, slug, display_name, description, kind, type, html, css, js, fields,
                    created_at, updated_at, deleted_at
             FROM modules WHERE 1=1 ${branchFilter} ORDER BY created_at ASC
           `
-        : sql`
+          : sql`
             SELECT id::text AS id, slug, display_name, description, kind, type, html, css, js, fields,
                    created_at, updated_at, deleted_at
             FROM modules WHERE deleted_at IS NULL ${branchFilter} ORDER BY created_at ASC
           `,
-    )) as unknown as ModuleDbRow[];
-    const effective = await overlayBranchEdits(ctx, tx, rows);
-    // A module this chat deleted (branched) is hidden like a live-deleted one.
-    const visible = input.includeDeleted
-      ? effective
-      : effective.filter((r) => r.deleted_at === null);
-    return ok({ modules: visible.map(rowToModule) });
-  },
-});
+      )) as unknown as ModuleDbRow[];
+      const effective = await overlayBranchEdits(ctx, tx, rows);
+      // A module this chat deleted (branched) is hidden like a live-deleted one.
+      const visible = input.includeDeleted
+        ? effective
+        : effective.filter((r) => r.deleted_at === null);
+      return ok({ modules: visible.map(rowToModule) });
+    },
+  }),
+);
 
-export const getModuleOp = defineOperation({
-  name: "modules.get",
-  // CLAUDE.md §11: read surfaces are open to AI.
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z.object({ moduleId: z.string().uuid() }),
-  output: z.object({ module: moduleRowSchema }),
-  handler: async (ctx, input, tx) => {
-    // v0.9.0 — branch-aware read so a chat can fetch its own
-    // branched-create modules immediately after creating them; the
-    // overlay then layers the chat's own branched edits on top.
-    const branchFilter = branchVisibilityFilter(ctx);
-    const rows = (await tx.execute(sql`
+export const getModuleOp = withHumanisedLinks(
+  defineOperation({
+    name: "modules.get",
+    // CLAUDE.md §11: read surfaces are open to AI.
+    actorScope: ["human", "ai", "system"],
+    database: "cms_admin",
+    input: z.object({ moduleId: z.string().uuid() }),
+    output: z.object({ module: moduleRowSchema }),
+    handler: async (ctx, input, tx) => {
+      // v0.9.0 — branch-aware read so a chat can fetch its own
+      // branched-create modules immediately after creating them; the
+      // overlay then layers the chat's own branched edits on top.
+      const branchFilter = branchVisibilityFilter(ctx);
+      const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, display_name, description, kind, type, html, css, js, fields,
              created_at, updated_at, deleted_at
       FROM modules WHERE id = ${input.moduleId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as ModuleDbRow[];
-    const [row] = await overlayBranchEdits(ctx, tx, rows, [input.moduleId]);
-    if (!row) {
-      return err({ kind: "HandlerError", operation: "modules.get", message: "module not found" });
-    }
-    return ok({ module: rowToModule(row) });
-  },
-});
+      const [row] = await overlayBranchEdits(ctx, tx, rows, [input.moduleId]);
+      if (!row) {
+        return err({ kind: "HandlerError", operation: "modules.get", message: "module not found" });
+      }
+      return ok({ module: rowToModule(row) });
+    },
+  }),
+);
 
 /**
  * Every data-list name a plugin claims, running or not (#447). Dormant
@@ -377,9 +383,28 @@ export const createModuleOp = defineOperation({
     // <style>/<script> — they survive the byte-preserving compose path and
     // leak a stray `]]>` into chrome/layout slots. Runs unconditionally
     // (the extractor is skipped on the canonical explicit-fields path).
-    const persistedHtml = stripCdataGuards(candidateHtml);
     const extractedMutable = extracted ? ([...extracted.fields] as ModuleField[]) : [];
-    const persistedFields = candidateFields;
+    // Epic #724 — internal links in the HTML and in field defaults are
+    // stored as references; a link to no page refuses the write.
+    const linkCanon = await canonicaliseModuleCode(
+      tx,
+      ctx,
+      { html: stripCdataGuards(candidateHtml), fields: candidateFields },
+      undefined,
+    );
+    if (!linkCanon.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "modules.create",
+        input,
+        succeeded: false,
+        resultSummary: `link-canonicalisation: ${linkCanon.issues.length} issue(s)`,
+      });
+      return err({ kind: "HandlerError", operation: "modules.create", message: linkCanon.message });
+    }
+    const persistedHtml = linkCanon.value.html as string;
+    const persistedFields = linkCanon.value.fields as ModuleField[];
     // v0.9.0 — branch-scoped uniqueness. Same-branch slug clash
     // surfaces as the unique-index violation at INSERT below; check
     // here narrows it to a clean error. We only check the caller's
@@ -610,8 +635,31 @@ export const updateModuleOp = defineOperation({
     }
     // Unwrap XHTML-style CDATA guards (see modules.create) — guarded on
     // `undefined` because an update may leave html untouched.
-    const persistedHtml = extractedHtml === undefined ? undefined : stripCdataGuards(extractedHtml);
-    const persistedFields = extractedFields ?? input.fields;
+    // Epic #724 — canonicalise internal links (see modules.create); links
+    // already in the module as this scope sees it are grandfathered.
+    const linkCanon = await canonicaliseModuleCode(
+      tx,
+      ctx,
+      {
+        html: extractedHtml === undefined ? undefined : stripCdataGuards(extractedHtml),
+        fields: extractedFields ?? input.fields,
+      },
+      { html: branchBase ? branchBase.html : prev.html, fields: prevFields },
+    );
+    if (!linkCanon.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "modules.update",
+        input,
+        succeeded: false,
+        entityId: input.moduleId,
+        resultSummary: `link-canonicalisation: ${linkCanon.issues.length} issue(s)`,
+      });
+      return err({ kind: "HandlerError", operation: "modules.update", message: linkCanon.message });
+    }
+    const persistedHtml = linkCanon.value.html;
+    const persistedFields = linkCanon.value.fields;
 
     // v0.5.1 — branched writes skip the live UPDATE. Module code stays
     // visible to other chats at its pre-edit state until publish merges

@@ -610,7 +610,8 @@ export const mediaDeleteOp = defineOperation({
       SELECT id::text AS id, slug FROM modules
       WHERE deleted_at IS NULL
         AND (html LIKE ${`%/_caelo/media/${target.slug}%`}
-             OR html LIKE ${`%/_caelo/media/${input.assetId}/%`})
+             OR html LIKE ${`%/_caelo/media/${input.assetId}/%`}
+             OR html LIKE ${`%caelo:media/${input.assetId}%`})
     `)) as unknown as { id: string; slug: string }[];
 
     if (num(target.usage_count) > 0 && !input.force) {
@@ -698,7 +699,8 @@ export const mediaListUsagesOp = defineOperation({
       SELECT id::text AS id, slug, display_name FROM modules
       WHERE deleted_at IS NULL
         AND (html LIKE ${`%/_caelo/media/${assetSlug}%`}
-             OR html LIKE ${`%/_caelo/media/${input.assetId}/%`})
+             OR html LIKE ${`%/_caelo/media/${input.assetId}/%`}
+             OR html LIKE ${`%caelo:media/${input.assetId}%`})
       ORDER BY slug
     `)) as unknown as { id: string; slug: string; display_name: string }[];
     return ok({
@@ -1207,6 +1209,8 @@ export const mediaDeleteManyOp = defineOperation({
         await findContentInstancesContaining(tx, ctx.chatBranchId, [
           `/_caelo/media/${target.slug}`,
           `/_caelo/media/${assetId}/`,
+          // Epic #724 — the stored reference form.
+          `caelo:media/${assetId}`,
         ])
       ).filter((ci) => refersToTarget(ci.valuesText));
       const instanceModuleSlugs =
@@ -1228,7 +1232,8 @@ export const mediaDeleteManyOp = defineOperation({
           SELECT slug FROM modules
           WHERE deleted_at IS NULL
             AND (html LIKE ${`%/_caelo/media/${target.slug}%`}
-                 OR html LIKE ${`%/_caelo/media/${assetId}/%`})
+                 OR html LIKE ${`%/_caelo/media/${assetId}/%`}
+                 OR html LIKE ${`%caelo:media/${assetId}%`})
         `)) as unknown as { slug: string }[];
         blocked.push({
           assetId,

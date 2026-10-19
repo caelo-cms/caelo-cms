@@ -88,24 +88,44 @@ beforeAll(async () => {
 
   // A page whose module links to BOTH the existing target (good) and a
   // page that was never built (broken) — via a hardcoded href in the
-  // module HTML AND a url content value.
+  // module HTML AND a url content value. Since #724 the write ops refuse
+  // a link to no page and store valid ones as references, so literal
+  // links like these exist only in content written before; the page is
+  // built valid and the legacy literals are written underneath the ops.
   const linker = await execute(registry, adapter, systemCtx, "pages.build_page", {
     page: { slug: LINKER_SLUG, title: "LINT Linker", templateId },
     modules: [
       {
         blockName: "content",
         displayName: "LINT Linker Nav",
-        html: `<nav><a href="/${TARGET_SLUG}">good</a><a href="/does-not-exist">bad html link</a><a href="#top">frag</a><a href="https://example.com">ext</a></nav>`,
+        html: `<nav><a href="#top">frag</a><a href="{{cta_href}}">cta</a></nav>`,
         fields: [{ name: "cta_href", kind: "url", label: "CTA href" }],
-        content: { source: "inline", values: { cta_href: "/also-missing" } },
+        content: { source: "inline", values: { cta_href: "https://example.com/cta" } },
       },
     ],
   });
   if (!linker.ok) throw new Error(`linker seed failed: ${JSON.stringify(linker.error)}`);
+  const legacy = new SQL(ADMIN_URL!);
+  try {
+    await legacy.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE modules
+               SET html = ${`<nav><a href="/${TARGET_SLUG}">good</a><a href="/does-not-exist">bad html link</a><a href="#top">frag</a><a href="https://example.com">ext</a>{{cta_href}}</nav>`}
+               WHERE display_name = 'LINT Linker Nav'`;
+      await tx`UPDATE content_instances
+               SET "values" = ${JSON.stringify({ cta_href: "/also-missing" })}::jsonb
+               WHERE module_id IN (SELECT id FROM modules WHERE display_name = 'LINT Linker Nav')`;
+    });
+  } finally {
+    await legacy.end();
+  }
 
   // #846 — a page whose content values exercise every field kind. Only the
   // link-bearing kinds (link / url default / link-list / richtext / nested
   // sub-module) may be reported; image + text + text-list paths never.
+  // The dead links are written as `https://legacy.invalid/…` (#724 refuses
+  // an internal link to no page) and turned into the legacy literals
+  // below, underneath the ops.
   const kinds = await execute(registry, adapter, systemCtx, "pages.build_page", {
     page: { slug: KINDS_SLUG, title: "LINT Kinds", templateId },
     modules: [
@@ -114,7 +134,7 @@ beforeAll(async () => {
         // No blockName → detached sub-module, rendered only through the
         // parent's module-list. Its HTML + values must still be scanned.
         displayName: "LINT Kinds Card",
-        html: `<article><a href="/missing-nested-html">{{card_label}}</a><a href="{{card_href}}">go</a><img src="{{card_image}}"></article>`,
+        html: `<article><a href="https://legacy.invalid/missing-nested-html">{{card_label}}</a><a href="{{card_href}}">go</a><img src="{{card_image}}"></article>`,
         fields: [
           { name: "card_label", kind: "text", label: "Card label" },
           { name: "card_href", kind: "link", label: "Card link" },
@@ -124,7 +144,7 @@ beforeAll(async () => {
           source: "inline",
           values: {
             card_label: "/shop/nested-text",
-            card_href: "/missing-nested-link",
+            card_href: "https://legacy.invalid/missing-nested-link",
             card_image: "/media/nested.webp",
           },
         },
@@ -146,7 +166,7 @@ beforeAll(async () => {
             name: "fallback_href",
             kind: "url",
             label: "Fallback href",
-            default: "/missing-default-url",
+            default: "https://legacy.invalid/missing-default-url",
           },
           { name: "menu", kind: "link-list", label: "Menu" },
           { name: "body", kind: "richtext", label: "Body" },
@@ -158,12 +178,12 @@ beforeAll(async () => {
             hero_image: "/media/foo.webp",
             alert_text: "/shop/xyz",
             tags: ["/shop/tag-path"],
-            primary_link: "/missing-link",
+            primary_link: "https://legacy.invalid/missing-link",
             menu: [
               { label: "Good", href: `/${TARGET_SLUG}` },
-              { label: "Bad", href: "/missing-link-list" },
+              { label: "Bad", href: "https://legacy.invalid/missing-link-list" },
             ],
-            body: `<p>See <a href="/missing-richtext">this</a> and <a href="/${TARGET_SLUG}">that</a>.</p>`,
+            body: `<p>See <a href="https://legacy.invalid/missing-richtext">this</a> and <a href="/${TARGET_SLUG}">that</a>.</p>`,
             cards: [{ $ref: "card" }],
           },
         },
@@ -184,6 +204,13 @@ beforeAll(async () => {
     await db.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`UPDATE content_instances SET "values" = "values" || jsonb_build_object('stray_path', ${"/missing-undeclared"}::text) WHERE id = ${placementCi}::uuid`;
+      await tx`UPDATE modules
+               SET html = replace(html, 'https://legacy.invalid/', '/'),
+                   fields = replace(fields::text, 'https://legacy.invalid/', '/')::jsonb
+               WHERE display_name LIKE 'LINT Kinds %'`;
+      await tx`UPDATE content_instances
+               SET "values" = replace("values"::text, 'https://legacy.invalid/', '/')::jsonb
+               WHERE module_id IN (SELECT id FROM modules WHERE display_name LIKE 'LINT Kinds %')`;
     });
   } finally {
     await db.end();
