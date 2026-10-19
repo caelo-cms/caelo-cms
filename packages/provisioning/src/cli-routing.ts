@@ -149,6 +149,12 @@ export const CLI_COMMANDS: readonly CliCommandDoc[] = [
       "Print a one-time password-reset link for a locked-out Owner on installs whose admin cannot send email.",
   },
   {
+    name: "request-update",
+    args: "--version <x.y.z[-rc.n]> [--wait] [--install <id> | --project-id <p> --region <r>]",
+    summary:
+      "gcp-firebase: install a release (a release candidate too) with the install's own upgrader job, like Settings -> Updates; --wait follows it to the end.",
+  },
+  {
     name: "state migrate",
     args: "[--install <id|domain>] [--to remote|local] [--dry-run] [--yes]",
     summary: "Move the install's Pulumi state into (or out of) the install's own cloud project.",

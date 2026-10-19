@@ -4,6 +4,8 @@
  * Installing a Caelo release from Settings → Updates (epic #696 Phase 2).
  *
  *   platform_updates.request         the Owner asks for the newest release
+ *   platform_updates.operator_request  the install's operator asks for any
+ *                                    newer release (#818; system-only)
  *   platform_updates.cancel          …and withdraws it before the job ran
  *   platform_updates.record_trigger  the admin notes whether it could start
  *                                    the upgrader job
@@ -287,6 +289,90 @@ export const platformUpdatesRequestOp = defineOperation({
   },
 });
 
+/**
+ * The operator's way to queue a release (#818): `cms-provision
+ * request-update`, which reaches the admin through its identity proxy as
+ * caelo-mcp and signs with the install's internal secret
+ * (/api/internal/platform-update) — the same gate as `owner-reset`, which
+ * only someone holding the install's cloud project passes. It exists so
+ * the release workflow's real-GCP upgrader smoke test can drive the
+ * upgrader job end to end, and so an operator can install a release
+ * candidate, which Settings → Updates never offers (the release check
+ * follows GitHub's newest stable release).
+ *
+ * Unlike the Owner's request it takes any release newer than this one,
+ * pre-releases included; the upgrader job still decides from the signed
+ * manifest (signature, downgrade, minFromVersion, infrastructure contract).
+ */
+export const platformUpdatesOperatorRequestOp = defineOperation({
+  name: "platform_updates.operator_request",
+  // Why system-only: only the internal endpoint calls it, after IAP and the
+  // internal-secret token; installing a release is a deployment, locked
+  // from the AI (CLAUDE.md §2, #696 decision 3), and an Owner in the admin
+  // uses platform_updates.request with their password instead.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      targetVersion: releaseVersionSchema,
+      /** Who asked, for the timeline and the audit row (self-asserted by the CLI). */
+      source: z.string().min(1).max(400),
+    })
+    .strict(),
+  output: z.object({ requestId: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const op = "platform_updates.operator_request";
+    const refuse = async (message: string) => {
+      await recordAuditFromCtx(tx, ctx, {
+        operation: op,
+        input,
+        succeeded: false,
+        resultSummary: message.slice(0, 200),
+      });
+      return handlerError(op, message);
+    };
+    if (!isNewerVersion(input.targetVersion, CAELO_VERSION)) {
+      return refuse(
+        `This install already runs ${CAELO_VERSION}; ${input.targetVersion} is not newer.`,
+      );
+    }
+    await endStaleRuns(tx);
+    const active = await readRequests(tx, sql`r.status IN ('pending', 'running')`, 1);
+    if (active[0]) {
+      return refuse(
+        `An update to ${active[0].targetVersion} is already ${active[0].status === "running" ? "being installed" : "waiting to start"} (request ${active[0].id}). Wait for it to finish.`,
+      );
+    }
+    // The requester is the system actor: the operator is not a user of
+    // this install (a manual request must name an actor, migration 0267).
+    // The timeline line and the audit row name who asked.
+    const inserted = (await tx.execute(sql`
+      INSERT INTO platform_update_requests (target_version, from_version, trigger, requested_by)
+      VALUES (${input.targetVersion}, ${CAELO_VERSION}, 'manual', ${ctx.actorId}::uuid)
+      RETURNING id::text AS id
+    `)) as unknown as { id: string }[];
+    const requestId = inserted[0]?.id as string;
+    await appendEvent(
+      tx,
+      requestId,
+      "queued",
+      "info",
+      `Update to ${input.targetVersion} requested by the install's operator (${input.source}).`,
+    );
+    await recordAuditFromCtx(tx, ctx, {
+      operation: op,
+      input,
+      succeeded: true,
+      entityId: requestId,
+      resultSummary: `requested ${CAELO_VERSION} → ${input.targetVersion} by ${input.source}`.slice(
+        0,
+        300,
+      ),
+    });
+    return ok({ requestId });
+  },
+});
+
 export const platformUpdatesCancelOp = defineOperation({
   name: "platform_updates.cancel",
   // Why human-only: withdraws the Owner's own deployment request (same gate
@@ -352,8 +438,12 @@ export const platformUpdatesRecordTriggerOp = defineOperation({
   output: z.object({ recorded: z.literal(true) }),
   handler: async (ctx, input, tx) => {
     const op = "platform_updates.record_trigger";
+    // The system records automatic requests (the scheduler) and its own
+    // manual ones (#818, platform_updates.operator_request).
     const mine =
-      ctx.actorKind === "system" ? sql`trigger = 'auto'` : sql`requested_by = ${ctx.actorId}::uuid`;
+      ctx.actorKind === "system"
+        ? sql`(trigger = 'auto' OR requested_by = ${ctx.actorId}::uuid)`
+        : sql`requested_by = ${ctx.actorId}::uuid`;
     // Only for the requester's own request, and only while it has not
     // moved on: a retried or late call must not add a contradicting line to
     // a request the job claimed, finished or the Owner cancelled.

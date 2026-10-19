@@ -405,6 +405,92 @@ describe("platform_updates.request rules", () => {
   });
 });
 
+describe("platform_updates.operator_request (#818)", () => {
+  const SOURCE = "cms-provision request-update by gcloud account op@example.com (self-asserted)";
+
+  it("is system-only: the AI and every human (the Owner included) are refused", async () => {
+    for (const ctx of [AI, owner, editor]) {
+      const r = await run(ctx, "platform_updates.operator_request", {
+        targetVersion: "99.2.0-rc.1",
+        source: SOURCE,
+      });
+      expect(r.ok === false && r.error.kind).toBe("ActorScopeRejected");
+    }
+  });
+
+  it("queues any newer release, a pre-release included, as the system with the operator named", async () => {
+    // Not the release check's newest: a release candidate the page never offers.
+    const { requestId } = await okValue<{ requestId: string }>(
+      SYSTEM,
+      "platform_updates.operator_request",
+      { targetVersion: "99.2.0-rc.1", source: SOURCE },
+    );
+    const got = await okValue<{
+      request: { status: string; trigger: string; requestedBy: string | null };
+      events: { phase: string; message: string }[];
+    }>(SYSTEM, "platform_updates.get", { requestId });
+    expect(got.request).toMatchObject({ status: "pending", trigger: "manual", requestedBy: null });
+    expect(got.events[0]?.phase).toBe("queued");
+    expect(got.events[0]?.message).toContain("op@example.com");
+    const audit = await admin(
+      (tx) =>
+        tx`SELECT succeeded, result_summary FROM audit_events
+             WHERE operation = 'platform_updates.operator_request' AND entity_id = ${requestId}::uuid`,
+    );
+    expect((audit as unknown as { succeeded: boolean; result_summary: string }[])[0]).toMatchObject(
+      { succeeded: true },
+    );
+  });
+
+  it("refuses a release that is not newer, and a second one while one is active", async () => {
+    const old = await run(SYSTEM, "platform_updates.operator_request", {
+      targetVersion: "0.0.1",
+      source: SOURCE,
+    });
+    expect(message(old)).toContain("is not newer");
+    await okValue(SYSTEM, "platform_updates.operator_request", {
+      targetVersion: "99.2.0",
+      source: SOURCE,
+    });
+    const second = await run(SYSTEM, "platform_updates.operator_request", {
+      targetVersion: "99.3.0",
+      source: SOURCE,
+    });
+    expect(message(second)).toContain("already waiting to start");
+    // The Owner's request is blocked by it too: one request at a time.
+    await stepUp(owner, ownerSession);
+    const owners = await run(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+    });
+    expect(message(owners)).toContain("already waiting to start");
+  });
+
+  it("the system records the job start of the operator's request, never of an Owner's", async () => {
+    const { requestId } = await okValue<{ requestId: string }>(
+      SYSTEM,
+      "platform_updates.operator_request",
+      { targetVersion: "99.2.0", source: SOURCE },
+    );
+    await okValue(SYSTEM, "platform_updates.record_trigger", {
+      requestId,
+      outcome: { started: true, execution: "caelo-production-upgrader-abc" },
+    });
+    await admin((tx) => tx`DELETE FROM platform_update_requests`);
+
+    await stepUp(owner, ownerSession);
+    const owned = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+    });
+    const r = await run(SYSTEM, "platform_updates.record_trigger", {
+      requestId: owned.requestId,
+      outcome: { started: true, execution: "x" },
+    });
+    expect(message(r)).toContain("No such update request of yours");
+  });
+});
+
 describe("platform_update_policy", () => {
   const policy = {
     mode: "auto",
