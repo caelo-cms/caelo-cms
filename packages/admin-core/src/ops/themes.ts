@@ -57,6 +57,7 @@ import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { emitSnapshot, type SnapshotOpKind } from "../snapshots/index.js";
 import type { ThemeState } from "../snapshots/state.js";
+import { ensureFaviconRendition } from "./media_favicon.js";
 import {
   applyFontAxisOverrides,
   fontAxesInput,
@@ -749,8 +750,8 @@ export const setThemeAssetOp = defineOperation({
     // dangling FK would silently render a broken image).
     if (input.mediaId) {
       const found = (await tx.execute(sql`
-        SELECT mime FROM media_assets WHERE id = ${input.mediaId}::uuid AND deleted_at IS NULL LIMIT 1
-      `)) as unknown as Array<{ mime: string }>;
+        SELECT mime, sha256 FROM media_assets WHERE id = ${input.mediaId}::uuid AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as Array<{ mime: string; sha256: string }>;
       const media = found[0];
       if (!media) {
         return err({
@@ -767,6 +768,20 @@ export const setThemeAssetOp = defineOperation({
           operation: "themes.set_asset",
           message: `media asset ${input.mediaId} is ${media.mime}, not an image — the favicon slot needs an image (ICO, PNG or SVG); pick an image row from find_media`,
         });
+      }
+      // A raster favicon ships as its small PNG rendition, never the
+      // original (see ops/media_favicon.ts) — create it now, so every
+      // render after this bind can link it.
+      if (input.slot === "favicon") {
+        try {
+          await ensureFaviconRendition(tx, { id: input.mediaId, ...media });
+        } catch (e) {
+          return err({
+            kind: "HandlerError",
+            operation: "themes.set_asset",
+            message: `media asset ${input.mediaId} could not be turned into a favicon (${(e as Error).message.slice(0, 300)}) — pick another image from find_media, or upload an .ico / .svg favicon`,
+          });
+        }
       }
     }
 

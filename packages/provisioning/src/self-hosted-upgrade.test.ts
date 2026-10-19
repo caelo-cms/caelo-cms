@@ -19,6 +19,7 @@ import {
   readRelease,
   recordRelease,
 } from "./self-hosted-release.js";
+import type { ConvergeOutcome } from "./self-hosted-roles.js";
 import {
   composePath,
   legacyComposePath,
@@ -121,11 +122,15 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-function deps(runner: HostRunner) {
+function deps(runner: HostRunner & { calls: string[] }, roles: ConvergeOutcome = { ok: true }) {
   return {
     caeloDir: dir,
     runner,
     renderCompose: render,
+    convergeRoles: async () => {
+      runner.calls.push("converge roles");
+      return roles;
+    },
     log,
     fetchImpl: registry,
     sleep: async () => {},
@@ -151,6 +156,7 @@ describe("upgradeSelfHosted", () => {
       "pull",
       "migrate admin",
       "migrate public",
+      "converge roles",
       "up caelo-admin",
       "health admin",
       "up caelo-gateway",
@@ -267,6 +273,27 @@ describe("upgradeSelfHosted", () => {
     expect(r).toMatchObject({ ok: false, stage: "migrate", previousRunning: true });
     expect(steps(runner.calls).some((s) => s.startsWith("up "))).toBe(false);
     expect(readFileSync(composePath(dir), "utf8")).toBe(render(OLD));
+  });
+
+  it("converges the database roles on every upgrade, after the migrations (#635: drops gateway_role)", async () => {
+    const runner = fakeRunner();
+    expect((await upgradeSelfHosted({ version: "0.11.0" }, deps(runner))).ok).toBe(true);
+    const s = steps(runner.calls);
+    expect(s.indexOf("converge roles")).toBeGreaterThan(s.indexOf("migrate public"));
+    expect(s.indexOf("converge roles")).toBeLessThan(s.indexOf("up caelo-admin"));
+  });
+
+  it("restores the Compose file and restarts nothing when the role convergence fails", async () => {
+    const runner = fakeRunner();
+    const r = await upgradeSelfHosted(
+      { version: "0.11.0" },
+      deps(runner, { ok: false, reachable: true, error: "role is busy" }),
+    );
+    expect(r).toMatchObject({ ok: false, stage: "roles", previousRunning: true });
+    if (!r.ok) expect(r.error).toContain("role is busy");
+    expect(steps(runner.calls).some((x) => x.startsWith("up "))).toBe(false);
+    expect(readFileSync(composePath(dir), "utf8")).toBe(render(OLD));
+    expect(readRelease(dir)?.version).toBe("0.10.0");
   });
 
   it("rolls back to the previous images when the gateway fails its health check", async () => {

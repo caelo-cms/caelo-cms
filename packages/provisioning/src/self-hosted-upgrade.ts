@@ -13,9 +13,15 @@
  *      the same `migrate.ts` entrypoint the GCP migrate job runs) while the
  *      old containers keep serving — migrations are expand-only, so the
  *      running release works on the new schema;
- *   5. recreate the admin, health-check it (`/_caelo/health`, which proves
+ *   5. converge the database roles (the same script `cms-provision up`
+ *      runs): bootstrap.sh only runs on the data volume's first start, so a
+ *      role a release retires — #635's gateway_role — is dropped here, on
+ *      every existing install. After the migrations, because the runner
+ *      refuses an install that skipped the release the old role's last user
+ *      was retired in (run-order.ts): past it, nothing running uses it;
+ *   6. recreate the admin, health-check it (`/_caelo/health`, which proves
  *      the DB pool and roles); then the gateway (`/healthz`);
- *   6. record the release in `.caelo/release.json`.
+ *   7. record the release in `.caelo/release.json`.
  * Any failure after step 3 puts the previous Compose file back; once a
  * container was recreated the previous images are started again and
  * health-checked (rollback). The database is never restored automatically:
@@ -52,6 +58,7 @@ import {
   releaseImages,
   resolveVerifiedRelease,
 } from "./self-hosted-release.js";
+import type { ConvergeOutcome } from "./self-hosted-roles.js";
 import { fetchLatestReleaseTag, RELEASE_SERVICES, releaseTag } from "./upgrade/release-images.js";
 
 /** The Compose service names of the two Caelo services. */
@@ -78,6 +85,11 @@ export interface SelfHostedUpgradeDeps {
   /** Renders the Compose file for `images` from the install's config (secrets included). */
   readonly renderCompose: (images: ReleaseImages) => string;
   readonly log: UpgradeLog;
+  /**
+   * Converges the database roles as the Postgres superuser
+   * (`convergeSelfHostedRoles`); drops roles a release retired (#635).
+   */
+  readonly convergeRoles: () => Promise<ConvergeOutcome>;
   readonly fetchImpl?: typeof fetch;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => Date;
@@ -116,6 +128,7 @@ type UpgradeStage =
   | "backup"
   | "pull"
   | "migrate"
+  | "roles"
   | "roll-admin"
   | "roll-gateway";
 
@@ -321,7 +334,19 @@ export async function upgradeSelfHosted(
     );
   }
 
-  // 5. Roll admin, then gateway, each health-checked.
+  // 5. Database roles: drops what this release retired (#635 gateway_role).
+  log.step("Converging the database roles");
+  const roles = await deps.convergeRoles();
+  if (!roles.ok) {
+    restoreCompose(file, previousCompose);
+    return fail(
+      "roles",
+      `Could not converge the database roles: ${roles.error}\nThe previous release keeps running; the migrations are applied (expand-only). Fix the cause and re-run the upgrade. Database backup: ${backup.dir}`,
+      true,
+    );
+  }
+
+  // 6. Roll admin, then gateway, each health-checked.
   for (const service of RELEASE_SERVICES) {
     const stage = service === "admin" ? "roll-admin" : "roll-gateway";
     log.phase?.("roll");
@@ -353,7 +378,7 @@ export async function upgradeSelfHosted(
     log.info(`${service} healthy ✓`);
   }
 
-  // 6. Record.
+  // 7. Record.
   log.phase?.("record");
   recordRelease(
     caeloDir,

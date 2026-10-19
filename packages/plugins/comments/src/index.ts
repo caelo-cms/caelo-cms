@@ -15,8 +15,9 @@
 import {
   attachCaptchaProof,
   escapeHtml,
+  honeypotBodyField,
   honeypotFieldHtml,
-  isHoneypotTripped,
+  isHoneypotArgTripped,
   KIT_CSS,
   postPluginJson,
   readBakeTimestamp,
@@ -191,6 +192,11 @@ export default definePlugin<PluginContextTier1>({
   operations: {
     submit: async (ctx, args) => {
       const input = args as SubmitInput;
+      // A filled honeypot gets the same answer as a real submission, so
+      // the bot learns nothing — and nothing reaches the moderation inbox.
+      if (isHoneypotArgTripped(args)) {
+        return { commentId: "00000000-0000-0000-0000-000000000000", status: "pending" as const };
+      }
       if (!input.content.trim()) throw new Error("submit: content empty");
       if (!input.authorName.trim()) throw new Error("submit: authorName required");
       const ok = await ctx.captcha.requireProof(input.captchaToken ?? null);
@@ -336,7 +342,7 @@ export default definePlugin<PluginContextTier1>({
             `ai_moderate: verdict "${input.verdict}" is not one of APPROVE, REJECT, SPAM — call ai_moderate_comment again with exactly one of them`,
           );
         }
-        await ctx.query.update("comments", input.commentId, { status: decision });
+        await archiveAndDeletePublic(ctx, input.commentId, decision);
         return { commentId: input.commentId, status: decision, verdict };
       }
 
@@ -371,7 +377,7 @@ export default definePlugin<PluginContextTier1>({
       if (!decision) {
         return { commentId: input.commentId, status: "pending" as const, verdict };
       }
-      await ctx.query.update("comments", input.commentId, { status: decision });
+      await archiveAndDeletePublic(ctx, input.commentId, decision);
       return { commentId: input.commentId, status: decision, verdict };
     },
   },
@@ -524,14 +530,8 @@ export default definePlugin<PluginContextTier1>({
       });
       return r.comments
         .map((c) => {
-          const safeAuthor = c.authorName
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
-          const safeContent = c.content
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
+          const safeAuthor = escapeHtml(c.authorName);
+          const safeContent = escapeHtml(c.content);
           return `<article class="comment"><header>${safeAuthor} · ${new Date(c.submittedAt).toISOString()}</header><div class="body">${safeContent}</div></article>`;
         })
         .join("");
@@ -623,11 +623,6 @@ export default definePlugin<PluginContextTier1>({
         ev.preventDefault();
         setStatus(status, "clear");
         const fd = new FormData(form);
-        if (isHoneypotTripped(fd)) {
-          setStatus(status, "ok", "Thanks — pending moderation.");
-          form.reset();
-          return;
-        }
         try {
           // P13 — solve PoW captcha (if enabled by /settings/gateway).
           const captcha = await attachCaptchaProof().catch(() => null);
@@ -635,6 +630,8 @@ export default definePlugin<PluginContextTier1>({
             pageId,
             authorName: fd.get("authorName"),
             content: fd.get("content"),
+            // The honeypot rides along; `submit` judges it server-side.
+            ...honeypotBodyField(fd),
             captchaToken: "dev",
             ...(captcha ? { _caelo_captcha: captcha } : {}),
           });

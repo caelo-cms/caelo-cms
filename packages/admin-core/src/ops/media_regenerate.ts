@@ -227,7 +227,7 @@ export const regenerateMediaVariantsOp = defineOperation({
 });
 
 /** The `orig` row's storage key — the bytes every regeneration starts from. */
-async function origStorageKey(tx: TransactionRunner, assetId: string): Promise<string> {
+export async function origStorageKey(tx: TransactionRunner, assetId: string): Promise<string> {
   const rows = (await tx.execute(sql`
     SELECT storage_key FROM media_variants
     WHERE asset_id = ${assetId}::uuid AND variant = 'orig' LIMIT 1

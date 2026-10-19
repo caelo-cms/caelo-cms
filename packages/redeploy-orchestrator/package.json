@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/redeploy-orchestrator",
-  "version": "0.10.52",
+  "version": "0.10.53",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
@@ -19,6 +19,9 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@caelo-cms/admin-core": "workspace:*"
+    "@caelo-cms/admin-core": "workspace:*",
+    "@caelo-cms/plugin-host": "workspace:*",
+    "@caelo-cms/plugin-ratings": "workspace:*",
+    "@caelo-cms/plugin-sandbox": "workspace:*"
   }
 }

@@ -103,8 +103,11 @@ PROJECT="$(dc config --format json | bun -e 'console.log(JSON.parse(await Bun.st
 [ "$(docker ps --filter "label=com.docker.compose.project=$PROJECT" -q | wc -l | tr -d ' ')" = 4 ] ||
   fail "the containers are not in the install's own Compose project $PROJECT"
 echo "ok  compose project $PROJECT"
-[ "$(psql_admin "select count(*) from pg_roles where rolname in ('admin_role','public_role','gateway_role')")" = 3 ] ||
+[ "$(psql_admin "select count(*) from pg_roles where rolname in ('admin_role','public_role')")" = 2 ] ||
   fail "bootstrap.sh did not create the application roles"
+# #635 — the gateway has no cms_admin login: the former gateway_role is gone.
+[ "$(psql_admin "select count(*) from pg_roles where rolname = 'gateway_role'")" = 0 ] ||
+  fail "the former gateway_role still exists"
 echo "ok  roles"
 
 echo "==> backup / change / restore"

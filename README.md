@@ -33,7 +33,7 @@ Everything the AI builds comes from the same parts, so the site stays consistent
 - Pages are assembled from layouts, templates and modules, styled by one theme. A page never holds raw HTML of its own.
 - Plugins for languages, cookie consent, forms, newsletter, comments, ratings and visitor login ship with Caelo.
 - SEO is structured fields (meta, canonical, Open Graph, JSON-LD, sitemap), not hand-written `<head>` markup. Moving a page creates its redirect.
-- Staged builds get a Lighthouse quality check; a failed check keeps the site from going live until it is fixed or explicitly accepted.
+- Staged builds get a quality check: Lighthouse, plus a structure check that catches the same component pasted as free HTML on several pages instead of being one module. A failed check keeps the site from going live until it is fixed or explicitly accepted.
 
 ### You decide
 
@@ -82,8 +82,8 @@ No laptop needed: install into your own Google Cloud project from Cloud Shell.
 
 | | |
 |---|---|
-| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.52&cloudshell_tutorial=gcp.md) |
-| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.52&cloudshell_tutorial=gcp-firebase.md) |
+| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.53&cloudshell_tutorial=gcp.md) |
+| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.53&cloudshell_tutorial=gcp-firebase.md) |
 
 Cloud Shell opens a short tutorial: sign in, run `./run.sh`, answer a few questions, confirm the monthly cost. The install then runs as a job in your project, so closing the tab doesn't stop it, and clicking the button again picks it up. The links are pinned to this release; `run.sh` verifies the provisioner's npm provenance and the release's signed manifest before anything runs ([how](https://github.com/caelo-cms/install#what-happens-when-you-click)).
 
@@ -106,6 +106,17 @@ After any install, open the setup link it prints, create the Owner account and p
 
 Either way the agent works in the draft, and publishing stays with a human. Mint a token at `/settings/mcp` on your install; the page shows the exact `claude mcp add` command for it.
 
+With Claude Code, Power-MCP looks like this:
+
+```bash
+claude mcp add caelo-admin \
+  --env CAELO_ADMIN_URL=https://admin.example.com \
+  --env CAELO_MCP_TOKEN=mcp_<token> \
+  -- bunx --package @caelo-cms/mcp-server@<your Caelo version> caelo-admin-mcp
+```
+
+Then ask it for an outcome, for example *"Add a pricing page in our design system and stage it for review."* Details: [MCP and Power-MCP docs](https://caelo-cms.com/docs/mcp/).
+
 ## Documentation
 
 User docs (install, editing, plugins, MCP, security) live at **[caelo-cms.com/docs](https://caelo-cms.com/docs/)**, built in Caelo itself.
@@ -118,7 +129,7 @@ The roadmap lives on the GitHub Project board: **[Caelo Roadmap](https://github.
 
 ## Local development
 
-Prerequisites: [Bun](https://bun.sh/) 1.3.13 or newer, Docker with Docker Compose, [Deno](https://deno.com) 2 or newer (for the plugin sandbox), and an API key for an AI provider.
+Prerequisites: [Bun](https://bun.sh/) 1.4.2 or newer (the version pinned in `packageManager` and CI; 1.3.x breaks the plugin-sandbox bundling the tests rely on), Docker with Docker Compose, [Deno](https://deno.com) 2 or newer (for the plugin sandbox), and an API key for an AI provider.
 
 ```bash
 git clone https://github.com/caelo-cms/caelo-cms.git
@@ -130,6 +141,8 @@ bun run db:migrate                    # cms_admin + cms_public migrations
 bun run --filter @caelo-cms/admin seed:dev
 bun run --filter @caelo-cms/admin dev     # admin at http://localhost:5173
 ```
+
+All configuration lives in the root `.env`; the admin's `dev` and `seed:dev` scripts load it from there, so you can also run them from `apps/admin`. Ports, the staging URL and the importer allowlist for local migration tests are in the optional block at the end of `.env.example`; see [`CONTRIBUTING.md`](./CONTRIBUTING.md#local-development-loop) for when you need them.
 
 Verify before opening a PR:
 
@@ -152,4 +165,4 @@ Report vulnerabilities via **[GitHub Private Vulnerability Reporting](https://gi
 
 ## Contributing
 
-See **[`CONTRIBUTING.md`](./CONTRIBUTING.md)**. Code of Conduct: the [Contributor Covenant 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).
+See **[`CONTRIBUTING.md`](./CONTRIBUTING.md)**. New here? Start with an issue labeled [`good first issue`](https://github.com/caelo-cms/caelo-cms/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22). Questions, ideas and show-and-tell go to [Discussions](https://github.com/caelo-cms/caelo-cms/discussions). Code of Conduct: the [Contributor Covenant 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/).

@@ -4,7 +4,19 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import type { TransactionRunner } from "./operation.js";
 
-const SENSITIVE_KEYS = new Set(["password", "token", "csrfToken", "passwordHash"]);
+const SENSITIVE_KEYS = new Set([
+  "password",
+  "newPassword",
+  "currentPassword",
+  "token",
+  "csrfToken",
+  "passwordHash",
+  "secret",
+  "apiKey",
+  "clientSecret",
+]);
+const SENSITIVE_KEY_RE =
+  /pass(word|wd|phrase)?|secret|token|api[-_]?key|credential|private[-_]?key/i;
 
 function redact(value: unknown): unknown {
   if (value === null || value === undefined) return value;
@@ -12,14 +24,15 @@ function redact(value: unknown): unknown {
   if (typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = SENSITIVE_KEYS.has(k) ? "<redacted>" : redact(v);
+      if (k === "__proto__" || k === "constructor" || k === "prototype") continue;
+      out[k] = SENSITIVE_KEYS.has(k) || SENSITIVE_KEY_RE.test(k) ? "<redacted>" : redact(v);
     }
     return out;
   }
   return value;
 }
 
-async function canonicalHash(input: unknown): Promise<string> {
+export async function canonicalHash(input: unknown): Promise<string> {
   const canonical = JSON.stringify(redact(input), (_key, val) => {
     if (val && typeof val === "object" && !Array.isArray(val)) {
       const sorted: Record<string, unknown> = {};

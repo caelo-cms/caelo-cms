@@ -205,11 +205,6 @@ function handlerError(operation: string, message: string) {
   return err({ kind: "HandlerError" as const, operation, message });
 }
 
-/** Wake the gateway's settings LISTEN so the change applies immediately. */
-async function notifyGateway(tx: Tx): Promise<void> {
-  await tx.execute(sql`SELECT pg_notify('caelo_gateway_settings', 'staging_access')`);
-}
-
 /** What `staging_access.get` returns. */
 export const stagingAccessOutput = z.object({
   /** `https://<staging host>`, or null when this provider has no staging domain yet or no host is set. */
@@ -358,7 +353,6 @@ export const setStagingAccessOp = defineOperation({
         updated_at         = now()
       WHERE id = 1
     `);
-    await notifyGateway(tx);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -405,7 +399,6 @@ export const rotateStagingCredentialsOp = defineOperation({
         updated_at       = now()
       WHERE id = 1
     `);
-    await notifyGateway(tx);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -488,7 +481,6 @@ export async function setStagingOrigin(
       updated_at    = now()
     WHERE id = 1
   `);
-  await notifyGateway(tx);
 }
 
 // ─── the staging host setting ────────────────────────────────────────
@@ -532,7 +524,6 @@ export const seedStagingHostOp = defineOperation({
       RETURNING id
     `)) as unknown as { id: number }[];
     if (updated.length > 0) {
-      await notifyGateway(tx);
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
@@ -567,7 +558,6 @@ export const setStagingHostOp = defineOperation({
     await tx.execute(sql`
       UPDATE staging_access SET staging_host = ${checked.host}, updated_at = now() WHERE id = 1
     `);
-    await notifyGateway(tx);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -738,7 +728,6 @@ export const provisionStagingOp = defineOperation({
         updated_at         = now()
       WHERE id = 1
     `);
-    await notifyGateway(tx);
     const hostChanged = host !== previousHost;
     await recordAudit(tx, {
       actorId: ctx.actorId,

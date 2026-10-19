@@ -153,6 +153,13 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
   },
 };
 
+/** #820 — the field values a build_page call writes (inline + shared content). */
+export function buildPageValues(input: BuildPageInput): Record<string, unknown>[] {
+  return input.modules.flatMap((m) =>
+    m.content !== undefined && "values" in m.content ? [m.content.values] : [],
+  );
+}
+
 export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
   name: "build_page",
   description:
@@ -269,7 +276,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
         : "";
 
     // css-var scan once over ALL freshly-authored CSS; design-guard per
-    // minted module (pattern-reuse needs the displayName). Reuses the
+    // minted module (pattern-reuse compares its html). Reuses the
     // exact helpers add_module_to_page applies — no forks.
     const allCss = modules
       .filter((m) => m.moduleId === undefined)
@@ -278,13 +285,19 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       .join("\n");
     const cssWarning = await cssVarWarningSuffix(ctx, toolCtx, allCss);
     const guardFindings: string[] = [];
+    // Every module this call minted is in the catalog now; none may
+    // match itself (or a sibling minted from the same markup — `$ref`
+    // re-placement is the same-call reuse path, the check catches the rest).
+    const mintedIds = [
+      ...value.placements.filter((p) => p.minted).map((p) => p.moduleId),
+      ...value.detached.map((d) => d.moduleId),
+    ];
     for (const [i, m] of modules.entries()) {
       if (m.moduleId !== undefined) continue;
       const suffix = await designGuardSuffix(ctx, toolCtx, {
         css: m.css,
-        displayName: m.displayName,
-        kind: m.kind,
-        type: m.type,
+        html: m.html,
+        excludeModuleIds: mintedIds,
       });
       if (suffix.length > 0) guardFindings.push(`modules[${i}]:${suffix}`);
     }

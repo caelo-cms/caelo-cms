@@ -101,7 +101,12 @@ export const editModuleTool: ToolDefinitionWithHandler<
       // issue #166 / #430 — static consistency findings against the active
       // theme + the site's module rows (checked on the css as written,
       // i.e. post-binding).
-      const guard = await designGuardSuffix(ctx, toolCtx, { css: effectiveCss });
+      const guard = await designGuardSuffix(ctx, toolCtx, {
+        css: effectiveCss,
+        ...(input.html !== undefined
+          ? { html: input.html, excludeModuleIds: [input.moduleId] }
+          : {}),
+      });
       // v0.12.2 — surface the extractor's inferred fields when present
       // so the AI's next turn sees the auto-minted names verbatim.
       const value = result.value as {

@@ -36,7 +36,13 @@
     DialogTitle,
   } from "#lib/components/ui/dialog/index.js";
   import { postQualityAction, qualityStatusFor } from "./quality-status.svelte.js";
-  import { formResultError, publishButtonState } from "./stage-deploy-state.js";
+  import {
+    formResultError,
+    offersStageAgain,
+    publishButtonState,
+    publishErrorNextStep,
+    stageToolbarMode,
+  } from "./stage-deploy-state.js";
 
   interface PendingEntity {
     kind: string;
@@ -147,6 +153,18 @@
    * attempt; immune to toast dedup.
    */
   let publishError = $state<string | null>(null);
+  /** #835 — the next step under a parity refusal, kept out of the truncation. */
+  const publishNextStep = $derived(publishErrorNextStep(publishError));
+  /** #835 — inline Stage again failure, same persistence rule as `stageError`. */
+  let restageError = $state<string | null>(null);
+  const toolbarMode = $derived(
+    stageToolbarMode({
+      sessionPublished,
+      branchChangeCount,
+      hasStagedBuild: lastStaged !== null,
+      sessionLastStagedAt,
+    }),
+  );
   let popoverOpen = $state(false);
   let popoverRef = $state<HTMLDivElement | null>(null);
   let pillRef = $state<HTMLButtonElement | null>(null);
@@ -296,12 +314,65 @@
       Publish failed: {publishError}
     </span>
   {/if}
+  {#if publishNextStep}
+    <span class="text-xs font-medium text-foreground" data-testid="publish-error-next-step">
+      {publishNextStep}
+    </span>
+  {/if}
+{/snippet}
+
+<!-- #835 — Stage again without pending edits: rebuilds staging from the
+     current main. The one re-Stage control of the promote-only toolbar,
+     whatever the quality gate says — after a parity refusal, a Caelo
+     upgrade or fixes written live, it is the operator's only way to a
+     fresh Stage. Secondary (outline): Publish live stays the decision. -->
+{#snippet stageAgainForm()}
+  <form
+    method="post"
+    action="?/stageAndDeployStaging"
+    use:enhance={() => {
+      staging = true;
+      restageError = null;
+      return async ({ result, update }) => {
+        try {
+          await update({ reset: false });
+        } finally {
+          staging = false;
+        }
+        restageError = formResultError(result);
+        // A fresh Stage replaces what a refused Publish live compared against.
+        if (restageError === null) publishError = null;
+        void quality.refresh();
+      };
+    }}
+    class="contents"
+  >
+    <input type="hidden" name="chatSessionId" value={chatSessionId} />
+    {#if activePageId}<input type="hidden" name="pageId" value={activePageId} />{/if}
+    <input type="hidden" name="_csrf" value={csrfToken} />
+    <Button
+      type="submit"
+      size="sm"
+      variant="outline"
+      disabled={staging || publishing}
+      title="Rebuild staging from the current site, then check it before Publish live"
+      data-testid="restage-btn"
+    >
+      {staging ? "Staging…" : "Stage again"}
+    </Button>
+  </form>
+  {#if restageError}
+    <span role="alert" class="text-xs font-medium text-red-700 dark:text-red-300" data-testid="restage-error">
+      Stage failed: {restageError}
+    </span>
+  {/if}
 {/snippet}
 
 <!-- #553 — what to do when the quality gate keeps Publish live closed:
      retry a failed / missing check, publish anyway over a FAILED check
-     (an explicit, recorded human decision), or re-Stage after fixes that
-     do not show as pending changes (SEO texts are written live). -->
+     (an explicit, recorded human decision). Re-Staging after fixes that do
+     not show as pending changes (SEO texts are written live) is the
+     promote-only toolbar's Stage again (#835). -->
 {#snippet qualityGateControls()}
   {#if gate && !gate.open}
     <span class="inline-flex items-center gap-2" data-testid="quality-gate-status" data-state={gate.state}>
@@ -330,33 +401,6 @@
         >
           Publish anyway…
         </Button>
-      {/if}
-      {#if gate.state === "problems" && branchChangeCount === 0}
-        <form
-          method="post"
-          action="?/stageAndDeployStaging"
-          use:enhance={() => {
-            staging = true;
-            qualityActionError = null;
-            return async ({ result, update }) => {
-              try {
-                await update({ reset: false });
-              } finally {
-                staging = false;
-              }
-              qualityActionError = formResultError(result);
-              void quality.refresh();
-            };
-          }}
-          class="contents"
-        >
-          <input type="hidden" name="chatSessionId" value={chatSessionId} />
-          {#if activePageId}<input type="hidden" name="pageId" value={activePageId} />{/if}
-          <input type="hidden" name="_csrf" value={csrfToken} />
-          <Button type="submit" size="sm" variant="outline" disabled={staging} data-testid="quality-restage-btn">
-            {staging ? "Staging…" : "Stage again"}
-          </Button>
-        </form>
       {/if}
       {#if qualityActionError}
         <span role="alert" class="text-xs font-medium text-red-700 dark:text-red-300" data-testid="quality-action-error">
@@ -402,12 +446,12 @@
   {/if}
 {/snippet}
 
-{#if sessionPublished}
+{#if toolbarMode === "published"}
   <span class="text-xs text-muted-foreground italic">Chat published</span>
-{:else if branchChangeCount === 0 && !lastStaged && !sessionLastStagedAt}
+{:else if toolbarMode === "fresh"}
   <!-- v0.10.9 — truly fresh chat: no edits AND never Staged. -->
   <span class="text-xs text-muted-foreground">No pending changes</span>
-{:else if branchChangeCount === 0}
+{:else if toolbarMode === "promote-only"}
   <!-- v0.10.10 — chat has no fresh pending edits but staging holds
        a build the operator hasn't promoted yet. Direct Publish-live
        submit, no modal. v0.10.12 — adds the persistent staging preview
@@ -415,6 +459,7 @@
   <div class="inline-flex items-center gap-3" data-testid="stage-deploy">
     {@render stagingStatus()}
     {@render publishLiveForm("promote-only-btn")}
+    {#if offersStageAgain(toolbarMode)}{@render stageAgainForm()}{/if}
     {@render qualityGateControls()}
   </div>
 {:else}

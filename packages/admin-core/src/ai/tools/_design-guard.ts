@@ -28,8 +28,10 @@
  *
  *   1. literal-duplicates-token: css carries literals equal to theme
  *      token values → point at var(--…) / bindThemeLiterals;
- *   2. pattern-reuse: the mint looks like an existing module but doesn't
- *      reuse its type → point at place mode;
+ *   2. pattern-reuse (#820): the html is structurally identical or near
+ *      to an existing module, or contains one → place / nest it instead
+ *      (_markup-guard.ts; replaced a display-name word match that never
+ *      looked at the markup and so missed every real copy);
  *   3. roles-in-play: the recorded role of each var this css actually
  *      references, so role misuse is visible in-context.
  */
@@ -42,14 +44,15 @@ import {
   listTokenRoles,
   type ThemeDocument,
 } from "@caelo-cms/shared";
+import { moduleMarkupFindings } from "./_markup-guard.js";
 import type { ToolContext } from "./dispatch.js";
 
 export interface DesignGuardInput {
   readonly css?: string;
-  /** Mint-mode metadata; omit for pure restyles. */
-  readonly displayName?: string;
-  readonly kind?: string;
-  readonly type?: string;
+  /** The module template written (mint or html edit); omit for pure restyles. */
+  readonly html?: string;
+  /** The module(s) this write created or edited — never matched against themselves. */
+  readonly excludeModuleIds?: readonly string[];
 }
 
 /** How many roles-in-play entries to replay before truncating. */
@@ -95,70 +98,14 @@ export async function designGuardSuffix(
     }
   }
 
-  // 2. pattern-reuse for mints that look like a module the site already
-  // has. Module rows are the site's real pattern inventory — they carry
-  // the display name, kind, type and description the AI wrote when it
-  // built them, so nothing has to be re-declared anywhere else.
-  if (input.displayName !== undefined) {
-    const modsRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.list", {
-      includeDeleted: false,
-    });
-    if (modsRes.ok) {
-      // `?? []` — a fake/legacy adapter answering `{}` must read as "no
-      // modules", not crash the write path. The guard is a best-effort
-      // warning surface; the write it comments on already succeeded.
-      const modules =
-        (
-          modsRes.value as {
-            modules?: { displayName: string; kind: string; type: string; description: string }[];
-          }
-        ).modules ?? [];
-      const match = findReusableModule(modules, input);
-      if (match) {
-        findings.push(
-          `this looks like the existing "${match.displayName}" module (type \`${match.type}\`` +
-            `${match.description ? `: ${truncate(match.description, 120)}` : ""}) — reuse it ` +
-            `(place mode / type: '${match.type}') unless the operator asked for a new variant`,
-        );
-      }
-    }
+  // 2. pattern-reuse: the module rows are the site's real pattern
+  // inventory, and their html is what a copy shares with them.
+  if (input.html !== undefined) {
+    findings.push(
+      ...(await moduleMarkupFindings(ctx, toolCtx, input.html, input.excludeModuleIds ?? [])),
+    );
   }
 
   if (findings.length === 0) return "";
   return ` 🎯 design-guard: ${findings.join(". ")}.`;
-}
-
-interface ModuleRow {
-  readonly displayName: string;
-  readonly kind: string;
-  readonly type: string;
-  readonly description: string;
-}
-
-/**
- * Find an existing module the mint appears to duplicate: a significant
- * word shared with its display name, and a different `type` (same type
- * IS the reuse we want, so it is not a finding). Kind must match when
- * the caller supplied one — a "hero" and a "content" band that both say
- * "features" are genuinely different things.
- */
-function findReusableModule(
-  modules: readonly ModuleRow[],
-  input: DesignGuardInput,
-): ModuleRow | undefined {
-  const haystack = `${input.displayName ?? ""} ${input.kind ?? ""}`.toLowerCase();
-  for (const m of modules) {
-    if (m.type === input.type) continue;
-    if (input.kind !== undefined && m.kind !== input.kind) continue;
-    const nameHit = m.displayName
-      .toLowerCase()
-      .split(/\s+/)
-      .some((w) => w.length >= 4 && haystack.includes(w));
-    if (nameHit) return m;
-  }
-  return undefined;
-}
-
-function truncate(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }

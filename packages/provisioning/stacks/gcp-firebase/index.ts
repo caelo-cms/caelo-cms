@@ -224,14 +224,11 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
   "tool-approval-secret": gcpSecretId(env, "tool-approval-secret"),
   "staging-gate-secret": gcpSecretId(env, "staging-gate-secret"),
   "public-role-password": gcpSecretId(env, "public-role-password"),
-  "gateway-role-password": gcpSecretId(env, "gateway-role-password"),
 };
 
 // #613 — public_role's own password (CLI-generated, stack-contract.ts
 // DATABASE_ROLE_SECRET), so the gateway, which reads it, never holds
-// admin_role's. gateway_role is not declared here: migration 0248 creates
-// it in SQL (an API-created user would join cloudsqlsuperuser) and the CLI
-// sets its password after migrations.
+// admin_role's. The gateway has no other database login (#635).
 const publicRolePassword = pulumi.secret(
   gcp.secretmanager.getSecretVersionOutput(
     { project, secret: gcpSecretId(env, "public-role-password") },
