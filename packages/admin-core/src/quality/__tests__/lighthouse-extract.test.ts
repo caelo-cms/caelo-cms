@@ -391,4 +391,30 @@ describe("measurementFromRuns", () => {
   it("refuses a page without runs", () => {
     expect(() => bestRunIndex([], [])).toThrow(/no Performance runs/);
   });
+
+  it("refuses score and finding lists of different runs", () => {
+    expect(() => bestRunIndex([100, 99], [0])).toThrow(/2 Performance score\(s\) but 1/);
+  });
+
+  it("lists an audit shared with another category once, even when the best run is Performance-only", () => {
+    // An extra run carries only the Performance category, so an audit that
+    // Performance shares with Best Practices looks Performance-only there.
+    // Its category comes from the full run, and it is listed once.
+    const withShared = (run: LhrLike): LhrLike => {
+      const categories = { ...run.categories };
+      for (const c of ["performance", "best-practices"] as const) {
+        const cat = categories[c];
+        if (cat) categories[c] = { ...cat, auditRefs: [...cat.auditRefs, { id: "shared-audit" }] };
+      }
+      return { ...run, categories };
+    };
+    const shared = audit("shared-audit", 0);
+    const full = withShared(lhr({ performance: 90, bestPractices: 92, audits: [shared] }));
+    const best = withShared(lhr({ performance: 100, perfOnly: true, audits: [shared] }));
+    const { measurement } = measurementFromRuns(full, [best]);
+    expect(measurement.scores.performance).toBe(100);
+    const found = measurement.failingAudits.filter((f) => f.id === "shared-audit");
+    expect(found).toHaveLength(1);
+    expect(found[0]?.categories).toEqual(["performance", "best-practices"]);
+  });
 });

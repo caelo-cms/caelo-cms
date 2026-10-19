@@ -271,23 +271,25 @@ export function failingAudits(lhr: LhrLike): FailingAudit[] {
  *
  * @param performanceScores - each run's 0..100 Performance score, in run order.
  * @param perfOnlyFailures - each run's count of failing Performance-only audits.
- * @throws when there is no run (an infrastructure failure, never a score).
+ * @throws when there is no run (an infrastructure failure, never a score)
+ *   or the two lists do not describe the same runs.
  */
 export function bestRunIndex(
   performanceScores: readonly number[],
   perfOnlyFailures: readonly number[],
 ): number {
   if (performanceScores.length === 0) throw new Error("bestRunIndex: no Performance runs");
+  if (perfOnlyFailures.length !== performanceScores.length) {
+    throw new Error(
+      `bestRunIndex: ${performanceScores.length} Performance score(s) but ${perfOnlyFailures.length} finding count(s); both must list every run`,
+    );
+  }
   let best = 0;
   for (let i = 1; i < performanceScores.length; i += 1) {
     const score = performanceScores[i] as number;
     const bestScore = performanceScores[best] as number;
-    if (
-      score > bestScore ||
-      (score === bestScore && (perfOnlyFailures[i] ?? 0) < (perfOnlyFailures[best] ?? 0))
-    ) {
-      best = i;
-    }
+    const fewerFindings = (perfOnlyFailures[i] as number) < (perfOnlyFailures[best] as number);
+    if (score > bestScore || (score === bestScore && fewerFindings)) best = i;
   }
   return best;
 }
@@ -368,7 +370,17 @@ export function combineRuns(runs: readonly RunMeasurement[]): {
     if (score === undefined) throw new Error(`combineRuns: run ${i + 1} has no Performance score`);
     return score;
   });
-  const isPerformanceOnly = (f: FailingAudit) => f.categories.every((c) => c === "performance");
+  // An extra run carries the Performance category alone, so an audit that
+  // Performance shares with another category looks Performance-only there.
+  // The full run knows its categories: an audit it lists under another
+  // category comes from the full run only, never twice.
+  const fromFullRun = new Set(
+    full.failingAudits
+      .filter((f) => f.categories.some((c) => c !== "performance"))
+      .map((f) => f.id),
+  );
+  const isPerformanceOnly = (f: FailingAudit) =>
+    !fromFullRun.has(f.id) && f.categories.every((c) => c === "performance");
   const perfOnlyByRun = runs.map((r) => r.failingAudits.filter(isPerformanceOnly));
   const best = bestRunIndex(
     performanceRuns,
@@ -376,7 +388,7 @@ export function combineRuns(runs: readonly RunMeasurement[]): {
   );
   const findings = [
     ...full.failingAudits.filter((f) => !isPerformanceOnly(f)),
-    ...(perfOnlyByRun[best] ?? []),
+    ...(perfOnlyByRun[best] as FailingAudit[]),
   ].sort((a, b) => a.id.localeCompare(b.id));
   const calibration = runs[best]?.cpuCalibration;
   return {
