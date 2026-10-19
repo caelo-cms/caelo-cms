@@ -139,6 +139,10 @@ function warnOnProductionEnvHookLeak(): void {
   ) {
     leaked.push("CAELO_CHAT_TEMPERATURE");
   }
+  // Ignored under production by isE2eAutoApproveEnabled (chat-runner).
+  if (process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1") {
+    leaked.push("CAELO_E2E_AUTO_APPROVE_PROPOSALS");
+  }
   if (leaked.length > 0) {
     console.warn(
       `[provider-resolver] test-only env hook(s) set under NODE_ENV=production: ${leaked.join(", ")}. These are IGNORED in production by design; unset them in this environment to silence this warning.`,

@@ -16,8 +16,8 @@ import { abortLocalAgentRuns, verifyCsrfToken } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
 import { z } from "zod";
-import { requirePermission } from "#lib/server/guards.js";
-import { getQueryContext } from "#lib/server/query.js";
+import { requirePermission } from "./guards.js";
+import { getQueryContext } from "./query.js";
 
 /** One row of the running-agents list (chat.list_agent_runs). */
 export interface AgentRunView {
@@ -36,6 +36,18 @@ export interface AgentRunView {
 
 function canManageAllChats(user: NonNullable<App.Locals["user"]>): boolean {
   return user.permissions.has("settings.write");
+}
+
+/**
+ * Stop / Allow are chat writes, so they need `content.write` — or
+ * `settings.write`, the site administration that may control every chat's
+ * agents: an administrator whose role lacks `content.write` must still be
+ * able to halt a runaway agent they can see.
+ */
+export function requireAgentControl(locals: App.Locals): NonNullable<App.Locals["user"]> {
+  const user = requirePermission(locals, "content.read");
+  if (user.permissions.has("content.write") || canManageAllChats(user)) return user;
+  throw error(403, "Missing required permission: content.write");
 }
 
 /** CSRF for JSON POSTs: the token rides in `x-csrf-token` (as on the chat stream). */
@@ -79,6 +91,7 @@ export async function cancelAgents(
   chatSessionId: string,
   runId: string | undefined,
 ): Promise<{ cancelledRunIds: string[]; stoppedExternalAgents: number; chatStopped: boolean }> {
+  requireAgentControl(locals);
   await assertChatAccess(locals, chatSessionId);
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "chat.cancel_agents", {
@@ -105,6 +118,7 @@ export async function allowExternalAgent(
   chatSessionId: string,
   runId: string,
 ): Promise<boolean> {
+  requireAgentControl(locals);
   await assertChatAccess(locals, chatSessionId);
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "chat.allow_external_agent", {
