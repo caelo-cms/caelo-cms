@@ -172,6 +172,15 @@ const FIXTURE_SCRIPT = `
                  auto_patch = false, auto_minor = false, auto_converge = false, window_start = NULL, window_end = NULL,
                  window_timezone = 'UTC', soak_hours = 24, security_soak_hours = 2, paused = false,
                  paused_reason = NULL, paused_at = NULL, paused_until = NULL, paused_by = NULL\`;
+    } else if (op === "auto-on") {
+      // The Owner chose "Install automatically" for bug fixes, an hour ago
+      // (before the scheduler's tick that auto-status writes).
+      await tx\`UPDATE platform_update_policy SET mode = 'auto', auto_patch = true,
+                 updated_at = now() - interval '1 hour'\`;
+    } else if (op === "auto-pause") {
+      // Paused after the scheduler decided (the decision stays until its next tick).
+      await tx\`UPDATE platform_update_policy SET paused = true, paused_at = now(),
+                 paused_reason = 'e2e', updated_at = now()\`;
     } else if (op === "auto-status") {
       // What the scheduler writes after a tick (platform_updates.scheduler_tick).
       await tx\`UPDATE platform_update_scheduler SET last_run_at = now(), last_version = \${process.env.E2E_LATEST},
@@ -271,7 +280,8 @@ const card = (page: Page) => page.getByTestId("update-status-card");
 /** Open one of the collapsed sections by its title. */
 async function openSection(page: Page, testid: string): Promise<void> {
   const section = page.getByTestId(testid);
-  if ((await section.getAttribute("open")) === null) await section.locator("summary").click();
+  if ((await section.getAttribute("open")) === null)
+    await section.locator(":scope > summary").click();
 }
 
 /** Exactly one primary action on the page: none of the others render in the card. */
@@ -393,6 +403,18 @@ test("in_progress: confirm with the password; the timeline replaces the card bod
   );
   await expect(timeline.locator('[data-phase="backup"]')).toContainText("Backup 1760000000000");
   await expect(page.getByTestId("cancel-update")).toHaveCount(0);
+
+  // A newer release shows up meanwhile: the heading still names the
+  // release this run installs, like its timeline does.
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "checked-ago",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: "99.1.0",
+    E2E_MINUTES: "1",
+  });
+  await page.reload();
+  await expect(card(page)).toHaveAttribute("data-state", "in_progress");
+  await expect(card(page).getByTestId("target-version")).toHaveText(`v${LATEST}`);
 
   // The job ends; the page reloads its state (this stand-in install keeps
   // its version, so the release is still on offer) and keeps the run in
@@ -537,6 +559,7 @@ test("a stale Cloud Shell request for an older release stays in the history (#81
 test("scheduled: names when it installs by itself, and offers Install now", async ({ page }) => {
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-on", E2E_EMAIL: REVIEWER_EMAIL });
   runBunInline(FIXTURE_SCRIPT, {
     E2E_OP: "auto-status",
     E2E_EMAIL: REVIEWER_EMAIL,
@@ -550,6 +573,11 @@ test("scheduled: names when it installs by itself, and offers Install now", asyn
   );
   await expect(page.getByTestId("open-install-dialog")).toHaveText("Install now…");
   await expectOnlyAction(page, "open-install-dialog");
+
+  // Paused after the scheduler decided: the page no longer promises the time.
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-pause", E2E_EMAIL: REVIEWER_EMAIL });
+  await page.reload();
+  await expect(card(page)).toHaveAttribute("data-state", "update_available");
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
 });
 
@@ -796,6 +824,11 @@ test("a Reviewer reads the automatic-update policy but cannot change it", async 
   await expect(policyCard.getByTestId("auto-update-summary")).toBeVisible();
   await expect(policyCard.getByTestId("policy-form")).toHaveCount(0);
   await expect(policyCard.getByTestId("save-policy")).toHaveCount(0);
+  // Settings → Email needs settings.write: no link the Reviewer can't follow.
+  await expect(page.getByTestId("email-not-set-up")).toContainText(
+    "Ask an Owner of this site to set one up.",
+  );
+  await expect(page.getByTestId("setup-email")).toHaveCount(0);
 });
 
 test("unknown: a failed check is never 'Up to date'; Check now refreshes it", async ({ page }) => {

@@ -39,6 +39,7 @@
     autoUpdateModeLine,
     checkedAgo,
     historySummary,
+    isActive,
     statusDisplay,
     updatePageState,
   } from "#lib/updates-display.js";
@@ -62,6 +63,21 @@
 
   const status = $derived(data.status);
 
+  /**
+   * Ticks every 30 s so "checked 40 min ago" stays true on an open tab
+   * (and an ended pause stops holding back a scheduled install).
+   */
+  let now = $state(new Date());
+  $effect(() => {
+    const id = setInterval(() => (now = new Date()), 30_000);
+    return () => clearInterval(id);
+  });
+  // Re-read the clock whenever the page's data changes (after "Check now").
+  $effect(() => {
+    void status.checkedAt;
+    now = new Date();
+  });
+
   /** The page's one state: sentence, badge and the single primary action. */
   const pageState = $derived(
     updatePageState({
@@ -72,12 +88,27 @@
       events: data.latest.events,
       deadRunLogsUrl: data.deadRun?.logsUrl ?? null,
       scheduler: data.scheduler,
+      policy: data.policy,
+      now,
       installRoute: data.installRoute,
       selfHosted: data.selfHosted,
       convergeJob: data.convergeJob,
+      cloudShellAvailable: data.cloudShellAvailable,
     }),
   );
   const action = $derived(pageState.action);
+  /**
+   * The release the heading points at: while an update runs (or waits),
+   * the one it installs — a newer release found meanwhile must not make the
+   * card say "→ vNewest" over a timeline installing another version.
+   */
+  const headingTarget = $derived(
+    latestRequest !== null && isActive(latestRequest.status)
+      ? latestRequest.targetVersion
+      : status.upgradeAvailable
+        ? status.latestVersion
+        : null,
+  );
   /** The release the Install dialog installs (only while Install is the action). */
   const installVersion = $derived(action.kind === "install" ? action.version : null);
   /** The last attempt's timeline belongs in the status card (it explains the state). */
@@ -90,17 +121,6 @@
           latestRequest.targetVersion === status.latestVersion)),
   );
 
-  /** Ticks every 30 s so "checked 40 min ago" stays true on an open tab. */
-  let now = $state(new Date());
-  $effect(() => {
-    const id = setInterval(() => (now = new Date()), 30_000);
-    return () => clearInterval(id);
-  });
-  // Re-read the clock whenever the page's data changes (after "Check now").
-  $effect(() => {
-    void status.checkedAt;
-    now = new Date();
-  });
   const checkedAt = $derived(status.checkedAt ? checkedAgo(status.checkedAt, now) : null);
 
   /** "Check now" runs a GitHub request; the control says so while it does. */
@@ -168,9 +188,9 @@
       <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
         <CardTitle class="flex flex-wrap items-baseline gap-2 font-mono text-lg">
           <span data-testid="installed-version">v{status.installedVersion}</span>
-          {#if status.upgradeAvailable && status.latestVersion}
+          {#if headingTarget}
             <span class="text-muted-foreground" aria-hidden="true">→</span>
-            <span data-testid="target-version">v{status.latestVersion}</span>
+            <span data-testid="target-version">v{headingTarget}</span>
           {/if}
         </CardTitle>
         {#if pageState.kind !== "in_progress"}
@@ -337,7 +357,7 @@
     </CardContent>
   </Card>
 
-  {#if data.agent && !data.upgrader.available && status.upgradeAvailable && pageState.kind === "update_available"}
+  {#if data.agent?.installCommand && !data.upgrader.available && status.upgradeAvailable && pageState.kind === "update_available"}
     <AgentSetup
       agent={data.agent.status}
       problem={data.agent.problem}
@@ -397,16 +417,27 @@
           <span class="block text-sm text-muted-foreground" data-testid="auto-update-line">
             {autoUpdateModeLine(data.policy)}
             {#if !data.emailConfigured}
-              · Email not set up —
-              <a href="/settings/email" class="underline underline-offset-4" data-testid="setup-email"
-                >Set up email</a
-              >
+              · Email not set up
             {/if}
           </span>
         </span>
         <ChevronDown class="mt-1 size-4 shrink-0 transition-transform group-open:rotate-180" aria-hidden="true" />
       </summary>
-      <div class="px-4 pb-4">
+      <div class="space-y-4 px-4 pb-4">
+        <!-- Not in the <summary>: a link there is a control inside a control
+             (axe nested-interactive). /settings/email needs settings.write. -->
+        {#if !data.emailConfigured}
+          <p class="text-sm text-muted-foreground" data-testid="email-not-set-up">
+            Update emails need an email service, and none is set up.
+            {#if data.canUpgrade}
+              <a href="/settings/email" class="underline underline-offset-4" data-testid="setup-email"
+                >Set up email</a
+              >
+            {:else}
+              Ask an Owner of this site to set one up.
+            {/if}
+          </p>
+        {/if}
         <AutoUpdatePolicy
           policy={data.policy}
           scheduler={data.scheduler}

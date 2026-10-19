@@ -222,12 +222,13 @@ export const SUPERSEDED_NEWER = "No longer needed: a newer update was requested 
  * happened (installed, rolled back, failed) and stays true.
  *
  * @param installedVersion the release this admin runs (CAELO_VERSION)
- * @returns the ids it closed
+ * @returns each request it closed, with the reason it recorded
+ *   ({@link SUPERSEDED_INSTALLED} or {@link SUPERSEDED_NEWER})
  */
 export async function supersedeRequests(
   tx: TransactionRunner,
   installedVersion: string,
-): Promise<string[]> {
+): Promise<{ readonly id: string; readonly reason: string }[]> {
   const open = (await tx.execute(sql`
     SELECT r.id::text AS id, r.target_version,
            EXISTS (SELECT 1 FROM platform_update_requests n
@@ -235,7 +236,7 @@ export async function supersedeRequests(
       FROM platform_update_requests r
      WHERE r.status = 'needs_cloud_shell'
   `)) as unknown as { id: string; target_version: string; has_newer: boolean }[];
-  const closed: string[] = [];
+  const closed: { id: string; reason: string }[] = [];
   for (const r of open) {
     // SemVer order, not text order: 0.10.9 < 0.10.10.
     const installed = !isNewerVersion(r.target_version, installedVersion);
@@ -249,7 +250,7 @@ export async function supersedeRequests(
     `)) as unknown as { id: string }[];
     if (rows.length === 0) continue;
     await appendEvent(tx, r.id, "finish", "info", reason);
-    closed.push(r.id);
+    closed.push({ id: r.id, reason });
   }
   return closed;
 }
@@ -464,16 +465,18 @@ export const platformUpdatesSupersedeStaleOp = defineOperation({
   output: z.object({ superseded: z.array(z.string()) }),
   handler: async (ctx, _input, tx) => {
     const superseded = await supersedeRequests(tx, CAELO_VERSION);
-    for (const id of superseded) {
+    for (const { id, reason } of superseded) {
+      // The reason the row itself records: the release runs now, or a newer
+      // request replaced it (the install may still run an older release).
       await recordAuditFromCtx(tx, ctx, {
         operation: "platform_updates.supersede_stale",
         input: { requestId: id },
         succeeded: true,
         entityId: id,
-        resultSummary: `superseded (v${CAELO_VERSION} runs)`,
+        resultSummary: `superseded: ${reason}`,
       });
     }
-    return ok({ superseded });
+    return ok({ superseded: superseded.map((s) => s.id) });
   },
 });
 

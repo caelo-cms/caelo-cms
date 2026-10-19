@@ -48,6 +48,30 @@ const fakeManifests: ManifestReader = async (version) => ({
 });
 
 /**
+ * How long one registry request (a manifest or a blob, body included) may
+ * take. The release check awaits the manifest reader before it saves or
+ * answers, so a registry that accepts the connection and then stalls would
+ * otherwise hang "Check now" and stack up the hourly worker's polls.
+ */
+export const REGISTRY_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * `fetchImpl` with every request aborted after `timeoutMs` (combined with
+ * any signal the caller passed). The abort covers reading the body too, so
+ * a registry that sends headers and then stalls is bounded as well.
+ */
+export function withFetchTimeout(
+  fetchImpl: (url: string, init?: RequestInit) => Promise<Response>,
+  timeoutMs: number,
+): (url: string, init?: RequestInit) => Promise<Response> {
+  return (url, init) => {
+    const timeout = AbortSignal.timeout(timeoutMs);
+    const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
+    return fetchImpl(url, { ...init, signal });
+  };
+}
+
+/**
  * One manifest reader per admin process, shared by the release check, "Check
  * now" and the auto-update scheduler: it caches what it read, and a
  * release's manifest never changes.
@@ -57,6 +81,8 @@ let registryReader: ManifestReader | null = null;
 /** The manifest reader for a release's route and facts (the registry, or the e2e stand-in). */
 export function releaseManifestReader(): ManifestReader {
   if (isFake()) return fakeManifests;
-  registryReader ??= registryManifestReader({ fetch: (url, init) => fetch(url, init) });
+  registryReader ??= registryManifestReader({
+    fetch: withFetchTimeout((url, init) => fetch(url, init), REGISTRY_FETCH_TIMEOUT_MS),
+  });
   return registryReader;
 }

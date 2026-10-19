@@ -147,10 +147,12 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
   // Cloud Shell for the newest release: the break-glass step when the page
   // needs it, otherwise one of the "other ways" (Google Cloud installs only;
   // self-hosted upgrades on its server with `upgrade`).
-  const cloudShell =
-    canUpgrade && status.upgradeAvailable && status.latestVersion
+  const cloudShellFor =
+    status.upgradeAvailable && status.latestVersion
       ? cloudShellUpgrade(env, status.latestVersion)
       : null;
+  // The commands only for those who may run them (settings.write).
+  const cloudShell = canUpgrade ? cloudShellFor : null;
   const upgraderAvailable = !upgrader.ok
     ? false
     : selfHosted
@@ -171,6 +173,10 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
     },
     installRoute,
     convergeJob: CONVERGE_JOB_AVAILABLE,
+    // Whether a Cloud Shell walkthrough exists for this install at all
+    // (Google Cloud, upgrade command buildable): the page never offers a
+    // break-glass step that isn't there (`updatePageState`).
+    cloudShellAvailable: cloudShellFor !== null,
     emailConfigured: await readEmailConfigured(locals.ctx),
     agent:
       selfHosted && canInstall
@@ -178,7 +184,9 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
             status: agent,
             problem: agentProblem,
             // Pinned to the running release: the agent it sets up is this one.
-            installCommand: agentInstallCommand(status.installedVersion),
+            // A command to run on the server, so only for settings.write
+            // (like the upgrade command): withheld here, not just hidden.
+            installCommand: canUpgrade ? agentInstallCommand(status.installedVersion) : null,
           }
         : null,
     policy: policyResult.value as StoredUpdatePolicy,

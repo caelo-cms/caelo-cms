@@ -451,6 +451,35 @@ describe("superseded requests (#817)", () => {
     ).toEqual([]);
   });
 
+  it("audits the reason each request was closed for", async () => {
+    const installed = await needsShell("0.0.2", 90);
+    const replaced = await needsShell(NEWEST, 60);
+    const newest = await needsShell(NEWEST, 30);
+    const r = await okValue<{ superseded: string[] }>(
+      SYSTEM,
+      "platform_updates.supersede_stale",
+      {},
+    );
+    expect([...r.superseded].sort()).toEqual([installed, replaced].sort());
+    const summaries = async (id: string) =>
+      (
+        (await admin(
+          (tx) => tx`SELECT result_summary FROM audit_events
+                      WHERE operation = 'platform_updates.supersede_stale'
+                        AND entity_id = ${id}::uuid`,
+        )) as unknown as { result_summary: string }[]
+      ).map((a) => a.result_summary);
+    expect(await summaries(installed)).toEqual([
+      `superseded: ${SUPERSEDED_INSTALLED(CAELO_VERSION)}`,
+    ]);
+    // Replaced by a newer request: the audit must not claim the release runs.
+    expect(await summaries(replaced)).toEqual([`superseded: ${SUPERSEDED_NEWER}`]);
+    const still = await okValue<{ request: { status: string } }>(AI, "platform_updates.get", {
+      requestId: newest,
+    });
+    expect(still.request.status).toBe("needs_cloud_shell");
+  });
+
   it("a new request closes an older Cloud Shell step", async () => {
     const older = await needsShell(NEWEST, 30);
     await stepUp(owner, ownerSession);

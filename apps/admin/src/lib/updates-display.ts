@@ -8,10 +8,11 @@
  * a migration, a revision or install.json.
  */
 
-import type {
-  PlatformUpdatePhase,
-  PlatformUpdateStatusValue,
-  UpdatePolicyMode,
+import {
+  isPausedAt,
+  type PlatformUpdatePhase,
+  type PlatformUpdateStatusValue,
+  type UpdatePolicyMode,
 } from "@caelo-cms/shared";
 
 /**
@@ -289,10 +290,26 @@ export interface UpdatePageInput {
   readonly deadRunLogsUrl: string | null;
   /** The auto-update scheduler's last decision. */
   readonly scheduler: {
+    /** When that decision was made; null = the scheduler never ran. */
+    readonly lastRunAt: string | null;
     readonly lastAction: string | null;
     readonly lastVersion: string | null;
     readonly lastWaitUntil: string | null;
   };
+  /**
+   * The automatic-update policy as stored NOW. The scheduler's decision
+   * holds only while the policy still installs automatically, is not
+   * paused, and has not changed since the decision (the scheduler
+   * recomputes on its next tick).
+   */
+  readonly policy: {
+    readonly mode: UpdatePolicyMode;
+    readonly paused: boolean;
+    readonly pausedUntil: string | null;
+    readonly updatedAt: string;
+  };
+  /** The clock the pause is read against (the page's ticking `now`). */
+  readonly now: Date;
   readonly installRoute: InstallRoute;
   readonly selfHosted: boolean;
   /**
@@ -301,6 +318,28 @@ export interface UpdatePageInput {
    * release is a break-glass step in Cloud Shell.
    */
   readonly convergeJob: boolean;
+  /**
+   * The Google Cloud Shell walkthrough exists for the newest release
+   * (`cloudShellUpgrade()` is non-null): false on a provider without one or
+   * when the upgrade command can't be built. Then the page offers no Cloud
+   * Shell step and shows why instead. Only read for a viewer who may run it
+   * (`canUpgrade`) on a non-self-hosted install.
+   */
+  readonly cloudShellAvailable: boolean;
+}
+
+/**
+ * When the scheduler's "wait" decision for `latest` installs it, or null
+ * when that decision no longer holds: the policy must still install
+ * automatically, not be paused at `now`, and not have changed after the
+ * decision was made.
+ */
+function scheduledInstall(input: UpdatePageInput, latest: string): string | null {
+  const { scheduler: s, policy } = input;
+  if (s.lastAction !== "wait" || s.lastVersion !== latest || s.lastWaitUntil === null) return null;
+  if (policy.mode !== "auto" || isPausedAt(policy, input.now)) return null;
+  if (s.lastRunAt === null || Date.parse(policy.updatedAt) > Date.parse(s.lastRunAt)) return null;
+  return s.lastWaitUntil;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -412,7 +451,23 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
   const askedForHand = attempt?.status === "needs_cloud_shell" ? attempt : null;
   const predictedConverge =
     latest !== null && status.infraChange === true && !input.convergeJob && !input.selfHosted;
-  if (latest !== null && canAct && (askedForHand !== null || predictedConverge)) {
+  const needsHand = latest !== null && canAct && (askedForHand !== null || predictedConverge);
+  if (needsHand && input.canUpgrade && !input.selfHosted && !input.cloudShellAvailable) {
+    // No Cloud Shell walkthrough for this install (another provider, or the
+    // upgrade command can't be built): never point at a step that isn't
+    // there. The page shows the upgrade path's diagnostic under the sentence.
+    return {
+      kind: "update_available",
+      badge: { label: "Update available", tone: "warning" },
+      sentence: `v${latest} is available.`,
+      detail:
+        askedForHand !== null
+          ? `Caelo can't install it by itself, and this install has no Cloud Shell upgrade.${askedForHand.statusReason ? ` ${askedForHand.statusReason}` : ""}`
+          : "It also changes settings in your cloud project, which Caelo can't do by itself yet, and this install has no Cloud Shell upgrade.",
+      action: { kind: "none" },
+    };
+  }
+  if (latest !== null && needsHand) {
     const handAction: PrimaryAction = !input.canUpgrade
       ? { kind: "none" }
       : input.selfHosted
@@ -434,10 +489,8 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
 
   // 6./7. A newer release: installed automatically at a known time, or by hand.
   if (latest !== null) {
-    const s = input.scheduler;
-    const scheduled =
-      s.lastAction === "wait" && s.lastVersion === latest && s.lastWaitUntil !== null;
-    if (!scheduled) {
+    const scheduledAt = scheduledInstall(input, latest);
+    if (scheduledAt === null) {
       return {
         kind: "update_available",
         badge: { label: "Update available", tone: "warning" },
@@ -452,7 +505,7 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
     return {
       kind: "scheduled",
       badge: { label: "Scheduled", tone: "secondary" },
-      sentence: `v${latest} installs automatically on ${utcDayTime(s.lastWaitUntil as string)}.`,
+      sentence: `v${latest} installs automatically on ${utcDayTime(scheduledAt)}.`,
       detail: null,
       action: installAction(input, latest, "Install now…"),
     };

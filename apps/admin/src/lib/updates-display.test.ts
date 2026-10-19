@@ -91,12 +91,29 @@ describe("updatePageState (#861): one state, one primary action", () => {
     request: null,
     events: [],
     deadRunLogsUrl: null,
-    scheduler: { lastAction: null, lastVersion: null, lastWaitUntil: null },
+    scheduler: { lastRunAt: null, lastAction: null, lastVersion: null, lastWaitUntil: null },
+    policy: AUTO_POLICY,
+    now: NOW,
     installRoute: "in_product",
     selfHosted: false,
     convergeJob: false,
+    cloudShellAvailable: true,
     ...over,
   });
+  /** Installs automatically, not paused, unchanged since long before the scheduler's tick. */
+  const AUTO_POLICY: UpdatePageInput["policy"] = {
+    mode: "auto",
+    paused: false,
+    pausedUntil: null,
+    updatedAt: "2026-10-01T00:00:00.000Z",
+  };
+  /** The scheduler decided at 11:00 to wait until tomorrow 03:00. */
+  const WAITING: UpdatePageInput["scheduler"] = {
+    lastRunAt: "2026-10-14T11:00:00.000Z",
+    lastAction: "wait",
+    lastVersion: LATEST,
+    lastWaitUntil: "2026-10-20T03:00:00.000Z",
+  };
   const upToDate = {
     installedVersion: INSTALLED,
     latestVersion: INSTALLED,
@@ -223,6 +240,39 @@ describe("updatePageState (#861): one state, one primary action", () => {
     expect(s.action).toEqual({ kind: "cloud_shell", version: LATEST });
   });
 
+  it("no Cloud Shell for this install: no break-glass step, the diagnostic instead", () => {
+    // Predicted cloud-setup change on a provider without a Cloud Shell
+    // walkthrough (or a misconfigured upgrade command).
+    const predicted = updatePageState(
+      input({ cloudShellAvailable: false, status: { ...input().status, infraChange: true } }),
+    );
+    expect(predicted.kind).toBe("update_available");
+    expect(predicted.action).toEqual({ kind: "none" });
+    expect(predicted.detail).toContain("no Cloud Shell upgrade");
+    // A run that asked for Cloud Shell: same, with the run's reason.
+    const asked = updatePageState(
+      input({
+        cloudShellAvailable: false,
+        request: request({ status: "needs_cloud_shell", statusReason: "drift" }),
+      }),
+    );
+    expect(asked.kind).toBe("update_available");
+    expect(asked.action).toEqual({ kind: "none" });
+    expect(asked.detail).toBe(
+      "Caelo can't install it by itself, and this install has no Cloud Shell upgrade. drift",
+    );
+    // Self-hosted never uses Cloud Shell: the server command stays.
+    expect(
+      updatePageState(
+        input({
+          cloudShellAvailable: false,
+          selfHosted: true,
+          request: request({ status: "needs_cloud_shell" }),
+        }),
+      ).action,
+    ).toEqual({ kind: "server_command", version: LATEST });
+  });
+
   it("a stale Cloud Shell request for an installed release stays in the history", () => {
     const s = updatePageState(
       input({
@@ -263,24 +313,41 @@ describe("updatePageState (#861): one state, one primary action", () => {
   });
 
   it("scheduled: names when, and offers Install now", () => {
-    const s = updatePageState(
-      input({
-        scheduler: {
-          lastAction: "wait",
-          lastVersion: LATEST,
-          lastWaitUntil: "2026-10-20T03:00:00.000Z",
-        },
-      }),
-    );
+    const s = updatePageState(input({ scheduler: WAITING }));
     expect(s.kind).toBe("scheduled");
     expect(s.sentence).toBe("v0.10.53 installs automatically on Oct 20 at 03:00 UTC.");
     expect(s.action).toEqual({ kind: "install", version: LATEST, label: "Install now…" });
     // Waiting because paused (no time): not scheduled.
+    expect(updatePageState(input({ scheduler: { ...WAITING, lastWaitUntil: null } })).kind).toBe(
+      "update_available",
+    );
+  });
+
+  it("scheduled: the current policy wins over the scheduler's last decision", () => {
+    const kind = (policy: Partial<UpdatePageInput["policy"]>) =>
+      updatePageState(input({ scheduler: WAITING, policy: { ...AUTO_POLICY, ...policy } })).kind;
+    // Switched to "Notify only" after the decision.
+    expect(kind({ mode: "notify", updatedAt: "2026-10-14T11:30:00.000Z" })).toBe(
+      "update_available",
+    );
+    // Paused after the decision: until resumed, or until a time still ahead.
+    expect(kind({ paused: true, updatedAt: "2026-10-14T11:30:00.000Z" })).toBe("update_available");
     expect(
-      updatePageState(
-        input({ scheduler: { lastAction: "wait", lastVersion: LATEST, lastWaitUntil: null } }),
-      ).kind,
+      kind({
+        paused: true,
+        pausedUntil: "2026-10-26T00:00:00.000Z",
+        updatedAt: WAITING.lastRunAt as string,
+      }),
     ).toBe("update_available");
+    // A pause that has ended no longer holds.
+    expect(kind({ paused: true, pausedUntil: "2026-10-14T00:00:00.000Z" })).toBe("scheduled");
+    // Any other change after the decision (kinds, window, waiting times):
+    // the scheduler recomputes on its next tick; until then no promise.
+    expect(kind({ updatedAt: "2026-10-14T11:30:00.000Z" })).toBe("update_available");
+    // The scheduler never ran: no decision to show.
+    expect(updatePageState(input({ scheduler: { ...WAITING, lastRunAt: null } })).kind).toBe(
+      "update_available",
+    );
   });
 
   it("up_to_date: no action", () => {
