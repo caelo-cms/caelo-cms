@@ -62,6 +62,30 @@ describe("recordRolledDigests", () => {
     expect(calls).toEqual(["stack"]);
   });
 
+  it("regression #865: with no known version, the manual fix removes the stale releaseVersion", async () => {
+    const { d, lines } = deps({
+      recordInstall: () => {
+        throw new Error("403");
+      },
+    });
+    expect(await recordRolledDigests(DIGESTS, null, d)).toBe(false);
+    const error = lines.find((l) => l.level === "error")?.message ?? "";
+    expect(error).toContain(DIGESTS.admin);
+    expect(error).not.toContain('"releaseVersion":');
+    expect(error).toContain('delete the "releaseVersion" field');
+  });
+
+  it("with a known version, the manual fix sets it and says nothing about deleting it", async () => {
+    const { d, lines } = deps({
+      recordInstall: () => {
+        throw new Error("403");
+      },
+    });
+    await recordRolledDigests(DIGESTS, "0.10.53", d);
+    const error = lines.find((l) => l.level === "error")?.message ?? "";
+    expect(error).not.toContain("delete the");
+  });
+
   it("a failed stack-config pin fails the upgrade too, with the commands to run", async () => {
     const { d, lines } = deps({
       pinStack: async () => {

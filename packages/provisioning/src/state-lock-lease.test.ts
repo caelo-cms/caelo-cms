@@ -12,9 +12,12 @@ import {
   type ExecutionState,
   judgeHeldLock,
   LEASE_SKEW_MS,
+  type LocalHost,
   lockBody,
+  PROCESS_LEASE_MS,
   parseExecutionState,
   parseLockBody,
+  renewedLockBody,
 } from "./state-lock-lease.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
@@ -46,11 +49,91 @@ describe("lockBody", () => {
     expect(body?.leaseUntil).toBe(new Date(LEASE_END).toISOString());
   });
 
-  it("a CLI lock carries neither", () => {
+  it("a machine-local lock (no holder) carries neither", () => {
     const body = parseLockBody(lockBody("cms-provision upgrade", START));
     expect(body?.purpose).toBe("cms-provision upgrade");
     expect(body?.execution).toBeUndefined();
     expect(body?.leaseUntil).toBeUndefined();
+  });
+
+  it("a CLI process's lock names host + pid, a unique id and a lease of leaseMs + skew", () => {
+    const a = parseLockBody(
+      lockBody("cms-provision upgrade", START, { leaseMs: PROCESS_LEASE_MS }),
+    );
+    const b = parseLockBody(
+      lockBody("cms-provision upgrade", START, { leaseMs: PROCESS_LEASE_MS }),
+    );
+    expect(a?.pid).toBe(process.pid);
+    expect(a?.host).toBeTruthy();
+    expect(a?.execution).toBeUndefined();
+    expect(a?.leaseUntil).toBe(
+      new Date(START.getTime() + PROCESS_LEASE_MS + LEASE_SKEW_MS).toISOString(),
+    );
+    expect(a?.id).toBeTruthy();
+    expect(a?.id).not.toBe(b?.id);
+  });
+
+  it("a renewed body keeps its id and start and moves only the lease", () => {
+    const body = parseLockBody(
+      lockBody("cms-provision upgrade", START, { leaseMs: PROCESS_LEASE_MS }, "id-1"),
+    );
+    if (!body) throw new Error("unparsable");
+    const later = at(START.getTime() + 3 * HOUR);
+    const renewed = parseLockBody(renewedLockBody(body, later, PROCESS_LEASE_MS));
+    expect(renewed).toMatchObject({ id: "id-1", startedAt: START.toISOString() });
+    expect(renewed?.leaseUntil).toBe(
+      new Date(later.getTime() + PROCESS_LEASE_MS + LEASE_SKEW_MS).toISOString(),
+    );
+  });
+});
+
+describe("judgeHeldLock — a CLI process holder (#815 review)", () => {
+  const HERE: LocalHost = { host: "laptop", alive: (pid) => pid === 4242 };
+  const cli = (host: string, pid: number) =>
+    JSON.stringify({
+      purpose: "cms-provision upgrade",
+      host,
+      pid,
+      startedAt: START.toISOString(),
+      leaseUntil: new Date(START.getTime() + PROCESS_LEASE_MS + LEASE_SKEW_MS).toISOString(),
+    });
+  const LEASE = START.getTime() + PROCESS_LEASE_MS + LEASE_SKEW_MS;
+  const never = () => {
+    throw new Error("Cloud Run must not be asked about a CLI holder");
+  };
+
+  it("its own host's lock whose pid is dead is broken at once, inside the lease", () => {
+    const v = judgeHeldLock(cli("laptop", 9999), never, at(START.getTime() + 1), HERE);
+    expect(v.kind).toBe("break");
+    expect(v.why).toContain("process is gone");
+  });
+
+  it("its own host's lock whose pid lives is held until the lease ends", () => {
+    expect(judgeHeldLock(cli("laptop", 4242), never, at(LEASE), HERE)).toMatchObject({
+      kind: "held",
+      manualRemoval: false,
+    });
+    expect(judgeHeldLock(cli("laptop", 4242), never, at(LEASE + 1), HERE).kind).toBe("break");
+  });
+
+  it("another host's lock (a Cloud Shell) is held within the lease, broken after it", () => {
+    expect(judgeHeldLock(cli("cs-1", 9999), never, at(LEASE), HERE).kind).toBe("held");
+    const v = judgeHeldLock(cli("cs-1", 9999), never, at(LEASE + 1), HERE);
+    expect(v.kind).toBe("break");
+    expect(v.why).toContain("stopped renewing");
+  });
+
+  it("an unreadable lease is held for a person to remove", () => {
+    const body = JSON.stringify({
+      purpose: "cms-provision upgrade",
+      host: "cs-1",
+      pid: 1,
+      leaseUntil: "soon",
+    });
+    expect(judgeHeldLock(body, never, at(LEASE + HOUR), HERE)).toMatchObject({
+      kind: "held",
+      manualRemoval: true,
+    });
   });
 });
 
@@ -103,7 +186,7 @@ describe("judgeHeldLock", () => {
     expect(v.why).toContain("PERMISSION_DENIED");
   });
 
-  it("a CLI or pre-#815 lock is never broken automatically, and Cloud Run is not asked", () => {
+  it("a pre-#815 lock (no lease) from another host is never broken automatically, and Cloud Run is not asked", () => {
     const describe = () => {
       throw new Error("must not be asked");
     };
@@ -119,7 +202,12 @@ describe("judgeHeldLock", () => {
       pid: 1,
       startedAt: START.toISOString(),
     });
-    expect(judgeHeldLock(legacy, describe, at(START.getTime() + 100 * HOUR)).kind).toBe("held");
+    expect(
+      judgeHeldLock(legacy, describe, at(START.getTime() + 100 * HOUR), {
+        host: "laptop",
+        alive: () => false,
+      }).kind,
+    ).toBe("held");
   });
 
   it("an unreadable lock body is held, with the body quoted", () => {

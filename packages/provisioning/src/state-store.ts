@@ -22,6 +22,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertNoCheckpointSecrets, assertNoSecrets } from "./checkpoint-secrets.js";
@@ -31,8 +32,13 @@ import {
   describeExecutionArgs,
   type ExecutionLockHolder,
   judgeHeldLock,
+  type LocalHost,
+  type LockHolder,
   lockBody,
+  PROCESS_LEASE_MS,
   parseExecutionState,
+  parseLockBody,
+  renewedLockBody,
 } from "./state-lock-lease.js";
 
 /** The two documents a store holds. */
@@ -188,16 +194,33 @@ const PRECONDITION_FAILED = /PreconditionFailed|412|At least one of the pre-cond
 /** How a bucket lock is taken: who holds it, and the clock to judge leases by. */
 export interface BucketLockOptions {
   /**
-   * The Cloud Run execution taking the lock (#815). With it the lock
-   * carries a lease, and a later run may break it once Cloud Run says this
-   * execution has finished. Without it (a CLI run) the lock is only ever
-   * removed by its holder or by hand.
+   * The Cloud Run execution taking the lock (#815): the lock's lease is the
+   * execution's task timeout, and a later run may break it once Cloud Run
+   * says this execution has finished. Without it the holder is this
+   * process (a CLI run): the lock names host + pid, carries a lease of
+   * {@link PROCESS_LEASE_MS} and is renewed by a heartbeat until released.
    */
   readonly holder?: ExecutionLockHolder;
   /** Told when a dead holder's lock was broken, with why. */
   readonly onBreak?: (message: string) => void;
+  /**
+   * Told when the heartbeat found the lock no longer this run's (another
+   * run broke it after the lease ran out, e.g. while this machine slept).
+   */
+  readonly onLost?: (message: string) => void;
   readonly now?: () => Date;
+  /** Starts the heartbeat; returns its stop. Defaults to an unref'd setInterval. */
+  readonly schedule?: (tick: () => void, everyMs: number) => () => void;
+  /** This host and its pid check (state-lock-lease.ts LocalHost); tests pass a fake. */
+  readonly here?: LocalHost;
 }
+
+const defaultSchedule = (tick: () => void, everyMs: number): (() => void) => {
+  const timer = setInterval(tick, everyMs);
+  // The heartbeat must never keep a finished CLI alive.
+  timer.unref?.();
+  return () => clearInterval(timer);
+};
 
 /**
  * The install's state lock in its ops bucket, created only if absent
@@ -207,15 +230,21 @@ export interface BucketLockOptions {
  * switching away from.
  *
  * A lock that is held is judged (state-lock-lease.ts): one whose Cloud Run
- * execution has finished, or whose execution is gone after its lease, is
- * broken with a generation-matched delete and taken once more. The
+ * execution has finished, whose execution is gone after its lease, whose
+ * CLI process is gone on this host, or whose CLI lease ran out unrenewed,
+ * is broken with a generation-matched delete and taken once more. The
  * generation is read BEFORE the body, so the delete can only remove the
  * lock that was judged: if another run replaced it in between, the
  * delete's precondition fails and nothing is removed. Two runs breaking the
  * same dead lock cannot both win either — the slower one's create fails
  * its own precondition and reports the lock as held.
  *
- * @returns the release function; it deletes only this lock's generation
+ * A CLI holder renews its lease every third of {@link PROCESS_LEASE_MS}
+ * with a generation-matched rewrite, so a run that is alive keeps its lock
+ * however long it takes, and a killed one loses it within one lease.
+ *
+ * @returns the release function; it stops the heartbeat and deletes only
+ *   this lock's generation
  * @throws StateLockHeldError when another run holds the lock
  * @throws Error when the lock or its holder cannot be read (no access)
  */
@@ -227,14 +256,16 @@ export function acquireBucketStateLock(
 ): () => void {
   const url = bucketStateLockUrl(bucket);
   const now = opts.now ?? (() => new Date());
+  const holder: LockHolder = opts.holder ?? { leaseMs: PROCESS_LEASE_MS };
+  const id = randomUUID();
   const create = () =>
     run(
       ["storage", "cp", "-", url, "--if-generation-match=0"],
-      lockBody(purpose, now(), opts.holder),
+      lockBody(purpose, now(), holder, id),
     );
   let r = create();
   if (!r.ok && PRECONDITION_FAILED.test(r.stderr)) {
-    breakDeadLock(url, run, now(), opts.onBreak);
+    breakDeadLock(url, run, now(), opts.onBreak, opts.here);
     r = create();
     if (!r.ok && PRECONDITION_FAILED.test(r.stderr)) {
       throw new StateLockHeldError(
@@ -243,17 +274,49 @@ export function acquireBucketStateLock(
     }
   }
   if (!r.ok) throw new Error(`Could not take the state lock ${url}: ${r.stderr.trim()}`);
-  const own = lockGeneration(url, run);
-  if (own.kind !== "found") {
-    // Ours, just created; without its generation the release could delete
-    // a successor's lock, so give it back now rather than hold it blind.
-    run(["storage", "rm", url]);
+  const owned = ownedGeneration(url, run, id);
+  if (owned.kind !== "owned") {
+    // Ours, just created — but without its generation a delete could hit a
+    // successor's lock. Give it back only once a second look proves it is
+    // still ours at a known generation; otherwise its lease ends it.
+    const retry = ownedGeneration(url, run, id);
+    if (retry.kind === "owned") {
+      run(["storage", "rm", url, `--if-generation-match=${retry.generation}`]);
+    }
     throw new Error(
-      `Could not read the generation of the state lock ${url} this run just took${own.kind === "error" ? `: ${own.error}` : ""}`,
+      `Could not read the generation of the state lock ${url} this run just took (${owned.why}). ${
+        retry.kind === "owned"
+          ? "It was given back."
+          : "It was left in place and expires with its lease; re-run after that."
+      }`,
     );
   }
+  let generation = owned.generation;
+  let lost: string | null = null;
+  const stopHeartbeat =
+    "execution" in holder
+      ? () => {}
+      : (opts.schedule ?? defaultSchedule)(
+          () => {
+            if (lost !== null) return;
+            const renewed = renewLock(url, run, id, generation, now(), holder.leaseMs);
+            if (renewed.kind === "owned") {
+              generation = renewed.generation;
+              return;
+            }
+            if (renewed.kind === "lost") {
+              lost = renewed.why;
+              opts.onLost?.(
+                `This run no longer holds the install's state lock (${renewed.why}). Stop it and re-run once the other run has finished.`,
+              );
+            }
+            // "error": a transient failure; the next beat tries again within the lease.
+          },
+          Math.floor(holder.leaseMs / 3),
+        );
   return () => {
-    const rm = run(["storage", "rm", url, `--if-generation-match=${own.generation}`]);
+    stopHeartbeat();
+    const rm = run(["storage", "rm", url, `--if-generation-match=${generation}`]);
     if (rm.ok) return;
     if (PRECONDITION_FAILED.test(rm.stderr) || NOT_FOUND.test(rm.stderr)) {
       throw new Error(
@@ -262,6 +325,71 @@ export function acquireBucketStateLock(
     }
     throw new Error(`Could not release ${url}; remove it: gcloud storage rm ${url}`);
   };
+}
+
+type Ownership =
+  | { readonly kind: "owned"; readonly generation: string }
+  | { readonly kind: "lost"; readonly why: string }
+  | { readonly kind: "error"; readonly why: string };
+
+/**
+ * The lock's generation, provided the lock is still the one with `id`. The
+ * generation is read before the body: if another run replaced the lock in
+ * between, the body names its id and this returns "lost" — never a
+ * generation that is not ours.
+ */
+function ownedGeneration(url: string, run: SyncGcloud, id: string): Ownership {
+  const g = lockGeneration(url, run);
+  if (g.kind === "absent") return { kind: "lost", why: "the lock is gone" };
+  if (g.kind === "error") return { kind: "error", why: g.error };
+  const body = run(["storage", "cat", url]);
+  if (!body.ok) {
+    return NOT_FOUND.test(body.stderr)
+      ? { kind: "lost", why: "the lock is gone" }
+      : { kind: "error", why: body.stderr.trim() || `gcloud exited ${body.exitCode}` };
+  }
+  const parsed = parseLockBody(body.stdout);
+  if (parsed?.id !== id) {
+    return { kind: "lost", why: `another run holds it now (${body.stdout.trim().slice(0, 200)})` };
+  }
+  return { kind: "owned", generation: g.generation };
+}
+
+/**
+ * One heartbeat: rewrite the lock with a later lease, only if it is still
+ * at `generation` (ours), and return its new generation.
+ */
+function renewLock(
+  url: string,
+  run: SyncGcloud,
+  id: string,
+  generation: string,
+  now: Date,
+  leaseMs: number,
+): Ownership {
+  const current = run(["storage", "cat", url]);
+  if (!current.ok) {
+    return NOT_FOUND.test(current.stderr)
+      ? { kind: "lost", why: "the lock is gone" }
+      : { kind: "error", why: current.stderr.trim() };
+  }
+  const body = parseLockBody(current.stdout);
+  if (body?.id !== id) {
+    return {
+      kind: "lost",
+      why: `another run holds it now (${current.stdout.trim().slice(0, 200)})`,
+    };
+  }
+  const w = run(
+    ["storage", "cp", "-", url, `--if-generation-match=${generation}`],
+    renewedLockBody(body, now, leaseMs),
+  );
+  if (!w.ok) {
+    return PRECONDITION_FAILED.test(w.stderr)
+      ? { kind: "lost", why: "another run replaced it" }
+      : { kind: "error", why: w.stderr.trim() };
+  }
+  return ownedGeneration(url, run, id);
 }
 
 type LockGeneration =
@@ -307,6 +435,7 @@ function breakDeadLock(
   run: SyncGcloud,
   now: Date,
   onBreak: ((message: string) => void) | undefined,
+  here: LocalHost | undefined,
 ): void {
   const found = lockGeneration(url, run);
   if (found.kind === "absent") return;
@@ -322,6 +451,7 @@ function breakDeadLock(
     held.stdout,
     (ref) => parseExecutionState(run(describeExecutionArgs(ref))),
     now,
+    here,
   );
   if (verdict.kind === "unknown") {
     // Not contention: retrying will not help, and guessing "dead" could let
@@ -349,14 +479,33 @@ function breakDeadLock(
 
 /**
  * The same lock for an install whose state is on this machine:
- * `~/.caelo-<id>/state.lock`, created exclusively.
+ * `~/.caelo-<id>/state.lock`, created exclusively. A lock left by a
+ * process that is gone on this machine is taken over (#815).
  *
+ * @param here this host and its pid check; tests pass a fake
  * @returns the release function
  */
-export function acquireLocalStateLock(root: string, purpose: string): () => void {
+export function acquireLocalStateLock(root: string, purpose: string, here?: LocalHost): () => void {
   const path = join(root, "state.lock");
-  try {
+  const take = () =>
     writeFileSync(path, lockBody(purpose, new Date()), { flag: "wx", mode: 0o600 });
+  try {
+    try {
+      take();
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      // #815 — the file is on this machine, so a holder whose process has
+      // ended is known dead: take its lock over instead of asking for `rm`.
+      const verdict = judgeHeldLock(
+        readFileSync(path, "utf8"),
+        () => ({ kind: "unknown", error: "a machine-local lock names no Cloud Run execution" }),
+        new Date(),
+        here,
+      );
+      if (verdict.kind !== "break") throw e;
+      rmSync(path, { force: true });
+      take();
+    }
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "EEXIST") {
       throw new StateLockHeldError(
@@ -378,5 +527,46 @@ export function acquireStateLock(
 ): () => void {
   return backend.kind === "gcs"
     ? acquireBucketStateLock(backend.bucket, purpose, run, opts)
-    : acquireLocalStateLock(root, purpose);
+    : acquireLocalStateLock(root, purpose, opts.here);
+}
+
+/** The part of `process` {@link releaseOnSignal} needs; tests pass a fake. */
+export interface SignalTarget {
+  once(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+  removeListener(signal: "SIGINT" | "SIGTERM", listener: () => void): unknown;
+  exit(code: number): never;
+}
+
+/**
+ * Give the state lock back when the CLI is stopped (Ctrl-C, a closed Cloud
+ * Shell tab's SIGTERM), then exit with the signal's conventional code
+ * (#815). Without this a stopped run leaves its lock until its lease ends.
+ *
+ * @param report told what happened to the lock
+ * @returns removes the handlers; call it once the run released the lock itself
+ */
+export function releaseOnSignal(
+  release: () => void,
+  report: (message: string) => void,
+  proc: SignalTarget = process,
+): () => void {
+  const dispose = () => {
+    proc.removeListener("SIGINT", onInt);
+    proc.removeListener("SIGTERM", onTerm);
+  };
+  const stop = (signal: "SIGINT" | "SIGTERM", code: number): never => {
+    dispose();
+    try {
+      release();
+      report(`Stopped (${signal}); the install's state lock was released.`);
+    } catch (e) {
+      report(`Stopped (${signal}); ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return proc.exit(code);
+  };
+  const onInt = () => stop("SIGINT", 130);
+  const onTerm = () => stop("SIGTERM", 143);
+  proc.once("SIGINT", onInt);
+  proc.once("SIGTERM", onTerm);
+  return dispose;
 }

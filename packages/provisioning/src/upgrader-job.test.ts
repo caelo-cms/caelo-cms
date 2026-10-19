@@ -86,6 +86,7 @@ const POLICY: StoredUpdatePolicy = {
   autoSecurity: false,
   autoPatch: false,
   autoMinor: false,
+  autoConverge: false,
   channel: "stable",
   windowStart: null,
   windowEnd: null,
@@ -642,6 +643,53 @@ describe("runUpgraderJob", () => {
     ).toBe(true);
   });
 
+  it("#815: drift + a stop verdict: a failed re-read under the lock keeps the verdict", async () => {
+    const drift = setup({
+      meta: { ...META, imageDigests: { admin: D("9"), gateway: D("2") }, infraContractVersion: 1 },
+      manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+    });
+    let reads = 0;
+    const r = await runUpgraderJob({
+      ...drift.deps,
+      readInstall: () => {
+        reads += 1;
+        if (reads > 1) throw new Error("storage.objects.get timed out");
+        return {
+          ...META,
+          imageDigests: { admin: D("9"), gateway: D("2") },
+          infraContractVersion: 1,
+        };
+      },
+    });
+    expect(r.status).toBe("needs_cloud_shell");
+    expect(drift.q.end()?.codes).toEqual(["infra-contract"]);
+    expect(drift.written).toEqual([]);
+    expect(drift.order).toContain("unlock");
+    expect(
+      drift.q.events.some(
+        (e) => e.level === "warn" && e.message.includes("storage.objects.get timed out"),
+      ),
+    ).toBe(true);
+  });
+
+  it("#815: a failed re-read under the lock before the backup stops as install-state-read", async () => {
+    const { deps, order, q, written } = setup();
+    let reads = 0;
+    const r = await runUpgraderJob({
+      ...deps,
+      readInstall: () => {
+        reads += 1;
+        if (reads > 1) throw new Error("storage.objects.get timed out");
+        return META;
+      },
+    });
+    expect(r.status).toBe("failed");
+    expect(q.end()?.codes).toEqual(["install-state-read"]);
+    expect(written).toEqual([]);
+    expect(order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
+    expect(order).toContain("unlock");
+  });
+
   it("drift where the recorded version is the serving one needs no tag lookup", async () => {
     const { deps, order, written } = setup({
       meta: { ...META, imageDigests: { admin: D("9"), gateway: D("2") } },
@@ -666,6 +714,75 @@ describe("runUpgraderJob", () => {
     expect(written).toEqual([]);
     expect(order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
     expect(order).not.toContain("manifest 0.11.0");
+  });
+
+  it("regression #865: drift whose release manifest the registry cannot serve fails retryably, not install-state-drift", async () => {
+    const { deps, order, q, written } = setup({
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("8") },
+        releaseVersion: "0.10.44",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": {
+          ok: false,
+          error: { code: "registry", message: "503 Service Unavailable", transient: true },
+        },
+      },
+      gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
+    });
+    const r = await runUpgraderJob(deps);
+    expect(r.status).toBe("failed");
+    const end = q.end();
+    expect(end?.codes).toEqual(["registry"]);
+    expect(end?.reason).toContain("503 Service Unavailable");
+    expect(end?.reason).toContain("Try again later");
+    expect(end?.reason).not.toContain("Cloud Shell");
+    expect(written).toEqual([]);
+    expect(order).not.toContain("manifest 0.11.0");
+  });
+
+  it("regression #865: drift whose candidate manifest does not exist (404) ends in install-state-drift, not a retry", async () => {
+    const { deps, q, written } = setup({
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("8") },
+        releaseVersion: "0.10.44",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": {
+          ok: false,
+          error: { code: "registry", message: "no release manifest for v0.10.45 (HTTP 404)" },
+        },
+      },
+      gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    const end = q.end();
+    expect(end?.codes).toEqual(["install-state-drift"]);
+    expect(end?.reason).toContain("HTTP 404");
+    expect(end?.reason).not.toContain("Try again later");
+    expect(written).toEqual([]);
+  });
+
+  it("drift with a signature-rejected candidate still ends in install-state-drift", async () => {
+    const { deps, q, written } = setup({
+      meta: {
+        ...META,
+        imageDigests: { admin: D("9"), gateway: D("8") },
+        releaseVersion: "0.10.44",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": { ok: false, error: { code: "signature", message: "not signed" } },
+      },
+      gcloud: [releaseTags("admin", { "0.10.44": D("9"), "0.10.45": D("1") })],
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    expect(q.end()?.codes).toEqual(["install-state-drift"]);
+    expect(written).toEqual([]);
   });
 
   it("partial match (the admin of a release, the gateway not) is refused", async () => {

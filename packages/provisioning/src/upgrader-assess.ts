@@ -60,6 +60,7 @@ import { needsConverge } from "./upgrade/converge.js";
 /** Machine-readable reason codes (`platform_update_requests.refusal_codes`). */
 export type RefusalCode =
   | "registry"
+  | "manifest-missing"
   | "signature"
   | "manifest-unreadable"
   | "install-version-unknown"
@@ -142,10 +143,20 @@ export function assessUpgradeRequest(input: {
     const e = input.manifest.error;
     switch (e.code) {
       case "registry":
+        // Only an outage is worth retrying: a manifest the registry says
+        // does not exist (404 / other 4xx) never appears, so retrying would
+        // loop on "try again later" forever.
+        if (e.transient) {
+          return stop(
+            "failed",
+            "registry",
+            `Could not reach the Caelo release registry to verify v${target} (${e.message}). Nothing was changed; try again later.`,
+          );
+        }
         return stop(
-          "failed",
-          "registry",
-          `Could not reach the Caelo release registry to verify v${target} (${e.message}). Nothing was changed; try again later.`,
+          "refused",
+          "manifest-missing",
+          `v${target} has no signed release manifest in the Caelo release registry, so it cannot be verified and will not be installed. Nothing was changed; retrying will not help. (${e.message})`,
         );
       case "schema":
         return stop(

@@ -12,7 +12,7 @@
 
 FROM denoland/deno:bin-2.9.7 AS deno
 
-FROM oven/bun:1.4.2 AS builder
+FROM oven/bun:1.4.3 AS builder
 
 WORKDIR /repo
 
@@ -72,7 +72,7 @@ COPY apps/admin/scripts/sign-tier1-manifest.ts apps/admin/scripts/
 RUN bun run apps/admin/scripts/sign-tier1-manifest.ts --new-key && rm -f .caelo-dev-key
 
 # ---------------------------------------------------------------------------
-FROM oven/bun:1.4.2-slim AS runtime
+FROM oven/bun:1.4.3-slim AS runtime
 
 COPY --from=deno /deno /usr/local/bin/deno
 

@@ -63,7 +63,7 @@ import {
   type ResolvedBackend,
   resolveBackend,
 } from "./state-backend.js";
-import { acquireStateLock, realSyncGcloud } from "./state-store.js";
+import { acquireStateLock, realSyncGcloud, releaseOnSignal } from "./state-store.js";
 import {
   type AppRollPlan,
   type ReleaseImage,
@@ -496,7 +496,11 @@ async function upgradeInstall(
   // `pulumi up` and `state migrate` take: a Cloud Shell upgrade must not
   // race an Owner-started or automatic job run. The local copy always
   // names where the state lives (install-state.ts stateStoreFor). A lock
-  // left by a job whose run has ended is broken automatically.
+  // left by a job whose run has ended, by a CLI whose process is gone on
+  // this machine, or by one that stopped renewing its lease is broken
+  // automatically. This run's own lock carries host + pid and a lease its
+  // heartbeat renews, and is given back on Ctrl-C / SIGTERM — a killed CLI
+  // or a closed Cloud Shell never blocks in-app updates for good.
   const backend = readLocalMetadata(installId)?.stateBackend;
   let releaseLock: () => void;
   try {
@@ -505,15 +509,20 @@ async function upgradeInstall(
       installRoot(installId),
       "cms-provision upgrade",
       realSyncGcloud,
-      { onBreak: (message) => log.info(message) },
+      {
+        onBreak: (message) => log.info(message),
+        onLost: (message) => log.error(red(message)),
+      },
     );
   } catch (e) {
     log.error(red(`Nothing was changed: ${e instanceof Error ? e.message : String(e)}`));
     return false;
   }
+  const disposeSignals = releaseOnSignal(releaseLock, (message) => log.warn(yellow(message)));
   try {
     return await upgradeLockedInstall(installId, meta, opts, provider, projectId);
   } finally {
+    disposeSignals();
     try {
       releaseLock();
     } catch (e) {

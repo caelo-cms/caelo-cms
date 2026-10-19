@@ -129,6 +129,7 @@ const POLICY = {
   autoSecurity: true,
   autoPatch: true,
   autoMinor: false,
+  autoConverge: false,
   channel: "stable",
   windowStart: null,
   windowEnd: null,
@@ -144,7 +145,8 @@ async function setPolicy(over: Record<string, unknown> = {}): Promise<void> {
     (
       tx,
     ) => tx`UPDATE platform_update_policy SET mode = ${p.mode}, auto_security = ${p.autoSecurity},
-      auto_patch = ${p.autoPatch}, auto_minor = ${p.autoMinor}, soak_hours = ${p.soakHours},
+      auto_patch = ${p.autoPatch}, auto_minor = ${p.autoMinor},
+      auto_converge = ${p.autoConverge}, soak_hours = ${p.soakHours},
       security_soak_hours = ${p.securitySoakHours}, window_start = ${p.windowStart}::time,
       window_end = ${p.windowEnd}::time, window_timezone = ${p.windowTimezone} WHERE id = 1`,
   );
@@ -486,6 +488,14 @@ describe("platform_updates.scheduler_tick", () => {
     const [n] = await notifications();
     expect(n).toMatchObject({ kind: "needs_cloud_shell", target_version: NEXT_MINOR });
     expect(n?.body).toContain("Cloud Shell");
+  });
+
+  it("auto_converge stays inert until #819: an infra change is still never queued", async () => {
+    await setLatest(NEXT_MINOR, 48);
+    await setPolicy({ autoMinor: true, autoConverge: true });
+    const r = await tick({ ...FACTS, infraChange: true });
+    expect(r.action).toBe("needs_cloud_shell");
+    expect(await requests()).toHaveLength(0);
   });
 
   it("notify mode emails once per release, and nothing when up to date", async () => {

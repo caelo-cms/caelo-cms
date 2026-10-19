@@ -40,6 +40,9 @@ export const ALLOWED_LICENSES: readonly string[] = [
   "CC0-1.0",
   "Unlicense",
   "Python-2.0",
+  // The PSF License Agreement on its own, the permissive core of Python-2.0
+  // (argparse 3.x relabelled from Python-2.0 to this SPDX id).
+  "PSF-2.0",
   "BlueOak-1.0.0",
 ];
 
