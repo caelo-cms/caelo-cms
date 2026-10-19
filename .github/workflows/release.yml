@@ -385,9 +385,10 @@ jobs:
 
       - name: Determine npm dist-tag
         id: disttag
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           # Strip the leading `v` from the tag (or workflow_dispatch input).
-          REF="${{ github.event.inputs.tag || github.ref_name }}"
           VERSION="${REF#v}"
           # Pre-releases (containing a hyphen) get a channel-named tag —
           # `0.6.0-rc.1` → tag `rc`. Stable releases get `latest`.
@@ -438,8 +439,9 @@ jobs:
     steps:
       - name: Resolve version
         id: ver
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          REF="${{ github.event.inputs.tag || github.ref_name }}"
           echo "version=${REF#v}" >> "${GITHUB_OUTPUT}"
 
       - name: Setup Bun (cms-provision binary's shebang is #!/usr/bin/env bun)
@@ -539,8 +541,9 @@ jobs:
 
       - name: Extract changelog stanza for this version
         id: changelog
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          REF="${{ github.event.inputs.tag || github.ref_name }}"
           VERSION="${REF#v}"
           # Pull the `## v<VERSION>` section out of CHANGELOG.md (everything
           # from that heading to the next `## v` heading).
@@ -560,8 +563,9 @@ jobs:
 
       - name: Determine pre-release flag
         id: prerelease
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          REF="${{ github.event.inputs.tag || github.ref_name }}"
           VERSION="${REF#v}"
           if [[ "${VERSION}" == *-* ]]; then
             echo "prerelease=true" >> "${GITHUB_OUTPUT}"

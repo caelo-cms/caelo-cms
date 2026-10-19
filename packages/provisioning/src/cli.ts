@@ -192,8 +192,8 @@ function loadProvider(): Provider {
 }
 
 function saveProvider(provider: Provider): void {
-  if (!existsSync(CAELO_DIR)) mkdirSync(CAELO_DIR, { recursive: true });
-  writeFileSync(PROVIDER_PATH, JSON.stringify({ provider }, null, 2));
+  if (!existsSync(CAELO_DIR)) mkdirSync(CAELO_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(PROVIDER_PATH, JSON.stringify({ provider }, null, 2), { mode: 0o600 });
 }
 
 /**
@@ -238,8 +238,8 @@ function loadConfig(): CaeloConfig | null {
 }
 
 function saveConfig(c: CaeloConfig): void {
-  if (!existsSync(CAELO_DIR)) mkdirSync(CAELO_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2));
+  if (!existsSync(CAELO_DIR)) mkdirSync(CAELO_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2), { mode: 0o600 });
 }
 
 function arg(name: string): string | undefined {
@@ -601,7 +601,9 @@ async function init(): Promise<void> {
   // internal-secret`.
   const internalSecret = randomSecret(48);
   const internalSecretPath = resolve(CAELO_DIR, "internal-secret.json");
-  writeFileSync(internalSecretPath, JSON.stringify({ secret: internalSecret }, null, 2));
+  writeFileSync(internalSecretPath, JSON.stringify({ secret: internalSecret }, null, 2), {
+    mode: 0o600,
+  });
   // #696 Phase 4c — the update agent (Linux + systemd): the fresh volume's
   // bootstrap.sh creates its database login on Postgres's first start.
   const { reportAgentSetup, setUpAgent } = await import("./agent/command.js");

@@ -103,9 +103,24 @@ export function selfHostedSeedDomains(domain: string, stagingDomain: string): Ca
   ];
 }
 
+const UNSAFE_CADDY_TOKEN_RE = /[\s"{}#\\;]/;
+
+function assertSafeCaddyToken(label: string, value: string): void {
+  if (value.length === 0 || UNSAFE_CADDY_TOKEN_RE.test(value)) {
+    throw new Error(`Caddyfile: invalid ${label} ${JSON.stringify(value)}`);
+  }
+}
+
 export function generateCaddyfile(spec: CaddyfileSpec): string {
+  assertSafeCaddyToken("ownerEmail", spec.ownerEmail);
+  assertSafeCaddyToken("publicSiteRoot", spec.publicSiteRoot);
+  assertSafeCaddyToken("stagingSiteRoot", spec.stagingSiteRoot);
+  assertSafeCaddyToken("adminUpstream", spec.adminUpstream);
+  assertSafeCaddyToken("gatewayUpstream", spec.gatewayUpstream);
+
   const hostnames = new Set<string>();
   for (const d of spec.domains) {
+    assertSafeCaddyToken("hostname", d.hostname);
     if (hostnames.has(d.hostname)) {
       // Caddy refuses a config with two site blocks for one address, so a
       // duplicate would take every vhost down, not just this one.

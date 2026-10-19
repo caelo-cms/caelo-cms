@@ -47,12 +47,13 @@ export function listTarEntries(tar: Uint8Array): TarEntry[] {
       longLink = cString(body);
       continue;
     }
-    if (typeflag === "x" || typeflag === "g") {
+    if (typeflag === "g") {
+      throw new Error("tar archive contains unsupported pax global extended header");
+    }
+    if (typeflag === "x") {
       const pax = paxRecords(body);
-      if (typeflag === "x") {
-        paxPath = pax.path ?? null;
-        paxLink = pax.linkpath ?? null;
-      }
+      if (pax.path !== undefined) paxPath = pax.path;
+      if (pax.linkpath !== undefined) paxLink = pax.linkpath;
       continue;
     }
     const prefix = cString(header.subarray(345, 500));
@@ -75,12 +76,18 @@ export function listTarEntries(tar: Uint8Array): TarEntry[] {
 
 /** `./a/b/` → `a/b`; the archive root (`./`) → "". */
 export function normalizeMemberName(name: string): string {
-  return name.replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+  return name
+    .replace(/\/+/g, "/")
+    .replace(/^(\.\/)+/, "")
+    .replace(/\/+$/, "");
 }
 
 /** Whether a member name could write outside the extraction directory. */
 export function escapesRoot(name: string): boolean {
-  return name.startsWith("/") || name.split("/").some((part) => part === "..");
+  const normalized = name.replace(/\/+/g, "/").replace(/^(\.\/)+/, "");
+  return (
+    name.startsWith("/") || normalized.split("/").some((part) => part === ".." || part === ".")
+  );
 }
 
 function octal(field: Uint8Array): number {

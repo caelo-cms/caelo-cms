@@ -105,4 +105,18 @@ describe("Caddyfile TLS", () => {
     const out = generateCaddyfile({ ...spec, tls: "internal" });
     expect(out.startsWith("{\n  email owner@example.com\n  local_certs\n}\n")).toBe(true);
   });
+
+  it("rejects unsafe characters in ownerEmail and domain hostnames", () => {
+    expect(() => generateCaddyfile({ ...spec, ownerEmail: "owner@example.com\n  debug" })).toThrow(
+      /invalid ownerEmail/,
+    );
+    expect(() =>
+      generateCaddyfile({
+        ...spec,
+        domains: [
+          { hostname: "evil.example.com {\n  respond 200\n}", kind: "public", env: "production" },
+        ],
+      }),
+    ).toThrow(/invalid hostname/);
+  });
 });
