@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { registerAdminOps } from "@caelo-cms/admin-core";
+import { publishProjectionOnce, registerAdminOps } from "@caelo-cms/admin-core";
 import {
   bootstrap as bootstrapPluginHost,
   resetPluginHost,
@@ -43,7 +43,12 @@ const PFX = "vr844-";
 const OP = "ratings.submit";
 /** Allowlisted, but its plugin (comments) is never installed in this file. */
 const UNINSTALLED_OP = "comments.moderate";
-const EVENT_PLUGIN_ID = "11111111-2222-4333-8444-555555555555";
+/**
+ * The id a stale projection still lists the (uninstalled) comments plugin
+ * under: since #856, public_role may only record events of a plugin the
+ * projection lists, under its own slug.
+ */
+const STALE_COMMENTS_ID = "11111111-2222-4333-8444-555555555555";
 const POLL_MS = 25;
 
 let adapter: DatabaseAdapter;
@@ -51,6 +56,8 @@ let adminRegistry: OperationRegistry;
 let gateway: SQL;
 let pageId: string;
 let ratingId: string;
+/** The ratings plugin's id, as installed and published. */
+let ratingsPluginId: string;
 let prevSettings: {
   enabled: boolean;
   debounce_ms: number;
@@ -153,11 +160,15 @@ async function watermark(): Promise<string> {
   return rows[0]?.id ?? "0";
 }
 
-/** Insert one event as the gateway does (public_role); returns its id. */
+/**
+ * Insert one event as the gateway does (public_role), under the published
+ * plugin its operation names; returns its id.
+ */
 async function gatewayEvent(entityId: string, operation: string = OP): Promise<string> {
+  const pluginId = operation === UNINSTALLED_OP ? STALE_COMMENTS_ID : ratingsPluginId;
   await gateway`
     INSERT INTO gateway_plugin_op_events (plugin_id, operation, input_hash, succeeded, entity_id)
-    VALUES (${EVENT_PLUGIN_ID}::uuid, ${operation},${"c".repeat(64)}, true, ${entityId}::uuid)`;
+    VALUES (${pluginId}::uuid, ${operation},${"c".repeat(64)}, true, ${entityId}::uuid)`;
   // public_role may insert but not read back; look the id up as the system.
   const rows = (await adapter.withPublicTransaction(
     SYS,
@@ -249,13 +260,16 @@ beforeAll(async () => {
     systemActorId: SYS.actorId,
     testPlugins: [{ definition: ratingsPlugin }],
   });
-  const ratingsPluginId = await adapter.withAdminTransaction(SYS, async (tx) => {
+  const installedId = await adapter.withAdminTransaction(SYS, async (tx) => {
     const rows = (await tx.execute(
       sql`SELECT id::text AS id FROM plugins WHERE slug = 'ratings'`,
     )) as unknown as { id: string }[];
     return rows[0]?.id;
   });
-  if (!ratingsPluginId) throw new Error("ratings plugin row missing after bootstrap");
+  if (!installedId) throw new Error("ratings plugin row missing after bootstrap");
+  ratingsPluginId = installedId;
+  // The admin publishes the projection, so the gateway may record ratings events.
+  await publishProjectionOnce(adapter, { declarations: new Map() });
   const emitted = schemaFromSpec({
     pluginId: ratingsPluginId,
     slug: "ratings",
@@ -324,6 +338,7 @@ afterAll(async () => {
     });
   }
   await wipe();
+  await publishProjectionOnce(adapter, { declarations: new Map() });
   await gateway.end();
   await adapter.close();
 });
@@ -347,8 +362,17 @@ describe("visitor plugin op events and the automatic redeploy (PR #844)", () => 
 
   it("drops a forged event for a plugin that is not installed, advances, and still redeploys later events", async () => {
     await assertCommentsNotInstalled();
-    // comments.moderate is allowlisted, but the comments plugin has no row.
-    const forgedId = await gatewayEvent("00000000-0000-4000-8000-0000000000bb", UNINSTALLED_OP);
+    // comments.moderate is allowlisted, but the comments plugin has no row
+    // in cms_admin. The database lets the gateway record it only while a
+    // stale projection still lists comments (#856), so the orchestrator
+    // must check cms_admin itself.
+    await setStaleCommentsProjection(true);
+    let forgedId: string;
+    try {
+      forgedId = await gatewayEvent("00000000-0000-4000-8000-0000000000bb", UNINSTALLED_OP);
+    } finally {
+      await setStaleCommentsProjection(false);
+    }
     const validId = await gatewayEvent(ratingId);
     const logs = await runUntilConsumed(validId);
     expect(logs.tickErrors).toEqual([]);
@@ -415,6 +439,23 @@ async function assertCommentsNotInstalled(): Promise<void> {
   expect(rows[0]?.n).toBe(0);
 }
 
+/** List (or stop listing) the uninstalled comments plugin in the published projection. */
+async function setStaleCommentsProjection(listed: boolean): Promise<void> {
+  await adapter.withPublicTransaction(SYS, async (tx) => {
+    await tx.execute(sql`DELETE FROM published_plugins WHERE slug = 'comments'`);
+    if (listed) {
+      await tx.execute(sql`
+        INSERT INTO published_plugins (id, slug, tier, version)
+        VALUES (${STALE_COMMENTS_ID}::uuid, 'comments', 1, '1.0.0')`);
+    }
+  });
+}
+
+/**
+ * Flip the plugin's status in cms_admin only. The projection is not
+ * republished, so it still lists ratings as active (the outbox drain lags
+ * the admin write) and the gateway can still record its events.
+ */
 async function setRatingsStatus(status: "active" | "disabled"): Promise<void> {
   await withAdminSql(async (tx) => {
     await tx`UPDATE plugins SET status = ${status} WHERE slug = 'ratings'`;
