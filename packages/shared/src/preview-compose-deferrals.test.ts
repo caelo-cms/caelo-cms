@@ -14,6 +14,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { Parser } from "htmlparser2";
 import { type ComposeDeferral, composePageWithLayout } from "./preview-compose.js";
 
 const LAYOUT = '<html><head></head><body><caelo-slot name="content">_</caelo-slot></body></html>';
@@ -141,4 +142,106 @@ describe("composer — withheld modules", () => {
     expect(html).not.toContain('onload="evil()"');
     expect(html).toContain("&quot;");
   });
+
+  it("prevents </template>, </style>, and </script> inside withheld modules from breaking out of the inert template", () => {
+    const breakout = {
+      ...VIDEO,
+      html: "<div></template><script>alert(1)</script></div>",
+      css: ".v{content:'</style></template><script>alert(2)</script>'}",
+      js: 'const x = "</script></template><script>alert(3)</script>";',
+    };
+    const { html } = composePageWithLayout({
+      templateHtml: TEMPLATE,
+      templateCss: "",
+      blocks: [{ blockName: "main", modules: [breakout] }],
+      layoutHtml: LAYOUT,
+      layoutCss: "",
+      layoutBlocks: [],
+      deferredModules: { [VIDEO.moduleId]: DEFERRAL },
+    });
+    // None of the module's scripts may end up outside the inert template.
+    expect(liveScripts(html).filter((s) => s.includes("alert"))).toEqual([]);
+    expect(html).toContain("&lt;/template><script>alert(1)</script></div>");
+  });
+
+  it("parks JS that could end its <script> as base64 carrying the exact bytes", () => {
+    // `0</script/.test(v)` is valid JS that any `<\/script` rewrite breaks,
+    // and `<!--` + `<script` would keep the browser from ending the element.
+    const js = "window.r = [0</script/.test('x'), '<!--<script>'];";
+    const { html } = composePageWithLayout({
+      templateHtml: TEMPLATE,
+      templateCss: "",
+      blocks: [{ blockName: "main", modules: [{ ...VIDEO, js }] }],
+      layoutHtml: LAYOUT,
+      layoutCss: "",
+      layoutBlocks: [],
+      deferredModules: { [VIDEO.moduleId]: DEFERRAL },
+    });
+    const m =
+      /<script type="text\/plain" data-caelo-deferred-script="[^"]+" data-caelo-encoding="base64">([^<]*)<\/script>/.exec(
+        html,
+      );
+    expect(m).not.toBeNull();
+    expect(Buffer.from(m?.[1] ?? "", "base64").toString("utf8")).toBe(js);
+  });
+
+  it("escapes </style in live module CSS so it cannot add markup to <head>", () => {
+    const { html } = composePageWithLayout({
+      templateHtml: TEMPLATE,
+      templateCss: "",
+      blocks: [
+        { blockName: "main", modules: [{ ...VIDEO, css: ".v{content:'</STYLE><meta x>'}" }] },
+      ],
+      layoutHtml: LAYOUT,
+      layoutCss: "",
+      layoutBlocks: [],
+    });
+    const head = html.slice(0, html.indexOf("</head>"));
+    expect(head).toContain(".v{content:'<\\/STYLE><meta x>'}");
+    expect(head.toLowerCase()).not.toContain("</style><meta");
+  });
+
+  it("keeps a balanced nested <template> inside a withheld module intact", () => {
+    const nested = { ...VIDEO, html: "<ul><template id=row><li>x</li></template></ul>" };
+    const { html } = composePageWithLayout({
+      templateHtml: TEMPLATE,
+      templateCss: "",
+      blocks: [{ blockName: "main", modules: [nested] }],
+      layoutHtml: LAYOUT,
+      layoutCss: "",
+      layoutBlocks: [],
+      deferredModules: { [VIDEO.moduleId]: DEFERRAL },
+    });
+    expect(html).toContain("<template id=row><li>x</li></template></ul></template></div>");
+  });
 });
+
+/**
+ * The text of every `<script>` a browser would run because it sits outside
+ * any `<template>` — tokenized like a browser (style / script bodies are
+ * raw text, so a `</template` inside them is not a tag).
+ */
+function liveScripts(html: string): string[] {
+  const scripts: string[] = [];
+  let templateDepth = 0;
+  let current: string | null = null;
+  const parser = new Parser({
+    onopentag(name) {
+      if (name === "template") templateDepth++;
+      if (name === "script" && templateDepth === 0) current = "";
+    },
+    ontext(text) {
+      if (current !== null) current += text;
+    },
+    onclosetag(name) {
+      if (name === "template") templateDepth--;
+      if (name === "script" && current !== null) {
+        scripts.push(current);
+        current = null;
+      }
+    },
+  });
+  parser.write(html);
+  parser.end();
+  return scripts;
+}

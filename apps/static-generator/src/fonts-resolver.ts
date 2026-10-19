@@ -38,6 +38,7 @@ import {
   extractThemeFontRequests,
   type FontAxisPolicy,
   type FontRequest,
+  fontFaceProblem,
   fontFamilySlug,
   fontWeightDescriptor,
   googleFontsCssUrl,
@@ -316,14 +317,22 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
       memo.set(key, manifest);
     }
     const slug = fontFamilySlug(req.family);
+    const familyFaces: ResolvedFontFace[] = manifest.faces.map((face) => ({
+      family: face.family,
+      style: face.style,
+      weight: face.weight,
+      unicodeRange: face.unicodeRange,
+      publicUrl: `${args.publicBasePath}/${slug}/${face.fileName}`,
+    }));
+    // The descriptors come from the remote fonts CSS; one outside the
+    // descriptor grammar makes the whole family unresolved (loud), never
+    // a scrubbed rule.
+    if (familyFaces.some((face) => fontFaceProblem(face) !== null)) {
+      unresolved.push(`${req.family}:InvalidFontFace`);
+      continue;
+    }
+    resolvedFaces.push(...familyFaces);
     for (const face of manifest.faces) {
-      resolvedFaces.push({
-        family: face.family,
-        style: face.style,
-        weight: face.weight,
-        unicodeRange: face.unicodeRange,
-        publicUrl: `${args.publicBasePath}/${slug}/${face.fileName}`,
-      });
       files.push({
         cachePath: join(args.cacheDir, slug, face.fileName),
         relPath: `${slug}/${face.fileName}`,

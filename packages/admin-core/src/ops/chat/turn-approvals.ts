@@ -34,7 +34,7 @@ import { recordAudit } from "../../audit.js";
 import type { Permission } from "../../permissions.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { approverRefusal } from "../_approver-permission.js";
-import { getMcpBridge, resolveMcpToken } from "../security/mcp_tokens.js";
+import { getMcpBridge, mcpTokenAuthErrorMessage, resolveMcpToken } from "../security/mcp_tokens.js";
 import {
   type ChatApprovalState,
   chatApprovalStateOf,
@@ -567,7 +567,7 @@ export const mcpGetChatApprovalStateOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "mcp.get_chat_approval_state",
-        message: `auth_error: token ${resolved.error}`,
+        message: mcpTokenAuthErrorMessage(resolved.error),
       });
     }
     const rows = await tokenApprovals(

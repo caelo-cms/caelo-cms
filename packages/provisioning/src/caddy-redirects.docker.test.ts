@@ -47,6 +47,8 @@ const LIVE = "example.test";
 const STAGING = "staging.example.test";
 const CADDY_DIR = resolve(import.meta.dir, "../caddy");
 const SERVED = ["index.html", "about/index.html", "blog/index.html"];
+/** Consecutive matching answers that count as "the reload settled". */
+const SETTLED_PROBES = 5;
 
 function docker(args: string[]): { ok: boolean; out: string } {
   const r = Bun.spawnSync(["docker", ...args], { stdout: "pipe", stderr: "pipe" });
@@ -100,11 +102,25 @@ describe.skipIf(!dockerUp)(`self-hosted redirects through ${CADDY_IMAGE}`, () =>
     const location = head.match(/^location: ([^\r\n]*)/im)?.[1]?.trim() ?? null;
     return { status, location };
   };
+  /**
+   * Waits until `path` answers with `location` on {@link SETTLED_PROBES}
+   * consecutive connections. One matching answer is not enough: Caddy's
+   * graceful reload keeps the old config's listener open next to the new
+   * one (SO_REUSEPORT) while it drains, so the connection after the first
+   * new answer can still reach the old config (CI runs 38867358899 and
+   * 39242522450). Only a streak of new answers shows the reload settled.
+   */
   const eventually = async (host: string, path: string, location: string | null) => {
     const deadline = Date.now() + 30_000;
+    let streak = 0;
     for (;;) {
       const got = probe(host, path).location;
-      if (got === location) return;
+      streak = got === location ? streak + 1 : 0;
+      if (streak >= SETTLED_PROBES) return;
+      if (got === location) {
+        await Bun.sleep(200);
+        continue;
+      }
       if (Date.now() > deadline) {
         throw new Error(
           `${host}${path} → ${got}, expected ${location}: ${docker(["logs", name]).out}`,
@@ -241,11 +257,8 @@ describe.skipIf(!dockerUp)(`self-hosted redirects through ${CADDY_IMAGE}`, () =>
   it("the reload loop picks up a deploy's new snippet", async () => {
     write("production", snippet([["/brand-new", "/blog", 301]]));
     await eventually(LIVE, "/brand-new", "/blog/");
-    // Caddy's graceful reload keeps the old config's listener open for a
-    // moment next to the new one (SO_REUSEPORT), so a connection right
-    // after the first new answer can still reach the old config: the old
-    // redirect may answer once more (CI run 38867358899). What must hold is
-    // that the new snippet REPLACES the old one once the reload settled.
+    // What must hold is that the new snippet REPLACES the old one once the
+    // reload settled (see `eventually` for why one answer is not enough).
     await eventually(LIVE, "/old", null);
     expect(probe(LIVE, "/old").status).toBe(404);
     expect(probe(LIVE, "/brand-new").location).toBe("/blog/");
