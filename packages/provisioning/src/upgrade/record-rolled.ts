@@ -62,8 +62,15 @@ export async function recordRolledDigests(
       imageDigests: digests,
       ...(releaseVersion ? { releaseVersion } : {}),
     };
+    // With no known version the fix must REMOVE the recorded one: left in
+    // place, the previous release's version would sit next to the new
+    // digests, and the upgrader (which matches records by digest only)
+    // would judge the next update's downgrade / minFromVersion against it.
+    const versionFix = releaseVersion
+      ? ""
+      : '\nAlso delete the "releaseVersion" field from that file: it names the previous release, not the one that serves now.';
     log.error(
-      `The new release serves, but its digests could not be recorded in ${deps.installJsonLocation} (${reason(e)}). Set these fields there before anything else, or a re-run of the installer deploys another release and in-product updates refuse to run:\n${JSON.stringify(fields, null, 2)}`,
+      `The new release serves, but its digests could not be recorded in ${deps.installJsonLocation} (${reason(e)}). Set these fields there before anything else, or a re-run of the installer deploys another release and in-product updates refuse to run:\n${JSON.stringify(fields, null, 2)}${versionFix}`,
     );
   }
   try {

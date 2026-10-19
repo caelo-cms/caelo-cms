@@ -54,7 +54,11 @@ const verified = (m: Partial<ReleaseManifest> = {}): ReleaseManifestResult => ({
 });
 const broken = (
   code: "registry" | "signature" | "schema" | "blob-digest" | "version-mismatch" | "artifact-shape",
-): ReleaseManifestResult => ({ ok: false, error: { code, message: `${code} problem` } });
+  transient?: true,
+): ReleaseManifestResult => ({
+  ok: false,
+  error: { code, message: `${code} problem`, ...(transient ? { transient } : {}) },
+});
 
 interface Row {
   readonly name: string;
@@ -73,9 +77,16 @@ const ROWS: readonly Row[] = [
   { name: "a signed, newer, app-only release", expect: "proceed" },
   {
     name: "registry unreachable",
-    manifest: broken("registry"),
+    manifest: broken("registry", true),
     expect: "failed/registry",
-    reasonContains: "Nothing was changed",
+    reasonContains: "try again later",
+  },
+  {
+    // Regression #865: a 404 never heals, so it must not end retryable.
+    name: "no signed manifest for the target (404)",
+    manifest: broken("registry"),
+    expect: "refused/manifest-missing",
+    reasonContains: "has no signed release manifest",
   },
   { name: "bad signature", manifest: broken("signature"), expect: "refused/signature" },
   { name: "tampered blob", manifest: broken("blob-digest"), expect: "refused/signature" },
