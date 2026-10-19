@@ -613,6 +613,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # This job runs a downloaded third-party binary; nothing here
+          # pushes, so the checkout token must not sit in .git/config.
+          persist-credentials: false
 
       - name: Install mcp-publisher (pinned + checksum-verified)
         run: |
