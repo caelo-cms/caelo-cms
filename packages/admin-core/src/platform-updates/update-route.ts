@@ -73,6 +73,10 @@ export function chooseUpdateRoute(input: UpdateRouteInput): UpdateRoute {
     return { ok: true, route: "app_roll", why: "no change to the cloud setup" };
   }
   if (input.provider === "aws" || input.provider === "azure") {
+    // FIXME(issue #696): AWS and Azure have no in-cloud upgrader or converge
+    // job yet (CLAUDE.md §11.B/§11.C want the same shape on every adapter).
+    // Until they do, a cloud-setup release is refused here with the command
+    // that installs it; the refusal must stay honest, never a silent no-op.
     return {
       ok: false,
       error: `v${input.targetVersion} changes this install's cloud setup. Installing such releases from Caelo is available on Google Cloud installs only so far; on ${input.provider === "aws" ? "AWS" : "Azure"} run the upgrade from the computer you installed from (the provisioning CLI).`,
