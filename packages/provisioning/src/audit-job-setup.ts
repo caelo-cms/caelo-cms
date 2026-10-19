@@ -56,6 +56,7 @@ import {
 } from "./gcp-names.js";
 import { readAdminConfig } from "./migration-runner.js";
 import type { GcpProvider } from "./stack-contract.js";
+import { describeAuditJobImage } from "./upgrade/audit-job-roll.js";
 
 /** Where the admin image ships the task's entry point. */
 export const AUDIT_TASK_SCRIPT = "/app/packages/admin-core/src/quality/audit-task.ts";
@@ -104,7 +105,8 @@ export interface AuditJobTarget {
   /**
    * Tasks at once (`auditParallelism`, 1–15). Absent on converge: an
    * existing job keeps the value it has, so an operator's choice survives
-   * `upgrade`.
+   * `upgrade`; a job the converge creates gets
+   * {@link AUDIT_PARALLELISM_DEFAULT}, as a fresh install's does.
    */
   readonly parallelism?: number;
 }
@@ -278,7 +280,15 @@ export async function ensureAuditJob(
   if (!logs.ok) return fail("grant the audit job roles/logging.logWriter", logs);
   done.push("audit job: roles/logging.logWriter on the project");
 
-  // 5. The job: the admin image, its own SA, no secrets, no VPC.
+  // 5. The job: the admin image, its own SA, no secrets, no VPC. A job
+  //    created without a parallelism would run every task at once with no
+  //    cap; an existing job keeps its own.
+  let parallelism = target.parallelism;
+  if (parallelism === undefined) {
+    const existing = await describeAuditJobImage(run, { projectId, region, env });
+    if (!existing.ok) return { ok: false, done, error: `read job ${job}: ${existing.error}` };
+    if (existing.image === null) parallelism = AUDIT_PARALLELISM_DEFAULT;
+  }
   const envVars = [
     `CAELO_PROVIDER=${provider}`,
     `CAELO_AUDIT_RESULTS_BUCKET=${results}`,
@@ -306,7 +316,7 @@ export async function ensureAuditJob(
     // Lighthouse wants two cores: the browser and the trace processing.
     "--cpu=2",
     "--memory=2Gi",
-    ...(target.parallelism !== undefined ? [`--parallelism=${target.parallelism}`] : []),
+    ...(parallelism !== undefined ? [`--parallelism=${parallelism}`] : []),
     "--quiet",
   ]);
   if (!deploy.ok) return fail(`deploy job ${job}`, deploy);

@@ -36,12 +36,18 @@ export function lighthouseRunnerFromEnv(env: NodeJS.ProcessEnv): LighthouseRunne
       ok: false,
       failure: {
         code: "child-failed",
-        message: `quality audits have no parallel audit job on provider "${provider}" — the audit is recorded as failed so the gap stays visible`,
+        message: `quality audits have no parallel audit job on provider "${provider}" yet (${PENDING_AUDIT_JOB_ISSUE[provider] ?? "no tracking issue"}) — the audit is recorded as failed so the gap stays visible`,
       },
     });
   }
   return createParallelAuditRunner({ launcher });
 }
+
+/** Where each provider's missing audit job is tracked (its stack's FIXME). */
+const PENDING_AUDIT_JOB_ISSUE: Readonly<Record<string, string>> = {
+  aws: "issue #749: a Fargate task per run",
+  azure: "issue #750: a Container Apps job per run",
+};
 
 function launcherFor(provider: string, env: NodeJS.ProcessEnv): AuditTaskLauncher | null {
   if (provider === "gcp" || provider === "gcp-firebase") return gcpAuditLauncherFromEnv(env);

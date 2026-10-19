@@ -10,8 +10,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
   AUDIT_FORBIDDEN_ROLES,
+  AUDIT_PARALLELISM_DEFAULT,
   AUDIT_TASK_SCRIPT,
   type AuditJobTarget,
   ensureAuditJob,
@@ -108,6 +111,14 @@ describe("ensureAuditJob", () => {
     ]);
   });
 
+  it("points the job at a task script the admin image ships", () => {
+    // The image copies the repo's packages/ to /app/packages (apps/admin/Dockerfile);
+    // a moved script would only fail when the first audit starts.
+    const repoRoot = join(import.meta.dir, "..", "..", "..");
+    expect(AUDIT_TASK_SCRIPT.startsWith("/app/packages/")).toBe(true);
+    expect(existsSync(join(repoRoot, AUDIT_TASK_SCRIPT.slice("/app/".length)))).toBe(true);
+  });
+
   it("deploys the admin image as its own SA with no secrets and no VPC", async () => {
     const { run, calls } = fakeGcloud();
     await ensureAuditJob(TARGET, { run, sleep: async () => {} });
@@ -141,11 +152,32 @@ describe("ensureAuditJob", () => {
   });
 
   it("keeps an existing bucket and an operator's parallelism on converge", async () => {
-    const { run, calls } = fakeGcloud([[/^storage buckets list/, ok(`gs://${RESULTS}/\n`)]]);
+    const { run, calls } = fakeGcloud([
+      [/^storage buckets list/, ok(`gs://${RESULTS}/\n`)],
+      [/^run jobs describe caelo-production-audit /, ok(`${ADMIN_IMAGE}\n`)],
+    ]);
     const { parallelism: _, ...converge } = TARGET;
-    await ensureAuditJob(converge, { run, sleep: async () => {} });
+    expect((await ensureAuditJob(converge, { run, sleep: async () => {} })).ok).toBe(true);
     expect(calls.some((c) => c.slice(0, 3).join(" ") === "storage buckets create")).toBe(false);
     expect(flag(deployOf(calls), "parallelism")).toBeUndefined();
+  });
+
+  it("gives a job the converge creates the default parallelism, as a fresh install's", async () => {
+    const { run, calls } = fakeGcloud([
+      [/^run jobs describe/, fail("ERROR: Cannot find job [caelo-production-audit]. NOT_FOUND")],
+    ]);
+    const { parallelism: _, ...converge } = TARGET;
+    const r = await ensureAuditJob(converge, { run, sleep: async () => {} });
+    expect(r.ok).toBe(true);
+    expect(flag(deployOf(calls), "parallelism")).toBe(String(AUDIT_PARALLELISM_DEFAULT));
+  });
+
+  it("refuses to redeploy a job it cannot read on converge", async () => {
+    const { run, calls } = fakeGcloud([[/^run jobs describe/, fail("PERMISSION_DENIED")]]);
+    const { parallelism: _, ...converge } = TARGET;
+    const r = await ensureAuditJob(converge, { run, sleep: async () => {} });
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("PERMISSION_DENIED") });
+    expect(deployOf(calls)).toBeUndefined();
   });
 
   it("on gcp-firebase reads no bucket: the task audits the public preview channel", async () => {
