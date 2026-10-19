@@ -348,7 +348,24 @@ function lookupPath(doc: ThemeDocument, path: string): AnyThemeToken | null {
 // Per-category CSS emission
 // ────────────────────────────────────────────────────────────────────
 
-const SAFE_CSS_IDENT_PART_RE = /^[a-zA-Z0-9_-]+$/;
+/**
+ * Serialize a token-path segment as part of a CSS custom-property name, the
+ * way `CSS.escape` does: ASCII letters, digits, `-`, `_` and every
+ * non-ASCII character stay as they are (so `color.grün` is still
+ * `--color-grün`), anything else becomes a hex escape. A theme key can
+ * therefore never end the declaration, the rule, or the surrounding
+ * `<style>` element.
+ */
+function escapeCssIdentPart(part: string): string {
+  let out = "";
+  for (const ch of part) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp === 0) out += "\\fffd ";
+    else if (/[A-Za-z0-9_-]/.test(ch) || cp >= 0x80) out += ch;
+    else out += `\\${cp.toString(16)} `;
+  }
+  return out;
+}
 
 function emitTokenLines(
   category: string,
@@ -371,13 +388,12 @@ function emitTokenLines(
   // every category (color/spacing/radius/etc.) so any future
   // DTCG-group-with-DEFAULT-alias works the same way.
   const restRaw = path.slice(category.length + 1);
-  const rest = restRaw.endsWith(".DEFAULT")
-    ? restRaw.slice(0, -".DEFAULT".length).replace(/\./g, "-")
-    : restRaw.replace(/\./g, "-");
-  if (!SAFE_CSS_IDENT_PART_RE.test(category) || !SAFE_CSS_IDENT_PART_RE.test(rest)) {
-    return;
-  }
-  const baseName = `--${category === "ease" ? "ease" : category}-${rest}`;
+  const rest = escapeCssIdentPart(
+    restRaw.endsWith(".DEFAULT")
+      ? restRaw.slice(0, -".DEFAULT".length).replace(/\./g, "-")
+      : restRaw.replace(/\./g, "-"),
+  );
+  const baseName = `--${category === "ease" ? "ease" : escapeCssIdentPart(category)}-${rest}`;
 
   switch (category) {
     case "color":

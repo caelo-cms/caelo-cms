@@ -183,7 +183,9 @@ export function injectPluginAssets(
       .map((a) =>
         mode === "linked"
           ? `<link rel="stylesheet" href="${escapeAttr(a.publicPath)}" data-caelo-plugin="${escapeAttr(a.pluginSlug)}" />`
-          : `<style data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${a.content.replace(/<\/style/gi, "<\\/style")}\n</style>`,
+          : // `<\/style` means what `</style` means wherever CSS can hold it
+            // (strings, url(), comments), so this escape keeps the CSS intact.
+            `<style data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${a.content.replace(/<\/style/gi, "<\\/style")}\n</style>`,
       )
       .join("\n");
     // A function replacer: a string one would expand `$&` / `$'` inside
@@ -195,10 +197,26 @@ export function injectPluginAssets(
       .map((a) =>
         mode === "linked"
           ? `<script defer src="${escapeAttr(a.publicPath)}" data-caelo-plugin="${escapeAttr(a.pluginSlug)}"></script>`
-          : `<script defer data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${a.content.replace(/<\/script/gi, "<\\/script")}\n</script>`,
+          : inlineScriptTag(a),
       )
       .join("\n");
     out = out.replace(BODY_CLOSE_RE, () => `${block}\n</body>`);
   }
   return out;
+}
+
+/**
+ * The preview's inline form of a JS asset. Verbatim when the source cannot
+ * close the element; otherwise a base64 `data:` URL, because no textual
+ * rewrite of `</script` keeps every JavaScript program's meaning (a regex
+ * literal or `String.raw` observes an inserted backslash). Both forms run
+ * the identical bytes the deploy links.
+ */
+function inlineScriptTag(asset: PluginClientAsset): string {
+  const slug = escapeAttr(asset.pluginSlug);
+  if (!/<\/script/i.test(asset.content)) {
+    return `<script defer data-caelo-plugin="${slug}">\n${asset.content}\n</script>`;
+  }
+  const encoded = Buffer.from(asset.content, "utf8").toString("base64");
+  return `<script defer src="data:text/javascript;charset=utf-8;base64,${encoded}" data-caelo-plugin="${slug}"></script>`;
 }

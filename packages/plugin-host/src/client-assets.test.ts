@@ -101,4 +101,14 @@ describe("plugin client assets — page injection", () => {
     expect(html).not.toContain("</style><script>");
     expect(html).not.toContain("</script><script>");
   });
+
+  it("ships a JS asset that spells </script as a data: URL carrying the exact bytes", () => {
+    // `0</script/.test(v)` is valid JS that any `<\/script` rewrite breaks.
+    const content = "const v = 1; window.r = 0</script/.test(String(v));";
+    const html = injectPluginAssets(DOC, [asset({ kind: "js", content })], "inline");
+    const src = /<script defer src="data:text\/javascript;charset=utf-8;base64,([^"]+)"/.exec(html);
+    expect(src).not.toBeNull();
+    expect(Buffer.from(src?.[1] ?? "", "base64").toString("utf8")).toBe(content);
+    expect(html).not.toContain("0</script/");
+  });
 });

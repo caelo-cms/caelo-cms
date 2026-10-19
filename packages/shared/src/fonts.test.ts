@@ -10,6 +10,7 @@ import { describe, expect, it } from "bun:test";
 import {
   buildFontFaceCss,
   extractThemeFontRequests,
+  fontFaceProblem,
   fontUnresolvableMarker,
   googleFontsCssUrl,
   isSystemFontFamily,
@@ -156,17 +157,38 @@ describe("fontUnresolvableMarker", () => {
   });
 });
 
-describe("buildFontFaceCss sanitization", () => {
-  it("scrubs </style> and CSS block delimiters from face properties", () => {
-    const css = buildFontFaceCss([
-      {
-        family: "Evil</style><script>alert(1)</script>",
-        style: "normal;}</style><script>",
-        weight: "400;}</style>",
-        unicodeRange: "U+0000-00FF;</style>",
-        publicUrl: "/_assets/fonts/x.woff2)</style>",
-      },
-    ]);
+describe("buildFontFaceCss descriptor validation", () => {
+  const good = {
+    family: "Inter",
+    style: "normal",
+    weight: "400",
+    unicodeRange: "U+0000-00FF, U+0131, U+0152-0153",
+    publicUrl: "/_assets/fonts/inter/abc123.woff2",
+  };
+
+  it("accepts the descriptor shapes a css2 response carries", () => {
+    expect(fontFaceProblem(good)).toBeNull();
+    expect(fontFaceProblem({ ...good, style: "italic", weight: "100 900" })).toBeNull();
+    expect(fontFaceProblem({ ...good, style: "oblique 0deg 10deg" })).toBeNull();
+    expect(fontFaceProblem({ ...good, unicodeRange: null })).toBeNull();
+    expect(fontFaceProblem({ ...good, unicodeRange: "U+4??" })).toBeNull();
+  });
+
+  it("refuses descriptors that could close the <style> or add rules, instead of scrubbing them", () => {
+    expect(fontFaceProblem({ ...good, style: "normal;}</style><script>" })).toMatch(/font-style/);
+    expect(fontFaceProblem({ ...good, weight: "400;}</style>" })).toMatch(/font-weight/);
+    expect(fontFaceProblem({ ...good, unicodeRange: "U+0000-00FF;</style>" })).toMatch(
+      /unicode-range/,
+    );
+    expect(fontFaceProblem({ ...good, publicUrl: "/x.woff2)</style>" })).toMatch(/url/);
+    expect(() => buildFontFaceCss([{ ...good, weight: "400}</style>" }])).toThrow(
+      /invalid font-weight/,
+    );
+  });
+
+  it("writes a family name's < as a CSS escape so it cannot spell </style", () => {
+    const css = buildFontFaceCss([{ ...good, family: "Evil</style><script>alert(1)</script>" }]);
     expect(css.toLowerCase()).not.toContain("</style");
+    expect(css).toContain("Evil\\3c /style>");
   });
 });

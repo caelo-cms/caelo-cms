@@ -62,7 +62,7 @@ describe("renderThemeCss CSS-token sanitization (S6)", () => {
     );
   });
 
-  it("skips token keys containing characters outside CSS custom property identifiers", () => {
+  it("escapes token keys outside CSS identifier characters instead of letting them end the rule", () => {
     const doc = {
       color: {
         "primary;--x:1}</style><script>": { $type: "color", $value: "#000" },
@@ -71,6 +71,15 @@ describe("renderThemeCss CSS-token sanitization (S6)", () => {
     } as unknown as ThemeDocument;
     const css = renderThemeCss(doc);
     expect(css.toLowerCase()).not.toContain("</style");
+    expect(css).not.toContain("}</");
+    expect(css).toContain("--color-primary\\3b --x\\3a 1\\7d \\3c \\2f style\\3e ");
     expect(css).toContain("--color-valid:#fff;");
+  });
+
+  it("keeps non-ASCII token names as they are (valid CSS identifiers)", () => {
+    const doc = {
+      color: { grün: { $type: "color", $value: "#0a0" } },
+    } as unknown as ThemeDocument;
+    expect(renderThemeCss(doc)).toContain("--color-grün:#0a0;");
   });
 });

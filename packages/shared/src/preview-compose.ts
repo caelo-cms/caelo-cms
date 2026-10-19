@@ -40,6 +40,7 @@ import {
   listSlotNames,
 } from "./preview-scanner.js";
 import { stripCdataGuards } from "./strip-cdata.js";
+import { balanceTemplateCloses } from "./template-balance.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";
 import { renderThemeCss as renderThemeCssFromTokens } from "./theme-render.js";
 import type { ThemeDocument } from "./themes.js";
@@ -635,11 +636,13 @@ function wrapDeferredModule(
 ): string {
   const attr = (v: string): string =>
     v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
-  const safeStyle = (v: string): string =>
-    v.replace(/<\/style/gi, "<\\/style").replace(/<\/template/gi, "<\\/template");
-  const safeScript = (v: string): string =>
-    v.replace(/<\/script/gi, "<\\/script").replace(/<\/template/gi, "<\\/template");
-  const safeHtml = moduleHtml.replace(/<\/template/gi, "&lt;/template");
+  // Inside the inert <template>, only an element's own end tag ends a
+  // <style> / <script>; a `</template` there is text. So CSS and JS need
+  // just their own close escaped, and the markup needs its unmatched
+  // `</template>` closes neutralized (balanced nested templates stay).
+  const safeStyle = (v: string): string => v.replace(/<\/style/gi, "<\\/style");
+  const safeScript = (v: string): string => v.replace(/<\/script/gi, "<\\/script");
+  const safeHtml = balanceTemplateCloses(moduleHtml);
   const gated = [module, ...nestedModules];
   const css = gated
     .filter((g) => g.css.trim().length > 0)

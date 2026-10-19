@@ -158,7 +158,27 @@ describe("composer — withheld modules", () => {
       layoutBlocks: [],
       deferredModules: { [VIDEO.moduleId]: DEFERRAL },
     });
-    const templateCloses = [...html.matchAll(/<\/template>/gi)];
-    expect(templateCloses).toHaveLength(1);
+    // Raw-text bodies end at their own first close tag (a `</template` in
+    // them is text), so drop them the way the tokenizer reads them; what
+    // remains may close a template exactly once: the wrapper.
+    const tokenized = html
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "<style></style>")
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "<script></script>");
+    expect([...tokenized.matchAll(/<\/template>/gi)]).toHaveLength(1);
+    expect(html).toContain("&lt;/template><script>alert(1)</script></div>");
+  });
+
+  it("keeps a balanced nested <template> inside a withheld module intact", () => {
+    const nested = { ...VIDEO, html: "<ul><template id=row><li>x</li></template></ul>" };
+    const { html } = composePageWithLayout({
+      templateHtml: TEMPLATE,
+      templateCss: "",
+      blocks: [{ blockName: "main", modules: [nested] }],
+      layoutHtml: LAYOUT,
+      layoutCss: "",
+      layoutBlocks: [],
+      deferredModules: { [VIDEO.moduleId]: DEFERRAL },
+    });
+    expect(html).toContain("<template id=row><li>x</li></template></ul></template></div>");
   });
 });
