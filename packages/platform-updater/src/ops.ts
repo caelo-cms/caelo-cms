@@ -26,16 +26,19 @@ import {
   PLATFORM_UPDATE_STALE_REASON,
   PLATFORM_UPDATE_TRIGGERS,
   type StoredUpdatePolicy,
+  UPDATE_POLICY_CHANNELS,
+  UPDATE_POLICY_MODES,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 
 const policySchema = z.object({
-  mode: z.enum(["off", "notify", "auto"]),
+  mode: z.enum(UPDATE_POLICY_MODES),
   autoSecurity: z.boolean(),
   autoPatch: z.boolean(),
   autoMinor: z.boolean(),
-  channel: z.enum(["stable", "rc", "beta", "alpha"]),
+  autoConverge: z.boolean(),
+  channel: z.enum(UPDATE_POLICY_CHANNELS),
   windowStart: z.string().nullable(),
   windowEnd: z.string().nullable(),
   windowTimezone: z.string(),
@@ -149,7 +152,7 @@ export const jobClaimOp = defineOperation({
     const row = resumed ?? claimed[0];
     if (!row) return ok({ recovered: stale.map((s) => s.id), claimed: null });
     const policies = (await tx.execute(sql`
-      SELECT mode, auto_security, auto_patch, auto_minor, channel,
+      SELECT mode, auto_security, auto_patch, auto_minor, auto_converge, channel,
              to_char(window_start, 'HH24:MI') AS window_start,
              to_char(window_end, 'HH24:MI') AS window_end,
              window_timezone, soak_hours, security_soak_hours, paused, paused_reason,
@@ -160,6 +163,7 @@ export const jobClaimOp = defineOperation({
       auto_security: boolean;
       auto_patch: boolean;
       auto_minor: boolean;
+      auto_converge: boolean;
       channel: StoredUpdatePolicy["channel"];
       window_start: string | null;
       window_end: string | null;
@@ -193,6 +197,7 @@ export const jobClaimOp = defineOperation({
           autoSecurity: p.auto_security,
           autoPatch: p.auto_patch,
           autoMinor: p.auto_minor,
+          autoConverge: p.auto_converge,
           channel: p.channel,
           windowStart: p.window_start,
           windowEnd: p.window_end,

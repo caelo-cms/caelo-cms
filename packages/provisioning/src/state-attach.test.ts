@@ -197,7 +197,7 @@ describe("state locks", () => {
     };
     const release = acquireBucketStateLock("acme-site-caelo-ops", "state migrate", run);
     expect(() => acquireBucketStateLock("acme-site-caelo-ops", "installer pulumi up", run)).toThrow(
-      /gcloud storage rm gs:\/\/acme-site-caelo-ops\/install\/state.lock/,
+      /held by state migrate .*lease runs until/,
     );
     release();
     acquireBucketStateLock("acme-site-caelo-ops", "installer pulumi up", run)();

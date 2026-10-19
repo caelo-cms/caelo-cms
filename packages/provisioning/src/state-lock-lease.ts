@@ -20,15 +20,25 @@
  *     here — the caller reports the error; guessing "dead" could let two
  *     runs write the same state.
  *
- * A lock without an execution (a CLI run on someone's machine, or a lock
- * written before #815) cannot be checked from the cloud, so it is never
- * broken automatically; its holder message names the command to remove it.
+ * A lock taken by a process outside Cloud Run (a CLI run on someone's
+ * machine or in Cloud Shell) names its host and pid and carries a short
+ * lease that the holder renews while it runs (the heartbeat in
+ * state-store.ts). Such a lock is broken when:
+ *
+ *   - it was taken on THIS host and its pid is no longer alive (a killed
+ *     CLI on the same machine — no need to wait for the lease), or
+ *   - its lease has expired: the holder stopped renewing it (killed, or a
+ *     closed Cloud Shell), so it can no longer be writing.
+ *
+ * Only a lock written before #815 (no lease, no execution) is never broken
+ * automatically; its holder message names the command to remove it.
  *
  * Everything here is pure except {@link describeExecution}, which takes a
  * {@link SyncGcloud}; the lock itself (create, generation-matched break,
  * release) lives in state-store.ts.
  */
 
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { z } from "zod";
 import type { GcloudResult } from "./gcloud.js";
@@ -51,6 +61,21 @@ export interface ExecutionLockHolder {
 }
 
 /**
+ * A lock holder outside Cloud Run (a CLI process): its lease is short and
+ * renewed by a heartbeat while it runs, so a holder that dies stops
+ * renewing and its lock expires on its own (#815).
+ */
+export interface ProcessLockHolder {
+  readonly leaseMs: number;
+}
+
+/** Who takes a lock: a Cloud Run execution, or a renewing process. */
+export type LockHolder = ExecutionLockHolder | ProcessLockHolder;
+
+/** The lease of a CLI process's lock; renewed every third of it. */
+export const PROCESS_LEASE_MS = 10 * 60_000;
+
+/**
  * Margin added to a lease for clock skew between the holder and the run
  * judging it (both read their own clock; Cloud Run's are NTP-synced, a
  * developer laptop's may not be).
@@ -66,6 +91,8 @@ const executionRefSchema = z.object({
 /** The lock object's body. `execution` + `leaseUntil` appear together (#815). */
 const lockBodySchema = z.object({
   purpose: z.string(),
+  /** Unique per acquisition: proves a lock is still the one this run took. */
+  id: z.string().optional(),
   host: z.string().optional(),
   pid: z.number().optional(),
   startedAt: z.string().optional(),
@@ -79,24 +106,62 @@ export type LockBody = z.infer<typeof lockBodySchema>;
 /**
  * The body a new lock is written with.
  *
- * @param holder present when a Cloud Run execution takes the lock; its
- *   lease is `now + maxRuntimeMs + LEASE_SKEW_MS`
+ * @param holder a Cloud Run execution (lease: `now + maxRuntimeMs +
+ *   LEASE_SKEW_MS`) or a renewing process (lease: `now + leaseMs +
+ *   LEASE_SKEW_MS`); none only for the machine-local lock file, which is
+ *   judged by its pid alone
+ * @param id the acquisition's id; a fresh one when omitted
  */
-export function lockBody(purpose: string, now: Date, holder?: ExecutionLockHolder): string {
+export function lockBody(
+  purpose: string,
+  now: Date,
+  holder?: LockHolder,
+  id: string = randomUUID(),
+): string {
+  const leaseMs = holder ? ("execution" in holder ? holder.maxRuntimeMs : holder.leaseMs) : null;
   const body: LockBody = {
     purpose,
+    id,
     host: hostname(),
     pid: process.pid,
     startedAt: now.toISOString(),
-    ...(holder
-      ? {
-          execution: { ...holder.execution },
-          leaseUntil: new Date(now.getTime() + holder.maxRuntimeMs + LEASE_SKEW_MS).toISOString(),
-        }
+    ...(holder && "execution" in holder ? { execution: { ...holder.execution } } : {}),
+    ...(leaseMs !== null
+      ? { leaseUntil: new Date(now.getTime() + leaseMs + LEASE_SKEW_MS).toISOString() }
       : {}),
   };
   return JSON.stringify(body);
 }
+
+/**
+ * The same lock body with its lease moved to `now + leaseMs + skew` — the
+ * heartbeat of a process holder. Everything else (id, start) is kept.
+ */
+export function renewedLockBody(body: LockBody, now: Date, leaseMs: number): string {
+  return JSON.stringify({
+    ...body,
+    leaseUntil: new Date(now.getTime() + leaseMs + LEASE_SKEW_MS).toISOString(),
+  });
+}
+
+/** Whether process `pid` exists on this host (signal 0 checks without signalling). */
+export function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: it exists, it is just someone else's.
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** The judging run's own host and how it checks a local pid. */
+export interface LocalHost {
+  readonly host: string;
+  readonly alive: (pid: number) => boolean;
+}
+
+const THIS_HOST: LocalHost = { host: hostname(), alive: processAlive };
 
 /** Parse a lock body; null when it is not one this code wrote. */
 export function parseLockBody(text: string): LockBody | null {
@@ -200,11 +265,13 @@ export type LockVerdict =
  * @param describe looks the holder's execution up in Cloud Run; called only
  *   when the body names one
  * @param now the judging run's clock, compared against the lease
+ * @param here this host's name and pid check, for a process holder's lock
  */
 export function judgeHeldLock(
   text: string,
   describe: (ref: CloudRunExecutionRef) => ExecutionState,
   now: Date,
+  here: LocalHost = THIS_HOST,
 ): LockVerdict {
   const body = parseLockBody(text);
   if (!body) {
@@ -215,11 +282,7 @@ export function judgeHeldLock(
     };
   }
   const who = holderText(body);
-  if (!body.execution) {
-    // A CLI run or a pre-#815 lock: nothing in the cloud can vouch that it
-    // has ended, so only a person may remove it.
-    return { kind: "held", why: `held by ${who}`, manualRemoval: true };
-  }
+  if (!body.execution) return judgeProcessLock(body, who, now, here);
   const leaseUntil = body.leaseUntil ? Date.parse(body.leaseUntil) : Number.NaN;
   const state = describe(body.execution);
   switch (state.kind) {
@@ -255,6 +318,40 @@ export function judgeHeldLock(
         why: `could not check whether ${who} is still running: ${state.error}`,
       };
   }
+}
+
+/**
+ * A process holder's lock (a CLI run): broken when its pid is dead on this
+ * very host, or once its lease — renewed while the holder runs — expired.
+ */
+function judgeProcessLock(body: LockBody, who: string, now: Date, here: LocalHost): LockVerdict {
+  if (body.host === here.host && body.pid !== undefined && !here.alive(body.pid)) {
+    return { kind: "break", why: `${who} has ended (its process is gone on this machine)` };
+  }
+  if (body.leaseUntil === undefined) {
+    // Written before #815: no lease to wait out, and its host may be
+    // another machine — only a person may remove it.
+    return { kind: "held", why: `held by ${who}`, manualRemoval: true };
+  }
+  const leaseUntil = Date.parse(body.leaseUntil);
+  if (Number.isNaN(leaseUntil)) {
+    return {
+      kind: "held",
+      why: `held by ${who}, whose lock carries no readable lease`,
+      manualRemoval: true,
+    };
+  }
+  if (now.getTime() > leaseUntil) {
+    return {
+      kind: "break",
+      why: `${who} stopped renewing its lock; its lease ended at ${body.leaseUntil}`,
+    };
+  }
+  return {
+    kind: "held",
+    why: `held by ${who}; its lease runs until ${body.leaseUntil} unless renewed`,
+    manualRemoval: false,
+  };
 }
 
 /** "caelo upgrader job (run X, started T)" — for messages. */

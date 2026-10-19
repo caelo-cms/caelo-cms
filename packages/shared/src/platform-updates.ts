@@ -147,8 +147,12 @@ function comparePrerelease(x: string, y: string): number {
   return 0;
 }
 
-/** The automatic-update modes. */
-export const UPDATE_POLICY_MODES = ["off", "notify", "auto"] as const;
+/**
+ * The automatic-update modes. There is no "off": security releases are
+ * always announced (maintainer decision on #862; migration 0301 moved
+ * stored `off` rows to `notify`).
+ */
+export const UPDATE_POLICY_MODES = ["notify", "auto"] as const;
 export type UpdatePolicyMode = (typeof UPDATE_POLICY_MODES)[number];
 
 /** Release channels a policy may follow (only `stable` installs automatically). */
@@ -177,6 +181,13 @@ export const updatePolicySchema = z
     autoSecurity: z.boolean(),
     autoPatch: z.boolean(),
     autoMinor: z.boolean(),
+    /**
+     * Releases that change the install's Google Cloud project (an
+     * infrastructure-contract bump) may install on their own. Stored and
+     * shown, but inert until those releases can run from Caelo (#819): the
+     * scheduler treats them as notify-only regardless (auto-update.ts).
+     */
+    autoConverge: z.boolean(),
     channel: z.enum(UPDATE_POLICY_CHANNELS),
     /** `HH:MM` local time in `windowTimezone`, or null with windowEnd null = any time. */
     windowStart: z.string().regex(WALL_CLOCK, "expected HH:MM").nullable(),

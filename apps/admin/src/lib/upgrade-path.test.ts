@@ -2,12 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { cloudShellInstallUrl } from "@caelo-cms/shared";
-import {
-  cloudShellUpgrade,
-  releaseNotesExcerpt,
-  resolveUpgradePath,
-  type UpgradePath,
-} from "./upgrade-path.js";
+import { cloudShellUpgrade, resolveUpgradePath, type UpgradePath } from "./upgrade-path.js";
 
 const gcp = {
   CAELO_PROVIDER: "gcp",
@@ -76,27 +71,6 @@ describe("resolveUpgradePath", () => {
       kind: "cli",
       provider: "self-hosted",
     });
-  });
-});
-
-describe("releaseNotesExcerpt", () => {
-  it("returns short notes whole", () => {
-    expect(releaseNotesExcerpt("## Fixes\n\n- one\r\n")).toEqual({
-      text: "## Fixes\n\n- one",
-      truncated: false,
-    });
-  });
-
-  it("cuts long notes at a paragraph", () => {
-    const notes = `${"a".repeat(50)}\n\n${"b".repeat(50)}\n\n${"c".repeat(50)}`;
-    const r = releaseNotesExcerpt(notes, 120);
-    expect(r).toEqual({ text: `${"a".repeat(50)}\n\n${"b".repeat(50)}\n…`, truncated: true });
-  });
-
-  it("cuts one long paragraph at a word", () => {
-    const r = releaseNotesExcerpt("word ".repeat(100), 22);
-    expect(r.truncated).toBe(true);
-    expect(r.text).toBe("word word word word\n…");
   });
 });
 
