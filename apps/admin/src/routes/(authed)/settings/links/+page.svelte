@@ -80,7 +80,9 @@
 
   <Card>
     <CardHeader>
-      <CardTitle class="text-base">Latest conversion</CardTitle>
+      <CardTitle class="text-base">
+        {data.run?.mode === "dry_run" ? "Latest check (dry run)" : "Latest conversion"}
+      </CardTitle>
       {#if data.run}
         <CardDescription>
           {data.run.mode === "dry_run" ? "Dry run (nothing changed)" : "Applied"},
@@ -113,11 +115,13 @@
           <input type="hidden" name="dryRun" value="false" />
           <Button type="submit" size="sm">Convert now</Button>
         </form>
-        {#if data.run && data.run.mode === "apply" && !data.run.revertedAt}
+        {#if data.revertableRun}
           <form method="post" action="?/revert">
             <input type="hidden" name="_csrf" value={data.csrfToken} />
-            <input type="hidden" name="runId" value={data.run.runId} />
-            <Button type="submit" variant="destructive" size="sm">Revert this conversion</Button>
+            <input type="hidden" name="runId" value={data.revertableRun.runId} />
+            <Button type="submit" variant="destructive" size="sm">
+              Revert the conversion of {new Date(data.revertableRun.createdAt).toLocaleString()}
+            </Button>
           </form>
         {/if}
       </div>

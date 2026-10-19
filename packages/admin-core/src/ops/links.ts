@@ -213,7 +213,14 @@ export const getLinkMigrationReportOp = defineOperation({
     })
     .strict(),
   output: z.object({
+    /** The run reported on: `runId`, else the latest site-wide run (a dry run included). */
     run: runSummary.nullable(),
+    /**
+     * The run a revert would undo: the latest applied site-wide run that
+     * changed something and is not reverted yet. Independent of `run`, so
+     * a later dry run or a no-op re-run never hides (or replaces) it.
+     */
+    revertableRun: runSummary.nullable(),
     unresolved: z.array(unresolvedLink),
     /** Matching unresolved links in total (before limit / offset). */
     unresolvedTotal: z.number(),
@@ -224,6 +231,12 @@ export const getLinkMigrationReportOp = defineOperation({
     const recent = (await tx.execute(sql`
       SELECT ${RUN_COLUMNS} FROM link_migration_runs ORDER BY created_at DESC LIMIT 10
     `)) as unknown as RunRow[];
+    const revertable = (await tx.execute(sql`
+      SELECT ${RUN_COLUMNS} FROM link_migration_runs
+       WHERE mode = 'apply' AND entities_changed > 0 AND reverted_at IS NULL
+       ORDER BY created_at DESC LIMIT 1
+    `)) as unknown as RunRow[];
+    const revertableRun = revertable[0] ? toSummary(revertable[0]) : null;
     const rows = (await tx.execute(
       input.runId
         ? sql`SELECT ${RUN_COLUMNS}, unresolved FROM link_migration_runs WHERE id = ${input.runId}::uuid`
@@ -241,6 +254,7 @@ export const getLinkMigrationReportOp = defineOperation({
       }
       return ok({
         run: null,
+        revertableRun,
         unresolved: [],
         unresolvedTotal: 0,
         recentRuns: recent.map(toSummary),
@@ -255,6 +269,7 @@ export const getLinkMigrationReportOp = defineOperation({
       : all;
     return ok({
       run: toSummary(row),
+      revertableRun,
       unresolved: matching.slice(input.offset, input.offset + input.limit),
       unresolvedTotal: matching.length,
       recentRuns: recent.map(toSummary),
@@ -276,8 +291,21 @@ export const revertLinkMigrationOp = defineOperation({
     })
     .strict(),
   output: z.object({
+    /**
+     * False when parts were edited since the migration and `skipConflicts`
+     * was not set: nothing was written, `conflicts` names every such part.
+     */
+    reverted: z.boolean(),
     restored: z.number(),
     skippedConflicts: z.number(),
+    conflicts: z.array(
+      z.object({
+        entityKind: z.string(),
+        entityId: z.string(),
+        branchId: z.string().nullable(),
+        reason: z.string(),
+      }),
+    ),
     siteSnapshotId: z.string().nullable(),
   }),
   handler: async (ctx, input, tx) => {
@@ -300,17 +328,25 @@ export const revertLinkMigrationOp = defineOperation({
       skipConflicts: input.skipConflicts,
     });
     if (outcome.conflicts.length > 0 && !input.skipConflicts) {
-      const list = outcome.conflicts
-        .slice(0, 10)
-        .map(
-          (c) =>
-            `${c.entityKind} ${c.entityId}${c.branchId ? ` (chat branch ${c.branchId})` : ""}: ${c.reason}`,
-        )
-        .join("; ");
-      return fail(
-        `${outcome.conflicts.length} part(s) changed since the migration: ${list}${outcome.conflicts.length > 10 ? "; …" : ""}. ` +
-          "Nothing was reverted. Next step: revert again with skipConflicts: true to restore everything else and keep those edits.",
-      );
+      // Not an error: the revert is refused as a whole (nothing written)
+      // and the caller decides — revert again with skipConflicts: true to
+      // restore everything else and keep those edits.
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "links.revert_migration",
+        input,
+        succeeded: false,
+        entityId: input.runId,
+        resultSummary: `refused: ${outcome.conflicts.length} part(s) edited since the migration`,
+      });
+      return ok({
+        reverted: false,
+        restored: 0,
+        skippedConflicts: 0,
+        conflicts: outcome.conflicts,
+        siteSnapshotId: null,
+      });
     }
     await tx.execute(sql`
       UPDATE link_migration_runs SET reverted_at = now(), reverted_by = ${ctx.actorId}::uuid
@@ -326,8 +362,10 @@ export const revertLinkMigrationOp = defineOperation({
       resultSummary: `restored ${outcome.restored}, kept ${outcome.conflicts.length} edited part(s)`,
     });
     return ok({
+      reverted: true,
       restored: outcome.restored,
       skippedConflicts: outcome.conflicts.length,
+      conflicts: outcome.conflicts,
       siteSnapshotId: outcome.siteSnapshotId,
     });
   },

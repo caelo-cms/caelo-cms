@@ -53,6 +53,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   if (!r.ok) {
     return {
       run: null,
+      revertableRun: null,
       unresolved: [],
       unresolvedTotal: 0,
       recentRuns: [],
@@ -61,6 +62,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   }
   const v = r.value as {
     run: RunSummary | null;
+    revertableRun: RunSummary | null;
     unresolved: Unresolved[];
     unresolvedTotal: number;
     recentRuns: RunSummary[];
@@ -100,9 +102,30 @@ export const actions: Actions = {
       runId,
       skipConflicts,
     });
-    if (!r.ok)
-      return fail(400, { error: messageOf(r.error, "revert failed"), conflict: true, runId });
-    const v = r.value as { restored: number; skippedConflicts: number };
+    // `conflict` is a literal on both failures: an `{ error }`-only branch
+    // would absorb the 409 one below in the inferred return type (subtype
+    // reduction), hiding `conflict` / `runId` from the page.
+    if (!r.ok) {
+      return fail(400, { error: messageOf(r.error, "revert failed"), conflict: false as const });
+    }
+    const v = r.value as {
+      reverted: boolean;
+      restored: number;
+      skippedConflicts: number;
+      conflicts: { entityKind: string; branchId: string | null }[];
+    };
+    if (!v.reverted) {
+      // Only this refusal offers "revert the rest": parts edited since
+      // the conversion would be overwritten, so nothing was reverted.
+      const onChats = v.conflicts.filter((c) => c.branchId !== null).length;
+      return fail(409, {
+        error:
+          `Nothing was reverted: ${v.conflicts.length} converted part(s) were edited since the conversion` +
+          `${onChats > 0 ? ` (${onChats} in unstaged chat changes)` : ""}. Reverting them would discard those edits.`,
+        conflict: true as const,
+        runId,
+      });
+    }
     return {
       ok: true,
       message: `Reverted: ${v.restored} part(s) restored${v.skippedConflicts > 0 ? `, ${v.skippedConflicts} edited part(s) kept` : ""}.`,
