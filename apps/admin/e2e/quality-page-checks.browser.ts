@@ -168,7 +168,7 @@ test("the quality view shows page-check findings, Performance metrics, site-wide
   const metrics = detail.getByTestId("quality-page-metrics");
   await expect(metrics).toContainText("LCP 4.1 s");
   await expect(metrics).toContainText("CLS 0.356");
-  await expect(metrics).toContainText("median of 1 run(s)");
+  await expect(metrics).toContainText("best of 1 run(s)");
   await expect(metrics).toContainText("LCP element: main > section.hero > img");
   await expect(metrics).toContainText("Resource load delay 1800 ms");
   await expect(metrics).toContainText(

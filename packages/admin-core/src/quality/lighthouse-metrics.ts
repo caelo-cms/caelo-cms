@@ -12,12 +12,15 @@
  * and which element causes it, instead of guessing — or running Lighthouse
  * itself against a URL that is not the staged build.
  *
- * Aggregation follows the Performance score (`medianScore`, ratchet.ts):
- * every value is the median over all Performance runs of the page. A
- * metric some run did not measure is null with the reason, never a zero
- * or a median of the runs that happened to measure it. The elements
- * (LCP element, breakdown, layout shifts) come from the full run, the one
- * the failing-audit findings come from.
+ * Every value comes from the page's BEST Performance run (`bestRunIndex`,
+ * lighthouse-extract.ts), the same run the Performance score and the
+ * Performance-only findings come from, so the three always agree. Host
+ * interference only ever slows a run down, so the best run is the closest
+ * measurement of the page on the target device (#874). `runValues` keeps
+ * every run's value so the spread stays visible. A metric the best run did
+ * not measure is null with the reason, never a zero or another run's value.
+ * The elements (LCP element, breakdown, layout shifts) come from the best
+ * run too.
  */
 
 import type { LhrLike } from "./lighthouse-extract.js";
@@ -51,7 +54,7 @@ export const PERFORMANCE_METRICS = [
 type MetricDef = (typeof PERFORMANCE_METRICS)[number];
 export type PerformanceMetricId = MetricDef["id"];
 
-/** One metric of one page, aggregated over the Performance runs. */
+/** One metric of one page: the best run's value, plus every run's. */
 export interface PerformanceMetric {
   readonly id: PerformanceMetricId;
   /** Short name ("LCP"). */
@@ -59,11 +62,11 @@ export interface PerformanceMetric {
   readonly title: string;
   /** Lighthouse's unit of `numericValue` (`millisecond`, or `unitless` for CLS). */
   readonly numericUnit: "millisecond" | "unitless";
-  /** Median over the runs; null when a run did not measure it (see `unavailableReason`). */
+  /** The best run's value; null when that run did not measure it (see `unavailableReason`). */
   readonly numericValue: number | null;
-  /** The median formatted the way Lighthouse shows it ("2.2 s", "120 ms", "0.012"). */
+  /** The best run's value formatted the way Lighthouse shows it ("2.2 s", "120 ms", "0.012"). */
   readonly displayValue: string | null;
-  /** Median of Lighthouse's 0..1 metric score; null with `numericValue`. */
+  /** The best run's 0..1 Lighthouse metric score; null with `numericValue`. */
   readonly score: number | null;
   /** Each run's value, in run order (the full run first); null where a run measured nothing. */
   readonly runValues: readonly (number | null)[];
@@ -90,7 +93,7 @@ export interface LayoutShift {
 
 /** The Performance metrics of one audited page. */
 export interface PerformanceMetrics {
-  /** How many Performance runs the medians are taken over. */
+  /** How many Performance runs were taken; the values are the best one's. */
   readonly runs: number;
   /** Every metric of `PERFORMANCE_METRICS`, in that order. */
   readonly metrics: readonly PerformanceMetric[];
@@ -112,18 +115,6 @@ export interface PerformanceMetrics {
 const MAX_LAYOUT_SHIFTS = 5;
 /** Root causes kept per layout shift. */
 const MAX_SHIFT_CAUSES = 3;
-
-/**
- * Median of a non-empty list, without rounding (mean of the middle pair
- * for an even count) — `medianScore` (ratchet.ts) for real-valued data.
- */
-export function medianOf(values: readonly number[]): number {
-  if (values.length === 0) throw new Error("medianOf: no values to take the median of");
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) return sorted[mid] as number;
-  return ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
-}
 
 function round(value: number, decimals: number): number {
   const f = 10 ** decimals;
@@ -161,31 +152,34 @@ function runValue(
   return { value: audit.numericValue, score: audit.score };
 }
 
-function aggregateMetric(def: MetricDef, runs: readonly LhrLike[]): PerformanceMetric {
+function metricOfBestRun(
+  def: MetricDef,
+  runs: readonly LhrLike[],
+  bestIndex: number,
+): PerformanceMetric {
   const per = runs.map((r) => runValue(r, def));
   const runValues = per.map((p) =>
     "value" in p ? round(p.value, def.unit === "unitless" ? 4 : 0) : null,
   );
   const base = { id: def.id, label: def.label, title: def.title, numericUnit: def.unit, runValues };
-  const missing = per
-    .map((p, i) => ("reason" in p ? `run ${i + 1}: ${p.reason}` : null))
-    .filter((m) => m !== null);
-  if (missing.length > 0) {
+  const best = per[bestIndex];
+  if (!best)
+    throw new Error(`performanceMetricsFromRuns: no run ${bestIndex + 1} of ${runs.length}`);
+  if ("reason" in best) {
     return {
       ...base,
       numericValue: null,
       displayValue: null,
       score: null,
-      unavailableReason: `${def.label} was not measured in ${missing.length} of ${runs.length} Lighthouse run(s) (${missing.join("; ")}); no median is reported from a partial set of runs.`,
+      unavailableReason: `${def.label} was not measured in the best of ${runs.length} Lighthouse run(s) (run ${bestIndex + 1}: ${best.reason}); no other run's value is reported in its place.`,
     };
   }
-  const measured = per as readonly { value: number; score: number }[];
-  const value = round(medianOf(measured.map((m) => m.value)), def.unit === "unitless" ? 4 : 0);
+  const value = round(best.value, def.unit === "unitless" ? 4 : 0);
   return {
     ...base,
     numericValue: value,
     displayValue: formatMetricValue(def.id, value),
-    score: round(medianOf(measured.map((m) => m.score)), 2),
+    score: round(best.score, 2),
     unavailableReason: null,
   };
 }
@@ -259,20 +253,26 @@ function layoutShifts(run: LhrLike): LayoutShift[] {
 /**
  * The page's Performance metrics from its Lighthouse runs.
  *
- * @param runs - every Performance run of the page, the full run first
- *   (the same runs the Performance score's median is taken over).
+ * @param runs - every Performance run of the page, the full run first.
+ * @param bestIndex - the run the Performance score comes from
+ *   (`bestRunIndex`, lighthouse-extract.ts).
  * @throws when `runs` is empty: an audited page without a Performance run
  *   is an infrastructure failure, never a measurement.
  */
-export function performanceMetricsFromRuns(runs: readonly LhrLike[]): PerformanceMetrics {
-  const full = runs[0];
-  if (!full) throw new Error("performanceMetricsFromRuns: no Lighthouse runs");
-  const lcp = lcpDetails(full);
+export function performanceMetricsFromRuns(
+  runs: readonly LhrLike[],
+  bestIndex: number,
+): PerformanceMetrics {
+  if (runs.length === 0) throw new Error("performanceMetricsFromRuns: no Lighthouse runs");
+  const best = runs[bestIndex];
+  if (!best)
+    throw new Error(`performanceMetricsFromRuns: no run ${bestIndex + 1} of ${runs.length}`);
+  const lcp = lcpDetails(best);
   return {
     runs: runs.length,
-    metrics: PERFORMANCE_METRICS.map((def) => aggregateMetric(def, runs)),
+    metrics: PERFORMANCE_METRICS.map((def) => metricOfBestRun(def, runs, bestIndex)),
     lcpElement: lcp.element,
     lcpBreakdown: lcp.breakdown,
-    layoutShifts: layoutShifts(full),
+    layoutShifts: layoutShifts(best),
   };
 }
