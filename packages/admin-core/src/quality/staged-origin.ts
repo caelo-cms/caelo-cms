@@ -21,7 +21,13 @@
  */
 
 import { readFile, realpath } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import { request as httpsRequest } from "node:https";
 import { join, sep } from "node:path";
 import { readStagedBuildFiles, readStagedObject } from "../deploy/staged-build-files.js";
 import { cacheControlForContentType, contentTypeFor } from "../deploy/static-file-policy.js";
@@ -180,14 +186,8 @@ const FORWARDED_REQUEST_HEADERS = [
   "user-agent",
 ] as const;
 
-/** Response headers that describe the hop, not the answer (fetch decodes the body). */
-const DROPPED_RESPONSE_HEADERS = new Set([
-  "connection",
-  "content-encoding",
-  "content-length",
-  "keep-alive",
-  "transfer-encoding",
-]);
+/** Response headers that describe the hop, not the answer. */
+const DROPPED_RESPONSE_HEADERS = new Set(["connection", "keep-alive", "transfer-encoding"]);
 
 /**
  * The gateway URL a loopback `/api/*` request goes to, or null when the
@@ -215,37 +215,49 @@ async function readBody(req: IncomingMessage): Promise<Buffer | null> {
   return Buffer.concat(chunks);
 }
 
-async function forwardToGateway(
+/**
+ * Forward one `/api/*` request. The upstream host comes only from the
+ * configured origin and the request contributes only the path, so no
+ * request can choose where the forward goes.
+ */
+function forwardToGateway(
   req: IncomingMessage,
   res: ServerResponse,
-  target: string,
+  apiOrigin: URL,
+  path: string,
+  body: Buffer | null,
 ): Promise<void> {
-  const headers = new Headers();
+  const headers: Record<string, string> = {};
   for (const name of FORWARDED_REQUEST_HEADERS) {
     const value = req.headers[name];
-    if (typeof value === "string") headers.set(name, value);
+    if (typeof value === "string") headers[name] = value;
   }
-  const hasBody = req.method !== "GET" && req.method !== "HEAD";
-  const body = hasBody ? await readBody(req) : null;
-  if (hasBody && body === null) {
-    res.writeHead(413, { "Content-Type": "text/plain; charset=utf-8" }).end("body too large");
-    return;
-  }
-  const answer = await fetch(target, {
-    method: req.method ?? "GET",
-    headers,
-    ...(body ? { body: new Uint8Array(body) } : {}),
-    redirect: "manual",
+  if (body) headers["content-length"] = String(body.byteLength);
+  const send = apiOrigin.protocol === "https:" ? httpsRequest : httpRequest;
+  return new Promise<void>((resolve, reject) => {
+    const upstream = send(
+      {
+        protocol: apiOrigin.protocol,
+        hostname: apiOrigin.hostname,
+        port: apiOrigin.port || undefined,
+        method: req.method ?? "GET",
+        path,
+        headers,
+      },
+      (answer) => {
+        const out: Record<string, string | string[]> = {};
+        for (const [name, value] of Object.entries(answer.headers)) {
+          if (value !== undefined && !DROPPED_RESPONSE_HEADERS.has(name)) out[name] = value;
+        }
+        res.writeHead(answer.statusCode ?? 502, out);
+        answer.pipe(res);
+        answer.on("end", resolve);
+        answer.on("error", reject);
+      },
+    );
+    upstream.on("error", reject);
+    upstream.end(body ?? undefined);
   });
-  const out: Record<string, string | string[]> = {};
-  answer.headers.forEach((value, name) => {
-    if (!DROPPED_RESPONSE_HEADERS.has(name) && name !== "set-cookie") out[name] = value;
-  });
-  const cookies = answer.headers.getSetCookie();
-  if (cookies.length > 0) out["set-cookie"] = cookies;
-  const bytes = new Uint8Array(await answer.arrayBuffer());
-  res.writeHead(answer.status, out);
-  res.end(req.method === "HEAD" ? undefined : bytes);
 }
 
 /** A running loopback origin. */
@@ -261,8 +273,15 @@ export async function serveStagedBuild(
 ): Promise<StagedOrigin> {
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const apiTarget = options.apiOrigin ? apiTargetFor(req.url ?? "/", options.apiOrigin) : null;
-    if (apiTarget) {
-      await forwardToGateway(req, res, apiTarget);
+    if (apiTarget && options.apiOrigin) {
+      const hasBody = req.method !== "GET" && req.method !== "HEAD";
+      const body = hasBody ? await readBody(req) : null;
+      if (hasBody && body === null) {
+        res.writeHead(413, { "Content-Type": "text/plain; charset=utf-8" }).end("body too large");
+        return;
+      }
+      const origin = new URL(options.apiOrigin);
+      await forwardToGateway(req, res, origin, apiTarget.slice(origin.origin.length), body);
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") {
