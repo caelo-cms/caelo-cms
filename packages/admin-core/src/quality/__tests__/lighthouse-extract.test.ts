@@ -8,8 +8,10 @@ import {
   type LhrLike,
   LighthouseRunError,
   measurementFromRuns,
+  reduceRun,
 } from "../lighthouse-extract.js";
 import { pageMeasurementSchema } from "../lighthouse-protocol.js";
+import { QUALITY_CATEGORIES } from "../ratchet.js";
 
 type Audit = LhrLike["audits"][string];
 
@@ -416,5 +418,41 @@ describe("measurementFromRuns", () => {
     const found = measurement.failingAudits.filter((f) => f.id === "shared-audit");
     expect(found).toHaveLength(1);
     expect(found[0]?.categories).toEqual(["performance", "best-practices"]);
+  });
+
+  it("never lists a shared audit that fails only in a Performance-only best run", () => {
+    // The audit passes in the full run and fails only in the extra run,
+    // where it looks Performance-only. Whether it belongs to another
+    // category is the full run's knowledge (`otherCategoryAuditIds`), so it
+    // is the full run's finding (none), never a Performance-only finding.
+    const withShared = (run: LhrLike): LhrLike => {
+      const categories = { ...run.categories };
+      for (const c of ["performance", "best-practices"] as const) {
+        const cat = categories[c];
+        if (cat) categories[c] = { ...cat, auditRefs: [...cat.auditRefs, { id: "shared-audit" }] };
+      }
+      return { ...run, categories };
+    };
+    const full = withShared(
+      lhr({ performance: 90, bestPractices: 92, audits: [audit("shared-audit", 1)] }),
+    );
+    const best = withShared(
+      lhr({ performance: 100, perfOnly: true, audits: [audit("shared-audit", 0)] }),
+    );
+    const { measurement } = measurementFromRuns(full, [best]);
+    expect(measurement.scores.performance).toBe(100);
+    expect(measurement.failingAudits.map((f) => f.id)).not.toContain("shared-audit");
+  });
+
+  it("carries the full run's other-category audits across the reduction", () => {
+    const full = reduceRun(lhr({ performance: 90, audits: [] }), QUALITY_CATEGORIES);
+    const perf = reduceRun(lhr({ performance: 90, perfOnly: true, audits: [] }), ["performance"]);
+    expect(full.otherCategoryAuditIds).toEqual([
+      "color-contrast",
+      "errors-in-console",
+      "image-alt",
+      "meta-description",
+    ]);
+    expect(perf.otherCategoryAuditIds).toEqual([]);
   });
 });

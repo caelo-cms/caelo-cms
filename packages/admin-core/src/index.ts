@@ -98,6 +98,7 @@ export { lockPluginRow } from "./locks.js";
 export { assertDurableMediaRoot, type MediaStorageSetup } from "./media/durable-root.js";
 export * from "./media/pipeline.js";
 export { resolvePrivatePreviewImages } from "./media/private-preview-images.js";
+export { sanitizeSvg } from "./media/sanitize-svg.js";
 export * from "./media/storage.js";
 // #589 — approver permissions declared on the §11.A executor ops.
 export { approverPermissionsOf } from "./ops/_approver-permission.js";

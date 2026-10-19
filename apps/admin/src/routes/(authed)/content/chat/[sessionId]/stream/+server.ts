@@ -35,7 +35,7 @@ const AI_ACTOR_ID = "00000000-0000-0000-0000-000000000a1a";
 const TEST_PROVIDER_HEADER = "x-caelo-test-provider";
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-  requirePermission(locals, "content.read");
+  requirePermission(locals, "content.write");
 
   // Lightweight CSRF check via a dedicated header (the body is JSON, not
   // form-encoded, so the existing assertCsrfToken helper doesn't apply).

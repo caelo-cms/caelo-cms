@@ -305,6 +305,14 @@ export interface RunMeasurement {
   readonly scores: Partial<Record<QualityCategory, number>>;
   /** The run's failing audits (`failingAudits`). */
   readonly failingAudits: readonly FailingAudit[];
+  /**
+   * Every audit the run's non-Performance categories reference, failing or
+   * not. Empty for a Performance-only run. `combineRuns` reads it from the
+   * full run to tell which audits belong only to Performance: an extra run
+   * carries the Performance category alone, so an audit Performance shares
+   * with another category looks Performance-only there.
+   */
+  readonly otherCategoryAuditIds: readonly string[];
   readonly metrics: RunMetrics;
   /** Where the run ended up after redirects. */
   readonly finalUrl?: string;
@@ -330,6 +338,13 @@ export function reduceRun(
   return {
     scores: categoryScores(lhr, categories),
     failingAudits: failingAudits(lhr),
+    otherCategoryAuditIds: [
+      ...new Set(
+        categories
+          .filter((c) => c !== "performance")
+          .flatMap((c) => (lhr.categories[c]?.auditRefs ?? []).map((r) => r.id)),
+      ),
+    ].sort(),
     metrics: runMetrics(lhr),
     ...(lhr.finalDisplayedUrl ? { finalUrl: lhr.finalDisplayedUrl } : {}),
     ...(cpuCalibration ? { cpuCalibration } : {}),
@@ -370,17 +385,13 @@ export function combineRuns(runs: readonly RunMeasurement[]): {
     if (score === undefined) throw new Error(`combineRuns: run ${i + 1} has no Performance score`);
     return score;
   });
-  // An extra run carries the Performance category alone, so an audit that
-  // Performance shares with another category looks Performance-only there.
-  // The full run knows its categories: an audit it lists under another
-  // category comes from the full run only, never twice.
-  const fromFullRun = new Set(
-    full.failingAudits
-      .filter((f) => f.categories.some((c) => c !== "performance"))
-      .map((f) => f.id),
-  );
+  // Which audits belong only to Performance is read from the full run
+  // (`otherCategoryAuditIds`): an audit shared with another category would
+  // otherwise look Performance-only in an extra run and be listed twice, or
+  // with the wrong categories when it fails in the best run alone.
+  const sharedWithOtherCategories = new Set(full.otherCategoryAuditIds);
   const isPerformanceOnly = (f: FailingAudit) =>
-    !fromFullRun.has(f.id) && f.categories.every((c) => c === "performance");
+    !sharedWithOtherCategories.has(f.id) && f.categories.every((c) => c === "performance");
   const perfOnlyByRun = runs.map((r) => r.failingAudits.filter(isPerformanceOnly));
   const best = bestRunIndex(
     performanceRuns,

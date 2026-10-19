@@ -89,6 +89,7 @@ export const runMeasurementSchema = z
   .object({
     scores: z.partialRecord(categorySchema, z.number().int().min(0).max(100)),
     failingAudits: z.array(failingAuditSchema),
+    otherCategoryAuditIds: z.array(z.string().min(1)),
     metrics: runMetricsSchema,
     finalUrl: z.string().optional(),
     cpuCalibration: z
