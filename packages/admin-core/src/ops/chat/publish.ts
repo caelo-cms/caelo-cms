@@ -692,7 +692,7 @@ export async function mergeWindowToMain(
   // skip in the originating op).
   // Pages this branch created become live in the replay below; their
   // branch-time path was never public, so a path change at merge is not
-  // a URL move (no 301, no link rewrite).
+  // a URL move (no 301).
   const newlyLivePageIds = new Set(
     (
       (await tx.execute(sql`
@@ -969,7 +969,7 @@ export async function mergeWindowToMain(
   // Replayed pages (a chat's renames / moves — their subtrees move with
   // them) and plugin rows (a locale variant link) can both move URLs;
   // now that they are live, recompose main-line paths and give every
-  // moved URL its 301 + link rewrites.
+  // moved URL its 301.
   if (pageRows.length > 0) await assertLiveParents(tx);
   if (pageRows.length > 0 || pluginRowRows.length > 0) {
     await refreshLivePathsAfterMerge(ctx, tx, window.branchId, {

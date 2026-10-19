@@ -481,7 +481,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // metadata edits across many pages/modules in one tool call.
   registry.register(deletePagesManyTool);
   registry.register(updatePagesManyTool);
-  // 0263 — nested page URLs: reparent pages (subtree + 301s + link rewrites).
+  // 0263 — nested page URLs: reparent pages (subtree + 301s).
   registry.register(movePagesTool);
   registry.register(updateModulesManyTool);
   // v0.9.13 — singular + bulk status flip. Drafts are LIVE-EDIT ONLY;
