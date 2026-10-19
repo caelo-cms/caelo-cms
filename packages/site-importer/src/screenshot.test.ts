@@ -26,7 +26,7 @@ describe("bundledChromiumLaunchOptions", () => {
 });
 
 describe("handleExternalRoute (SSRF connect-time fulfillment)", () => {
-  function mockRoute(url: string, method = "GET") {
+  function mockRoute(url: string, method = "GET", requestHeaders: Record<string, string> = {}) {
     let abortedWith: string | undefined;
     let fulfilledWith:
       | { status: number; headers?: Record<string, string>; body?: Buffer | Uint8Array }
@@ -36,7 +36,7 @@ describe("handleExternalRoute (SSRF connect-time fulfillment)", () => {
       request: () => ({
         url: () => url,
         method: () => method,
-        headers: () => ({}),
+        headers: () => requestHeaders,
       }),
       abort: async (code) => {
         abortedWith = code ?? "aborted";
@@ -95,5 +95,52 @@ describe("handleExternalRoute (SSRF connect-time fulfillment)", () => {
     expect(m.getFulfilled()?.status).toBe(200);
     expect(Buffer.from(m.getFulfilled()?.body ?? []).toString("utf8")).toContain("ok");
     expect(seenFinalUrl).toBe("https://example.com/landed");
+  });
+
+  it("forwards only the browser's identity headers to the guarded fetch, never cookies or credentials", async () => {
+    let sentHeaders: Record<string, string> | undefined;
+    const m = mockRoute("https://example.com/page", "GET", {
+      "user-agent": "Mozilla/5.0 test",
+      accept: "text/html",
+      "accept-language": "de",
+      referer: "https://example.com/",
+      cookie: "session=secret",
+      authorization: "Bearer secret",
+    });
+    await handleExternalRoute(m.route, {
+      allowedHosts: [],
+      fetchBinaryFn: async (_url, opts) => {
+        sentHeaders = opts?.headers;
+        return {
+          ok: true,
+          status: 200,
+          contentType: "text/html",
+          bodyBytes: new Uint8Array(0),
+          finalUrl: "https://example.com/page",
+        };
+      },
+    });
+    expect(sentHeaders).toEqual({
+      "user-agent": "Mozilla/5.0 test",
+      accept: "text/html",
+      "accept-language": "de",
+      referer: "https://example.com/",
+    });
+  });
+
+  it("never hands a redirect to the browser: the fulfilled response carries no Location", async () => {
+    const m = mockRoute("https://example.com/old");
+    await handleExternalRoute(m.route, {
+      allowedHosts: [],
+      fetchBinaryFn: async () => ({
+        ok: true,
+        status: 200,
+        contentType: "text/html",
+        bodyBytes: new Uint8Array(0),
+        finalUrl: "https://example.com/new",
+      }),
+    });
+    expect(m.getFulfilled()?.headers).toEqual({ "content-type": "text/html" });
+    expect(m.getContinued()).toBe(false);
   });
 });

@@ -30,10 +30,10 @@ import {
 /** Minimal Playwright route surface — typed locally so the package
  * doesn't need @types/playwright (Playwright stays a dynamic import). */
 export interface PlaywrightRoute {
-  request(): { url(): string; method?(): string; headers(): Record<string, string> };
+  request(): { url(): string; method(): string; headers(): Record<string, string> };
   abort(errorCode?: string): Promise<void>;
   continue(opts?: { headers?: Record<string, string> }): Promise<void>;
-  fulfill?(opts: {
+  fulfill(opts: {
     status: number;
     headers?: Record<string, string>;
     body?: Buffer | Uint8Array;
@@ -306,12 +306,26 @@ export async function launchBundledChromium(opts?: {
 }
 
 /**
+ * Browser request headers worth forwarding to the guarded fetch so the
+ * source site serves what a browser would get. Never cookies or
+ * credentials: the fulfilled responses carry no Set-Cookie, so the context
+ * holds none anyway.
+ */
+const FORWARDED_REQUEST_HEADERS = ["user-agent", "accept", "accept-language", "referer"] as const;
+
+/**
  * Fulfill an external browser request via `safeExternalFetchBinary` so
  * connect-time DNS validation (`makeGuardedLookup`), redirect re-validation,
  * and response size caps apply with zero DNS-rebinding TOCTOU gap between
  * route inspection and Chromium's socket connect. Non-GET/HEAD requests are
  * aborted so rendered third-party pages cannot trigger cross-site state
  * mutations.
+ *
+ * Redirects are followed by the guarded fetch, never handed to Chromium:
+ * Chromium follows a redirect (from `continue()` or a fulfilled 3xx) on its
+ * own network stack WITHOUT routing the next hop, so a 3xx to an internal
+ * address would bypass this guard entirely. The fulfilled response therefore
+ * never carries a `Location` header.
  */
 export async function handleExternalRoute(
   route: PlaywrightRoute,
@@ -323,7 +337,7 @@ export async function handleExternalRoute(
   },
 ): Promise<void> {
   const req = route.request();
-  const method = (req.method?.() ?? "GET").toUpperCase();
+  const method = req.method().toUpperCase();
   if (method !== "GET" && method !== "HEAD") {
     await route.abort("blockedbyclient");
     return;
@@ -331,23 +345,33 @@ export async function handleExternalRoute(
   const requestUrl = req.url();
   const fetchFn = opts.fetchBinaryFn ?? safeExternalFetchBinary;
   try {
+    const browserHeaders = req.headers();
+    const headers: Record<string, string> = {};
+    for (const name of FORWARDED_REQUEST_HEADERS) {
+      const value = browserHeaders[name];
+      if (value !== undefined) headers[name] = value;
+    }
     const res = await fetchFn(requestUrl, {
       allowedHosts: opts.allowedHosts,
+      headers,
       ...(opts.lookupFn ? { lookupFn: opts.lookupFn } : {}),
     });
     opts.onFinalUrl?.(requestUrl, res.finalUrl);
-    if (route.fulfill) {
-      await route.fulfill({
-        status: res.status,
-        ...(res.contentType ? { headers: { "content-type": res.contentType } } : {}),
-        body: method === "HEAD" ? Buffer.alloc(0) : Buffer.from(res.bodyBytes),
-      });
-    } else {
-      await route.continue();
-    }
+    await route.fulfill({
+      status: res.status,
+      ...(res.contentType ? { headers: { "content-type": res.contentType } } : {}),
+      body: method === "HEAD" ? Buffer.alloc(0) : Buffer.from(res.bodyBytes),
+    });
   } catch {
     await route.abort("blockedbyclient");
   }
+}
+
+/** A navigation URL as the browser requests it: normalized, no fragment. */
+function navigationKey(rawUrl: string): string {
+  const u = new URL(rawUrl);
+  u.hash = "";
+  return u.href;
 }
 
 /**
@@ -403,6 +427,9 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     }
     const ctx = await browser.newContext({
       viewport: { width: opts.width ?? 1280, height: opts.height ?? 800 },
+      // A service worker's own fetches are not seen by `ctx.route`, so an
+      // external page must not get to install one.
+      ...(opts.external ? { serviceWorkers: "block" } : {}),
     });
     if (opts.sameOriginHeaders) {
       // Deliberately NOT `newContext({ extraHTTPHeaders })`: that would send
@@ -423,6 +450,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
         await route.continue(patched ? { headers: patched } : undefined);
       });
     }
+    let navTarget = navigationKey(url);
     let navFinalUrl: string | undefined;
     if (opts.external) {
       // Guard every request the page makes (navigation + subresources) by
@@ -433,10 +461,13 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
         await handleExternalRoute(route, {
           allowedHosts,
           onFinalUrl: (reqUrl, finalUrl) => {
-            if (reqUrl === url) navFinalUrl = finalUrl;
+            if (navigationKey(reqUrl) === navTarget) navFinalUrl = finalUrl;
           },
         });
       });
+      // WebSockets bypass `ctx.route`; a rendered page must not open one to
+      // an internal address. Closing without connectToServer() never dials.
+      await ctx.routeWebSocket(/.*/, (ws: { close(): Promise<void> }) => ws.close());
     }
     const page = await ctx.newPage();
     try {
@@ -445,10 +476,21 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       // — capped so we never pay the old 30s `networkidle` timeout, which
       // routinely fired because the SSRF route-guard aborts blocked
       // subresources and `networkidle` then never settles.
-      const gotoResponse = await page.goto(url, {
+      let gotoResponse = await page.goto(url, {
         waitUntil: "domcontentloaded",
         timeout: 15_000,
       });
+      if (navFinalUrl !== undefined && navigationKey(navFinalUrl) !== navTarget) {
+        // The guarded fetch followed a redirect, but the browser rendered the
+        // final document under the ORIGINAL url, so relative URLs and the
+        // page's own `location` would be wrong. Navigate to where the
+        // redirect landed; that request goes through the guard again.
+        navTarget = navigationKey(navFinalUrl);
+        gotoResponse = await page.goto(navFinalUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: 15_000,
+        });
+      }
       await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
       return await fn(page, gotoResponse, navFinalUrl);
     } finally {
