@@ -192,6 +192,13 @@ describe("injectSeoIntoHead", () => {
   it("falls back to prepending when the document has no </head>", () => {
     expect(injectSeoIntoHead("<body>x</body>", "<title>X</title>")).toContain("<title>X</title>");
   });
+
+  it("preserves literal $-replacement patterns in headBlock", () => {
+    const html = "<html><head></head><body>x</body></html>";
+    const headBlock = "<title>Price $& and $' and $`</title>";
+    const out = injectSeoIntoHead(html, headBlock);
+    expect(out).toContain(headBlock);
+  });
 });
 
 describe("schemas", () => {

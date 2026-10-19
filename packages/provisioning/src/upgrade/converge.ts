@@ -7,7 +7,8 @@
  * CLI-generated runtime secrets, the stack's IAM/CDN/firewall invariants,
  * MCP access through IAP, public_role's Cloud SQL role memberships (#633),
  * the gateway's and public_role's database logins, the operator-access sync
- * job, and dropping bindings nothing reads any more.
+ * job, the quality-audit job (#875), and dropping bindings nothing reads any
+ * more.
  *
  * It needs the rights of whoever provisioned the install, so only
  * `cms-provision upgrade` (the operator's own identity) runs it — never the
@@ -24,6 +25,7 @@
  * {@link AppRollHooks} the app-roll calls in between, and a part after it.
  */
 
+import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
 import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import { upgraderServiceAccountEmail } from "../gcp-names.js";
@@ -40,6 +42,8 @@ import {
 } from "../runtime-secrets.js";
 import { selfCommand } from "../self-command.js";
 import {
+  AUDIT_JOB_ENV_VAR,
+  AUDIT_RESULTS_BUCKET_ENV_VAR,
   MCP_ENV_VAR,
   OPERATOR_ACCESS_JOB_ENV_VAR,
   UPGRADER_JOB_ENV_VAR,
@@ -268,6 +272,42 @@ export function startConverge(
     incomplete = true;
   }
 
+  async function auditJob(): Promise<void> {
+    // #875 — the job the quality audit fans its Lighthouse runs out to.
+    // Deployed with the admin's CURRENT image (the admin still runs it until
+    // the app-roll moves both together, and the job refuses a batch from
+    // another version). A failure only costs Stage audits, so it warns and
+    // the admin keeps its current env.
+    const s = r.step("Ensuring the quality-audit job (parallel Lighthouse runs)...");
+    const image = await resolveAdminImage(
+      { projectId: install.projectId, region: install.region, env: install.env },
+      { run },
+    );
+    const aj = image.ok
+      ? await ensureAuditJob(
+          {
+            provider: install.provider,
+            projectId: install.projectId,
+            region: install.region,
+            env: install.env,
+            adminImageRef: image.imageRef,
+          },
+          runDeps,
+        )
+      : { ok: false as const, done: [], error: image.error };
+    for (const step of aj.done) r.info(`  ${step}`);
+    if (aj.ok) {
+      s.done("Quality-audit job ready (Stage audits run in parallel)");
+      return;
+    }
+    s.warned(`Quality-audit job not set up: ${aj.error}`);
+    r.warn(
+      "The upgrade continues; Stage audits fail with the missing job until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    incomplete = true;
+    leaveUntouched.push(AUDIT_JOB_ENV_VAR, AUDIT_RESULTS_BUCKET_ENV_VAR);
+  }
+
   /** The admin's IAP resource: the service on gcp-firebase, the LB backend on gcp. */
   async function adminIapResource(): Promise<IapResource | null> {
     if (install.provider === "gcp-firebase") {
@@ -406,6 +446,7 @@ export function startConverge(
       if (!(await publicRoleIsolation())) return false;
       await mcpAccess();
       await urlMapRedirectsAccess();
+      await auditJob();
       return true;
     },
 

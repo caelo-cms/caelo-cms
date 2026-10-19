@@ -985,6 +985,19 @@ new gcp.iap.WebBackendServiceIamMember(
 );
 
 // =========================================================================
+// Quality-audit job — deliberately NOT here
+// =========================================================================
+//
+// #875 — every Stage audit's Lighthouse runs execute in parallel in a Cloud
+// Run job, one task per run, under its own service account (results bucket
+// create-only, staged build read-only, no secrets, no VPC). The CLI owns the
+// job, its account, the results bucket and the grants
+// (packages/provisioning/src/audit-job-setup.ts, run by the wizard after
+// `pulumi up` and by `upgrade`), because `upgrade` never runs Pulumi: a
+// bucket or job both this program and `upgrade` created would collide on
+// the next wizard run. The app-roll moves the job's image with the admin's.
+
+// =========================================================================
 // Operator access — deliberately NOT here
 // =========================================================================
 //

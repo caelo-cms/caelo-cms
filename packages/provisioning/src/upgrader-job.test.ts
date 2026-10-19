@@ -709,6 +709,51 @@ describe("runUpgraderJob", () => {
     expect(written).toEqual([]);
   });
 
+  it("admin and gateway of two different signed releases are refused, naming both", async () => {
+    // Each image is genuinely signed, but no ONE release names both: a mixed
+    // deployment no release vouches for.
+    const { deps, q, written } = setup({
+      gcloud: [
+        servingAs(D("9"), D("2")),
+        releaseTags("admin", { "0.10.44": D("9") }),
+        releaseTags("gateway", { "0.10.45": D("2") }),
+      ],
+      meta: {
+        ...META,
+        imageDigests: { admin: D("1"), gateway: D("2") },
+        releaseVersion: "0.10.45",
+      },
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": manifestOf("0.10.45", D("1"), D("2")),
+      },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    const end = q.end();
+    expect(end?.codes).toEqual(["install-state-drift"]);
+    expect(end?.reason).toContain("The gateway serves v0.10.45's image, the admin does not");
+    expect(end?.reason).toContain("the admin serves v0.10.44's image, the gateway does not");
+    expect(written).toEqual([]);
+  });
+
+  it("an older signed release serving is recorded as what it is, and the target judged from it", async () => {
+    // install.json says 0.10.45, but someone put 0.10.44 back: the heal must
+    // record the OLDER version, never keep claiming the newer one.
+    const { deps, q, written } = setup({
+      gcloud: [servingAs(D("9"), D("8")), releaseTags("admin", { "0.10.44": D("9") })],
+      manifests: {
+        "0.10.44": manifestOf("0.10.44", D("9"), D("8")),
+        "0.10.45": manifestOf("0.10.45", D("1"), D("2")),
+      },
+    });
+    expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+    expect(written[0]).toMatchObject({
+      releaseVersion: "0.10.44",
+      imageDigests: { admin: D("9"), gateway: D("8") },
+    });
+    expect(q.events.some((e) => e.message.startsWith("0.10.44 → 0.11.0"))).toBe(true);
+  });
+
   it("a release whose manifest does not verify is never recorded", async () => {
     const { deps, q, written } = setup({
       meta: { ...META, imageDigests: { admin: D("9"), gateway: D("8") } },

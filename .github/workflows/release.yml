@@ -54,6 +54,11 @@ jobs:
   gate:
     name: gate (lint + typecheck + test)
     runs-on: ubuntu-latest
+    # Runs the whole dependency tree's code (install scripts, tests); it
+    # needs to read the repo and nothing else — not the root's
+    # `contents: write` + `id-token: write` the publish jobs use.
+    permissions:
+      contents: read
 
     services:
       postgres:
@@ -124,6 +129,13 @@ jobs:
 
       - name: Run migrations
         run: bun run db:migrate
+
+      - name: Install Playwright chromium (live screenshotter tests)
+        # Same step as ci.yml's check job (scripts/release-gate-env.test.ts
+        # R3 keeps them in step): since #869 the site-importer's live
+        # Chromium suites FAIL under CI without a browser, which failed the
+        # v0.10.54 publish after its release PR had merged.
+        run: bun node_modules/playwright/cli.js install chromium --with-deps
 
       - name: Test
         run: bun run test
@@ -219,7 +231,7 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
           flags=""
           for svc in admin gateway ops; do
             digest="$(oras resolve "ghcr.io/caelo-cms/${svc}:${V}")"
@@ -244,7 +256,7 @@ jobs:
           set -euo pipefail
           cosign sign-blob --yes --bundle release-manifest.json.sigstore.json release-manifest.json
           cosign verify-blob --bundle release-manifest.json.sigstore.json \
-            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/v${V}" \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/v${V}" \
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             release-manifest.json
 
@@ -383,9 +395,10 @@ jobs:
 
       - name: Determine npm dist-tag
         id: disttag
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           # Strip the leading `v` from the tag (or workflow_dispatch input).
-          REF="${{ github.event.inputs.tag || github.ref_name }}"
           VERSION="${REF#v}"
           # Pre-releases (containing a hyphen) get a channel-named tag —
           # `0.6.0-rc.1` → tag `rc`. Stable releases get `latest`.
@@ -418,7 +431,9 @@ jobs:
         # success. See scripts/npm-publish-idempotent.ts header
         # for the full diagnosis (observed on v0.2.3 / provisioning).
         working-directory: packages/${{ matrix.package }}
-        run: bun "${GITHUB_WORKSPACE}/scripts/npm-publish-idempotent.ts" --tag "${{ steps.disttag.outputs.tag }}"
+        env:
+          DIST_TAG: ${{ steps.disttag.outputs.tag }}
+        run: bun "${GITHUB_WORKSPACE}/scripts/npm-publish-idempotent.ts" --tag "${DIST_TAG}"
 
   # ──────────────────────────────────────────────────────────────────
   # Verify the published artifacts are actually reachable before
@@ -432,12 +447,16 @@ jobs:
     name: verify published artifacts
     needs: [docker, publish-npm]
     runs-on: ubuntu-latest
+    # Installs + runs the just-published packages; read-only, public pulls.
+    permissions:
+      contents: read
 
     steps:
       - name: Resolve version
         id: ver
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          REF="${{ github.event.inputs.tag || github.ref_name }}"
           echo "version=${REF#v}" >> "${GITHUB_OUTPUT}"
 
       - name: Setup Bun (cms-provision binary's shebang is #!/usr/bin/env bun)
@@ -446,17 +465,21 @@ jobs:
           bun-version: 1.4.2
 
       - name: Verify GHCR images are pullable
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           for service in admin gateway ops; do
-            IMAGE="ghcr.io/caelo-cms/${service}:${{ steps.ver.outputs.version }}"
+            IMAGE="ghcr.io/caelo-cms/${service}:${VERSION}"
             echo "Pulling ${IMAGE}..."
             docker pull "${IMAGE}" || { echo "::error::failed to pull ${IMAGE}"; exit 1; }
           done
 
       - name: Verify npm packages are installable
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           for pkg in shared mcp-server provisioning; do
-            INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
+            INSTALL="@caelo-cms/${pkg}@${VERSION}"
             echo "Inspecting ${INSTALL}..."
             # Same registry-propagation window as the install step below:
             # npm can take minutes to make a just-published version visible
@@ -479,12 +502,14 @@ jobs:
         # missing dist files, bad bin script paths, ESM/CJS errors
         # at module load. Runs in a clean tmpdir outside the
         # monorepo so workspace resolution can't mask anything.
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           TMPDIR=$(mktemp -d)
           cd "$TMPDIR"
           npm init -y >/dev/null
           for pkg in shared mcp-server provisioning; do
-            INSTALL="@caelo-cms/${pkg}@${{ steps.ver.outputs.version }}"
+            INSTALL="@caelo-cms/${pkg}@${VERSION}"
             echo "::group::install ${INSTALL}"
             # Retry with backoff: right after publish, npm's CDN can
             # 404 the tarball while the metadata endpoint already
@@ -537,8 +562,9 @@ jobs:
 
       - name: Extract changelog stanza for this version
         id: changelog
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          REF="${{ github.event.inputs.tag || github.ref_name }}"
           VERSION="${REF#v}"
           # Pull the `## v<VERSION>` section out of CHANGELOG.md (everything
           # from that heading to the next `## v` heading).
@@ -558,8 +584,9 @@ jobs:
 
       - name: Determine pre-release flag
         id: prerelease
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          REF="${{ github.event.inputs.tag || github.ref_name }}"
           VERSION="${REF#v}"
           if [[ "${VERSION}" == *-* ]]; then
             echo "prerelease=true" >> "${GITHUB_OUTPUT}"

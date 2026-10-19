@@ -51,6 +51,7 @@ import { generateBootstrapToken } from "./bootstrap-token.js";
 import {
   type CaddyDomainSpec,
   type CaddyTlsMode,
+  caddyTokenProblem,
   generateCaddyfile,
   selfHostedAdminHost,
   selfHostedSeedDomains,
@@ -71,6 +72,7 @@ import {
   SITE_OUTPUT_ROOT,
   selfHostedSiteUrl,
 } from "./compose.js";
+import { tightenPrivateTree, writePrivateFile } from "./private-file.js";
 import { selfCommand } from "./self-command.js";
 import {
   bunHostRunner,
@@ -192,8 +194,8 @@ function loadProvider(): Provider {
 }
 
 function saveProvider(provider: Provider): void {
-  if (!existsSync(CAELO_DIR)) mkdirSync(CAELO_DIR, { recursive: true });
-  writeFileSync(PROVIDER_PATH, JSON.stringify({ provider }, null, 2));
+  if (!existsSync(CAELO_DIR)) mkdirSync(CAELO_DIR, { recursive: true, mode: 0o700 });
+  writePrivateFile(PROVIDER_PATH, JSON.stringify({ provider }, null, 2));
 }
 
 /**
@@ -224,6 +226,20 @@ function randomSecret(bytes = 32): string {
 
 function loadConfig(): CaeloConfig | null {
   if (!existsSync(CONFIG_PATH)) return null;
+  // Every command that works on an install reads its config first, so this
+  // is where an install made by an older CLI loses its world-readable
+  // secrets (#888) — not only once each file happens to be rewritten.
+  tightenPrivateTree(
+    CAELO_DIR,
+    [BOOTSTRAP_DIR, "backups"],
+    [
+      "config.json",
+      "provider.json",
+      "internal-secret.json",
+      "docker-compose.yml",
+      `${BOOTSTRAP_DIR}/pending-token.json`,
+    ],
+  );
   const cfg = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as CaeloConfig;
   // #707 — settings added later, back-filled (and stored) with what every
   // install ran before they existed, so `upgrade` / `agent` render the same
@@ -238,8 +254,8 @@ function loadConfig(): CaeloConfig | null {
 }
 
 function saveConfig(c: CaeloConfig): void {
-  if (!existsSync(CAELO_DIR)) mkdirSync(CAELO_DIR, { recursive: true });
-  writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2));
+  if (!existsSync(CAELO_DIR)) mkdirSync(CAELO_DIR, { recursive: true, mode: 0o700 });
+  writePrivateFile(CONFIG_PATH, JSON.stringify(c, null, 2));
 }
 
 function arg(name: string): string | undefined {
@@ -293,7 +309,7 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
  * operator-added domains only `up` / `regenerate-caddy` read back).
  */
 function emitComposeFiles(cfg: CaeloConfig): void {
-  writeFileSync(COMPOSE_PATH, renderCompose(cfg, installImages(cfg)), { mode: 0o600 });
+  writePrivateFile(COMPOSE_PATH, renderCompose(cfg, installImages(cfg)));
   // No secrets (it reads the passwords from the container's environment),
   // and the postgres user inside the container must be able to read it.
   writeFileSync(
@@ -527,6 +543,19 @@ async function init(): Promise<void> {
     console.error(`--staging-domain: ${stagingProblem}`);
     process.exit(2);
   }
+  // The Caddyfile check would only fire in emitConfig, after config.json is
+  // written — and a re-run then stops at "config already exists".
+  for (const [flag, value, kind] of [
+    ["--domain", domain, "address"],
+    ["--staging-domain", stagingArg, "address"],
+    ["--owner-email", ownerEmail, "token"],
+  ] as const) {
+    const problem = value === undefined ? null : caddyTokenProblem(value, kind);
+    if (problem) {
+      console.error(`${flag} ${JSON.stringify(value)}: ${problem}.`);
+      process.exit(2);
+    }
+  }
   // #696 — the prebuilt release images, resolved to digests and
   // cosign-verified BEFORE anything is written, so a failed check leaves no
   // half-made install. `--dev` (contributors only) runs this checkout instead.
@@ -589,7 +618,7 @@ async function init(): Promise<void> {
   // staging file.
   const tok = generateBootstrapToken();
   mkdirSync(resolve(CAELO_DIR, BOOTSTRAP_DIR), { recursive: true, mode: 0o700 });
-  writeFileSync(PENDING_TOKEN_PATH, JSON.stringify(tok, null, 2), { mode: 0o600 });
+  writePrivateFile(PENDING_TOKEN_PATH, JSON.stringify(tok, null, 2));
 
   // P15.1 — mint the shared HMAC secret for /api/internal/* endpoints.
   // Same secret is read by:
@@ -601,7 +630,7 @@ async function init(): Promise<void> {
   // internal-secret`.
   const internalSecret = randomSecret(48);
   const internalSecretPath = resolve(CAELO_DIR, "internal-secret.json");
-  writeFileSync(internalSecretPath, JSON.stringify({ secret: internalSecret }, null, 2));
+  writePrivateFile(internalSecretPath, JSON.stringify({ secret: internalSecret }, null, 2));
   // #696 Phase 4c — the update agent (Linux + systemd): the fresh volume's
   // bootstrap.sh creates its database login on Postgres's first start.
   const { reportAgentSetup, setUpAgent } = await import("./agent/command.js");

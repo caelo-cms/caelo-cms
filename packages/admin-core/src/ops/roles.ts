@@ -155,6 +155,14 @@ export const deleteRoleOp = defineOperation({
   },
 });
 
+/**
+ * Refusal for a permission change on the built-in `owner` role: stripping
+ * it would lock every Owner out of the surfaces that could undo it
+ * (PR #863, M-10). Shared with `roles.propose_update_permissions`.
+ */
+export const OWNER_ROLE_PERMISSIONS_FIXED =
+  "cannot change the permissions of the built-in owner role — it always holds every permission. Create a custom role with the permissions you need and assign that role instead.";
+
 export const updateRolePermissionsOp = defineOperation({
   name: "roles.update_permissions",
   // Why human-only: Owner-only — security.
@@ -166,6 +174,25 @@ export const updateRolePermissionsOp = defineOperation({
   }),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    const targetRows = (await tx.execute(sql`
+      SELECT name, is_builtin FROM roles WHERE id = ${input.roleId}::uuid LIMIT 1
+    `)) as unknown as { name: string; is_builtin: boolean }[];
+    if (targetRows[0]?.is_builtin && targetRows[0].name === "owner") {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "roles.update_permissions",
+        input,
+        succeeded: false,
+        entityId: input.roleId,
+        resultSummary: "builtin-protected",
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "roles.update_permissions",
+        message: OWNER_ROLE_PERMISSIONS_FIXED,
+      });
+    }
     await tx.execute(sql`DELETE FROM role_permissions WHERE role_id = ${input.roleId}::uuid`);
     for (const perm of input.permissions) {
       await tx.execute(sql`

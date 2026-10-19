@@ -58,6 +58,16 @@ describe("enrichResponsiveImages (issue #162)", () => {
     expect(out.match(/srcset=/g)).toHaveLength(1);
   });
 
+  it("inserts URLs verbatim even when they spell $-replacement patterns", () => {
+    // A string replacement would expand `$&` into the matched text.
+    const out = enrichResponsiveImages(IMG, byAsset, {
+      rewriteSrc: true,
+      urlFor: (id, v) => `/cdn/$&/${id}/${v}`,
+    });
+    expect(out).toContain(`src="/cdn/$&/${ASSET}/webp-800"`);
+    expect(out).toContain(`/cdn/$&/${ASSET}/webp-400 400w`);
+  });
+
   it("skips srcset for sub-two-entry ladders and non-media images", () => {
     const single = new Map([[ASSET, [{ variant: "webp-800", format: "webp" }]]]);
     const out = enrichResponsiveImages(IMG, single, {

@@ -47,6 +47,12 @@ describe("pageOutputPath", () => {
       expect(pageOutputPath("/about")).toBe("about/index.html");
       expect(pageOutputPath("/about", "directory")).toBe("about/index.html");
     });
+
+    it("rejects dot and dot-dot path traversal segments", () => {
+      expect(() => pageOutputPath("/../escape")).toThrow(/invalid page path/);
+      expect(() => pageOutputPath("/a/./b")).toThrow(/invalid page path/);
+      expect(() => pageOutputPath("/a//b")).toThrow(/invalid page path/);
+    });
   });
 });
 

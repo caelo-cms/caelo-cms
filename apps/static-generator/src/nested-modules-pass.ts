@@ -242,6 +242,9 @@ export function assertNoRenderFailures(pages: readonly RenderedPageForGate[]): v
       "Each names the page, the module and the field whose content could not be rendered. " +
       "Next step: open the page in the editor (the preview flags the same spots), then repair the field — " +
       "AI: get_content_instance on the module's content, then set_content_instance_values with a valid " +
-      "{ moduleId, contentInstanceId } reference or without the broken item — and Stage again.",
+      "{ moduleId, contentInstanceId } reference or without the broken item — and Stage again. " +
+      "A `link-target-missing:page/<id>` (or `media/<id>`) is a link to a page (image) that was deleted: " +
+      "set the link to an existing page's path from list_pages (or an existing image from find_media) or remove it; " +
+      "a `link-ref-malformed:<text>` is a link written in a form no page or file matches — fix it the same way.",
   );
 }

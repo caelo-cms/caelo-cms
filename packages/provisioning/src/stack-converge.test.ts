@@ -312,7 +312,7 @@ describe("planContractEnv", () => {
     // #650 — the same roll converges the protected staging domain's host
     // and gate key onto an install that predates it.
     expect(plan.services.admin.flags).toEqual([
-      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_STAGING_HOST=staging.acme.com",
+      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_STAGING_HOST=staging.acme.com",
       "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
     expect(plan.services.gateway.flags).toEqual([
