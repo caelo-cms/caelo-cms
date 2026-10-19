@@ -30,6 +30,12 @@ import type { AIProvider } from "../../ai/provider.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
 import { isOpenCard, type TurnApprovalStatus } from "../chat/turn-approval-state.js";
+import {
+  exactlyOneMcpCredential,
+  type McpCredentialInput,
+  mcpCredentialShape,
+} from "./mcp_credential.js";
+import { type McpPrincipal, mcpAgentRefOf, resolveRemoteMcpPrincipal } from "./mcp_principal.js";
 
 /**
  * Issue #376 — token scope. `chat` drives the caelo_chat surface only;
@@ -351,7 +357,8 @@ export function getMcpBridge(): SendChatBridgeOpts | null {
 
 const sendChatInput = z
   .object({
-    plaintextToken: z.string().min(8).max(200),
+    /** A bearer token (stdio shim) or a remote IAP credential (#806). */
+    ...mcpCredentialShape,
     /** What the external agent says. Absent only on a resume (below). */
     message: z.string().min(1).max(50_000).optional(),
     /**
@@ -375,6 +382,7 @@ const sendChatInput = z
     pageId: z.string().uuid().optional(),
   })
   .strict()
+  .refine(exactlyOneMcpCredential.check, { message: exactlyOneMcpCredential.message })
   .refine((v) => (v.message !== undefined) !== (v.resumeApprovals === true), {
     message: "send either a message or resumeApprovals: true",
   })
@@ -433,15 +441,14 @@ export const mcpSendChatOp = defineOperation({
           "AI provider not configured — visit /settings/ai to set up an API key, then retry.",
       });
     }
-    const resolved = await resolveMcpToken(adapter, input.plaintextToken);
-    if (!resolved.ok) {
-      return err({
-        kind: "HandlerError",
-        operation: "mcp.send_chat",
-        message: mcpTokenAuthErrorMessage(resolved.error),
-      });
+    const auth = await resolveMcpPrincipal(adapter, input, {
+      surface: "chat",
+      operation: "mcp.send_chat",
+    });
+    if (!auth.ok) {
+      return err({ kind: "HandlerError", operation: "mcp.send_chat", message: auth.message });
     }
-    const { actorId, aiCostCapMicrocents, tokenId } = resolved.value;
+    const { actorId, aiCostCapMicrocents } = auth.principal;
 
     // Fresh requestId per turn — MCP clients echo it back so the operator
     // can click through to /settings/audit/<id> for the full trail.
@@ -513,7 +520,7 @@ export const mcpSendChatOp = defineOperation({
         // Issue #664 — listed in the chat's running agents; the operator's
         // Stop reaches it, and a stopped chat refuses it.
         agentRunSource: "mcp_chat",
-        agentRunMcpTokenId: tokenId,
+        agentRunMcpAgent: mcpAgentRefOf(auth.principal),
         ...(stopEpochAtArrival !== undefined ? { stopEpochAtArrival } : {}),
       },
       input.resumeApprovals === true
@@ -637,7 +644,11 @@ export const mcpAuthorizeUploadOp = defineOperation({
   // Why system-only: credentials are resolved here; bytes are stored as the human actor.
   actorScope: ["system"],
   database: "cms_admin",
-  input: z.object({ plaintextToken: z.string().min(8).max(200) }).strict(),
+  // Either surface may upload (both list caelo_upload_images).
+  input: z
+    .object({ ...mcpCredentialShape })
+    .strict()
+    .refine(exactlyOneMcpCredential.check, { message: exactlyOneMcpCredential.message }),
   output: z.object({ actorId: z.string().uuid() }),
   handler: async (_ctx, input, tx) => {
     const bridge = getMcpBridge();
@@ -647,14 +658,17 @@ export const mcpAuthorizeUploadOp = defineOperation({
         operation: "mcp.authorize_upload",
         message: "MCP bridge not configured",
       });
-    const resolved = await resolveMcpToken(bridge.adapter, input.plaintextToken);
+    const resolved = await resolveMcpPrincipal(bridge.adapter, input, {
+      surface: "any",
+      operation: "mcp.authorize_upload",
+    });
     if (!resolved.ok)
       return err({
         kind: "HandlerError",
         operation: "mcp.authorize_upload",
-        message: mcpTokenAuthErrorMessage(resolved.error),
+        message: resolved.message,
       });
-    const actorId = resolved.value.actorId;
+    const actorId = resolved.principal.actorId;
     const rows = (await tx.execute(sql`
       SELECT u.id FROM users u
       JOIN user_roles ur ON ur.user_id = u.id
@@ -707,3 +721,59 @@ export const mcpGetVersionOp = defineOperation({
     return ok({ version: CAELO_VERSION });
   },
 });
+
+/**
+ * Issue #806 — resolve an op's credential to its principal (mcp_principal.ts),
+ * enforcing what the op needs:
+ * `admin` — the Power-MCP surface (an admin-scoped token or the remote admin
+ * connection); `chat` — caelo_chat (any token, or the remote chat
+ * connection); `any` — either surface (image uploads).
+ *
+ * @returns the principal, or a message with the `auth_error:` /
+ *   `permission_denied:` prefix the HTTP shells map to 401 / 403.
+ */
+export async function resolveMcpPrincipal(
+  adapter: DatabaseAdapter,
+  credential: McpCredentialInput,
+  need: { readonly surface: "chat" | "admin" | "any"; readonly operation: string },
+): Promise<{ ok: true; principal: McpPrincipal } | { ok: false; message: string }> {
+  if (credential.remote !== undefined && credential.plaintextToken === undefined) {
+    if (need.surface !== "any" && credential.remote.surface !== need.surface) {
+      return {
+        ok: false,
+        message: `auth_error: ${need.operation} belongs to the ${need.surface} surface; this request came through the remote ${credential.remote.surface} surface.`,
+      };
+    }
+    const r = await resolveRemoteMcpPrincipal(adapter, credential.remote);
+    if (!r.ok) {
+      const prefix = r.error.status === 401 ? "auth_error" : "permission_denied";
+      return { ok: false, message: `${prefix}: ${r.error.code} — ${r.error.message}` };
+    }
+    return { ok: true, principal: r.value };
+  }
+  if (credential.plaintextToken === undefined || credential.remote !== undefined) {
+    return { ok: false, message: `auth_error: ${exactlyOneMcpCredential.message}` };
+  }
+  const resolved = await resolveMcpToken(adapter, credential.plaintextToken);
+  if (!resolved.ok) return { ok: false, message: mcpTokenAuthErrorMessage(resolved.error) };
+  const t = resolved.value;
+  if (need.surface === "admin" && t.scope !== "admin") {
+    return {
+      ok: false,
+      message:
+        `auth_error: token scope '${t.scope}' — ${need.operation} needs an admin-scoped token. ` +
+        `Mint one at /settings/mcp (scope: admin); 'chat' tokens only drive caelo_chat.`,
+    };
+  }
+  return {
+    ok: true,
+    principal: {
+      actorId: t.actorId,
+      scope: t.scope,
+      aiCostCapMicrocents: t.aiCostCapMicrocents,
+      allowCaeloAi: t.allowCaeloAi,
+      displayName: t.displayName,
+      via: { kind: "token", tokenId: t.tokenId },
+    },
+  };
+}

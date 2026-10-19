@@ -2,6 +2,7 @@
   // SPDX-License-Identifier: MPL-2.0
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import McpClientSetup from "#lib/components/McpClientSetup.svelte";
+  import McpRemoteConnections from "#lib/components/McpRemoteConnections.svelte";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
@@ -83,6 +84,9 @@
   {#if form?.ok && form?.revoked}
     <Alert><AlertDescription>Token revoked.</AlertDescription></Alert>
   {/if}
+  {#if form && "remoteUpdated" in form}
+    <Alert><AlertDescription>Remote connection updated.</AlertDescription></Alert>
+  {/if}
 
   <Card>
     <CardHeader>
@@ -146,6 +150,12 @@
       {/if}
     </CardContent>
   </Card>
+
+  <McpRemoteConnections
+    connections={data.remoteConnections}
+    csrfToken={data.csrfToken}
+    canWrite={data.canWrite}
+  />
 
   <Card>
     <CardHeader>

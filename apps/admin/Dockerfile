@@ -147,6 +147,11 @@ RUN mkdir -p /repo/node_modules/bun && \
 # monorepo build path needs the same artifact ahead of time.
 RUN bun run --filter @caelo-cms/shared build
 
+# Issue #806 — the remote MCP endpoints run the same MCP servers as the
+# stdio shim (`@caelo-cms/mcp-server/surfaces`); like shared, Vite under
+# Node resolves the package's `import` condition → dist, so build it too.
+RUN bun run --filter @caelo-cms/mcp-server build
+
 # v0.2.18 — build every Tier-1 plugin's dist/. The plugin-host loader
 # dynamic-imports `packages/plugins/<slug>/dist/index.js` at startup;
 # without these built into the image, every plugin lands at
