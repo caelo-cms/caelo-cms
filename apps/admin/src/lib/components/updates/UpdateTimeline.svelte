@@ -7,6 +7,12 @@
    * runs it polls /settings/updates/progress, which reads the database only,
    * so it keeps working while the admin itself restarts onto the new release
    * (failed polls during that minute are expected and retried).
+   *
+   * #861: the last step is named by the run's outcome — a run refused
+   * before it changed anything ends "Stopped before changing anything",
+   * never "Finished" — and while it runs, `showProgress` puts the one
+   * sentence of the page's status card on top ("Step 3 of 5: …"), kept
+   * live by the same poll.
    */
 
   import type { PlatformUpdateEvent, PlatformUpdateRequest } from "@caelo-cms/admin-core";
@@ -14,17 +20,20 @@
   import { untrack } from "svelte";
   import { invalidateAll } from "$app/navigation";
   import { Badge } from "#lib/components/ui/badge/index.js";
-  import { isActive, PHASE_LABELS, statusDisplay } from "#lib/updates-display.js";
+  import { isActive, phaseLabel, progressSentence, statusDisplay } from "#lib/updates-display.js";
 
   let {
     request: initialRequest,
     events: initialEvents,
     selfHosted = false,
+    showProgress = false,
   }: {
     request: PlatformUpdateRequest;
     events: PlatformUpdateEvent[];
     /** A self-hosted install (its hand-run upgrade is on the server). */
     selfHosted?: boolean;
+    /** Lead with the live "Step N of M" sentence while the update runs (the status card). */
+    showProgress?: boolean;
   } = $props();
 
   // Seeded once from the page's load; the poll below owns them afterwards
@@ -46,12 +55,13 @@
         };
         if (stopped || !body.request) return;
         reconnecting = false;
-        const ended = !isActive(body.request.status);
+        const moved = body.request.status !== request.status;
         request = body.request;
         events = body.events;
-        // The rest of the page (install controls, the Cloud Shell step,
-        // history) follows the request's end state.
-        if (ended) await invalidateAll();
+        // The rest of the page (its state, the cancel button that only
+        // works while the update waits, the history) follows every status
+        // change: waiting → installing → its end.
+        if (moved) await invalidateAll();
       } catch {
         // The admin restarts during a roll; keep trying.
         reconnecting = true;
@@ -87,6 +97,9 @@
       <LoaderCircle class="size-4 animate-spin text-muted-foreground" aria-hidden="true" />
     {/if}
   </div>
+  {#if showProgress && isActive(request.status)}
+    <p class="text-sm" data-testid="update-progress">{progressSentence(request, events)}</p>
+  {/if}
   {#if reconnecting && isActive(request.status)}
     <p class="text-xs text-muted-foreground">
       The admin is switching to the new version — reconnecting…
@@ -98,7 +111,7 @@
   <ol class="space-y-3 border-l pl-4">
     {#each groups as group, i (`${group.phase}-${i}`)}
       <li data-testid="timeline-phase" data-phase={group.phase}>
-        <p class="text-sm font-medium">{PHASE_LABELS[group.phase]}</p>
+        <p class="text-sm font-medium">{phaseLabel(group.phase, request.status, events)}</p>
         <ul class="mt-1 space-y-1">
           {#each group.lines as line (line.id)}
             <li class="flex gap-2 text-xs text-muted-foreground">

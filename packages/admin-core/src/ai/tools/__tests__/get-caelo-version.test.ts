@@ -12,10 +12,18 @@ const base: PlatformUpdateStatus = {
   releaseNotes: "## Fixes",
   publishedAt: "2026-10-12T09:00:00Z",
   checkedAt: "2026-10-13T10:00:00Z",
+  infraChange: null,
   updatesPath: "/settings/updates",
 };
 
 describe("get_caelo_version", () => {
+  it("says when the release has to be installed once from Google Cloud Shell (#817)", () => {
+    expect(formatCaeloVersion(base)).not.toContain("Cloud Shell");
+    expect(formatCaeloVersion({ ...base, infraChange: true })).toContain(
+      "changes this install's Google Cloud setup",
+    );
+  });
+
   it("reports the update and sends the operator to Settings → Updates", () => {
     const out = formatCaeloVersion(base);
     expect(out).toContain("Installed Caelo version: 0.10.43");

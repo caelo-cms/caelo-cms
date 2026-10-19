@@ -16,21 +16,23 @@
  * CAELO_FAKE_IMAGE_PROVIDER):
  *   - `CAELO_E2E_FAKE_UPGRADER=1` starts no Google Cloud job and reports a
  *     fake run (for both jobs), so the Playwright suite can drive "Install
- *     update" and feed the timeline itself; release manifests are not
- *     fetched then (the route falls back to what the last attempt said);
+ *     update" and feed the timeline itself; release manifests then come
+ *     from the stand-in in release-check.ts (`releaseManifestReader`);
  *   - with it, the `caelo_e2e_updates_provider` cookie switches the page to
  *     another provider for one browser (`self-hosted` / `gcp`), so the same
  *     admin build serves both install kinds to the suite;
- *   - and the `caelo_e2e_upgrader_run` cookie (`stopped`) makes the fake
- *     job's latest run read as ended, so the suite can drive "Continue" for
- *     a converge whose run died (#883 review).
+ *   - the `caelo_e2e_upgrader_run=ended` cookie makes the fake report
+ *     its run `e2e-upgrader-ended` as over (crashed without reporting back),
+ *     so the suite can show a request whose run died (#861 `interrupted`);
+ *   - and the `caelo_e2e_converge_job=absent` cookie shows an install
+ *     without the converge job (#819: one set up before it existed, or
+ *     without a caelo-provisioner), whose cloud-setup releases stay a step
+ *     by hand.
  */
 
 import {
   agentUpgraderTrigger,
   convergeTriggerFromEnv,
-  type ManifestReader,
-  registryManifestReader,
   type UpgraderTrigger,
   UpgraderTriggerError,
   upgraderTriggerFromEnv,
@@ -57,20 +59,19 @@ const fakeTrigger: UpgraderTrigger = {
   },
 };
 
-/** The fake job as the e2e cookie describes its latest run. */
-function fakeTriggerFor(env: UpgradePathEnv): UpgraderTrigger {
-  if (env.CAELO_E2E_RUN_STATE !== "stopped") return fakeTrigger;
-  return {
-    start: fakeTrigger.start,
-    async latest() {
-      return {
-        execution: `e2e-upgrader-${fakeRuns}`,
-        state: "failed",
-        logsUrl: "https://console.cloud.google.com/run/jobs",
-      };
-    },
-  };
-}
+/** The stand-in whose only run (`e2e-upgrader-ended`) died without reporting back. */
+const endedFakeTrigger: UpgraderTrigger = {
+  async start() {
+    return "e2e-upgrader-ended";
+  },
+  async latest() {
+    return {
+      execution: "e2e-upgrader-ended",
+      state: "failed",
+      logsUrl: "https://console.cloud.google.com/run/jobs/e2e-upgrader-ended",
+    };
+  },
+};
 
 /** Whether the test-only stand-ins are on (never in production). */
 function e2eStandIns(): boolean {
@@ -80,39 +81,60 @@ function e2eStandIns(): boolean {
 /** The e2e cookie that picks the provider per browser (see the file comment). */
 export const E2E_UPDATES_PROVIDER_COOKIE = "caelo_e2e_updates_provider";
 
-/** The e2e cookie that ends the fake job's latest run (see the file comment). */
+/** The e2e cookie that makes the fake upgrader's run a dead one (see the file comment). */
 export const E2E_UPGRADER_RUN_COOKIE = "caelo_e2e_upgrader_run";
+
+/** The e2e cookie that hides the stand-in converge job (see the file comment). */
+export const E2E_CONVERGE_JOB_COOKIE = "caelo_e2e_converge_job";
+
+/** {@link UpgradePathEnv} plus the test-only choices of the fake jobs. */
+export interface UpdatesEnv extends UpgradePathEnv {
+  /** `ended`: the fake upgrader's run died (test-only stand-ins only). */
+  readonly CAELO_E2E_UPGRADER_RUN?: string;
+  /** `absent`: this install has no converge job (test-only stand-ins only). */
+  readonly CAELO_E2E_CONVERGE_JOB?: string;
+}
 
 /**
  * The environment Settings → Updates resolves the install's provider from:
  * the admin's own, plus — under the test-only stand-ins — the provider the
  * browser's e2e cookie names.
  */
-export function updatesEnv(cookies: Cookies): UpgradePathEnv {
-  const env: UpgradePathEnv = process.env;
+export function updatesEnv(cookies: Cookies): UpdatesEnv {
+  const env: UpdatesEnv = process.env;
   if (!e2eStandIns()) return env;
   const override = cookies.get(E2E_UPDATES_PROVIDER_COOKIE);
-  const run = cookies.get(E2E_UPGRADER_RUN_COOKIE);
+  const run = cookies.get(E2E_UPGRADER_RUN_COOKIE) === "ended" ? "ended" : undefined;
+  const noConverge = cookies.get(E2E_CONVERGE_JOB_COOKIE) === "absent";
   return {
     ...env,
     ...(override === "self-hosted" || override === "gcp"
       ? { CAELO_E2E_UPDATES_PROVIDER: override }
       : {}),
-    ...(run === "stopped" ? { CAELO_E2E_RUN_STATE: "stopped" } : {}),
+    ...(run ? { CAELO_E2E_UPGRADER_RUN: run } : {}),
+    ...(noConverge ? { CAELO_E2E_CONVERGE_JOB: "absent" } : {}),
   };
 }
 
 /**
  * The converge job of this install (#819), null when it has none (not
  * Google Cloud, or set up before the job existed), or the setup problem.
+ * Under the test-only stand-ins it is the same fake as the upgrader, so the
+ * `caelo_e2e_upgrader_run=ended` cookie also kills a converge run.
  */
 export function convergeTrigger(
-  env: UpgradePathEnv,
+  env: UpdatesEnv,
 ):
   | { readonly ok: true; readonly trigger: UpgraderTrigger | null }
   | { readonly ok: false; readonly error: string; readonly nextStep: string } {
   if (updatesProvider(env) === "self-hosted") return { ok: true, trigger: null };
-  if (e2eStandIns()) return { ok: true, trigger: fakeTriggerFor(env) };
+  if (e2eStandIns()) {
+    if (env.CAELO_E2E_CONVERGE_JOB === "absent") return { ok: true, trigger: null };
+    return {
+      ok: true,
+      trigger: env.CAELO_E2E_UPGRADER_RUN === "ended" ? endedFakeTrigger : fakeTrigger,
+    };
+  }
   try {
     return {
       ok: true,
@@ -129,23 +151,9 @@ export function convergeTrigger(
   }
 }
 
-let manifests: ManifestReader | null = null;
-
-/**
- * Where the update route reads release manifests (#819): the public
- * registry, cached per process; never the network under the e2e stand-ins.
- */
-export function routeManifestReader(): ManifestReader {
-  if (e2eStandIns()) {
-    return async () => ({ ok: false, message: "release manifests are not read in e2e runs" });
-  }
-  manifests ??= registryManifestReader({ fetch: (url, init) => fetch(url, init) });
-  return manifests;
-}
-
 /** The upgrader of this install, null when it has none, or the setup problem. */
 export function upgraderTrigger(
-  env: UpgradePathEnv,
+  env: UpdatesEnv,
   readAgent: () => Promise<PlatformUpdateAgentStatus | null>,
 ):
   | { readonly ok: true; readonly trigger: UpgraderTrigger | null }
@@ -155,7 +163,12 @@ export function upgraderTrigger(
   if (updatesProvider(env) === "self-hosted") {
     return { ok: true, trigger: agentUpgraderTrigger(readAgent) };
   }
-  if (e2eStandIns()) return { ok: true, trigger: fakeTriggerFor(env) };
+  if (e2eStandIns()) {
+    return {
+      ok: true,
+      trigger: env.CAELO_E2E_UPGRADER_RUN === "ended" ? endedFakeTrigger : fakeTrigger,
+    };
+  }
   try {
     return {
       ok: true,

@@ -1,17 +1,28 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Plain-language labels for Settings → Updates (#696): what each phase of
- * an upgrader run and each end state means to an Owner who has never heard
- * of a migration or a revision.
+ * Settings → Updates in plain language (#696, #861): the page's one state
+ * (`updatePageState`) with its sentence and single primary action, what
+ * each phase of an upgrader run and each end state means, and the one-line
+ * summaries of the collapsed sections — for an Owner who has never heard of
+ * a migration, a revision or install.json.
  */
 
-import type { PlatformUpdatePhase, PlatformUpdateStatusValue } from "@caelo-cms/shared";
+import {
+  isPausedAt,
+  PLATFORM_UPDATE_STALE_MINUTES,
+  type PlatformUpdatePhase,
+  type PlatformUpdateStatusValue,
+  type UpdatePolicyMode,
+} from "@caelo-cms/shared";
 
-/** The timeline's steps, in order (rollback only shows when it happened). */
-export const PHASE_LABELS: Readonly<Record<PlatformUpdatePhase, string>> = {
-  queued: "Waiting to start",
-  start: "Started",
+/**
+ * The timeline's steps, in order (rollback only shows when it happened).
+ * The last one, `finish`, is named by its outcome: {@link phaseLabel}.
+ */
+export const PHASE_LABELS: Readonly<Record<Exclude<PlatformUpdatePhase, "finish">, string>> = {
+  queued: "Requested",
+  start: "Upgrader started",
   verify: "Checking the release is genuine",
   assess: "Checking it fits this site",
   backup: "Backing up your database",
@@ -23,7 +34,6 @@ export const PHASE_LABELS: Readonly<Record<PlatformUpdatePhase, string>> = {
   rollback: "Going back to the previous version",
   record: "Recording the new version",
   "self-update": "Updating the updater",
-  finish: "Finished",
 };
 
 /** Status badge text + tone. */
@@ -41,6 +51,7 @@ export const STATUS_DISPLAY: Readonly<
   refused: { label: "Not installed", tone: "destructive" },
   needs_cloud_shell: { label: "Needs Cloud Shell", tone: "warning" },
   cancelled: { label: "Cancelled", tone: "secondary" },
+  superseded: { label: "No longer needed", tone: "secondary" },
 };
 
 /**
@@ -78,26 +89,548 @@ export function checkedAgo(checkedAt: string, now: Date): string {
 }
 
 /**
- * What the "Your version" card says about the release check. `up_to_date`
- * only when the last check actually reached GitHub — a check that never ran
- * or failed must not read as "Up to date".
+ * How old the last release check may be before "Your site runs the newest
+ * version" stops being a claim the page can make. The worker checks every
+ * hour and stamps failed checks too, so an answer this old means the check
+ * is not running at all (worker off, admin crash-looping): the page says it
+ * does not know instead of repeating a day-old "up to date".
  */
-export type ReleaseCheckState =
-  | { readonly kind: "never" }
-  | { readonly kind: "failed"; readonly ago: string }
-  | { readonly kind: "up_to_date" | "update_available"; readonly ago: string };
+export const RELEASE_CHECK_STALE_MS = 24 * 60 * 60 * 1000;
 
-/** The release-check state for `platform_updates.status`'s fields at `now`. */
-export function releaseCheckState(
-  status: {
+/* ------------------------------------------------------------------------ */
+/* How a run ended (#861): outcomes, not phases.                            */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Phases in which the upgrader changes the install: from the database
+ * migrations on. Everything before (signature, fit check, backup, the
+ * health baseline) leaves the site as it was.
+ */
+const CHANGING_PHASES: ReadonlySet<PlatformUpdatePhase> = new Set([
+  "migrations",
+  "roll",
+  "health",
+  "rollback",
+  "record",
+  "self-update",
+]);
+
+/** Whether a run's timeline shows it never reached a step that changes the install. */
+export function stoppedBeforeChange(
+  events: readonly { readonly phase: PlatformUpdatePhase }[],
+): boolean {
+  return !events.some((e) => CHANGING_PHASES.has(e.phase));
+}
+
+/**
+ * The label of a finished run's last timeline step: what came out of it.
+ * A run refused before it changed anything never reads "Finished" (#861).
+ */
+export function finishLabel(
+  status: PlatformUpdateStatusValue,
+  events: readonly { readonly phase: PlatformUpdatePhase }[],
+): string {
+  switch (status) {
+    case "succeeded":
+      return "Installed";
+    case "rolled_back":
+      return "Went back to the previous version";
+    case "cancelled":
+      return "Cancelled before it started";
+    case "superseded":
+      return "No longer needed";
+    case "pending":
+    case "running":
+      return "Finishing";
+    default:
+      return stoppedBeforeChange(events)
+        ? "Stopped before changing anything"
+        : "Stopped before it finished";
+  }
+}
+
+/** The label of one timeline step; the last one says how the run ended. */
+export function phaseLabel(
+  phase: PlatformUpdatePhase,
+  status: PlatformUpdateStatusValue,
+  events: readonly { readonly phase: PlatformUpdatePhase }[],
+): string {
+  return phase === "finish" ? finishLabel(status, events) : PHASE_LABELS[phase];
+}
+
+/** The steps an Owner sees while an update runs, in order. */
+const PROGRESS_STEPS: readonly {
+  readonly label: string;
+  readonly phases: readonly PlatformUpdatePhase[];
+}[] = [
+  // #819 — the converge job opens with `converge`, before its backup.
+  { label: "checking the release", phases: ["verify", "assess", "converge"] },
+  { label: "backing up your database", phases: ["backup", "health-baseline"] },
+  { label: "updating the database", phases: ["migrations"] },
+  { label: "switching to the new version", phases: ["roll"] },
+  { label: "testing the new version", phases: ["health", "rollback", "record", "self-update"] },
+];
+
+/**
+ * The one sentence for an update in flight: which step of how many, in
+ * words. Recomputed from the live timeline while the page polls.
+ */
+export function progressSentence(
+  request: { readonly status: PlatformUpdateStatusValue; readonly targetVersion: string },
+  events: readonly { readonly phase: PlatformUpdatePhase }[],
+): string {
+  const leave = "You can leave this page.";
+  let step = 0;
+  for (const e of events) {
+    const i = PROGRESS_STEPS.findIndex((s) => s.phases.includes(e.phase));
+    if (i + 1 > step) step = i + 1;
+  }
+  if (request.status === "pending" || step === 0) {
+    return `Caelo installs v${request.targetVersion} as soon as the upgrader starts. ${leave}`;
+  }
+  const current = PROGRESS_STEPS[step - 1] as (typeof PROGRESS_STEPS)[number];
+  return `Caelo is installing v${request.targetVersion}. Step ${step} of ${PROGRESS_STEPS.length}: ${current.label}. ${leave}`;
+}
+
+/* ------------------------------------------------------------------------ */
+/* The page's one state (#861).                                             */
+/* ------------------------------------------------------------------------ */
+
+/** The nine states of Settings → Updates, in priority order (first match wins). */
+export const UPDATE_PAGE_STATES = [
+  "no_permission",
+  "in_progress",
+  "interrupted",
+  "rolled_back",
+  "break_glass",
+  "update_available",
+  "scheduled",
+  "up_to_date",
+  "unknown",
+] as const;
+export type UpdatePageStateKind = (typeof UPDATE_PAGE_STATES)[number];
+
+/**
+ * How the viewer can install a release from this page right now:
+ * `in_product` = the Install button (platform.update + an upgrader on this
+ * install); `terminal` = the pinned upgrade command (settings.write);
+ * `none` = neither (no permission, or no upgrade path for this provider).
+ */
+export type InstallRoute = "in_product" | "terminal" | "none";
+
+/** The one primary action of the page. */
+export type PrimaryAction =
+  | { readonly kind: "none" }
+  /** The password-confirmed Install dialog for `version`. */
+  | { readonly kind: "install"; readonly version: string; readonly label: string }
+  /** The pinned upgrade command for `version`. */
+  | { readonly kind: "terminal"; readonly version: string }
+  /** Google Cloud Shell with the upgrade walkthrough for `version` (break-glass). */
+  | { readonly kind: "cloud_shell"; readonly version: string }
+  /** Self-hosted break-glass: the upgrade command on the server. */
+  | { readonly kind: "server_command"; readonly version: string }
+  /** The live timeline replaces the card body; cancel only while it waits. */
+  | { readonly kind: "timeline"; readonly cancellable: boolean }
+  /** The log of an upgrader run that died without reporting back. */
+  | { readonly kind: "logs"; readonly url: string }
+  /**
+   * #819 — the password-confirmed Continue of a converge whose run died: the
+   * converge job starts again and resumes from its checkpoint.
+   */
+  | { readonly kind: "continue"; readonly version: string; readonly logsUrl: string }
+  /** Ask GitHub for the newest release now. */
+  | { readonly kind: "check_now" };
+
+/** What the status card shows. */
+export interface UpdatePageState {
+  readonly kind: UpdatePageStateKind;
+  readonly badge: {
+    readonly label: string;
+    readonly tone: "secondary" | "success" | "warning" | "destructive";
+  };
+  /** The one sentence. */
+  readonly sentence: string;
+  /** An optional second line (why, or what else to expect); null when there is none. */
+  readonly detail: string | null;
+  readonly action: PrimaryAction;
+}
+
+/** Everything {@link updatePageState} looks at. */
+export interface UpdatePageInput {
+  /** The viewer holds platform.update (installs from the admin). */
+  readonly canInstall: boolean;
+  /** The viewer holds settings.write (may run the upgrade command). */
+  readonly canUpgrade: boolean;
+  readonly status: {
+    readonly installedVersion: string;
     readonly latestVersion: string | null;
     readonly upgradeAvailable: boolean;
     readonly checkedAt: string | null;
-  },
-  now: Date,
-): ReleaseCheckState {
-  if (status.checkedAt === null) return { kind: "never" };
-  const ago = checkedAgo(status.checkedAt, now);
-  if (status.latestVersion === null) return { kind: "failed", ago };
-  return { kind: status.upgradeAvailable ? "update_available" : "up_to_date", ago };
+    /** The newest release raises the infrastructure contract (#817); null = not known. */
+    readonly infraChange: boolean | null;
+  };
+  /** The most recent update request, or null. */
+  readonly request: {
+    readonly status: PlatformUpdateStatusValue;
+    readonly targetVersion: string;
+    readonly fromVersion: string;
+    readonly statusReason: string | null;
+    /** Why the job stopped, as codes (`infra-contract`, …); empty when it did not. */
+    readonly refusalCodes: readonly string[];
+  } | null;
+  /** The request's timeline. */
+  readonly events: readonly { readonly phase: PlatformUpdatePhase }[];
+  /** The request is `running` but its upgrader run is over (died without reporting); its log. */
+  readonly deadRunLogsUrl: string | null;
+  /**
+   * #819 — that dead run was a converge the viewer may continue: it resumes
+   * from its checkpoint instead of waiting for the stale cut-off.
+   */
+  readonly deadRunContinuable: boolean;
+  /** The auto-update scheduler's last decision. */
+  readonly scheduler: {
+    /** When that decision was made; null = the scheduler never ran. */
+    readonly lastRunAt: string | null;
+    readonly lastAction: string | null;
+    readonly lastVersion: string | null;
+    readonly lastWaitUntil: string | null;
+  };
+  /**
+   * The automatic-update policy as stored NOW. The scheduler's decision
+   * holds only while the policy still installs automatically, is not
+   * paused, and has not changed since the decision (the scheduler
+   * recomputes on its next tick).
+   */
+  readonly policy: {
+    readonly mode: UpdatePolicyMode;
+    readonly paused: boolean;
+    readonly pausedUntil: string | null;
+    readonly updatedAt: string;
+  };
+  /** The clock the pause is read against (the page's ticking `now`). */
+  readonly now: Date;
+  readonly installRoute: InstallRoute;
+  readonly selfHosted: boolean;
+  /**
+   * The in-admin converge job exists (#819): a release that changes the
+   * cloud setup installs from here like any other. Until then such a
+   * release is a break-glass step in Cloud Shell.
+   */
+  readonly convergeJob: boolean;
+  /**
+   * The step only the Owner's own account can take exists for the newest
+   * release: on Google Cloud the Cloud Shell walkthrough (`cloudShellUpgrade()`
+   * is non-null), self-hosted the upgrade command on the server
+   * (`resolveUpgradePath()` is `cli`). False on a provider without one, or
+   * when the upgrade command can't be built (CAELO_SITE_URL missing). Then
+   * the page offers no such step and shows why instead. Only read for a
+   * viewer who may run it (`canUpgrade`).
+   */
+  readonly breakGlassAvailable: boolean;
+}
+
+/**
+ * When the scheduler's "wait" decision for `latest` installs it, or null
+ * when that decision no longer holds: the policy must still install
+ * automatically, not be paused at `now`, and not have changed after the
+ * decision was made.
+ */
+function scheduledInstall(input: UpdatePageInput, latest: string): string | null {
+  const { scheduler: s, policy } = input;
+  if (s.lastAction !== "wait" || s.lastVersion !== latest || s.lastWaitUntil === null) return null;
+  if (policy.mode !== "auto" || isPausedAt(policy, input.now)) return null;
+  if (s.lastRunAt === null || Date.parse(policy.updatedAt) > Date.parse(s.lastRunAt)) return null;
+  return s.lastWaitUntil;
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * "Oct 20 at 03:00 UTC": a day and time every Owner reads the same way, on
+ * the server and in any browser (no locale-dependent Intl output, so the
+ * server render and the hydrated page agree).
+ */
+export function utcDayTime(iso: string): string {
+  const d = new Date(iso);
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} at ${d.toISOString().slice(11, 16)} UTC`;
+}
+
+/** The action that installs `version` for this viewer (`label` on the Install button). */
+function installAction(input: UpdatePageInput, version: string, label: string): PrimaryAction {
+  if (input.installRoute === "in_product") return { kind: "install", version, label };
+  if (input.installRoute === "terminal") return { kind: "terminal", version };
+  return { kind: "none" };
+}
+
+/**
+ * Settings → Updates in one state: the first of {@link UPDATE_PAGE_STATES}
+ * that applies, with one sentence and exactly one primary action. The
+ * page renders only this; an Owner who has never heard of install.json or
+ * an infrastructure contract can tell in five seconds whether they can
+ * update, and how (CLAUDE.md §1A).
+ *
+ * A previous attempt counts only when it is about the release on offer
+ * now (its target is the newest release, newer than what runs); older
+ * ones live in the history.
+ */
+export function updatePageState(input: UpdatePageInput): UpdatePageState {
+  const { status, request } = input;
+  const installed = status.installedVersion;
+  const latest = status.upgradeAvailable ? status.latestVersion : null;
+  const active = request !== null && isActive(request.status) ? request : null;
+  // The last attempt, only when it was about the release on offer now.
+  const attempt =
+    request !== null && latest !== null && request.targetVersion === latest && active === null
+      ? request
+      : null;
+  const canAct = input.canInstall || input.canUpgrade;
+
+  // 1. Someone else installs.
+  if (!canAct && (latest !== null || active !== null)) {
+    const target = active !== null ? active.targetVersion : latest;
+    return {
+      kind: "no_permission",
+      badge: active
+        ? { label: "Installing", tone: "secondary" }
+        : { label: "Update available", tone: "warning" },
+      sentence: active
+        ? `An Owner is installing v${target}. Nothing changes for your work.`
+        : `v${target} is available. An Owner of this site installs Caelo updates; nothing changes for your work until then.`,
+      detail: null,
+      action: { kind: "none" },
+    };
+  }
+
+  // 2. An update runs (and its run is still alive).
+  if (active !== null && input.deadRunLogsUrl === null) {
+    return {
+      kind: "in_progress",
+      badge: STATUS_DISPLAY[active.status],
+      sentence: progressSentence(active, input.events),
+      detail: null,
+      action: { kind: "timeline", cancellable: active.status === "pending" && input.canInstall },
+    };
+  }
+
+  // 3. The last attempt at this release did not finish.
+  if (active !== null && input.deadRunLogsUrl !== null && input.deadRunContinuable) {
+    return {
+      kind: "interrupted",
+      badge: { label: "Interrupted", tone: "destructive" },
+      sentence: `The update to v${active.targetVersion} stopped before it finished. Continue it: Caelo picks up where it stopped.`,
+      detail:
+        "It keeps the backup it took before the update began, finishes what is left, tests the new version and goes back automatically if the test fails.",
+      action: {
+        kind: "continue",
+        version: active.targetVersion,
+        logsUrl: input.deadRunLogsUrl,
+      },
+    };
+  }
+  if (active !== null && input.deadRunLogsUrl !== null) {
+    return {
+      kind: "interrupted",
+      badge: { label: "Interrupted", tone: "destructive" },
+      sentence: `The update to v${active.targetVersion} stopped without reporting back. Your site may still run v${installed}: open it to check.`,
+      detail: `Once its run is cleared (within ${PLATFORM_UPDATE_STALE_MINUTES} minutes of its start) you can try again from here. The upgrader's log shows where it stopped.`,
+      action: { kind: "logs", url: input.deadRunLogsUrl },
+    };
+  }
+  if (latest !== null && (attempt?.status === "failed" || attempt?.status === "refused")) {
+    const nothing = stoppedBeforeChange(input.events);
+    return {
+      kind: "interrupted",
+      badge: { label: "Not installed", tone: "destructive" },
+      sentence: nothing
+        ? `The update to v${latest} stopped before it changed anything. Your site runs on v${installed}.`
+        : `The update to v${latest} was interrupted. Your site runs on v${installed}.`,
+      detail: attempt.statusReason,
+      action: installAction(input, latest, "Try again…"),
+    };
+  }
+
+  // 4. The new release failed its test and was undone.
+  if (latest !== null && attempt?.status === "rolled_back") {
+    return {
+      kind: "rolled_back",
+      badge: { label: "Rolled back", tone: "warning" },
+      sentence: `v${latest} did not pass its test. Caelo switched back to v${installed}; your site is unchanged.`,
+      detail: attempt.statusReason,
+      action: installAction(input, latest, "Try again…"),
+    };
+  }
+
+  // 5. Only the Owner's own account can do it: Cloud Shell (or, self-hosted,
+  //    the server). Never next to an Install button for the same release.
+  // #819 — a cloud-setup change the upgrader handed back is no step by hand
+  // when this install has the converge job: Install hands it to that job.
+  const convergeInstead =
+    input.convergeJob && (attempt?.refusalCodes.includes("infra-contract") ?? false);
+  const askedForHand = attempt?.status === "needs_cloud_shell" && !convergeInstead ? attempt : null;
+  const predictedConverge =
+    latest !== null && status.infraChange === true && !input.convergeJob && !input.selfHosted;
+  const needsHand = latest !== null && canAct && (askedForHand !== null || predictedConverge);
+  if (needsHand && input.canUpgrade && !input.breakGlassAvailable) {
+    // No such step for this install (another provider, or the upgrade
+    // command can't be built): never point at a step that isn't there. The
+    // page shows the upgrade path's diagnostic under the sentence.
+    const missing = input.selfHosted
+      ? "the upgrade command for your server can't be built"
+      : "this install has no Cloud Shell upgrade";
+    return {
+      kind: "update_available",
+      badge: { label: "Update available", tone: "warning" },
+      sentence: `v${latest} is available.`,
+      detail:
+        askedForHand !== null
+          ? `Caelo can't install it by itself, and ${missing}.${askedForHand.statusReason ? ` ${askedForHand.statusReason}` : ""}`
+          : `It also changes settings in your cloud project, which Caelo can't do by itself yet, and ${missing}.`,
+      action: { kind: "none" },
+    };
+  }
+  if (latest !== null && needsHand && !input.canUpgrade) {
+    // May install from here, but not run the step by hand (it needs
+    // settings.write, which this role lacks): say who can, not how.
+    return {
+      kind: "break_glass",
+      badge: { label: "Needs an Owner", tone: "warning" },
+      sentence: `Caelo can't install v${latest} by itself. It needs one step by an Owner who may change this site's settings; ask them to open this page.`,
+      detail: askedForHand?.statusReason ?? null,
+      action: { kind: "none" },
+    };
+  }
+  if (latest !== null && needsHand) {
+    const handAction: PrimaryAction = input.selfHosted
+      ? { kind: "server_command", version: latest }
+      : { kind: "cloud_shell", version: latest };
+    const sentence = input.selfHosted
+      ? `Caelo can't install v${latest} by itself. Run the upgrade command on your server once; after that, updates install from here again.`
+      : askedForHand !== null
+        ? `Caelo can't install v${latest} by itself. Install it once from Google Cloud Shell with your Google account; nothing on your site was changed.`
+        : `v${latest} also changes settings in your Google Cloud project, which Caelo can't do by itself yet. Install it once from Google Cloud Shell with your Google account.`;
+    return {
+      kind: "break_glass",
+      badge: { label: "Needs one step from you", tone: "warning" },
+      sentence,
+      detail: askedForHand?.statusReason ?? null,
+      action: handAction,
+    };
+  }
+
+  // 6./7. A newer release: installed automatically at a known time, or by hand.
+  if (latest !== null) {
+    const scheduledAt = scheduledInstall(input, latest);
+    if (scheduledAt === null) {
+      return {
+        kind: "update_available",
+        badge: { label: "Update available", tone: "warning" },
+        sentence: `v${latest} is available.`,
+        detail:
+          status.infraChange === true
+            ? "This update also changes settings in your Google Cloud project, so it takes a little longer."
+            : null,
+        action: installAction(input, latest, `Install v${latest}…`),
+      };
+    }
+    return {
+      kind: "scheduled",
+      badge: { label: "Scheduled", tone: "secondary" },
+      sentence: `v${latest} installs automatically on ${utcDayTime(scheduledAt)}.`,
+      detail: null,
+      action: installAction(input, latest, "Install now…"),
+    };
+  }
+
+  // 8. Nothing newer, and the check really reached GitHub — recently.
+  const stale =
+    status.checkedAt !== null &&
+    input.now.getTime() - Date.parse(status.checkedAt) > RELEASE_CHECK_STALE_MS;
+  if (status.checkedAt !== null && status.latestVersion !== null && !stale) {
+    return {
+      kind: "up_to_date",
+      badge: { label: "Up to date", tone: "success" },
+      sentence: "Your site runs the newest version of Caelo.",
+      detail: null,
+      action: { kind: "none" },
+    };
+  }
+
+  // 9. Never checked, the last check failed, or it is too old to vouch for
+  //    anything: say so, never "up to date".
+  if (status.checkedAt === null) {
+    return {
+      kind: "unknown",
+      badge: { label: "Not checked yet", tone: "secondary" },
+      sentence: "Caelo hasn't checked for new releases yet. It checks once an hour.",
+      detail: null,
+      action: { kind: "check_now" },
+    };
+  }
+  if (stale) {
+    return {
+      kind: "unknown",
+      badge: { label: "Check out of date", tone: "warning" },
+      sentence: `Caelo last checked for new releases ${checkedAgo(status.checkedAt, input.now)}, so it may not know about a newer one.`,
+      detail:
+        "It normally checks every hour. Check now; if this comes back tomorrow, the admin's release check isn't running.",
+      action: { kind: "check_now" },
+    };
+  }
+  return {
+    kind: "unknown",
+    badge: { label: "Last check failed", tone: "destructive" },
+    sentence:
+      "Caelo couldn't reach GitHub, so it doesn't know whether there is a new release. It tries again within the hour.",
+    detail: null,
+    action: { kind: "check_now" },
+  };
+}
+
+/* ------------------------------------------------------------------------ */
+/* One-line summaries of the collapsed sections (#861).                     */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The automatic-update policy in one line. Takes the shared policy mode
+ * type: "notify" is the only mode besides "auto" since #862 dropped "off".
+ */
+export function autoUpdateModeLine(policy: {
+  readonly mode: UpdatePolicyMode;
+  readonly autoSecurity: boolean;
+  readonly autoPatch: boolean;
+  readonly autoMinor: boolean;
+  readonly paused: boolean;
+}): string {
+  const paused = policy.paused ? " Paused right now." : "";
+  if (policy.mode === "auto") {
+    const kinds = [
+      policy.autoSecurity && "security fixes",
+      policy.autoPatch && "bug-fix releases",
+      policy.autoMinor && "feature releases",
+    ].filter((k): k is string => typeof k === "string");
+    if (kinds.length === 0) {
+      return `On, but no kind of release is chosen: you install everything yourself.${paused}`;
+    }
+    const list =
+      kinds.length === 1 ? kinds[0] : `${kinds.slice(0, -1).join(", ")} and ${kinds.at(-1)}`;
+    return `Installs ${list} automatically.${paused}`;
+  }
+  return `You're notified and install updates yourself.${paused}`;
+}
+
+/** The history in one line: the last attempt and how it ended, plus the count. */
+export function historySummary(
+  history: readonly { readonly requestedAt: string; readonly status: PlatformUpdateStatusValue }[],
+  latestEvents: readonly { readonly phase: PlatformUpdatePhase }[],
+  selfHosted: boolean,
+): string {
+  const last = history[0];
+  if (!last) return "No updates installed from here yet.";
+  const when = utcDayTime(last.requestedAt);
+  const outcome =
+    last.status === "failed" || last.status === "refused" || last.status === "needs_cloud_shell"
+      ? finishLabel(last.status, latestEvents).toLowerCase()
+      : statusDisplay(last.status, selfHosted).label.toLowerCase();
+  const count = `${history.length} ${history.length === 1 ? "entry" : "entries"}`;
+  return `Last attempt ${when}: ${outcome} · ${count}`;
 }

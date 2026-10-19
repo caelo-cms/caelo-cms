@@ -25,9 +25,10 @@ import {
   type QueryError,
   type TransactionRunner,
 } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { CAELO_VERSION, type ExecutionContext, isNewerVersion } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { type ManifestReader, readReleaseFacts } from "./release-facts.js";
 
 export const GITHUB_LATEST_RELEASE_URL =
   "https://api.github.com/repos/caelo-cms/caelo-cms/releases/latest";
@@ -50,27 +51,50 @@ export const RELEASE_CHECK_PROBLEMS = [
   "malformed",
 ] as const;
 
-/** What one release check found: the newest release, or why there is none. */
+const githubReleaseSchema = z
+  .object({
+    reached: z.literal(true),
+    latestVersion: z.string().min(1).max(100),
+    releaseUrl: z.string().max(2000).nullable(),
+    releaseNotes: z.string().max(RELEASE_NOTES_MAX_CHARS).nullable(),
+    publishedAt: z.string().max(100).nullable(),
+  })
+  .strict();
+
+const checkFailedSchema = z
+  .object({
+    reached: z.literal(false),
+    problem: z.enum(RELEASE_CHECK_PROBLEMS),
+    message: z.string().min(1).max(500),
+  })
+  .strict();
+
+/** What GitHub answered: the newest release, or why there is none. */
+export type GitHubReleaseOutcome =
+  | z.infer<typeof githubReleaseSchema>
+  | z.infer<typeof checkFailedSchema>;
+
+/**
+ * What one release check found: the newest release plus how it would be
+ * installed (#817), or why there is none.
+ */
 export const releaseCheckOutcomeSchema = z.discriminatedUnion("reached", [
-  z
-    .object({
-      reached: z.literal(true),
-      latestVersion: z.string().min(1).max(100),
-      releaseUrl: z.string().max(2000).nullable(),
-      releaseNotes: z.string().max(RELEASE_NOTES_MAX_CHARS).nullable(),
-      publishedAt: z.string().max(100).nullable(),
+  githubReleaseSchema
+    .extend({
+      /**
+       * The release raises the infrastructure contract over the running
+       * release (its manifest vs the running release's), so the in-admin
+       * upgrader cannot install it. null = not known (a manifest could not
+       * be read) or nothing to install. Display only: the upgrader job
+       * re-decides from the signed manifest before it changes anything.
+       */
+      infraChange: z.boolean().nullable(),
     })
     .strict(),
-  z
-    .object({
-      reached: z.literal(false),
-      problem: z.enum(RELEASE_CHECK_PROBLEMS),
-      message: z.string().min(1).max(500),
-    })
-    .strict(),
+  checkFailedSchema,
 ]);
 
-/** Output of `fetchLatestRelease`; input of `writeReleaseCheck`. */
+/** Output of `predictReleaseRoute`; input of `writeReleaseCheck`. */
 export type ReleaseCheckOutcome = z.infer<typeof releaseCheckOutcomeSchema>;
 
 /** The `fetch` shape the check needs — injectable for tests and the e2e stand-in. */
@@ -104,7 +128,7 @@ function rateLimitMessage(res: Response): string | null {
  */
 export async function fetchLatestRelease(
   opts: FetchLatestReleaseOpts = {},
-): Promise<ReleaseCheckOutcome> {
+): Promise<GitHubReleaseOutcome> {
   const doFetch = opts.fetchImpl ?? ((url, init) => fetch(url, init));
   let res: Response;
   try {
@@ -161,6 +185,41 @@ export async function fetchLatestRelease(
   };
 }
 
+/** What {@link predictReleaseRoute} needs: where manifests come from, and the install's provider. */
+export interface RoutePredictionOpts {
+  /** Reads release manifests from the registry (release-facts.ts). */
+  readonly readManifest: ManifestReader;
+  /** `CAELO_PROVIDER` as Settings → Updates resolves it (`self-hosted` has no cloud setup to change). */
+  readonly provider: string | undefined;
+}
+
+/**
+ * Add the route to a release GitHub named (#817): does it raise the
+ * infrastructure contract over the running release? Reads the manifests
+ * over the network, so it runs outside any transaction like the fetch. The
+ * same comparison the auto-update scheduler makes (`readReleaseFacts`), so
+ * the page and the scheduler never disagree about a release.
+ */
+export async function predictReleaseRoute(
+  outcome: GitHubReleaseOutcome,
+  opts: RoutePredictionOpts,
+): Promise<ReleaseCheckOutcome> {
+  if (!outcome.reached) return outcome;
+  // Not newer than what runs: there is no install to route.
+  if (!isNewerVersion(outcome.latestVersion, CAELO_VERSION)) {
+    return { ...outcome, infraChange: null };
+  }
+  const facts = await readReleaseFacts(
+    {
+      installedVersion: CAELO_VERSION,
+      targetVersion: outcome.latestVersion,
+      provider: opts.provider,
+    },
+    opts.readManifest,
+  );
+  return { ...outcome, infraChange: "unavailable" in facts ? null : facts.infraChange };
+}
+
 /**
  * Store one check's result in the cache. A failed check clears the release
  * (NULLs) and still stamps `fetched_at`, so the page can say "the last check
@@ -177,7 +236,13 @@ export async function writeReleaseCheck(
 ): Promise<boolean> {
   const release = outcome.reached
     ? outcome
-    : { latestVersion: null, releaseUrl: null, releaseNotes: null, publishedAt: null };
+    : {
+        latestVersion: null,
+        releaseUrl: null,
+        releaseNotes: null,
+        publishedAt: null,
+        infraChange: null,
+      };
   const cooldown =
     onlyIfOlderThanMs === undefined
       ? sql`true`
@@ -188,6 +253,8 @@ export async function writeReleaseCheck(
            release_url    = ${release.releaseUrl},
            release_notes  = ${release.releaseNotes},
            published_at   = ${release.publishedAt}::timestamptz,
+           latest_infra_change = ${release.infraChange}::boolean,
+           infra_change_from   = ${outcome.reached ? CAELO_VERSION : null},
            fetched_at     = now()
      WHERE id = 1 AND ${cooldown}
      RETURNING id
@@ -223,7 +290,7 @@ export type CheckReleasesNowResult =
     };
 
 /** Options for `checkReleasesNow`. */
-export interface CheckReleasesNowOpts extends FetchLatestReleaseOpts {
+export interface CheckReleasesNowOpts extends FetchLatestReleaseOpts, RoutePredictionOpts {
   readonly registry: OperationRegistry;
   readonly adapter: DatabaseAdapter;
   /** The human who clicked "Check now". */
@@ -245,7 +312,8 @@ function errorMessage(error: QueryError, fallback: string): string {
  *
  *   1. read when the last check ran (`platform_updates.status`) and refuse
  *      within the cooldown — before any request goes to GitHub;
- *   2. ask GitHub, outside any transaction;
+ *   2. ask GitHub, and read the release's manifest for its route, outside
+ *      any transaction;
  *   3. record the result with `platform_updates.check_now` (permission,
  *      cooldown re-checked in its transaction, audit).
  */
@@ -265,7 +333,7 @@ export async function checkReleasesNow(
   const wait = releaseCheckCooldownMs(checkedAt, opts.now ?? new Date());
   if (wait > 0) return { ok: false, kind: "cooldown", message: releaseCheckCooldownMessage(wait) };
 
-  const outcome = await fetchLatestRelease(opts);
+  const outcome = await predictReleaseRoute(await fetchLatestRelease(opts), opts);
   const recorded = await execute(registry, adapter, ctx, "platform_updates.check_now", {
     outcome,
   });

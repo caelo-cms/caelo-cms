@@ -2,7 +2,9 @@
 
 /**
  * Settings → Updates (#696): the release this install runs, the newest
- * release with its notes, and how to install it.
+ * release with its notes, and how to install it. The page derives ONE state
+ * from what this loads (`updatePageState`, #861) and shows one action for it
+ * at the top; everything else is collapsed reference.
  *
  *   - Phase 0: for whoever may change settings, the exact, version-pinned
  *     command that upgrades this install from a terminal.
@@ -21,7 +23,8 @@
  *     the release manifest and the last attempt). A converge whose run died
  *     is offered "Continue" (`continueUpdate`), which starts the job again; it
  *     resumes from its checkpoint. Cloud Shell stays only for installs
- *     without the converge job (break-glass).
+ *     without the converge job (break-glass); #817's release check predicts
+ *     that route before the click.
  *
  * "Check now" asks GitHub for the newest release right away (otherwise the
  * release-check worker does, hourly) — for anyone who may open this page.
@@ -56,15 +59,11 @@ import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
-import { releaseCheckFetch } from "#lib/server/release-check.js";
+import { releaseCheckFetch, releaseManifestReader } from "#lib/server/release-check.js";
 import { confirmStepUp } from "#lib/server/step-up.js";
-import {
-  convergeTrigger,
-  routeManifestReader,
-  updatesEnv,
-  upgraderTrigger,
-} from "#lib/server/upgrader.js";
+import { convergeTrigger, updatesEnv, upgraderTrigger } from "#lib/server/upgrader.js";
 import { deadRunOf } from "#lib/update-dead-run.js";
+import type { InstallRoute } from "#lib/updates-display.js";
 import {
   cloudShellUpgrade,
   resolveUpgradePath,
@@ -72,6 +71,14 @@ import {
   updatesProvider,
 } from "#lib/upgrade-path.js";
 import type { Actions, PageServerLoad } from "./$types";
+
+/** Whether an email transport is set up (the update emails need one). */
+async function readEmailConfigured(ctx: App.Locals["ctx"]): Promise<boolean> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, ctx, "email_config.get", {});
+  if (!r.ok) throw new Error(opErrorMessage(r.error, "could not read the email settings"));
+  return (r.value as { config: { transport: string } }).config.transport !== "none";
+}
 
 /** The self-hosted update agent's last check-in (null when it never checked in). */
 async function readAgent(ctx: App.Locals["ctx"]): Promise<PlatformUpdateAgentStatus | null> {
@@ -133,9 +140,9 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
   const convergeJob = converge.ok && converge.trigger !== null;
   // A run that died (out of memory, timeout) never writes its end; Cloud
   // Run knows. Say so instead of showing "Installing" until the next run
-  // ends it. Each route asks its own job.
-  // A converge whose stage-2 run never started names no execution at all;
-  // it counts as dead once the job has no live run (lib/update-dead-run.ts).
+  // ends it. Each route asks its own job. A converge whose stage-2 run
+  // never started names no execution at all; it counts as dead once the
+  // job has no live run (lib/update-dead-run.ts), and may be continued.
   let deadRun: { logsUrl: string; continuable: boolean } | null = null;
   const active = latest.request;
   const activeJob = active?.route === "converge" ? converge : upgrader;
@@ -152,22 +159,22 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
       });
     }
   }
-  // A release that needs Cloud Shell: the commands, pinned to that release.
-  // Self-hosted: the upgrade command on the server instead. Not when the
-  // upgrader only found a cloud-setup change and this install has the
-  // converge job (#819): then Install hands the release to that job.
-  const convergeInstead =
-    convergeJob &&
-    latest.request?.status === "needs_cloud_shell" &&
-    latest.request.refusalCodes.includes("infra-contract");
-  const needsHand =
-    canUpgrade && latest.request?.status === "needs_cloud_shell" && !convergeInstead;
-  const cloudShell =
-    needsHand && latest.request ? cloudShellUpgrade(env, latest.request.targetVersion) : null;
-  const serverUpgrade =
-    needsHand && selfHosted && latest.request
-      ? resolveUpgradePath(env, latest.request.targetVersion)
+  // Cloud Shell for the newest release: the break-glass step when the page
+  // needs it, otherwise one of the "other ways" (Google Cloud installs only;
+  // self-hosted upgrades on its server with `upgrade`).
+  const cloudShellFor =
+    status.upgradeAvailable && status.latestVersion
+      ? cloudShellUpgrade(env, status.latestVersion)
       : null;
+  // The commands only for those who may run them (settings.write).
+  const cloudShell = canUpgrade ? cloudShellFor : null;
+  const upgraderAvailable = !upgrader.ok
+    ? false
+    : selfHosted
+      ? canInstall && agentProblem === null
+      : upgrader.trigger !== null;
+  const installRoute: InstallRoute =
+    canInstall && upgraderAvailable ? "in_product" : upgrade?.kind === "cli" ? "terminal" : "none";
 
   return {
     status,
@@ -175,19 +182,27 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
     canInstall,
     upgrade,
     selfHosted,
-    upgrader: !upgrader.ok
-      ? { available: false, problem: `${upgrader.error} ${upgrader.nextStep}` }
-      : selfHosted
-        ? { available: canInstall && agentProblem === null, problem: null }
-        : { available: upgrader.trigger !== null, problem: null },
+    upgrader: {
+      available: upgraderAvailable,
+      problem: upgrader.ok ? null : `${upgrader.error} ${upgrader.nextStep}`,
+    },
+    installRoute,
     convergeJob,
+    // Whether the step by hand exists for this install at all — Google
+    // Cloud: the Cloud Shell walkthrough; self-hosted: the upgrade command
+    // on the server (both need a buildable upgrade command). The page never
+    // offers a break-glass step that isn't there (`updatePageState`).
+    breakGlassAvailable: selfHosted ? upgrade?.kind === "cli" : cloudShellFor !== null,
+    emailConfigured: await readEmailConfigured(locals.ctx),
     agent:
       selfHosted && canInstall
         ? {
             status: agent,
             problem: agentProblem,
             // Pinned to the running release: the agent it sets up is this one.
-            installCommand: agentInstallCommand(status.installedVersion),
+            // A command to run on the server, so only for settings.write
+            // (like the upgrade command): withheld here, not just hidden.
+            installCommand: canUpgrade ? agentInstallCommand(status.installedVersion) : null,
           }
         : null,
     policy: policyResult.value as StoredUpdatePolicy,
@@ -196,7 +211,6 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
     deadRun,
     history,
     cloudShell,
-    serverUpgrade: serverUpgrade?.kind === "cli" ? serverUpgrade : null,
   };
 };
 
@@ -220,7 +234,7 @@ export const actions: Actions = {
    * whoever may read this page: it changes nothing but the cached answer.
    * Refused within a minute of the last check (GitHub's API quota).
    */
-  checkNow: async ({ request, locals }) => {
+  checkNow: async ({ request, locals, cookies }) => {
     requirePermission(locals, "settings.read");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
@@ -231,6 +245,8 @@ export const actions: Actions = {
       adapter,
       ctx: locals.ctx,
       ...(fetchImpl ? { fetchImpl } : {}),
+      readManifest: releaseManifestReader(),
+      provider: updatesProvider(updatesEnv(cookies)),
     });
     if (!r.ok) {
       // `releaseCheck` keeps the message in the version card, not in the
@@ -274,7 +290,7 @@ export const actions: Actions = {
     // Network (the release manifests), outside any transaction.
     const facts = await readReleaseFacts(
       { installedVersion: CAELO_VERSION, targetVersion: version, provider },
-      routeManifestReader(),
+      releaseManifestReader(),
     );
     const route = chooseUpdateRoute({
       provider,

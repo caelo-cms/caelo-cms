@@ -15,6 +15,7 @@ import {
   PLUGIN_PREVIEW_REFERENCE_MARKER,
 } from "@caelo-cms/shared";
 
+import { mcpAgentOpFields } from "../../ops/chat/mcp-agent.js";
 import type { AccumulatedServerToolCall, AccumulatedToolCall, ChatRunnerOptions } from "./types.js";
 
 /** The session aggregate `chat.get_session` returns. */
@@ -86,7 +87,7 @@ export async function claimTurnApprovals(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   humanCtx: ExecutionContext,
-  options: Pick<ChatRunnerOptions, "agentRunSource" | "agentRunMcpTokenId">,
+  options: Pick<ChatRunnerOptions, "agentRunSource" | "agentRunMcpAgent">,
   input: ChatSendMessageInput,
 ): Promise<{ ok: true; value: ApprovalDecision[] } | { ok: false; message: string }> {
   const fromExternalAgent = options.agentRunSource === "mcp_chat";
@@ -101,7 +102,7 @@ export async function claimTurnApprovals(
   const r = await execute(registry, adapter, humanCtx, "chat.claim_turn_approvals", {
     chatSessionId: input.chatSessionId,
     ...(fromExternalAgent
-      ? { source: "mcp_chat" as const, mcpTokenId: options.agentRunMcpTokenId }
+      ? { source: "mcp_chat" as const, ...mcpAgentOpFields(options.agentRunMcpAgent) }
       : { source: "live_edit" as const, decision: input.resumeApproval }),
   });
   if (!r.ok) {

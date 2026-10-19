@@ -359,6 +359,7 @@ import {
   platformUpdatesListOp,
   platformUpdatesRecordTriggerOp,
   platformUpdatesRequestOp,
+  platformUpdatesSupersedeStaleOp,
 } from "./ops/platform-update-requests.js";
 import {
   platformUpdatesNotificationClaimOp,
@@ -469,6 +470,12 @@ import {
   mcpListToolsOp,
   mcpOpenSessionOp,
 } from "./ops/security/mcp_power.js";
+import {
+  listMcpRemoteConnectionsOp,
+  restoreMcpRemoteConnectionOp,
+  revokeMcpRemoteConnectionOp,
+  setMcpRemoteConnectionCapOp,
+} from "./ops/security/mcp_remote_connections.js";
 import {
   createMcpTokenOp,
   listMcpTokensOp,
@@ -913,6 +920,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // back to the external agent (read-only for the agent).
   registry.register(mcpGetApprovalOutcomeOp);
   registry.register(listMcpApprovalHandoffsOp);
+  // Issue #806 — remote MCP connections (IAP identity, no bearer): the
+  // Owner's list / revoke / restore / cap controls.
+  registry.register(listMcpRemoteConnectionsOp);
+  registry.register(revokeMcpRemoteConnectionOp);
+  registry.register(restoreMcpRemoteConnectionOp);
+  registry.register(setMcpRemoteConnectionCapOp);
   // v0.2.27 — mcp_tokens propose/execute pairs (create / revoke).
   // AI proposes new tokens by displayName + cap; the Owner approves
   // at /settings/mcp/pending and the plaintext token is generated
@@ -1148,6 +1161,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(platformUpdatesRecordTriggerOp);
   registry.register(platformUpdatesListOp);
   registry.register(platformUpdatesGetOp);
+  registry.register(platformUpdatesSupersedeStaleOp);
   registry.register(platformUpdatesAgentStatusOp);
   registry.register(platformUpdatePolicyGetOp);
   registry.register(platformUpdatePolicySetOp);

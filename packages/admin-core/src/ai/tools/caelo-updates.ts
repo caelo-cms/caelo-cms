@@ -31,6 +31,8 @@ const STATUS_WORDS: Record<PlatformUpdateRequest["status"], string> = {
   needs_cloud_shell:
     "needs the Owner to run the upgrade by hand once (Cloud Shell on Google Cloud, the upgrade command on a self-hosted server)",
   cancelled: "cancelled",
+  superseded:
+    "no longer needed (the install has moved past it: it runs this release or a newer one, or a newer update was requested)",
 };
 
 /** One request as a line the AI can pass on. */

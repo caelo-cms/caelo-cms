@@ -584,6 +584,28 @@ describe("platform_updates.scheduler_tick", () => {
     expect(n?.body).toContain("paused until you resume");
   });
 
+  it("closes a Cloud Shell step for the running release, and audits it (#817)", async () => {
+    await setLatest(NEXT_PATCH, 48);
+    const rows = (await admin(
+      (tx) => tx`INSERT INTO platform_update_requests
+                   (target_version, from_version, trigger, auto_basis, status, status_reason,
+                    started_at, finished_at)
+                 VALUES (${CAELO_VERSION}, '0.0.1', 'auto', 'patch', 'needs_cloud_shell',
+                         'changes the cloud setup', now(), now())
+                 RETURNING id::text AS id`,
+    )) as unknown as { id: string }[];
+    const id = rows[0]?.id as string;
+    await tick();
+    expect((await requests()).find((r) => r.id === id)?.status).toBe("superseded");
+    const audits = (await admin(
+      (tx) => tx`SELECT result_summary FROM audit_events
+                  WHERE operation = 'platform_updates.scheduler_tick' AND entity_id = ${id}::uuid`,
+    )) as unknown as { result_summary: string }[];
+    expect(audits.map((a) => a.result_summary)).toEqual([
+      `superseded: No longer needed: this install runs v${CAELO_VERSION} now.`,
+    ]);
+  });
+
   it("emails how automatic installs ended, once each", async () => {
     await setLatest(CAELO_VERSION, 1);
     await admin(
