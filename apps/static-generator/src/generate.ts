@@ -125,7 +125,7 @@ export interface UnpublishedLinkTarget {
   /** The page carrying the link. */
   readonly pageSlug: string;
   readonly pagePath: string;
-  /** The linked page and the path its link renders as. */
+  /** The page the link renders to (after the page-variant mapping) and its URL. */
   readonly targetPageId: string;
   readonly targetUrl: string;
 }
@@ -873,7 +873,6 @@ export async function generateSite(args: {
         synced: r.sync_mode === "synced",
       })),
     })),
-    pageUrlStyle,
   );
 
   // Every page's blocks as the composer will receive them (content
@@ -914,7 +913,7 @@ export async function generateSite(args: {
     ),
   );
   const renderedForGate: RenderedPageForGate[] = [];
-  const linkIndex = await loadBuildLinkIndex(tx, target.env, pageUrlStyle);
+  const linkIndex = await loadBuildLinkIndex(tx, target.env, pageUrlStyle, args.plugins);
   const unpublishedLinkTargets: UnpublishedLinkTarget[] = [];
 
   for (let i = 0; i < pageRows.length; i++) {
@@ -968,13 +967,16 @@ export async function generateSite(args: {
     });
     const seenTargets = new Set<string>();
     for (const o of linkResolver.observed) {
-      if (o.ref.kind !== "page" || o.resolution.status !== "unpublished") continue;
-      if (seenTargets.has(o.ref.pageId)) continue;
-      seenTargets.add(o.ref.pageId);
+      if (o.resolution.status !== "unpublished") continue;
+      // The page the link renders to — the referenced page, or its
+      // sibling in this page's variant (link-resolve point).
+      const targetPageId = o.resolution.pageId;
+      if (seenTargets.has(targetPageId)) continue;
+      seenTargets.add(targetPageId);
       unpublishedLinkTargets.push({
         pageSlug: page.slug,
         pagePath: page.current_path,
-        targetPageId: o.ref.pageId,
+        targetPageId,
         targetUrl: o.resolution.url,
       });
     }

@@ -378,11 +378,30 @@ function brokenLinkNextStep(marker: string): string | undefined {
   );
 }
 
+/**
+ * Epic #724 (rollout D) — next step for a link whose target has no
+ * version in this page's variant (`link-variant-missing:page/<id>:<variant>`;
+ * on a multilingual site the variant is the page's language): the link
+ * would lead into another language, so it is not rendered.
+ */
+function missingVariantLinkNextStep(marker: string): string | undefined {
+  const m = /^link-variant-missing:page\/([0-9a-f-]{36}):(.+)$/.exec(marker);
+  if (!m) return undefined;
+  return (
+    `A link on this page goes to a page that has no "${m[2]}" version (this page's language), so it ` +
+    `cannot be shown without sending visitors to another language. Either give that page a "${m[2]}" ` +
+    "version (multilingual sites: create_variant + translate_variant on the linked page), or change the " +
+    `link to a page that has one (find it with grep_content("caelo:page/${m[1]}") or in the page's content). ` +
+    "Publishing is blocked until it is fixed."
+  );
+}
+
 /** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
 function siteSettingNextSteps(missing: readonly string[]): { nextSteps?: Record<string, string> } {
   const steps = Object.fromEntries(
     missing.flatMap((m) => {
-      const step = SITE_SETTING_NEXT_STEPS[m] ?? brokenLinkNextStep(m);
+      const step =
+        SITE_SETTING_NEXT_STEPS[m] ?? brokenLinkNextStep(m) ?? missingVariantLinkNextStep(m);
       return step ? [[m, step]] : [];
     }),
   );

@@ -4,11 +4,7 @@ import { describe, expect, it } from "bun:test";
 import {
   applyStrings,
   buildChromeTranslationPrompt,
-  mapLinks,
-  normalizePath,
   sourceFingerprint,
-  splitHref,
-  splitPageRef,
   translatableStrings,
   validateChromeTranslation,
 } from "./chrome.js";
@@ -63,46 +59,6 @@ describe("applyStrings", () => {
     expect(() => applyStrings(values, { "nav[9].label": "x" })).toThrow(/no list item/);
     expect(() => applyStrings(values, { count: "x" })).toThrow(/no text/);
     expect(() => applyStrings(values, { "a]b": "x" })).toThrow(/malformed/);
-  });
-});
-
-describe("mapLinks", () => {
-  it("rewrites link-list hrefs and url fields, reporting problems", () => {
-    const r = mapLinks(fields, values, (href) =>
-      href.startsWith("/about")
-        ? { href: "/de/ueber-uns/" }
-        : href === "/contact"
-          ? { problem: "no German contact page" }
-          : null,
-    );
-    expect(r.changed).toBe(true);
-    expect((r.values.nav as { href: string }[])[0]?.href).toBe("/de/ueber-uns/");
-    expect((r.values.nav as { href: string }[])[1]?.href).toBe("/pricing/?ref=nav#top");
-    expect(r.values.cta_href).toBe("/contact");
-    expect(r.problems).toEqual(["no German contact page"]);
-  });
-
-  it("recognises link lists by shape when the field kinds are unknown", () => {
-    const r = mapLinks([], { items: [{ label: "A", href: "/a" }] }, () => ({ href: "/de/a/" }));
-    expect(r.values.items).toEqual([{ label: "A", href: "/de/a/" }]);
-  });
-});
-
-describe("href helpers", () => {
-  it("splits internal hrefs and normalises paths", () => {
-    expect(splitHref("/pricing/?x=1#y")).toEqual({ path: "/pricing/", suffix: "?x=1#y" });
-    expect(splitHref("https://example.com/")).toBeNull();
-    expect(splitHref("//cdn.example.com/x")).toBeNull();
-    expect(normalizePath("/de/preise/")).toBe("/de/preise");
-    expect(normalizePath("/")).toBe("/");
-  });
-
-  it("splits a stored page reference (#724) into its page id and suffix", () => {
-    const id = "0b0c0d0e-1111-4222-8333-444455556666";
-    expect(splitPageRef(`caelo:page/${id}`)).toEqual({ pageId: id, suffix: "" });
-    expect(splitPageRef(`caelo:page/${id}?x=1#team`)).toEqual({ pageId: id, suffix: "?x=1#team" });
-    expect(splitPageRef(`caelo:media/${id}`)).toBeNull();
-    expect(splitPageRef("/about")).toBeNull();
   });
 });
 

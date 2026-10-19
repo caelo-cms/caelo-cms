@@ -40,11 +40,18 @@
  * environment's policy (warn at Stage, block at Publish live — the
  * blocking check is rollout F).
  *
+ * Page variants (rollout D): a plugin that splits the site into page
+ * variants — international-site: one variant per language — answers
+ * the `link-resolve` composition point with each page's variant and
+ * variant group ({@link LinkPageVariant}). {@link SiteLinkIndex.forPage}
+ * then maps every page reference onto the target's sibling in the
+ * RENDERING page's variant, so a German page's links go to German pages
+ * wherever the link lives (module HTML, rich text, link fields, link
+ * lists, nav-menu sets, chrome). A target with no sibling in that
+ * variant is a loud failure (`link-variant-missing:page/<id>:<variant>`),
+ * never a silent link into another language.
+ *
  * Seams for the later rollout steps:
- *   - D (locale composition point): {@link SiteLinkIndex.forPage} is the
- *     per-rendering-page hook. A `link-resolve` contribution maps the
- *     target to the rendering page's same-locale sibling there; nothing
- *     in the engine or composer changes.
  *   - E (data migration): {@link mapLinkRefsDeep} / the canonicaliser's
  *     pure core walk the same shapes the migration rewrites.
  *   - F (reference integrity): {@link RecordingLinkResolver.observed}
@@ -242,11 +249,20 @@ export type LinkResolution =
   /**
    * The target exists but is not published, so a deploy build will not
    * contain it. Rendered with its URL; the caller applies the
-   * environment's policy ({@link linkIssueSeverity}).
+   * environment's policy ({@link linkIssueSeverity}). `pageId` is the
+   * page the URL points at — the referenced page, or its sibling in the
+   * rendering page's variant.
    */
-  | { readonly status: "unpublished"; readonly url: string }
+  | { readonly status: "unpublished"; readonly url: string; readonly pageId: string }
   /** No live target (never existed, deleted, another chat's branch). */
-  | { readonly status: "missing" };
+  | { readonly status: "missing" }
+  /**
+   * The target exists, but has no sibling in the rendering page's
+   * variant (a German page linking to a page that has no German
+   * version). Not rendered — linking into another variant instead is
+   * exactly the silent fallback CLAUDE.md §2 forbids.
+   */
+  | { readonly status: "no-variant"; readonly variant: string };
 
 /**
  * Turns references into URLs for ONE rendering page. Synchronous: the
@@ -283,10 +299,20 @@ export const LINK_TARGET_MISSING = "link-target-missing";
  */
 export const LINK_RESOLVER_UNAVAILABLE = "link-resolver-unavailable";
 
-/** True for the two link failure markers above. */
+/**
+ * `missingSlots` marker for a page reference whose target has no sibling
+ * in the rendering page's variant:
+ * `link-variant-missing:page/<targetId>:<variant>` (variant = the
+ * rendering page's, e.g. a locale code). Blocks a deploy like a missing
+ * target.
+ */
+export const LINK_VARIANT_MISSING = "link-variant-missing";
+
+/** True for the link failure markers above. */
 export function isLinkFailureMarker(marker: string): boolean {
   return (
     marker.startsWith(`${LINK_TARGET_MISSING}:`) ||
+    marker.startsWith(`${LINK_VARIANT_MISSING}:`) ||
     marker.startsWith(`${LINK_RESOLVER_UNAVAILABLE}:`)
   );
 }
@@ -320,6 +346,10 @@ export function resolveLinkRefsInHtml(
       missing.push(`${LINK_TARGET_MISSING}:${linkRefTargetKey(ref)}`);
       return raw;
     }
+    if (r.status === "no-variant") {
+      missing.push(`${LINK_VARIANT_MISSING}:${linkRefTargetKey(ref)}:${r.variant}`);
+      return raw;
+    }
     return r.url;
   });
 }
@@ -329,13 +359,15 @@ export function resolveLinkRefsInHtml(
  * cleanly (maintainer decision on #724): a missing target blocks
  * everywhere; an unpublished one is a warning at Stage and blocks
  * Publish live / promote. The editor preview shows drafts, so nothing
- * there is an issue beyond a missing target.
+ * there is an issue beyond a missing target. A target without a sibling
+ * in the rendering page's variant counts as missing: there is no page
+ * the link could go to.
  */
 export function linkIssueSeverity(
   env: LinkRenderEnv,
   status: LinkResolution["status"],
 ): "block" | "warning" | null {
-  if (status === "missing") return "block";
+  if (status === "missing" || status === "no-variant") return "block";
   if (status === "unpublished") {
     if (env === "production") return "block";
     if (env === "staging") return "warning";
@@ -362,6 +394,17 @@ export interface LinkIndexMedia {
   readonly slug: string;
 }
 
+/**
+ * One page's place in a plugin's page-variant partition (the
+ * `link-resolve` composition point): its `variant` (international-site:
+ * the locale code) and the `group` of pages that are versions of each
+ * other (null = the page has no versions besides itself).
+ */
+export interface LinkPageVariant {
+  readonly variant: string;
+  readonly group: string | null;
+}
+
 /** What a render-wide link index is built from. */
 export interface SiteLinkIndexInput {
   /** Every live (non-deleted) page visible to the render's scope, drafts included. */
@@ -375,6 +418,14 @@ export interface SiteLinkIndexInput {
    * internal link, and byte-identical with the canonical (#590).
    */
   readonly pageUrlStyle: PageUrlStyle;
+  /**
+   * The `link-resolve` composition point's answer: page id → its variant
+   * and variant group. Absent or empty = no plugin partitions the site,
+   * every page reference resolves to the referenced page. A page missing
+   * from a non-empty map is one no plugin has an opinion about: links
+   * FROM it resolve as referenced, and a link TO it is not remapped.
+   */
+  readonly pageVariants?: ReadonlyMap<string, LinkPageVariant>;
 }
 
 /**
@@ -384,10 +435,11 @@ export interface SiteLinkIndexInput {
 export interface SiteLinkIndex {
   readonly env: LinkRenderEnv;
   /**
-   * The resolver for rendering page `renderingPageId`. Today every page
-   * gets the same answers; rollout D's `link-resolve` composition point
-   * hooks in here to map a target onto the rendering page's locale.
-   * Each call returns a fresh {@link RecordingLinkResolver}.
+   * The resolver for rendering page `renderingPageId`: page references
+   * resolve to the target's sibling in the rendering page's variant
+   * ({@link SiteLinkIndexInput.pageVariants}); null = a render outside
+   * any page, which maps nothing. Each call returns a fresh
+   * {@link RecordingLinkResolver}.
    */
   forPage(renderingPageId: string | null): RecordingLinkResolver;
   /** The page's public path (no style applied), or null when unknown. */
@@ -428,29 +480,51 @@ function pageRefUrl(ref: PageLinkRef, path: string, style: PageUrlStyle): string
 export function createSiteLinkIndex(input: SiteLinkIndexInput): SiteLinkIndex {
   const pages = new Map(input.pages.map((p) => [p.id, p]));
   const media = new Map(input.media.map((m) => [m.id, m]));
-  const resolve = (ref: LinkRef): LinkResolution => {
+  const variants = input.pageVariants ?? new Map<string, LinkPageVariant>();
+  // group → variant → page: the sibling lookup. Only pages the index
+  // knows count — a sibling deleted or on another chat's branch is no
+  // sibling.
+  const siblings = new Map<string, Map<string, string>>();
+  for (const [pageId, v] of variants) {
+    if (v.group === null || !pages.has(pageId)) continue;
+    const members = siblings.get(v.group) ?? new Map<string, string>();
+    members.set(v.variant, pageId);
+    siblings.set(v.group, members);
+  }
+  /** The page a link to `targetId` goes to when rendered in `variant`. */
+  const pageInVariant = (targetId: string, variant: string | null): string | null => {
+    const target = variants.get(targetId);
+    if (variant === null || target === undefined || target.variant === variant) return targetId;
+    if (target.group === null) return null;
+    return siblings.get(target.group)?.get(variant) ?? null;
+  };
+  const resolve = (ref: LinkRef, variant: string | null): LinkResolution => {
     if (ref.kind === "media") {
       const asset = media.get(ref.mediaId);
       if (!asset) return { status: "missing" };
       return { status: "resolved", url: buildMediaUrl(asset.slug, ref.variant ?? "orig") };
     }
-    const page = pages.get(ref.pageId);
-    if (!page) return { status: "missing" };
+    if (!pages.has(ref.pageId)) return { status: "missing" };
+    const pageId = pageInVariant(ref.pageId, variant);
+    const page = pageId === null ? undefined : pages.get(pageId);
+    if (pageId === null || !page) return { status: "no-variant", variant: variant as string };
     const url = pageRefUrl(ref, page.path, input.pageUrlStyle);
     if (input.env !== "preview" && page.status !== "published") {
-      return { status: "unpublished", url };
+      return { status: "unpublished", url, pageId };
     }
     return { status: "resolved", url };
   };
   return {
     env: input.env,
     pathOf: (pageId) => pages.get(pageId)?.path ?? null,
-    forPage: () => {
+    forPage: (renderingPageId) => {
       const observed: ObservedLinkResolution[] = [];
+      const variant =
+        renderingPageId === null ? null : (variants.get(renderingPageId)?.variant ?? null);
       return {
         observed,
         resolve(ref) {
-          const resolution = resolve(ref);
+          const resolution = resolve(ref, variant);
           observed.push({ ref, resolution });
           return resolution;
         },
