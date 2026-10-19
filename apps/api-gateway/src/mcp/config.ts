@@ -7,7 +7,11 @@
  *
  * - **Deploy-time env** (set by provisioning): `CAELO_MCP_PUBLIC_URL`,
  *   `CAELO_ADMIN_URL`, `CAELO_MCP_OAUTH_SEAL_KEY`,
- *   `CAELO_MCP_OAUTH_CLIENT_FILE`.
+ *   `CAELO_MCP_OAUTH_CLIENT_FILE`, and — only while a seal-key rotation is
+ *   in progress — `CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS`: values sealed under
+ *   the previous key (refresh tokens live up to 30 days) still open, new
+ *   ones are sealed under the current key. Absent means "no rotation in
+ *   progress", not "use something else".
  * - **The Google OAuth client** the Owner creates AFTER deploy. It reaches
  *   the gateway as a Cloud Run secret volume (`CAELO_MCP_OAUTH_CLIENT_FILE`)
  *   whose placeholder content `{}` means "not set up yet", so it is re-read
@@ -31,6 +35,7 @@ export const MCP_ENV = {
   publicUrl: "CAELO_MCP_PUBLIC_URL",
   adminUrl: "CAELO_ADMIN_URL",
   sealKey: "CAELO_MCP_OAUTH_SEAL_KEY",
+  previousSealKey: "CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS",
   clientFile: "CAELO_MCP_OAUTH_CLIENT_FILE",
 } as const;
 
@@ -50,8 +55,10 @@ export interface McpConfig {
   readonly publicUrl: string;
   /** Origin of the IAP-protected admin, no trailing slash. */
   readonly adminUrl: string;
-  /** 32-byte AES-256-GCM key for sealed values. */
+  /** 32-byte AES-256-GCM key every new sealed value is sealed under. */
   readonly sealKey: Uint8Array;
+  /** Keys a sealed value may be opened with: `sealKey` first, then the previous key during a rotation. */
+  readonly openKeys: readonly Uint8Array[];
   readonly google: GoogleClient;
 }
 
@@ -123,14 +130,14 @@ function originFromEnv(name: string, raw: string): string | { error: string } {
   return url.origin;
 }
 
-function sealKeyFromEnv(raw: string): Uint8Array | { error: string } {
+function sealKeyFromEnv(name: string, raw: string): Uint8Array | { error: string } {
   if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(raw)) {
-    return { error: `${MCP_ENV.sealKey} must be base64` };
+    return { error: `${name} must be base64` };
   }
   // Node's base64 decoder accepts both the standard and the URL-safe alphabet.
   const bytes = new Uint8Array(Buffer.from(raw, "base64"));
   if (bytes.byteLength !== 32) {
-    return { error: `${MCP_ENV.sealKey} must decode to exactly 32 bytes` };
+    return { error: `${name} must decode to exactly 32 bytes` };
   }
   return bytes;
 }
@@ -165,7 +172,7 @@ export class McpConfigLoader {
       clientFile: this.env[MCP_ENV.clientFile],
     };
     if (!raw.publicUrl || !raw.adminUrl || !raw.sealKey || !raw.clientFile) {
-      const missing = (Object.keys(MCP_ENV) as (keyof typeof MCP_ENV)[])
+      const missing = (Object.keys(raw) as (keyof typeof raw)[])
         .filter((k) => !raw[k])
         .map((k) => MCP_ENV[k]);
       return {
@@ -178,11 +185,21 @@ export class McpConfigLoader {
     if (typeof publicUrl !== "string") return this.broken(publicUrl.error);
     const adminUrl = originFromEnv(MCP_ENV.adminUrl, raw.adminUrl);
     if (typeof adminUrl !== "string") return this.broken(adminUrl.error);
-    const sealKey = sealKeyFromEnv(raw.sealKey);
+    const sealKey = sealKeyFromEnv(MCP_ENV.sealKey, raw.sealKey);
     if (!(sealKey instanceof Uint8Array)) return this.broken(sealKey.error);
+    const openKeys: Uint8Array[] = [sealKey];
+    const rawPrevious = this.env[MCP_ENV.previousSealKey];
+    if (rawPrevious) {
+      const previous = sealKeyFromEnv(MCP_ENV.previousSealKey, rawPrevious);
+      if (!(previous instanceof Uint8Array)) return this.broken(previous.error);
+      openKeys.push(previous);
+    }
     const client = await this.client(raw.clientFile);
     if (!client.ok) return client;
-    return { ok: true, config: { publicUrl, adminUrl, sealKey, google: client.client } };
+    return {
+      ok: true,
+      config: { publicUrl, adminUrl, sealKey, openKeys, google: client.client },
+    };
   }
 
   /** Drop the cached client file (tests; the TTL covers production). */

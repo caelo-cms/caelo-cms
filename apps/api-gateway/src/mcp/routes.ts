@@ -7,30 +7,32 @@
  *
  * Nothing here touches a database or admin-only code (the gateway
  * boundary, docs/dev/public-admin-boundary.md): configuration is env plus
- * one secret-volume file, and every value the broker must remember is
- * sealed into what it hands the client.
+ * one secret-volume file, every value the broker must remember is sealed
+ * into what it hands the client, and the per-address rate limits are
+ * in-process (rate-limit.ts says why).
  *
  * Routes (all under the public origin `CAELO_MCP_PUBLIC_URL`):
  *
  *   GET|POST|DELETE /api/mcp/{chat,admin}                     proxy.ts
  *   GET  /.well-known/oauth-protected-resource/api/mcp/{s}     metadata.ts
  *   GET  /api/mcp/oauth/protected-resource/{s}                 metadata.ts
- *   GET  (four AS-metadata variants)                           metadata.ts
- *   GET  /api/mcp/oauth/authorize                              authorize.ts
+ *   GET  (two AS-metadata variants)                            metadata.ts
+ *   GET  /api/mcp/oauth/authorize          consent page        authorize.ts
+ *   POST /api/mcp/oauth/authorize          Approve / Deny      authorize.ts
  *   GET  /api/mcp/oauth/google-callback                        authorize.ts
  *   POST /api/mcp/oauth/token                                  token.ts
  *   POST /api/mcp/oauth/register                               registration.ts
  *   GET  /api/mcp/oauth/status                                 setup self-check
  */
 
-import { handleAuthorize, handleGoogleCallback } from "./authorize.js";
+import { handleAuthorize, handleAuthorizeDecision, handleGoogleCallback } from "./authorize.js";
 import {
   McpConfigLoader,
   type McpSurface,
   notConfiguredResponse,
   type ReadTextFile,
 } from "./config.js";
-import type { McpContext } from "./context.js";
+import type { McpContext, ProxyLimits } from "./context.js";
 import { corsPreflight, json } from "./http.js";
 import {
   AS_METADATA_PATHS,
@@ -38,22 +40,32 @@ import {
   protectedResourceMetadata,
   protectedResourceSurface,
 } from "./metadata.js";
-import { handleMcpProxy } from "./proxy.js";
-import { handleRegister } from "./registration.js";
+import { handleMcpProxy, PROXY_LIMITS } from "./proxy.js";
+import {
+  type BucketSpec,
+  MCP_RATE_LIMITS,
+  type McpRateClass,
+  McpRateLimiter,
+} from "./rate-limit.js";
+import { CimdCache, handleRegister } from "./registration.js";
 import { handleToken } from "./token.js";
 
-/** Effects the router may perform; all default to the real ones. */
+/** Effects and limits the router uses; all default to the real ones. */
 export interface McpRouterDeps {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly readFile?: ReadTextFile;
   readonly fetchImpl?: typeof fetch;
   readonly nowMs?: () => number;
+  readonly rateLimits?: Record<McpRateClass, BucketSpec>;
+  readonly proxyLimits?: ProxyLimits;
 }
 
 /** Per-request facts only the server knows. */
 export interface McpRequestHooks {
-  /** Disable Bun's idle timeout for this request (`server.timeout(req, 0)`). */
-  readonly disableIdleTimeout: () => void;
+  /** The client's address under the deployment's proxy topology (client-ip.ts). */
+  readonly clientAddress: string;
+  /** Set Bun's idle timeout for this request, in seconds (`server.timeout(req, s)`; 0 = none). */
+  readonly setIdleTimeout: (seconds: number) => void;
 }
 
 /** A router: a Response for a remote-MCP path, null for anything else. */
@@ -75,16 +87,48 @@ function methodNotAllowed(allow: string): Response {
   return json({ error: "method_not_allowed", message: `use ${allow}` }, 405, { allow });
 }
 
-/** Create the remote-MCP router. One per process: it owns the client-file cache. */
+/** The rate-limit class of a remote-MCP path. */
+function rateClass(pathname: string): McpRateClass {
+  if (MCP_ENDPOINT.test(pathname)) return "proxy";
+  switch (pathname) {
+    case `${OAUTH_PREFIX}authorize`:
+      return "authorize";
+    case `${OAUTH_PREFIX}google-callback`:
+      return "callback";
+    case `${OAUTH_PREFIX}token`:
+      return "token";
+    case `${OAUTH_PREFIX}register`:
+      return "register";
+    default:
+      return "metadata";
+  }
+}
+
+/** Create the remote-MCP router. One per process: it owns the client-file cache, CIMD cache and rate buckets. */
 export function createMcpRouter(deps: McpRouterDeps = {}): McpRouter {
   const nowMs = deps.nowMs ?? Date.now;
   const loader = new McpConfigLoader(deps.env ?? process.env, deps.readFile, nowMs);
   const fetchImpl = deps.fetchImpl ?? fetch;
+  const cimdCache = new CimdCache(nowMs);
+  const limiter = new McpRateLimiter(nowMs, deps.rateLimits ?? MCP_RATE_LIMITS);
+  const proxyLimits = deps.proxyLimits ?? PROXY_LIMITS;
 
   return async (req, hooks) => {
     const { pathname } = new URL(req.url);
     if (!isMcpPath(pathname)) return null;
     if (req.method === "OPTIONS") return corsPreflight();
+
+    const taken = limiter.take(rateClass(pathname), hooks.clientAddress);
+    if (!taken.ok) {
+      return json(
+        {
+          error: "rate_limited",
+          message: `Too many requests from this address. Try again in ${taken.retryAfterSeconds} s.`,
+        },
+        429,
+        { "retry-after": String(taken.retryAfterSeconds) },
+      );
+    }
 
     const loaded = await loader.load();
 
@@ -105,11 +149,16 @@ export function createMcpRouter(deps: McpRouterDeps = {}): McpRouter {
       config: loaded.config,
       fetchImpl,
       nowSeconds: () => Math.floor(nowMs() / 1000),
+      cimdCache,
+      proxyLimits,
     };
 
     const endpoint = MCP_ENDPOINT.exec(pathname);
-    if (endpoint)
-      return handleMcpProxy(req, ctx, endpoint[1] as McpSurface, hooks.disableIdleTimeout);
+    if (endpoint) {
+      return handleMcpProxy(req, ctx, endpoint[1] as McpSurface, {
+        setIdleTimeout: hooks.setIdleTimeout,
+      });
+    }
 
     const prSurface = protectedResourceSurface(pathname);
     if (prSurface) {
@@ -124,7 +173,9 @@ export function createMcpRouter(deps: McpRouterDeps = {}): McpRouter {
     }
     switch (pathname) {
       case `${OAUTH_PREFIX}authorize`:
-        return req.method === "GET" ? handleAuthorize(req, ctx) : methodNotAllowed("GET");
+        if (req.method === "GET") return handleAuthorize(req, ctx);
+        if (req.method === "POST") return handleAuthorizeDecision(req, ctx);
+        return methodNotAllowed("GET, POST");
       case `${OAUTH_PREFIX}google-callback`:
         return req.method === "GET" ? handleGoogleCallback(req, ctx) : methodNotAllowed("GET");
       case `${OAUTH_PREFIX}token`:

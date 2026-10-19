@@ -14,8 +14,15 @@
  *   the seal.
  *
  * Either way, every redirect URI the broker uses must also pass the
- * allowlist (redirect-allowlist.ts): registration is open to anyone, so
- * it is not what keeps codes away from attackers.
+ * allowlist (redirect-allowlist.ts), and the user approves each sign-in on
+ * the broker's consent page (consent.ts): registration is open to anyone,
+ * so it is not what keeps codes away from attackers. That is also why a
+ * `client_name` is shown as unverified — it is whatever the registrant
+ * typed.
+ *
+ * CIMD documents are cached for {@link CIMD_CACHE_TTL_MS}: the consent
+ * page and its approval resolve the client twice per sign-in, and the
+ * vendors' documents change on release cadence, not per request.
  */
 
 import { z } from "zod";
@@ -32,14 +39,59 @@ export const CIMD_ALLOWED_HOSTS: readonly string[] = ["claude.ai", "chatgpt.com"
 export const CIMD_TIMEOUT_MS = 5_000;
 export const CIMD_MAX_BYTES = 64 * 1024;
 
+/** How long a fetched CIMD document is reused, and how many are kept. */
+export const CIMD_CACHE_TTL_MS = 5 * 60_000;
+const CIMD_CACHE_MAX_ENTRIES = 64;
+
 /** Largest /register body accepted. */
 const REGISTER_MAX_BYTES = 16 * 1024;
+
+/**
+ * Longest DCR `client_id` issued. The client id rides inside the sealed
+ * consent token, Google `state` and authorization code, each capped at
+ * `MAX_SEALED_LENGTH` (seal.ts, 8192) next to the redirect URI, the
+ * client's `state` (≤ 1024) and Google's code; 2048 keeps the largest of
+ * them under that cap with room, so a registration whose id would not fit
+ * is refused here instead of failing mid-sign-in. Real clients register
+ * one to four short URIs (a few hundred characters of id).
+ */
+export const MAX_DCR_CLIENT_ID_LENGTH = 2048;
 
 /** A client the broker may run the flow for. */
 export interface ResolvedClient {
   readonly clientId: string;
   readonly redirectUris: readonly string[];
   readonly kind: "cimd" | "dcr";
+  /** The name the client gave itself; unverified (anyone can register any name). */
+  readonly clientName: string | null;
+}
+
+/** Successful CIMD resolutions, reused for {@link CIMD_CACHE_TTL_MS}. One per router. */
+export class CimdCache {
+  private readonly entries = new Map<string, { at: number; client: ResolvedClient }>();
+
+  constructor(private readonly nowMs: () => number) {}
+
+  /** The cached client for `clientId`, if fetched within the TTL. */
+  get(clientId: string): ResolvedClient | null {
+    const e = this.entries.get(clientId);
+    if (!e) return null;
+    if (this.nowMs() - e.at >= CIMD_CACHE_TTL_MS) {
+      this.entries.delete(clientId);
+      return null;
+    }
+    return e.client;
+  }
+
+  /** Remember a successful resolution (the oldest entry goes when full). */
+  set(client: ResolvedClient): void {
+    this.entries.delete(client.clientId);
+    if (this.entries.size >= CIMD_CACHE_MAX_ENTRIES) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
+    }
+    this.entries.set(client.clientId, { at: this.nowMs(), client });
+  }
 }
 
 const RedirectUris = z.array(z.string().min(1).max(2048)).min(1).max(20);
@@ -145,7 +197,15 @@ async function resolveCimd(ctx: McpContext, url: URL): Promise<ClientResolution>
   if (usable.length === 0) {
     return { ok: false, message: "none of the client's redirect URIs is one Caelo accepts" };
   }
-  return { ok: true, client: { clientId, redirectUris: usable, kind: "cimd" } };
+  return {
+    ok: true,
+    client: {
+      clientId,
+      redirectUris: usable,
+      kind: "cimd",
+      clientName: doc.data.client_name ?? null,
+    },
+  };
 }
 
 /** Resolve a `client_id` from an authorization request. */
@@ -158,13 +218,22 @@ export async function resolveClient(ctx: McpContext, clientId: string): Promise<
         message: `client metadata documents are only accepted from ${CIMD_ALLOWED_HOSTS.join(", ")}`,
       };
     }
-    return resolveCimd(ctx, url);
+    const cached = ctx.cimdCache.get(url.href);
+    if (cached) return { ok: true, client: cached };
+    const resolved = await resolveCimd(ctx, url);
+    if (resolved.ok) ctx.cimdCache.set(resolved.client);
+    return resolved;
   }
-  const opened = open(ctx.config.sealKey, "client", clientId, ClientSealSchema, ctx.nowSeconds());
+  const opened = open(ctx.config.openKeys, "client", clientId, ClientSealSchema, ctx.nowSeconds());
   if (!opened.ok) return { ok: false, message: "unknown client_id; register the client again" };
   return {
     ok: true,
-    client: { clientId, redirectUris: opened.value.redirect_uris, kind: "dcr" },
+    client: {
+      clientId,
+      redirectUris: opened.value.redirect_uris,
+      kind: "dcr",
+      clientName: opened.value.client_name ?? null,
+    },
   };
 }
 
@@ -231,6 +300,12 @@ export async function handleRegister(req: Request, ctx: McpContext): Promise<Res
     ...(reg.client_name !== undefined ? { client_name: reg.client_name } : {}),
     iat,
   });
+  if (clientId.length > MAX_DCR_CLIENT_ID_LENGTH) {
+    return oauthError(
+      "invalid_client_metadata",
+      "the registration is too large: register fewer or shorter redirect_uris and a shorter client_name",
+    );
+  }
   return json(
     {
       client_id: clientId,

@@ -15,20 +15,23 @@
  * exactly like a forged value, so no kind can stand in for another even
  * though they share a key.
  *
- * Envelope: `v1.<iv>.<ciphertext+tag>` (base64url, 12-byte random IV,
- * 16-byte tag). The version prefix lets a later key or format coexist with
- * values already in clients' hands. Expiry is the payload's `exp` (Unix
+ * Envelope: `v2.<kid>.<iv>.<ciphertext+tag>` (base64url, 12-byte random
+ * IV, 16-byte tag). `kid` names the key that sealed the value (a hash
+ * prefix, never the key), so during a key rotation `open` picks the
+ * previous key for values still in clients' hands — a refresh token lives
+ * up to 30 days — without trial-decrypting under every key. The version
+ * prefix lets a later format coexist. Expiry is the payload's `exp` (Unix
  * seconds), checked on open; kinds that must expire carry it in their
  * schema.
  */
 
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import type { z } from "zod";
 
 /** The kinds of sealed values; each is bound to its own AAD. */
-export type SealPurpose = "state" | "code" | "refresh" | "client";
+export type SealPurpose = "state" | "code" | "refresh" | "client" | "consent" | "access";
 
-const VERSION = "v1";
+const VERSION = "v2";
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
 /** Longest sealed value accepted; anything longer is not ours (and not worth decrypting). */
@@ -38,7 +41,20 @@ function aad(purpose: SealPurpose): Buffer {
   return Buffer.from(`caelo-mcp-oauth/${VERSION}/${purpose}`, "utf8");
 }
 
-/** Seal `payload` for `purpose`. */
+/**
+ * The key id carried in the envelope: 8 base64url characters of a
+ * domain-separated SHA-256 of the key. Public by design; it only says
+ * which of the configured keys to try.
+ */
+export function keyId(key: Uint8Array): string {
+  return createHash("sha256")
+    .update("caelo-mcp-oauth/kid/")
+    .update(key)
+    .digest("base64url")
+    .slice(0, 8);
+}
+
+/** Seal `payload` for `purpose` under `key` (always the current key). */
 export function seal(key: Uint8Array, purpose: SealPurpose, payload: object): string {
   const iv = randomBytes(IV_BYTES);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
@@ -48,7 +64,7 @@ export function seal(key: Uint8Array, purpose: SealPurpose, payload: object): st
     cipher.final(),
     cipher.getAuthTag(),
   ]);
-  return `${VERSION}.${iv.toString("base64url")}.${body.toString("base64url")}`;
+  return `${VERSION}.${keyId(key)}.${iv.toString("base64url")}.${body.toString("base64url")}`;
 }
 
 /** Why a sealed value was refused. Deliberately coarse: callers answer one generic error. */
@@ -63,11 +79,14 @@ const B64URL = /^[A-Za-z0-9_-]+$/;
 /**
  * Open a sealed value of `purpose` and validate its payload with `schema`.
  *
+ * @param keys - the keys a value may have been sealed under: the current
+ *   one, plus the previous one while a rotation is in progress. A single
+ *   key is accepted for convenience.
  * @param nowSeconds - current Unix time; a payload whose `exp` is not in the
  *   future is `expired`.
  */
 export function open<S extends z.ZodType>(
-  key: Uint8Array,
+  keys: Uint8Array | readonly Uint8Array[],
   purpose: SealPurpose,
   token: string,
   schema: S,
@@ -75,9 +94,14 @@ export function open<S extends z.ZodType>(
 ): OpenResult<z.infer<S>> {
   if (token.length > MAX_SEALED_LENGTH) return { ok: false, reason: "malformed" };
   const parts = token.split(".");
-  if (parts.length !== 3 || parts[0] !== VERSION) return { ok: false, reason: "malformed" };
-  const [, ivPart, bodyPart] = parts as [string, string, string];
+  if (parts.length !== 4 || parts[0] !== VERSION) return { ok: false, reason: "malformed" };
+  const [, kid, ivPart, bodyPart] = parts as [string, string, string, string];
   if (!B64URL.test(ivPart) || !B64URL.test(bodyPart)) return { ok: false, reason: "malformed" };
+  const ring = keys instanceof Uint8Array ? [keys] : keys;
+  // An unknown kid is a value sealed under a key this install no longer
+  // (or never) had: indistinguishable from a forgery for the caller.
+  const key = ring.find((k) => keyId(k) === kid);
+  if (!key) return { ok: false, reason: "forged" };
   const iv = Buffer.from(ivPart, "base64url");
   const body = Buffer.from(bodyPart, "base64url");
   if (iv.byteLength !== IV_BYTES || body.byteLength <= TAG_BYTES) {

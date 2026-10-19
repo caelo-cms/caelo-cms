@@ -81,7 +81,7 @@ import {
 } from "./database-env.js";
 import { startGatewayStateGc } from "./gc.js";
 import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
-import { createMcpRouter } from "./mcp/routes.js";
+import { createMcpRouter, isMcpPath } from "./mcp/routes.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
 import {
   type CaptchaConfig,
@@ -449,11 +449,13 @@ export interface GatewayConnection {
   /** The TCP peer (Bun `server.requestIP`); read only when no proxy is in front. */
   readonly peerAddress: string | null;
   /**
-   * Turn off Bun's idle timeout for this request (`server.timeout(req, 0)`):
-   * a remote-MCP SSE stream may stay quiet longer than the 10 s default.
-   * Absent outside Bun.serve (tests), where there is no timeout to lift.
+   * Set Bun's idle timeout for this request (`server.timeout(req, s)`, 0 =
+   * none): the remote-MCP proxy waits up to its first-response timeout for
+   * the admin, then lifts it for an SSE stream that may stay quiet longer
+   * than the 10 s default. Absent outside Bun.serve (tests), where there is
+   * no timeout to change.
    */
-  readonly disableIdleTimeout?: () => void;
+  readonly setIdleTimeout?: (seconds: number) => void;
 }
 
 /**
@@ -546,8 +548,19 @@ export async function handleRequest(
 
   // #806 — before the database-backed pipeline: remote MCP needs neither
   // the gateway's settings nor its plugin host.
-  const mcp = await mcpRouter(req, { disableIdleTimeout: conn.disableIdleTimeout ?? (() => {}) });
-  if (mcp) return mcp;
+  // Rate limited per client address inside the router (mcp/rate-limit.ts),
+  // so the address is resolved by the same rule as every other limit here.
+  if (isMcpPath(url.pathname)) {
+    const mcpClient = resolveClientAddress(() =>
+      clientAddress(req, trustedProxyHopsFromEnv(process.env), conn.peerAddress),
+    );
+    if (!mcpClient.ok) return mcpClient.response;
+    const mcp = await mcpRouter(req, {
+      clientAddress: mcpClient.value,
+      setIdleTimeout: conn.setIdleTimeout ?? (() => {}),
+    });
+    if (mcp) return mcp;
+  }
 
   if (!cachedAdapter) {
     return jsonResponse(
@@ -984,7 +997,7 @@ if (import.meta.main) {
     fetch: (req, srv) =>
       handleRequest(req, {
         peerAddress: srv.requestIP(req)?.address ?? null,
-        disableIdleTimeout: () => srv.timeout(req, 0),
+        setIdleTimeout: (seconds) => srv.timeout(req, seconds),
       }),
   });
   console.log(`[api-gateway] listening on :${server.port}`);
