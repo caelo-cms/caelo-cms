@@ -225,6 +225,11 @@ export function pageOutputPath(
 ): string {
   const trimmed = trimSlashes(currentPath);
   if (trimmed.length === 0) return "index.html";
+  for (const seg of trimmed.split("/")) {
+    if (seg.length === 0 || seg === "." || seg === "..") {
+      throw new Error(`static-generator: invalid page path "${currentPath}"`);
+    }
+  }
   return pageUrlStyle === "no-extension" ? trimmed : `${trimmed}/index.html`;
 }
 
@@ -416,6 +421,9 @@ export async function generateSite(args: {
 }): Promise<GenerateResult> {
   const start = Date.now();
   const { tx, target, runId } = args;
+  if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
+    throw new Error(`static-generator: invalid runId "${runId}"`);
+  }
   const root = args.repoRoot ?? process.cwd();
   const outDir = resolve(root, target.outDir);
   const buildsDir = join(outDir, "builds");
@@ -1029,7 +1037,10 @@ export async function generateSite(args: {
   // markup is guaranteed to find it already in the document.
   const clientAssets = await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id));
   for (const asset of clientAssets) {
-    const assetPath = join(buildDir, asset.relPath);
+    const assetPath = resolve(buildDir, asset.relPath);
+    if (!assetPath.startsWith(`${buildDir}/`)) {
+      throw new Error(`static-generator: asset path "${asset.relPath}" escapes build directory`);
+    }
     await mkdir(dirname(assetPath), { recursive: true });
     await writeFile(assetPath, asset.content, "utf8");
     fileCount += 1;
@@ -1053,7 +1064,10 @@ export async function generateSite(args: {
   // the extension (no extension AND it's a page).
   const contentTypeOverrides: Record<string, string> = {};
   for (const p of composedPages) {
-    const filePath = join(buildDir, p.relPath);
+    const filePath = resolve(buildDir, p.relPath);
+    if (!filePath.startsWith(`${buildDir}/`)) {
+      throw new Error(`static-generator: output path "${p.relPath}" escapes build directory`);
+    }
     await mkdir(join(filePath, ".."), { recursive: true });
     await writeFile(filePath, p.html, "utf8");
     fileCount += 1;
