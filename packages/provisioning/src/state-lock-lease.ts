@@ -25,8 +25,13 @@
  * lease that the holder renews while it runs (the heartbeat in
  * state-store.ts). Such a lock is broken when:
  *
- *   - it was taken on THIS host and its pid is no longer alive (a killed
- *     CLI on the same machine — no need to wait for the lease), or
+ *   - it was taken on THIS machine and its pid is no longer alive (a
+ *     killed CLI on the same machine — no need to wait for the lease). The
+ *     machine is told apart by {@link machineId}, not by its host name
+ *     alone: every Cloud Run container calls itself the same, and two
+ *     laptops may too, so a pid that is dead HERE says nothing about a
+ *     process THERE. Inside Cloud Run there is no machine id at all, so a
+ *     lock from there is only ever judged by its lease; or
  *   - its lease has expired: the holder stopped renewing it (killed, or a
  *     closed Cloud Shell), so it can no longer be writing.
  *
@@ -38,8 +43,9 @@
  * release) lives in state-store.ts.
  */
 
-import { randomUUID } from "node:crypto";
-import { hostname } from "node:os";
+import { createHash, randomUUID } from "node:crypto";
+import { readlinkSync } from "node:fs";
+import { hostname, networkInterfaces } from "node:os";
 import { z } from "zod";
 import type { GcloudResult } from "./gcloud.js";
 
@@ -94,6 +100,8 @@ const lockBodySchema = z.object({
   /** Unique per acquisition: proves a lock is still the one this run took. */
   id: z.string().optional(),
   host: z.string().optional(),
+  /** {@link machineId} of the writer; null when it has none (Cloud Run). */
+  machine: z.string().nullable().optional(),
   pid: z.number().optional(),
   startedAt: z.string().optional(),
   execution: executionRefSchema.optional(),
@@ -122,7 +130,8 @@ export function lockBody(
   const body: LockBody = {
     purpose,
     id,
-    host: hostname(),
+    host: THIS_HOST.host,
+    machine: THIS_HOST.machine ?? null,
     pid: process.pid,
     startedAt: now.toISOString(),
     ...(holder && "execution" in holder ? { execution: { ...holder.execution } } : {}),
@@ -155,13 +164,50 @@ export function processAlive(pid: number): boolean {
   }
 }
 
+/**
+ * An id for this machine AND pid namespace, so a pid is only ever checked
+ * where it was taken: the host name, the network cards' MAC addresses and
+ * (on Linux) the pid namespace. Null inside Cloud Run, where every
+ * container is called `localhost`, has its own pid space and no stable
+ * hardware to tell it apart — a lock from there is judged by its lease
+ * alone. Null too when the machine shows no network card. An id that
+ * changes while a lock is held (a new network card) only makes a later
+ * judge wait for the lease: a mismatch is always the safe direction.
+ */
+export function machineId(env: NodeJS.ProcessEnv = process.env): string | null {
+  if (env.CLOUD_RUN_EXECUTION || env.K_SERVICE) return null;
+  const macs = new Set<string>();
+  for (const cards of Object.values(networkInterfaces())) {
+    for (const card of cards ?? []) {
+      if (!card.internal && card.mac && card.mac !== "00:00:00:00:00:00") macs.add(card.mac);
+    }
+  }
+  if (macs.size === 0) return null;
+  let pidSpace = "";
+  try {
+    pidSpace = readlinkSync("/proc/self/ns/pid");
+  } catch {
+    // Not Linux: the machine has one pid space, which the MACs already name.
+  }
+  return createHash("sha256")
+    .update([hostname(), pidSpace, ...[...macs].sort()].join("\n"))
+    .digest("hex")
+    .slice(0, 32);
+}
+
 /** The judging run's own host and how it checks a local pid. */
 export interface LocalHost {
   readonly host: string;
+  /**
+   * {@link machineId}; a lock that names another (or none) is never judged
+   * by its pid. Left out only by a lock from before the machine id, which
+   * falls back to comparing host names (state-lock-lease tests).
+   */
+  readonly machine?: string | null;
   readonly alive: (pid: number) => boolean;
 }
 
-const THIS_HOST: LocalHost = { host: hostname(), alive: processAlive };
+const THIS_HOST: LocalHost = { host: hostname(), machine: machineId(), alive: processAlive };
 
 /** Parse a lock body; null when it is not one this code wrote. */
 export function parseLockBody(text: string): LockBody | null {
@@ -325,7 +371,7 @@ export function judgeHeldLock(
  * very host, or once its lease — renewed while the holder runs — expired.
  */
 function judgeProcessLock(body: LockBody, who: string, now: Date, here: LocalHost): LockVerdict {
-  if (body.host === here.host && body.pid !== undefined && !here.alive(body.pid)) {
+  if (body.pid !== undefined && sameMachine(body, here) && !here.alive(body.pid)) {
     return { kind: "break", why: `${who} has ended (its process is gone on this machine)` };
   }
   if (body.leaseUntil === undefined) {
@@ -352,6 +398,19 @@ function judgeProcessLock(body: LockBody, who: string, now: Date, here: LocalHos
     why: `held by ${who}; its lease runs until ${body.leaseUntil} unless renewed`,
     manualRemoval: false,
   };
+}
+
+/**
+ * Whether the lock was taken where `here` can check its pid. A lock naming
+ * a machine id needs this run's to match; one naming none (Cloud Run)
+ * never matches; a lock from before machine ids compares host names.
+ */
+function sameMachine(body: LockBody, here: LocalHost): boolean {
+  if (body.host !== here.host) return false;
+  // A judge in Cloud Run shares its host name with every other container.
+  if (here.machine === null) return false;
+  if (body.machine === undefined) return true;
+  return body.machine !== null && here.machine != null && body.machine === here.machine;
 }
 
 /** "caelo upgrader job (run X, started T)" — for messages. */
