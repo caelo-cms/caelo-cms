@@ -90,6 +90,10 @@ function setupGrants(): Map<string, Set<string>> {
       `projects/${p}/serviceAccounts/caelo-mcp@${p}.iam.gserviceaccount.com`,
       of("roles/iam.serviceAccountTokenCreator"),
     ],
+    [
+      `projects/${p}/serviceAccounts/caelo-production-audit@${p}.iam.gserviceaccount.com`,
+      of("roles/iam.serviceAccountUser"),
+    ],
     // Project-level run.developer reaches the job too.
     [`projects/${p}/locations/europe-west1/jobs/caelo-production-upgrader`, project],
     [`gs://${p}-caelo-ops`, bucketList],
@@ -117,6 +121,23 @@ describe("upgraderAccessChecks", () => {
   it("asks only for what upgrader-setup.ts grants: a fresh setup passes the self-check", async () => {
     const r = await runIamPreflight(upgraderAccessChecks(TARGET), tester(setupGrants()));
     expect(r).toEqual({ kind: "ok" });
+  });
+
+  it("#879 review: the audit job's account is checked, since every app-roll moves that job (#875)", async () => {
+    const grants = setupGrants();
+    grants.delete(
+      "projects/acme/serviceAccounts/caelo-production-audit@acme.iam.gserviceaccount.com",
+    );
+    const r = await runIamPreflight(upgraderAccessChecks(TARGET), tester(grants));
+    expect(r.kind).toBe("missing");
+    if (r.kind !== "missing") return;
+    expect(r.missing.map((m) => [resourceName(m.check.resource), m.missing])).toEqual([
+      [
+        "projects/acme/serviceAccounts/caelo-production-audit@acme.iam.gserviceaccount.com",
+        ["iam.serviceAccounts.actAs"],
+      ],
+    ]);
+    expect(preflightMissingReason(r.missing)).toContain("quality-audit job");
   });
 
   it("never needs a permission only a forbidden role would give (no compute, no IAM admin)", () => {
