@@ -354,3 +354,37 @@ describe("#724 D — internal links go to the rendering page's language", () => 
     }
   }, 120_000);
 });
+
+describe("#724 D — links.canonicalise_values (plugin write-path building block)", () => {
+  const call = (actorKind: ExecutionContext["actorKind"], input: unknown) =>
+    execute(registry, adapter, { ...SYS_CTX, actorKind }, "links.canonicalise_values", input);
+  const fields = [{ name: "cta_href", kind: "url" }];
+
+  it("canonicalises a path to a page reference", async () => {
+    const r = await call("system", { fields, values: { cta_href: `/${PFX}-about#team` } });
+    expect(r.ok && r.value).toEqual({ values: { cta_href: `caelo:page/${ids.enAbout}#team` } });
+  });
+
+  it("refuses a path that names no page with an actionable message", async () => {
+    const r = await call("system", { fields, values: { cta_href: `/${PFX}-nowhere` } });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe("HandlerError");
+    expect((r.error as { message: string }).message).toContain(`/${PFX}-nowhere`);
+  });
+
+  it("is not callable by the AI or a human directly", async () => {
+    for (const actorKind of ["ai", "human"] as const) {
+      const r = await call(actorKind, { fields, values: { cta_href: `/${PFX}-about` } });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.kind).toBe("ActorScopeRejected");
+    }
+  });
+
+  it("caps the number of value keys", async () => {
+    const values = Object.fromEntries(Array.from({ length: 501 }, (_, i) => [`k${i}`, "x"]));
+    const r = await call("system", { fields: [], values });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.kind).toBe("ValidationFailed");
+  });
+});
