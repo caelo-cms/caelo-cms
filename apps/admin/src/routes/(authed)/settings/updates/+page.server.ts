@@ -39,21 +39,15 @@ import {
   agentInstallCommand,
   agentUnavailable,
   checkReleasesNow,
-  chooseUpdateRoute,
   type PlatformUpdateEvent,
   type PlatformUpdateRequest,
   type PlatformUpdateStatus,
-  readReleaseFacts,
   type SchedulerStatus,
   STEP_UP_REQUIRED,
   startUpgraderFor,
 } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
-import {
-  CAELO_VERSION,
-  type PlatformUpdateAgentStatus,
-  type StoredUpdatePolicy,
-} from "@caelo-cms/shared";
+import type { PlatformUpdateAgentStatus, StoredUpdatePolicy } from "@caelo-cms/shared";
 import { error, fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
@@ -61,7 +55,12 @@ import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { releaseCheckFetch, releaseManifestReader } from "#lib/server/release-check.js";
 import { confirmStepUp } from "#lib/server/step-up.js";
-import { convergeTrigger, updatesEnv, upgraderTrigger } from "#lib/server/upgrader.js";
+import {
+  convergeTrigger,
+  updateRouteFor,
+  updatesEnv,
+  upgraderTrigger,
+} from "#lib/server/upgrader.js";
 import { deadRunOf } from "#lib/update-dead-run.js";
 import type { InstallRoute } from "#lib/updates-display.js";
 import {
@@ -286,16 +285,10 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const last = await execute(registry, adapter, locals.ctx, "platform_updates.get", {});
     if (!last.ok) return opFailure(last.error, "Could not read the last update.");
-    const provider = updatesProvider(env);
     // Network (the release manifests), outside any transaction.
-    const facts = await readReleaseFacts(
-      { installedVersion: CAELO_VERSION, targetVersion: version, provider },
-      releaseManifestReader(),
-    );
-    const route = chooseUpdateRoute({
-      provider,
+    const route = await updateRouteFor({
+      env,
       targetVersion: version,
-      infraChange: "unavailable" in facts ? null : facts.infraChange,
       lastAttempt: (last.value as { request: PlatformUpdateRequest | null }).request,
       convergeAvailable: converge.trigger !== null,
     });

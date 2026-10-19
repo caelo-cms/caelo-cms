@@ -32,13 +32,18 @@
 
 import {
   agentUpgraderTrigger,
+  chooseUpdateRoute,
   convergeTriggerFromEnv,
+  type LastUpdateAttempt,
+  readReleaseFacts,
+  type UpdateRoute,
   type UpgraderTrigger,
   UpgraderTriggerError,
   upgraderTriggerFromEnv,
 } from "@caelo-cms/admin-core";
-import type { PlatformUpdateAgentStatus } from "@caelo-cms/shared";
+import { CAELO_VERSION, type PlatformUpdateAgentStatus } from "@caelo-cms/shared";
 import type { Cookies } from "@sveltejs/kit";
+import { releaseManifestReader } from "#lib/server/release-check.js";
 import { type UpgradePathEnv, updatesProvider } from "#lib/upgrade-path.js";
 
 let fakeRuns = 0;
@@ -183,4 +188,34 @@ export function upgraderTrigger(
     }
     throw e;
   }
+}
+
+/**
+ * Which job installs `targetVersion` from Settings → Updates (#819): the
+ * release manifests (read, network) and the last attempt decide, through
+ * admin-core update-route.ts.
+ *
+ * It lives here rather than in the route because the page is its only
+ * caller: reached through the admin-core barrel from a `+page.server.ts`
+ * alone, the bundler hoists update-route.ts into the page's chunk and
+ * re-exports it from there, which SvelteKit refuses (`invalid_export`).
+ */
+export async function updateRouteFor(input: {
+  readonly env: UpdatesEnv;
+  readonly targetVersion: string;
+  readonly lastAttempt: LastUpdateAttempt | null;
+  readonly convergeAvailable: boolean;
+}): Promise<UpdateRoute> {
+  const provider = updatesProvider(input.env);
+  const facts = await readReleaseFacts(
+    { installedVersion: CAELO_VERSION, targetVersion: input.targetVersion, provider },
+    releaseManifestReader(),
+  );
+  return chooseUpdateRoute({
+    provider,
+    targetVersion: input.targetVersion,
+    infraChange: "unavailable" in facts ? null : facts.infraChange,
+    lastAttempt: input.lastAttempt,
+    convergeAvailable: input.convergeAvailable,
+  });
 }
