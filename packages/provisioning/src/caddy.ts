@@ -103,11 +103,19 @@ export function selfHostedSeedDomains(domain: string, stagingDomain: string): Ca
   ];
 }
 
-const UNSAFE_CADDY_TOKEN_RE = /[\s"{}#\\;]/;
+/**
+ * Characters that would let a value end its Caddyfile token and start new
+ * directives or blocks: whitespace (incl. newlines), both quote styles Caddy
+ * tokenizes (`"` and backtick), braces (blocks and `{placeholders}`), the
+ * comment marker, escapes and semicolons.
+ */
+const UNSAFE_CADDY_TOKEN_RE = /[\s"`{}#\\;]/;
 
 function assertSafeCaddyToken(label: string, value: string): void {
   if (value.length === 0 || UNSAFE_CADDY_TOKEN_RE.test(value)) {
-    throw new Error(`Caddyfile: invalid ${label} ${JSON.stringify(value)}`);
+    throw new Error(
+      `Caddyfile: invalid ${label} ${JSON.stringify(value)} — it may not be empty or contain whitespace, quotes, braces, '#', '\\' or ';'. Fix the value in .caelo/config.json (or the domain you added) and run the command again.`,
+    );
   }
 }
 

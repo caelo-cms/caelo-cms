@@ -7,8 +7,14 @@
  * otherwise land outside the target directory).
  *
  * Parses ustar headers plus the two extensions GNU tar and bsdtar emit for
- * long names: GNU `L`/`K` records and pax `x`/`g` records (`path=`,
- * `linkpath=`). Anything it cannot read is an error, never a skipped member.
+ * long names: GNU `L`/`K` records and pax `x` records (`path=`, `linkpath=`,
+ * `size=`). Anything it cannot read is an error, never a skipped member.
+ *
+ * The parser must walk the archive exactly as `tar -x` will: a pax `size=`
+ * overrides the header's size field for the next member, so ignoring it
+ * would let an archive hide a member from this check inside what the parser
+ * takes for a body. Records that rename a member in ways it does not model
+ * (pax global `g` headers, GNU sparse `GNU.sparse.*` keys) are refused.
  */
 
 const BLOCK = 512;
@@ -30,11 +36,16 @@ export function listTarEntries(tar: Uint8Array): TarEntry[] {
   let longLink: string | null = null;
   let paxPath: string | null = null;
   let paxLink: string | null = null;
+  let paxSize: number | null = null;
   while (offset + BLOCK <= tar.length) {
     const header = tar.subarray(offset, offset + BLOCK);
     if (header.every((b) => b === 0)) break; // end-of-archive marker
-    const size = octal(header.subarray(124, 136));
     const typeflag = String.fromCharCode(header[156] ?? 0);
+    // A pax `size=` describes the member that follows the pax header, never
+    // another extension header (GNU tar applies it the same way).
+    const isExtension =
+      typeflag === "x" || typeflag === "g" || typeflag === "L" || typeflag === "K";
+    const size = !isExtension && paxSize !== null ? paxSize : octal(header.subarray(124, 136));
     const body = tar.subarray(offset + BLOCK, offset + BLOCK + size);
     if (body.length < size) throw new Error("truncated tar archive");
     offset += BLOCK + Math.ceil(size / BLOCK) * BLOCK;
@@ -52,8 +63,17 @@ export function listTarEntries(tar: Uint8Array): TarEntry[] {
     }
     if (typeflag === "x") {
       const pax = paxRecords(body);
+      if (Object.keys(pax).some((key) => key.startsWith("GNU.sparse."))) {
+        throw new Error("tar archive contains an unsupported GNU sparse member");
+      }
       if (pax.path !== undefined) paxPath = pax.path;
       if (pax.linkpath !== undefined) paxLink = pax.linkpath;
+      if (pax.size !== undefined) {
+        if (!/^[0-9]+$/.test(pax.size)) {
+          throw new Error(`unreadable pax size ${JSON.stringify(pax.size)}`);
+        }
+        paxSize = Number.parseInt(pax.size, 10);
+      }
       continue;
     }
     const prefix = cString(header.subarray(345, 500));
@@ -61,6 +81,7 @@ export function listTarEntries(tar: Uint8Array): TarEntry[] {
     const name = paxPath ?? longName ?? (prefix ? `${prefix}/${shortName}` : shortName);
     const link = paxLink ?? longLink ?? cString(header.subarray(157, 257));
     longName = longLink = paxPath = paxLink = null;
+    paxSize = null;
     const type: TarEntryType =
       typeflag === "0" || typeflag === "\0" || typeflag === "7"
         ? "file"

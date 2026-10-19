@@ -71,6 +71,7 @@ import {
   SITE_OUTPUT_ROOT,
   selfHostedSiteUrl,
 } from "./compose.js";
+import { writePrivateFile } from "./private-file.js";
 import { selfCommand } from "./self-command.js";
 import {
   bunHostRunner,
@@ -193,7 +194,7 @@ function loadProvider(): Provider {
 
 function saveProvider(provider: Provider): void {
   if (!existsSync(CAELO_DIR)) mkdirSync(CAELO_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(PROVIDER_PATH, JSON.stringify({ provider }, null, 2), { mode: 0o600 });
+  writePrivateFile(PROVIDER_PATH, JSON.stringify({ provider }, null, 2));
 }
 
 /**
@@ -239,7 +240,7 @@ function loadConfig(): CaeloConfig | null {
 
 function saveConfig(c: CaeloConfig): void {
   if (!existsSync(CAELO_DIR)) mkdirSync(CAELO_DIR, { recursive: true, mode: 0o700 });
-  writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2), { mode: 0o600 });
+  writePrivateFile(CONFIG_PATH, JSON.stringify(c, null, 2));
 }
 
 function arg(name: string): string | undefined {
@@ -293,7 +294,7 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
  * operator-added domains only `up` / `regenerate-caddy` read back).
  */
 function emitComposeFiles(cfg: CaeloConfig): void {
-  writeFileSync(COMPOSE_PATH, renderCompose(cfg, installImages(cfg)), { mode: 0o600 });
+  writePrivateFile(COMPOSE_PATH, renderCompose(cfg, installImages(cfg)));
   // No secrets (it reads the passwords from the container's environment),
   // and the postgres user inside the container must be able to read it.
   writeFileSync(
@@ -589,7 +590,7 @@ async function init(): Promise<void> {
   // staging file.
   const tok = generateBootstrapToken();
   mkdirSync(resolve(CAELO_DIR, BOOTSTRAP_DIR), { recursive: true, mode: 0o700 });
-  writeFileSync(PENDING_TOKEN_PATH, JSON.stringify(tok, null, 2), { mode: 0o600 });
+  writePrivateFile(PENDING_TOKEN_PATH, JSON.stringify(tok, null, 2));
 
   // P15.1 — mint the shared HMAC secret for /api/internal/* endpoints.
   // Same secret is read by:
@@ -601,9 +602,7 @@ async function init(): Promise<void> {
   // internal-secret`.
   const internalSecret = randomSecret(48);
   const internalSecretPath = resolve(CAELO_DIR, "internal-secret.json");
-  writeFileSync(internalSecretPath, JSON.stringify({ secret: internalSecret }, null, 2), {
-    mode: 0o600,
-  });
+  writePrivateFile(internalSecretPath, JSON.stringify({ secret: internalSecret }, null, 2));
   // #696 Phase 4c — the update agent (Linux + systemd): the fresh volume's
   // bootstrap.sh creates its database login on Postgres's first start.
   const { reportAgentSetup, setUpAgent } = await import("./agent/command.js");

@@ -43,37 +43,65 @@ describe("listTarEntries", () => {
   });
 
   it("rejects PAX global extended headers ('g') and merges consecutive 'x' headers", () => {
-    const makeBlock = (name: string, typeflag: string, bodyText = ""): Uint8Array => {
-      const body = new TextEncoder().encode(bodyText);
-      const paddedLen = Math.ceil(body.length / 512) * 512;
-      const out = new Uint8Array(512 + paddedLen);
-      out.set(new TextEncoder().encode(name), 0);
-      out.set(new TextEncoder().encode(`${body.length.toString(8).padStart(11, "0")}\0`), 124);
-      out[156] = typeflag.charCodeAt(0);
-      out.set(body, 512);
-      return out;
-    };
-    const paxLine = (kv: string): string => {
-      const base = ` ${kv}\n`;
-      const len = String(base.length + 2).length + base.length;
-      return `${len}${base}`;
-    };
-
     const gBlock = makeBlock("PaxHeader", "g", paxLine("path=/etc/passwd"));
     expect(() => listTarEntries(gBlock)).toThrow(/pax global extended header/);
 
     const x1 = makeBlock("PaxHeader", "x", paxLine("path=../../etc/passwd"));
     const x2 = makeBlock("PaxHeader", "x", paxLine("mtime=1234567890"));
     const fileBlock = makeBlock("safe.txt", "0", "");
-    const combined = new Uint8Array(x1.length + x2.length + fileBlock.length);
-    combined.set(x1, 0);
-    combined.set(x2, x1.length);
-    combined.set(fileBlock, x1.length + x2.length);
-    const entries = listTarEntries(combined);
+    const entries = listTarEntries(concat(x1, x2, fileBlock));
     expect(entries).toHaveLength(1);
     expect(entries[0]?.name).toBe("../../etc/passwd");
   });
+
+  it("walks a member's body by its pax size, so a member hidden behind the header size is seen", () => {
+    // tar -x reads `safe.txt` as empty (pax size=0) and then extracts the
+    // `../../evil` header that the ustar size field claims is file data.
+    const pax = makeBlock("PaxHeader", "x", paxLine("size=0"));
+    const hidden = makeBlock("../../evil", "0", "");
+    const file = makeBlock("safe.txt", "0", "");
+    file.set(new TextEncoder().encode(`${(512).toString(8).padStart(11, "0")}\0`), 124);
+    const archive = concat(pax, file.subarray(0, 512), hidden);
+    expect(listTarEntries(archive).map((e) => e.name)).toEqual(["safe.txt", "../../evil"]);
+  });
+
+  it("rejects GNU sparse pax records and an unreadable pax size", () => {
+    const sparse = makeBlock("PaxHeader", "x", paxLine("GNU.sparse.name=../../evil"));
+    expect(() => listTarEntries(concat(sparse, makeBlock("safe.txt", "0")))).toThrow(/GNU sparse/);
+    const badSize = makeBlock("PaxHeader", "x", paxLine("size=-1"));
+    expect(() => listTarEntries(concat(badSize, makeBlock("safe.txt", "0")))).toThrow(
+      /unreadable pax size/,
+    );
+  });
 });
+
+function makeBlock(name: string, typeflag: string, bodyText = ""): Uint8Array {
+  const body = new TextEncoder().encode(bodyText);
+  const paddedLen = Math.ceil(body.length / 512) * 512;
+  const out = new Uint8Array(512 + paddedLen);
+  out.set(new TextEncoder().encode(name), 0);
+  out.set(new TextEncoder().encode(`${body.length.toString(8).padStart(11, "0")}\0`), 124);
+  out[156] = typeflag.charCodeAt(0);
+  out.set(body, 512);
+  return out;
+}
+
+/** One pax record; its leading length counts its own digits. */
+function paxLine(kv: string): string {
+  const base = ` ${kv}\n`;
+  const len = String(base.length + 2).length + base.length;
+  return `${len}${base}`;
+}
+
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
 
 describe("escapesRoot & normalizeMemberName", () => {
   it("flags absolute, parent-relative, and dot-segment member names", () => {
