@@ -302,9 +302,11 @@ jobs:
           if-no-files-found: error
 
   # ──────────────────────────────────────────────────────────────────
-  # Real-GCP upgrader smoke test (#818): the smoke install's own upgrader
-  # job installs this release (images + signed manifest are published by
-  # now), and the run checks it serves. Blocks npm and the GitHub Release.
+  # Real-GCP upgrader smoke test (#818), gate mode: this release's signed
+  # manifest verifies, and the smoke install cleanly serves the release
+  # before it — installed through Settings → Updates, the only update
+  # path. Read-only; it never starts an update. Blocks npm and the GitHub
+  # Release.
   # Controlled by the UPGRADER_SMOKE repository variable — `required` or
   # `off`, never a silent skip (upgrader-smoke.yml, docs/dev/upgrader-smoke.md).
   # ──────────────────────────────────────────────────────────────────
@@ -314,7 +316,7 @@ jobs:
     uses: ./.github/workflows/upgrader-smoke.yml
     with:
       candidate: ${{ needs.release-manifest.outputs.version }}
-    secrets: inherit
+    # No secrets: WIF only, and the smoke check is read-only.
     permissions:
       contents: read
       id-token: write

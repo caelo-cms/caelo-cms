@@ -40,7 +40,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 ## Releases and operations
 
 - [dev/release-manifest.md](./dev/release-manifest.md) — the signed release manifest and the `caelo-ops` image.
-- [dev/upgrader-smoke.md](./dev/upgrader-smoke.md) — the real-GCP upgrader smoke test every release tag runs, and its one-time setup.
+- [dev/upgrader-smoke.md](./dev/upgrader-smoke.md) — the real-GCP upgrader smoke test (release gate + post-install verify via Settings → Updates) and its one-time setup.
 - [maintainer-public-registry-setup.md](./maintainer-public-registry-setup.md) — one-time setup of the public image registry mirrors.
 - [maintainer-ar-cleanup-policy.json](./maintainer-ar-cleanup-policy.json) — the Artifact Registry cleanup (retention) policy.
 - [incident-response.md](./incident-response.md) — runbook for triaging and recovering from production incidents.

@@ -2,39 +2,46 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The real-GCP upgrader smoke test (#818): install a release candidate on
- * a dedicated smoke install with that install's OWN upgrader job, and
- * check that it really serves afterwards. Driven by
+ * The real-GCP upgrader smoke test (#818): every release is installed on a
+ * dedicated smoke install by that install's OWN upgrader job, started the
+ * only way any install starts it — Settings → Updates, one click + the
+ * Owner's password. There is no side channel (no operator endpoint, no
+ * CLI request): the maintainer decided every release installs through
+ * that one path, so the smoke test checks what that path produced and
+ * never starts an update itself. Driven by
  * `.github/workflows/upgrader-smoke.yml`; setup in docs/dev/upgrader-smoke.md.
  *
  * Why real GCP: the first live in-app update died at its first bucket write
  * on an IAM condition no fake could have caught (#799), and the gateway of
- * v0.10.51 exited on start only on Cloud Run (#821). So this drives the
- * real job — its image, its service account and IAM self-check, the
- * backup, the migration job on Direct VPC egress, the roll and the deep
- * health check — and then asserts from the outside:
+ * v0.10.51 exited on start only on Cloud Run (#821). What a passing check
+ * asserts, from the outside, for a release R:
  *
- *   - install.json in the ops bucket records the candidate and the signed
- *     manifest's admin + gateway digests;
+ *   - install.json in the ops bucket records R and the signed manifest's
+ *     admin + gateway digests;
  *   - the revisions serving traffic run exactly those images and the
  *     services are Ready (the images booted on Cloud Run);
- *   - the upgrader job moved itself onto the candidate's ops image.
+ *   - the upgrader job moved itself onto R's ops image (its last step).
  *
- * Which update is tested. The smoke install rides the release train: every
- * release tag (candidate and stable) is installed on it in order, so the
- * first candidate of a cycle goes from the previous stable release N-1,
- * later candidates from the candidate before. When the install is behind
- * N-1 it is first brought to N-1 (that run is an upgrader test too); when
- * it is AHEAD of the candidate the run fails and says how to reset it.
- * Re-running for a candidate that is already installed only re-checks.
+ * Two modes:
  *
- *   bun scripts/upgrader-smoke.ts --candidate 0.11.0-rc.1 \
- *     --project-id caelo-upgrader-smoke --region europe-west1 [--dry-run]
- *       --dry-run reads and verifies everything, prints the plan and the
- *       commands, and requests nothing.
+ *   --mode gate    (release.yml, before npm + the GitHub Release): a tag is
+ *                  not offered in Settings → Updates until it is published,
+ *                  so it cannot be installed yet. The gate checks that the
+ *                  smoke install cleanly serves the release before it, at
+ *                  least the previous stable release N-1 — i.e. that N-1
+ *                  WAS installed through Settings → Updates and verified —
+ *                  and that the candidate's manifest verifies. A release
+ *                  cannot ship while its predecessor never went through the
+ *                  real in-app path.
+ *   --mode verify  (by hand, after the maintainer installed the published
+ *                  release on the smoke install via Settings → Updates):
+ *                  the install must run the release and serve it cleanly.
  *
- *   bun scripts/upgrader-smoke.ts --candidate 0.11.0-rc.1 --installed 0.10.53
- *       No cloud at all: print the plan for an install that runs 0.10.53.
+ *   bun scripts/upgrader-smoke.ts --candidate 0.11.0 --mode gate \
+ *     --project-id caelo-upgrader-smoke --region europe-west1
+ *
+ *   bun scripts/upgrader-smoke.ts --candidate 0.11.0 --installed 0.10.53
+ *       No cloud at all: print the gate's plan for an install on 0.10.53.
  */
 
 import { spawnSync } from "node:child_process";
@@ -62,8 +69,6 @@ import { isNewerVersion } from "../packages/shared/src/version.ts";
 
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
 const REPO_ROOT = resolve(import.meta.dir, "..");
-/** The provisioning CLI of this checkout (`cms-provision`). */
-const PROVISIONING_CLI = resolve(REPO_ROOT, "packages", "provisioning", "src", "cli.ts");
 
 /**
  * The newest stable release below `candidate`, from git tags (`v0.10.53`).
@@ -81,11 +86,17 @@ export function previousStable(tags: readonly string[], candidate: string): stri
   return best;
 }
 
-/** What the run will do. */
+/** Which smoke check runs. */
+export type SmokeMode = "gate" | "verify";
+
+/** What the run will check. */
 export type SmokePlan =
-  | { readonly kind: "install"; readonly versions: readonly string[]; readonly note: string }
-  | { readonly kind: "verify-only"; readonly note: string }
+  /** Check that the smoke install cleanly serves `version`. */
+  | { readonly kind: "check"; readonly version: string; readonly note: string }
   | { readonly kind: "refuse"; readonly reason: string };
+
+const VIA_SETTINGS =
+  "install it on the smoke install through Settings → Updates (one click + the Owner's password), run the upgrader-smoke workflow with mode `verify` for it";
 
 /**
  * Plan the smoke run for an install that runs `installed`.
@@ -96,11 +107,26 @@ export function planSmoke(input: {
   readonly installed: string;
   readonly previous: string | null;
   readonly candidate: string;
+  readonly mode: SmokeMode;
 }): SmokePlan {
-  const { installed, previous, candidate } = input;
+  const { installed, previous, candidate, mode } = input;
+  if (mode === "verify") {
+    if (installed === candidate) {
+      return {
+        kind: "check",
+        version: candidate,
+        note: `The smoke install runs ${candidate}; checking that it serves it.`,
+      };
+    }
+    return {
+      kind: "refuse",
+      reason: `The smoke install runs ${installed}, not ${candidate}. ${capitalise(VIA_SETTINGS)} again.`,
+    };
+  }
   if (installed === candidate) {
     return {
-      kind: "verify-only",
+      kind: "check",
+      version: candidate,
       note: `The smoke install already runs ${candidate}; checking that it serves it (a re-run).`,
     };
   }
@@ -112,19 +138,19 @@ export function planSmoke(input: {
   }
   if (previous && isNewerVersion(previous, installed)) {
     return {
-      kind: "install",
-      versions: [previous, candidate],
-      note: `The smoke install runs ${installed}, behind the previous release ${previous}: installing ${previous} first, then ${candidate} (${previous} → ${candidate} is the update under test).`,
+      kind: "refuse",
+      reason: `The smoke install runs ${installed}, behind the previous release ${previous}: ${previous} never went through the real in-app update. ${capitalise(VIA_SETTINGS)}, then re-run this release.`,
     };
   }
   return {
-    kind: "install",
-    versions: [candidate],
-    note:
-      previous === null || installed === previous
-        ? `Testing ${installed} → ${candidate}.`
-        : `Testing ${installed} → ${candidate} (the release train: ${installed} is after the previous stable release ${previous}).`,
+    kind: "check",
+    version: installed,
+    note: `The smoke install runs ${installed}; checking that it serves it cleanly before ${candidate} ships. Once ${candidate} is published, ${VIA_SETTINGS}.`,
   };
+}
+
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 /** What was observed on the smoke install after the run. */
@@ -244,37 +270,26 @@ function releaseTags(): string[] {
   return r.stdout.split("\n").filter(Boolean);
 }
 
-/** `cms-provision request-update … --wait` from this checkout; resolves to its exit code. */
-function requestUpdate(version: string, projectId: string, region: string): number {
-  const r = spawnSync(
-    // The Bun running this script, so the CLI runs on the same pinned version.
-    process.execPath,
-    [
-      PROVISIONING_CLI,
-      "request-update",
-      "--version",
-      version,
-      "--project-id",
-      projectId,
-      "--region",
-      region,
-      "--wait",
-    ],
-    { cwd: REPO_ROOT, stdio: "inherit" },
-  );
-  return r.status ?? 1;
-}
-
 async function main(argv: readonly string[]): Promise<number> {
   const candidate = flag(argv, "candidate")?.replace(/^v/, "");
   if (!candidate || !SEMVER.test(candidate)) {
-    console.error("Usage: bun scripts/upgrader-smoke.ts --candidate <x.y.z[-rc.n]> …");
+    console.error(
+      "Usage: bun scripts/upgrader-smoke.ts --candidate <x.y.z[-rc.n]> --mode gate|verify …",
+    );
     return 2;
   }
+  const modeFlag = flag(argv, "mode") ?? "gate";
+  if (modeFlag !== "gate" && modeFlag !== "verify") {
+    console.error(`upgrader-smoke: --mode is gate or verify, not ${modeFlag}.`);
+    return 2;
+  }
+  const mode: SmokeMode = modeFlag;
   const previous = previousStable(releaseTags(), candidate);
   const offline = flag(argv, "installed");
   if (offline) {
-    console.log(JSON.stringify(planSmoke({ installed: offline, previous, candidate }), null, 2));
+    console.log(
+      JSON.stringify(planSmoke({ installed: offline, previous, candidate, mode }), null, 2),
+    );
     return 0;
   }
   const projectId = flag(argv, "project-id");
@@ -283,14 +298,13 @@ async function main(argv: readonly string[]): Promise<number> {
     console.error("upgrader-smoke: --project-id and --region are required.");
     return 2;
   }
-  const dryRun = argv.includes("--dry-run");
   const run: GcloudRunner = gcloud;
 
-  // The candidate must be a signed release before anything is asked of the install.
-  const manifest = await fetchVerifiedReleaseManifest(candidate);
-  if (!manifest.ok) {
+  // The candidate must be a signed release before anything is judged.
+  const candidateManifest = await fetchVerifiedReleaseManifest(candidate);
+  if (!candidateManifest.ok) {
     console.error(
-      `upgrader-smoke: the manifest of ${candidate} does not verify: ${manifest.error.message}`,
+      `upgrader-smoke: the manifest of ${candidate} does not verify: ${candidateManifest.error.message}`,
     );
     return 1;
   }
@@ -301,39 +315,35 @@ async function main(argv: readonly string[]): Promise<number> {
     );
     return 1;
   }
-  const plan = planSmoke({ installed: install.releaseVersion, previous, candidate });
-  console.log(`Previous stable release: ${previous ?? "none"}; candidate: ${candidate}.`);
+  const plan = planSmoke({ installed: install.releaseVersion, previous, candidate, mode });
+  console.log(
+    `Previous stable release: ${previous ?? "none"}; candidate: ${candidate}; mode: ${mode}.`,
+  );
   if (plan.kind === "refuse") {
     console.error(`upgrader-smoke: ${plan.reason}`);
     return 1;
   }
   console.log(plan.note);
-  if (plan.kind === "install") {
-    for (const v of plan.versions) {
-      const cmd = `cms-provision request-update --version ${v} --project-id ${projectId} --region ${region} --wait`;
-      if (dryRun) {
-        console.log(`[dry-run] would run: ${cmd}`);
-        continue;
-      }
-      console.log(`::group::${cmd}`);
-      const code = requestUpdate(v, projectId, region);
-      console.log("::endgroup::");
-      if (code !== 0) {
-        console.error(
-          `upgrader-smoke: installing ${v} on the smoke install failed (exit ${code}).`,
-        );
-        return 1;
-      }
-    }
-    if (dryRun) return 0;
+  const checked =
+    plan.version === candidate
+      ? candidateManifest
+      : await fetchVerifiedReleaseManifest(plan.version);
+  if (!checked.ok) {
+    console.error(
+      `upgrader-smoke: the manifest of ${plan.version} (the release the smoke install runs) does not verify: ${checked.error.message}`,
+    );
+    return 1;
   }
-  const failures = smokeFailures(manifest.manifest, await observe(run, projectId, region));
+  const failures = smokeFailures(checked.manifest, await observe(run, projectId, region));
   if (failures.length > 0) {
     for (const f of failures) console.error(`upgrader-smoke: ${f}`);
+    console.error(
+      `upgrader-smoke: the smoke install does not cleanly serve ${plan.version}. Its update timeline is under Settings → Updates on the smoke install (docs/dev/upgrader-smoke.md, "When it fails").`,
+    );
     return 1;
   }
   console.log(
-    `Upgrader smoke test passed: ${candidate} serves on ${projectId} (admin ${manifest.manifest.digests.admin.slice(0, 19)}…, gateway ${manifest.manifest.digests.gateway.slice(0, 19)}…), and the upgrader moved onto its ops image.`,
+    `Upgrader smoke check passed: ${plan.version} serves on ${projectId} (admin ${checked.manifest.digests.admin.slice(0, 19)}…, gateway ${checked.manifest.digests.gateway.slice(0, 19)}…), and the upgrader runs its ops image.`,
   );
   return 0;
 }

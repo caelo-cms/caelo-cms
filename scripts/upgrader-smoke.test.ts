@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #818 — the upgrader smoke test's own logic: which update it tests (the
- * release train, N-1 first), when it refuses, and what counts as "the
- * candidate serves". The cloud half runs only in upgrader-smoke.yml.
+ * #818 — the upgrader smoke test's own logic: which release it checks (the
+ * gate before a tag ships, the verify after the Owner-path install), when
+ * it refuses, and what counts as "serves". It never starts an update: every
+ * release installs through Settings → Updates. The cloud half runs only in
+ * upgrader-smoke.yml.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -43,42 +45,58 @@ describe("previousStable", () => {
   });
 });
 
-describe("planSmoke", () => {
-  it("tests N-1 → candidate when the install is at N-1", () => {
-    expect(
-      planSmoke({ installed: "0.10.53", previous: "0.10.53", candidate: "0.11.0-rc.1" }),
-    ).toEqual({
-      kind: "install",
-      versions: ["0.11.0-rc.1"],
-      note: "Testing 0.10.53 → 0.11.0-rc.1.",
+describe("planSmoke — gate (before a tag ships)", () => {
+  const gate = (installed: string, candidate = "0.11.0") =>
+    planSmoke({ installed, previous: "0.10.53", candidate, mode: "gate" });
+
+  it("checks that the install cleanly serves N-1, and says how the candidate gets installed", () => {
+    const p = gate("0.10.53");
+    expect(p).toMatchObject({ kind: "check", version: "0.10.53" });
+    expect(p.kind === "check" && p.note).toContain("Settings → Updates");
+    expect(p.kind === "check" && p.note).toContain("mode `verify`");
+  });
+
+  it("refuses when N-1 never went through the in-app update — never installs anything itself", () => {
+    const p = gate("0.10.50");
+    expect(p.kind).toBe("refuse");
+    expect(p.kind === "refuse" && p.reason).toContain("0.10.53 never went through");
+    expect(p.kind === "refuse" && p.reason).toContain("Settings → Updates");
+  });
+
+  it("accepts an install on an earlier candidate of the same cycle and checks that one", () => {
+    expect(gate("0.11.0-rc.1", "0.11.0-rc.2")).toMatchObject({
+      kind: "check",
+      version: "0.11.0-rc.1",
     });
   });
 
-  it("brings an install behind N-1 to N-1 first", () => {
-    const p = planSmoke({ installed: "0.10.50", previous: "0.10.53", candidate: "0.11.0-rc.1" });
-    expect(p.kind === "install" && p.versions).toEqual(["0.10.53", "0.11.0-rc.1"]);
-  });
-
-  it("rides the release train from an earlier candidate of the same cycle", () => {
-    const p = planSmoke({
-      installed: "0.11.0-rc.1",
-      previous: "0.10.53",
-      candidate: "0.11.0-rc.2",
-    });
-    expect(p.kind === "install" && p.versions).toEqual(["0.11.0-rc.2"]);
-    expect(p.kind === "install" && p.note).toContain("release train");
-  });
-
-  it("only re-checks a candidate that is already installed (an idempotent re-run)", () => {
-    expect(
-      planSmoke({ installed: "0.11.0-rc.1", previous: "0.10.53", candidate: "0.11.0-rc.1" }).kind,
-    ).toBe("verify-only");
+  it("re-checks a candidate that is already installed (a re-run)", () => {
+    expect(gate("0.11.0")).toMatchObject({ kind: "check", version: "0.11.0" });
   });
 
   it("refuses an install that is ahead of the candidate, naming the reset", () => {
-    const p = planSmoke({ installed: "0.11.0", previous: "0.10.53", candidate: "0.11.0-rc.2" });
+    const p = gate("0.11.0", "0.11.0-rc.2");
     expect(p.kind).toBe("refuse");
     expect(p.kind === "refuse" && p.reason).toContain("Reset");
+  });
+});
+
+describe("planSmoke — verify (after the Owner-path install)", () => {
+  it("checks the candidate once the smoke install runs it", () => {
+    expect(
+      planSmoke({ installed: "0.11.0", previous: "0.10.53", candidate: "0.11.0", mode: "verify" }),
+    ).toMatchObject({ kind: "check", version: "0.11.0" });
+  });
+
+  it("refuses while the smoke install runs anything else, pointing at Settings → Updates", () => {
+    const p = planSmoke({
+      installed: "0.10.53",
+      previous: "0.10.53",
+      candidate: "0.11.0",
+      mode: "verify",
+    });
+    expect(p.kind).toBe("refuse");
+    expect(p.kind === "refuse" && p.reason).toContain("Settings → Updates");
   });
 });
 
