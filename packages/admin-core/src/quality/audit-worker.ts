@@ -15,9 +15,11 @@
  * needs it — and reports through `quality_audits.record_result`. Every
  * failure path reports too: an audit never stays silently unrun.
  *
- * One audit at a time per process: an audit drives a whole Chromium and
- * Lighthouse is CPU-bound, so parallel audits would only slow each other
- * and starve the editor's requests.
+ * One audit at a time per process. On cloud installs the Lighthouse runs
+ * themselves leave the admin (#875, lighthouse-runner-select.ts): every run
+ * gets its own container, in parallel, so no run shares a CPU with another
+ * or with the editor's requests. Self-hosted runs them in the in-process
+ * child, one after another.
  */
 
 import { existsSync } from "node:fs";
@@ -32,6 +34,8 @@ import { runChecksOnStagedBuild } from "./checks/run-staged.js";
 import { structureSourcesFromOps } from "./checks/structure-sources.js";
 import type { AuditJob } from "./lighthouse-protocol.js";
 import type { AuditJobResult } from "./lighthouse-runner.js";
+import { lighthouseRunnerFromEnv } from "./lighthouse-runner-select.js";
+import type { StagedBuildSource } from "./staged-build-source.js";
 import {
   gcsStagingSource,
   localBuildSource,
@@ -87,6 +91,12 @@ export type StagingOrigin =
       readonly displayBaseUrl?: string;
       /** Set for a loopback origin this audit owns: close it afterwards. */
       readonly close?: () => Promise<void>;
+      /**
+       * #875 — how a parallel audit task, which cannot open this admin's
+       * loopback origin, reaches the same build. Absent when `baseUrl` is
+       * reachable from anywhere (a preview channel, self-hosted staging).
+       */
+      readonly stagedBuild?: StagedBuildSource;
     }
   | { readonly ok: false; readonly code: string; readonly message: string };
 
@@ -191,7 +201,20 @@ export async function resolveStagingOrigin(
       source = found.source;
     }
     const origin = await serveStagedBuild(source);
-    return { ok: true, baseUrl: origin.baseUrl, close: origin.close };
+    return {
+      ok: true,
+      baseUrl: origin.baseUrl,
+      close: origin.close,
+      ...(provider === "gcp"
+        ? {
+            stagedBuild: {
+              kind: "gcs-staging" as const,
+              runId: run.deployRunId,
+              baseUrl: origin.baseUrl,
+            },
+          }
+        : {}),
+    };
   }
   return {
     ok: false,
@@ -258,6 +281,7 @@ let coreChecks: CheckRegistry | null = null;
 /** Core's registry, built once per process (one adapter per process). */
 function defaultChecks(deps: WorkerDeps): CheckRegistry {
   coreChecks ??= createCoreCheckRegistry({
+    lighthouse: lighthouseRunnerFromEnv(process.env),
     structure: structureSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
     links: linkSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
   });
@@ -346,6 +370,7 @@ export async function processClaimedRun(deps: WorkerDeps, run: ClaimedAuditRun):
       result = await runLighthouse({
         pages: run.pages.map((p) => ({ pageId: p.pageId, url: pageUrl(p) })),
         performanceRuns: run.performanceRuns,
+        ...(origin.stagedBuild ? { stagedBuild: origin.stagedBuild } : {}),
       });
     }
   } finally {

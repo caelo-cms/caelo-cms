@@ -83,6 +83,7 @@ describe("ensureUpgraderJob", () => {
         "iam service-accounts add-iam-policy-binding caelo-production-gateway-sa@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "iam service-accounts add-iam-policy-binding caelo-production-upgrader@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "iam service-accounts add-iam-policy-binding caelo-mcp@acme.iam.gserviceaccount.com → roles/iam.serviceAccountTokenCreator",
+        "iam service-accounts add-iam-policy-binding caelo-production-audit@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → roles/storage.objectUser",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → projects/acme/roles/caeloUpgraderOpsList",
       ].sort(),

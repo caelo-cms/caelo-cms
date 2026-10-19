@@ -42,6 +42,7 @@ import {
   rollService,
   serviceRollArgs,
 } from "../stack-converge.js";
+import { describeAuditJobImage, setAuditJobImage } from "./audit-job-roll.js";
 import { restoreCommand, type SqlBackup } from "./backup.js";
 import {
   describeServiceJson,
@@ -366,7 +367,17 @@ export async function executeAppRoll(
   }
 
   const rolled: RollPlan[] = [];
+  /** The audit job's image before this roll moved it (#875); null = not moved. */
+  let auditJobPriorImage: string | null = null;
   const rollBack = async (alsoCurrent?: RollPlan): Promise<void> => {
+    if (auditJobPriorImage) {
+      const back = await setAuditJobImage(run, install, auditJobPriorImage);
+      if (back.ok) r.info(`  audit job image restored to ${auditJobPriorImage.slice(-19)}`);
+      else
+        r.error(
+          `  audit job rollback FAILED (${back.error}) — set its image to ${auditJobPriorImage} by hand`,
+        );
+    }
     const services = alsoCurrent ? [...rolled, alsoCurrent] : rolled;
     if (services.length === 0) return;
     r.warn(`Rolling back ${services.length} service(s) to the revisions that served before...`);
@@ -445,6 +456,29 @@ export async function executeAppRoll(
     }
     s.done(`${p.slug} rolled to ${p.digest.slice(0, 19)}...`);
     rolled.push(p);
+  }
+
+  // #875 — the audit job runs the admin's image; it follows the admin. A
+  // failure here does not undo the release: audits then fail loudly with
+  // the version mismatch and the fix, until the next upgrade moves it.
+  const sAudit = r.step("Moving the quality-audit job onto the admin's image...");
+  const auditPrior = await describeAuditJobImage(run, install);
+  if (!auditPrior) {
+    sAudit.warned(
+      "The install has no quality-audit job yet; Stage audits fail until `cms-provision upgrade` sets it up.",
+    );
+  } else if (auditPrior === admin.imageRef) {
+    sAudit.done("Quality-audit job already on the admin's image");
+  } else {
+    const moved = await setAuditJobImage(run, install, admin.imageRef);
+    if (moved.ok) {
+      auditJobPriorImage = auditPrior;
+      sAudit.done(`Quality-audit job on ${admin.digest.slice(0, 19)}...`);
+    } else {
+      sAudit.warned(
+        `Quality-audit job not moved (${moved.error}); Stage audits fail until the next upgrade moves it.`,
+      );
+    }
   }
 
   if (deps.health) {

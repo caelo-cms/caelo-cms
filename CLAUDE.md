@@ -321,6 +321,7 @@ Background workers (redeploy orchestrator, plugin host, MCP bridge, GC loops) **
 
 - Don't provision separate `orchestrator` / `runner` Cloud Run services.
 - The admin's `apps/admin/src/hooks.server.ts` bootstraps these inline (`bootstrapPlugins`, `bootstrapRedeploy`, `bootstrapMcpBridge`, `bootstrapReleaseCheck`, `bootstrapProposalGc`, `bootstrapChatImageGc`).
+- **One exception: the quality audit's Lighthouse runs (#875).** They run in a separate short-lived container job, one task per run, all in parallel (GCP: the CLI-owned Cloud Run job `caelo-<env>-audit`, `packages/provisioning/src/audit-job-setup.ts`). Why: Lighthouse simulates the CPU slowdown from observed task durations, so a run that shares CPU with the editor's requests or with another run measures that interference, and an unchanged page flips between pass and block. The job's identity reads the staged build, creates results in its own bucket and writes logs, nothing else (no database, no secrets, no VPC). The audit worker itself stays in the admin; only the runs leave. Self-hosted keeps the in-process runner (no extra machines). AWS/Azure follow once their publishers and admin task exist (#749/#750).
 
 ### Cross-cutting standards
 

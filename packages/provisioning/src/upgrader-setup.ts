@@ -21,8 +21,9 @@
  *     move traffic, recreate the migration job, update its own job image.
  *     It includes no `*.setIamPolicy`.
  *   - `roles/iam.serviceAccountUser` on exactly the admin's and the
- *     gateway's runtime service accounts (a revision runs as them) and on
- *     itself (its own job) — not on the project.
+ *     gateway's runtime service accounts (a revision runs as them), on
+ *     itself (its own job) and on the quality-audit job's account (the
+ *     app-roll moves that job's image, #875) — not on the project.
  *   - the custom role `caeloUpgraderSqlBackup`: create/read Cloud SQL
  *     backups and read the instance — no restore, no instance changes.
  *   - `roles/cloudsql.instanceUser` + a Cloud SQL IAM database user that
@@ -51,6 +52,7 @@ import { ensureCloudSqlIamUser } from "./cloudsql-iam-user.js";
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import {
+  auditServiceAccountEmail,
   gatewayServiceAccountEmail,
   mcpIapServiceAccountEmail,
   runServiceAccountEmail,
@@ -256,6 +258,11 @@ export async function ensureUpgraderJob(
       why: "gateway revisions run as it",
     },
     { account: sa, role: "roles/iam.serviceAccountUser", why: "the job updates its own image" },
+    {
+      account: auditServiceAccountEmail(projectId, env),
+      role: "roles/iam.serviceAccountUser",
+      why: "the app-roll moves the quality-audit job, which runs as it, onto the new image",
+    },
     {
       account: mcpIapServiceAccountEmail(projectId),
       role: "roles/iam.serviceAccountTokenCreator",

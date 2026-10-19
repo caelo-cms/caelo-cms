@@ -10,7 +10,9 @@
 import { z } from "zod";
 import { MAX_FLAGGED_ELEMENTS } from "./lighthouse-extract.js";
 import { PERFORMANCE_METRICS, type PerformanceMetricId } from "./lighthouse-metrics.js";
+import type { PageMeasurement } from "./ratchet.js";
 import { QUALITY_CATEGORIES } from "./ratchet.js";
+import { stagedBuildSourceSchema } from "./staged-build-source.js";
 
 const categorySchema = z.enum(QUALITY_CATEGORIES);
 
@@ -19,12 +21,16 @@ export const auditJobSchema = z
     pages: z.array(z.object({ pageId: z.string().uuid(), url: z.string().url() }).strict()).min(1),
     /** Lighthouse runs per page; the best one scores Performance (>= 1). */
     performanceRuns: z.number().int().min(1).max(5),
+    /** #875 — set when `pages[].url` is a loopback origin only this admin
+     *  can open: a parallel audit task serves the same build itself. The
+     *  in-process child ignores it (it shares the admin's loopback). */
+    stagedBuild: stagedBuildSourceSchema.optional(),
   })
   .strict();
 
 export type AuditJob = z.infer<typeof auditJobSchema>;
 
-const flaggedElementSchema = z
+export const flaggedElementSchema = z
   .object({
     selector: z.string().optional(),
     snippet: z.string().optional(),
@@ -34,7 +40,7 @@ const flaggedElementSchema = z
   })
   .strict();
 
-const failingAuditSchema = z
+export const failingAuditSchema = z
   .object({
     id: z.string(),
     title: z.string(),
@@ -114,6 +120,27 @@ export const pageMeasurementSchema = z
     metrics: performanceMetricsSchema,
   })
   .strict();
+
+/**
+ * A measurement in the wire shape (the schemas' mutable arrays). Pure copy:
+ * the measurement types are readonly, the inferred wire types are not.
+ */
+export function wirePageMeasurement(m: PageMeasurement): z.infer<typeof pageMeasurementSchema> {
+  return {
+    scores: m.scores,
+    failingAudits: m.failingAudits.map(({ categories, elements, ...f }) => ({
+      ...f,
+      categories: [...categories],
+      ...(elements ? { elements: [...elements] } : {}),
+    })),
+    metrics: {
+      ...m.metrics,
+      metrics: m.metrics.metrics.map((x) => ({ ...x, runValues: [...x.runValues] })),
+      lcpBreakdown: [...m.metrics.lcpBreakdown],
+      layoutShifts: m.metrics.layoutShifts.map((l) => ({ ...l, causes: [...l.causes] })),
+    },
+  };
+}
 
 export const childEventSchema = z.discriminatedUnion("kind", [
   z
