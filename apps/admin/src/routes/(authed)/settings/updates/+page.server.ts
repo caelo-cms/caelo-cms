@@ -2,7 +2,9 @@
 
 /**
  * Settings → Updates (#696): the release this install runs, the newest
- * release with its notes, and how to install it.
+ * release with its notes, and how to install it. The page derives ONE state
+ * from what this loads (`updatePageState`, #861) and shows one action for it
+ * at the top; everything else is collapsed reference.
  *
  *   - Phase 0: for whoever may change settings, the exact, version-pinned
  *     command that upgrades this install from a terminal.
@@ -16,6 +18,11 @@
  *     and a live timeline of the job's run that survives the admin restarting
  *     (it is in the database). A release that changes the cloud setup ends as
  *     "needs Cloud Shell" with the commands to run there.
+ *   - #817: the release check predicts that route before the click (the
+ *     release's manifest raises the infrastructure contract); until the
+ *     in-admin converge job exists (#819) such a release is offered only
+ *     through Cloud Shell, and `install` refuses it instead of starting a
+ *     job that would refuse.
  *
  * "Check now" asks GitHub for the newest release right away (otherwise the
  * release-check worker does, hourly) — for anyone who may open this page.
@@ -44,9 +51,10 @@ import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
-import { releaseCheckFetch } from "#lib/server/release-check.js";
+import { releaseCheckFetch, releaseManifestReader } from "#lib/server/release-check.js";
 import { confirmStepUp } from "#lib/server/step-up.js";
 import { updatesEnv, upgraderTrigger } from "#lib/server/upgrader.js";
+import type { InstallRoute } from "#lib/updates-display.js";
 import {
   cloudShellUpgrade,
   resolveUpgradePath,
@@ -54,6 +62,21 @@ import {
   updatesProvider,
 } from "#lib/upgrade-path.js";
 import type { Actions, PageServerLoad } from "./$types";
+
+/**
+ * #819 — the in-admin converge job. Until it exists, a release that raises
+ * the infrastructure contract installs only from Cloud Shell; the page and
+ * `actions.install` read this one switch.
+ */
+const CONVERGE_JOB_AVAILABLE = false;
+
+/** Whether an email transport is set up (the update emails need one). */
+async function readEmailConfigured(ctx: App.Locals["ctx"]): Promise<boolean> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, ctx, "email_config.get", {});
+  if (!r.ok) throw new Error(opErrorMessage(r.error, "could not read the email settings"));
+  return (r.value as { config: { transport: string } }).config.transport !== "none";
+}
 
 /** The self-hosted update agent's last check-in (null when it never checked in). */
 async function readAgent(ctx: App.Locals["ctx"]): Promise<PlatformUpdateAgentStatus | null> {
@@ -121,15 +144,22 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
       deadRun = { logsUrl: run.logsUrl };
     }
   }
-  // A release that needs Cloud Shell: the commands, pinned to that release.
-  // Self-hosted: the upgrade command on the server instead.
-  const needsHand = canUpgrade && latest.request?.status === "needs_cloud_shell";
-  const cloudShell =
-    needsHand && latest.request ? cloudShellUpgrade(env, latest.request.targetVersion) : null;
-  const serverUpgrade =
-    needsHand && selfHosted && latest.request
-      ? resolveUpgradePath(env, latest.request.targetVersion)
+  // Cloud Shell for the newest release: the break-glass step when the page
+  // needs it, otherwise one of the "other ways" (Google Cloud installs only;
+  // self-hosted upgrades on its server with `upgrade`).
+  const cloudShellFor =
+    status.upgradeAvailable && status.latestVersion
+      ? cloudShellUpgrade(env, status.latestVersion)
       : null;
+  // The commands only for those who may run them (settings.write).
+  const cloudShell = canUpgrade ? cloudShellFor : null;
+  const upgraderAvailable = !upgrader.ok
+    ? false
+    : selfHosted
+      ? canInstall && agentProblem === null
+      : upgrader.trigger !== null;
+  const installRoute: InstallRoute =
+    canInstall && upgraderAvailable ? "in_product" : upgrade?.kind === "cli" ? "terminal" : "none";
 
   return {
     status,
@@ -137,18 +167,27 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
     canInstall,
     upgrade,
     selfHosted,
-    upgrader: !upgrader.ok
-      ? { available: false, problem: `${upgrader.error} ${upgrader.nextStep}` }
-      : selfHosted
-        ? { available: canInstall && agentProblem === null, problem: null }
-        : { available: upgrader.trigger !== null, problem: null },
+    upgrader: {
+      available: upgraderAvailable,
+      problem: upgrader.ok ? null : `${upgrader.error} ${upgrader.nextStep}`,
+    },
+    installRoute,
+    convergeJob: CONVERGE_JOB_AVAILABLE,
+    // Whether the step by hand exists for this install at all — Google
+    // Cloud: the Cloud Shell walkthrough; self-hosted: the upgrade command
+    // on the server (both need a buildable upgrade command). The page never
+    // offers a break-glass step that isn't there (`updatePageState`).
+    breakGlassAvailable: selfHosted ? upgrade?.kind === "cli" : cloudShellFor !== null,
+    emailConfigured: await readEmailConfigured(locals.ctx),
     agent:
       selfHosted && canInstall
         ? {
             status: agent,
             problem: agentProblem,
             // Pinned to the running release: the agent it sets up is this one.
-            installCommand: agentInstallCommand(status.installedVersion),
+            // A command to run on the server, so only for settings.write
+            // (like the upgrade command): withheld here, not just hidden.
+            installCommand: canUpgrade ? agentInstallCommand(status.installedVersion) : null,
           }
         : null,
     policy: policyResult.value as StoredUpdatePolicy,
@@ -157,7 +196,6 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
     deadRun,
     history,
     cloudShell,
-    serverUpgrade: serverUpgrade?.kind === "cli" ? serverUpgrade : null,
   };
 };
 
@@ -181,7 +219,7 @@ export const actions: Actions = {
    * whoever may read this page: it changes nothing but the cached answer.
    * Refused within a minute of the last check (GitHub's API quota).
    */
-  checkNow: async ({ request, locals }) => {
+  checkNow: async ({ request, locals, cookies }) => {
     requirePermission(locals, "settings.read");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
@@ -192,6 +230,8 @@ export const actions: Actions = {
       adapter,
       ctx: locals.ctx,
       ...(fetchImpl ? { fetchImpl } : {}),
+      readManifest: releaseManifestReader(),
+      provider: updatesProvider(updatesEnv(cookies)),
     });
     if (!r.ok) {
       // `releaseCheck` keeps the message in the version card, not in the
@@ -220,9 +260,20 @@ export const actions: Actions = {
         error: "This install has no upgrader yet; run the upgrade command shown on this page.",
       });
     }
+    // #817: a release that changes the cloud setup would only be refused
+    // by the job; the page offers Cloud Shell for it instead (#819 lifts this).
+    const { adapter, registry } = getQueryContext();
+    if (!CONVERGE_JOB_AVAILABLE && updatesProvider(updatesEnv(cookies)) !== "self-hosted") {
+      const st = await execute(registry, adapter, locals.ctx, "platform_updates.status", {});
+      if (!st.ok) return opFailure(st.error, "Could not read the update status.");
+      if ((st.value as PlatformUpdateStatus).infraChange === true) {
+        return fail(400, {
+          error: `v${version} also changes settings in your Google Cloud project, which Caelo can't do by itself yet. Install it from Google Cloud Shell as this page shows.`,
+        });
+      }
+    }
     const check = await confirmStepUp(locals, cookies, form, "platform_update", "install");
     if (!check.ok) return check.failure;
-    const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "platform_updates.request", {
       targetVersion: version,
       sessionHash: check.sessionHash,

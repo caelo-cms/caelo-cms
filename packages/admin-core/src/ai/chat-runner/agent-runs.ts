@@ -26,6 +26,7 @@
 
 import { type DatabaseAdapter, execute, type OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { type McpAgentRef, mcpAgentOpFields } from "../../ops/chat/mcp-agent.js";
 
 /** What a turn / subagent registers as. */
 export interface AgentRunRegistration {
@@ -36,8 +37,8 @@ export interface AgentRunRegistration {
   readonly parentRunId?: string;
   /** The chat's Stop count when the request arrived (refused if a Stop came since). */
   readonly stopEpochAtArrival?: number;
-  /** caelo_chat: the MCP token driving the turn (its Stop block applies). */
-  readonly mcpTokenId?: string;
+  /** caelo_chat: the external agent driving the turn (its Stop block applies). */
+  readonly mcpAgent?: McpAgentRef;
   /** The operator's own message (or Approve/Reject click) in this chat. */
   readonly operatorInitiated: boolean;
   /** Issue #658 — a caelo_chat turn resuming with the operator's decisions. */
@@ -85,7 +86,7 @@ export function queryApiAgentRunStore(
         source: reg.source,
         label: reg.label,
         ...(reg.parentRunId ? { parentRunId: reg.parentRunId } : {}),
-        ...(reg.mcpTokenId ? { mcpTokenId: reg.mcpTokenId } : {}),
+        ...mcpAgentOpFields(reg.mcpAgent),
         ...(reg.stopEpochAtArrival !== undefined
           ? { stopEpochAtArrival: reg.stopEpochAtArrival }
           : {}),

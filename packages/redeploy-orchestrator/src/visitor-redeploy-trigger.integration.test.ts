@@ -194,7 +194,10 @@ interface Logs {
  * polls to arm or skip the debounce timer, then fire whatever is pending.
  * Captures console.warn / console.error meanwhile.
  */
-async function runOrchestrator(done: (logs: Logs) => Promise<boolean>): Promise<Logs> {
+async function runOrchestrator(
+  done: (logs: Logs) => Promise<boolean>,
+  orchestratorAdapter: DatabaseAdapter = adapter,
+): Promise<Logs> {
   const logs: Logs = { warnings: [], tickErrors: [] };
   const warnSpy = spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
     logs.warnings.push(args.map(String).join(" "));
@@ -203,7 +206,7 @@ async function runOrchestrator(done: (logs: Logs) => Promise<boolean>): Promise<
     if (args[0] === "[redeploy-orchestrator] tick failed") logs.tickErrors.push(args[1]);
   });
   const handle = startRedeployOrchestrator({
-    adapter,
+    adapter: orchestratorAdapter,
     registry: spyRegistry(),
     pollIntervalMs: POLL_MS,
   });
@@ -382,6 +385,36 @@ describe("visitor plugin op events and the automatic redeploy (PR #844)", () => 
     expect(warned).toHaveLength(1);
     expect(warned[0]).toContain(`op=${UNINSTALLED_OP}`);
     expect(warned[0]).toContain('the "comments" plugin is not installed');
+  });
+
+  it("a tick slower than the poll interval never overlaps the next (one warning per dropped event)", async () => {
+    // Every database call of the orchestrator takes longer than a poll
+    // interval, so overlapping ticks would both read the forged event
+    // before either commits the watermark and warn about it twice.
+    const slow = new Proxy(adapter, {
+      get(target, key, receiver) {
+        const value = Reflect.get(target, key, receiver);
+        if (typeof value !== "function" || !String(key).startsWith("with")) return value;
+        return async (...args: unknown[]) => {
+          await Bun.sleep(POLL_MS * 3);
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    });
+    await assertCommentsNotInstalled();
+    await setStaleCommentsProjection(true);
+    let forgedId: string;
+    try {
+      forgedId = await gatewayEvent("00000000-0000-4000-8000-0000000000dd", UNINSTALLED_OP);
+    } finally {
+      await setStaleCommentsProjection(false);
+    }
+    const logs = await runOrchestrator(
+      async () => BigInt(await watermark()) >= BigInt(forgedId),
+      slow,
+    );
+    expect(logs.tickErrors).toEqual([]);
+    expect(logs.warnings.filter((w) => w.includes(`id=${forgedId} `))).toHaveLength(1);
   });
 
   it("drops an event whose plugin is installed but not active", async () => {
