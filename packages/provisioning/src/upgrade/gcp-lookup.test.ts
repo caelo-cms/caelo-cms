@@ -64,6 +64,10 @@ describe("findServingImage", () => {
     expect(
       await findServingImage(gcloud(ok("not json")), "acme", "europe-west1", "svc"),
     ).toBeNull();
+    // JSON of an unexpected shape reads as unknown instead of throwing.
+    for (const odd of ["null", "[]", '{"spec":{"containers":{"image":1}}}', '{"status":"x"}']) {
+      expect(await findServingImage(gcloud(ok(odd)), "acme", "europe-west1", "svc")).toBeNull();
+    }
     expect(
       await findServingImage(
         gcloud({ ok: false, stdout: "", stderr: "denied", exitCode: 1 }),

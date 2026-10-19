@@ -7,6 +7,7 @@
  * by a different identity in the in-cloud upgrader job (epic #696).
  */
 
+import { z } from "zod";
 import type { GcloudRunner } from "../gcloud-retry.js";
 
 /**
@@ -135,6 +136,14 @@ export function servingImageDigests(image: ServingImage): string[] {
 
 const PINNED_DIGEST = /@(sha256:[0-9a-f]{64})$/;
 
+/** The fields of `gcloud run revisions describe --format=json` the lookup reads. */
+const RevisionJsonSchema = z.object({
+  spec: z
+    .object({ containers: z.array(z.object({ image: z.string().optional() })).optional() })
+    .optional(),
+  status: z.object({ imageDigest: z.string().optional() }).optional(),
+});
+
 /**
  * The serving revision's {@link ServingImage}, or null when the revision or
  * any digest of it cannot be read.
@@ -159,20 +168,21 @@ export async function findServingImage(
     "--format=json",
   ]);
   if (!r.ok) return null;
-  let parsed: {
-    spec?: { containers?: { image?: unknown }[] };
-    status?: { imageDigest?: unknown };
-  };
+  let json: unknown;
   try {
-    parsed = JSON.parse(r.stdout);
+    json = JSON.parse(r.stdout);
   } catch {
     return null;
   }
-  const digestOf = (ref: unknown): string | null =>
-    typeof ref === "string" ? (PINNED_DIGEST.exec(ref.trim())?.[1] ?? null) : null;
+  // gcloud output is a boundary (CLAUDE.md §4): an unexpected shape (`null`,
+  // an array, a non-string image) reads as "unknown" instead of throwing.
+  const parsed = RevisionJsonSchema.safeParse(json);
+  if (!parsed.success) return null;
+  const digestOf = (ref: string | undefined): string | null =>
+    ref === undefined ? null : (PINNED_DIGEST.exec(ref.trim())?.[1] ?? null);
   const image: ServingImage = {
-    deployedDigest: digestOf(parsed.spec?.containers?.[0]?.image),
-    resolvedDigest: digestOf(parsed.status?.imageDigest),
+    deployedDigest: digestOf(parsed.data.spec?.containers?.[0]?.image),
+    resolvedDigest: digestOf(parsed.data.status?.imageDigest),
   };
   return servingImageDigests(image).length > 0 ? image : null;
 }
