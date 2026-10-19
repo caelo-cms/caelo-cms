@@ -1,0 +1,153 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Real-GCP upgrader smoke test (#818).
+#
+# Installs a release on a dedicated, throwaway smoke install with that
+# install's OWN upgrader job (`cms-provision request-update --wait`, the
+# same request + job start as the Owner's "Install update"), then checks
+# from outside that the release really serves: install.json, the serving
+# revisions' image digests against the signed manifest, Cloud Run's Ready
+# condition, and the upgrader's self-update. See scripts/upgrader-smoke.ts.
+#
+# Why: nothing after the upgrader's state lock had ever run against real
+# GCP IAM before the first live in-app update died on an IAM condition
+# (#799), and the v0.10.51 gateway exited on start only on Cloud Run
+# (#821). Fakes cannot catch either class (CLAUDE.md §4, §6).
+#
+# Runs:
+#   - from release.yml (workflow_call) for every release tag, after the
+#     images and the signed manifest are published and BEFORE npm and the
+#     GitHub Release: a failure blocks the release;
+#   - by hand (workflow_dispatch) for any published release, optionally
+#     as a dry run that reads and verifies everything and requests nothing.
+#
+# Credentials: Workload Identity Federation only, no service-account key
+# (CLAUDE.md §11.C). One-time setup (smoke project, WIF pool, the CI
+# service account's grants, the repository variables below) is in
+# docs/dev/upgrader-smoke.md.
+#
+# Repository variables:
+#   UPGRADER_SMOKE                 `required` (run, block on failure) or
+#                                  `off` (releases ship without it, with a
+#                                  warning). Anything else fails the release:
+#                                  the choice is explicit, never a silent skip.
+#   UPGRADER_SMOKE_PROJECT         the smoke install's GCP project id
+#   UPGRADER_SMOKE_REGION          its region
+#   UPGRADER_SMOKE_WIF_PROVIDER    projects/<n>/locations/global/workloadIdentityPools/<pool>/providers/<provider>
+#   UPGRADER_SMOKE_SA_EMAIL        the CI service account it impersonates
+
+name: upgrader-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: "Published release to install on the smoke install (e.g. 0.11.0-rc.1)."
+        required: true
+      dry_run:
+        description: "Read + verify + print the plan; request nothing."
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      candidate:
+        description: "The release being cut (no leading v)."
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write # WIF: the GitHub OIDC token is exchanged for a short-lived GCP token.
+
+# One smoke install: two runs must never upgrade it at the same time.
+concurrency:
+  group: upgrader-smoke
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  smoke:
+    name: upgrader smoke (${{ inputs.candidate }})
+    runs-on: ubuntu-latest
+    # Up to two upgrader runs (catch-up to N-1, then the candidate), each
+    # bounded by the job's 60-minute task timeout, plus the checks.
+    timeout-minutes: 170
+    steps:
+      - name: Decide whether the smoke test runs
+        id: mode
+        env:
+          MODE: ${{ vars.UPGRADER_SMOKE }}
+          EVENT: ${{ github.event_name }}
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "${CANDIDATE}" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::candidate '${CANDIDATE}' is not a release version like 0.11.0-rc.1"
+            exit 1
+          fi
+          case "${MODE}" in
+            required)
+              echo "run=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            off)
+              if [ "${EVENT}" = "workflow_dispatch" ]; then
+                echo "::error::UPGRADER_SMOKE is 'off'; set it to 'required' (docs/dev/upgrader-smoke.md) to run the smoke test."
+                exit 1
+              fi
+              echo "::warning::The real-GCP upgrader smoke test is OFF (repository variable UPGRADER_SMOKE=off): ${CANDIDATE} ships without an upgrader run on real GCP (#818)."
+              echo "run=false" >> "${GITHUB_OUTPUT}"
+              ;;
+            *)
+              echo "::error::Repository variable UPGRADER_SMOKE is '${MODE}'. Set it to 'required' once the smoke project is set up (docs/dev/upgrader-smoke.md), or to 'off' to release without the real-GCP upgrader smoke test (#818)."
+              exit 1
+              ;;
+          esac
+
+      - uses: actions/checkout@v7
+        if: steps.mode.outputs.run == 'true'
+        with:
+          # previousStable() reads the release tags.
+          fetch-depth: 0
+
+      - name: Setup Bun
+        if: steps.mode.outputs.run == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.2
+
+      - name: Install dependencies
+        if: steps.mode.outputs.run == 'true'
+        run: bun install --frozen-lockfile
+
+      - name: Install cosign (the signed release manifest is verified like an upgrader does)
+        if: steps.mode.outputs.run == 'true'
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Authenticate to the smoke project via Workload Identity Federation
+        if: steps.mode.outputs.run == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.UPGRADER_SMOKE_WIF_PROVIDER }}
+          service_account: ${{ vars.UPGRADER_SMOKE_SA_EMAIL }}
+
+      - name: Sign gcloud in with the federated credential
+        # request-update names the active gcloud account on the update's
+        # timeline (`gcloud auth list`), which the credential-file override
+        # alone does not register.
+        if: steps.mode.outputs.run == 'true'
+        run: gcloud auth login --cred-file="${GOOGLE_GHA_CREDS_PATH}" --quiet
+
+      - name: Install the release on the smoke install and check it serves
+        if: steps.mode.outputs.run == 'true'
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          PROJECT: ${{ vars.UPGRADER_SMOKE_PROJECT }}
+          REGION: ${{ vars.UPGRADER_SMOKE_REGION }}
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # DRY_RUN is empty or one flag.
+          bun scripts/upgrader-smoke.ts --candidate "${CANDIDATE}" \
+            --project-id "${PROJECT}" --region "${REGION}" ${DRY_RUN}

@@ -94,6 +94,13 @@ in the same commit, citing the vendor checksum file in the PR.
 All four happen in parallel from the single `git push --follow-tags`
 that lands the release commit.
 
+Before npm and the GitHub Release, `release.yml` runs the **real-GCP
+upgrader smoke test** (`upgrader-smoke.yml`, #818): the smoke install's
+own upgrader job installs the tag, and the release stops if it does not
+end up serving it. The repository variable `UPGRADER_SMOKE` must be
+`required` or `off` (unset fails the release); setup and what to do when
+it fails: [`docs/dev/upgrader-smoke.md`](docs/dev/upgrader-smoke.md).
+
 ---
 
 ## One-time setup
