@@ -55,7 +55,7 @@ jobs:
           # MPL-2.0-compatible set per CLAUDE.md §3 — mirrors ALLOWED_LICENSES in
           # scripts/license-check.ts. scripts/license-check.test.ts keeps the two
           # in lockstep.
-          allow-licenses: MPL-2.0, Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0, Unlicense, Python-2.0, BlueOak-1.0.0
+          allow-licenses: MPL-2.0, Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, CC0-1.0, Unlicense, Python-2.0, PSF-2.0, BlueOak-1.0.0
           # Per-package exceptions, mirroring LICENSE_EXCEPTIONS in
           # scripts/license-check.ts (each carries its reason there); never a
           # global entry above. The license-check and font tests keep this list
