@@ -155,3 +155,18 @@ describe("fontUnresolvableMarker", () => {
     expect(fontUnresolvableMarker("Poppins")).toBe("theme-font-unresolvable:Poppins");
   });
 });
+
+describe("buildFontFaceCss sanitization", () => {
+  it("scrubs </style> and CSS block delimiters from face properties", () => {
+    const css = buildFontFaceCss([
+      {
+        family: "Evil</style><script>alert(1)</script>",
+        style: "normal;}</style><script>",
+        weight: "400;}</style>",
+        unicodeRange: "U+0000-00FF;</style>",
+        publicUrl: "/_assets/fonts/x.woff2)</style>",
+      },
+    ]);
+    expect(css.toLowerCase()).not.toContain("</style");
+  });
+});

@@ -183,7 +183,7 @@ export function injectPluginAssets(
       .map((a) =>
         mode === "linked"
           ? `<link rel="stylesheet" href="${escapeAttr(a.publicPath)}" data-caelo-plugin="${escapeAttr(a.pluginSlug)}" />`
-          : `<style data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${a.content}\n</style>`,
+          : `<style data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${a.content.replace(/<\/style/gi, "<\\/style")}\n</style>`,
       )
       .join("\n");
     // A function replacer: a string one would expand `$&` / `$'` inside
@@ -195,7 +195,7 @@ export function injectPluginAssets(
       .map((a) =>
         mode === "linked"
           ? `<script defer src="${escapeAttr(a.publicPath)}" data-caelo-plugin="${escapeAttr(a.pluginSlug)}"></script>`
-          : `<script defer data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${a.content}\n</script>`,
+          : `<script defer data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${a.content.replace(/<\/script/gi, "<\\/script")}\n</script>`,
       )
       .join("\n");
     out = out.replace(BODY_CLOSE_RE, () => `${block}\n</body>`);

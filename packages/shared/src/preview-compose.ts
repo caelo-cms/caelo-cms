@@ -223,11 +223,11 @@ export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | nul
   const links = fonts.preloads
     .map((href) => {
       const format = /\.(woff2?|ttf|otf)(?:[?#]|$)/.exec(href)?.[1];
-      return `<link rel="preload" as="font"${format ? ` type="font/${format}"` : ""} crossorigin href="${href}">`;
+      return `<link rel="preload" as="font"${format ? ` type="font/${format}"` : ""} crossorigin href="${escapeAttr(href)}">`;
     })
     .join("");
-  const style =
-    fonts.css.trim().length > 0 ? `<style data-source="fonts">${fonts.css}</style>` : "";
+  const safeCss = fonts.css.replace(/<\/style/gi, "<\\/style");
+  const style = safeCss.trim().length > 0 ? `<style data-source="fonts">${safeCss}</style>` : "";
   const fragment = links + style;
   return fragment.length > 0 ? fragment : null;
 }
@@ -635,22 +635,27 @@ function wrapDeferredModule(
 ): string {
   const attr = (v: string): string =>
     v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+  const safeStyle = (v: string): string =>
+    v.replace(/<\/style/gi, "<\\/style").replace(/<\/template/gi, "<\\/template");
+  const safeScript = (v: string): string =>
+    v.replace(/<\/script/gi, "<\\/script").replace(/<\/template/gi, "<\\/template");
+  const safeHtml = moduleHtml.replace(/<\/template/gi, "&lt;/template");
   const gated = [module, ...nestedModules];
   const css = gated
     .filter((g) => g.css.trim().length > 0)
-    .map((g) => `<style data-source="module">${g.css}</style>`)
+    .map((g) => `<style data-source="module">${safeStyle(g.css)}</style>`)
     .join("");
   const js = gated
     .filter((g) => g.js.trim().length > 0)
     .map(
       (g) =>
-        `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}">${g.js}</script>`,
+        `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}">${safeScript(g.js)}</script>`,
     )
     .join("");
   return [
     `<div data-caelo-deferred="${attr(deferral.pluginSlug)}" data-reason="${attr(deferral.reason)}" data-module="${attr(module.slug)}">`,
     `<div data-caelo-deferred-placeholder>${deferral.placeholderHtml}</div>`,
-    `<template data-caelo-deferred-content>${css}${moduleHtml}${js}</template>`,
+    `<template data-caelo-deferred-content>${css}${safeHtml}${js}</template>`,
     `</div>`,
   ].join("");
 }

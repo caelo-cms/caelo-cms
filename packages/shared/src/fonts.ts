@@ -224,6 +224,20 @@ export function parseFontsCss(cssText: string): ParsedFontFace[] {
   return faces;
 }
 
+function sanitizeFontCssToken(value: string): string {
+  let out = value;
+  let prev: string;
+  do {
+    prev = out;
+    out = out
+      .replace(/<\/style/gi, "")
+      .replace(/<!--/g, "")
+      .replace(/--!?>/g, "")
+      .replace(/[{};()'"\\]/g, "");
+  } while (out !== prev);
+  return out;
+}
+
 /**
  * Emit self-hosted @font-face CSS. `font-display: swap` always — text
  * must render in the fallback while the woff2 loads.
@@ -231,11 +245,16 @@ export function parseFontsCss(cssText: string): ParsedFontFace[] {
 export function buildFontFaceCss(faces: readonly ResolvedFontFace[]): string {
   return faces
     .map((f) => {
-      const range = f.unicodeRange !== null ? `unicode-range:${f.unicodeRange};` : "";
+      const family = JSON.stringify(f.family).replace(/<\/style/gi, "<\\/style");
+      const style = sanitizeFontCssToken(f.style);
+      const weight = sanitizeFontCssToken(f.weight);
+      const publicUrl = sanitizeFontCssToken(f.publicUrl);
+      const range =
+        f.unicodeRange !== null ? `unicode-range:${sanitizeFontCssToken(f.unicodeRange)};` : "";
       return (
-        `@font-face{font-family:${JSON.stringify(f.family)};` +
-        `font-style:${f.style};font-weight:${f.weight};font-display:swap;` +
-        `src:url(${f.publicUrl}) format('woff2');${range}}`
+        `@font-face{font-family:${family};` +
+        `font-style:${style};font-weight:${weight};font-display:swap;` +
+        `src:url(${publicUrl}) format('woff2');${range}}`
       );
     })
     .join("\n");

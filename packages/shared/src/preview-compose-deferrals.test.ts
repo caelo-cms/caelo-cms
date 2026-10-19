@@ -141,4 +141,24 @@ describe("composer — withheld modules", () => {
     expect(html).not.toContain('onload="evil()"');
     expect(html).toContain("&quot;");
   });
+
+  it("prevents </template>, </style>, and </script> inside withheld modules from breaking out of the inert template", () => {
+    const breakout = {
+      ...VIDEO,
+      html: "<div></template><script>alert(1)</script></div>",
+      css: ".v{content:'</style></template><script>alert(2)</script>'}",
+      js: 'const x = "</script></template><script>alert(3)</script>";',
+    };
+    const { html } = composePageWithLayout({
+      templateHtml: TEMPLATE,
+      templateCss: "",
+      blocks: [{ blockName: "main", modules: [breakout] }],
+      layoutHtml: LAYOUT,
+      layoutCss: "",
+      layoutBlocks: [],
+      deferredModules: { [VIDEO.moduleId]: DEFERRAL },
+    });
+    const templateCloses = [...html.matchAll(/<\/template>/gi)];
+    expect(templateCloses).toHaveLength(1);
+  });
 });

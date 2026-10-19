@@ -34,9 +34,13 @@ import { type AnyThemeToken, flattenTokens, type ThemeDocument } from "./themes.
 
 /** Renderer-level error for cyclic / unresolved aliases. */
 export class ThemeRenderError extends Error {
-  readonly kind: "cyclic-alias" | "missing-alias";
+  readonly kind: "cyclic-alias" | "missing-alias" | "invalid-selector";
   readonly path: string;
-  constructor(kind: "cyclic-alias" | "missing-alias", path: string, message: string) {
+  constructor(
+    kind: "cyclic-alias" | "missing-alias" | "invalid-selector",
+    path: string,
+    message: string,
+  ) {
     super(message);
     this.name = "ThemeRenderError";
     this.kind = kind;
@@ -74,6 +78,13 @@ export interface RenderThemeCssOptions {
  */
 export function renderThemeCss(tokens: ThemeDocument, options: RenderThemeCssOptions = {}): string {
   const selector = options.selector ?? ":root";
+  if (/[{};]|<\/style|<!--|--!?>/i.test(selector)) {
+    throw new ThemeRenderError(
+      "invalid-selector",
+      selector,
+      `Invalid CSS selector for theme rendering: '${selector}'`,
+    );
+  }
   const flat = flattenTokens(tokens);
   const resolveCache = new Map<string, unknown>();
   const lightLines: string[] = [];
@@ -337,6 +348,8 @@ function lookupPath(doc: ThemeDocument, path: string): AnyThemeToken | null {
 // Per-category CSS emission
 // ────────────────────────────────────────────────────────────────────
 
+const SAFE_CSS_IDENT_PART_RE = /^[a-zA-Z0-9_-]+$/;
+
 function emitTokenLines(
   category: string,
   path: string,
@@ -361,6 +374,9 @@ function emitTokenLines(
   const rest = restRaw.endsWith(".DEFAULT")
     ? restRaw.slice(0, -".DEFAULT".length).replace(/\./g, "-")
     : restRaw.replace(/\./g, "-");
+  if (!SAFE_CSS_IDENT_PART_RE.test(category) || !SAFE_CSS_IDENT_PART_RE.test(rest)) {
+    return;
+  }
   const baseName = `--${category === "ease" ? "ease" : category}-${rest}`;
 
   switch (category) {
@@ -430,9 +446,9 @@ function emitTypography(rest: string, value: unknown, out: string[]): void {
 
 function emitShadow(baseName: string, value: unknown, out: string[]): void {
   // Literal CSS box-shadow string (the tolerant `shadowValueString` form).
-  // Emit verbatim — the DTCG object form is expanded below.
+  // Scrubbed through sanitizeCssTokenValue like every other token value.
   if (typeof value === "string") {
-    const s = value.trim();
+    const s = sanitizeCssTokenValue(value.trim());
     if (s.length > 0) out.push(`${baseName}:${s};`);
     return;
   }

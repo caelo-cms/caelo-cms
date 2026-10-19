@@ -42,4 +42,35 @@ describe("renderThemeCss CSS-token sanitization (S6)", () => {
     const css = renderThemeCss(fontDoc("Inter, sans-serif"));
     expect(css).toContain("Inter, sans-serif");
   });
+
+  it("scrubs </style> from string shadow tokens", () => {
+    const doc = {
+      shadow: {
+        card: { $value: "0 2px 4px #000</style><script>alert(1)</script>", $type: "shadow" },
+      },
+    } as unknown as ThemeDocument;
+    const css = renderThemeCss(doc);
+    expect(css.toLowerCase()).not.toContain("</style");
+  });
+
+  it("rejects selectors containing CSS block delimiters or </style>", () => {
+    expect(() => renderThemeCss(fontDoc("Inter"), { selector: ":root{color:red}body" })).toThrow(
+      /Invalid CSS selector/,
+    );
+    expect(() => renderThemeCss(fontDoc("Inter"), { selector: "</style><script>" })).toThrow(
+      /Invalid CSS selector/,
+    );
+  });
+
+  it("skips token keys containing characters outside CSS custom property identifiers", () => {
+    const doc = {
+      color: {
+        "primary;--x:1}</style><script>": { $type: "color", $value: "#000" },
+        valid: { $type: "color", $value: "#fff" },
+      },
+    } as unknown as ThemeDocument;
+    const css = renderThemeCss(doc);
+    expect(css.toLowerCase()).not.toContain("</style");
+    expect(css).toContain("--color-valid:#fff;");
+  });
 });

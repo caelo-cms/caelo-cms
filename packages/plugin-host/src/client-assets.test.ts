@@ -88,4 +88,17 @@ describe("plugin client assets — page injection", () => {
     expect(html).not.toContain('onload="evil()"');
     expect(html).toContain("&quot;");
   });
+
+  it("escapes closing </style> and </script> tags in inline mode", () => {
+    const html = injectPluginAssets(
+      DOC,
+      [
+        asset({ kind: "css", content: ".x{content:'</style><script>evil()</script>'}" }),
+        asset({ kind: "js", content: 'const s = "</script><script>evil()</script>";' }),
+      ],
+      "inline",
+    );
+    expect(html).not.toContain("</style><script>");
+    expect(html).not.toContain("</script><script>");
+  });
 });
