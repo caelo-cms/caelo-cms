@@ -51,7 +51,7 @@ import { z } from "zod";
 import { recordAuditFromCtx } from "../audit.js";
 import { updateNotificationText } from "../platform-updates/notification-text.js";
 import { readUpdatePolicy } from "./platform-update-policy.js";
-import { endStaleRuns, supersedeRequests } from "./platform-update-requests.js";
+import { endStaleRuns, supersedeRequestsAudited } from "./platform-update-requests.js";
 
 const handlerError = (operation: string, message: string) =>
   err({ kind: "HandlerError" as const, operation, message });
@@ -192,7 +192,7 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
     await endStaleRuns(tx);
     // …and a Cloud Shell step for a release that is installed by now (or
     // answered by a newer request) no longer asks for anything (#817).
-    await supersedeRequests(tx, CAELO_VERSION);
+    await supersedeRequestsAudited(tx, ctx, SCHEDULER_TICK);
 
     // An Owner pause whose end has passed is over.
     const lifted = (await tx.execute(sql`

@@ -7,7 +7,7 @@ import {
   finishLabel,
   historySummary,
   phaseLabel,
-  releaseCheckState,
+  RELEASE_CHECK_STALE_MS,
   stoppedBeforeChange,
   UPDATE_PAGE_STATES,
   type UpdatePageInput,
@@ -32,38 +32,6 @@ describe("checkedAgo", () => {
     expect(checkedAgo(minutesAgo(23 * 60 + 59), NOW)).toBe("23 h ago");
     expect(checkedAgo(minutesAgo(24 * 60), NOW)).toBe("1 day ago");
     expect(checkedAgo(minutesAgo(3 * 24 * 60), NOW)).toBe("3 days ago");
-  });
-});
-
-describe("releaseCheckState", () => {
-  it("never claims 'Up to date' when the check never ran", () => {
-    expect(
-      releaseCheckState({ latestVersion: null, upgradeAvailable: false, checkedAt: null }, NOW),
-    ).toEqual({ kind: "never" });
-  });
-
-  it("says the last check failed when it ran without finding a release", () => {
-    expect(
-      releaseCheckState(
-        { latestVersion: null, upgradeAvailable: false, checkedAt: minutesAgo(5) },
-        NOW,
-      ),
-    ).toEqual({ kind: "failed", ago: "5 min ago" });
-  });
-
-  it("is up to date, or has an update, with when it checked", () => {
-    expect(
-      releaseCheckState(
-        { latestVersion: "0.10.48", upgradeAvailable: false, checkedAt: minutesAgo(40) },
-        NOW,
-      ),
-    ).toEqual({ kind: "up_to_date", ago: "40 min ago" });
-    expect(
-      releaseCheckState(
-        { latestVersion: "0.10.49", upgradeAvailable: true, checkedAt: minutesAgo(0) },
-        NOW,
-      ),
-    ).toEqual({ kind: "update_available", ago: "just now" });
   });
 });
 
@@ -97,7 +65,7 @@ describe("updatePageState (#861): one state, one primary action", () => {
     installRoute: "in_product",
     selfHosted: false,
     convergeJob: false,
-    cloudShellAvailable: true,
+    breakGlassAvailable: true,
     ...over,
   });
   /** Installs automatically, not paused, unchanged since long before the scheduler's tick. */
@@ -244,7 +212,7 @@ describe("updatePageState (#861): one state, one primary action", () => {
     // Predicted cloud-setup change on a provider without a Cloud Shell
     // walkthrough (or a misconfigured upgrade command).
     const predicted = updatePageState(
-      input({ cloudShellAvailable: false, status: { ...input().status, infraChange: true } }),
+      input({ breakGlassAvailable: false, status: { ...input().status, infraChange: true } }),
     );
     expect(predicted.kind).toBe("update_available");
     expect(predicted.action).toEqual({ kind: "none" });
@@ -252,7 +220,7 @@ describe("updatePageState (#861): one state, one primary action", () => {
     // A run that asked for Cloud Shell: same, with the run's reason.
     const asked = updatePageState(
       input({
-        cloudShellAvailable: false,
+        breakGlassAvailable: false,
         request: request({ status: "needs_cloud_shell", statusReason: "drift" }),
       }),
     );
@@ -261,16 +229,34 @@ describe("updatePageState (#861): one state, one primary action", () => {
     expect(asked.detail).toBe(
       "Caelo can't install it by itself, and this install has no Cloud Shell upgrade. drift",
     );
-    // Self-hosted never uses Cloud Shell: the server command stays.
-    expect(
-      updatePageState(
-        input({
-          cloudShellAvailable: false,
-          selfHosted: true,
-          request: request({ status: "needs_cloud_shell" }),
-        }),
-      ).action,
-    ).toEqual({ kind: "server_command", version: LATEST });
+    // Self-hosted without a buildable server command (CAELO_SITE_URL
+    // missing): no empty "run the command" step either; the page shows the
+    // misconfiguration under the sentence.
+    const selfHosted = updatePageState(
+      input({
+        breakGlassAvailable: false,
+        selfHosted: true,
+        request: request({ status: "needs_cloud_shell" }),
+      }),
+    );
+    expect(selfHosted.kind).toBe("update_available");
+    expect(selfHosted.action).toEqual({ kind: "none" });
+    expect(selfHosted.detail).toContain("the upgrade command for your server can't be built");
+  });
+
+  it("break_glass for a role that may install but not run the step: names who can", () => {
+    const s = updatePageState(
+      input({
+        canUpgrade: false,
+        breakGlassAvailable: false,
+        request: request({ status: "needs_cloud_shell", statusReason: "drift" }),
+      }),
+    );
+    expect(s.kind).toBe("break_glass");
+    expect(s.action).toEqual({ kind: "none" });
+    expect(s.sentence).toContain("an Owner who may change this site's settings");
+    expect(s.sentence).not.toContain("Cloud Shell");
+    expect(s.detail).toBe("drift");
   });
 
   it("a stale Cloud Shell request for an installed release stays in the history", () => {
@@ -369,6 +355,23 @@ describe("updatePageState (#861): one state, one primary action", () => {
     const failed = updatePageState(input({ status: { ...upToDate, latestVersion: null } }));
     expect(failed.badge.label).toBe("Last check failed");
     expect(failed.sentence).toContain("couldn't reach GitHub");
+  });
+
+  it("unknown: a day-old 'up to date' is no longer claimed (the check isn't running)", () => {
+    const at = (ms: number) => new Date(NOW.getTime() - ms).toISOString();
+    expect(
+      updatePageState(input({ status: { ...upToDate, checkedAt: at(RELEASE_CHECK_STALE_MS) } }))
+        .kind,
+    ).toBe("up_to_date");
+    const stale = updatePageState(
+      input({ status: { ...upToDate, checkedAt: at(RELEASE_CHECK_STALE_MS + 3 * 3_600_000) } }),
+    );
+    expect(stale.kind).toBe("unknown");
+    expect(stale.badge.label).toBe("Check out of date");
+    expect(stale.sentence).toBe(
+      "Caelo last checked for new releases 1 day ago, so it may not know about a newer one.",
+    );
+    expect(stale.action).toEqual({ kind: "check_now" });
   });
 });
 

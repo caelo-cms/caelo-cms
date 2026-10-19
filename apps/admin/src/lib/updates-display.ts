@@ -10,6 +10,7 @@
 
 import {
   isPausedAt,
+  PLATFORM_UPDATE_STALE_MINUTES,
   type PlatformUpdatePhase,
   type PlatformUpdateStatusValue,
   type UpdatePolicyMode,
@@ -87,29 +88,13 @@ export function checkedAgo(checkedAt: string, now: Date): string {
 }
 
 /**
- * What the "Your version" card says about the release check. `up_to_date`
- * only when the last check actually reached GitHub — a check that never ran
- * or failed must not read as "Up to date".
+ * How old the last release check may be before "Your site runs the newest
+ * version" stops being a claim the page can make. The worker checks every
+ * hour and stamps failed checks too, so an answer this old means the check
+ * is not running at all (worker off, admin crash-looping): the page says it
+ * does not know instead of repeating a day-old "up to date".
  */
-export type ReleaseCheckState =
-  | { readonly kind: "never" }
-  | { readonly kind: "failed"; readonly ago: string }
-  | { readonly kind: "up_to_date" | "update_available"; readonly ago: string };
-
-/** The release-check state for `platform_updates.status`'s fields at `now`. */
-export function releaseCheckState(
-  status: {
-    readonly latestVersion: string | null;
-    readonly upgradeAvailable: boolean;
-    readonly checkedAt: string | null;
-  },
-  now: Date,
-): ReleaseCheckState {
-  if (status.checkedAt === null) return { kind: "never" };
-  const ago = checkedAgo(status.checkedAt, now);
-  if (status.latestVersion === null) return { kind: "failed", ago };
-  return { kind: status.upgradeAvailable ? "update_available" : "up_to_date", ago };
-}
+export const RELEASE_CHECK_STALE_MS = 24 * 60 * 60 * 1000;
 
 /* ------------------------------------------------------------------------ */
 /* How a run ended (#861): outcomes, not phases.                            */
@@ -319,13 +304,15 @@ export interface UpdatePageInput {
    */
   readonly convergeJob: boolean;
   /**
-   * The Google Cloud Shell walkthrough exists for the newest release
-   * (`cloudShellUpgrade()` is non-null): false on a provider without one or
-   * when the upgrade command can't be built. Then the page offers no Cloud
-   * Shell step and shows why instead. Only read for a viewer who may run it
-   * (`canUpgrade`) on a non-self-hosted install.
+   * The step only the Owner's own account can take exists for the newest
+   * release: on Google Cloud the Cloud Shell walkthrough (`cloudShellUpgrade()`
+   * is non-null), self-hosted the upgrade command on the server
+   * (`resolveUpgradePath()` is `cli`). False on a provider without one, or
+   * when the upgrade command can't be built (CAELO_SITE_URL missing). Then
+   * the page offers no such step and shows why instead. Only read for a
+   * viewer who may run it (`canUpgrade`).
    */
-  readonly cloudShellAvailable: boolean;
+  readonly breakGlassAvailable: boolean;
 }
 
 /**
@@ -417,8 +404,7 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
       kind: "interrupted",
       badge: { label: "Interrupted", tone: "destructive" },
       sentence: `The update to v${active.targetVersion} stopped without reporting back. Your site may still run v${installed}: open it to check.`,
-      detail:
-        "Once its run is cleared (within 90 minutes) you can try again from here. The upgrader's log shows where it stopped.",
+      detail: `Once its run is cleared (within ${PLATFORM_UPDATE_STALE_MINUTES} minutes of its start) you can try again from here. The upgrader's log shows where it stopped.`,
       action: { kind: "logs", url: input.deadRunLogsUrl },
     };
   }
@@ -452,27 +438,39 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
   const predictedConverge =
     latest !== null && status.infraChange === true && !input.convergeJob && !input.selfHosted;
   const needsHand = latest !== null && canAct && (askedForHand !== null || predictedConverge);
-  if (needsHand && input.canUpgrade && !input.selfHosted && !input.cloudShellAvailable) {
-    // No Cloud Shell walkthrough for this install (another provider, or the
-    // upgrade command can't be built): never point at a step that isn't
-    // there. The page shows the upgrade path's diagnostic under the sentence.
+  if (needsHand && input.canUpgrade && !input.breakGlassAvailable) {
+    // No such step for this install (another provider, or the upgrade
+    // command can't be built): never point at a step that isn't there. The
+    // page shows the upgrade path's diagnostic under the sentence.
+    const missing = input.selfHosted
+      ? "the upgrade command for your server can't be built"
+      : "this install has no Cloud Shell upgrade";
     return {
       kind: "update_available",
       badge: { label: "Update available", tone: "warning" },
       sentence: `v${latest} is available.`,
       detail:
         askedForHand !== null
-          ? `Caelo can't install it by itself, and this install has no Cloud Shell upgrade.${askedForHand.statusReason ? ` ${askedForHand.statusReason}` : ""}`
-          : "It also changes settings in your cloud project, which Caelo can't do by itself yet, and this install has no Cloud Shell upgrade.",
+          ? `Caelo can't install it by itself, and ${missing}.${askedForHand.statusReason ? ` ${askedForHand.statusReason}` : ""}`
+          : `It also changes settings in your cloud project, which Caelo can't do by itself yet, and ${missing}.`,
+      action: { kind: "none" },
+    };
+  }
+  if (latest !== null && needsHand && !input.canUpgrade) {
+    // May install from here, but not run the step by hand (it needs
+    // settings.write, which this role lacks): say who can, not how.
+    return {
+      kind: "break_glass",
+      badge: { label: "Needs an Owner", tone: "warning" },
+      sentence: `Caelo can't install v${latest} by itself. It needs one step by an Owner who may change this site's settings; ask them to open this page.`,
+      detail: askedForHand?.statusReason ?? null,
       action: { kind: "none" },
     };
   }
   if (latest !== null && needsHand) {
-    const handAction: PrimaryAction = !input.canUpgrade
-      ? { kind: "none" }
-      : input.selfHosted
-        ? { kind: "server_command", version: latest }
-        : { kind: "cloud_shell", version: latest };
+    const handAction: PrimaryAction = input.selfHosted
+      ? { kind: "server_command", version: latest }
+      : { kind: "cloud_shell", version: latest };
     const sentence = input.selfHosted
       ? `Caelo can't install v${latest} by itself. Run the upgrade command on your server once; after that, updates install from here again.`
       : askedForHand !== null
@@ -511,8 +509,11 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
     };
   }
 
-  // 8. Nothing newer, and the check really reached GitHub.
-  if (status.checkedAt !== null && status.latestVersion !== null) {
+  // 8. Nothing newer, and the check really reached GitHub — recently.
+  const stale =
+    status.checkedAt !== null &&
+    input.now.getTime() - Date.parse(status.checkedAt) > RELEASE_CHECK_STALE_MS;
+  if (status.checkedAt !== null && status.latestVersion !== null && !stale) {
     return {
       kind: "up_to_date",
       badge: { label: "Up to date", tone: "success" },
@@ -522,17 +523,32 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
     };
   }
 
-  // 9. Never checked, or the last check failed: say so, never "up to date".
+  // 9. Never checked, the last check failed, or it is too old to vouch for
+  //    anything: say so, never "up to date".
+  if (status.checkedAt === null) {
+    return {
+      kind: "unknown",
+      badge: { label: "Not checked yet", tone: "secondary" },
+      sentence: "Caelo hasn't checked for new releases yet. It checks once an hour.",
+      detail: null,
+      action: { kind: "check_now" },
+    };
+  }
+  if (stale) {
+    return {
+      kind: "unknown",
+      badge: { label: "Check out of date", tone: "warning" },
+      sentence: `Caelo last checked for new releases ${checkedAgo(status.checkedAt, input.now)}, so it may not know about a newer one.`,
+      detail:
+        "It normally checks every hour. Check now; if this comes back tomorrow, the admin's release check isn't running.",
+      action: { kind: "check_now" },
+    };
+  }
   return {
     kind: "unknown",
-    badge:
-      status.checkedAt === null
-        ? { label: "Not checked yet", tone: "secondary" }
-        : { label: "Last check failed", tone: "destructive" },
+    badge: { label: "Last check failed", tone: "destructive" },
     sentence:
-      status.checkedAt === null
-        ? "Caelo hasn't checked for new releases yet. It checks once an hour."
-        : "Caelo couldn't reach GitHub, so it doesn't know whether there is a new release. It tries again within the hour.",
+      "Caelo couldn't reach GitHub, so it doesn't know whether there is a new release. It tries again within the hour.",
     detail: null,
     action: { kind: "check_now" },
   };

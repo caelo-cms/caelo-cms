@@ -7,7 +7,9 @@
  * no_permission, in_progress, interrupted, rolled_back, break_glass (a
  * refused run, and a release predicted to change the cloud setup, #817),
  * update_available, scheduled, up_to_date, unknown — plus a stale Cloud
- * Shell request that stays in the history. Also pins:
+ * Shell request that stays in the history, a run that died without
+ * reporting back (`interrupted`, its log), and a day-old check that no
+ * longer claims "Up to date" (`unknown`). Also pins:
  *   - an Owner sees the newest release and the exact, version-pinned upgrade
  *     command for this install, and the copy button puts it on the clipboard;
  *   - a role without settings.write (Reviewer) sees the versions but no
@@ -108,6 +110,21 @@ const FIXTURE_SCRIPT = `
         await tx\`INSERT INTO platform_update_events (request_id, phase, level, message)
                  VALUES (\${r.id}, \${phase}, 'info', \${"Reached " + phase + "."})\`;
       }
+    } else if (op === "dead-run") {
+      // A request the job claimed (running, its execution recorded) whose
+      // run then died without writing its end: the fake upgrader reports
+      // that execution as over (the caelo_e2e_upgrader_run cookie).
+      await tx\`DELETE FROM platform_update_requests\`;
+      const [owner] = await tx\`SELECT id FROM users WHERE email = 'dev-owner@example.com'\`;
+      const [r] = await tx\`INSERT INTO platform_update_requests
+                 (target_version, from_version, trigger, requested_by, status, execution, started_at)
+               VALUES (\${process.env.E2E_LATEST}, '0.10.52', 'manual', \${owner.id}, 'running',
+                 'e2e-upgrader-ended', now())
+               RETURNING id\`;
+      for (const phase of ["queued", "start", "verify", "backup"]) {
+        await tx\`INSERT INTO platform_update_events (request_id, phase, level, message)
+                 VALUES (\${r.id}, \${phase}, 'info', \${"Reached " + phase + "."})\`;
+      }
     } else if (op === "converge-predicted") {
       // What the release check notes when the newest release's manifest
       // raises the infrastructure contract over the running release (#817).
@@ -133,6 +150,13 @@ const FIXTURE_SCRIPT = `
       await tx\`DELETE FROM platform_update_requests\`;
       await tx\`UPDATE release_check_cache SET latest_version = \${CAELO_VERSION}, fetched_at = now()
                 WHERE id = 1\`;
+    } else if (op === "stale-up-to-date") {
+      // The last check that ran found nothing newer — two days ago (the
+      // hourly check has not run since).
+      const { CAELO_VERSION } = await import("@caelo-cms/shared");
+      await tx\`DELETE FROM platform_update_requests\`;
+      await tx\`UPDATE release_check_cache SET latest_version = \${CAELO_VERSION},
+                 fetched_at = now() - interval '2 days' WHERE id = 1\`;
     } else if (op === "job-progress") {
       // What the upgrader job writes while it runs (platform-updater ops).
       const [r] = await tx\`SELECT id FROM platform_update_requests ORDER BY requested_at DESC LIMIT 1\`;
@@ -474,6 +498,39 @@ test("interrupted: a run refused before any change says so and never reads 'Fini
   const finish = page.getByTestId("last-attempt").locator('[data-phase="finish"]');
   await expect(finish).toContainText("Stopped before changing anything");
   await expect(page.getByTestId("last-attempt")).not.toContainText("Finished");
+});
+
+test("interrupted: a run that died without reporting back points at its log, not at Install", async ({
+  page,
+  baseURL,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "dead-run",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: LATEST,
+  });
+  await page
+    .context()
+    .addCookies([
+      { name: "caelo_e2e_upgrader_run", value: "ended", url: baseURL ?? "http://localhost:4173" },
+    ]);
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "interrupted");
+  await expect(page.getByTestId("update-state-sentence")).toContainText(
+    `The update to v${LATEST} stopped without reporting back.`,
+  );
+  await expect(page.getByTestId("update-state-detail")).toContainText("within 90 minutes");
+  const log = card(page).getByTestId("upgrader-log");
+  await expect(log).toHaveAttribute(
+    "href",
+    "https://console.cloud.google.com/run/jobs/e2e-upgrader-ended",
+  );
+  // Not "Installing" with a live timeline, and no second action next to the log.
+  await expectOnlyAction(page, "none");
+  await expect(card(page).getByTestId("cancel-update")).toHaveCount(0);
+  await expect(card(page).getByTestId("update-state-badge")).toHaveText("Interrupted");
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
 });
 
 test("rolled_back: the release failed its test; the site is unchanged, Try again", async ({
@@ -829,6 +886,21 @@ test("a Reviewer reads the automatic-update policy but cannot change it", async 
     "Ask an Owner of this site to set one up.",
   );
   await expect(page.getByTestId("setup-email")).toHaveCount(0);
+});
+
+test("unknown: a two-day-old check no longer claims 'Up to date'", async ({ page }) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "stale-up-to-date", E2E_EMAIL: REVIEWER_EMAIL });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "unknown");
+  await expect(page.getByTestId("update-state-badge")).toHaveText("Check out of date");
+  await expect(page.getByTestId("update-state-sentence")).toHaveText(
+    "Caelo last checked for new releases 2 days ago, so it may not know about a newer one.",
+  );
+  await expect(page.getByText("Up to date", { exact: true })).toHaveCount(0);
+  await expectOnlyAction(page, "none");
+  await expect(card(page).getByTestId("check-releases-now")).toHaveCount(1);
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
 });
 
 test("unknown: a failed check is never 'Up to date'; Check now refreshes it", async ({ page }) => {

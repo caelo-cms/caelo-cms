@@ -93,7 +93,7 @@
       installRoute: data.installRoute,
       selfHosted: data.selfHosted,
       convergeJob: data.convergeJob,
-      cloudShellAvailable: data.cloudShellAvailable,
+      breakGlassAvailable: data.breakGlassAvailable,
     }),
   );
   const action = $derived(pageState.action);

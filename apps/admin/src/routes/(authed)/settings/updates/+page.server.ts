@@ -173,10 +173,11 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
     },
     installRoute,
     convergeJob: CONVERGE_JOB_AVAILABLE,
-    // Whether a Cloud Shell walkthrough exists for this install at all
-    // (Google Cloud, upgrade command buildable): the page never offers a
-    // break-glass step that isn't there (`updatePageState`).
-    cloudShellAvailable: cloudShellFor !== null,
+    // Whether the step by hand exists for this install at all — Google
+    // Cloud: the Cloud Shell walkthrough; self-hosted: the upgrade command
+    // on the server (both need a buildable upgrade command). The page never
+    // offers a break-glass step that isn't there (`updatePageState`).
+    breakGlassAvailable: selfHosted ? upgrade?.kind === "cli" : cloudShellFor !== null,
     emailConfigured: await readEmailConfigured(locals.ctx),
     agent:
       selfHosted && canInstall

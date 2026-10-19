@@ -255,6 +255,33 @@ export async function supersedeRequests(
   return closed;
 }
 
+/**
+ * {@link supersedeRequests} plus one audit row per request it closed, under
+ * `operation` (the op that ran it: boot, a new request, the scheduler).
+ * Every caller goes through here, so no request changes status unaudited.
+ *
+ * @returns the ids of the requests it closed
+ */
+export async function supersedeRequestsAudited(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  operation: string,
+): Promise<string[]> {
+  const closed = await supersedeRequests(tx, CAELO_VERSION);
+  for (const { id, reason } of closed) {
+    // The reason the row itself records: the release runs now, or a newer
+    // request replaced it (the install may still run an older release).
+    await recordAuditFromCtx(tx, ctx, {
+      operation,
+      input: { event: "superseded", requestId: id },
+      succeeded: true,
+      entityId: id,
+      resultSummary: `superseded: ${reason}`,
+    });
+  }
+  return closed.map((c) => c.id);
+}
+
 export const platformUpdatesRequestOp = defineOperation({
   name: "platform_updates.request",
   // Why human-only: installing a Caelo release is a deployment (CLAUDE.md
@@ -329,7 +356,7 @@ export const platformUpdatesRequestOp = defineOperation({
       `Update to ${input.targetVersion} requested (confirmed with the Owner's password).`,
     );
     // The new request answers any older one that asked for a Cloud Shell step.
-    await supersedeRequests(tx, CAELO_VERSION);
+    await supersedeRequestsAudited(tx, ctx, op);
     await consumeStepUp(tx, ctx.actorId, input.sessionHash);
     await recordAuditFromCtx(tx, ctx, {
       operation: op,
@@ -464,19 +491,8 @@ export const platformUpdatesSupersedeStaleOp = defineOperation({
   input: z.object({}).strict(),
   output: z.object({ superseded: z.array(z.string()) }),
   handler: async (ctx, _input, tx) => {
-    const superseded = await supersedeRequests(tx, CAELO_VERSION);
-    for (const { id, reason } of superseded) {
-      // The reason the row itself records: the release runs now, or a newer
-      // request replaced it (the install may still run an older release).
-      await recordAuditFromCtx(tx, ctx, {
-        operation: "platform_updates.supersede_stale",
-        input: { requestId: id },
-        succeeded: true,
-        entityId: id,
-        resultSummary: `superseded: ${reason}`,
-      });
-    }
-    return ok({ superseded: superseded.map((s) => s.id) });
+    const superseded = await supersedeRequestsAudited(tx, ctx, "platform_updates.supersede_stale");
+    return ok({ superseded });
   },
 });
 

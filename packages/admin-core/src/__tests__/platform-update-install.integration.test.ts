@@ -494,6 +494,12 @@ describe("superseded requests (#817)", () => {
     );
     expect(got.request.status).toBe("superseded");
     expect(got.request.statusReason).toBe(SUPERSEDED_NEWER);
+    // Audited under the op that closed it, like every other status change.
+    const audits = (await admin(
+      (tx) => tx`SELECT result_summary FROM audit_events
+                  WHERE operation = 'platform_updates.request' AND entity_id = ${older}::uuid`,
+    )) as unknown as { result_summary: string }[];
+    expect(audits.map((a) => a.result_summary)).toEqual([`superseded: ${SUPERSEDED_NEWER}`]);
   });
 
   it("is system-only", async () => {
