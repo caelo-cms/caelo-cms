@@ -17,6 +17,7 @@ import { execute } from "@caelo-cms/query-api";
 import { error, json } from "@sveltejs/kit";
 import { z } from "zod";
 import { assertChatAccess, assertJsonCsrf } from "#lib/server/agent-runs.js";
+import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
@@ -29,6 +30,7 @@ const decisionInput = z
   .strict();
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
+  requirePermission(locals, "content.write");
   await assertJsonCsrf(request, locals);
   await assertChatAccess(locals, params.sessionId);
   const parsed = decisionInput.safeParse(await request.json().catch(() => null));

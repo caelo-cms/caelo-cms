@@ -48,7 +48,7 @@ export type CpuCalibration =
  * The `cpuSlowdownMultiplier` for a host with the given benchmark index.
  *
  * @param benchmarkIndex - Lighthouse's `computeBenchmarkIndex()` result for
- *   the host (the median of several samples, see `medianBenchmarkIndex`).
+ *   the host (the fastest of several samples, see `fastestBenchmarkIndex`).
  * @returns the multiplier rounded to one decimal, or `ok: false` when the
  *   host is too slow to measure reliably — never a silent default.
  */
@@ -69,18 +69,18 @@ export function calibrateCpuSlowdown(benchmarkIndex: number): CpuCalibration {
 }
 
 /**
- * Median of benchmark samples. A single sample is itself noisy on a shared
- * vCPU, so the child measures a few and takes the middle one.
+ * The fastest of several benchmark samples. Interference on a shared vCPU
+ * only ever lowers a sample, never raises it, so the highest one is the
+ * host's own speed. That is the same reasoning as scoring a page by its
+ * best run (#874, `bestRunIndex` in lighthouse-extract.ts): the slowdown is
+ * calibrated to the undisturbed host, and the run it is applied to is the
+ * undisturbed one. A low sample would under-throttle every run.
  *
  * @throws when `samples` is empty (a caller bug, not a measurement).
  */
-export function medianBenchmarkIndex(samples: readonly number[]): number {
-  if (samples.length === 0) throw new Error("medianBenchmarkIndex needs at least one sample");
-  const sorted = [...samples].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1
-    ? (sorted[mid] as number)
-    : ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
+export function fastestBenchmarkIndex(samples: readonly number[]): number {
+  if (samples.length === 0) throw new Error("fastestBenchmarkIndex needs at least one sample");
+  return Math.max(...samples);
 }
 
 /**

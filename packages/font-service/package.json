@@ -16,6 +16,6 @@
     "drizzle-orm": "0.45.4",
     "fontverter": "2.0.0",
     "subset-font": "2.9.0",
-    "zod": "4.6.5"
+    "zod": "4.6.7"
   }
 }

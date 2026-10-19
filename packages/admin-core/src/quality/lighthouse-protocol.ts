@@ -17,7 +17,7 @@ const categorySchema = z.enum(QUALITY_CATEGORIES);
 export const auditJobSchema = z
   .object({
     pages: z.array(z.object({ pageId: z.string().uuid(), url: z.string().url() }).strict()).min(1),
-    /** Lighthouse runs per page for the Performance median (>= 1). */
+    /** Lighthouse runs per page; the best one scores Performance (>= 1). */
     performanceRuns: z.number().int().min(1).max(5),
   })
   .strict();
