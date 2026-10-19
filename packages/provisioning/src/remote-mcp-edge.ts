@@ -26,7 +26,7 @@
  *     100/min ban would cut every user behind the same connector for 10
  *     minutes after one busy session.
  *
- * So `/api/mcp/*` gets its own rule, evaluated before the general ones
+ * So the MCP paths ({@link MCP_ARMOR_PATH_PATTERN}) get their own rule, evaluated before the general ones
  * (lower priority number = earlier; the first matching rule decides): a
  * per-IP *throttle* of 600 requests a minute — about five busy agent
  * sessions per egress IP — answering 429 above it without a ban, so a burst
@@ -37,8 +37,21 @@
  * without a valid token of an allowlisted user before it reaches the admin.
  */
 
-/** The broker's path prefix (contract #806). */
-export const MCP_PATH_PREFIX = "/api/mcp/";
+/**
+ * The paths the MCP rule covers, as an anchored RE2 pattern (Cloud Armor's
+ * `matches`): the two MCP endpoints and the broker's `oauth/<name>` and
+ * `oauth/<name>/<surface>` routes — lowercase letters and hyphens only.
+ *
+ * Deliberately not a prefix match. A `startsWith('/api/mcp/')` rule also
+ * matches `/api/mcp/../forms/submit` or `/api/mcp/%2e%2e/comments`, which
+ * the gateway's URL parser normalises to `/api/forms/submit` — so any
+ * public write could borrow the MCP rule's 600/min throttle and skip the
+ * OWASP packs and the ban. No dot, no percent sign and no extra segment can
+ * match this pattern, so a traversal falls through to the general rules.
+ * The dotted metadata aliases (`/.well-known/…`, `oauth/.well-known/…`) are
+ * one-off GETs per connection and stay under the general rules.
+ */
+export const MCP_ARMOR_PATH_PATTERN = "^/api/mcp/(chat|admin|oauth/[a-z-]+(/[a-z-]+)?)$";
 
 /** The general per-IP ban rule and the OWASP rule packs the MCP rule must precede. */
 export const GENERAL_RATE_LIMIT_PRIORITY = 1000;
@@ -48,7 +61,7 @@ export const OWASP_RULE_PRIORITIES: readonly number[] = [2000, 2001];
 export const MCP_ARMOR_RULE = {
   priority: 900,
   description: "Caelo remote MCP: per-IP throttle sized for agent traffic; skips the OWASP packs",
-  expression: `request.path.startsWith('${MCP_PATH_PREFIX}')`,
+  expression: `request.path.matches('${MCP_ARMOR_PATH_PATTERN}')`,
   action: "throttle",
   /** Requests per {@link MCP_ARMOR_RULE.intervalSec} per source IP. */
   count: 600,

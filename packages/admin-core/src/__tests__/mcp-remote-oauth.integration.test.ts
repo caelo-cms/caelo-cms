@@ -39,6 +39,12 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 const ownerId = crypto.randomUUID();
 const OWNER: ExecutionContext = { actorId: ownerId, actorKind: "human", requestId: "remote-mcp" };
+const editorId = crypto.randomUUID();
+const EDITOR: ExecutionContext = {
+  actorId: editorId,
+  actorKind: "human",
+  requestId: "remote-mcp-editor",
+};
 const AI: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-0000000a11a0",
   actorKind: "ai",
@@ -69,7 +75,18 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
   await admin(async (tx) => {
-    await tx`INSERT INTO actors (id, kind, display_name) VALUES (${ownerId}::uuid, 'human', 'Remote MCP owner')`;
+    // The writer policy (0313) checks settings.write at the Postgres layer,
+    // so the Owner is a real user with the owner role; the editor is not one.
+    for (const [id, name, role] of [
+      [ownerId, "Remote MCP owner", "owner"],
+      [editorId, "Remote MCP editor", "editor"],
+    ] as const) {
+      await tx`INSERT INTO actors (id, kind, display_name) VALUES (${id}::uuid, 'human', ${name})`;
+      await tx`INSERT INTO users (id, email, password_hash)
+               VALUES (${id}::uuid, ${`${id}@t806-oauth.test`}, 'test-only')`;
+      await tx`INSERT INTO user_roles (user_id, role_id)
+               SELECT ${id}::uuid, id FROM roles WHERE name = ${role}`;
+    }
   });
 });
 afterEach(async () => {
@@ -137,6 +154,23 @@ describe("mcp_remote_oauth ops", () => {
     }
     const sync = await execute(registry, adapter, OWNER, "mcp_remote_oauth.client_for_sync", {});
     expect(sync.ok === false && sync.error.kind).toBe("ActorScopeRejected");
+  });
+
+  it("refuses a human without settings.write at the Postgres layer, not only in the route", async () => {
+    const set = await execute(registry, adapter, EDITOR, "mcp_remote_oauth.set", {
+      clientId: OTHER,
+    });
+    expect(set.ok).toBe(false);
+    expect(await get()).toBeNull();
+
+    await execute(registry, adapter, OWNER, "mcp_remote_oauth.set", { clientId: CLIENT });
+    const replace = await execute(registry, adapter, EDITOR, "mcp_remote_oauth.set", {
+      clientId: OTHER,
+    });
+    expect(replace.ok).toBe(false);
+    const clear = await execute(registry, adapter, EDITOR, "mcp_remote_oauth.clear", {});
+    expect(clear.ok && clear.value).toEqual({ cleared: false });
+    expect((await get())?.clientId).toBe(CLIENT);
   });
 });
 

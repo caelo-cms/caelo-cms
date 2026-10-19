@@ -21,6 +21,7 @@ import {
 import {
   GENERAL_RATE_LIMIT_PRIORITY,
   isMcpArmorRule,
+  MCP_ARMOR_PATH_PATTERN,
   MCP_ARMOR_RULE,
   mcpArmorRuleArgs,
   mcpArmorRuleFlags,
@@ -325,7 +326,37 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     // A throttle (no ban) whose conforming action is `allow` — terminal.
     expect(MCP_ARMOR_RULE.action).toBe("throttle");
     expect(MCP_ARMOR_RULE.conformAction).toBe("allow");
-    expect(MCP_ARMOR_RULE.expression).toBe("request.path.startsWith('/api/mcp/')");
+    expect(MCP_ARMOR_RULE.expression).toBe(`request.path.matches('${MCP_ARMOR_PATH_PATTERN}')`);
+  });
+
+  it("covers exactly the broker's paths; a traversal never borrows the MCP rule", () => {
+    // RE2 and JS agree on this pattern (anchors, alternation, classes only).
+    const re = new RegExp(MCP_ARMOR_PATH_PATTERN);
+    for (const p of [
+      "/api/mcp/chat",
+      "/api/mcp/admin",
+      "/api/mcp/oauth/authorize",
+      "/api/mcp/oauth/google-callback",
+      "/api/mcp/oauth/token",
+      "/api/mcp/oauth/register",
+      "/api/mcp/oauth/status",
+      "/api/mcp/oauth/protected-resource/chat",
+    ]) {
+      expect(re.test(p)).toBe(true);
+    }
+    for (const p of [
+      "/api/mcp/../forms/submit",
+      "/api/mcp/%2e%2e/comments/post",
+      "/api/mcp/chat/../../forms/submit",
+      "/api/mcp/chat/x",
+      "/api/mcp/oauth/token/../../../forms",
+      "/api/mcp/",
+      "/api/forms/submit",
+    ]) {
+      expect(re.test(p)).toBe(false);
+    }
+    // Why it matters: the gateway's URL parser resolves such a path to a public write.
+    expect(new URL("https://h/api/mcp/%2e%2e/comments/post").pathname).toBe("/api/comments/post");
   });
 
   it("the stack shape and the gcloud flags describe the same rule", () => {
@@ -335,7 +366,7 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     ).toBe(true);
     expect(mcpArmorRuleFlags()).toEqual([
       `--description=${MCP_ARMOR_RULE.description}`,
-      "--expression=request.path.startsWith('/api/mcp/')",
+      `--expression=request.path.matches('${MCP_ARMOR_PATH_PATTERN}')`,
       "--action=throttle",
       "--rate-limit-threshold-count=600",
       "--rate-limit-threshold-interval-sec=60",

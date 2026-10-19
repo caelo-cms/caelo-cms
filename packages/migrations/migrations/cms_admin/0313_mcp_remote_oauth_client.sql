@@ -31,9 +31,32 @@ ALTER TABLE mcp_remote_oauth_client ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mcp_remote_oauth_client FORCE ROW LEVEL SECURITY;
 
 -- Any authenticated session may read (the client ID is not a secret: it is
--- in every Google sign-in URL); only humans and system write, matching the
--- human/system op scope.
+-- in every Google sign-in URL). Writes decide which OAuth client Google IAP
+-- accepts programmatically, so they are system or a human Owner
+-- (settings.write) — at the Postgres layer, not only in the route guard
+-- (CLAUDE.md §2; the same rule 0315 applies to mcp_tokens). The AI never
+-- writes here. `caelo.actor_id` is compared as text so a malformed id
+-- matches nobody instead of failing the cast.
 DROP POLICY IF EXISTS mcp_remote_oauth_client_authenticated_scope ON mcp_remote_oauth_client;
-CREATE POLICY mcp_remote_oauth_client_authenticated_scope ON mcp_remote_oauth_client
-  USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL)
-  WITH CHECK (current_setting('caelo.actor_kind', true) IN ('human', 'system'));
+CREATE POLICY mcp_remote_oauth_client_read ON mcp_remote_oauth_client FOR SELECT
+  USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
+
+CREATE FUNCTION caelo_mcp_remote_oauth_writer() RETURNS boolean
+  LANGUAGE sql STABLE
+  AS $$
+    SELECT current_setting('caelo.actor_kind', true) = 'system'
+      OR (current_setting('caelo.actor_kind', true) = 'human' AND EXISTS (
+        SELECT 1 FROM user_roles ur
+        JOIN role_permissions rp ON rp.role_id = ur.role_id
+        JOIN permissions p ON p.id = rp.permission_id
+        WHERE ur.user_id::text = current_setting('caelo.actor_id', true)
+          AND p.name = 'settings.write'
+      ))
+  $$;
+
+CREATE POLICY mcp_remote_oauth_client_insert ON mcp_remote_oauth_client FOR INSERT
+  WITH CHECK (caelo_mcp_remote_oauth_writer());
+CREATE POLICY mcp_remote_oauth_client_update ON mcp_remote_oauth_client FOR UPDATE
+  USING (caelo_mcp_remote_oauth_writer()) WITH CHECK (caelo_mcp_remote_oauth_writer());
+CREATE POLICY mcp_remote_oauth_client_delete ON mcp_remote_oauth_client FOR DELETE
+  USING (caelo_mcp_remote_oauth_writer());
