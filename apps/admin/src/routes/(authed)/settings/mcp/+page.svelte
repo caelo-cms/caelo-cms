@@ -3,7 +3,7 @@
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import McpClientSetup from "#lib/components/McpClientSetup.svelte";
   import { Badge } from "#lib/components/ui/badge/index.js";
-  import { Button } from "#lib/components/ui/button/index.js";
+  import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
   import {
     Card,
     CardContent,
@@ -65,6 +65,21 @@
       queue for your click. Each token assumes your Owner identity in audit + cost dashboards.
     </p>
   </div>
+
+  <Card data-testid="mcp-remote-entry">
+    <CardHeader>
+      <CardTitle class="text-base">Connect ChatGPT, claude.ai and other AI tools</CardTitle>
+      <CardDescription>
+        Remote MCP: AI tools connect by URL and each person signs in with Google — no token, nothing
+        to install. Set up once per site.
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <a href="/settings/mcp/remote" class={buttonVariants({ variant: "outline" })}>
+        Set up remote MCP
+      </a>
+    </CardContent>
+  </Card>
 
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>

@@ -421,6 +421,9 @@ const _gatewayApp = containerApp({
   serviceName: "gateway",
   databaseEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
   // Which X-Forwarded-For entry is the visitor (api-gateway client-ip.ts).
+  // #806 — no remote-MCP env: remote MCP rides Google IAP (gcp stacks
+  // only); unset, the gateway answers /api/mcp/* with 503
+  // remote_mcp_not_configured and the admin reports it unavailable.
   extraEnv: [{ name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS.azure) }],
 });
 const _orchestratorApp = containerApp({

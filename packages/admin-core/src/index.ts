@@ -164,6 +164,19 @@ export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit
 export * from "./rate-limit.js";
 export * from "./register.js";
 export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";
+// #806 — Settings → MCP → Remote: availability, the Owner's OAuth client, self-check.
+export {
+  disableRemoteMcp,
+  type RemoteMcpConfigureResult,
+  recheckRemoteMcp,
+  remoteMcpClientInputSchema,
+  saveRemoteMcpClient,
+} from "./security/remote-mcp/configure.js";
+export {
+  type RemoteMcpAvailability,
+  remoteMcpAvailability,
+  type SelfCheckLine,
+} from "./security/remote-mcp/setup.js";
 // P12+ at-rest secret encryption (project KEK + AES-GCM).
 export {
   decryptSecret,

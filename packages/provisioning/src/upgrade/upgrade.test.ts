@@ -453,6 +453,65 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(recorded.contract).toEqual([]);
   });
 
+  it("#806 — the rolls carry remote MCP: identity env, the gateway's client file and timeout", async () => {
+    const events: string[] = [];
+    const { deps, calls } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const rolls = calls.filter((c) =>
+      /^run services update \S+ --region europe-west1 .*--image/.test(c),
+    );
+    const admin = rolls.find((c) => c.startsWith(`run services update ${ADMIN} `)) ?? "";
+    const gateway = rolls.find((c) => c.startsWith(`run services update ${GATEWAY} `)) ?? "";
+    expect(admin).toContain(
+      `CAELO_IAP_AUDIENCE=/projects/42/locations/europe-west1/services/${ADMIN}`,
+    );
+    expect(admin).toContain(`CAELO_MCP_PUBLIC_URL=https://${GATEWAY}-xyz.a.run.app`);
+    expect(gateway).toContain(`CAELO_ADMIN_URL=https://${ADMIN}-xyz.a.run.app`);
+    expect(gateway).toContain(`CAELO_MCP_PUBLIC_URL=https://${GATEWAY}-xyz.a.run.app`);
+    expect(gateway).toContain(
+      "--update-secrets=/secrets/mcp-oauth-client/client.json=caelo-production-mcp-oauth-client:latest",
+    );
+    expect(gateway).toContain("--timeout=3600");
+    expect(admin).not.toContain("--timeout");
+    // No extra revision: everything rides the image rolls.
+    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(2);
+  });
+
+  it("#806 — on gcp, routes the discovery paths and adds the Cloud Armor rule before the roll", async () => {
+    const events: string[] = [];
+    const urlMap = {
+      name: "caelo-production-url-map-1",
+      hostRules: [{ hosts: ["acme.com"], pathMatcher: "public" }],
+      pathMatchers: [{ name: "public", pathRules: [{ paths: ["/api/*"], service: "gw" }] }],
+    };
+    const puts: string[] = [];
+    const { deps, lines } = upgradeDeps(events, {
+      overrides: [
+        [/^compute url-maps list/, ok(JSON.stringify([urlMap]))],
+        [/^compute security-policies list/, ok("caelo-production-waf-1\n")],
+        [/^compute security-policies describe/, ok(JSON.stringify({ rules: [] }))],
+      ],
+    });
+    const recordingHttp: HttpFetch = async (url, init) => {
+      if (init.method === "PUT" && url.includes("/urlMaps/"))
+        puts.push(`${url} ${init.body ?? ""}`);
+      return http(url, init);
+    };
+    expect(await upgradeGcpInstall(GCP_TARGET, { ...deps, http: recordingHttp })).toBe(true);
+    expect(events).toContainEqual(
+      expect.stringMatching(
+        /^gcloud compute security-policies rules create 900 --security-policy=caelo-production-waf-1 /,
+      ),
+    );
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).toContain("/global/urlMaps/caelo-production-url-map-1");
+    expect(puts[0]).toContain("/.well-known/oauth-authorization-server/*");
+    expect(lines).toContain("done: Remote-MCP load-balancer rules ready");
+    expect(indexOf(events, /security-policies rules create/)).toBeLessThan(
+      indexOf(events, /^migrate /),
+    );
+  });
+
   it("on gcp-firebase there is no URL map: no redirects role", async () => {
     const events: string[] = [];
     const { deps, calls } = upgradeDeps(events);

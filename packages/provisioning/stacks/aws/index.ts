@@ -353,6 +353,10 @@ const cluster = new aws.ecs.Cluster(`${namePrefix}-ecs`, {
   settings: [{ name: "containerInsights", value: "enabled" }],
 });
 
+// #806 — no remote MCP on AWS: it rides Google IAP (gcp stacks only). The
+// gateway task definition, once it exists, sets none of its env, so /api/mcp/*
+// answers 503 remote_mcp_not_configured and the admin reports it unavailable.
+//
 // One task role per service (#635): the gateway's may read only the
 // public_role password, never a secret that unlocks a cms_admin login
 // (src/aws-task-roles.ts AWS_SERVICE_SECRETS, asserted by
