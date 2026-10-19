@@ -124,6 +124,29 @@ describe("resolveThemeFonts (issue #150)", () => {
     expect(calls.length).toBe(callsAfterFirst);
   });
 
+  it("never hands a second cache dir the first one's file paths from the memo", async () => {
+    const calls: string[] = [];
+    const base = {
+      tokens: tokensWith({ body: "Poppins" }),
+      publicBasePath: "/_assets/fonts",
+      preloadLanguage: null,
+      loadFontUsage: noUsageScan,
+      fetcher: fakeFetcher(calls),
+    };
+    await resolveThemeFonts({ ...base, cacheDir });
+    const otherDir = await mkdtemp(join(tmpdir(), "caelo-fonts-test-other-"));
+    try {
+      const res = await resolveThemeFonts({ ...base, cacheDir: otherDir });
+      expect(res.files.length).toBeGreaterThan(0);
+      for (const f of res.files) {
+        expect(f.cachePath.startsWith(otherDir)).toBe(true);
+        expect(await readFile(f.cachePath)).toBeDefined();
+      }
+    } finally {
+      await rm(otherDir, { recursive: true, force: true });
+    }
+  });
+
   it("isolates per-family failures: broken family lands in unresolved, others resolve", async () => {
     const res = await resolveThemeFonts({
       tokens: tokensWith({ body: "Poppins", heading: "Playfair Display" }),

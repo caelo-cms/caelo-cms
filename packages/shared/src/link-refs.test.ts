@@ -15,8 +15,10 @@ import {
   findMalformedLinkRefs,
   formatLinkRef,
   humaniseLinkRefs,
+  isLinkFailureMarker,
   type LinkRef,
   linkIssueSeverity,
+  linkMarkersOf,
   linkRefTargetKey,
   mapLinkRefsDeep,
   pageHrefForStyle,
@@ -515,5 +517,36 @@ describe("humanise — reads show paths, never ids", () => {
       b: ['<img src="/_caelo/media/hero-shot/webp-800">'],
       c: `caelo:page/${GONE}`,
     });
+  });
+});
+
+describe("link failure markers — what the build gate and the preview report", () => {
+  it("covers missing targets, malformed references and resolver-less renders", () => {
+    const missing: string[] = [];
+    resolveLinkRefsInHtml(
+      `<a href="caelo:page/${GONE}">a</a><a href="caelo:page/${PAGE}/team">b</a>`,
+      index().forPage(null),
+      missing,
+    );
+    resolveLinkRefsInHtml(`<a href="caelo:page/${PAGE}">c</a>`, undefined, missing);
+    expect(missing).toEqual([
+      `link-ref-malformed:caelo:page/${PAGE}/team`,
+      `link-target-missing:page/${GONE}`,
+      `link-resolver-unavailable:page/${PAGE}`,
+    ]);
+    expect(missing.every(isLinkFailureMarker)).toBe(true);
+  });
+
+  it("leaves every other marker alone, in order", () => {
+    expect(isLinkFailureMarker("field-not-declared:x")).toBe(false);
+    expect(isLinkFailureMarker("link-list-malformed:nav[0]")).toBe(false);
+    expect(
+      linkMarkersOf([
+        "theme-asset-unbound:logo",
+        "link-ref-malformed:caelo:page/x",
+        "module-ref-malformed:hero",
+        `link-target-missing:media/${MEDIA}`,
+      ]),
+    ).toEqual(["link-ref-malformed:caelo:page/x", `link-target-missing:media/${MEDIA}`]);
   });
 });

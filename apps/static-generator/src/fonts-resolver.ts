@@ -111,12 +111,15 @@ export interface ResolvedThemeFonts {
   readonly unresolved: readonly string[];
 }
 
-/** family|w1;w2 → manifest. Process-lifetime; safe because a cache entry
- *  is content-addressed and never rewritten in place. */
+/** cacheDir|family|w1;w2 → manifest. Process-lifetime; safe because a cache
+ *  entry is content-addressed and never rewritten in place. Keyed by the
+ *  cache dir too: the manifest only promises files under the dir it was
+ *  written to, so a second build with another root (tests, or a process
+ *  building several roots) must not inherit paths that do not exist. */
 const memo = new Map<string, FamilyManifest>();
 
-function requestKey(req: FontRequest): string {
-  return `${fontFamilySlug(req.family)}|${req.weights.join(";")}`;
+function requestKey(cacheDir: string, req: FontRequest): string {
+  return `${cacheDir}|${fontFamilySlug(req.family)}|${req.weights.join(";")}`;
 }
 
 function manifestPath(cacheDir: string, req: FontRequest): string {
@@ -299,7 +302,7 @@ export async function resolveThemeFonts(args: ResolveThemeFontsArgs): Promise<Re
       unresolved.push(req.family);
       continue;
     }
-    const key = requestKey(req);
+    const key = requestKey(args.cacheDir, req);
     let manifest = memo.get(key) ?? null;
     if (manifest === null) {
       const mPath = manifestPath(args.cacheDir, req);
