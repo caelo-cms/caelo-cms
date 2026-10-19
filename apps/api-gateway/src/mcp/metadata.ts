@@ -2,9 +2,9 @@
 
 /**
  * Discovery documents (issue #806): RFC 9728 protected-resource metadata
- * per MCP surface, and RFC 8414 / OIDC-style authorization-server
- * metadata for the broker. MCP clients probe different paths, so the same
- * documents are served under every variant the contract lists.
+ * per MCP surface, and RFC 8414 authorization-server metadata for the
+ * broker. MCP clients probe different paths, so the same documents are
+ * served under each OAuth variant they use.
  */
 
 import type { McpConfig, McpSurface } from "./config.js";
@@ -45,11 +45,20 @@ export function authorizationServerMetadata(config: McpConfig): Response {
   });
 }
 
-/** Paths that serve {@link authorizationServerMetadata}. */
+/**
+ * Paths that serve {@link authorizationServerMetadata}: RFC 8414's
+ * path-inserted form and the path-appended form some clients probe.
+ *
+ * No `openid-configuration` aliases: this broker is not an OpenID
+ * Provider (no `jwks_uri`, no ID tokens of its own, no userinfo), and a
+ * document served there would claim to be OIDC discovery while missing
+ * the fields OpenID Connect Discovery 1.0 §3 makes mandatory. MCP clients
+ * try RFC 8414 discovery first and only fall back to OIDC discovery
+ * (MCP authorization spec, "Authorization Server Metadata Discovery"), and
+ * every client on the redirect allowlist finds this AS through RFC 8414.
+ */
 export const AS_METADATA_PATHS: readonly string[] = [
   "/.well-known/oauth-authorization-server/api/mcp/oauth",
-  "/.well-known/openid-configuration/api/mcp/oauth",
-  "/api/mcp/oauth/.well-known/openid-configuration",
   "/api/mcp/oauth/.well-known/oauth-authorization-server",
 ];
 

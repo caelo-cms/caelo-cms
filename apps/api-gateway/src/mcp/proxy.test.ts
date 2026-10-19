@@ -2,12 +2,15 @@
 
 /**
  * #806 — the MCP proxy against a real local admin stand-in (Bun.serve):
- * the 401 challenge, header allowlisting, IAP 401/403 mapping, and SSE
- * chunks arriving before the upstream response completes.
+ * the 401 challenge, header allowlisting both ways, IAP/admin 401 and 403
+ * mapping, SSE chunks arriving before the upstream response completes,
+ * the idle/first-response timeouts and the request body cap.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { BASE_ENV, CONFIGURED_FILE, PUBLIC } from "./__tests__/harness.js";
+import type { ProxyLimits } from "./context.js";
+import { MAX_PROXY_BODY_BYTES, PROXY_LIMITS } from "./proxy.js";
 import { createMcpRouter } from "./routes.js";
 
 interface Seen {
@@ -27,13 +30,18 @@ beforeAll(() => {
     idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
+      const mode = req.headers.get("authorization")?.slice("Bearer ".length);
+      if (mode === "hang") {
+        // Never answers; the proxy must give up on its own.
+        await new Promise((r) => setTimeout(r, 5_000));
+        return new Response("late");
+      }
       seen.push({
         method: req.method,
         path: url.pathname + url.search,
         headers: Object.fromEntries(req.headers),
         body: req.method === "POST" ? await req.text() : "",
       });
-      const mode = req.headers.get("authorization")?.slice("Bearer ".length);
       if (mode === "iap-401") {
         return new Response("Invalid IAP credentials", {
           status: 401,
@@ -41,6 +49,12 @@ beforeAll(() => {
             "x-goog-iap-generated-response": "true",
             "www-authenticate": "Bearer realm=iap",
           },
+        });
+      }
+      if (mode === "app-401") {
+        return new Response("no", {
+          status: 401,
+          headers: { "www-authenticate": `Bearer realm="${url.origin}"` },
         });
       }
       if (mode === "iap-403") {
@@ -77,8 +91,15 @@ beforeAll(() => {
         {
           headers: {
             "mcp-session-id": "sess-1",
+            "cache-control": "no-cache",
             "set-cookie": "GCP_IAP_UID=secret; Path=/",
             "x-admin-trace": "t1",
+            server: "caelo-admin/1",
+            via: "1.1 google",
+            location: "https://admin.example.com/elsewhere",
+            "access-control-allow-origin": "https://admin.example.com",
+            "access-control-allow-credentials": "true",
+            "strict-transport-security": "max-age=1",
           },
         },
       );
@@ -90,20 +111,31 @@ afterAll(() => {
   admin.stop(true);
 });
 
-function router() {
+function router(proxyLimits?: ProxyLimits) {
   return createMcpRouter({
     env: { ...BASE_ENV, CAELO_ADMIN_URL: `http://127.0.0.1:${admin.port}` },
     readFile: async () => CONFIGURED_FILE,
+    ...(proxyLimits ? { proxyLimits } : {}),
   });
+}
+
+/** Records every idle-timeout change the proxy makes. */
+function idleRecorder() {
+  const timeouts: number[] = [];
+  return { timeouts, setIdleTimeout: (s: number) => void timeouts.push(s) };
 }
 
 async function send(
   path: string,
   init: RequestInit = {},
-  hooks = { disableIdleTimeout: () => {} },
+  idle = idleRecorder(),
+  proxyLimits?: ProxyLimits,
 ) {
   seen = [];
-  const res = await router()(new Request(`${PUBLIC}${path}`, init), hooks);
+  const res = await router(proxyLimits)(new Request(`${PUBLIC}${path}`, init), {
+    clientAddress: "198.51.100.7",
+    setIdleTimeout: idle.setIdleTimeout,
+  });
   if (!res) throw new Error("router declined");
   return res;
 }
@@ -113,13 +145,16 @@ const CHALLENGE_CHAT = `Bearer resource_metadata="${PUBLIC}/api/mcp/oauth/protec
 describe("MCP proxy", () => {
   it("answers 401 with the resource_metadata challenge when there is no bearer token", async () => {
     for (const surface of ["chat", "admin"]) {
-      const res = await send(`/api/mcp/${surface}`, { method: "POST", body: "{}" });
+      const idle = idleRecorder();
+      const res = await send(`/api/mcp/${surface}`, { method: "POST", body: "{}" }, idle);
       expect(res.status).toBe(401);
       expect(res.headers.get("www-authenticate")).toBe(
         `Bearer resource_metadata="${PUBLIC}/api/mcp/oauth/protected-resource/${surface}"`,
       );
       expect(res.headers.get("access-control-expose-headers")).toContain("www-authenticate");
       expect(seen).toHaveLength(0);
+      // An unauthenticated request never gets its idle timeout touched.
+      expect(idle.timeouts).toEqual([]);
     }
     const basic = await send("/api/mcp/chat", {
       method: "POST",
@@ -131,7 +166,7 @@ describe("MCP proxy", () => {
   });
 
   it("forwards only allowlisted headers and sets fresh forwarding facts", async () => {
-    let disabled = 0;
+    const idle = idleRecorder();
     const res = await send(
       "/api/mcp/admin?x=1",
       {
@@ -158,10 +193,9 @@ describe("MCP proxy", () => {
           "proxy-authorization": "Basic x",
         },
       },
-      { disableIdleTimeout: () => disabled++ },
+      idle,
     );
     expect(res.status).toBe(200);
-    expect(disabled).toBe(1);
     expect(seen).toHaveLength(1);
     const up = seen[0] as Seen;
     expect(up.method).toBe("POST");
@@ -189,22 +223,55 @@ describe("MCP proxy", () => {
     ]) {
       expect(up.headers[name]).toBeUndefined();
     }
-    // Response side: session id exposed, admin cookies dropped, CORS on.
-    expect(res.headers.get("mcp-session-id")).toBe("sess-1");
-    expect(res.headers.get("set-cookie")).toBeNull();
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    // A JSON answer keeps the bounded idle timeout: it is never lifted.
+    expect(idle.timeouts).toEqual([31]);
     expect(await res.json()).toEqual({ ok: true });
   });
 
-  it("maps IAP's 401 to a re-auth challenge and IAP's 403 to not_a_caelo_user", async () => {
-    const r401 = await send("/api/mcp/chat", {
+  it("passes back only allowlisted response headers, with exactly one set of CORS headers", async () => {
+    const res = await send("/api/mcp/chat", {
       method: "POST",
-      headers: { authorization: "Bearer iap-401" },
+      body: "{}",
+      headers: { authorization: "Bearer ok" },
     });
-    expect(r401.status).toBe(401);
-    expect(r401.headers.get("www-authenticate")).toBe(`${CHALLENGE_CHAT}, error="invalid_token"`);
-    expect(r401.headers.get("x-goog-iap-generated-response")).toBeNull();
+    expect(res.status).toBe(200);
+    expect(res.headers.get("mcp-session-id")).toBe("sess-1");
+    expect(res.headers.get("cache-control")).toBe("no-cache");
+    expect(res.headers.get("content-type")).toContain("application/json");
+    for (const name of [
+      "set-cookie",
+      "x-admin-trace",
+      "server",
+      "via",
+      "location",
+      "access-control-allow-credentials",
+      "strict-transport-security",
+    ]) {
+      expect(res.headers.get(name)).toBeNull();
+    }
+    // Headers.get joins duplicates with ", "; a single "*" means no admin copy leaked through.
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-expose-headers")).toBe(
+      "mcp-session-id, www-authenticate",
+    );
+  });
 
+  it("maps any upstream 401 (IAP's or the admin's) to this resource's re-auth challenge", async () => {
+    for (const token of ["iap-401", "app-401"]) {
+      const idle = idleRecorder();
+      const r401 = await send(
+        "/api/mcp/chat",
+        { method: "POST", headers: { authorization: `Bearer ${token}` } },
+        idle,
+      );
+      expect(r401.status).toBe(401);
+      expect(r401.headers.get("www-authenticate")).toBe(`${CHALLENGE_CHAT}, error="invalid_token"`);
+      expect(r401.headers.get("x-goog-iap-generated-response")).toBeNull();
+      expect(idle.timeouts).not.toContain(0);
+    }
+  });
+
+  it("maps IAP's 403 to not_a_caelo_user and passes the admin's own 403 through", async () => {
     const r403 = await send("/api/mcp/chat", {
       method: "POST",
       headers: { authorization: "Bearer iap-403" },
@@ -215,8 +282,6 @@ describe("MCP proxy", () => {
       message:
         "This Google account has no access to this Caelo site. Ask the site Owner to add you under Settings → Users.",
     });
-
-    // A 403 from the admin itself (not IAP) passes through unchanged.
     const app = await send("/api/mcp/chat", {
       method: "POST",
       headers: { authorization: "Bearer app-403" },
@@ -225,13 +290,16 @@ describe("MCP proxy", () => {
     expect(((await app.json()) as { message: string }).message).toBe("from the admin");
   });
 
-  it("streams SSE: the first event arrives before the upstream finishes", async () => {
-    const res = await send("/api/mcp/chat", {
-      method: "GET",
-      headers: { authorization: "Bearer sse", accept: "text/event-stream" },
-    });
+  it("streams SSE: lifts the idle timeout only then, and the first event arrives before the upstream finishes", async () => {
+    const idle = idleRecorder();
+    const res = await send(
+      "/api/mcp/chat",
+      { method: "GET", headers: { authorization: "Bearer sse", accept: "text/event-stream" } },
+      idle,
+    );
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/event-stream");
+    expect(idle.timeouts).toEqual([31, 0]);
     const reader = (res.body as ReadableStream<Uint8Array>).getReader();
     const dec = new TextDecoder();
     const first = await Promise.race([
@@ -252,6 +320,76 @@ describe("MCP proxy", () => {
     expect(rest).toContain("data: second");
   });
 
+  it("answers 504 when the admin sends no headers within the first-response timeout", async () => {
+    const idle = idleRecorder();
+    const started = Date.now();
+    const res = await send(
+      "/api/mcp/chat",
+      { method: "POST", body: "{}", headers: { authorization: "Bearer hang" } },
+      idle,
+      { ...PROXY_LIMITS, firstResponseTimeoutMs: 300 },
+    );
+    expect(res.status).toBe(504);
+    expect(((await res.json()) as { error: string }).error).toBe("admin_timeout");
+    expect(Date.now() - started).toBeLessThan(3_000);
+    // Bun's own idle timeout stays just above the proxy's; it is never lifted.
+    expect(idle.timeouts).toEqual([2]);
+  });
+
+  it("refuses a body over the cap with 413, by declared length or while streaming", async () => {
+    const limits = { ...PROXY_LIMITS, maxBodyBytes: 1024 };
+    const declared = await send(
+      "/api/mcp/chat",
+      {
+        method: "POST",
+        body: "x".repeat(2048),
+        headers: { authorization: "Bearer ok", "content-length": "2048" },
+      },
+      idleRecorder(),
+      limits,
+    );
+    expect(declared.status).toBe(413);
+    expect(seen).toHaveLength(0);
+
+    const chunk = new Uint8Array(512).fill(120);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= 8) return controller.close();
+        sent++;
+        controller.enqueue(chunk);
+      },
+    });
+    const streamed = await send(
+      "/api/mcp/chat",
+      {
+        method: "POST",
+        body: stream,
+        headers: { authorization: "Bearer ok" },
+        duplex: "half",
+      } as RequestInit,
+      idleRecorder(),
+      limits,
+    );
+    expect(streamed.status).toBe(413);
+    expect(seen.every((s) => s.body.length <= 1024)).toBe(true);
+
+    const fits = await send(
+      "/api/mcp/chat",
+      { method: "POST", body: "x".repeat(1024), headers: { authorization: "Bearer ok" } },
+      idleRecorder(),
+      limits,
+    );
+    expect(fits.status).toBe(200);
+  });
+
+  it("caps bodies just above what caelo_upload_images can legitimately send", () => {
+    // 4 images x 5 MiB, base64: the largest call the remote surface accepts.
+    const largestUpload = 4 * Math.ceil((5 * 1024 * 1024) / 3) * 4;
+    expect(MAX_PROXY_BODY_BYTES).toBeGreaterThan(largestUpload);
+    expect(MAX_PROXY_BODY_BYTES).toBeLessThan(largestUpload + 2 * 1024 * 1024);
+  });
+
   it("answers 502 when the admin is unreachable, and 405 for other methods", async () => {
     const r = createMcpRouter({
       env: { ...BASE_ENV, CAELO_ADMIN_URL: "http://127.0.0.1:1" },
@@ -262,7 +400,7 @@ describe("MCP proxy", () => {
         method: "POST",
         headers: { authorization: "Bearer x" },
       }),
-      { disableIdleTimeout: () => {} },
+      { clientAddress: "198.51.100.7", setIdleTimeout: () => {} },
     );
     if (!res) throw new Error("router declined");
     expect(res.status).toBe(502);
