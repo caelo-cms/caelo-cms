@@ -1,7 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
-  import { claudeMcpAddCommand } from "#lib/mcp-command.js";
+  import McpClientSetup from "#lib/components/McpClientSetup.svelte";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
@@ -42,14 +42,14 @@
     return "destructive";
   }
 
-  const claudeMcpAddSnippet = $derived(
+  const setupArgs = $derived(
     form?.ok && form?.plaintextToken
-      ? claudeMcpAddCommand({
+      ? {
           scope: String(form?.scope ?? ""),
           adminUrl: data.adminUrl,
           token: form.plaintextToken,
           iapServiceAccount: data.iapServiceAccount,
-        })
+        }
       : null,
   );
 </script>
@@ -69,19 +69,14 @@
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
   {/if}
-  {#if form?.ok && form?.plaintextToken}
+  {#if form?.ok && form?.plaintextToken && setupArgs}
     <Alert>
-      <AlertDescription class="space-y-2">
-        <p class="font-medium">Token created — copy it now. It will never be shown again.</p>
-        <pre class="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>{form.plaintextToken}</code></pre>
-        <p class="font-medium">Wire it into Claude Code:</p>
-        <pre class="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>{claudeMcpAddSnippet}</code></pre>
-        {#if data.iapServiceAccount}
-          <p class="text-sm text-muted-foreground">
-            This admin is protected by Google IAP. The MCP server gets through it with your Google
-            login — run <code>gcloud auth application-default login</code> once on this machine.
-          </p>
-        {/if}
+      <AlertDescription class="space-y-4">
+        <div class="space-y-2">
+          <p class="font-medium">Token created — copy it now. It will never be shown again.</p>
+          <pre class="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code>{form.plaintextToken}</code></pre>
+        </div>
+        <McpClientSetup args={setupArgs} />
       </AlertDescription>
     </Alert>
   {/if}
