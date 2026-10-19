@@ -20,7 +20,10 @@
  *     fetched then (the route falls back to what the last attempt said);
  *   - with it, the `caelo_e2e_updates_provider` cookie switches the page to
  *     another provider for one browser (`self-hosted` / `gcp`), so the same
- *     admin build serves both install kinds to the suite.
+ *     admin build serves both install kinds to the suite;
+ *   - and the `caelo_e2e_upgrader_run` cookie (`stopped`) makes the fake
+ *     job's latest run read as ended, so the suite can drive "Continue" for
+ *     a converge whose run died (#883 review).
  */
 
 import {
@@ -54,6 +57,21 @@ const fakeTrigger: UpgraderTrigger = {
   },
 };
 
+/** The fake job as the e2e cookie describes its latest run. */
+function fakeTriggerFor(env: UpgradePathEnv): UpgraderTrigger {
+  if (env.CAELO_E2E_RUN_STATE !== "stopped") return fakeTrigger;
+  return {
+    start: fakeTrigger.start,
+    async latest() {
+      return {
+        execution: `e2e-upgrader-${fakeRuns}`,
+        state: "failed",
+        logsUrl: "https://console.cloud.google.com/run/jobs",
+      };
+    },
+  };
+}
+
 /** Whether the test-only stand-ins are on (never in production). */
 function e2eStandIns(): boolean {
   return process.env.NODE_ENV !== "production" && process.env.CAELO_E2E_FAKE_UPGRADER === "1";
@@ -61,6 +79,9 @@ function e2eStandIns(): boolean {
 
 /** The e2e cookie that picks the provider per browser (see the file comment). */
 export const E2E_UPDATES_PROVIDER_COOKIE = "caelo_e2e_updates_provider";
+
+/** The e2e cookie that ends the fake job's latest run (see the file comment). */
+export const E2E_UPGRADER_RUN_COOKIE = "caelo_e2e_upgrader_run";
 
 /**
  * The environment Settings → Updates resolves the install's provider from:
@@ -71,9 +92,14 @@ export function updatesEnv(cookies: Cookies): UpgradePathEnv {
   const env: UpgradePathEnv = process.env;
   if (!e2eStandIns()) return env;
   const override = cookies.get(E2E_UPDATES_PROVIDER_COOKIE);
-  return override === "self-hosted" || override === "gcp"
-    ? { ...env, CAELO_E2E_UPDATES_PROVIDER: override }
-    : env;
+  const run = cookies.get(E2E_UPGRADER_RUN_COOKIE);
+  return {
+    ...env,
+    ...(override === "self-hosted" || override === "gcp"
+      ? { CAELO_E2E_UPDATES_PROVIDER: override }
+      : {}),
+    ...(run === "stopped" ? { CAELO_E2E_RUN_STATE: "stopped" } : {}),
+  };
 }
 
 /**
@@ -86,7 +112,7 @@ export function convergeTrigger(
   | { readonly ok: true; readonly trigger: UpgraderTrigger | null }
   | { readonly ok: false; readonly error: string; readonly nextStep: string } {
   if (updatesProvider(env) === "self-hosted") return { ok: true, trigger: null };
-  if (e2eStandIns()) return { ok: true, trigger: fakeTrigger };
+  if (e2eStandIns()) return { ok: true, trigger: fakeTriggerFor(env) };
   try {
     return {
       ok: true,
@@ -129,7 +155,7 @@ export function upgraderTrigger(
   if (updatesProvider(env) === "self-hosted") {
     return { ok: true, trigger: agentUpgraderTrigger(readAgent) };
   }
-  if (e2eStandIns()) return { ok: true, trigger: fakeTrigger };
+  if (e2eStandIns()) return { ok: true, trigger: fakeTriggerFor(env) };
   try {
     return {
       ok: true,

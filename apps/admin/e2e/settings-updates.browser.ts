@@ -108,6 +108,24 @@ const FIXTURE_SCRIPT = `
                VALUES (\${process.env.E2E_LATEST}, '0.10.45', 'manual', \${owner.id}, 'needs_cloud_shell',
                  'v99.0.0 changes this install''s cloud setup (infrastructure contract 1 → 2).',
                  ARRAY['infra-contract'], now(), now())\`;
+    } else if (op === "converge-stalled") {
+      // #819 review: a converge whose stage 1 handed over and whose stage-2
+      // run never started — running, route converge, NO execution.
+      await tx\`DELETE FROM platform_update_requests\`;
+      const [owner] = await tx\`SELECT id FROM users WHERE email = 'dev-owner@example.com'\`;
+      const [r] = await tx\`INSERT INTO platform_update_requests
+                 (target_version, from_version, trigger, requested_by, status, route, started_at)
+               VALUES (\${process.env.E2E_LATEST}, '0.10.45', 'manual', \${owner.id}, 'running',
+                 'converge', now())
+               RETURNING id\`;
+      for (const [phase, level, message] of [
+        ["verify", "success", "Release information verified: signed by Caelo's release workflow."],
+        ["backup", "success", "Backup 1760000000000 taken."],
+        ["converge", "info", "Handing over to the new release's installer."],
+      ]) {
+        await tx\`INSERT INTO platform_update_events (request_id, phase, level, message)
+                 VALUES (\${r.id}, \${phase}, \${level}, \${message})\`;
+      }
     } else if (op === "auto-reset") {
       await tx\`DELETE FROM platform_update_notifications\`;
       await tx\`UPDATE platform_update_scheduler SET lease_holder = NULL, last_run_at = NULL,
@@ -330,6 +348,50 @@ test("a release that changes the cloud setup explains the Cloud Shell step", asy
     /^https:\/\/(shell|console)\.cloud\.google\.com\//,
   );
   await expect(page.getByTestId("cloud-shell-command").last()).toHaveText(COMMAND);
+});
+
+test("#819: a converge whose next run never started offers Continue, confirmed with the password", async ({
+  page,
+  baseURL,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "converge-stalled",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: LATEST,
+  });
+  // The (stand-in) converge job has no live run (test-only cookie,
+  // lib/server/upgrader.ts) — Continue must not wait for the 90-minute
+  // stale cut-off.
+  await page
+    .context()
+    .addCookies([
+      { name: "caelo_e2e_upgrader_run", value: "stopped", url: baseURL ?? "http://localhost:4173" },
+    ]);
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+
+  await expect(page.getByTestId("upgrader-stopped")).toContainText("Continue the update");
+  await page.getByTestId("continue-update").click();
+  let dialog = page.getByTestId("continue-dialog");
+  await expect(dialog).toContainText(`Continue the update to v${LATEST}?`);
+  await expect(dialog).toContainText("backup");
+
+  // A wrong password is refused in the dialog; nothing is started.
+  await dialog.getByTestId("continue-dialog-password").fill("not the password");
+  await dialog.getByTestId("continue-dialog-submit").click();
+  dialog = page.getByTestId("continue-dialog");
+  await expect(dialog.getByTestId("continue-dialog-error")).toContainText("Wrong password");
+  await expect(page.getByTestId("update-timeline")).not.toContainText("Continued by the Owner");
+
+  // The right one continues: the timeline names it and the job's new run.
+  await dialog.getByTestId("continue-dialog-password").fill(OWNER_PASSWORD);
+  await dialog.getByTestId("continue-dialog-submit").click();
+  const timeline = page.getByTestId("update-timeline");
+  await expect(timeline).toContainText("Continued by the Owner", { timeout: 15_000 });
+  await expect(timeline).toContainText("started (run e2e-upgrader-");
+
+  await page.context().clearCookies({ name: "caelo_e2e_upgrader_run" });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
 });
 
 /** Show this browser a self-hosted install (test-only cookie, lib/server/upgrader.ts). */

@@ -64,6 +64,7 @@ import {
   updatesEnv,
   upgraderTrigger,
 } from "#lib/server/upgrader.js";
+import { deadRunOf } from "#lib/update-dead-run.js";
 import {
   cloudShellUpgrade,
   resolveUpgradePath,
@@ -133,14 +134,22 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
   // A run that died (out of memory, timeout) never writes its end; Cloud
   // Run knows. Say so instead of showing "Installing" until the next run
   // ends it. Each route asks its own job.
+  // A converge whose stage-2 run never started names no execution at all;
+  // it counts as dead once the job has no live run (lib/update-dead-run.ts).
   let deadRun: { logsUrl: string; continuable: boolean } | null = null;
   const active = latest.request;
   const activeJob = active?.route === "converge" ? converge : upgrader;
-  if (active?.status === "running" && active.execution && activeJob.ok && activeJob.trigger) {
-    const run = await activeJob.trigger.latest().catch(() => null);
-    if (run && run.execution === active.execution && run.state !== "running") {
-      // A converge resumes from its checkpoint: the Owner continues it.
-      deadRun = { logsUrl: run.logsUrl, continuable: active.route === "converge" && canInstall };
+  if (active?.status === "running" && activeJob.ok && activeJob.trigger) {
+    // A failed lookup decides nothing: the page keeps showing the timeline.
+    const run = await activeJob.trigger.latest().then(
+      (r) => ({ ok: true as const, run: r }),
+      () => ({ ok: false as const }),
+    );
+    if (run.ok) {
+      deadRun = deadRunOf(active, run.run, {
+        canInstall,
+        logsUrl: "https://console.cloud.google.com/run/jobs",
+      });
     }
   }
   // A release that needs Cloud Shell: the commands, pinned to that release.
