@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The converge job's checkpoint (#819): `install/converge-job.json` in the
- * install's ops bucket, next to install.json and the install job's
- * `install-job.json`. It has the install job's status shape
+ * The converge job's checkpoint (#819): `converge/converge-job.json` in the
+ * install's ops bucket. NOT under `install/` next to install.json: the
+ * upgrader's service account may write `install/` (its object grant is
+ * conditioned on that prefix, upgrader-setup.ts), and this file steers a
+ * run as the provisioner — its backup and rollback targets would be
+ * tamperable from there (#883 review). Only the provisioner and the
+ * operator, who hold the whole bucket, can write `converge/`. It has the
+ * install job's status shape
  * (install-job.ts {@link InstallJobStatusSchema}: which execution runs, its
  * phase, whether it finished) plus what a killed run's successor must
  * reuse instead of recomputing:
@@ -21,7 +26,6 @@
 
 import { z } from "zod";
 import { InstallJobStatusSchema, readJobStatusDoc, writeJobStatusDoc } from "./install-job.js";
-import { OPS_INSTALL_PREFIX } from "./state-backend.js";
 import type { SyncGcloud } from "./state-store.js";
 
 const VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/;
@@ -42,12 +46,18 @@ export const ConvergeCheckpointSchema = InstallJobStatusSchema.extend({
     .optional(),
   priorRevisions: z.object({ admin: z.string().min(1), gateway: z.string().min(1) }).optional(),
 });
-/** What `install/converge-job.json` records. */
+/**
+ * The ops-bucket prefix of the converge job's own files — outside the
+ * upgrader's `install/` grant on purpose (see the file comment).
+ */
+export const CONVERGE_STATE_PREFIX = "converge";
+
+/** What `converge/converge-job.json` records. */
 export type ConvergeCheckpoint = z.infer<typeof ConvergeCheckpointSchema>;
 
-/** `gs://<bucket>/install/converge-job.json`. */
+/** `gs://<bucket>/converge/converge-job.json`. */
 export function convergeCheckpointUrl(bucket: string): string {
-  return `gs://${bucket}/${OPS_INSTALL_PREFIX}/converge-job.json`;
+  return `gs://${bucket}/${CONVERGE_STATE_PREFIX}/converge-job.json`;
 }
 
 /** The checkpoint as the bucket holds it now (never cached), or null. */

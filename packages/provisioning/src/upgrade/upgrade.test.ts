@@ -23,7 +23,12 @@ import { restoreCommand, takeSqlBackup } from "./backup.js";
 import { needsConverge, startConverge } from "./converge.js";
 import type { HealthOutcome, HealthProbe } from "./health.js";
 import type { UpgradeReporter } from "./reporter.js";
-import { type GcpUpgradeDeps, type GcpUpgradeTarget, upgradeGcpInstall } from "./upgrade.js";
+import {
+  type GcpUpgradeDeps,
+  type GcpUpgradeTarget,
+  upgradeGcpInstall,
+  upgradeGcpInstallOutcome,
+} from "./upgrade.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
@@ -386,6 +391,36 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(calls.some((c) => c.includes("remove-iam-policy-binding"))).toBe(false);
   });
 
+  it("#883 review: reports rolledBack structurally — true only when every pin back succeeded", async () => {
+    const deep = { ok: false as const, error: "cms_admin is missing 1 migration(s)" };
+    const back = upgradeDeps([], { deep });
+    expect(await upgradeGcpInstallOutcome(TARGET, back.deps)).toEqual({
+      ok: false,
+      rolledBack: true,
+    });
+
+    // The gateway's pin back fails: the previous release does NOT serve.
+    const stuck = upgradeDeps([], {
+      deep,
+      overrides: [[new RegExp(`update-traffic ${GATEWAY} .*--to-revisions`), fail("503")]],
+    });
+    expect(await upgradeGcpInstallOutcome(TARGET, stuck.deps)).toEqual({
+      ok: false,
+      rolledBack: false,
+    });
+
+    // Nothing rolled (migrations failed): no rollback, so not rolled back.
+    const early = upgradeDeps([]);
+    expect(
+      await upgradeGcpInstallOutcome(TARGET, {
+        ...early.deps,
+        migrate: async () => ({ ok: false, error: "boom" }),
+      }),
+    ).toEqual({ ok: false, rolledBack: false });
+
+    expect(await upgradeGcpInstallOutcome(TARGET, upgradeDeps([]).deps)).toEqual({ ok: true });
+  });
+
   it("sets up the converge job as the install's provisioner after the upgrader (#819)", async () => {
     const events: string[] = [];
     const { deps, lines } = upgradeDeps(events);
@@ -696,7 +731,7 @@ describe("app-roll and converge stay on their side", () => {
         },
       },
     );
-    expect(result).toEqual({ ok: false, phase: "roll", migrated: true });
+    expect(result).toEqual({ ok: false, phase: "roll", migrated: true, rolledBack: true });
     expect(calls).toContain(
       `run services update-traffic ${ADMIN} --region europe-west1 --project acme --to-revisions ${ADMIN}-00001-old=100 --quiet`,
     );
@@ -720,7 +755,7 @@ describe("app-roll and converge stay on their side", () => {
         recordDigests: async () => {},
       },
     );
-    expect(result).toEqual({ ok: false, phase: "migrations", migrated: true });
+    expect(result).toEqual({ ok: false, phase: "migrations", migrated: true, rolledBack: false });
     expect(calls.filter((c) => APP_ROLL_WRITE.test(c))).toEqual([]);
     expect(
       lines.some((l) => l.includes("contract-type") && l.includes(restoreCommand(BACKUP))),

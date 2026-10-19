@@ -308,6 +308,13 @@ export type AppRollResult =
       readonly phase: AppRollPhase;
       /** Whether migrations ran before the failure (the backup matters then). */
       readonly migrated: boolean;
+      /**
+       * Whether services had rolled and EVERY one of them was pinned back to
+       * the revision that served before — i.e. the previous release serves
+       * again. False when nothing had rolled, or when a pin failed (then a
+       * person must pin it; the reporter named which).
+       */
+      readonly rolledBack: boolean;
     };
 
 /** Run the app-roll. See the file comment for the sequence. */
@@ -319,10 +326,13 @@ export async function executeAppRoll(
   const { reporter: r, run } = deps;
   const { install } = input.plan;
   let plan = input.plan;
+  /** Set by {@link rollBack}: null until one ran with services to restore. */
+  let rollbackOk: boolean | null = null;
   const fail = (phase: AppRollPhase, migrated: boolean): AppRollResult => ({
     ok: false,
     phase,
     migrated,
+    rolledBack: rollbackOk === true,
   });
 
   // A probe that cannot reach the install now would only fail after the
@@ -370,6 +380,7 @@ export async function executeAppRoll(
     const services = alsoCurrent ? [...rolled, alsoCurrent] : rolled;
     if (services.length === 0) return;
     r.warn(`Rolling back ${services.length} service(s) to the revisions that served before...`);
+    rollbackOk = true;
     for (const p of [...services].reverse()) {
       const ok = await pinTraffic(
         run,
@@ -379,7 +390,10 @@ export async function executeAppRoll(
         p.priorRevision,
       );
       if (ok) r.info(`  ${p.slug} traffic restored to ${p.priorRevision}`);
-      else r.error(`  ${p.slug} rollback FAILED — pin ${p.priorRevision} by hand`);
+      else {
+        rollbackOk = false;
+        r.error(`  ${p.slug} rollback FAILED — pin ${p.priorRevision} by hand`);
+      }
       await hooks.afterRollback?.(p.slug);
     }
   };

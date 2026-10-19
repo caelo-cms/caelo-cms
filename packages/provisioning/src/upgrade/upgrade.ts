@@ -114,11 +114,37 @@ export interface GcpUpgradeDeps {
   readonly onCheckpoint?: (checkpoint: UpgradeCheckpoint) => void;
 }
 
+/** How {@link upgradeGcpInstallOutcome} ended. */
+export type GcpUpgradeOutcome =
+  | { readonly ok: true }
+  | {
+      readonly ok: false;
+      /**
+       * The roll failed AND every rolled service was pinned back to the
+       * revision that served before (app-roll.ts AppRollResult): the
+       * previous release serves again. Structural, never read from text.
+       */
+      readonly rolledBack: boolean;
+    };
+
 /** Upgrade one install; true on success. See the file comment for the order. */
 export async function upgradeGcpInstall(
   target: GcpUpgradeTarget,
   deps: GcpUpgradeDeps,
 ): Promise<boolean> {
+  return (await upgradeGcpInstallOutcome(target, deps)).ok;
+}
+
+/**
+ * {@link upgradeGcpInstall} with how a failure ended: whether the previous
+ * release serves again after a rollback (the converge job reports
+ * rolled_back only then, #819 review).
+ */
+export async function upgradeGcpInstallOutcome(
+  target: GcpUpgradeTarget,
+  deps: GcpUpgradeDeps,
+): Promise<GcpUpgradeOutcome> {
+  const failed: GcpUpgradeOutcome = { ok: false, rolledBack: false };
   const { reporter: r, run } = deps;
   const { projectId } = target;
 
@@ -128,7 +154,7 @@ export async function upgradeGcpInstall(
   if (!images.ok) {
     sPre.failed("Couldn't resolve the release images");
     r.error(images.error);
-    return false;
+    return failed;
   }
   const planned = await planAppRoll(
     {
@@ -145,7 +171,7 @@ export async function upgradeGcpInstall(
   if (!planned.ok) {
     sPre.failed("Pre-flight failed");
     r.error(planned.error);
-    return false;
+    return failed;
   }
   const plan = withPriorRevisions(planned.plan, deps, r);
   sPre.done(`Pre-flight ok — ${plan.services.length} services planned`);
@@ -154,7 +180,7 @@ export async function upgradeGcpInstall(
   // 2. P21 ship 4 — signatures against the Caelo release workflow's
   // identity: refuses a compromised registry, a typosquat or a fork's image.
   if (!target.skipVerify) {
-    if (!(await deps.verifyImages(plan.services))) return false;
+    if (!(await deps.verifyImages(plan.services))) return failed;
   } else {
     r.warn("--skip-verify set — image signatures NOT verified.");
   }
@@ -179,7 +205,7 @@ export async function upgradeGcpInstall(
     if (!taken.ok) {
       sBak.failed(`Pre-upgrade backup failed: ${taken.error}`);
       r.warn(backupFailureHelp({ projectId }));
-      return false;
+      return failed;
     }
     sBak.done(`Pre-upgrade backup ${taken.backup.backupId} of ${taken.backup.instance} taken`);
     backup = taken;
@@ -198,7 +224,7 @@ export async function upgradeGcpInstall(
     ...(deps.http ? { http: deps.http } : {}),
     ...(deps.provisionerIdentity ? { provisionerIdentity: deps.provisionerIdentity } : {}),
   });
-  if (!(await converge.beforeAppRoll())) return false;
+  if (!(await converge.beforeAppRoll())) return failed;
 
   // 5. App-roll, with the converge steps that sit between its own.
   let health: HealthProbe | null = null;
@@ -207,7 +233,7 @@ export async function upgradeGcpInstall(
     if (!probe.ok) {
       r.error(probe.error);
       r.warn("No migrations ran and no traffic moved.");
-      return false;
+      return failed;
     }
     health = probe.probe;
   }
@@ -229,7 +255,7 @@ export async function upgradeGcpInstall(
       recordDigests: deps.recordDigests,
     },
   );
-  if (!rolled.ok) return false;
+  if (!rolled.ok) return { ok: false, rolledBack: rolled.rolledBack };
   r.success(`Upgrade to ${target.targetTag} complete (admin + gateway revisions serving).`);
   r.info(
     `Pre-upgrade backup: ${backup.backup.backupId} (restore: ${restoreCommand(backup.backup)})`,
@@ -250,7 +276,7 @@ export async function upgradeGcpInstall(
       "Some converge steps did not succeed (see above); the install is not marked as converged, so in-product updates stay unavailable until a re-run of upgrade completes them.",
     );
   }
-  return true;
+  return { ok: true };
 }
 
 /**

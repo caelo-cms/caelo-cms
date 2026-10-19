@@ -25,7 +25,7 @@ import type { ConvergeJobDeps, ConvergeQueue, ConvergeUpgradeOutcome } from "./c
 import { CONVERGE_TASK_TIMEOUT_MINUTES } from "./converge-job-setup.js";
 import { gcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
-import { convergeJobName, GCP_STACK_ENV } from "./gcp-names.js";
+import { convergeJobName, GCP_STACK_ENV, operatorAccessJobName } from "./gcp-names.js";
 import { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
 import { describeExecution } from "./install-job.js";
 import {
@@ -36,13 +36,14 @@ import {
   recordInfraContractVersion,
 } from "./install-state.js";
 import { runMigrationsViaCloudRunJob } from "./migration-runner.js";
+import { installIapAllowlist } from "./operator-access.js";
 import { fetchVerifiedReleaseManifest } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import { attachInstall } from "./state-attach.js";
 import { hasLocalPulumiState, opsBucketName } from "./state-backend.js";
 import { acquireBucketStateLock, GcsStateStore, realSyncGcloud } from "./state-store.js";
 import { releaseImageRef, verifyCosignAll } from "./upgrade/release-images.js";
-import { upgradeGcpInstall } from "./upgrade/upgrade.js";
+import { upgradeGcpInstallOutcome } from "./upgrade/upgrade.js";
 import { healthProbeFor, type UpgraderPlacement } from "./upgrader-gcp.js";
 import type { JobLog } from "./upgrader-reporter.js";
 
@@ -69,6 +70,51 @@ export function executionImageDigest(describeJson: string): string | null {
   const image =
     p.spec?.template?.spec?.containers?.[0]?.image ?? p.template?.containers?.[0]?.image ?? "";
   return DIGEST.exec(image)?.[1] ?? null;
+}
+
+/** The operator-access job's env var listing the install's fixed IAP members. */
+const STATIC_MEMBERS_ENV = "CAELO_OPERATOR_ACCESS_STATIC_MEMBERS";
+
+/**
+ * Why install.json's Owner email does not match the IAP members the
+ * deployed operator-access job admits (operator-access.ts deploys them as
+ * `installIapAllowlist(ownerEmail)`), or null when it does. Read from
+ * `gcloud run jobs describe --format=json` (v1 or v2 shape).
+ */
+export function deployedOwnerMismatch(describeJson: string, ownerEmail: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(describeJson);
+  } catch {
+    return "the operator-access job's description is not JSON";
+  }
+  const p = parsed as {
+    spec?: {
+      template?: {
+        spec?: {
+          template?: { spec?: { containers?: { env?: { name?: string; value?: string }[] }[] } };
+        };
+      };
+    };
+    template?: { template?: { containers?: { env?: { name?: string; value?: string }[] }[] } };
+  };
+  const env =
+    p.spec?.template?.spec?.template?.spec?.containers?.[0]?.env ??
+    p.template?.template?.containers?.[0]?.env ??
+    [];
+  const deployed = env.find((e) => e.name === STATIC_MEMBERS_ENV)?.value;
+  if (deployed === undefined) return `the operator-access job sets no ${STATIC_MEMBERS_ENV}`;
+  const want = installIapAllowlist(ownerEmail).join(",");
+  const have = deployed
+    .split(",")
+    .map((m) => m.trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  if (have !== [...installIapAllowlist(ownerEmail)].sort().join(",")) {
+    return `the admin admits ${deployed || "nobody"}, the records would make it ${want}`;
+  }
+  return null;
 }
 
 /**
@@ -135,17 +181,31 @@ export function gcpConvergeDeps(
       reporter.error(`install.json of ${installId} is not a Google Cloud install with a region.`);
       return { ok: false, rolledBack: false, unrecorded: false };
     }
-    let rolledBack = false;
+    // #883 review — install.json is writable by the upgrader's account
+    // (install/ in the ops bucket), and this job runs as the provisioner:
+    // the Owner email it hands the converge decides who passes the admin's
+    // IAP gate. Converge only when it matches what is deployed today; a
+    // change of Owner is a terminal upgrade by the Owner.
+    const access = await run([
+      "run",
+      "jobs",
+      "describe",
+      operatorAccessJobName(GCP_STACK_ENV),
+      ...location,
+      "--format=json",
+    ]);
+    const ownerCheck = access.ok
+      ? deployedOwnerMismatch(access.stdout, meta.ownerEmail)
+      : `the deployed operator-access job could not be read (${access.stderr.trim()})`;
+    if (ownerCheck) {
+      reporter.error(
+        `Nothing was changed: the install's records name ${meta.ownerEmail} as Owner, which this update could not confirm against the admin's current access settings (${ownerCheck}). Run the update once from Cloud Shell or the computer you installed from.`,
+      );
+      return { ok: false, rolledBack: false, unrecorded: false };
+    }
     let recorded = true;
     let converged = false;
-    const watched = {
-      ...reporter,
-      warn: (message: string) => {
-        if (message.startsWith("Rolling back")) rolledBack = true;
-        reporter.warn(message);
-      },
-    };
-    const ok = await upgradeGcpInstall(
+    const outcome = await upgradeGcpInstallOutcome(
       {
         provider: meta.provider,
         projectId,
@@ -165,7 +225,7 @@ export function gcpConvergeDeps(
         run,
         http,
         sleep: realSleep,
-        reporter: watched,
+        reporter,
         // The signed manifest's digests — never a registry tag lookup.
         resolveImages: async () => ({
           ok: true,
@@ -201,11 +261,17 @@ export function gcpConvergeDeps(
         onCheckpoint,
       },
     );
-    const outcome: ConvergeUpgradeOutcome =
-      ok && recorded
+    // rolled_back only when the rollback really put the previous release
+    // back (app-roll.ts reports it structurally), never from log text.
+    const result: ConvergeUpgradeOutcome =
+      outcome.ok && recorded
         ? { ok: true, converged }
-        : { ok: false, rolledBack, unrecorded: ok && !recorded };
-    return outcome;
+        : {
+            ok: false,
+            rolledBack: !outcome.ok && outcome.rolledBack,
+            unrecorded: outcome.ok && !recorded,
+          };
+    return result;
   };
 
   return {

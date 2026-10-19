@@ -13,9 +13,15 @@ import {
   readConvergeCheckpoint,
   writeConvergeCheckpoint,
 } from "./converge-checkpoint.js";
-import { executionImageDigest, startedExecutionName } from "./converge-job-gcp.js";
+import {
+  convergeExecutionNameError,
+  deployedOwnerMismatch,
+  executionImageDigest,
+  startedExecutionName,
+} from "./converge-job-gcp.js";
 import type { GcloudResult } from "./gcloud.js";
 import type { SyncGcloud } from "./state-store.js";
+import { installStateCondition } from "./upgrader-setup.js";
 
 const D = `sha256:${"c".repeat(64)}`;
 const OPS = `europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/ops@${D}`;
@@ -85,18 +91,80 @@ describe("the converge checkpoint", () => {
     priorRevisions: { admin: "a-00001", gateway: "g-00001" },
   };
 
-  it("lives next to install.json and round-trips", () => {
+  it("lives outside install/, where the upgrader may write, and round-trips (#883 review)", () => {
     const { run, objects } = fakeBucket();
     expect(readConvergeCheckpoint(BUCKET, run)).toBeNull();
     writeConvergeCheckpoint(BUCKET, CHECKPOINT, run);
-    expect([...objects.keys()]).toEqual(["gs://acme-caelo-ops/install/converge-job.json"]);
-    expect(convergeCheckpointUrl(BUCKET)).toBe("gs://acme-caelo-ops/install/converge-job.json");
+    expect([...objects.keys()]).toEqual(["gs://acme-caelo-ops/converge/converge-job.json"]);
+    expect(convergeCheckpointUrl(BUCKET)).toBe("gs://acme-caelo-ops/converge/converge-job.json");
     expect(readConvergeCheckpoint(BUCKET, run)).toEqual(CHECKPOINT);
+    // The upgrader's only object grant on the bucket is conditioned on
+    // install/ — the checkpoint is not under it.
+    const condition = installStateCondition(BUCKET);
+    const prefix = /objects\/([^"]+)"/.exec(condition)?.[1] ?? "";
+    expect(prefix).toBe("install/");
+    expect(convergeCheckpointUrl(BUCKET).startsWith(`gs://${BUCKET}/${prefix}`)).toBe(false);
   });
 
   it("refuses a document it does not understand", () => {
     const { run, objects } = fakeBucket();
     objects.set(convergeCheckpointUrl(BUCKET), JSON.stringify({ ...CHECKPOINT, fromVersion: "x" }));
     expect(() => readConvergeCheckpoint(BUCKET, run)).toThrow(/not a job status/);
+  });
+});
+
+describe("deployedOwnerMismatch (#883 review)", () => {
+  const job = (members: string | null) =>
+    JSON.stringify({
+      spec: {
+        template: {
+          spec: {
+            template: {
+              spec: {
+                containers: [
+                  {
+                    env: [
+                      { name: "CAELO_OPERATOR_ACCESS_IAP_WEB", value: "x" },
+                      ...(members === null
+                        ? []
+                        : [{ name: "CAELO_OPERATOR_ACCESS_STATIC_MEMBERS", value: members }]),
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    });
+
+  it("accepts install.json's Owner when the deployed IAP members are exactly it", () => {
+    expect(deployedOwnerMismatch(job("user:owner@acme.com"), "Owner@Acme.com")).toBeNull();
+  });
+
+  it("refuses an Owner email the deployed access settings do not admit (a tampered install.json)", () => {
+    const why = deployedOwnerMismatch(job("user:owner@acme.com"), "attacker@evil.example");
+    expect(why).toContain("user:owner@acme.com");
+    expect(why).toContain("user:attacker@evil.example");
+  });
+
+  it("refuses when the deployed members cannot be read — never assumes they match", () => {
+    expect(deployedOwnerMismatch(job(null), "owner@acme.com")).toContain("sets no");
+    expect(deployedOwnerMismatch("not json", "owner@acme.com")).toContain("not JSON");
+    expect(
+      deployedOwnerMismatch(job("user:owner@acme.com,user:x@y.z"), "owner@acme.com"),
+    ).not.toBeNull();
+  });
+});
+
+describe("convergeExecutionNameError (#883 review)", () => {
+  it("accepts a run of the converge job and no name at all (outside Cloud Run)", () => {
+    expect(convergeExecutionNameError("caelo-production-converge-x7k2p")).toBeNull();
+    expect(convergeExecutionNameError(null)).toBeNull();
+  });
+
+  it("refuses a run of another job or a value that is no Cloud Run name", () => {
+    expect(convergeExecutionNameError("caelo-production-upgrader-x1")).not.toBeNull();
+    expect(convergeExecutionNameError("caelo-production-converge-X;rm")).not.toBeNull();
   });
 });
