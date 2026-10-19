@@ -129,6 +129,8 @@ export type ReleaseManifestErrorCode =
 export interface ReleaseManifestError {
   readonly code: ReleaseManifestErrorCode;
   readonly message: string;
+  /** On `registry` errors a retry may cure; absent for not-found (see @caelo-cms/shared ReleaseArtifactError). */
+  readonly transient?: true;
 }
 
 export type ReleaseManifestResult =
