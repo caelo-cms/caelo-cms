@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/api-gateway",
-  "version": "0.10.53",
+  "version": "0.10.54",
   "private": true,
   "license": "MPL-2.0",
   "type": "module",
@@ -14,7 +14,8 @@
   "dependencies": {
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
-    "@caelo-cms/shared": "workspace:*"
+    "@caelo-cms/shared": "workspace:*",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@caelo-cms/admin-core": "workspace:*",

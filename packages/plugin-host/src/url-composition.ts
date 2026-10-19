@@ -137,9 +137,11 @@ export const urlContributionsRegistry = new UrlContributionsRegistry();
 // ---------------------------------------------------------------------------
 
 const PATH_SEGMENT_RE = /^[a-z0-9][a-z0-9._~-]*$/i;
+const HOST_RE =
+  /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*(?::\d{1,5})?$/i;
 
 function assertSegment(seg: string, source: string): void {
-  if (!PATH_SEGMENT_RE.test(seg) || seg.includes("/")) {
+  if (!PATH_SEGMENT_RE.test(seg) || seg.includes("/") || seg === "." || seg === "..") {
     throw new Error(
       `url-composition: contribution "${source}" produced an invalid path segment "${seg}"`,
     );
@@ -162,7 +164,15 @@ export interface ResolvedPageUrl {
  */
 export function resolvePageHost(page: UrlComposePage): string | null {
   const host = urlContributionsRegistry.bySlot("host");
-  if (host && host.contribution.slot === "host") return host.contribution.encode(page);
+  if (host && host.contribution.slot === "host") {
+    const encoded = host.contribution.encode(page);
+    if (encoded !== null && !HOST_RE.test(encoded)) {
+      throw new Error(
+        `url-composition: host contribution "${host.pluginSlug}" produced an invalid host "${encoded}"`,
+      );
+    }
+    return encoded;
+  }
   return null;
 }
 
@@ -188,6 +198,16 @@ export function resolvePageUrl(page: UrlComposePage): ResolvedPageUrl {
       throw new Error(
         `url-composition: full-path contribution "${full.pluginSlug}" must return a leading-slash path (got "${path}")`,
       );
+    }
+    if (path !== "/") {
+      if (path.endsWith("/")) {
+        throw new Error(
+          `url-composition: full-path contribution "${full.pluginSlug}" must not end with a trailing slash (got "${path}")`,
+        );
+      }
+      for (const seg of path.slice(1).split("/")) {
+        assertSegment(seg, `${full.pluginSlug}/full-path`);
+      }
     }
     return { path, host: hostValue };
   }

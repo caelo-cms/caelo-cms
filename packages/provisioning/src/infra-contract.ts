@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 7;
+export const INFRA_CONTRACT_VERSION = 8;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -51,6 +51,11 @@ export const INFRA_CONTRACT_VERSION = 7;
 //       runs from (the installed one), which does not set it — so the new
 //       gateway would not start. The operator-identity upgrade runs the new
 //       release's contract and sets it.
+//   8 — #875: the quality-audit job, its service account, the audit results
+//       bucket and their grants, plus CAELO_AUDIT_JOB /
+//       CAELO_AUDIT_RESULTS_BUCKET on the admin. The new admin fans every
+//       Stage audit out to that job, and the app-roll moves the job's image,
+//       so it must exist before an in-cloud upgrader rolls onto it.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -65,6 +70,7 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   5: "the gateway's cms_admin login removed from its env and IAM (#635)",
   6: "the upgrader's permission to list its ops bucket (#799)",
   7: "the gateway's trusted proxy hop count, CAELO_TRUSTED_PROXY_HOPS (#845)",
+  8: "the quality-audit job, its service account, results bucket and grants (#875)",
 };
 
 /**

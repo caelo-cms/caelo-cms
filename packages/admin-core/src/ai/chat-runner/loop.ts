@@ -57,6 +57,7 @@ import {
   recentTailCount,
   TOOL_RESULT_HEAD_CHARS,
 } from "./compaction.js";
+import { isE2eAutoApproveEnabled } from "./e2e-auto-approve.js";
 import { costCapUsd, microcents } from "./limits.js";
 import { evaluateLoopZeroDiagnostics } from "./passive-turn.js";
 import { persistApprovalResponse, persistAssistantTurn } from "./persistence.js";
@@ -855,7 +856,7 @@ export async function* runToolLoop(
         ),
         requiredPermissions: approverPermissionsForGatedCall(tools, registry, req.name),
       }));
-      const autoApprove = process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1";
+      const autoApprove = isE2eAutoApproveEnabled();
       // Issue #658 — record each card with whose turn paused, so the Live
       // Edit chat shows it after a reload (and for a caelo_chat turn at all)
       // and the click continues the right agent. Without the record nobody

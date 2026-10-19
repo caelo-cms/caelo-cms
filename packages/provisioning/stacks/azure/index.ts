@@ -330,6 +330,15 @@ const logWorkspace = new azure.operationalinsights.Workspace(`${namePrefix}-logs
 });
 
 // === 6. Container Apps environment + apps ===
+//
+// FIXME(issue #750): no quality-audit Container Apps job yet. On GCP every
+// Lighthouse run of a Stage audit runs in its own container (#875,
+// src/audit-job-setup.ts); the Azure equivalent is a Container Apps job
+// with one replica per run (admin-core quality/parallel-runner.ts
+// `AuditTaskLauncher`). Until it exists the admin records every Lighthouse
+// audit as failed with that gap (quality/lighthouse-runner-select.ts)
+// instead of measuring on its own shared CPU. Nothing is staged on Azure
+// before #750 either.
 const cappEnv = new azure.app.ManagedEnvironment(`${namePrefix}-capp-env`, {
   resourceGroupName: rg.name,
   environmentName: `${namePrefix}-capp-env`,
