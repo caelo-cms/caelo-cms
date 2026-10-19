@@ -67,7 +67,11 @@ The repository variable `UPGRADER_SMOKE` decides whether the gate runs:
 `required` (run, block on failure) or `off` (releases ship with a
 warning). Any other value — including unset — fails the release, so
 skipping it is always a visible, deliberate choice. **Set it (at least to
-`off`) before the next release tag.**
+`off`) before the next release tag.** The decision runs in its own job
+with no token and outside the `upgrader-smoke` environment, so an `off`
+release never waits for an environment reviewer and never touches GCP;
+only the check itself runs in the environment and may mint an OIDC token
+(`scripts/upgrader-smoke-workflow.test.ts` pins this).
 
 ## One-time setup (maintainer)
 

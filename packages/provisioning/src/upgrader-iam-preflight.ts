@@ -41,8 +41,9 @@
  * SERVICE AGENT (roles/run.serviceAgent has them), not on the principal
  * that deploys, so they are not checked here and the upgrader gets no
  * compute role (UPGRADER_FORBIDDEN_ROLES). The real-GCP upgrader smoke test
- * (.github/workflows/upgrader-smoke.yml) is what proves that on every
- * release candidate.
+ * (.github/workflows/upgrader-smoke.yml) is where that shows on real GCP:
+ * each stable release, installed on the smoke install through Settings →
+ * Updates, must serve cleanly before the next tag ships.
  *
  * Everything here is pure except {@link restIamTester}, which takes its
  * HTTP client and token source as arguments.

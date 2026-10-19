@@ -53,9 +53,11 @@
  * Cloud Run service agent, which `roles/run.serviceAgent` already gives it
  * (cloud.google.com/run/docs/configuring/vpc-direct-vpc), not on the
  * principal that deploys. So the upgrader gets no compute role; the
- * real-GCP upgrader smoke test (.github/workflows/upgrader-smoke.yml) proves
- * it on every release candidate. Every permission the job needs is checked
- * by the job itself before it changes anything (upgrader-iam-preflight.ts);
+ * real-GCP upgrader smoke test (.github/workflows/upgrader-smoke.yml) shows
+ * it once a stable release was installed on the smoke install through
+ * Settings → Updates (the next tag cannot ship before). Every permission
+ * the job needs is checked by the job itself before it changes anything
+ * (upgrader-iam-preflight.ts);
  * a grant added or removed here must keep that list in step.
  */
 
