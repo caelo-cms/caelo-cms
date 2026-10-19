@@ -25,7 +25,17 @@ const GONE = "33333333-3333-4333-8333-333333333333";
 const HERO = "44444444-4444-4444-8444-444444444444";
 
 const lookup: LinkTargetLookup = {
-  pageIdForPath: (p) => ({ "/": HOME, "/company/about": ABOUT, "/old-about": ABOUT })[p] ?? null,
+  pageIdForPath: (p) =>
+    (
+      ({
+        "/": HOME,
+        "/company/about": ABOUT,
+        "/old-about": ABOUT,
+        // Old URLs an import redirected (301) to the page.
+        "/about.html": ABOUT,
+        "/about/index.html": ABOUT,
+      }) as Record<string, string>
+    )[p] ?? null,
   mediaIdForSlug: (s) => (s === "hero" ? HERO : null),
   pageExists: (id) => id === ABOUT || id === HOME,
   mediaExists: (id) => id === HERO,
@@ -66,7 +76,7 @@ describe("canonicaliseUrl", () => {
       "#pricing",
       "{{cta_href}}",
       "/robots.txt",
-      "/files/guide.pdf",
+      "/sitemap.xml",
       "/_assets/app.css",
       "/api/forms/contact",
       "relative/path",
@@ -88,6 +98,51 @@ describe("canonicaliseUrl", () => {
       ["unknown-media", "/_caelo/media/missing", "html"],
       ["dangling-page-ref", `caelo:page/${GONE}`, "items[0].href"],
     ]);
+  });
+
+  it("resolves file-shaped old URLs a page or redirect answers before treating them as files", () => {
+    const r = run();
+    expect(canonicaliseUrl("/about.html", r, "x")).toBe(`caelo:page/${ABOUT}`);
+    expect(canonicaliseUrl("/about/index.html#team", r, "x")).toBe(`caelo:page/${ABOUT}#team`);
+    expect(r.issues).toEqual([]);
+  });
+
+  it("reports a file path nothing serves (strict) and keeps it literal (report)", () => {
+    const strict = run();
+    expect(canonicaliseUrl("/files/guide.pdf", strict, "html")).toBe("/files/guide.pdf");
+    expect(canonicaliseUrl("/index.php", strict, "html")).toBe("/index.php");
+    expect(strict.issues.map((i) => [i.kind, i.value])).toEqual([
+      ["unknown-file", "/files/guide.pdf"],
+      ["unknown-file", "/index.php"],
+    ]);
+    const report = linkCanonicaliseRun(lookup, { mode: "report" });
+    expect(canonicaliseUrl("/files/guide.pdf", report, "html")).toBe("/files/guide.pdf");
+    expect(report.issues.map((i) => i.kind)).toEqual(["unknown-file"]);
+    expect(describeLinkIssues(strict.issues)).toContain("media library");
+  });
+
+  it("refuses a media link with a query or anchor instead of dropping it", () => {
+    const r = run();
+    expect(canonicaliseUrl("/_caelo/media/hero#page=3", r, "x")).toBe("/_caelo/media/hero#page=3");
+    expect(canonicaliseUrl("/_caelo/media/hero?download=1", r, "y")).toBe(
+      "/_caelo/media/hero?download=1",
+    );
+    expect(r.issues.map((i) => [i.kind, i.where])).toEqual([
+      ["unsupported-link-form", "x"],
+      ["unsupported-link-form", "y"],
+    ]);
+    const report = linkCanonicaliseRun(lookup, { mode: "report" });
+    expect(canonicaliseUrl("/_caelo/media/hero#page=3", report, "x")).toBe(
+      "/_caelo/media/hero#page=3",
+    );
+    expect(report.issues.map((i) => i.kind)).toEqual(["unsupported-link-form"]);
+  });
+
+  it("stores the orig variant as the plain media reference", () => {
+    const r = run();
+    expect(canonicaliseUrl("/_caelo/media/hero/orig", r, "x")).toBe(`caelo:media/${HERO}`);
+    expect(canonicaliseUrl(`/_caelo/media/${HERO}/orig`, r, "x")).toBe(`caelo:media/${HERO}`);
+    expect(r.issues).toEqual([]);
   });
 
   it("grandfathers links already stored", () => {
@@ -117,6 +172,22 @@ describe("HTML and JSON positions", () => {
         `<img data-src="/company/about" src="/company/about"><a href="{{href}}">t</a>`,
     );
     expect(r.issues).toEqual([]);
+  });
+
+  it("reads attributes only inside start tags, not in escaped code samples", () => {
+    const r = run();
+    const html =
+      '<pre><code>&lt;a href="/nope"&gt;Docs&lt;/a&gt;</code></pre>' +
+      `<a title="a > b" href="/company/about">x</a><img alt='it"s' src="/_caelo/media/hero">`;
+    expect(canonicaliseHtmlLinks(html, r, "html")).toBe(
+      '<pre><code>&lt;a href="/nope"&gt;Docs&lt;/a&gt;</code></pre>' +
+        `<a title="a > b" href="caelo:page/${ABOUT}">x</a><img alt='it"s' src="caelo:media/${HERO}">`,
+    );
+    expect(r.issues).toEqual([]);
+    // An unterminated quote does not hide the tags before it.
+    expect(canonicaliseHtmlLinks('<a href="/company/about">x</a><b title="oops>', run(), "h")).toBe(
+      `<a href="caelo:page/${ABOUT}">x</a><b title="oops>`,
+    );
   });
 
   it("treats link-named keys as URLs and plain text as text", () => {

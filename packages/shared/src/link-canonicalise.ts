@@ -63,6 +63,7 @@ export interface LinkCanonicaliseIssue {
     | "unknown-media"
     | "dangling-page-ref"
     | "dangling-media-ref"
+    | "unknown-file"
     | "unsupported-link-form";
   /** The link exactly as written. */
   readonly value: string;
@@ -104,8 +105,13 @@ const ANCHOR_OK = /^[A-Za-z0-9_\-.~%:]{1,256}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MEDIA_SEGMENT_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const VARIANT_RE = /^[a-z][a-z0-9-]{0,63}$/;
-// A last path segment with a file extension names a file, not a page.
+// A last path segment with a file extension names a file, not a page —
+// unless a page or an old-URL redirect answers it (`/about.html` an import
+// redirected), which is checked first.
 const FILE_EXT_RE = /\.[A-Za-z0-9]{1,8}$/;
+// Files the static build itself serves at the site root; a link to one
+// is a plain URL. Any other file path must come from the media library.
+const SITE_SERVED_FILES: ReadonlySet<string> = new Set(["/robots.txt", "/sitemap.xml"]);
 
 /** Key / field names whose whole value is a URL. */
 export function isLinkKeyName(name: string): boolean {
@@ -156,10 +162,19 @@ function issue(
   run.issues.push({ kind, value, where });
 }
 
-/** Canonicalise a `/_caelo/media/<slug>[/<variant>]` path, or null when it is not one. */
+/**
+ * Canonicalise a `/_caelo/media/<slug>[/<variant>]` path, or null when it
+ * is not one.
+ *
+ * @param hasSuffix the link carries a `?query` or `#anchor`. A media
+ *   reference cannot carry either (`caelo:media/<id>` has no suffix), so
+ *   such a link is an `unsupported-link-form` issue instead of a
+ *   reference that silently drops `#page=3`.
+ */
 function canonicaliseMediaPath(
   path: string,
   raw: string,
+  hasSuffix: boolean,
   run: LinkCanonicaliseRun,
   where: string,
 ): string | null {
@@ -176,7 +191,16 @@ function canonicaliseMediaPath(
     if (!run.grandfathered.has(raw)) issue(run, "unknown-media", raw, where);
     return raw;
   }
-  return formatLinkRef({ kind: "media", mediaId: id, variant });
+  if (hasSuffix) {
+    if (!run.grandfathered.has(raw)) issue(run, "unsupported-link-form", raw, where);
+    return raw;
+  }
+  // `orig` is the original, which a reference expresses as no variant.
+  return formatLinkRef({
+    kind: "media",
+    mediaId: id,
+    variant: variant === "orig" ? null : variant,
+  });
 }
 
 /**
@@ -220,18 +244,20 @@ export function canonicaliseUrl(
   }
 
   const { path, query, anchor } = splitPathTail(local);
-  const media = canonicaliseMediaPath(path, v, run, where);
+  const media = canonicaliseMediaPath(path, v, query !== null || anchor !== null, run, where);
   if (media !== null) return media;
   if (scope === "media") return value;
-  // Not a page: other reserved surfaces (`/_assets/…`, `/_caelo/fonts/…`),
-  // the gateway (`/api/…`) and files (`/robots.txt`, `/guide.pdf`).
+  // Not a page: other reserved surfaces (`/_assets/…`, `/_caelo/fonts/…`)
+  // and the gateway (`/api/…`).
   if (path.startsWith("/_") || path === "/api" || path.startsWith("/api/")) return value;
-  const lastSegment = path.slice(path.lastIndexOf("/") + 1);
-  if (FILE_EXT_RE.test(lastSegment)) return value;
 
   const pageId = run.lookup.pageIdForPath(normaliseLinkPath(path));
   if (pageId === null) {
-    if (!run.grandfathered.has(v)) issue(run, "unknown-page-path", v, where);
+    const lastSegment = path.slice(path.lastIndexOf("/") + 1);
+    const isFile = FILE_EXT_RE.test(lastSegment);
+    if (isFile && SITE_SERVED_FILES.has(path)) return value;
+    if (!run.grandfathered.has(v))
+      issue(run, isFile ? "unknown-file" : "unknown-page-path", v, where);
     return value;
   }
   if ((query !== null && !QUERY_OK.test(query)) || (anchor !== null && !ANCHOR_OK.test(anchor))) {
@@ -257,7 +283,52 @@ export function canonicaliseHtmlLinks(
   where: string,
 ): string {
   if (!html.includes("=")) return html;
-  return html.replace(ATTR_RE, (whole, prefix: string, dq?: string, sq?: string) => {
+  // Attributes are only read inside a start tag, so escaped markup in a
+  // code sample (`&lt;a href="/x"&gt;` is text, not a link) is left alone.
+  let out = "";
+  let from = 0;
+  for (const [start, end] of startTags(html)) {
+    out += html.slice(from, start) + canonicaliseTagAttributes(html.slice(start, end), run, where);
+    from = end;
+  }
+  return from === 0 ? html : out + html.slice(from);
+}
+
+/**
+ * `[start, end)` of every start tag (`<` + letter … `>`), quoted values
+ * allowed to contain `>`. One linear pass; an unterminated quote runs to
+ * the end of the input instead of being rescanned.
+ */
+function* startTags(html: string): Generator<[number, number]> {
+  let i = html.indexOf("<");
+  while (i !== -1 && i < html.length - 1) {
+    const c = html.charCodeAt(i + 1);
+    const isLetter = (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+    if (!isLetter) {
+      i = html.indexOf("<", i + 1);
+      continue;
+    }
+    let j = i + 2;
+    let quote = 0;
+    while (j < html.length) {
+      const ch = html.charCodeAt(j);
+      if (quote !== 0) {
+        if (ch === quote) quote = 0;
+      } else if (ch === 34 || ch === 39) {
+        quote = ch;
+      } else if (ch === 62) {
+        break;
+      }
+      j += 1;
+    }
+    const end = Math.min(j + 1, html.length);
+    yield [i, end];
+    i = html.indexOf("<", end);
+  }
+}
+
+function canonicaliseTagAttributes(tag: string, run: LinkCanonicaliseRun, where: string): string {
+  return tag.replace(ATTR_RE, (whole, prefix: string, dq?: string, sq?: string) => {
     const quote = dq !== undefined ? '"' : "'";
     const raw = (dq ?? sq) as string;
     const attr = prefix
@@ -420,7 +491,10 @@ const ISSUE_TEXT: Readonly<Record<LinkCanonicaliseIssue["kind"], string>> = {
   "unknown-media": "names no image or file in the media library",
   "dangling-page-ref": "links to a page that was deleted",
   "dangling-media-ref": "links to an image or file that was deleted",
-  "unsupported-link-form": "has a query or #anchor with characters a stored link cannot carry",
+  "unknown-file":
+    "is a file path nothing on this site serves (files are served from the media library: upload it, then link its media URL from find_media)",
+  "unsupported-link-form":
+    "has a query or #anchor a stored link cannot carry (page links allow plain query/anchor characters only; media links allow neither)",
 };
 
 /**
