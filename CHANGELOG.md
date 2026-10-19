@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.10.54
+
+### Features
+- ad32fa3a run Lighthouse in a parallel Cloud Run audit job, one task per run (#875) (#882)
+- 797941a6 setup for every MCP client on /settings/mcp, not just Claude Code (#885)
+- 61e7fa0d internal reference grammar, parser and render-time resolver (#724, rollout A) (#870)
+- ab82ea9f release notes in Owner language + auto-update policy as one choice (#864)
+
+### Fixes
+- bdd44276 prevent head/style/template breakouts, $-replacement injection, and output path traversal (#866)
+- ba2eb4c4 harden tar restore parser, secret file permissions, Caddyfile validation, and release workflow (#888)
+- 09973f62 prevent DNS-rebinding SSRF in screenshot capture and block special-use IPv6 ranges (#869)
+- 3612074e refuse tokens of deleted or role-less users; revoke on users.delete (#889)
+- b7d906a4 score Performance by the best of 3 runs instead of the median of 5 (#874) (#876)
+- 3e4a6937 enforce chat RBAC, harden SVG/preview sanitization, and revoke MCP tokens on user delete (#863)
+- b27ce6a1 tie gateway op events to active published plugins at the DB layer (#856) (#859)
+- 72fa33e0 parameterize plugin_id, redact credential fields in audit hashes, and guard visitor-only redeploy ticks (#844)
+
+### Chores
+- 16b00585 Bump the minor-and-patch group across 1 directory with 16 updates (#858)
+- 3c3250a6 allow PSF-2.0 alongside Python-2.0 (#887)
+- 4ff1a01f Bump the minor-and-patch group across 2 directories with 2 updates (#857)
+
 ## v0.10.53
 
 ### Features

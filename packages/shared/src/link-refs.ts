@@ -354,6 +354,25 @@ export const LINK_TARGET_MISSING = "link-target-missing";
 export const LINK_RESOLVER_UNAVAILABLE = "link-resolver-unavailable";
 
 /**
+ * True for every link failure marker: a missing target, a malformed
+ * reference and a render without a resolver. The static generator's
+ * render gate and the nested-module echo filter both key on this, so a
+ * new marker added here blocks a deploy everywhere at once.
+ */
+export function isLinkFailureMarker(marker: string): boolean {
+  return (
+    marker.startsWith(`${LINK_TARGET_MISSING}:`) ||
+    marker.startsWith(`${LINK_REF_MALFORMED}:`) ||
+    marker.startsWith(`${LINK_RESOLVER_UNAVAILABLE}:`)
+  );
+}
+
+/** The link failure markers among `markers`, in order. */
+export function linkMarkersOf(markers: readonly string[]): string[] {
+  return markers.filter(isLinkFailureMarker);
+}
+
+/**
  * Resolve every reference embedded in rendered HTML. Unresolvable
  * references stay in the output verbatim (loud-raw, CLAUDE.md §2) and
  * push a marker onto `missing`; `unpublished` ones render their URL and

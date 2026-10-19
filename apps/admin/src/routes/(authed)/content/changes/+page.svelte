@@ -70,6 +70,9 @@
         {#if form.staged.brokenInternalLinks.length > 0}
           Broken internal links: {form.staged.brokenInternalLinks.join(", ")}.
         {/if}
+        {#if form.staged.unpublishedLinkWarning}
+          {form.staged.unpublishedLinkWarning}
+        {/if}
       </AlertDescription>
     </Alert>
   {/if}

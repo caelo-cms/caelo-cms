@@ -143,6 +143,15 @@ export const INJECT_SCRIPT = `
       if (a.target && a.target !== "" && a.target !== "_self") return;
       var href = a.getAttribute("href");
       if (!href) return;
+      // Epic #724 — the server resolves every internal reference before
+      // the iframe sees it; one still reading caelo:page/<id> points at a
+      // deleted page (the preview flags it as link-target-missing). The
+      // browser cannot follow that scheme, so swallow the click instead
+      // of leaving the iframe on an error page.
+      if (href.startsWith("caelo:")) {
+        ev.preventDefault();
+        return;
+      }
       if (href.startsWith("#")) return;
       if (href.startsWith("mailto:") || href.startsWith("tel:")) return;
       if (/^https?:\\/\\//i.test(href)) {
