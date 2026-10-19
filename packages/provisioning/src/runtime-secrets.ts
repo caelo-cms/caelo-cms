@@ -13,9 +13,8 @@
  *     Secret Manager on stdin — never on argv, never to disk.
  *   - {@link ensureDatabaseRolePassword}: a database role's password set
  *     from its secret (`DATABASE_ROLE_SECRET`), through the Cloud SQL Admin
- *     API — how `gateway_role` (created by migration 0248, without a
- *     password) and `public_role` (moved off admin_role's password, #613)
- *     get theirs.
+ *     API — how `public_role` (moved off admin_role's password, #613) gets
+ *     its own.
  *   - {@link rotateRuntimeSecret}: `cms-provision rotate-secret`.
  *
  * Every function reports instead of throwing on a gcloud failure.
@@ -368,7 +367,6 @@ async function addVersion(
 export const ROTATABLE_SECRETS = [
   "postgres-password",
   "public-role-password",
-  "gateway-role-password",
   "internal-secret",
   "tool-approval-secret",
   // #650 — rotating it signs every staging session out and replaces the
@@ -726,8 +724,6 @@ export async function readSecretValue(
  * the role already has is a no-op for every client, so upgrade runs this on
  * every roll and an install converges whatever state it was left in.
  *
- * The role must exist: `gateway_role` is created by migration 0248, so this
- * runs after migrations.
  */
 export async function ensureDatabaseRolePassword(
   target: DatabaseRoleTarget,

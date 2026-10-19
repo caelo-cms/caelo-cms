@@ -106,6 +106,9 @@ const helloPluginDef = definePlugin({
       const a = args as { name?: string };
       return { greeting: `hello ${a.name ?? "world"}` };
     },
+    explode: async () => {
+      throw new Error("handler blew up");
+    },
     via_cms: async (ctx, _args) => {
       const c = (ctx as { cms?: { call: (op: string, i: unknown) => Promise<unknown> } }).cms;
       if (!c) throw new Error("ctx.cms missing — capability not granted");
@@ -205,6 +208,35 @@ describe("plugin-host bootstrap (testPlugins mode)", () => {
     expect(viaCms.ok).toBe(true);
     if (!viaCms.ok) return;
     expect(viaCms.value).toEqual({ echoed: "from-plugin", actorKind: "plugin" });
+  });
+
+  it("a throwing operation still leaves a succeeded=false audit row", async () => {
+    await bootstrap({
+      infra,
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: helloPluginDef }],
+    });
+    const failed = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: HOST_TEST_SLUG,
+      operationName: "explode",
+      args: { attempt: 1 },
+    });
+    expect(failed.ok).toBe(false);
+    if (!failed.ok) expect(failed.error.message).toContain("handler blew up");
+
+    const rows = await adapter.withAdminTransaction(
+      { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "t" },
+      async (tx) => {
+        const { sql } = await import("drizzle-orm");
+        return (await tx.execute(
+          sql`SELECT succeeded, entity_id FROM audit_events
+              WHERE operation = ${`${HOST_TEST_SLUG}.explode`}`,
+        )) as unknown as { succeeded: boolean; entity_id: string | null }[];
+      },
+    );
+    expect(rows).toEqual([{ succeeded: false, entity_id: null }]);
   });
 
   it("PluginNotFound for missing slug; OperationNotDeclared for missing op", async () => {

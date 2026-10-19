@@ -8,8 +8,8 @@
 import { describe, expect, it } from "bun:test";
 import {
   adminSchemaFromSpec,
-  gatewayReadableColumns,
   generateManifestKeyPair,
+  privateReadColumns,
   schemaFromSpec,
   signManifest,
   validateManifest,
@@ -384,46 +384,23 @@ describe("plugin storage host columns (docs/branch-aware-plugin-storage.md)", ()
   });
 });
 
-describe("the API gateway's read access to private storage (#613)", () => {
+describe("private storage and the former gateway_role (#613, #635)", () => {
   const spec = {
     pluginId: "11111111-1111-4111-8111-111111111111",
     slug: "probe",
     adminSchema: { settings: { label: "string" }, categories: { key: "string" } },
   };
 
-  it("a plugin serving visitors grants gateway_role SELECT on the declared columns only", () => {
-    const { sql } = adminSchemaFromSpec({ ...spec, visitorReadable: true });
-    expect(sql).toContain("IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role')");
-    expect(sql).toContain('GRANT USAGE ON SCHEMA "plugin_probe" TO gateway_role;');
-    expect(sql).toContain(
-      'GRANT SELECT ("id", "label", "caelo_chat_branch_id", "caelo_deleted_at", "caelo_version", "caelo_updated_at") ON "plugin_probe"."settings" TO gateway_role;',
-    );
-    expect(sql).toContain('GRANT SELECT ("id", "key", ');
-    // Never table-wide: that would cover columns a later version dropped.
-    expect(sql).not.toMatch(/GRANT SELECT ON [^;]*gateway_role/);
-    expect(sql).not.toMatch(/GRANT (INSERT|UPDATE|DELETE)[^;]*gateway_role/);
-  });
-
-  it("recomputes from scratch: every earlier grant is revoked before granting", () => {
-    const { sql } = adminSchemaFromSpec({ ...spec, visitorReadable: true });
-    const revoke = sql.indexOf(
-      'REVOKE ALL ON ALL TABLES IN SCHEMA "plugin_probe" FROM gateway_role;',
-    );
-    expect(revoke).toBeGreaterThan(-1);
-    expect(revoke).toBeLessThan(
-      sql.indexOf('GRANT USAGE ON SCHEMA "plugin_probe" TO gateway_role'),
-    );
-  });
-
-  it("any other plugin only revokes, so one that stops serving visitors converges", () => {
+  it("grants the public side nothing and revokes what the former gateway_role held", () => {
     const { sql } = adminSchemaFromSpec(spec);
-    expect(sql).not.toMatch(/GRANT [^;]*gateway_role/);
+    expect(sql).not.toMatch(/GRANT [^;]*(gateway_role|public_role)/);
     expect(sql).toContain('REVOKE ALL ON ALL TABLES IN SCHEMA "plugin_probe" FROM gateway_role;');
     expect(sql).toContain('REVOKE ALL ON SCHEMA "plugin_probe" FROM gateway_role;');
+    expect(sql).toContain("IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gateway_role')");
   });
 
-  it("gatewayReadableColumns: id, declared, host columns, no duplicates", () => {
-    expect(gatewayReadableColumns({ id: "uuid", label: "string" })).toEqual([
+  it("privateReadColumns: id, declared, host columns, no duplicates", () => {
+    expect(privateReadColumns({ id: "uuid", label: "string" })).toEqual([
       "id",
       "label",
       "caelo_chat_branch_id",
@@ -443,5 +420,92 @@ describe("identifiers past Postgres' 63-byte limit (#515 review)", () => {
         adminSchema: { [`t${"x".repeat(64)}`]: { body: "text" } },
       }),
     ).toThrow("63-byte");
+  });
+});
+
+describe("security hardening — AST escapes and schema pluginId validation", () => {
+  const kinds = (source: string) => validateSource({ source, filename: "p.ts" }).map((f) => f.kind);
+
+  it("rejects .constructor access and computed .constructor access", () => {
+    expect(kinds('const f = (() => {}).constructor("return 1");')).toContain("forbidden-eval");
+    expect(kinds('const f = (() => {})["constructor"]("return 1");')).toContain("forbidden-eval");
+    expect(kinds("const f = (() => {})[`constructor`]('return 1');")).toContain("forbidden-eval");
+  });
+
+  it("rejects optional chaining, parenthesized, and computed globalThis escapes", () => {
+    expect(kinds('eval?.("1+1");')).toContain("forbidden-eval");
+    expect(kinds('(eval)("1+1");')).toContain("forbidden-eval");
+    expect(kinds('globalThis?.fetch?.("https://evil.com");')).toContain("forbidden-call");
+    expect(kinds('globalThis["eval"]("1+1");')).toContain("forbidden-eval");
+    expect(kinds('globalThis["Deno"].exit(1);')).toContain("forbidden-deno-access");
+    expect(kinds('const k = "ev" + "al"; globalThis[k]("1+1");')).toContain("forbidden-call");
+  });
+
+  it("folds constant computed keys, so split spellings of .constructor/.eval are caught", () => {
+    expect(kinds('const f = (() => {})["con" + "structor"]("return 1");')).toContain(
+      "forbidden-eval",
+    );
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the placeholder is plugin source under test
+    expect(kinds('const f = (() => {})[`con${"struc"}tor`]("return 1");')).toContain(
+      "forbidden-eval",
+    );
+    expect(kinds('globalThis["ev" + "al"]("1+1");')).toContain("forbidden-eval");
+    expect(kinds("const F = f.constructor.constructor;")).toContain("forbidden-eval");
+    expect(kinds('new ((0, f).constructor)("return 1");')).toContain("forbidden-eval");
+  });
+
+  it("rejects eval and Function referenced as values (sequence callee, aliases)", () => {
+    expect(kinds('(0, eval)("1+1");')).toContain("forbidden-eval");
+    expect(kinds('const e = eval; e("1+1");')).toContain("forbidden-eval");
+    expect(kinds("const F = [Function][0];")).toContain("forbidden-eval");
+    expect(kinds('(0, globalThis.eval)("1+1");')).toContain("forbidden-eval");
+  });
+
+  it("rejects the global object used as a value (aliasing)", () => {
+    expect(kinds('const g = globalThis; g.eval("1+1");')).toContain("forbidden-globalthis-alias");
+    expect(kinds('Reflect.get(globalThis, "eval");')).toContain("forbidden-globalthis-alias");
+    expect(kinds('globalThis.globalThis.eval("1+1");')).toContain("forbidden-globalthis-alias");
+    expect(kinds("const { fetch: f } = self;")).toContain("forbidden-globalthis-alias");
+  });
+
+  it("still accepts ordinary code near those rules", () => {
+    const ok = [
+      "const isPlain = (v) => v !== null && v.constructor === Object;",
+      "const name = value.constructor.name;",
+      "const isFn = (v) => v instanceof Function;",
+      "const hasWindow = typeof window !== 'undefined';",
+      "const m = globalThis.Math.max(1, 2);",
+      "function f() { const self = this; return self.x; }",
+      "const o = { eval: 1, constructor: 2 }; const v = o.eval;",
+      "const k = 'a'; const v = obj[k];",
+      "class A { eval() { return 1; } }",
+    ];
+    for (const source of ok) expect(kinds(source)).toEqual([]);
+  });
+
+  it("fails closed when AST nesting exceeds MAX_DEPTH (200)", () => {
+    let deep = 'eval("1")';
+    for (let i = 0; i < 210; i++) {
+      deep = `[${deep}]`;
+    }
+    const failures = validateSource({ source: `const x = ${deep};`, filename: "deep.ts" });
+    expect(failures.some((f) => f.kind === "parse-error")).toBe(true);
+  });
+
+  it("rejects non-UUID pluginId in schemaFromSpec and adminSchemaFromSpec", () => {
+    expect(() =>
+      schemaFromSpec({
+        pluginId: "not-a-uuid'); DROP TABLE users; --",
+        slug: "probe",
+        schema: { rows: { name: "string" } },
+      }),
+    ).toThrow("not a valid UUID");
+    expect(() =>
+      adminSchemaFromSpec({
+        pluginId: "not-a-uuid'); DROP TABLE users; --",
+        slug: "probe",
+        adminSchema: { rows: { name: "string" } },
+      }),
+    ).toThrow("not a valid UUID");
   });
 });

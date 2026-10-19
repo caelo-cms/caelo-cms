@@ -34,6 +34,7 @@
  * Pure module — the stacks import it from `dist/`.
  */
 
+import type { SupportedProvider } from "./adapter.js";
 import {
   gatewayServiceAccountEmail,
   gcpBucketName,
@@ -237,14 +238,13 @@ export function adminMediaVolumeTemplate(volume: MediaVolumeContract) {
 export type RuntimeSecret =
   | "postgres-password"
   | "public-role-password"
-  | "gateway-role-password"
   | "secret-kek"
   | "internal-secret"
   | "tool-approval-secret"
   | "staging-gate-secret";
 
 /** The Postgres roles Caelo's services log in as, with their passwords. */
-export type DatabaseRole = "admin_role" | "public_role" | "gateway_role";
+export type DatabaseRole = "admin_role" | "public_role";
 
 /**
  * Each database role's password secret — one per role (#613), so the
@@ -256,7 +256,6 @@ export type DatabaseRole = "admin_role" | "public_role" | "gateway_role";
 export const DATABASE_ROLE_SECRET: Readonly<Record<DatabaseRole, RuntimeSecret>> = {
   admin_role: "postgres-password",
   public_role: "public-role-password",
-  gateway_role: "gateway-role-password",
 };
 
 /**
@@ -269,10 +268,9 @@ export const DATABASE_ROLE_SECRET: Readonly<Record<DatabaseRole, RuntimeSecret>>
 export const CLI_GENERATED_SECRETS = [
   "internal-secret",
   "tool-approval-secret",
-  // #613 — the gateway's own role passwords. Generated (never seeded from
+  // #613 — the gateway's own role password. Generated (never seeded from
   // `postgres-password`), so the gateway never learns admin_role's.
   "public-role-password",
-  "gateway-role-password",
   // #650 — the staging access gate's key: signs "Open staging" links and
   // session cookies, derives the crawler credentials. Read by the admin
   // (issues) and the gateway (verifies).
@@ -359,12 +357,49 @@ function commonEnv(inputs: ServiceEnvInputs): CloudRunEnvVar[] {
 }
 
 /**
+ * The env var telling the gateway which `X-Forwarded-For` entry is the
+ * visitor (apps/api-gateway client-ip.ts): the number of entries the proxies
+ * in front of it append, counting the client's own.
+ */
+export const TRUSTED_PROXY_HOPS_ENV = "CAELO_TRUSTED_PROXY_HOPS";
+
+/**
+ * {@link TRUSTED_PROXY_HOPS_ENV} per provider — a property of each
+ * adapter's topology (CLAUDE.md §11.B), so it is declared here once and every
+ * adapter sets it on its gateway. The gateway refuses to boot without it.
+ * A change to an adapter's path to the gateway must update its entry, or
+ * rate limits pool every visitor (too high) or trust a forgeable entry (too
+ * low).
+ */
+export const GATEWAY_TRUSTED_PROXY_HOPS: Readonly<Record<SupportedProvider, number>> = {
+  // External Application LB appends `<client>,<LB IP>`; the gateway's
+  // ingress is internal-and-LB only, so nothing reaches it around the LB.
+  gcp: 2,
+  // Cloud Run's front end appends its peer. Behind the Firebase Hosting
+  // rewrite that peer is the Hosting CDN edge, and the entry Hosting adds
+  // before it cannot be told apart from a forged one (the service is
+  // invokable on *.run.app too) — so the edge address is the most that can
+  // be trusted. Staging (Cloud Run domain mapping) gets the visitor.
+  "gcp-firebase": 1,
+  // Caddy without `trusted_proxies` replaces the header with its peer; the
+  // gateway is reachable only on the Compose network.
+  "self-hosted": 1,
+  // CloudFront appends the viewer, the ALB appends CloudFront. (No ECS task
+  // definition consumes it yet — see stacks/aws.)
+  aws: 2,
+  // Container Apps ingress appends its peer; the gateway's ingress is
+  // internal to the environment (no Front Door route to it yet).
+  azure: 1,
+};
+
+/**
  * The env of the gateway service. Order is stable so the stacks see no
  * spurious diffs.
  */
 export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvVar<V | string>[] {
   return [
     ...commonEnv(inputs),
+    { name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS[inputs.provider]) },
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
     ...secretEnv("gateway", inputs.env),
   ];

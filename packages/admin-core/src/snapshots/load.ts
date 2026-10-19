@@ -386,6 +386,38 @@ export async function loadContentInstanceStateWithBranchOverlay(
   return loadContentInstanceState(tx, contentInstanceId);
 }
 
+/**
+ * Batch form of {@link loadContentInstanceStateWithBranchOverlay} for list
+ * reads: the newest pending branch snapshot state of each instance that
+ * has one. Instances without a branch edit are absent from the map — the
+ * caller keeps their live row.
+ */
+export async function loadContentInstanceBranchStates(
+  tx: TransactionRunner,
+  contentInstanceIds: readonly string[],
+  chatBranchId: string,
+): Promise<Map<string, ContentInstanceState>> {
+  const out = new Map<string, ContentInstanceState>();
+  if (contentInstanceIds.length === 0) return out;
+  const rows = (await tx.execute(sql`
+    SELECT DISTINCT ON (cis.content_instance_id)
+           cis.content_instance_id::text AS id, cis.state
+      FROM content_instance_snapshots cis
+      JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
+     WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
+       AND cis.content_instance_id IN (${sql.join(
+         contentInstanceIds.map((id) => sql`${id}::uuid`),
+         sql`, `,
+       )})
+     ORDER BY cis.content_instance_id, ss.created_at DESC
+  `)) as unknown as { id: string; state: unknown }[];
+  for (const r of rows) {
+    const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+    out.set(r.id, raw as ContentInstanceState);
+  }
+  return out;
+}
+
 export async function loadPageLayoutState(
   tx: TransactionRunner,
   pageId: string,

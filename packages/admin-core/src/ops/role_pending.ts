@@ -26,7 +26,12 @@ import {
   isDuplicatePendingError,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
-import { createRoleOp, deleteRoleOp, updateRolePermissionsOp } from "./roles.js";
+import {
+  createRoleOp,
+  deleteRoleOp,
+  OWNER_ROLE_PERMISSIONS_FIXED,
+  updateRolePermissionsOp,
+} from "./roles.js";
 
 const PermissionEnum = z.enum(
   PERMISSIONS as readonly Permission[] as [Permission, ...Permission[]],
@@ -127,6 +132,13 @@ export const proposeRoleUpdatePermissionsOp = defineOperation({
         kind: "HandlerError",
         operation: "roles.propose_update_permissions",
         message: `role ${input.roleId} not found`,
+      });
+    }
+    if (r.is_builtin && r.name === "owner") {
+      return err({
+        kind: "HandlerError",
+        operation: "roles.propose_update_permissions",
+        message: OWNER_ROLE_PERMISSIONS_FIXED,
       });
     }
     const added = input.permissions.filter((p) => !r.current_permissions.includes(p));

@@ -400,6 +400,23 @@ first statement):
 The reason is required (a bare marker fails the lint) and appears as a
 `marked-contract` finding, so the cut's acknowledgement shows it.
 
+When a contract migration only works on an install that already ran
+the release with its expand half, it says so in the same header:
+
+```sql
+-- caelo:requires-earlier-run 0281_public_projection_outbox.sql
+```
+
+The migration runner (`packages/migrations/src/run-order.ts`) then
+refuses the whole run, before applying anything, on an existing install
+where an earlier run did not record that migration. An install that
+skips the expand release cannot apply both halves at once, whichever
+path upgrades it (in-cloud upgrader, `cms-provision upgrade`, the host
+agent). The error tells the operator which release to install first. A
+fresh database (nothing recorded) applies everything in one run. The
+named migration must sort before the one naming it; a unit test checks
+every shipped header.
+
 `migrations.lastContractVersion` carries the newest contract release
 forward (the release itself when it has contract migrations, else the
 previous release's value, recorded in `release-meta.json` by

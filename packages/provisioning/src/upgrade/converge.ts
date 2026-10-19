@@ -24,11 +24,7 @@
  * {@link AppRollHooks} the app-roll calls in between, and a part after it.
  */
 
-import {
-  ensureGatewayRolePassword,
-  findSqlInstance,
-  planPublicRoleSwitch,
-} from "../gateway-credentials.js";
+import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import { upgraderServiceAccountEmail } from "../gcp-names.js";
 import type { InstallMetadata } from "../install-state.js";
@@ -291,10 +287,9 @@ export function startConverge(
   }
 
   async function databaseLogins(): Promise<boolean> {
-    // #613 — migration 0248 creates gateway_role without a password; it gets
-    // its secret's value before the gateway rolls onto it. public_role
-    // moves onto its own password right before the gateway's roll.
-    const s = r.step("Ensuring the gateway's database login (gateway_role)...");
+    // #613 — public_role moves onto its own password right before the
+    // gateway's roll. The gateway has no other database login (#635).
+    const s = r.step("Preparing the gateway's database login (public_role)...");
     const sqlInstance = await findSqlInstance(install, { run });
     if (!sqlInstance) {
       s.failed("Could not find the Cloud SQL instance. Aborting upgrade.");
@@ -303,16 +298,7 @@ export function startConverge(
     }
     const roleTarget = { projectId: install.projectId, env: install.env, sqlInstance };
     const roleDeps = { ...runDeps, ...(deps.http ? { http: deps.http } : {}) };
-    const gatewayRole = await ensureGatewayRolePassword(roleTarget, roleDeps);
-    if (gatewayRole.status === "failed") {
-      s.failed("gateway_role could not be given its password. Aborting upgrade.");
-      r.error(`  ${gatewayRole.error ?? ""}`);
-      r.warn(
-        "Migrations ran (0248 creates gateway_role); no traffic was shifted. Fix the above and re-run upgrade.",
-      );
-      return false;
-    }
-    s.done("gateway_role ready");
+    s.done("public_role ready to switch");
     publicRole = planPublicRoleSwitch(roleTarget, service("gateway").liveEnv, roleDeps);
     return true;
   }

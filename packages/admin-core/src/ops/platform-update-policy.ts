@@ -16,7 +16,14 @@
  */
 
 import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
-import { err, ok, type StoredUpdatePolicy, updatePolicySchema } from "@caelo-cms/shared";
+import {
+  err,
+  ok,
+  type StoredUpdatePolicy,
+  UPDATE_POLICY_CHANNELS,
+  UPDATE_POLICY_MODES,
+  updatePolicySchema,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAuditFromCtx } from "../audit.js";
@@ -27,11 +34,12 @@ import {
 } from "../security/step-up/gate.js";
 
 const storedPolicySchema = z.object({
-  mode: z.enum(["off", "notify", "auto"]),
+  mode: z.enum(UPDATE_POLICY_MODES),
   autoSecurity: z.boolean(),
   autoPatch: z.boolean(),
   autoMinor: z.boolean(),
-  channel: z.enum(["stable", "rc", "beta", "alpha"]),
+  autoConverge: z.boolean(),
+  channel: z.enum(UPDATE_POLICY_CHANNELS),
   windowStart: z.string().nullable(),
   windowEnd: z.string().nullable(),
   windowTimezone: z.string(),
@@ -48,7 +56,7 @@ const storedPolicySchema = z.object({
 /** Read the singleton policy row (migration 0267 seeds it). */
 export async function readUpdatePolicy(tx: TransactionRunner): Promise<StoredUpdatePolicy | null> {
   const rows = (await tx.execute(sql`
-    SELECT mode, auto_security, auto_patch, auto_minor, channel,
+    SELECT mode, auto_security, auto_patch, auto_minor, auto_converge, channel,
            to_char(window_start, 'HH24:MI') AS window_start,
            to_char(window_end, 'HH24:MI') AS window_end,
            window_timezone, soak_hours, security_soak_hours, paused, paused_reason,
@@ -59,6 +67,7 @@ export async function readUpdatePolicy(tx: TransactionRunner): Promise<StoredUpd
     auto_security: boolean;
     auto_patch: boolean;
     auto_minor: boolean;
+    auto_converge: boolean;
     channel: StoredUpdatePolicy["channel"];
     window_start: string | null;
     window_end: string | null;
@@ -79,6 +88,7 @@ export async function readUpdatePolicy(tx: TransactionRunner): Promise<StoredUpd
     autoSecurity: r.auto_security,
     autoPatch: r.auto_patch,
     autoMinor: r.auto_minor,
+    autoConverge: r.auto_converge,
     channel: r.channel,
     windowStart: r.window_start,
     windowEnd: r.window_end,
@@ -139,7 +149,7 @@ export const platformUpdatePolicySetOp = defineOperation({
     await tx.execute(sql`
       UPDATE platform_update_policy SET
         mode = ${p.mode}, auto_security = ${p.autoSecurity}, auto_patch = ${p.autoPatch},
-        auto_minor = ${p.autoMinor}, channel = ${p.channel},
+        auto_minor = ${p.autoMinor}, auto_converge = ${p.autoConverge}, channel = ${p.channel},
         window_start = ${p.windowStart}::time, window_end = ${p.windowEnd}::time,
         window_timezone = ${p.windowTimezone}, soak_hours = ${p.soakHours},
         security_soak_hours = ${p.securitySoakHours},
@@ -153,7 +163,7 @@ export const platformUpdatePolicySetOp = defineOperation({
       operation: op,
       input: { policy: p },
       succeeded: true,
-      resultSummary: `mode=${p.mode} security=${p.autoSecurity} patch=${p.autoPatch} minor=${p.autoMinor} soak=${p.soakHours}h/${p.securitySoakHours}h`,
+      resultSummary: `mode=${p.mode} security=${p.autoSecurity} patch=${p.autoPatch} minor=${p.autoMinor} converge=${p.autoConverge} soak=${p.soakHours}h/${p.securitySoakHours}h`,
     });
     return ok(stored);
   },

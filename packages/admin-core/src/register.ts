@@ -314,6 +314,7 @@ import {
   setFocalPointOp,
   setMediaCdnOp,
 } from "./ops/media.js";
+import { ensureActiveFaviconRenditionOp } from "./ops/media_favicon.js";
 import { mediaListMissingFilesOp } from "./ops/media_missing.js";
 import { regenerateMediaVariantsOp } from "./ops/media_regenerate.js";
 import {
@@ -340,11 +341,7 @@ import {
   proposeSetStagingAccessOp,
   proposeSetStagingHostOp,
 } from "./ops/owner_settings_staging.js";
-import {
-  anyBootstrapTokenIssuedOp,
-  consumeBootstrapTokenOp,
-  insertBootstrapTokenOp,
-} from "./ops/owner-bootstrap-tokens.js";
+import { anyBootstrapTokenIssuedOp, insertBootstrapTokenOp } from "./ops/owner-bootstrap-tokens.js";
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import { appliedAdminMigrationsOp, appliedPublicMigrationsOp } from "./ops/platform_health.js";
@@ -619,7 +616,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createFirstOwnerOp);
   registry.register(isSetupCompleteOp);
   registry.register(insertBootstrapTokenOp);
-  registry.register(consumeBootstrapTokenOp);
   registry.register(anyBootstrapTokenIssuedOp);
   // P15 — provisioning outputs + DNS guidance.
   registry.register(setProvisioningOutputsOp);
@@ -1204,6 +1200,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(setMediaCdnOp);
   // run #10 D4 — recovery path for missing derived variants.
   registry.register(regenerateMediaVariantsOp);
+  registry.register(ensureActiveFaviconRenditionOp);
   registry.register(mediaListMissingFilesOp);
   // P7 optimizations — focal-point/crops, processing status, alt proposals.
   registry.register(setFocalPointOp);

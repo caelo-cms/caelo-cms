@@ -44,6 +44,7 @@ import { emitDomainEvent } from "../../domain-events.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
+  loadContentInstanceBranchStates,
   loadContentInstanceState,
   loadContentInstanceStateWithBranchOverlay,
   loadPageLayoutState,
@@ -464,7 +465,29 @@ export const listContentInstancesOp = defineOperation({
       ORDER BY ci.created_at ASC
     `)) as unknown as ContentInstanceRowSql[];
 
-    return ok({ instances: rows.map(rowToContentInstance) });
+    // #820 — same caller-branch overlay as content_instances.get: a
+    // branched set_values lands only in content_instance_snapshots, so a
+    // list without it showed pre-edit values (and the markup guard could
+    // not see copies the same chat had just written).
+    if (ctx.chatBranchId) {
+      const states = await loadContentInstanceBranchStates(
+        tx,
+        rows.map((r) => r.id),
+        ctx.chatBranchId,
+      );
+      for (const r of rows) {
+        const overlay = states.get(r.id);
+        if (!overlay) continue;
+        r.values = overlay.values;
+        r.slug = overlay.slug;
+        r.display_name = overlay.displayName;
+        r.version = overlay.version;
+        r.deleted_at = overlay.deletedAt;
+      }
+    }
+    const visible = input.includeDeleted ? rows : rows.filter((r) => r.deleted_at === null);
+
+    return ok({ instances: visible.map(rowToContentInstance) });
   },
 });
 

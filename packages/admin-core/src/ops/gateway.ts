@@ -179,8 +179,6 @@ export const setGatewaySettingsOp = defineOperation({
         updated_at                 = now()
       WHERE id = 1
     `);
-    // P13 audit fix #2 — propagate the new settings to every gateway.
-    await tx.execute(sql`SELECT pg_notify('caelo_gateway_settings', 'set')`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -210,9 +208,6 @@ export const rotateCookieSecretOp = defineOperation({
     await tx.execute(sql`
       UPDATE site_settings SET gateway_cookie_secret = ${secret}, updated_at = now() WHERE id = 1
     `);
-    // P13 audit fix #2 — wake every gateway replica's LISTEN on the
-    // settings channel so the cached secret invalidates immediately.
-    await tx.execute(sql`SELECT pg_notify('caelo_gateway_settings', 'rotate')`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -478,10 +473,6 @@ export const setRateLimitOverrideOp = defineOperation({
         updated_at      = now(),
         updated_by      = EXCLUDED.updated_by
     `);
-    // P13 audit re-pass — bust the gateway's per-spec cache via the
-    // shared LISTEN channel so the new limit takes effect immediately
-    // on every replica.
-    await tx.execute(sql`SELECT pg_notify('caelo_gateway_settings', 'rate_limit')`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -642,8 +633,6 @@ const executeRateLimitProposalOpDefinition = defineOperation({
          SET status = 'applied', decided_at = now(), decided_by = ${ctx.actorId}::uuid
        WHERE id = ${input.proposalId}::uuid
     `);
-    // P13 audit re-pass — invalidate gateway rate-limit-spec caches.
-    await tx.execute(sql`SELECT pg_notify('caelo_gateway_settings', 'rate_limit')`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -748,8 +737,6 @@ export const setRateLimitProfileOp = defineOperation({
         updated_at      = now(),
         updated_by      = EXCLUDED.updated_by
     `);
-    // Invalidate cached spec lookups so the new profile values take effect.
-    await tx.execute(sql`SELECT pg_notify('caelo_gateway_settings', 'profile')`);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

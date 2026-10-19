@@ -2,28 +2,22 @@
 
 /**
  * Moving an existing install's API gateway off admin_role (issue #613),
- * as `cms-provision upgrade` does it. The env side — the per-role password
- * secrets in, ADMIN_DATABASE_* out (and, since #635, GATEWAY_DATABASE_* out
- * too: the gateway has no cms_admin login at all) — rides the gateway's
- * roll (stack-contract.ts). gateway_role keeps getting its password until
- * the contract release drops the role, because the previous release's
- * gateway logs in with it until it is rolled. The database side is ordered around
- * that roll so /api/* keeps working:
+ * as `cms-provision upgrade` does it. The env side — public_role's own
+ * password secret in, every cms_admin credential out (#613, #635) — rides
+ * the gateway's roll (stack-contract.ts). The database side is ordered
+ * around that roll so /api/* keeps working:
  *
- *   1. after migrations (which create `gateway_role` without a password):
- *      `gateway_role` gets its password. Nothing uses the role yet, so this
- *      is safe at any point before the gateway rolls.
- *   2. right before the gateway rolls: `public_role` moves off admin_role's
+ *   1. right before the gateway rolls: `public_role` moves off admin_role's
  *      password onto its own. Only the gateway logs in as public_role, so
  *      the window in which the old revision cannot open NEW public
  *      connections is the roll itself (open connections stay up).
- *   3. if the gateway's roll fails and it is rolled back: `public_role`
+ *   2. if the gateway's roll fails and it is rolled back: `public_role`
  *      goes back to the password the prior revision reads, so the rollback
  *      leaves a working gateway, not a locked-out one.
  *
  * On every later upgrade the gateway already reads public_role's own
- * secret: step 2 then re-applies the same value (a no-op for clients) and
- * step 3 has nothing to undo.
+ * secret: step 1 then re-applies the same value (a no-op for clients) and
+ * step 2 has nothing to undo.
  */
 
 import { gcloud as defaultGcloud } from "./gcloud.js";
@@ -60,22 +54,14 @@ export interface GatewayCredentialDeps {
   readonly http?: HttpFetch;
 }
 
-/** Step 1: `gateway_role`'s password from its secret. */
-export function ensureGatewayRolePassword(
-  target: DatabaseRoleTarget,
-  deps: GatewayCredentialDeps = {},
-): Promise<EnsureOutcome> {
-  return ensureDatabaseRolePassword(target, "gateway_role", deps);
-}
-
-/** Steps 2 and 3 for one roll of the gateway. */
+/** Steps 1 and 2 for one roll of the gateway. */
 export interface PublicRoleSwitch {
   /** Whether this roll moves public_role off admin_role's password. */
   readonly moves: boolean;
-  /** Step 2 — run right before the gateway's `services update`. */
+  /** Step 1 — run right before the gateway's `services update`. */
   beforeGatewayRoll(): Promise<EnsureOutcome>;
   /**
-   * Step 3 — run when the gateway's roll failed and it goes back to its
+   * Step 2 — run when the gateway's roll failed and it goes back to its
    * prior revision. Returns what happened, for the operator.
    */
   afterGatewayRollFailed(): Promise<string>;

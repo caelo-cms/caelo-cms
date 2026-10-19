@@ -110,9 +110,10 @@ export interface ComposeThemeAsset {
   readonly mediaId: string;
   readonly url: string;
   /**
-   * `media_assets.mime` of the bound asset — the content type of the
-   * `orig` bytes the URL serves. Carried so `<head>` metadata that
-   * declares a type (`<link rel="icon" type=…>`) states the real one.
+   * Content type of the bytes the URL serves: `media_assets.mime` for the
+   * `orig` URL, `image/png` for a raster favicon's rendition (see
+   * `themeFaviconRendition`). Carried so `<head>` metadata that declares
+   * a type (`<link rel="icon" type=…>`) states the real one.
    */
   readonly mime: string;
 }
@@ -241,7 +242,8 @@ export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | nul
  * regardless of which layout or chrome modules the page uses, so the
  * composer emits it from the theme binding instead of relying on a
  * module to carry the tag. The href is the media URL as composed
- * (`/_caelo/media/<slug>`); the static generator's media pass rewrites
+ * (`/_caelo/media/<slug>/icon-64` for a raster favicon, the `orig` URL
+ * for ICO/SVG — see `themeFaviconRendition`); the static generator's media pass rewrites
  * it to the published `/_assets/<slug>.<hash>.<ext>` and copies the bytes, the
  * same as any other media reference. Returns null when no theme is
  * threaded or no favicon is bound (nothing to declare; browsers fall

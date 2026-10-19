@@ -124,6 +124,49 @@ export function buildMediaUrl(slug: string, variant: MediaVariantTag | string): 
 }
 
 /**
+ * The favicon rendition of a raster image bound to the theme's favicon
+ * slot: a square PNG, `FAVICON_VARIANT_PX` on each side. Browsers show a
+ * favicon at 16-32 CSS px (64 covers 2x screens). The `orig` of a raster
+ * favicon is often an AI-generated 1024 px PNG of 1-2 MB, and the browser
+ * fetches the `<link rel="icon">` while the page loads: under Lighthouse's
+ * throttled network that download pushed LCP from 0.9 s to 4.7 s on an
+ * otherwise perfect page (real-AI run 39038927234). Created when the
+ * favicon is bound (`themes.set_asset`), not on every upload.
+ */
+export const FAVICON_VARIANT = "icon-64";
+
+/** Edge length in px of {@link FAVICON_VARIANT}. */
+export const FAVICON_VARIANT_PX = 64;
+
+/** Raster mimes: the ones the image pipeline decodes (sharp) and resizes. */
+const RASTER_IMAGE_MIMES: ReadonlySet<string> = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/avif",
+  "image/gif",
+]);
+
+/** Whether `mime` is a raster image the pipeline can decode and resize. */
+export function isRasterImageMime(mime: string): boolean {
+  return RASTER_IMAGE_MIMES.has(mime);
+}
+
+/**
+ * The URL + content type the `<link rel="icon">` of a bound favicon uses.
+ * A raster favicon ships its {@link FAVICON_VARIANT} PNG; ICO and SVG are
+ * favicon formats already and ship as uploaded (`orig`).
+ */
+export function themeFaviconRendition(
+  slug: string,
+  mime: string,
+): { readonly url: string; readonly mime: string } {
+  return isRasterImageMime(mime)
+    ? { url: buildMediaUrl(slug, FAVICON_VARIANT), mime: "image/png" }
+    : { url: buildMediaUrl(slug, "orig"), mime };
+}
+
+/**
  * Turn a human/asset label into a URL-safe media slug: lowercase ascii,
  * kebab-case, extension + junk stripped, capped at 60 chars. NOT
  * uniquified — the caller resolves collisions against the live library

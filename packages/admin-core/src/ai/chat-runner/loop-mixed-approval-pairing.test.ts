@@ -263,4 +263,25 @@ describe("runToolLoop — mixed gated + non-gated turn pairing", () => {
       else process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS = prev;
     }
   });
+
+  it("never auto-approves under NODE_ENV=production, even with the e2e flag set (#863)", async () => {
+    // A leftover CAELO_E2E_AUTO_APPROVE_PROPOSALS on a real install must
+    // not turn the §11.A Approve card into an automatic yes.
+    const prevFlag = process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS;
+    const prevEnv = process.env.NODE_ENV;
+    process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS = "1";
+    process.env.NODE_ENV = "production";
+    try {
+      const fixture = buildFixtureQueryApi();
+      const { events, result } = await runLoop(mixedGatedTurnProvider(), fixture);
+      expect(fixture.appended.some((m) => m.content === "[approval granted]")).toBe(false);
+      expect(events.filter((e) => e.kind === "tool-approval-request")).toHaveLength(1);
+      expect(result.stopReason).toBe("awaiting_approval");
+    } finally {
+      if (prevFlag === undefined) delete process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS;
+      else process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS = prevFlag;
+      if (prevEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = prevEnv;
+    }
+  });
 });

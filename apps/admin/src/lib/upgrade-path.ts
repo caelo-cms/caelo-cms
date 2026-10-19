@@ -143,25 +143,6 @@ export function resolveUpgradePath(env: UpgradePathEnv, version: string): Upgrad
 }
 
 /**
- * The start of a release's notes for the Updates page: whole paragraphs up
- * to `maxChars`, shown as plain text (never rendered as HTML — the notes
- * come from GitHub). The full notes are one click away on GitHub.
- *
- * @returns the excerpt and whether anything was left out.
- */
-export function releaseNotesExcerpt(
-  notes: string,
-  maxChars = 1200,
-): { text: string; truncated: boolean } {
-  const trimmed = notes.replace(/\r\n/g, "\n").trim();
-  if (trimmed.length <= maxChars) return { text: trimmed, truncated: false };
-  const cut = trimmed.lastIndexOf("\n\n", maxChars);
-  // A first paragraph longer than the budget is cut at a word instead.
-  const end = cut > 0 ? cut : trimmed.lastIndexOf(" ", maxChars);
-  return { text: `${trimmed.slice(0, end > 0 ? end : maxChars).trimEnd()}\n…`, truncated: true };
-}
-
-/**
  * The install's Google Cloud project, from the upgrader job's resource name
  * (`projects/<id>/…`); null when the admin has no upgrader job.
  */

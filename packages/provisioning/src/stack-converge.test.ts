@@ -316,6 +316,8 @@ describe("planContractEnv", () => {
       "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
     expect(plan.services.gateway.flags).toEqual([
+      // The gateway learns which forwarded address is the visitor (#845).
+      "--update-env-vars=CAELO_TRUSTED_PROXY_HOPS=1",
       "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
   });

@@ -20,11 +20,14 @@
  * the soak period.
  *
  * Rules, in order (maintainer decisions on #696):
- *   1. nothing newer, or notices off → none;
+ *   1. nothing newer → none (there is no "notices off": security
+ *      releases are always announced, #862);
  *   2. off the stable channel, or the policy only notifies → notify;
  *   3. major → notify (never automatic before 1.0);
  *   4. release information unreadable → blocked (fails loudly, no guess);
- *   5. changes the cloud setup → needs_cloud_shell (never automatic);
+ *   5. changes the cloud setup → needs_cloud_shell (never automatic, even
+ *      with `autoConverge` on: that choice is inert until the converge job
+ *      runs these releases from Caelo, #819);
  *   6. destructive database changes → manual (never automatic);
  *   7. the kind is not switched on (security / patch / minor) → notify;
  *   8. no upgrader on this install → blocked;
@@ -194,9 +197,6 @@ export function decideAutoUpdate(input: AutoUpdateInput): AutoUpdateDecision {
   if (kind === null) {
     return { action: "none", reason: `v${input.installedVersion} is the newest release.` };
   }
-  if (policy.mode === "off") {
-    return { action: "none", reason: "Update notices are switched off in the update policy." };
-  }
   const v = release.version;
   const base = { version: v, kind } as const;
   if (!isStable(v)) {
@@ -229,10 +229,17 @@ export function decideAutoUpdate(input: AutoUpdateInput): AutoUpdateDecision {
   }
   const facts = input.facts;
   if (facts.infraChange === true) {
+    // FIXME(issue #819): once the converge job runs these releases from
+    // Caelo, `policy.autoConverge` decides here like autoPatch does below.
+    // Until then the Owner's "install automatically" choice is stored but
+    // has no effect, and the reason says so.
+    const ownerChoice = policy.autoConverge
+      ? " Your setting to install these automatically takes effect once Caelo can run them itself."
+      : "";
     return {
       action: "needs_cloud_shell",
       ...base,
-      reason: `v${v} changes this install's cloud setup, which the admin may not do. It is never installed automatically: the Owner runs it once with their own account in Cloud Shell.`,
+      reason: `v${v} changes this install's cloud setup, which the admin may not do. It is never installed automatically: the Owner runs it once with their own account in Cloud Shell.${ownerChoice}`,
     };
   }
   if (facts.contractMigrations) {

@@ -45,7 +45,6 @@ import {
 import { formatDnsRecordGroups, groupDnsRecords, type InstallDnsRecord } from "../dns/groups.js";
 import { pickDnsAdapter } from "../dns/index.js";
 import type { DnsRecord } from "../dns/types.js";
-import { ensureGatewayRolePassword, findSqlInstance } from "../gateway-credentials.js";
 import {
   activeAccount,
   type BillingAccount,
@@ -453,13 +452,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     }
   }
 
-  // === 11.2. The gateway's database login (#613) ===
-  // Migration 0248 created gateway_role without a password; it gets the
-  // gateway-role-password secret's value here. The gateway (deployed by
-  // Pulumi before migrations) retries its database on every request, so it
-  // starts serving /api/* as soon as this lands — no restart.
-  phase("Finishing: database logins, operator access, welcome page");
-  await stepGatewayRolePassword(projectId);
+  phase("Finishing: operator access, welcome page");
 
   // === 11.4. The upgrader job: Settings → Updates → Install update (#696) ===
   // Before operator access, which keeps the upgrader's caelo-mcp grant.
@@ -932,29 +925,6 @@ async function stepUrlMapRedirectsAccess(projectId: string): Promise<void> {
     process.exit(1);
   }
   s.stop(green(`Redirects role ready (${r.role})`));
-}
-
-/**
- * Give `gateway_role` (created by migration 0248) its password from the
- * `gateway-role-password` secret (#613). public_role already has its own:
- * the stack set it from `public-role-password`. Idempotent, so it runs on
- * every wizard pass.
- */
-async function stepGatewayRolePassword(projectId: string): Promise<void> {
-  const s = spinner();
-  s.start("Setting the gateway's database login (gateway_role)...");
-  const install = { projectId, env: GCP_STACK_ENV };
-  const sqlInstance = await findSqlInstance(install);
-  const r = sqlInstance
-    ? await ensureGatewayRolePassword({ ...install, sqlInstance })
-    : { status: "failed" as const, error: "the Cloud SQL instance was not found" };
-  if (r.status === "failed") {
-    s.stop(red(`Failed: ${r.error ?? ""}`));
-    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
-    cancel("Aborted.");
-    process.exit(1);
-  }
-  s.stop(green("gateway_role ready"));
 }
 
 /**

@@ -123,6 +123,7 @@ async function bootstrapAndProvision(): Promise<void> {
 }
 
 beforeAll(async () => {
+  process.env.CAELO_TRUSTED_PROXY_HOPS = "1";
   await wipe();
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
@@ -149,8 +150,12 @@ afterAll(async () => {
   await gatewayAdapter.close();
 });
 
+// Behind one proxy (self-hosted Caddy sets X-Forwarded-For to its peer).
 function postReq(path: string, body: unknown, cookieHeader?: string): Request {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Forwarded-For": "203.0.113.20",
+  };
   if (cookieHeader) headers.cookie = cookieHeader;
   return new Request(`http://localhost${path}`, {
     method: "POST",

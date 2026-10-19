@@ -248,9 +248,9 @@ function arg(name: string): string | undefined {
   return process.argv[idx + 1];
 }
 
-/** Fresh passwords for the three application roles. */
+/** Fresh passwords for the two application roles. */
 function newRolePasswords(): RolePasswords {
-  return { admin: randomSecret(32), public: randomSecret(32), gateway: randomSecret(32) };
+  return { admin: randomSecret(32), public: randomSecret(32) };
 }
 
 function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): void {
@@ -979,6 +979,7 @@ async function upgradeSelfHostedCommand(opts: {
       caeloDir: CAELO_DIR,
       runner: bunHostRunner,
       renderCompose: (images) => renderCompose(cfg, images),
+      convergeRoles: agentContext(cfg).convergeRoles,
       log: {
         step: (m) => console.log(`\n==> ${m}`),
         info: (m) => console.log(`    ${m}`),
