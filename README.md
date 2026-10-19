@@ -104,7 +104,7 @@ After any install, open the setup link it prints, create the Owner account and p
 - **`caelo_chat`**: you describe an outcome, Caelo's own AI does the work.
 - **Power-MCP**: your agent gets Caelo's full tool catalogue and runs the loop itself; by default Caelo makes no AI calls of its own.
 
-Either way the agent works in the draft, and publishing stays with a human. Mint a token at `/settings/mcp` on your install; the page shows the exact `claude mcp add` command for it.
+Either way the agent works in the draft, and publishing stays with a human. Mint a token at `/settings/mcp` on your install; the page shows the exact setup for it in Claude Code, Claude Desktop, Codex CLI, Cursor, VS Code and Gemini CLI.
 
 With Claude Code, Power-MCP looks like this:
 
@@ -112,7 +112,7 @@ With Claude Code, Power-MCP looks like this:
 claude mcp add caelo-admin \
   --env CAELO_ADMIN_URL=https://admin.example.com \
   --env CAELO_MCP_TOKEN=mcp_<token> \
-  -- bunx --package @caelo-cms/mcp-server@<your Caelo version> caelo-admin-mcp
+  -- bunx --package @caelo-cms/mcp-server@latest caelo-admin-mcp
 ```
 
 Then ask it for an outcome, for example *"Add a pricing page in our design system and stage it for review."* Details: [MCP and Power-MCP docs](https://caelo-cms.com/docs/mcp/).
