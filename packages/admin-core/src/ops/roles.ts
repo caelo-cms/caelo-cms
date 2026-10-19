@@ -155,6 +155,14 @@ export const deleteRoleOp = defineOperation({
   },
 });
 
+/**
+ * Refusal for a permission change on the built-in `owner` role: stripping
+ * it would lock every Owner out of the surfaces that could undo it
+ * (PR #863, M-10). Shared with `roles.propose_update_permissions`.
+ */
+export const OWNER_ROLE_PERMISSIONS_FIXED =
+  "cannot change the permissions of the built-in owner role — it always holds every permission. Create a custom role with the permissions you need and assign that role instead.";
+
 export const updateRolePermissionsOp = defineOperation({
   name: "roles.update_permissions",
   // Why human-only: Owner-only — security.
@@ -182,7 +190,7 @@ export const updateRolePermissionsOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "roles.update_permissions",
-        message: "cannot modify permissions of the built-in owner role",
+        message: OWNER_ROLE_PERMISSIONS_FIXED,
       });
     }
     await tx.execute(sql`DELETE FROM role_permissions WHERE role_id = ${input.roleId}::uuid`);

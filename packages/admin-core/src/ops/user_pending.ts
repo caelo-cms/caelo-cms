@@ -28,7 +28,12 @@ import {
   isDuplicatePendingError,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
-import { createUserOp, deleteUserOp, setUserRolesOp } from "./users.js";
+import {
+  createUserOp,
+  deleteUserOp,
+  FIRST_OWNER_KEEPS_OWNER_ROLE,
+  setUserRolesOp,
+} from "./users.js";
 
 // ─── propose_create ──────────────────────────────────────────────────
 
@@ -123,7 +128,7 @@ export const proposeUserSetRolesOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "users.propose_set_roles",
-        message: "cannot remove the owner role from the first Owner",
+        message: FIRST_OWNER_KEEPS_OWNER_ROLE,
       });
     }
     const preview = {

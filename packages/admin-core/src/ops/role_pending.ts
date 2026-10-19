@@ -26,7 +26,12 @@ import {
   isDuplicatePendingError,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
-import { createRoleOp, deleteRoleOp, updateRolePermissionsOp } from "./roles.js";
+import {
+  createRoleOp,
+  deleteRoleOp,
+  OWNER_ROLE_PERMISSIONS_FIXED,
+  updateRolePermissionsOp,
+} from "./roles.js";
 
 const PermissionEnum = z.enum(
   PERMISSIONS as readonly Permission[] as [Permission, ...Permission[]],
@@ -133,7 +138,7 @@ export const proposeRoleUpdatePermissionsOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "roles.propose_update_permissions",
-        message: "cannot modify permissions of the built-in owner role",
+        message: OWNER_ROLE_PERMISSIONS_FIXED,
       });
     }
     const added = input.permissions.filter((p) => !r.current_permissions.includes(p));
