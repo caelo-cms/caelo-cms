@@ -12,7 +12,10 @@
  * but cannot change IAM, service accounts or secrets. One run:
  *
  *   1. claim the oldest pending request (ending a run that died mid-way);
- *   2. read what the install runs from install.json in its ops bucket;
+ *   2. read what the install runs from install.json in its ops bucket; when
+ *      it names other images than the ones serving, re-record the serving
+ *      release if a signed release manifest names both its images, else
+ *      stop (upgrader-records.ts, #860);
  *   3. fetch the release manifest from the FIXED registry and verify its
  *      signature (release-manifest.ts) — no registry, identity or digest
  *      ever comes from the request, the env or argv;
@@ -23,7 +26,8 @@
  *   6. app-roll (upgrade/app-roll.ts) with no converge hooks: migrations
  *      with the new admin image, admin then gateway, deep health check,
  *      traffic back onto the previous revisions on any failure;
- *   7. record the new digests + version in install.json;
+ *   7. record the new digests + version in install.json (a failed write
+ *      ends the run as failed, never as succeeded);
  *   8. move this job onto the release's own ops image, last.
  *
  * Every step is narrated into `platform_update_events` (upgrader-reporter.ts).
@@ -52,10 +56,19 @@ import {
   type RollSlug,
 } from "./upgrade/app-roll.js";
 import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
-import { findServingImageDigest, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
+import {
+  findServingImage,
+  resolveGcpResourceName,
+  servingImageDigests,
+} from "./upgrade/gcp-lookup.js";
 import type { HealthProbe } from "./upgrade/health.js";
 import { releaseImageRef } from "./upgrade/release-images.js";
 import { assessUpgradeRequest, type RefusalCode } from "./upgrader-assess.js";
+import {
+  findServingRelease,
+  recordMatchesServing,
+  type ServingDigests,
+} from "./upgrader-records.js";
 import { eventReporter, type JobLog } from "./upgrader-reporter.js";
 
 /** A request the job claimed, with the policy as it stood at claim time. */
@@ -243,21 +256,26 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
 
     // 2. What the install runs — from its own state, never from the admin.
     r.phase("verify");
-    const meta = deps.readInstall();
-    if (!meta || meta.projectId !== deps.projectId) {
+    const read = deps.readInstall();
+    if (!read || read.projectId !== deps.projectId) {
       return stopWith(
         "needs_cloud_shell",
         ["install-state"],
         "The install's records (install.json) are not in its own cloud project yet, so the upgrader cannot tell what it runs. Run the upgrade once with Cloud Shell; it moves them there.",
       );
     }
-    if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") {
+    if (read.provider !== "gcp" && read.provider !== "gcp-firebase") {
       return stopWith(
         "refused",
         ["provider"],
-        `The upgrader job only upgrades Google Cloud installs; this one is ${meta.provider}.`,
+        `The upgrader job only upgrades Google Cloud installs; this one is ${read.provider}.`,
       );
     }
+    // Rebound when the records are refreshed below; `provider` is narrowed.
+    let meta: InstallMetadata & { provider: "gcp" | "gcp-firebase" } = {
+      ...read,
+      provider: read.provider,
+    };
 
     // install.json must describe what actually serves: if a previous run
     // rolled but could not record it, the recorded version is stale and
@@ -266,17 +284,35 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     if (!serving.ok) {
       return stopWith("failed", ["lookup"], `Nothing was changed: ${serving.error}.`);
     }
-    const recorded = meta.imageDigests;
-    if (
-      !recorded ||
-      recorded.admin !== serving.digests.admin ||
-      recorded.gateway !== serving.digests.gateway
-    ) {
-      return stopWith(
-        "needs_cloud_shell",
-        ["install-state-drift"],
-        "The release that serves now is not the one the install's records (install.json) name, so the upgrader cannot tell safely what it runs. Run the upgrade once with Cloud Shell; it records the serving release again.",
-      );
+    if (!recordMatchesServing(meta.imageDigests, serving.digests)) {
+      // #860 — re-record the serving release ourselves, but only one whose
+      // admin AND gateway images a signed release manifest names.
+      const found = await findServingRelease(meta, serving.digests, deps);
+      if (!found.ok) {
+        return stopWith("needs_cloud_shell", ["install-state-drift"], found.reason);
+      }
+      const v = found.manifest.version;
+      // The manifest's digests, not the serving ones: the signed form is the
+      // one every later comparison and deploy uses (gcp-lookup.ts ServingImage).
+      const refreshed = {
+        ...meta,
+        imageDigests: {
+          admin: found.manifest.digests.admin,
+          gateway: found.manifest.digests.gateway,
+        },
+        releaseVersion: v,
+      };
+      try {
+        deps.writeInstall(refreshed);
+        meta = refreshed;
+      } catch (e) {
+        return stopWith(
+          "failed",
+          ["install-state-write"],
+          `Nothing was changed: the install's records (install.json) name another release than the one that serves (v${v}), and they could not be corrected (${errorText(e)}).`,
+        );
+      }
+      r.success(`Caelo refreshed its install records: v${v} serves.`);
     }
 
     // 3 + 4. The signed manifest decides.
@@ -363,6 +399,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     }
 
     // 6 + 7. The roll; it rolls back by itself on failure.
+    let recordError: string | null = null;
     const rolled = await executeAppRoll(
       {
         plan: planned.plan,
@@ -377,6 +414,9 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
         reporter: r,
         migrate: deps.migrate,
         health: probe.probe,
+        // The roll already succeeded, so a failed write must not undo it;
+        // it is held here and ends the run as failed below (no fallbacks:
+        // never "succeeded" while the records name the previous release).
         recordDigests: async (digests) => {
           r.phase("record");
           try {
@@ -384,8 +424,9 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
             deps.writeInstall({ ...fresh, imageDigests: digests, releaseVersion: m.version });
             r.info(`Recorded ${m.version} as this install's release.`);
           } catch (e) {
-            r.warn(
-              `The new release serves, but install.json could not be updated (${errorText(e)}). The next update will stop and ask for one upgrade with Cloud Shell, which records it.`,
+            recordError = errorText(e);
+            r.error(
+              `The new release serves, but install.json could not be updated (${recordError}).`,
             );
           }
         },
@@ -406,6 +447,13 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
         "failed",
         [rolled.phase],
         `Stopped during ${rolled.phase === "migrations" ? "the database migrations" : "the pre-check"}; the previous release keeps serving.${restore}`,
+      );
+    }
+    if (recordError !== null) {
+      return stopWith(
+        "failed",
+        ["record"],
+        `Caelo ${m.version} serves and passed its checks, but the install's records (install.json) could not be updated (${recordError}), so they still name the previous release. The next update corrects them by itself once the upgrader can write its ops bucket again; check the upgrader's access to it.`,
       );
     }
 
@@ -467,11 +515,11 @@ export async function recordUpdateEnd(
   return false;
 }
 
-/** The digests the revisions serving traffic run, per service. */
+/** Every digest the revisions serving traffic are known by, per service. */
 async function servingDigests(
   deps: UpgraderJobDeps,
-): Promise<{ ok: true; digests: Record<RollSlug, string> } | { ok: false; error: string }> {
-  const digests: Partial<Record<RollSlug, string>> = {};
+): Promise<{ ok: true; digests: ServingDigests } | { ok: false; error: string }> {
+  const digests: Partial<Record<RollSlug, readonly string[]>> = {};
   for (const slug of ["admin", "gateway"] as const) {
     const prefix = `${gcpNamePrefix(deps.env)}-${slug}`;
     const service = await resolveGcpResourceName(
@@ -481,13 +529,13 @@ async function servingDigests(
       deps.projectId,
       deps.region,
     );
-    const digest = service
-      ? await findServingImageDigest(deps.run, deps.projectId, deps.region, service)
+    const image = service
+      ? await findServingImage(deps.run, deps.projectId, deps.region, service)
       : null;
-    if (!digest) return { ok: false, error: `could not read which image the ${slug} serves` };
-    digests[slug] = digest;
+    if (!image) return { ok: false, error: `could not read which image the ${slug} serves` };
+    digests[slug] = servingImageDigests(image);
   }
-  return { ok: true, digests: digests as Record<RollSlug, string> };
+  return { ok: true, digests: digests as ServingDigests };
 }
 
 async function recordFacts(
