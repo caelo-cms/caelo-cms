@@ -175,6 +175,7 @@ function isPublicIpv6(ip: string): boolean {
   if (g?.length !== 8) return false;
   const g0 = g[0] ?? 0;
   const g1 = g[1] ?? 0;
+  const g2 = g[2] ?? 0;
   const allZeroHead = g.slice(0, 5).every((x) => x === 0);
 
   // :: (unspecified) and ::1 (loopback)
@@ -184,15 +185,30 @@ function isPublicIpv6(ip: string): boolean {
   if (allZeroHead && (g[5] === 0xffff || g[5] === 0)) {
     return isPublicIpv4(groupsToV4(g[6] ?? 0, g[7] ?? 0));
   }
-  // NAT64 64:ff9b::/96 → judge the embedded v4
-  if (g0 === 0x64 && g1 === 0xff9b && g.slice(2, 6).every((x) => x === 0)) {
+  // SIIT v4-translated ::ffff:0:a.b.c.d (RFC 2765) → judge the embedded v4
+  if (g.slice(0, 4).every((x) => x === 0) && g[4] === 0xffff && g[5] === 0) {
     return isPublicIpv4(groupsToV4(g[6] ?? 0, g[7] ?? 0));
   }
+  // NAT64 64:ff9b::/96 (RFC 6052) → judge the embedded v4;
+  // local-use NAT64 64:ff9b:1::/48 (RFC 8215) → always non-public.
+  if (g0 === 0x64 && g1 === 0xff9b) {
+    if (g.slice(2, 6).every((x) => x === 0)) {
+      return isPublicIpv4(groupsToV4(g[6] ?? 0, g[7] ?? 0));
+    }
+    if (g2 === 1) return false;
+  }
+  // 0100::/64 discard-only prefix (RFC 6666)
+  if (g0 === 0x0100 && g1 === 0 && g2 === 0 && (g[3] ?? 0) === 0) return false;
+  // 2001::/23 IETF protocol assignments (includes Teredo 2001:0000::/32,
+  // benchmarking 2001:2::/48, ORCHIDv2 2001:20::/28)
+  if (g0 === 0x2001 && (g1 & 0xfe00) === 0x0000) return false;
+  if (g0 === 0x2001 && g1 === 0x0db8) return false; // documentation
+  // 6to4 2002::/16 (RFC 3056, deprecated RFC 7526)
+  if (g0 === 0x2002) return false;
   if ((g0 & 0xfe00) === 0xfc00) return false; // fc00::/7 ULA
   if ((g0 & 0xffc0) === 0xfe80) return false; // fe80::/10 link-local
   if ((g0 & 0xffc0) === 0xfec0) return false; // fec0::/10 deprecated site-local
   if ((g0 & 0xff00) === 0xff00) return false; // ff00::/8 multicast
-  if (g0 === 0x2001 && g1 === 0x0db8) return false; // documentation
   return true;
 }
 

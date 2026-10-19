@@ -54,7 +54,16 @@ describe("isPublicIpAddress", () => {
     "::ffff:10.0.0.1",
     "::ffff:192.168.0.1",
     "::ffff:169.254.169.254",
+    "::ffff:0:127.0.0.1", // SIIT v4-translated loopback
+    "::ffff:0:169.254.169.254", // SIIT v4-translated metadata
     "64:ff9b::7f00:1", // NAT64-embedded loopback
+    "64:ff9b:1::1", // RFC 8215 local-use NAT64
+    "100::1", // RFC 6666 discard-only prefix
+    "2001::1", // Teredo (2001:0000::/32)
+    "2001:2::1", // benchmarking (2001:2::/48)
+    "2001:20::1", // ORCHIDv2 (2001:20::/28)
+    "2002:7f00:1::1", // 6to4 loopback
+    "2002:a9fe:a9fe::1", // 6to4 metadata
     "not-an-ip",
     "",
   ];

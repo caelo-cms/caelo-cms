@@ -19,18 +19,25 @@
  * abstraction + a thin Playwright-backed factory.
  */
 
-import { lookup as dnsLookup } from "node:dns";
-import { isIP } from "node:net";
 import { COLLECT_STYLE_SAMPLES_SCRIPT, type ElementStyleSample } from "./design-tokens.js";
 import { REMOVE_HIDDEN_ELEMENTS_SCRIPT } from "./hidden-elements.js";
-import { assertPublicHttpUrl, isPublicIpAddress } from "./safe-fetch.js";
+import {
+  assertPublicHttpUrl,
+  type SafeFetchOptions,
+  safeExternalFetchBinary,
+} from "./safe-fetch.js";
 
 /** Minimal Playwright route surface — typed locally so the package
  * doesn't need @types/playwright (Playwright stays a dynamic import). */
-interface PlaywrightRoute {
-  request(): { url(): string; headers(): Record<string, string> };
+export interface PlaywrightRoute {
+  request(): { url(): string; method?(): string; headers(): Record<string, string> };
   abort(errorCode?: string): Promise<void>;
   continue(opts?: { headers?: Record<string, string> }): Promise<void>;
+  fulfill?(opts: {
+    status: number;
+    headers?: Record<string, string>;
+    body?: Buffer | Uint8Array;
+  }): Promise<void>;
 }
 
 export interface Screenshot {
@@ -299,6 +306,51 @@ export async function launchBundledChromium(opts?: {
 }
 
 /**
+ * Fulfill an external browser request via `safeExternalFetchBinary` so
+ * connect-time DNS validation (`makeGuardedLookup`), redirect re-validation,
+ * and response size caps apply with zero DNS-rebinding TOCTOU gap between
+ * route inspection and Chromium's socket connect. Non-GET/HEAD requests are
+ * aborted so rendered third-party pages cannot trigger cross-site state
+ * mutations.
+ */
+export async function handleExternalRoute(
+  route: PlaywrightRoute,
+  opts: {
+    readonly allowedHosts: readonly string[];
+    readonly lookupFn?: SafeFetchOptions["lookupFn"];
+    readonly fetchBinaryFn?: typeof safeExternalFetchBinary;
+    readonly onFinalUrl?: (requestUrl: string, finalUrl: string) => void;
+  },
+): Promise<void> {
+  const req = route.request();
+  const method = (req.method?.() ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    await route.abort("blockedbyclient");
+    return;
+  }
+  const requestUrl = req.url();
+  const fetchFn = opts.fetchBinaryFn ?? safeExternalFetchBinary;
+  try {
+    const res = await fetchFn(requestUrl, {
+      allowedHosts: opts.allowedHosts,
+      ...(opts.lookupFn ? { lookupFn: opts.lookupFn } : {}),
+    });
+    opts.onFinalUrl?.(requestUrl, res.finalUrl);
+    if (route.fulfill) {
+      await route.fulfill({
+        status: res.status,
+        ...(res.contentType ? { headers: { "content-type": res.contentType } } : {}),
+        body: method === "HEAD" ? Buffer.alloc(0) : Buffer.from(res.bodyBytes),
+      });
+    } else {
+      await route.continue();
+    }
+  } catch {
+    await route.abort("blockedbyclient");
+  }
+}
+
+/**
  * Returns a Playwright-backed screenshotter, or null if Playwright isn't
  * importable in the current runtime. issue #247: a null return is NOT a
  * silent skip anymore — the orchestrator records a loud
@@ -325,7 +377,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     return null;
   }
   const browser = launched.browser;
-  const allowedHosts = guardOpts?.allowedHosts ?? [];
+  const allowedHosts = (guardOpts?.allowedHosts ?? []).map((h) => h.toLowerCase());
 
   /**
    * Open an SSRF-guarded context + page, navigate (domcontentloaded + a short
@@ -342,7 +394,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       sameOriginHeaders?: Record<string, string>;
     },
     // biome-ignore lint/suspicious/noExplicitAny: Playwright page + response handles (dynamic import, no @types)
-    fn: (page: any, gotoResponse: any) => Promise<T>,
+    fn: (page: any, gotoResponse: any, navFinalUrl?: string) => Promise<T>,
   ): Promise<T> {
     if (opts.external) {
       // Static pre-check: scheme/port/IP-literal blocks fire before a
@@ -371,34 +423,19 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
         await route.continue(patched ? { headers: patched } : undefined);
       });
     }
+    let navFinalUrl: string | undefined;
     if (opts.external) {
-      // Guard every request the page makes (navigation + subresources).
-      // Hostnames are resolved at route time; the browser resolves again to
-      // connect, so a rebinding race is narrowed rather than eliminated — the
-      // primary target (direct navigation or an <img>/fetch to a metadata/
-      // loopback address) is fully blocked. The socket-level guarantee lives
-      // in safe-fetch.ts.
+      // Guard every request the page makes (navigation + subresources) by
+      // fulfilling it through safeExternalFetchBinary, eliminating the
+      // DNS-rebinding TOCTOU window between route-time DNS lookup and
+      // Chromium's own socket connection.
       await ctx.route("**/*", async (route: PlaywrightRoute) => {
-        const requestUrl = route.request().url();
-        try {
-          const u = assertPublicHttpUrl(requestUrl, { allowedHosts });
-          const bareHost = u.hostname.startsWith("[") ? u.hostname.slice(1, -1) : u.hostname;
-          if (isIP(bareHost) === 0 && !allowedHosts.includes(bareHost.toLowerCase())) {
-            const addresses = await new Promise<Array<{ address: string }>>((resolve, reject) => {
-              dnsLookup(bareHost, { all: true }, (err, addrs) => {
-                if (err) reject(err);
-                else resolve(addrs as Array<{ address: string }>);
-              });
-            });
-            if (addresses.some((a) => !isPublicIpAddress(a.address))) {
-              await route.abort("blockedbyclient");
-              return;
-            }
-          }
-          await route.continue();
-        } catch {
-          await route.abort("blockedbyclient");
-        }
+        await handleExternalRoute(route, {
+          allowedHosts,
+          onFinalUrl: (reqUrl, finalUrl) => {
+            if (reqUrl === url) navFinalUrl = finalUrl;
+          },
+        });
       });
     }
     const page = await ctx.newPage();
@@ -413,7 +450,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
         timeout: 15_000,
       });
       await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
-      return await fn(page, gotoResponse);
+      return await fn(page, gotoResponse, navFinalUrl);
     } finally {
       await ctx.close();
     }
@@ -443,7 +480,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           height: opts?.height,
           ...(opts?.sameOriginHeaders ? { sameOriginHeaders: opts.sameOriginHeaders } : {}),
         },
-        async (page, gotoResponse) => {
+        async (page, gotoResponse, navFinalUrl) => {
           let png: Uint8Array;
           if (opts?.selector) {
             const loc = page.locator(opts.selector).first();
@@ -492,7 +529,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             bytes: new Uint8Array(png),
             width: opts?.width ?? 1280,
             height: opts?.height ?? 800,
-            finalUrl: page.url() as string,
+            finalUrl: navFinalUrl ?? (page.url() as string),
             ...(finalStatus !== undefined ? { finalStatus } : {}),
             ...(styleSamples ? { styleSamples } : {}),
             ...(renderedHtml !== undefined ? { renderedHtml } : {}),
@@ -507,7 +544,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       return withGuardedPage(
         url,
         { external: opts?.external, width: opts?.width, height: opts?.height },
-        async (page, gotoResponse) => {
+        async (page, gotoResponse, navFinalUrl) => {
           let styleSamples: ElementStyleSample[] | undefined;
           if (opts?.sampleStyles) {
             styleSamples = (await page.evaluate(
@@ -533,7 +570,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             contentType = undefined;
           }
           return {
-            finalUrl: page.url() as string,
+            finalUrl: navFinalUrl ?? (page.url() as string),
             html,
             ...(contentType !== undefined ? { contentType } : {}),
             ...(styleSamples ? { styleSamples } : {}),
