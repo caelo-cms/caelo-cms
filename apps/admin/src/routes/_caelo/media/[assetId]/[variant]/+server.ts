@@ -19,6 +19,7 @@ import { getMediaStorage } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { FAVICON_VARIANT, MEDIA_VARIANT_TAGS, type MediaVariantTag } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
+import { mediaSecurityHeaders } from "#lib/server/media-headers.js";
 import { requireUserOrPreviewScreenshotToken } from "#lib/server/preview-screenshot-auth.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
@@ -68,14 +69,14 @@ export const GET: RequestHandler = async ({ params, locals, request }) => {
   // ArrayBufferLike). new Uint8Array(len) gives an exact ArrayBuffer.
   const copy = new Uint8Array(body.byteLength);
   copy.set(body);
-  return new Response(new Blob([copy], { type: contentTypeFor(v.format) }), {
+  const contentType = contentTypeFor(v.format);
+  return new Response(new Blob([copy], { type: contentType }), {
     status: 200,
     headers: {
-      "content-type": contentTypeFor(v.format),
+      "content-type": contentType,
       "content-length": String(body.byteLength),
       "cache-control": "private, max-age=31536000, immutable",
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      ...mediaSecurityHeaders(contentType),
     },
   });
 };
