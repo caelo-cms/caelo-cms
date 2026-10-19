@@ -103,9 +103,52 @@ export function selfHostedSeedDomains(domain: string, stagingDomain: string): Ca
   ];
 }
 
+/**
+ * Characters that would let a value end its Caddyfile token and start new
+ * directives or blocks: whitespace (incl. newlines), both quote styles Caddy
+ * tokenizes (`"` and backtick), braces (blocks and `{placeholders}`), the
+ * comment marker, escapes and semicolons. A site address additionally may
+ * not hold a comma, which would add further addresses to the same block.
+ */
+const UNSAFE_CADDY_TOKEN_RE = /[\s"`{}#\\;]/;
+const UNSAFE_CADDY_ADDRESS_RE = /[\s"`{}#\\;,]/;
+
+/**
+ * Why `value` cannot go into the Caddyfile as one token, or null when it can.
+ * `init` checks the operator's domains and email with this before it writes
+ * anything, so a bad value never leaves a half-made install behind.
+ *
+ * @param kind `address` for a site address (hostname), `token` for any other value
+ */
+export function caddyTokenProblem(value: string, kind: "address" | "token"): string | null {
+  if (value.length === 0) return "it is empty";
+  const unsafe = kind === "address" ? UNSAFE_CADDY_ADDRESS_RE : UNSAFE_CADDY_TOKEN_RE;
+  if (unsafe.test(value)) {
+    return `it contains whitespace, a quote, a brace, '#', '\\', ';'${kind === "address" ? " or ','" : ""}`;
+  }
+  return null;
+}
+
+function assertSafeCaddyToken(label: string, value: string, kind: "address" | "token"): void {
+  const problem = caddyTokenProblem(value, kind);
+  if (problem) {
+    throw new Error(
+      `Caddyfile: invalid ${label} ${JSON.stringify(value)} — ${problem}. Fix the value in .caelo/config.json (or the domain you added) and run the command again.`,
+    );
+  }
+}
+
+/** Every caller-supplied value is checked before any of it is emitted (#888). */
 export function generateCaddyfile(spec: CaddyfileSpec): string {
+  assertSafeCaddyToken("ownerEmail", spec.ownerEmail, "token");
+  assertSafeCaddyToken("publicSiteRoot", spec.publicSiteRoot, "token");
+  assertSafeCaddyToken("stagingSiteRoot", spec.stagingSiteRoot, "token");
+  assertSafeCaddyToken("adminUpstream", spec.adminUpstream, "token");
+  assertSafeCaddyToken("gatewayUpstream", spec.gatewayUpstream, "token");
+
   const hostnames = new Set<string>();
   for (const d of spec.domains) {
+    assertSafeCaddyToken("hostname", d.hostname, "address");
     if (hostnames.has(d.hostname)) {
       // Caddy refuses a config with two site blocks for one address, so a
       // duplicate would take every vhost down, not just this one.

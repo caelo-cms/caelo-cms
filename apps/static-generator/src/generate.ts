@@ -52,6 +52,7 @@ import {
 } from "./content-variants-pass.js";
 import { loadSiteFontUsage } from "./font-usage-sources.js";
 import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
+import { loadBuildLinkIndex } from "./link-index.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import {
   assertNoRenderFailures,
@@ -109,6 +110,24 @@ export interface GenerateResult {
   readonly durationMs: number;
   /** Absolute path to the build dir under builds/<runId>. */
   readonly buildDir: string;
+  /**
+   * Epic #724 — internal links whose target page exists but is not
+   * published, so this build does not contain it. Per the #724 decision
+   * a warning at Stage; the blocking check for Publish live / promote
+   * consumes the same list (rollout F). Missing targets never get here:
+   * they fail the build in the render gate.
+   */
+  readonly unpublishedLinkTargets: readonly UnpublishedLinkTarget[];
+}
+
+/** One page linking to a page this build does not ship. */
+export interface UnpublishedLinkTarget {
+  /** The page carrying the link. */
+  readonly pageSlug: string;
+  readonly pagePath: string;
+  /** The linked page and the path its link renders as. */
+  readonly targetPageId: string;
+  readonly targetUrl: string;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -225,6 +244,11 @@ export function pageOutputPath(
 ): string {
   const trimmed = trimSlashes(currentPath);
   if (trimmed.length === 0) return "index.html";
+  for (const seg of trimmed.split("/")) {
+    if (seg.length === 0 || seg === "." || seg === "..") {
+      throw new Error(`static-generator: invalid page path "${currentPath}"`);
+    }
+  }
   return pageUrlStyle === "no-extension" ? trimmed : `${trimmed}/index.html`;
 }
 
@@ -416,6 +440,9 @@ export async function generateSite(args: {
 }): Promise<GenerateResult> {
   const start = Date.now();
   const { tx, target, runId } = args;
+  if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
+    throw new Error(`static-generator: invalid runId "${runId}"`);
+  }
   const root = args.repoRoot ?? process.cwd();
   const outDir = resolve(root, target.outDir);
   const buildsDir = join(outDir, "builds");
@@ -895,6 +922,8 @@ export async function generateSite(args: {
     ),
   );
   const renderedForGate: RenderedPageForGate[] = [];
+  const linkIndex = await loadBuildLinkIndex(tx, target.env, pageUrlStyle);
+  const unpublishedLinkTargets: UnpublishedLinkTarget[] = [];
 
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
@@ -907,6 +936,7 @@ export async function generateSite(args: {
     // it with the page slug so the deploy operator can locate the
     // offending row, rather than silently emitting a body-less page.
     let composed: ReturnType<typeof composePageWithLayout>;
+    const linkResolver = linkIndex.forPage(page.page_id);
     try {
       composed = composePageWithLayout({
         templateHtml: page.template_html,
@@ -923,6 +953,7 @@ export async function generateSite(args: {
         dormantDataLists: dormantLists,
         deferredModules,
         nestedModules,
+        linkResolver,
       });
     } catch (e) {
       if (e instanceof ComposeError) {
@@ -943,6 +974,18 @@ export async function generateSite(args: {
       html: composed.html,
       moduleFailures: composed.moduleFailures,
     });
+    const seenTargets = new Set<string>();
+    for (const o of linkResolver.observed) {
+      if (o.ref.kind !== "page" || o.resolution.status !== "unpublished") continue;
+      if (seenTargets.has(o.ref.pageId)) continue;
+      seenTargets.add(o.ref.pageId);
+      unpublishedLinkTargets.push({
+        pageSlug: page.slug,
+        pagePath: page.current_path,
+        targetPageId: o.ref.pageId,
+        targetUrl: o.resolution.url,
+      });
+    }
     // P13 — record per-page bake target for the plugin render pass.
     bakeTargets.set(page.page_id, {
       pageId: page.page_id,
@@ -1029,7 +1072,10 @@ export async function generateSite(args: {
   // markup is guaranteed to find it already in the document.
   const clientAssets = await args.plugins.collectBuildAssets(pageRows.map((p) => p.page_id));
   for (const asset of clientAssets) {
-    const assetPath = join(buildDir, asset.relPath);
+    const assetPath = resolve(buildDir, asset.relPath);
+    if (!assetPath.startsWith(`${buildDir}/`)) {
+      throw new Error(`static-generator: asset path "${asset.relPath}" escapes build directory`);
+    }
     await mkdir(dirname(assetPath), { recursive: true });
     await writeFile(assetPath, asset.content, "utf8");
     fileCount += 1;
@@ -1053,7 +1099,10 @@ export async function generateSite(args: {
   // the extension (no extension AND it's a page).
   const contentTypeOverrides: Record<string, string> = {};
   for (const p of composedPages) {
-    const filePath = join(buildDir, p.relPath);
+    const filePath = resolve(buildDir, p.relPath);
+    if (!filePath.startsWith(`${buildDir}/`)) {
+      throw new Error(`static-generator: output path "${p.relPath}" escapes build directory`);
+    }
     await mkdir(join(filePath, ".."), { recursive: true });
     await writeFile(filePath, p.html, "utf8");
     fileCount += 1;
@@ -1158,7 +1207,13 @@ export async function generateSite(args: {
   // serving target (which is `current/`).
   await pruneOldBuilds(buildsDir, runId, 5);
 
-  return { pageCount: pageRows.length, fileCount, durationMs: Date.now() - start, buildDir };
+  return {
+    pageCount: pageRows.length,
+    fileCount,
+    durationMs: Date.now() - start,
+    buildDir,
+    unpublishedLinkTargets,
+  };
 }
 
 async function pruneOldBuilds(buildsDir: string, keepRunId: string, retain: number): Promise<void> {

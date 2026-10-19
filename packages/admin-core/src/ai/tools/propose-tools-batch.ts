@@ -526,7 +526,10 @@ export const proposeMcpTokenRevokeTool = makeProposeTool({
   toolName: "propose_revoke_mcp_token",
   opName: "mcp_tokens.propose_revoke",
   pendingQueuePath: "/settings/mcp/pending",
-  when: "Propose revoking an existing MCP token. Already-revoked tokens are rejected at queue time.",
+  when:
+    "Propose revoking an existing MCP token. Already-revoked tokens are rejected at queue time. " +
+    "In an Owner's chat any user's token can be named; in anyone else's chat only that person's own " +
+    "tokens are visible — another user's token id comes back as not found.",
   schema: z.object({ tokenId: uuid }).strict(),
   inputSchema: {
     type: "object",

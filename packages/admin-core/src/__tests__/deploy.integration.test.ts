@@ -10,6 +10,8 @@
  *   - AI actor can call deploy.trigger for non-production targets
  *     (trigger-only AI surface); a production target is refused.
  *   - deploy_runs row records succeeded + counts.
+ *   - #724: links to draft pages cross the generator boundary into
+ *     deploy.trigger's `unpublishedLinkTargets` (the Stage warning).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -55,6 +57,9 @@ const PAGE_SLUG = "p6-about";
 // page maps to index.html, so the fixture ships a root page alongside
 // the slug the assertions inspect.
 const HOME_SLUG = "home";
+// #724 — a published page linking to a draft one.
+const LINKER_SLUG = "p6-linker";
+const DRAFT_SLUG = "p6-draft-target";
 
 async function wipe(): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
@@ -62,8 +67,10 @@ async function wipe(): Promise<void> {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM deploy_runs`;
-      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN (${PAGE_SLUG}, ${HOME_SLUG}))`;
-      await tx`DELETE FROM pages WHERE slug IN (${PAGE_SLUG}, ${HOME_SLUG})`;
+      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN (${PAGE_SLUG}, ${HOME_SLUG}, ${LINKER_SLUG}, ${DRAFT_SLUG}))`;
+      await tx`DELETE FROM pages WHERE slug IN (${PAGE_SLUG}, ${HOME_SLUG}, ${LINKER_SLUG}, ${DRAFT_SLUG})`;
+      await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE display_name LIKE 'p6-link %')`;
+      await tx`DELETE FROM modules WHERE display_name LIKE 'p6-link %'`;
       await tx`DELETE FROM modules WHERE slug = ${MOD_SLUG}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
       await tx`DELETE FROM templates WHERE slug = ${TPL_SLUG}`;
@@ -450,4 +457,77 @@ describe("P6 deploy.trigger", () => {
       });
     }
   });
+
+  it("reports links to draft pages in unpublishedLinkTargets (#724 Stage warning)", async () => {
+    const tpl = await asSystemQuery(
+      (tx) => tx`SELECT id::text AS id FROM templates WHERE slug = ${TPL_SLUG}`,
+    );
+    const templateId = (tpl[0] as { id: string }).id;
+    const build = async (
+      slug: string,
+      status: "draft" | "published",
+      html: string,
+      values: Record<string, unknown>,
+      fields: unknown[],
+    ) => {
+      const r = await execute(registry, adapter, HUMAN, "pages.build_page", {
+        page: { slug, title: slug, templateId, status },
+        modules: [
+          {
+            blockName: "content",
+            displayName: `p6-link ${slug}`,
+            description: "Page body.",
+            kind: "content",
+            html,
+            fields,
+            content: { source: "inline", values },
+          },
+        ],
+      });
+      if (!r.ok) throw new Error(`build_page ${slug}: ${JSON.stringify(r.error)}`);
+      return (r.value as { pageId: string }).pageId;
+    };
+    const draft = await build(DRAFT_SLUG, "draft", "<p>{{body}}</p>", { body: "Soon" }, [
+      { name: "body", kind: "text", label: "Body" },
+    ]);
+    const linker = await build(
+      LINKER_SLUG,
+      "published",
+      '<a href="{{target}}">Soon</a>',
+      { target: `caelo:page/${draft}` },
+      [{ name: "target", kind: "url", label: "Target" }],
+    );
+    const seo = await execute(registry, adapter, HUMAN, "pages_seo.autofill_many", {
+      items: [{ pageId: linker, metaDescription: "Links to a draft page." }],
+    });
+    if (!seo.ok) throw new Error("seo seed");
+
+    await openQualityGate(adapter);
+    const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
+      targetName: "production",
+      repoRoot: testRoot,
+      changedPageIds: [linker],
+    });
+    if (!result.ok) throw new Error(`deploy.trigger: ${JSON.stringify(result.error)}`);
+    expect((result.value as { unpublishedLinkTargets: unknown[] }).unpublishedLinkTargets).toEqual([
+      {
+        pageSlug: LINKER_SLUG,
+        pagePath: `/${LINKER_SLUG}`,
+        targetPageId: draft,
+        targetUrl: `/${DRAFT_SLUG}/`,
+      },
+    ]);
+  });
 });
+
+async function asSystemQuery<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    return await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return query(tx);
+    });
+  } finally {
+    await sql.end();
+  }
+}

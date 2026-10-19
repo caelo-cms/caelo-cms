@@ -173,10 +173,16 @@ function pageResult(
 async function claim(): Promise<{
   auditRunId: string;
   deployRunId: string;
+  performanceRuns: number;
   pages: { pageId: string }[];
 } | null> {
   const v = await op<{
-    run: { auditRunId: string; deployRunId: string; pages: { pageId: string }[] } | null;
+    run: {
+      auditRunId: string;
+      deployRunId: string;
+      performanceRuns: number;
+      pages: { pageId: string }[];
+    } | null;
   }>(SYS, "quality_audits.claim_next", {});
   return v.run;
 }
@@ -367,6 +373,9 @@ describe("quality audit lifecycle + ratchet", () => {
 
     const run = await claim();
     expect(run?.deployRunId).toBe(deployRunId);
+    // #874: the page is scored by its best of 3 Performance runs (was the
+    // median of 5); the job the worker hands the Lighthouse child says so.
+    expect(run?.performanceRuns).toBe(3);
     const old = await op<{ runs: { status: string }[] }>(SYS, "quality_audits.list", {
       status: "superseded",
     });

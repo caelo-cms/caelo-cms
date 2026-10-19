@@ -28,6 +28,7 @@
 import { BASE_TECHNICAL_CSS } from "./base-css.js";
 import type { ModuleFieldKind } from "./content.js";
 import { NAV_FUNCTIONAL_CSS, NAV_TOGGLE_JS } from "./interactions.js";
+import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import {
   type NestedModuleResource,
   type NestedRenderFailure,
@@ -39,7 +40,9 @@ import {
   extractInnerOfTopLevelContentSlot,
   listSlotNames,
 } from "./preview-scanner.js";
+import { escapeStyleText, scriptNeedsEncoding, utf8ToBase64 } from "./raw-text-escape.js";
 import { stripCdataGuards } from "./strip-cdata.js";
+import { balanceTemplateCloses } from "./template-balance.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";
 import { renderThemeCss as renderThemeCssFromTokens } from "./theme-render.js";
 import type { ThemeDocument } from "./themes.js";
@@ -176,6 +179,15 @@ export interface ComposeInput {
    * `nested-renderer-unavailable` failure.
    */
   readonly nestedModules?: NestedRenderResolver;
+  /**
+   * Epic #724 — resolves internal references (`caelo:page/<id>`,
+   * `caelo:media/<id>`) for THIS page: in every placed and nested
+   * module and in nav-menu items. A broken reference becomes a
+   * `link-target-missing:<kind>/<id>` module failure; without a resolver
+   * every reference fails with `link-resolver-unavailable` (loud — a
+   * deploy refuses it).
+   */
+  readonly linkResolver?: LinkResolver;
 }
 
 /**
@@ -224,11 +236,11 @@ export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | nul
   const links = fonts.preloads
     .map((href) => {
       const format = /\.(woff2?|ttf|otf)(?:[?#]|$)/.exec(href)?.[1];
-      return `<link rel="preload" as="font"${format ? ` type="font/${format}"` : ""} crossorigin href="${href}">`;
+      return `<link rel="preload" as="font"${format ? ` type="font/${format}"` : ""} crossorigin href="${escapeAttr(href)}">`;
     })
     .join("");
-  const style =
-    fonts.css.trim().length > 0 ? `<style data-source="fonts">${fonts.css}</style>` : "";
+  const safeCss = escapeStyleText(fonts.css);
+  const style = safeCss.trim().length > 0 ? `<style data-source="fonts">${safeCss}</style>` : "";
   const fragment = links + style;
   return fragment.length > 0 ? fragment : null;
 }
@@ -287,7 +299,9 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
       let baseHtml: string;
       if (navMenuItems !== null) {
         navRendered = true;
-        baseHtml = renderNavMenuHtml(navMenuItems);
+        const nav = renderNavMenuHtml(navMenuItems, input.linkResolver);
+        baseHtml = nav.html;
+        recordFailures(moduleFailures, block.blockName, m, nav.failures);
       } else {
         const rendered = renderModuleFields(m, input);
         baseHtml = rendered.html;
@@ -355,7 +369,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   );
 
   if (allCss.length > 0) {
-    const styleTag = `<style data-source="modules">\n${allCss.join("\n")}\n</style>`;
+    const styleTag = `<style data-source="modules">\n${escapeStyleText(allCss.join("\n"))}\n</style>`;
     html = injectBefore(html, HEAD_CLOSE_RE, styleTag);
   }
   if (allJs.length > 0) {
@@ -423,8 +437,25 @@ function escapeText(s: string): string {
  * Render a nav-menu's typed items into HTML. Recursively handles
  * children for submenus. Plain `<nav><ul><li>` so site CSS can theme
  * it via the `caelo-nav-menu` class.
+ *
+ * Epic #724 — item hrefs may be internal references; they resolve
+ * through `resolver` like module content, and a broken one is returned
+ * as a failure attributed to the nav-menu module.
  */
-function renderNavMenuHtml(items: readonly unknown[]): string {
+function renderNavMenuHtml(
+  items: readonly unknown[],
+  resolver: LinkResolver | undefined,
+): { html: string; failures: NestedRenderFailure[] } {
+  const missing: string[] = [];
+  const renderNavItem = (item: NavMenuItem): string => {
+    const target = item.target === "_blank" ? ' target="_blank" rel="noopener"' : "";
+    const inner =
+      item.children && item.children.length > 0
+        ? `<ul>${item.children.map(renderNavItem).join("")}</ul>`
+        : "";
+    const href = resolveLinkRefsInHtml(item.href, resolver, missing);
+    return `<li><a href="${escapeAttr(href)}"${target}>${escapeText(item.label)}</a>${inner}</li>`;
+  };
   const safeItems = items.filter((it): it is NavMenuItem => {
     if (!it || typeof it !== "object") return false;
     const o = it as { label?: unknown; href?: unknown };
@@ -437,15 +468,8 @@ function renderNavMenuHtml(items: readonly unknown[]): string {
     '<button type="button" class="caelo-nav-toggle" aria-expanded="false" aria-label="Menu">' +
     '<span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span>' +
     "</button>";
-  return `<nav class="caelo-nav-menu" data-nav-open="false">${toggle}<ul>${safeItems.map(renderNavItem).join("")}</ul></nav>`;
-}
-function renderNavItem(item: NavMenuItem): string {
-  const target = item.target === "_blank" ? ' target="_blank" rel="noopener"' : "";
-  const inner =
-    item.children && item.children.length > 0
-      ? `<ul>${item.children.map(renderNavItem).join("")}</ul>`
-      : "";
-  return `<li><a href="${escapeAttr(item.href)}"${target}>${escapeText(item.label)}</a>${inner}</li>`;
+  const html = `<nav class="caelo-nav-menu" data-nav-open="false">${toggle}<ul>${safeItems.map(renderNavItem).join("")}</ul></nav>`;
+  return { html, failures: missing.map((reason) => ({ field: "", reason })) };
 }
 
 /**
@@ -502,6 +526,7 @@ function renderModuleFields(
     readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
     readonly dormantDataLists?: Readonly<Record<string, string>>;
     readonly nestedModules?: NestedRenderResolver;
+    readonly linkResolver?: LinkResolver;
   },
 ): RenderedModuleFields {
   // The substitution engine (renderTemplate) already unwraps CDATA
@@ -511,7 +536,15 @@ function renderModuleFields(
     Object.keys(input.dataLists ?? {}).length > 0 ||
     Object.keys(input.dormantDataLists ?? {}).length > 0;
   if (!m.fields && !m.contentValues && !input.theme && !hasLists) {
-    return { html: stripCdataGuards(m.html), failures: [], nestedModuleIds: [] };
+    // Still resolve references: pre-rendered (editor preview) and
+    // field-less chrome modules carry links in their raw HTML too.
+    const missing: string[] = [];
+    const html = resolveLinkRefsInHtml(stripCdataGuards(m.html), input.linkResolver, missing);
+    return {
+      html,
+      failures: missing.map((reason) => ({ field: "", reason })),
+      nestedModuleIds: [],
+    };
   }
   const fields: TemplateField[] = (m.fields ?? []).map((f) => ({
     name: f.name,
@@ -537,7 +570,12 @@ function renderModuleFields(
         values: m.contentValues ?? {},
       },
       input.nestedModules,
-      { themeAssets, dataLists: input.dataLists, dormantDataLists: input.dormantDataLists },
+      {
+        themeAssets,
+        dataLists: input.dataLists,
+        dormantDataLists: input.dormantDataLists,
+        linkResolver: input.linkResolver,
+      },
     );
     return { html: r.html, failures: r.failures, nestedModuleIds: [...r.touchedModuleIds] };
   }
@@ -548,6 +586,7 @@ function renderModuleFields(
     dataLists: input.dataLists,
     dormantDataLists: input.dormantDataLists,
     themeAssets,
+    linkResolver: input.linkResolver,
   });
   return {
     html: r.html,
@@ -637,22 +676,30 @@ function wrapDeferredModule(
 ): string {
   const attr = (v: string): string =>
     v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+  // Inside the inert <template>, only an element's own end tag ends a
+  // <style> / <script>; a `</template` there is text. So CSS needs just
+  // its own close escaped, JS that could end its <script> ships base64
+  // (the runtime decodes it, see consent-manager runtime.ts), and the
+  // markup needs its unmatched `</template>` closes neutralized
+  // (balanced nested templates stay).
+  const safeHtml = balanceTemplateCloses(moduleHtml);
   const gated = [module, ...nestedModules];
   const css = gated
     .filter((g) => g.css.trim().length > 0)
-    .map((g) => `<style data-source="module">${g.css}</style>`)
+    .map((g) => `<style data-source="module">${escapeStyleText(g.css)}</style>`)
     .join("");
   const js = gated
     .filter((g) => g.js.trim().length > 0)
-    .map(
-      (g) =>
-        `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}">${g.js}</script>`,
+    .map((g) =>
+      scriptNeedsEncoding(g.js)
+        ? `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}" data-caelo-encoding="base64">${utf8ToBase64(g.js)}</script>`
+        : `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}">${g.js}</script>`,
     )
     .join("");
   return [
     `<div data-caelo-deferred="${attr(deferral.pluginSlug)}" data-reason="${attr(deferral.reason)}" data-module="${attr(module.slug)}">`,
     `<div data-caelo-deferred-placeholder>${deferral.placeholderHtml}</div>`,
-    `<template data-caelo-deferred-content>${css}${moduleHtml}${js}</template>`,
+    `<template data-caelo-deferred-content>${css}${safeHtml}${js}</template>`,
     `</div>`,
   ].join("");
 }
@@ -775,7 +822,9 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     let baseHtml: string;
     if (navMenuItems !== null) {
       navRendered = true;
-      baseHtml = renderNavMenuHtml(navMenuItems);
+      const nav = renderNavMenuHtml(navMenuItems, input.linkResolver);
+      baseHtml = nav.html;
+      recordFailures(moduleFailures, blockName, m, nav.failures);
     } else {
       const rendered = renderModuleFields(m, input);
       baseHtml = rendered.html;
@@ -902,7 +951,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     html = injectBefore(
       html,
       HEAD_CLOSE_RE,
-      `<style data-source="modules">\n${cssParts.join("\n")}\n</style>`,
+      `<style data-source="modules">\n${escapeStyleText(cssParts.join("\n"))}\n</style>`,
     );
   }
   if (jsParts.length > 0) {
