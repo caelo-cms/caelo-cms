@@ -1122,7 +1122,6 @@ const handlers: Record<string, () => Promise<void>> = {
   "admin-domain": adminDomain,
   "staging-domain": stagingDomain,
   "owner-reset": ownerReset,
-  "request-update": requestUpdate,
   // #696 — Pulumi state in the install's own project.
   state: async () => (await import("./state-command.js")).stateCommand(process.argv),
   attach: async () => (await import("./state-command.js")).attachCommand(process.argv),
@@ -1236,77 +1235,6 @@ async function ownerReset(): Promise<void> {
     process.exit(1);
   }
   for (const line of describeOwnerReset(r.value)) console.log(line);
-}
-
-/**
- * #818 `request-update --version <v> [--wait] [--timeout-minutes <n>]
- * [--install <id> | --project-id <p> --region <r>]` — install a release
- * (a release candidate included) with the install's own upgrader job, as
- * the Owner's "Install update" does (see request-update.ts). The
- * project/region form needs no local install state, for CI runners (the
- * release workflow's upgrader smoke test).
- */
-async function requestUpdate(): Promise<void> {
-  const version = arg("version")?.replace(/^v/, "");
-  if (!version) {
-    console.error("Usage: cms-provision request-update --version <x.y.z[-rc.n]> [--wait]");
-    process.exit(2);
-  }
-  let target: { projectId: string; region: string };
-  const projectId = arg("project-id");
-  const region = arg("region");
-  if (projectId || region) {
-    if (!projectId || !region) {
-      console.error("request-update: --project-id and --region go together.");
-      process.exit(2);
-    }
-    target = { projectId, region };
-  } else {
-    const { installFlag, listInstalls, selectInstall } = await import("./install-state.js");
-    const selected = selectInstall(listInstalls(), installFlag(process.argv));
-    if (!selected.ok) {
-      console.error(selected.message);
-      process.exit(1);
-    }
-    const meta = selected.meta;
-    if (!meta.projectId || !meta.region) {
-      console.error(
-        `install ${meta.installId} has no project or region recorded in install.json; pass --project-id and --region.`,
-      );
-      process.exit(1);
-    }
-    target = { projectId: meta.projectId, region: meta.region };
-  }
-  const minutes = Number(arg("timeout-minutes") ?? "75");
-  if (!Number.isFinite(minutes) || minutes <= 0) {
-    console.error("request-update: --timeout-minutes must be a positive number.");
-    process.exit(2);
-  }
-  const { describeUpdateEnd, requestPlatformUpdate, waitForPlatformUpdate } = await import(
-    "./request-update.js"
-  );
-  const queued = await requestPlatformUpdate(target, version);
-  if (!queued.ok) {
-    console.error(`request-update: ${queued.error}`);
-    process.exit(1);
-  }
-  console.log(
-    `Update to ${version} requested (request ${queued.value.requestId}, upgrader run ${queued.value.execution}).`,
-  );
-  if (!process.argv.includes("--wait")) return;
-  const ended = await waitForPlatformUpdate(target, queued.value.requestId, {
-    timeoutMs: minutes * 60_000,
-    intervalMs: 20_000,
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    now: Date.now,
-    onEvent: (e) => console.log(`${e.at} [${e.phase}] ${e.level}: ${e.message}`),
-  });
-  if (!ended.ok) {
-    console.error(`request-update: ${ended.error}`);
-    process.exit(1);
-  }
-  for (const line of describeUpdateEnd(ended.value)) console.log(line);
-  if (ended.value.status !== "succeeded") process.exit(1);
 }
 
 /**

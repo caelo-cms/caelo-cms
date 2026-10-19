@@ -76,7 +76,7 @@ export async function requestOwnerReset(
  * The gcloud account this command runs as, for the admin's audit row. Without
  * one there is nobody to name, and the IAP step after this would fail anyway.
  */
-export async function readGcloudAccount(
+async function readGcloudAccount(
   run: NonNullable<AdminInternalDeps["run"]>,
 ): Promise<AdminInternalResult<string>> {
   // `auth list --filter=status:ACTIVE`, not `config get-value account`: the

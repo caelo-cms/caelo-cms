@@ -360,7 +360,6 @@ import {
   platformUpdatesCancelOp,
   platformUpdatesGetOp,
   platformUpdatesListOp,
-  platformUpdatesOperatorRequestOp,
   platformUpdatesRecordTriggerOp,
   platformUpdatesRequestOp,
 } from "./ops/platform-update-requests.js";
@@ -1149,7 +1148,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // the upgrader job does the install. list/get/policy.get are AI-readable.
   registry.register(platformUpdatesRequestOp);
   registry.register(platformUpdatesCancelOp);
-  registry.register(platformUpdatesOperatorRequestOp);
   registry.register(platformUpdatesRecordTriggerOp);
   registry.register(platformUpdatesListOp);
   registry.register(platformUpdatesGetOp);
