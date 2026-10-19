@@ -10,7 +10,7 @@
  * typed here with only the fields we read.
  */
 
-import { performanceMetricsFromRuns } from "./lighthouse-metrics.js";
+import { combineRunMetrics, type RunMetrics, runMetrics } from "./lighthouse-metrics.js";
 import { elementFromNode, nonEmpty } from "./lighthouse-node.js";
 import {
   type FailingAudit,
@@ -295,16 +295,133 @@ export function bestRunIndex(
 }
 
 /**
- * Combine one full run (all four categories) and the extra Performance
- * runs into the page's measurement.
+ * One Lighthouse run reduced to what the page's measurement needs. The audit
+ * child (or a parallel audit task, #875) reduces each run where it ran, so
+ * the multi-megabyte LHR never crosses a process or machine boundary.
+ */
+export interface RunMeasurement {
+  /** 0..100 per category the run audited: all four for the full run,
+   *  Performance alone for the extra runs. */
+  readonly scores: Partial<Record<QualityCategory, number>>;
+  /** The run's failing audits (`failingAudits`). */
+  readonly failingAudits: readonly FailingAudit[];
+  /**
+   * Every audit the run's non-Performance categories reference, failing or
+   * not. Empty for a Performance-only run. `combineRuns` reads it from the
+   * full run to tell which audits belong only to Performance: an extra run
+   * carries the Performance category alone, so an audit Performance shares
+   * with another category looks Performance-only there.
+   */
+  readonly otherCategoryAuditIds: readonly string[];
+  readonly metrics: RunMetrics;
+  /** Where the run ended up after redirects. */
+  readonly finalUrl?: string;
+  /** The CPU calibration of the host the run ran on (cpu-calibration.ts). */
+  readonly cpuCalibration?: {
+    readonly benchmarkIndex: number;
+    readonly cpuSlowdownMultiplier: number;
+  };
+}
+
+/**
+ * Reduce one run. The full run audits every category; extra runs only
+ * Performance.
+ *
+ * @throws LighthouseRunError when the run produced no usable result or a
+ *   requested category has no score.
+ */
+export function reduceRun(
+  lhr: LhrLike,
+  categories: readonly QualityCategory[],
+  cpuCalibration?: RunMeasurement["cpuCalibration"],
+): RunMeasurement {
+  return {
+    scores: categoryScores(lhr, categories),
+    failingAudits: failingAudits(lhr),
+    otherCategoryAuditIds: [
+      ...new Set(
+        categories
+          .filter((c) => c !== "performance")
+          .flatMap((c) => (lhr.categories[c]?.auditRefs ?? []).map((r) => r.id)),
+      ),
+    ].sort(),
+    metrics: runMetrics(lhr),
+    ...(lhr.finalDisplayedUrl ? { finalUrl: lhr.finalDisplayedUrl } : {}),
+    ...(cpuCalibration ? { cpuCalibration } : {}),
+  };
+}
+
+/**
+ * Combine the reduced runs of one page into its measurement. `runs[0]` is
+ * the full run (all four categories), the rest are Performance runs.
  *
  * - Performance score, Performance-only findings and Performance metrics
  *   (FCP, LCP, TBT, CLS, SI) all come from the best run (`bestRunIndex`),
- *   so the score, its findings and its metrics describe the same run.
- *   Metrics stay data next to the scores, never findings
- *   (lighthouse-metrics.ts); each metric keeps every run's value.
+ *   so the score, its findings and its metrics describe the same run, and
+ *   the CPU calibration shown is that run's host. Metrics stay data next
+ *   to the scores, never findings (lighthouse-metrics.ts); each metric
+ *   keeps every run's value.
  * - Accessibility, Best Practices, SEO and every finding that belongs to
  *   one of them: the full run (deterministic).
+ *
+ * @returns the measurement plus every Performance score, for the record.
+ * @throws when the full run lacks a category score or any run lacks its
+ *   Performance score (a reduction bug, never a measurement).
+ */
+export function combineRuns(runs: readonly RunMeasurement[]): {
+  measurement: PageMeasurement;
+  performanceRuns: number[];
+} {
+  const full = runs[0];
+  if (!full) throw new Error("combineRuns: no Lighthouse runs");
+  const scores = {} as Record<QualityCategory, number>;
+  for (const c of QUALITY_CATEGORIES) {
+    const score = full.scores[c];
+    if (score === undefined) throw new Error(`combineRuns: the full run has no ${c} score`);
+    scores[c] = score;
+  }
+  const performanceRuns = runs.map((r, i) => {
+    const score = r.scores.performance;
+    if (score === undefined) throw new Error(`combineRuns: run ${i + 1} has no Performance score`);
+    return score;
+  });
+  // Which audits belong only to Performance is read from the full run
+  // (`otherCategoryAuditIds`): an audit shared with another category would
+  // otherwise look Performance-only in an extra run and be listed twice, or
+  // with the wrong categories when it fails in the best run alone.
+  const sharedWithOtherCategories = new Set(full.otherCategoryAuditIds);
+  const isPerformanceOnly = (f: FailingAudit) =>
+    !sharedWithOtherCategories.has(f.id) && f.categories.every((c) => c === "performance");
+  const perfOnlyByRun = runs.map((r) => r.failingAudits.filter(isPerformanceOnly));
+  const best = bestRunIndex(
+    performanceRuns,
+    perfOnlyByRun.map((f) => f.length),
+  );
+  const findings = [
+    ...full.failingAudits.filter((f) => !isPerformanceOnly(f)),
+    ...(perfOnlyByRun[best] as FailingAudit[]),
+  ].sort((a, b) => a.id.localeCompare(b.id));
+  const calibration = runs[best]?.cpuCalibration;
+  return {
+    measurement: {
+      scores: { ...scores, performance: performanceRuns[best] as number },
+      failingAudits: findings,
+      metrics: {
+        ...combineRunMetrics(
+          runs.map((r) => r.metrics),
+          best,
+        ),
+        ...(calibration ? { cpuCalibration: calibration } : {}),
+      },
+    },
+    performanceRuns,
+  };
+}
+
+/**
+ * Combine one full run (all four categories) and the extra Performance
+ * runs of the same host into the page's measurement (`combineRuns` over
+ * `reduceRun` of each).
  *
  * @returns the measurement plus every Performance score, for the record.
  */
@@ -312,39 +429,8 @@ export function measurementFromRuns(
   fullRun: LhrLike,
   extraPerformanceRuns: readonly LhrLike[],
 ): { measurement: PageMeasurement; performanceRuns: number[] } {
-  const scores = categoryScores(fullRun, QUALITY_CATEGORIES);
-  const runs = [fullRun, ...extraPerformanceRuns];
-  const performanceRuns = [
-    scores.performance,
-    ...extraPerformanceRuns.map((r) => categoryScores(r, ["performance"]).performance),
-  ];
-  // Which audits belong only to Performance is read from the full run: an
-  // extra run carries the Performance category alone, so an audit shared
-  // with another category would look Performance-only there and be listed
-  // twice (once from the full run, once from the best run).
-  const sharedWithOtherCategories = new Set(
-    QUALITY_CATEGORIES.filter((c) => c !== "performance").flatMap((c) =>
-      (fullRun.categories[c]?.auditRefs ?? []).map((r) => r.id),
-    ),
-  );
-  const isPerformanceOnly = (f: FailingAudit) =>
-    !sharedWithOtherCategories.has(f.id) && f.categories.every((c) => c === "performance");
-  const perfOnlyByRun = runs.map((r) => failingAudits(r).filter(isPerformanceOnly));
-  const best = bestRunIndex(
-    performanceRuns,
-    perfOnlyByRun.map((f) => f.length),
-  );
-  const bestPerfOnly = perfOnlyByRun[best] as FailingAudit[];
-  const findings = [
-    ...failingAudits(fullRun).filter((f) => !isPerformanceOnly(f)),
-    ...bestPerfOnly,
-  ].sort((a, b) => a.id.localeCompare(b.id));
-  return {
-    measurement: {
-      scores: { ...scores, performance: performanceRuns[best] as number },
-      failingAudits: findings,
-      metrics: performanceMetricsFromRuns(runs, best),
-    },
-    performanceRuns,
-  };
+  return combineRuns([
+    reduceRun(fullRun, QUALITY_CATEGORIES),
+    ...extraPerformanceRuns.map((r) => reduceRun(r, ["performance"])),
+  ]);
 }
