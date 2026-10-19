@@ -30,7 +30,7 @@ import {
   assertCpuSlowdownApplied,
   type CpuCalibration,
   calibrateCpuSlowdown,
-  medianBenchmarkIndex,
+  fastestBenchmarkIndex,
 } from "./cpu-calibration.js";
 import { type LhrLike, LighthouseRunError, measurementFromRuns } from "./lighthouse-extract.js";
 import { type AuditJob, auditJobSchema, type ChildEvent } from "./lighthouse-protocol.js";
@@ -92,7 +92,7 @@ async function measureCpu(
     for (let i = 0; i < BENCHMARK_SAMPLES; i += 1) {
       samples.push((await page.evaluate(pageFunctions.computeBenchmarkIndex)) as number);
     }
-    return calibrateCpuSlowdown(medianBenchmarkIndex(samples));
+    return calibrateCpuSlowdown(fastestBenchmarkIndex(samples));
   } finally {
     await page.close();
   }

@@ -2,8 +2,8 @@
 
 /**
  * How `get_quality_audit` and `check_stage_audit` show a page's Lighthouse
- * Performance metrics to the AI: each metric's median with Lighthouse's
- * rating, the runs behind it, the LCP element and breakdown, and the
+ * Performance metrics to the AI: each metric's value in the best run with
+ * Lighthouse's rating, every run's value, the LCP element and breakdown, and the
  * layout shifts with their causes — enough to pick the module to fix
  * without running Lighthouse again.
  */
@@ -48,7 +48,7 @@ function element(el: Element): string {
  */
 export function formatMetrics(m: Metrics): string[] {
   const lines = [
-    `Performance metrics (median of ${m.runs} Lighthouse run(s) on the staged build; data behind the Performance score, not problems):`,
+    `Performance metrics (best of ${m.runs} Lighthouse run(s) on the staged build; data behind the Performance score, not problems):`,
   ];
   if (m.cpuCalibration) {
     lines.push(

@@ -104,7 +104,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       name: "Quality checks (Lighthouse on the admin)",
       monthlyUsd: 1,
       notes:
-        "~2-4 min of admin CPU per audited Stage (up to 5 pages x 5 runs); ~$1/mo at a few Stages a day",
+        "~1-3 min of admin CPU per audited Stage (up to 5 pages x 3 runs); ~$1/mo at a few Stages a day",
     },
     {
       name: "Cloud Run gateway",

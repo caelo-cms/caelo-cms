@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  bestRunIndex,
   categoryScores,
   failingAudits,
   type LhrLike,
@@ -301,7 +302,7 @@ describe("staging-exempt audits", () => {
 });
 
 describe("measurementFromRuns", () => {
-  it("uses the Performance median and majority-filters Performance-only findings", () => {
+  it("scores Performance by the best run and takes its Performance-only findings", () => {
     const full = lhr({
       performance: 80,
       accessibility: 92,
@@ -315,29 +316,66 @@ describe("measurementFromRuns", () => {
     const third = lhr({
       performance: 90,
       perfOnly: true,
-      audits: [audit("unused-javascript", 1, "metricSavings")],
+      audits: [audit("unused-javascript", 0.5, "metricSavings")],
     });
     const { measurement, performanceRuns } = measurementFromRuns(full, [second, third]);
     expect(performanceRuns).toEqual([80, 95, 90]);
     expect(measurement.scores).toEqual({
-      performance: 90,
+      performance: 95,
       accessibility: 92,
       "best-practices": 100,
       seo: 100,
     });
-    // unused-javascript failed in 1 of 3 runs → jitter, dropped.
+    // unused-javascript passes in the best run; image-alt is an
+    // Accessibility finding and always comes from the full run.
     expect(measurement.failingAudits.map((f) => f.id)).toEqual(["image-alt"]);
   });
 
-  it("keeps a Performance-only finding that fails in most runs, even if not in the first", () => {
+  it("is stable on the bimodal runs of an unchanged page (#837)", () => {
+    // /migrate on caelo-cms.com, byte-identical between two audits: TBT
+    // 0 / 451 / 258 ms in one, 0 / 600 / 516 ms in the next. The median
+    // moved the score 99 → 89; the best run scores 100 both times.
+    const tbt = audit("total-blocking-time", 0.4, "numeric");
+    const audits = [
+      lhr({ performance: 100, audits: [] }),
+      lhr({ performance: 91, perfOnly: true, audits: [tbt] }),
+      lhr({ performance: 94, perfOnly: true, audits: [tbt] }),
+    ];
+    const next = [
+      lhr({ performance: 89, audits: [tbt] }),
+      lhr({ performance: 100, perfOnly: true, audits: [] }),
+      lhr({ performance: 87, perfOnly: true, audits: [tbt] }),
+    ];
+    const [a0, ...aRest] = audits;
+    const [n0, ...nRest] = next;
+    const first = measurementFromRuns(a0 as LhrLike, aRest);
+    const second = measurementFromRuns(n0 as LhrLike, nRest);
+    expect(first.measurement.scores.performance).toBe(100);
+    expect(second.measurement.scores.performance).toBe(100);
+    expect(first.measurement.failingAudits).toEqual(second.measurement.failingAudits);
+  });
+
+  it("breaks a tie by the fewest Performance-only findings, then the earliest run", () => {
     const failing = audit("unused-javascript", 0.3, "metricSavings");
-    const full = lhr({
+    const full = lhr({ performance: 100, audits: [failing] });
+    const r2 = lhr({
       performance: 100,
+      perfOnly: true,
       audits: [audit("unused-javascript", 1, "metricSavings")],
     });
-    const r2 = lhr({ performance: 100, perfOnly: true, audits: [failing] });
-    const r3 = lhr({ performance: 100, perfOnly: true, audits: [failing] });
+    const r3 = lhr({ performance: 100, perfOnly: true, audits: [] });
     const { measurement } = measurementFromRuns(full, [r2, r3]);
+    expect(measurement.failingAudits).toEqual([]);
+    expect(bestRunIndex([100, 100, 100], [1, 0, 0])).toBe(1);
+    expect(bestRunIndex([98, 100, 100], [0, 0, 0])).toBe(1);
+  });
+
+  it("keeps a Performance-only finding that fails in the best run", () => {
+    const failing = audit("unused-javascript", 0.3, "metricSavings");
+    const full = lhr({ performance: 97, audits: [failing] });
+    const r2 = lhr({ performance: 96, perfOnly: true, audits: [] });
+    const { measurement } = measurementFromRuns(full, [r2]);
+    expect(measurement.scores.performance).toBe(97);
     expect(measurement.failingAudits.map((f) => f.id)).toEqual(["unused-javascript"]);
   });
 
@@ -348,5 +386,9 @@ describe("measurementFromRuns", () => {
     );
     expect(performanceRuns).toEqual([99]);
     expect(measurement.scores.performance).toBe(99);
+  });
+
+  it("refuses a page without runs", () => {
+    expect(() => bestRunIndex([], [])).toThrow(/no Performance runs/);
   });
 });
