@@ -23,7 +23,6 @@
  *   GET  /api/mcp/oauth/status                                 setup self-check
  */
 
-import { createHash } from "node:crypto";
 import { handleAuthorize, handleGoogleCallback } from "./authorize.js";
 import {
   McpConfigLoader,
@@ -92,12 +91,10 @@ export function createMcpRouter(deps: McpRouterDeps = {}): McpRouter {
     if (pathname === `${OAUTH_PREFIX}status`) {
       if (req.method !== "GET") return methodNotAllowed("GET");
       // The admin's setup self-check: whether the Owner's client reached
-      // this gateway, as a hash it can compare — never the id or secret.
+      // this gateway. The client ID is public (every /authorize redirect to
+      // Google carries it); the secret never leaves the file.
       if (loaded.ok) {
-        return json({
-          configured: true,
-          clientIdSha256: createHash("sha256").update(loaded.config.google.clientId).digest("hex"),
-        });
+        return json({ configured: true, clientId: loaded.config.google.clientId });
       }
       if (loaded.notSetUp) return json({ configured: false });
       return notConfiguredResponse(loaded.message);

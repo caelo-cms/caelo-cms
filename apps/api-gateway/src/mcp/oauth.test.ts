@@ -7,7 +7,6 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { createHash } from "node:crypto";
 import { GOOGLE_AUTHORIZE_URL, GOOGLE_TOKEN_URL } from "../mcp/google.js";
 import {
   authorizeQuery,
@@ -188,12 +187,8 @@ describe("not configured", () => {
     expect(await (await h.send("/api/mcp/oauth/status")).json()).toEqual({ configured: false });
     h.advance(60_000);
     const body = await (await h.send("/api/mcp/oauth/status")).text();
-    expect(JSON.parse(body)).toEqual({
-      configured: true,
-      clientIdSha256: createHash("sha256").update(GOOGLE_CLIENT_ID).digest("hex"),
-    });
+    expect(JSON.parse(body)).toEqual({ configured: true, clientId: GOOGLE_CLIENT_ID });
     expect(body).not.toContain(GOOGLE_CLIENT_SECRET);
-    expect(body).not.toContain(GOOGLE_CLIENT_ID);
   });
 });
 
