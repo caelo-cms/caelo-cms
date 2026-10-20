@@ -70,7 +70,7 @@ test("right-click → Edit text saves one field in place; Escape restores", asyn
       ]);
       const mod = await tx\`
         INSERT INTO modules (slug, display_name, type, html, fields)
-        VALUES (\${process.env.MOD_SLUG}, 'inline mod', \${process.env.MOD_SLUG}, '<section class="hero"><h1>{{title}}</h1><p>{{body}}</p></section>', \${fields}::jsonb)
+        VALUES (\${process.env.MOD_SLUG}, 'inline mod', \${process.env.MOD_SLUG}, '<section class="hero"><h1>{{title}}</h1><p>{{body}}</p></section>', \${fields}::text::jsonb)
         RETURNING id::text AS id\`;
       const pg = await tx\`
         INSERT INTO pages (slug, title, template_id, status)
@@ -78,7 +78,7 @@ test("right-click → Edit text saves one field in place; Escape restores", asyn
         RETURNING id::text AS id\`;
       out.pg = pg[0].id;
       const values = JSON.stringify({ title: "INLINE_BEFORE", body: "Body stays" });
-      const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${mod[0].id}::uuid, \${values}::jsonb) RETURNING id::text AS id\`;
+      const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${mod[0].id}::uuid, \${values}::text::jsonb) RETURNING id::text AS id\`;
       out.ci = ci[0].id;
       await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id) VALUES (\${out.pg}::uuid, 'content', 0, \${mod[0].id}::uuid, \${ci[0].id}::uuid)\`;
     });
