@@ -53,6 +53,8 @@ export {
   clearPendingScreenshots,
   deliverScreenshot,
   failScreenshot,
+  type ScreenshotCaptureMeta,
+  type ScreenshotViewportSource,
 } from "./ai/screenshot-orchestrator.js";
 export * from "./ai/system-prompt.js";
 // v0.2.77 — describeError reused by SvelteKit form actions to surface
