@@ -127,6 +127,7 @@ import {
   setLayoutModulesOp,
   updateLayoutOp,
 } from "./ops/content/layouts.js";
+import { canonicaliseLinkValuesOp } from "./ops/content/link-canonicalise.js";
 import {
   createModuleOp,
   deleteModuleOp,
@@ -724,6 +725,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(planPageMovesOp);
   registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
+  registry.register(canonicaliseLinkValuesOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
   registry.register(listUrlMigrationPendingOp);

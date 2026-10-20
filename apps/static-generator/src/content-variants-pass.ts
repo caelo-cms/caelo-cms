@@ -21,7 +21,7 @@ import {
   type ResolvedContentVariants,
 } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import type { ModuleFieldKind, PageUrlStyle } from "@caelo-cms/shared";
+import type { ModuleFieldKind } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
 /** A module as the composer consumes it (layout or page block entry). */
@@ -109,7 +109,6 @@ export async function resolveBuildContentVariants(
   tx: TransactionRunner,
   plugins: BuildPluginServices,
   pages: ReadonlyArray<VariantPassPage>,
-  pageUrlStyle: PageUrlStyle,
 ): Promise<{
   resolutions: ResolvedContentVariants;
   overrideModules: ReadonlyMap<string, VariantComposeModule>;
@@ -118,7 +117,6 @@ export async function resolveBuildContentVariants(
   if (pages.length === 0 || !(await plugins.hasContentVariantContributors())) return empty;
   const resolutions = await plugins.resolveContentVariants(
     pages.map((p) => ({ pageId: p.pageId, placements: variantPlacementsOf(p) })),
-    pageUrlStyle,
   );
 
   const problems: string[] = [];

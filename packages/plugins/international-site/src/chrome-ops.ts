@@ -7,12 +7,7 @@
  * in ./chrome.ts; see its header for the model.
  */
 
-import type {
-  ContentVariantPage,
-  PageUrlStyle,
-  PluginAdminQuery,
-  PluginAi,
-} from "@caelo-cms/plugin-sdk";
+import type { ContentVariantPage, PluginAdminQuery, PluginAi } from "@caelo-cms/plugin-sdk";
 import { z } from "@caelo-cms/plugin-sdk";
 import {
   applyStrings,
@@ -22,17 +17,12 @@ import {
   type ChromeTranslationTarget,
   chromeTranslationPayload,
   instanceTargetKey,
-  type LinkMapping,
   layoutTargetKey,
-  mapLinks,
-  normalizePath,
   sourceFingerprint,
-  splitHref,
-  splitPageRef,
   translatableStrings,
   validateChromeTranslation,
 } from "./chrome.js";
-import type { LocaleRow, PageVariantRow } from "./index.js";
+import type { LocaleRow } from "./index.js";
 import { basisOf } from "./stable-json.js";
 import {
   type GlossaryEntry,
@@ -119,11 +109,11 @@ export async function loadChromeTargets(cms: ChromeCms): Promise<ChromeTarget[]>
 
 /** The plugin store caps a read at 1000 rows; past that this plugin
  *  would silently plan with half the data — refuse instead (CLAUDE.md §2). */
-async function listAll(q: PluginAdminQuery, table: string): Promise<unknown[]> {
+export async function listAll(q: PluginAdminQuery, table: string): Promise<unknown[]> {
   const rows = await q.list(table, { limit: 1000 });
   if (rows.length >= 1000) {
     throw new Error(
-      `international-site:  holds 1000+ rows, more than one read returns; paged reads are not implemented yet (file an issue)`,
+      `international-site: ${table} holds 1000+ rows, more than one read returns; paged reads are not implemented yet (file an issue)`,
     );
   }
   return rows;
@@ -224,17 +214,16 @@ const placementSchema = z
   })
   .strict();
 const resolveArgs = z.object({
-  pageUrlStyle: z.enum(["directory", "no-extension"]),
   pages: z.array(z.object({ pageId: z.string(), placements: z.array(placementSchema) }).strict()),
 });
 
 /**
  * Which chrome a page shows. Pages of the default language render the
  * site's own chrome untouched; a page in another language gets its
- * locale variant of every shared placement, with internal links mapped
- * to the same-language pages. A shared placement with text but no
- * variant, and a link whose target has no published page in the
- * language, come back as problems — never as the source language.
+ * locale variant of every shared placement. A shared placement with text
+ * but no variant comes back as a problem — never as the source language.
+ * Internal links inside the values stay page references: core resolves
+ * them per page to the same-language version (the `link_resolve` answer).
  *
  * @param localesByPage the plugin's page → locale resolution.
  */
@@ -245,7 +234,6 @@ export async function resolveChromeVariants(
 ): Promise<{ resolutions: Record<string, Record<string, unknown>> }> {
   const parsed = resolveArgs.parse(rawArgs);
   const pages = parsed.pages as ContentVariantPage[];
-  const pageUrlStyle: PageUrlStyle = parsed.pageUrlStyle;
   const resolutions: Record<string, Record<string, unknown>> = {};
   if (deps.locales.size === 0 || pages.length === 0) return { resolutions };
   const pageLocale = await localesByPage(pages.map((p) => p.pageId));
@@ -255,125 +243,31 @@ export async function resolveChromeVariants(
   const variants = await loadChromeVariants(deps.q);
   const variantOf = (key: string, locale: string) =>
     variants.find((v) => v.target_key === key && v.locale_code === locale);
-  const links = await linkIndex(deps, pageUrlStyle);
 
   for (const page of localized) {
     const locale = pageLocale.get(page.pageId) as LocaleRow;
     const perPage: Record<string, unknown> = {};
     for (const pl of page.placements) {
-      let values: Readonly<Record<string, unknown>> = pl.values;
-      let moduleId: string | undefined;
-      let overridden = false;
-      const problems: string[] = [];
-      if (pl.shared) {
-        const key =
-          pl.scope === "layout"
-            ? layoutTargetKey(pl.layoutId ?? "", pl.blockName, pl.position)
-            : instanceTargetKey(pl.contentInstanceId ?? "");
-        const v = variantOf(key, locale.code);
-        if (v) {
-          values = v.values ?? {};
-          moduleId = pl.scope === "layout" && v.module_id ? v.module_id : undefined;
-          overridden = true;
-        } else if (translatableStrings(pl.fields, pl.values).length > 0) {
-          problems.push(
+      if (!pl.shared) continue;
+      const key =
+        pl.scope === "layout"
+          ? layoutTargetKey(pl.layoutId ?? "", pl.blockName, pl.position)
+          : instanceTargetKey(pl.contentInstanceId ?? "");
+      const v = variantOf(key, locale.code);
+      if (v) {
+        const moduleId = pl.scope === "layout" && v.module_id ? v.module_id : undefined;
+        perPage[pl.key] = { ...(moduleId ? { moduleId } : {}), values: v.values ?? {} };
+      } else if (translatableStrings(pl.fields, pl.values).length > 0) {
+        perPage[pl.key] = {
+          problems: [
             `there is no ${locale.display_name} (${locale.code}) version of "${pl.moduleName}" (${pl.scope === "layout" ? `layout ${pl.blockName} area` : "shared content"}) yet. Next step: translate_chrome({localeCode: "${locale.code}"}) creates it; set_chrome_variants gives the language its own content.`,
-          );
-        }
+          ],
+        };
       }
-      // A swapped-in module's field kinds are unknown here; its link
-      // lists are still recognised by shape.
-      const mapped = mapLinks(moduleId ? [] : pl.fields, values, (href) => links.map(href, locale));
-      for (const p of mapped.problems) problems.push(`"${pl.moduleName}": ${p}`);
-      if (mapped.changed) {
-        values = mapped.values;
-        overridden = true;
-      }
-      if (!overridden && problems.length === 0) continue;
-      perPage[pl.key] = {
-        ...(moduleId ? { moduleId } : {}),
-        ...(overridden ? { values } : {}),
-        ...(problems.length > 0 ? { problems } : {}),
-      };
     }
     if (Object.keys(perPage).length > 0) resolutions[page.pageId] = perPage;
   }
   return { resolutions };
-}
-
-/** Internal path → page, and page → its language versions. */
-async function linkIndex(
-  deps: ChromeDeps,
-  pageUrlStyle: PageUrlStyle,
-): Promise<{
-  map: (href: string, locale: LocaleRow) => LinkMapping;
-}> {
-  const pages = (
-    await deps.cms.call<{ pages: { id: string; status: string; currentPath: string }[] }>(
-      "pages.list",
-      {},
-    )
-  ).pages;
-  const byPath = new Map(pages.map((p) => [normalizePath(p.currentPath), p]));
-  const byId = new Map(pages.map((p) => [p.id, p]));
-  const variantRows = (await listAll(deps.q, "page_variants")) as unknown as PageVariantRow[];
-  const rowByPage = new Map(variantRows.map((r) => [r.page_id, r]));
-  const def = defaultLocaleOf(deps.locales);
-  const localeOf = (pageId: string) => rowByPage.get(pageId)?.locale_code ?? def?.code;
-  // #590 — a rewritten link carries the target's canonical path from core's
-  // URL builder (trailing slash per the serving target), never one
-  // composed here. Same-language targets share the host, so the path is
-  // enough.
-  const linkable = variantRows
-    .map((r) => r.page_id)
-    .filter((id) => byId.get(id)?.status === "published");
-  const canonicalPath = new Map<string, string>();
-  for (let i = 0; i < linkable.length; i += 1000) {
-    const { urls } = await deps.cms.call<{ urls: Record<string, string> }>(
-      "pages.resolve_public_urls",
-      { pageIds: linkable.slice(i, i + 1000), pageUrlStyle },
-    );
-    for (const [id, url] of Object.entries(urls)) canonicalPath.set(id, new URL(url).pathname);
-  }
-
-  return {
-    map: (href, locale) => {
-      const ref = splitPageRef(href);
-      const literal = ref ? null : splitHref(href);
-      const parts = ref ?? literal;
-      if (!parts) return null; // external, mailto:, anchors — not a page link
-      const target = ref
-        ? byId.get(ref.pageId)
-        : literal
-          ? byPath.get(normalizePath(literal.path))
-          : undefined;
-      if (!target) return null; // an asset or a path no page owns
-      if (localeOf(target.id) === locale.code) return null;
-      // Epic #724 — a stored link may be a `caelo:page/<id>` reference;
-      // problems name the link as the operator wrote it (the page's path).
-      const shown = ref ? `${target.currentPath}${ref.suffix}` : href;
-      const row = rowByPage.get(target.id);
-      const sibling = row
-        ? variantRows.find((r) => r.group_id === row.group_id && r.locale_code === locale.code)
-        : undefined;
-      const siblingPage = sibling ? byId.get(sibling.page_id) : undefined;
-      if (!siblingPage) {
-        return {
-          problem: `the link "${shown}" goes to a page that has no ${locale.display_name} version. Next step: create_variant + translate_variant for that page, or change the link with set_chrome_variants.`,
-        };
-      }
-      if (siblingPage.status !== "published") {
-        return {
-          problem: `the link "${shown}" goes to a page whose ${locale.display_name} version (${siblingPage.currentPath}) is not published yet. Next step: publish it, or change the link.`,
-        };
-      }
-      const path = canonicalPath.get(siblingPage.id);
-      if (path === undefined) {
-        throw new Error(`international-site: core resolved no URL for page ${siblingPage.id}`);
-      }
-      return { href: `${path}${parts.suffix}` };
-    },
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -538,25 +432,43 @@ export async function writeChromeTranslation(
   p: PreparedChromeTranslation,
   payload: ChromeTranslationPayload,
 ): Promise<number> {
-  let translated = 0;
+  // Two passes, like set_chrome_variants: every answer's links are
+  // checked before the first row is written. Rich text carries the
+  // source's stored links (`caelo:page/<id>` references) into the
+  // translation and back; a translator that rewrote one into a path, or
+  // broke it, goes through core's write-time canonicalisation like any
+  // other write (#724) — the path becomes a reference, a broken
+  // reference refuses the batch instead of shipping a dead link. Links
+  // the source already holds are grandfathered (its own literals are
+  // E's and F's to report).
+  const rows: { existing: ChromeVariantRow | undefined; row: Omit<ChromeVariantRow, "id"> }[] = [];
   for (const answer of payload.targets) {
     const o = p.offered.find((x) => x.id === answer.target);
     if (!o) continue; // validateChromeTranslation refused these
     const existing = p.variants.find(
       (x) => x.target_key === o.target.key && x.locale_code === p.locale.code,
     );
-    await upsertVariant(deps.q, existing, {
-      target_key: o.target.key,
-      locale_code: p.locale.code,
-      mode: "translated",
-      module_id: null,
-      values: applyStrings(o.target.values, answer.strings),
-      translation_status: "up_to_date",
-      source_hash: sourceFingerprint(o.target.fields, o.target.values),
+    const values = await canonicaliseChromeLinks(
+      deps.cms,
+      o.target.fields,
+      applyStrings(o.target.values, answer.strings),
+      o.target.values,
+    );
+    rows.push({
+      existing,
+      row: {
+        target_key: o.target.key,
+        locale_code: p.locale.code,
+        mode: "translated",
+        module_id: null,
+        values,
+        translation_status: "up_to_date",
+        source_hash: sourceFingerprint(o.target.fields, o.target.values),
+      },
     });
-    translated += 1;
   }
-  return translated;
+  for (const { existing, row } of rows) await upsertVariant(deps.q, existing, row);
+  return rows.length;
 }
 
 /** The install-side pass: prepare → the install's AI → write, in ONE call. */
@@ -611,6 +523,11 @@ const setVariantsArgs = z
  * values, own items and links, or — in a layout slot — another module.
  * Omitted `values` keep what the language shows now, so detaching alone
  * freezes the current translation against future source edits.
+ *
+ * Given values go through core's link canonicalisation first (#724):
+ * `/pricing` is stored as a reference to that page — rendered on a
+ * German page as the German version, flagged when there is none — and a
+ * path that names no page is refused with core's next step.
  */
 export async function setChromeVariants(
   deps: ChromeDeps,
@@ -619,7 +536,10 @@ export async function setChromeVariants(
   const args = setVariantsArgs.parse(rawArgs);
   const targets = new Map((await loadChromeTargets(deps.cms)).map((t) => [t.key, t]));
   const variants = await loadChromeVariants(deps.q);
-  const updated: { targetKey: string; localeCode: string }[] = [];
+  // Two passes so the batch is all-or-nothing (CLAUDE.md §11): every
+  // variant is checked and its links canonicalised BEFORE the first row
+  // is written — a refused variant N must not leave 0..N-1 stored.
+  const rows: { existing: ChromeVariantRow | undefined; row: Omit<ChromeVariantRow, "id"> }[] = [];
   for (const v of args.variants) {
     requireTargetLocale(deps, v.localeCode);
     const target = targets.get(v.targetKey);
@@ -636,19 +556,56 @@ export async function setChromeVariants(
     const existing = variants.find(
       (x) => x.target_key === v.targetKey && x.locale_code === v.localeCode,
     );
-    const values = v.values ?? (v.moduleId ? {} : (existing?.values ?? { ...target.values }));
-    await upsertVariant(deps.q, existing, {
-      target_key: v.targetKey,
-      locale_code: v.localeCode,
-      mode: "independent",
-      module_id: v.moduleId ?? (v.values === undefined ? (existing?.module_id ?? null) : null),
-      values,
-      translation_status: "up_to_date",
-      source_hash: null,
+    const values =
+      v.values !== undefined
+        ? await canonicaliseChromeLinks(
+            deps.cms,
+            v.moduleId ? [] : target.fields,
+            v.values,
+            existing?.values ?? undefined,
+          )
+        : v.moduleId
+          ? {}
+          : (existing?.values ?? { ...target.values });
+    rows.push({
+      existing,
+      row: {
+        target_key: v.targetKey,
+        locale_code: v.localeCode,
+        mode: "independent",
+        module_id: v.moduleId ?? (v.values === undefined ? (existing?.module_id ?? null) : null),
+        values,
+        translation_status: "up_to_date",
+        source_hash: null,
+      },
     });
-    updated.push({ targetKey: v.targetKey, localeCode: v.localeCode });
   }
-  return { updated };
+  for (const { existing, row } of rows) await upsertVariant(deps.q, existing, row);
+  return {
+    updated: rows.map(({ row }) => ({ targetKey: row.target_key, localeCode: row.locale_code })),
+  };
+}
+
+/**
+ * Core's write-time link canonicalisation for a variant's values.
+ * A swapped-in module's field kinds are not known here; core still
+ * recognises link keys (`href`, `*_url`, …) and HTML attributes.
+ *
+ * @param previous the values this write replaces or derives from; their
+ *   link literals are grandfathered, as for a core update.
+ */
+async function canonicaliseChromeLinks(
+  cms: ChromeCms,
+  fields: readonly ChromeField[],
+  values: Record<string, unknown>,
+  previous: Readonly<Record<string, unknown>> | undefined,
+): Promise<Record<string, unknown>> {
+  const r = await cms.call<{ values: Record<string, unknown> }>("links.canonicalise_values", {
+    fields: fields.map((f) => ({ name: f.name, kind: f.kind })),
+    values,
+    ...(previous ? { previous } : {}),
+  });
+  return r.values;
 }
 
 const reattachArgs = z
