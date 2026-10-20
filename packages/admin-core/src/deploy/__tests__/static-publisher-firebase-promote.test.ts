@@ -66,6 +66,8 @@ class FakeFirebase {
   live: string[] = []; // versionNames released on the live channel (newest first)
   blobs = new Map<string, Buffer>(); // sha256 → gzipped body
   deletedChannels: string[] = [];
+  /** channelId → expireTime; null once the channel never expires. */
+  channelExpiry = new Map<string, string | null>();
   private seq = 0;
 
   versionName(id: string): string {
@@ -163,9 +165,16 @@ class FakeFirebase {
       this.deletedChannels.push(channel[1]!);
       return new Response("", { status: 200 });
     }
+    if (method === "PATCH" && channel) {
+      if (params.get("updateMask") !== "expireTime") throw new Error("unexpected channel patch");
+      if (!this.channels.has(channel[1]!)) throw new Error("patch on unknown channel");
+      this.channelExpiry.set(channel[1]!, parsed.expireTime ?? null);
+      return json({});
+    }
     if (method === "POST" && route === `sites/${SITE}/channels`) {
       const channelId = params.get("channelId") ?? "";
       this.channels.set(channelId, []);
+      this.channelExpiry.set(channelId, parsed.ttl ?? null);
       return json({
         name: `sites/${SITE}/channels/${channelId}`,
         url: `https://${SITE}--${channelId}.web.app`,
@@ -339,9 +348,9 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
       runId: "run-2",
       target: STAGING,
     });
-    // #650 — the run's preview channel may be gone by now; rollback uses the
-    // Hosting version the run recorded.
-    await firebaseHostingPublisher.pruneStagingPreviews!({ keepRunId: null });
+    // #650 — the run's preview channel may be gone by now (a later Stage
+    // pruned it); rollback uses the Hosting version the run recorded.
+    await firebaseHostingPublisher.pruneStagingPreviews!({ keepRunId: "run-3" });
     await firebaseHostingPublisher.rollback({
       targetBuildId: "run-2",
       sourceBuildDir: buildDir,
@@ -409,9 +418,16 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
     expect(r.deleted.sort()).toEqual(["runid-run-old-1", "runid-run-old-2"]);
     expect([...fake.channels.keys()].sort()).toEqual(["runid-run-new", "someone-elses-channel"]);
 
-    // After Publish live: the last one goes too.
+    // Nothing served: every run channel goes.
     await firebaseHostingPublisher.pruneStagingPreviews!({ keepRunId: null });
     expect([...fake.channels.keys()]).toEqual(["someone-elses-channel"]);
+  });
+
+  it("publishStaging lifts the channel's TTL once it serves, so an idle staging never expires into 404s", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-idle", target: STAGING });
+    expect(fake.channels.get("runid-run-idle")?.length).toBe(1);
+    expect(fake.channelExpiry.get("runid-run-idle")).toBeNull();
   });
 });
 

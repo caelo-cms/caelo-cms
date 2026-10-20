@@ -1101,13 +1101,12 @@ export const promoteDeployOp = defineOperation({
         WHERE id = ${toRunId}::uuid
       `);
       if (rebuilt) {
-        // What was staged is live now: nothing is left to serve on
-        // staging.<domain>, and its public preview is retired (#650) —
-        // unless a newer Stage committed while this publish ran: that one
-        // stays served and keeps its preview.
-        const newer = await stagedRunOtherThan(tx, fromRunId);
-        if (newer === null) await setStagingOrigin(tx, null);
-        await pruneStagingPreviews(publisher, newer);
+        // staging.<domain> keeps serving what it served: the build that
+        // just went live (its content is now public anyway, so its preview
+        // may stay) or a newer Stage that committed while this publish ran.
+        // Clearing it would answer every staging page with "nothing staged"
+        // right after the operator compared staging with live.
+        await pruneStagingPreviews(publisher, await servedStagingRun(tx));
       }
       // Issue #620 — a human Publish live ships the staged build, and with
       // it exactly the AI Stages that build covered.
@@ -1223,23 +1222,22 @@ async function rebuildAndPublishLive(
 }
 
 /**
- * #650 — the run staging serves when it is not `runId`, else null. Read
+ * #650 — the run staging serves, or null when nothing was ever staged. Read
  * under the staging-publication lock, so the answer holds until commit.
  */
-async function stagedRunOtherThan(tx: TransactionRunner, runId: string): Promise<string | null> {
+async function servedStagingRun(tx: TransactionRunner): Promise<string | null> {
   const rows = (await tx.execute(sql`
     SELECT origin_run_id::text AS run_id FROM staging_access WHERE id = 1
   `)) as unknown as { run_id: string | null }[];
-  const current = rows[0]?.run_id ?? null;
-  return current !== null && current !== runId ? current : null;
+  return rows[0]?.run_id ?? null;
 }
 
 /**
  * #650 — retire public previews of staged builds that are no longer the
- * current one (all of them when `keepRunId` is null). Cleanup only: the
- * release it follows has already happened, and a preview that survives a
- * failed delete still expires with its 7-day TTL — so a failure is logged
- * loudly instead of failing a Stage or Publish live that did succeed.
+ * served one (all of them when `keepRunId` is null). Cleanup only: the
+ * release it follows has already happened, and every later Stage or
+ * Publish live prunes again — so a failure is logged loudly instead of
+ * failing a Stage or Publish live that did succeed.
  */
 async function pruneStagingPreviews(
   publisher: StaticPublisher,
@@ -1250,7 +1248,7 @@ async function pruneStagingPreviews(
     await publisher.pruneStagingPreviews({ keepRunId });
   } catch (e) {
     console.error(
-      "[deploy] could not delete superseded staging previews; they stay publicly reachable until their 7-day TTL ends",
+      "[deploy] could not delete superseded staging previews; they stay publicly reachable until the next Stage or Publish live prunes them",
       { keepRunId, error: e instanceof Error ? e.message : String(e) },
     );
   }

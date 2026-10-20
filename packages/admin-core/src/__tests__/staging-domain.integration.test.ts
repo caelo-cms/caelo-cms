@@ -73,6 +73,8 @@ const EDITOR_ID = "00000000-0000-0000-0000-0000000678a2";
 class FakeFirebase {
   versions = new Map<string, { config: unknown; files: Record<string, string> }>();
   channels = new Map<string, string>(); // channelId → url
+  /** channelId → expireTime; null once the channel never expires. */
+  expiry = new Map<string, string | null>();
   live: string[] = [];
   blobs = new Map<string, Buffer>();
   private seq = 0;
@@ -117,6 +119,7 @@ class FakeFirebase {
       const id = params.get("channelId") ?? "";
       const channelUrl = `https://${SITE}--${id}-x1y2.web.app`;
       this.channels.set(id, channelUrl);
+      this.expiry.set(id, parsed.ttl ?? null);
       return json({ name: `sites/${SITE}/channels/${id}`, url: channelUrl });
     }
     if (method === "GET" && route === `sites/${SITE}/channels`) {
@@ -130,6 +133,10 @@ class FakeFirebase {
     if (method === "DELETE" && channel) {
       this.channels.delete(channel[1] ?? "");
       return new Response("", { status: 200 });
+    }
+    if (method === "PATCH" && channel && params.get("updateMask") === "expireTime") {
+      this.expiry.set(channel[1] ?? "", parsed.expireTime ?? null);
+      return json({});
     }
     if (method === "POST" && /channels\/[^/]+\/releases$/.test(route)) return json({});
     if (method === "POST" && route === `sites/${SITE}/releases`) {
@@ -312,12 +319,14 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     const [row] = await stagingRow();
     expect(row?.origin_url).toBe(run!.publish_summary.previewUrl);
     expect(row?.origin_run_id).toBe(second.runId);
-    // Only the current Stage's channel is left.
+    // Only the current Stage's channel is left, and it does not expire:
+    // staging must not turn into a 404 after an idle week.
     expect([...fake.channels.keys()]).toEqual([`runid-${second.runId}`]);
+    expect(fake.expiry.get(`runid-${second.runId}`)).toBeNull();
     expect(first.runId).not.toBe(second.runId);
   });
 
-  it("Publish live rebuilds with the live host, passes the parity guard and retires the preview", async () => {
+  it("Publish live rebuilds with the live host, passes the parity guard and keeps staging on the published build", async () => {
     const staged = await ok<{ runId: string }>("deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
@@ -341,9 +350,16 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
                  FROM deploy_runs WHERE id = ${promoted.toRunId}::uuid`,
     )) as { status: string; site_url: string; location: string }[];
     expect(run).toEqual({ status: "succeeded", site_url: LIVE, location: liveVersion });
-    // Nothing is staged any more; no public preview is left.
-    expect(await stagingRow()).toEqual([{ origin_url: null, origin_run_id: null }]);
-    expect(fake.channels.size).toBe(0);
+    // Staging keeps serving the build that just went live instead of
+    // answering every page with "nothing staged"; only its channel is left.
+    const [stagedRun] = (await withSql(
+      (tx) => tx`SELECT publish_summary->>'previewUrl' AS preview_url
+                 FROM deploy_runs WHERE id = ${staged.runId}::uuid`,
+    )) as { preview_url: string }[];
+    expect(await stagingRow()).toEqual([
+      { origin_url: stagedRun!.preview_url, origin_run_id: staged.runId },
+    ]);
+    expect([...fake.channels.keys()]).toEqual([`runid-${staged.runId}`]);
   });
 
   it("a Stage waits for an in-flight Stage / Publish live before it publishes and prunes (codex review on #652)", async () => {

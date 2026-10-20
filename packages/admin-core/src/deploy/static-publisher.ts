@@ -151,9 +151,11 @@ export interface StaticPublisher {
 
   /**
    * #650 — retire public preview artefacts of staged builds that are no
-   * longer the current one: every one except `keepRunId` (after a Stage),
-   * or all of them (`keepRunId: null`, after Publish live). Absent on
-   * publishers whose staging is not publicly reachable per run.
+   * longer served: every one except `keepRunId`, the run staging serves
+   * (after Publish live still the published run, so staging keeps showing
+   * the live state), or all of them when nothing is served
+   * (`keepRunId: null`). Absent on publishers whose staging is not publicly
+   * reachable per run.
    */
   pruneStagingPreviews?(args: { keepRunId: string | null }): Promise<{ deleted: string[] }>;
 }

@@ -659,8 +659,9 @@ export const firebaseHostingPublisher: StaticPublisher = {
     //    staging.<domain> to it behind the access gate, and it is never
     //    shown to operators or the AI. Firebase cannot lock a channel
     //    (preview channels are public by URL), so older channels are
-    //    deleted as soon as a newer Stage succeeds and the last one after
-    //    Publish live (pruneStagingPreviews), and the TTL is the backstop.
+    //    deleted as soon as a newer Stage succeeds (pruneStagingPreviews).
+    //    The TTL only guards a Stage that dies before its release: step 8
+    //    lifts it once the channel serves.
     const channelId = channelIdFor(runId);
     const channel = await firebaseFetch<CreateChannelResponse>(
       `sites/${site}/channels?channelId=${channelId}`,
@@ -678,6 +679,17 @@ export const firebaseHostingPublisher: StaticPublisher = {
     await firebaseFetch(`sites/${site}/channels/${channelId}/releases?versionName=${versionName}`, {
       method: "POST",
       body: JSON.stringify({}),
+      token,
+    });
+
+    // 8. The channel now backs staging.<domain> until the next Stage, and
+    //    after Publish live it keeps showing the published state — an
+    //    idle week must not expire it into a 404 on every page. A null
+    //    expireTime means "never deleted automatically"; the next Stage
+    //    prunes it.
+    await firebaseFetch(`sites/${site}/channels/${channelId}?updateMask=expireTime`, {
+      method: "PATCH",
+      body: JSON.stringify({ expireTime: null }),
       token,
     });
 
