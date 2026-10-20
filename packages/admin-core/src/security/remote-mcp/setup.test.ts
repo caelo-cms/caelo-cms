@@ -1,23 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #806 — Settings → MCP → Remote: availability per install, the secret
- * write, and the self-check lines (no real Google, no real gateway).
+ * #806 — Settings → MCP → Remote: availability per install and the broker's
+ * self-check lines (no real gateway). The sign-in client itself is set up
+ * under Settings → Google sign-in (#914, google-sign-in/setup.test.ts).
  */
 
 import { describe, expect, it } from "bun:test";
-import type { GoogleDeps } from "../operator-access/google-iam.js";
+import type { SelfCheckDeps } from "../google-sign-in/setup.js";
 import {
-  addSecretVersion,
-  brokerRedirectUri,
   checkAuthorizationServer,
   checkGatewayClient,
-  createOAuthClientConsoleUrl,
-  iapSyncLine,
-  oauthClientFile,
   remoteMcpAvailability,
-  runSelfCheck,
-  type SelfCheckDeps,
+  runRemoteMcpSelfCheck,
 } from "./setup.js";
 
 const PUBLIC = "https://caelo-production-gateway-bbb-xyz.a.run.app";
@@ -26,7 +21,6 @@ const ENV = {
   CAELO_PROVIDER: "gcp-firebase",
   CAELO_MCP_PUBLIC_URL: PUBLIC,
   CAELO_IAP_AUDIENCE: "/projects/42/locations/europe-west1/services/caelo-production-admin-aaa",
-  CAELO_MCP_OAUTH_CLIENT_STORE: "projects/acme-site/secrets/caelo-production-mcp-oauth-client",
 };
 
 /** A fake gateway answering by path. */
@@ -58,58 +52,20 @@ describe("remoteMcpAvailability", () => {
     const a = remoteMcpAvailability({ CAELO_PROVIDER: "gcp" });
     expect(a).toMatchObject({
       status: "needs-upgrade",
-      missing: ["CAELO_MCP_PUBLIC_URL", "CAELO_IAP_AUDIENCE", "CAELO_MCP_OAUTH_CLIENT_STORE"],
+      missing: ["CAELO_MCP_PUBLIC_URL", "CAELO_IAP_AUDIENCE"],
     });
     expect(a.status === "needs-upgrade" && a.nextStep).toContain("cms-provision upgrade");
     const bad = remoteMcpAvailability({ ...ENV, CAELO_MCP_PUBLIC_URL: "http://x/" });
     expect(bad).toMatchObject({ status: "needs-upgrade", missing: ["CAELO_MCP_PUBLIC_URL"] });
   });
 
-  it("derives the console link, redirect URI and both MCP URLs on a prepared install", () => {
+  it("derives both MCP URLs and points at Google sign-in for the client", () => {
     expect(remoteMcpAvailability(ENV)).toEqual({
       status: "available",
-      projectId: "acme-site",
       mcpPublicUrl: PUBLIC,
-      secretResource: ENV.CAELO_MCP_OAUTH_CLIENT_STORE,
-      redirectUri: `${PUBLIC}/api/mcp/oauth/google-callback`,
-      createClientUrl: "https://console.cloud.google.com/auth/clients/create?project=acme-site",
-      clientsUrl: "https://console.cloud.google.com/auth/clients?project=acme-site",
+      signInSettingsPath: "/settings/google-sign-in",
       urls: { chat: `${PUBLIC}/api/mcp/chat`, admin: `${PUBLIC}/api/mcp/admin` },
     });
-    expect(brokerRedirectUri("https://acme.com")).toBe(
-      "https://acme.com/api/mcp/oauth/google-callback",
-    );
-    expect(createOAuthClientConsoleUrl("a b")).toContain("project=a%20b");
-  });
-});
-
-describe("the OAuth client file", () => {
-  it("is the broker's JSON, or {} when off", () => {
-    expect(JSON.parse(oauthClientFile({ clientId: CLIENT, clientSecret: "GOCSPX-s" }))).toEqual({
-      client_id: CLIENT,
-      client_secret: "GOCSPX-s",
-    });
-    expect(oauthClientFile(null)).toBe("{}");
-  });
-
-  it("is written as a new Secret Manager version, base64 in the body", async () => {
-    const seen: { url: string; body: unknown }[] = [];
-    const deps: GoogleDeps = {
-      fetch: (async (input: string | URL | Request, init?: RequestInit) => {
-        seen.push({ url: String(input), body: JSON.parse(String(init?.body)) });
-        return new Response(JSON.stringify({ name: "projects/1/secrets/x/versions/2" }));
-      }) as typeof fetch,
-      accessToken: async () => "tok",
-      metadata: async () => "",
-    };
-    const name = await addSecretVersion(deps, ENV.CAELO_MCP_OAUTH_CLIENT_STORE, "{}");
-    expect(name).toBe("projects/1/secrets/x/versions/2");
-    expect(seen).toEqual([
-      {
-        url: `https://secretmanager.googleapis.com/v1/${ENV.CAELO_MCP_OAUTH_CLIENT_STORE}:addVersion`,
-        body: { payload: { data: Buffer.from("{}").toString("base64") } },
-      },
-    ]);
   });
 });
 
@@ -155,7 +111,7 @@ describe("self-check", () => {
     expect(line.nextStep).toContain("load balancer");
   });
 
-  it("runs the chain in order and skips the endpoint checks when turning off", async () => {
+  it("runs the broker chain in order, and only the gateway's 'off' without a client", async () => {
     const on = gateway({
       "/api/mcp/oauth/status": () => ({ configured: true, clientId: CLIENT }),
       "/.well-known/oauth-authorization-server/api/mcp/oauth": () => ({
@@ -166,40 +122,15 @@ describe("self-check", () => {
         authorization_servers: [`${PUBLIC}/api/mcp/oauth`],
       }),
     });
-    const lines = await runSelfCheck(on, {
-      mcpPublicUrl: PUBLIC,
-      clientId: CLIENT,
-      sync: { status: "synced", execution: "e1", logsUrl: "l" },
-    });
+    const lines = await runRemoteMcpSelfCheck(on, { mcpPublicUrl: PUBLIC, clientId: CLIENT });
     expect(lines.map((l) => [l.id, l.ok])).toEqual([
-      ["iap-sync", true],
       ["gateway-client", true],
       ["authorization-server", true],
       ["protected-resource", true],
     ]);
 
     const off = gateway({ "/api/mcp/oauth/status": () => ({ configured: false }) });
-    const offLines = await runSelfCheck(off, {
-      mcpPublicUrl: PUBLIC,
-      clientId: null,
-      sync: { status: "synced", execution: "e2", logsUrl: "l" },
-    });
-    expect(offLines.map((l) => [l.id, l.ok])).toEqual([
-      ["iap-sync", true],
-      ["gateway-client", true],
-    ]);
-    expect(offLines[0]?.label).toContain("no longer");
-  });
-
-  it("turns a failed or missing sync job into a failed line with its next step", () => {
-    expect(iapSyncLine({ status: "failed", error: "boom", nextStep: "fix it" })).toMatchObject({
-      ok: false,
-      detail: "boom",
-      nextStep: "fix it",
-    });
-    expect(iapSyncLine({ status: "not-applicable", reason: "no IAP" }).nextStep).toContain(
-      "cms-provision upgrade",
-    );
-    expect(iapSyncLine({ status: "running", execution: "e", logsUrl: "u" }).ok).toBe(false);
+    const offLines = await runRemoteMcpSelfCheck(off, { mcpPublicUrl: PUBLIC, clientId: null });
+    expect(offLines.map((l) => [l.id, l.ok])).toEqual([["gateway-client", true]]);
   });
 });

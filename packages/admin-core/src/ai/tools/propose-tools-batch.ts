@@ -198,7 +198,8 @@ export const proposeUserCreateTool = makeProposeTool({
   when:
     "Propose inviting a new user to the CMS. Provide email + displayName + roleNames. " +
     "DO NOT include a password — the Owner approves and a one-time temporary password is generated server-side. " +
-    "On Google Cloud installs the approval also lets this email through Google IAP (browser and MCP), so use the person's Google account address (Gmail or Workspace); the result's `operatorAccess` says whether that worked — relay any `warning` to the operator.",
+    "On Google Cloud installs the approval also lets this email through Google IAP (browser and MCP), so use the person's Google account address (Gmail or Workspace); the result's `operatorAccess` says whether that worked — relay any `warning` to the operator. " +
+    "An address outside the project's Google organisation is refused until the Owner has set up Google sign-in (Settings → Google sign-in, a console step only a human can do): relay that error's next step to the operator instead of retrying or proposing another address.",
   schema: z
     .object({
       email: z.string().email().max(254),
