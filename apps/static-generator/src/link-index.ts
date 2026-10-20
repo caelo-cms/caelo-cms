@@ -13,9 +13,12 @@
  * The generator runs outside admin-core (subprocess), so it reads the two
  * tables itself; admin-core's `links/link-targets.ts` is the branch-aware
  * twin for the editor preview. Both feed the same shared
- * `createSiteLinkIndex`, which is what keeps preview and build URLs equal.
+ * `createSiteLinkIndex` — with the same link-resolve answer (rollout D:
+ * the page-variant partition that sends a German page's links to German
+ * pages) — which is what keeps preview and build URLs equal.
  */
 
+import type { BuildPluginServices } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   createSiteLinkIndex,
@@ -36,11 +39,18 @@ export function linkEnvOfTarget(env: "dev" | "staging" | "production"): LinkRend
   return env === "dev" ? "preview" : env;
 }
 
-/** Load the main-line link index for one build. */
+/**
+ * Load the main-line link index for one build.
+ *
+ * @param plugins the build's plugin answers (in-process or over the
+ *   generator's RPC); asked for the link-resolve partition only when a
+ *   plugin contributes one.
+ */
 export async function loadBuildLinkIndex(
   tx: TransactionRunner,
   targetEnv: "dev" | "staging" | "production",
   pageUrlStyle: PageUrlStyle,
+  plugins: BuildPluginServices,
 ): Promise<SiteLinkIndex> {
   const pages = (await tx.execute(sql`
     SELECT id::text AS id, current_path AS path, status
@@ -50,5 +60,15 @@ export async function loadBuildLinkIndex(
   const media = (await tx.execute(sql`
     SELECT id::text AS id, slug FROM media_assets WHERE deleted_at IS NULL
   `)) as unknown as LinkIndexMedia[];
-  return createSiteLinkIndex({ pages, media, env: linkEnvOfTarget(targetEnv), pageUrlStyle });
+  const pageVariants =
+    pages.length > 0 && (await plugins.hasLinkResolveContributors())
+      ? await plugins.resolveLinkVariants(pages.map((p) => p.id))
+      : undefined;
+  return createSiteLinkIndex({
+    pages,
+    media,
+    env: linkEnvOfTarget(targetEnv),
+    pageUrlStyle,
+    ...(pageVariants ? { pageVariants } : {}),
+  });
 }

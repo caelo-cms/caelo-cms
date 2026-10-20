@@ -123,6 +123,7 @@ describe("resolution", () => {
     expect(index("staging").forPage(null).resolve(ref)).toEqual({
       status: "unpublished",
       url: "/pricing/",
+      pageId: DRAFT,
     });
     expect(index("preview").forPage(null).resolve(ref)).toEqual({
       status: "resolved",
@@ -516,6 +517,190 @@ describe("scanner stays linear on adversarial input (CodeQL js/polynomial-redos)
       ).toBeLessThan(BUDGET_MS);
     });
   }
+});
+
+// Rollout D — the `link-resolve` composition point's answer: pages in
+// variants (locales) grouped by "versions of each other".
+const EN_ABOUT = "a1111111-1111-4111-8111-111111111111";
+const DE_ABOUT = "a2222222-2222-4222-8222-222222222222";
+const EN_PRICING = "b1111111-1111-4111-8111-111111111111";
+const DE_PRICING = "b2222222-2222-4222-8222-222222222222";
+const EN_SOLO = "c1111111-1111-4111-8111-111111111111";
+const EN_HOME = "d1111111-1111-4111-8111-111111111111";
+const DE_HOME = "d2222222-2222-4222-8222-222222222222";
+
+function variantIndex(env: "preview" | "staging" = "staging") {
+  return createSiteLinkIndex({
+    env,
+    pageUrlStyle: "directory",
+    pages: [
+      { id: EN_ABOUT, path: "/about", status: "published" },
+      { id: DE_ABOUT, path: "/de/ueber", status: "published" },
+      { id: EN_PRICING, path: "/pricing", status: "published" },
+      { id: DE_PRICING, path: "/de/preise", status: "draft" },
+      { id: EN_SOLO, path: "/solo", status: "published" },
+      { id: EN_HOME, path: "/", status: "published" },
+      { id: DE_HOME, path: "/de", status: "published" },
+    ],
+    media: [{ id: MEDIA, slug: "hero-shot" }],
+    pageVariants: new Map([
+      [EN_ABOUT, { variant: "en", group: "g-about" }],
+      [DE_ABOUT, { variant: "de", group: "g-about" }],
+      [EN_PRICING, { variant: "en", group: "g-pricing" }],
+      [DE_PRICING, { variant: "de", group: "g-pricing" }],
+      [EN_SOLO, { variant: "en", group: null }],
+      [EN_HOME, { variant: "en", group: "g-home" }],
+      [DE_HOME, { variant: "de", group: "g-home" }],
+    ]),
+  });
+}
+
+const pageRef = (pageId: string, anchor: string | null = null): LinkRef => ({
+  kind: "page",
+  pageId,
+  query: null,
+  anchor,
+});
+
+describe("page variants (link-resolve) — links go to the rendering page's variant", () => {
+  it("maps a reference to the same-variant sibling, keeping the anchor", () => {
+    const de = variantIndex().forPage(DE_HOME);
+    expect(de.resolve(pageRef(EN_ABOUT, "team"))).toEqual({
+      status: "resolved",
+      url: "/de/ueber/#team",
+    });
+    // Already in the rendering variant: unchanged.
+    expect(de.resolve(pageRef(DE_ABOUT))).toEqual({ status: "resolved", url: "/de/ueber/" });
+    // A source-variant page renders its own variant's page.
+    const en = variantIndex().forPage(EN_HOME);
+    expect(en.resolve(pageRef(DE_ABOUT))).toEqual({ status: "resolved", url: "/about/" });
+    expect(en.resolve(pageRef(EN_ABOUT))).toEqual({ status: "resolved", url: "/about/" });
+  });
+
+  it("refuses two pages claiming the same variant in one group", () => {
+    expect(() =>
+      createSiteLinkIndex({
+        env: "staging",
+        pageUrlStyle: "directory",
+        pages: [
+          { id: EN_ABOUT, path: "/about", status: "published" },
+          { id: DE_ABOUT, path: "/de/ueber", status: "published" },
+        ],
+        media: [],
+        pageVariants: new Map([
+          [EN_ABOUT, { variant: "de", group: "g-about" }],
+          [DE_ABOUT, { variant: "de", group: "g-about" }],
+        ]),
+      }),
+    ).toThrow(/both the "de" version in variant group g-about/);
+  });
+
+  it("applies the environment policy to the SIBLING (an unpublished German version)", () => {
+    expect(variantIndex("staging").forPage(DE_HOME).resolve(pageRef(EN_PRICING))).toEqual({
+      status: "unpublished",
+      url: "/de/preise/",
+      pageId: DE_PRICING,
+    });
+    expect(variantIndex("preview").forPage(DE_HOME).resolve(pageRef(EN_PRICING))).toEqual({
+      status: "resolved",
+      url: "/de/preise/",
+    });
+  });
+
+  it("refuses a target without a sibling in the rendering variant, loudly", () => {
+    const missing: string[] = [];
+    const out = resolveLinkRefsInHtml(
+      `<a href="caelo:page/${EN_SOLO}">Solo</a>`,
+      variantIndex().forPage(DE_HOME),
+      missing,
+    );
+    expect(out).toBe(`<a href="caelo:page/${EN_SOLO}">Solo</a>`);
+    expect(missing).toEqual([`link-variant-missing:page/${EN_SOLO}:de`]);
+    expect(linkIssueSeverity("preview", "no-variant")).toBe("block");
+    expect(linkIssueSeverity("staging", "no-variant")).toBe("block");
+  });
+
+  it("maps nothing for a page no plugin has an opinion about, or a render outside a page", () => {
+    expect(variantIndex().forPage(PAGE).resolve(pageRef(EN_SOLO))).toEqual({
+      status: "resolved",
+      url: "/solo/",
+    });
+    expect(variantIndex().forPage(null).resolve(pageRef(DE_ABOUT))).toEqual({
+      status: "resolved",
+      url: "/de/ueber/",
+    });
+  });
+
+  it("covers HTML href, rich text, link field and link-list in one render", () => {
+    const r = renderTemplate({
+      html: `<a href="caelo:page/${EN_HOME}">Home</a><a href="{{cta_href}}">Go</a>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}<div>{{body}}</div>`,
+      fields: [
+        { name: "cta_href", kind: "link" },
+        { name: "nav", kind: "link-list" },
+        { name: "body", kind: "richtext" },
+      ],
+      contentValues: {
+        cta_href: `caelo:page/${EN_PRICING}#plans`,
+        nav: [
+          { label: "About", href: `caelo:page/${EN_ABOUT}` },
+          { label: "Solo", href: `caelo:page/${EN_SOLO}` },
+        ],
+        body: `<p><a href="caelo:page/${EN_ABOUT}?x=1">about</a></p>`,
+      },
+      linkResolver: variantIndex("preview").forPage(DE_PRICING),
+    });
+    expect(r.html).toBe(
+      '<a href="/de/">Home</a><a href="/de/preise/#plans">Go</a>' +
+        `<a href="/de/ueber/">About</a><a href="caelo:page/${EN_SOLO}">Solo</a>` +
+        '<div><p><a href="/de/ueber/?x=1">about</a></p></div>',
+    );
+    expect(r.missingSlots).toEqual([`link-variant-missing:page/${EN_SOLO}:de`]);
+  });
+
+  it("covers nav-menu sets in the composer and attributes a missing sibling to the nav", () => {
+    const out = composePageWithLayout({
+      layoutHtml:
+        '<html><head></head><body><caelo-slot name="header"></caelo-slot><caelo-slot name="content"></caelo-slot></body></html>',
+      layoutCss: "",
+      layoutBlocks: [
+        {
+          blockName: "header",
+          modules: [
+            {
+              moduleId: "m-nav",
+              slug: "nav-menu-main",
+              displayName: "Nav",
+              html: "",
+              css: "",
+              js: "",
+            },
+          ],
+        },
+      ],
+      templateHtml: '<caelo-slot name="content"></caelo-slot>',
+      templateCss: "",
+      blocks: [],
+      structuredSets: {
+        byKindSlug: {
+          "nav-menu/main": [
+            { label: "About", href: `caelo:page/${EN_ABOUT}` },
+            { label: "Solo", href: `caelo:page/${EN_SOLO}` },
+          ],
+        },
+      },
+      linkResolver: variantIndex().forPage(DE_ABOUT),
+    });
+    expect(out.html).toContain('<a href="/de/ueber/">About</a>');
+    expect(out.moduleFailures).toEqual([
+      {
+        blockName: "header",
+        moduleId: "m-nav",
+        moduleSlug: "nav-menu-main",
+        field: "",
+        reason: `link-variant-missing:page/${EN_SOLO}:de`,
+      },
+    ]);
+  });
 });
 
 describe("humanise — reads show paths, never ids", () => {

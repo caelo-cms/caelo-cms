@@ -153,7 +153,7 @@ describe("ensureGeneratedSecrets", () => {
       // #806 — remote MCP's OAuth client starts as the "not configured"
       // placeholder; the Owner writes the real one from Settings → MCP.
       {
-        line: "secrets create caelo-production-mcp-oauth-client --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+        line: "secrets create caelo-production-operator-oauth-client --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
         stdin: "{}",
       },
       {
@@ -195,7 +195,7 @@ describe("ensureGeneratedSecrets", () => {
       "secrets versions list caelo-production-tool-approval-secret": [ok("v/1")],
       "secrets versions list caelo-production-public-role-password": [ok("v/1")],
       "secrets versions list caelo-production-staging-gate-secret": [ok("v/1")],
-      "secrets versions list caelo-production-mcp-oauth-client": [ok("v/1")],
+      "secrets versions list caelo-production-operator-oauth-client": [ok("v/1")],
       "secrets versions list caelo-production-mcp-oauth-seal-key": [ok("v/1")],
     });
     const outcomes = await ensureGeneratedSecrets(
@@ -255,7 +255,7 @@ describe("ensureGeneratedSecrets", () => {
       "secrets create caelo-production-public-role-password --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       // #652 — the staging gate's key follows the same path.
       "secrets create caelo-production-staging-gate-secret --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
-      "secrets create caelo-production-mcp-oauth-client --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
+      "secrets create caelo-production-operator-oauth-client --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
       "secrets create caelo-production-mcp-oauth-seal-key --project=acme --replication-policy=user-managed --locations=europe-west1 --data-file=- --quiet",
     ]);
   });

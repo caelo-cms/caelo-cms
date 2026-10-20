@@ -254,9 +254,10 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
   "tool-approval-secret": gcpSecretId(env, "tool-approval-secret"),
   "staging-gate-secret": gcpSecretId(env, "staging-gate-secret"),
   "public-role-password": gcpSecretId(env, "public-role-password"),
-  // #806 — remote MCP: the Owner-set Google OAuth client (a placeholder
-  // until then) and the broker's seal key, both CLI-generated.
-  "mcp-oauth-client": gcpSecretId(env, "mcp-oauth-client"),
+  // #914 / #806 — the Owner-set Google sign-in client (a placeholder until
+  // then; IAP login, IAP programmatic access and the remote-MCP broker) and
+  // the broker's seal key, both CLI-generated.
+  "operator-oauth-client": gcpSecretId(env, "operator-oauth-client"),
   "mcp-oauth-seal-key": gcpSecretId(env, "mcp-oauth-seal-key"),
 };
 
@@ -479,14 +480,14 @@ for (const binding of runtimeSecretBindings()) {
   );
 }
 
-// #806 — the Owner's remote-MCP setup (Settings → MCP → Remote) stores the
-// Google OAuth client in this one secret. Add-version only: the admin can
-// replace the client the gateway reads, never read it back or touch any
+// #914 — the Owner's Google sign-in setup (Settings → Google sign-in) stores
+// the install's Google OAuth client in this one secret. Add-version only: the
+// admin can replace the client the gateway and the operator-access job read, never read it back or touch any
 // other secret (stack-contract.ts GCP_COMMON says why).
 new gcp.secretmanager.SecretIamMember(
-  `${namePrefix}-admin-mcp-oauth-client-version-adder`,
+  `${namePrefix}-admin-operator-oauth-client-version-adder`,
   {
-    secretId: runtimeSecretIds["mcp-oauth-client"],
+    secretId: runtimeSecretIds["operator-oauth-client"],
     role: "roles/secretmanager.secretVersionAdder",
     member: pulumi.interpolate`serviceAccount:${runSa.email}`,
   },
