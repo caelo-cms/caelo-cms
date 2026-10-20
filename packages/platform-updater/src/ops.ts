@@ -7,7 +7,7 @@
  * requests and the policy, move a request through its run columns, append
  * events, set the policy's pause and write its own audit rows — which is
  * exactly what these ops do. Two jobs use them, each for its own route
- * (`platform_update_requests.route`, migration 0303): the upgrader job and
+ * (`platform_update_requests.route`, migration 0318): the upgrader job and
  * the self-hosted agent claim `app_roll` requests, the converge job
  * `converge` ones. The admin's ops (request, cancel, list, get, policy)
  * live in admin-core.

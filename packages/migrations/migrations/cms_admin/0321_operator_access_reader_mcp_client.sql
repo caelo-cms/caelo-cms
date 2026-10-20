@@ -1,7 +1,7 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0314 — issue #806: the operator-access sync job reads the remote-MCP
--- OAuth client ID (0313) so it can keep the admin IAP resource's
+-- 0321 — issue #806: the operator-access sync job reads the remote-MCP
+-- OAuth client ID (0320) so it can keep the admin IAP resource's
 -- `programmatic_clients` at exactly that client.
 --
 -- The smallest extension of the job's read-only role (0239): SELECT on the
