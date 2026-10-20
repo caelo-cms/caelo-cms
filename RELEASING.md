@@ -95,6 +95,17 @@ in the same commit, citing the vendor checksum file in the PR.
 All four happen in parallel from the single `git push --follow-tags`
 that lands the release commit.
 
+Before npm and the GitHub Release, `release.yml` runs the **real-GCP
+upgrader smoke test** (`upgrader-smoke.yml`, #818) in gate mode: the
+tag's signed manifest must verify, and the smoke install must cleanly
+serve the release before it — which the maintainer installed there
+through Settings → Updates (one click + password), the only update path.
+After publishing, install the new release on the smoke install the same
+way and run `upgrader-smoke` with mode `verify`; the next release's gate
+depends on it. The repository variable `UPGRADER_SMOKE` must be
+`required` or `off` (unset fails the release); setup and what to do when
+it fails: [`docs/dev/upgrader-smoke.md`](docs/dev/upgrader-smoke.md).
+
 ---
 
 ## One-time setup

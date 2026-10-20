@@ -16,6 +16,7 @@ import type { InstallMetadata } from "./install-state.js";
 import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
 import { StateLockHeldError } from "./state-store.js";
 import type { HealthOutcome, HealthProbe } from "./upgrade/health.js";
+import { type IamTester, resourceName } from "./upgrader-iam-preflight.js";
 import {
   type ClaimedUpdate,
   runUpgraderJob,
@@ -211,6 +212,10 @@ function setup(
     lockDenied?: boolean;
     /** The lock broke a dead run's lock on the way, with this message. */
     brokeStaleLock?: string;
+    /** IAM's answer: permissions withheld per resource name. */
+    iamWithheld?: Record<string, readonly string[]>;
+    /** A resource IAM cannot be asked about. */
+    iamError?: string;
   } = {},
 ) {
   const order: string[] = [];
@@ -231,6 +236,7 @@ function setup(
     region: "europe-west1",
     env: "production",
     execution: "caelo-production-upgrader-x1",
+    iam: fakeIam(order, opts.iamWithheld ?? {}, opts.iamError),
     fetchManifest: async (v) => {
       order.push(`manifest ${v}`);
       const other = opts.manifests?.[v];
@@ -263,6 +269,23 @@ function setup(
     log: () => {},
   };
   return { deps, order, q, written };
+}
+
+/** IAM granting everything asked except `withheld` per resource; `error` names a resource it cannot be asked about. */
+function fakeIam(
+  order: string[],
+  withheld: Record<string, readonly string[]>,
+  error?: string,
+): IamTester {
+  return {
+    granted: async (resource, permissions) => {
+      const name = resourceName(resource);
+      order.push(`iam ${name}`);
+      if (error && name === error) return { ok: false, error: "HTTP 503 backend unavailable" };
+      const no = withheld[name] ?? [];
+      return { ok: true, granted: permissions.filter((p) => !no.includes(p)) };
+    },
+  };
 }
 
 const step = (order: string[], re: RegExp) => order.findIndex((l) => re.test(l));
@@ -343,6 +366,71 @@ describe("runUpgraderJob", () => {
     expect(busy.q.end()?.codes).toEqual(["state-locked"]);
     expect(busy.order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
     expect(busy.order).not.toContain("unlock");
+  });
+
+  it("#818: checks IAM after the decision and before the lock, the backup and the roll", async () => {
+    const { deps, order } = setup();
+    expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+    const firstIam = step(order, /^iam /);
+    expect(firstIam).toBeGreaterThan(step(order, /^manifest 0\.11\.0/));
+    expect(firstIam).toBeLessThan(order.indexOf("lock"));
+    expect(firstIam).toBeLessThan(step(order, /^gcloud sql backups create/));
+    // Every resource the run acts on is asked about, each once.
+    expect(order.filter((l) => l.startsWith("iam ")).sort()).toEqual(
+      [
+        "iam gs://acme-caelo-ops",
+        "iam gs://acme-caelo-ops/install/",
+        "iam projects/acme",
+        "iam projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
+        "iam projects/acme/serviceAccounts/caelo-mcp@acme.iam.gserviceaccount.com",
+        "iam projects/acme/serviceAccounts/caelo-production-audit@acme.iam.gserviceaccount.com",
+        "iam projects/acme/serviceAccounts/caelo-production-gateway-sa@acme.iam.gserviceaccount.com",
+        "iam projects/acme/serviceAccounts/caelo-production-run-sa@acme.iam.gserviceaccount.com",
+        "iam projects/acme/serviceAccounts/caelo-production-upgrader@acme.iam.gserviceaccount.com",
+        "iam projects/caelo-website/locations/europe-west1/repositories/caelo-cms-images",
+      ].sort(),
+    );
+  });
+
+  it("#818: missing grants end needs-Cloud-Shell with EVERY missing permission named; nothing changed", async () => {
+    const { deps, order, q, written } = setup({
+      iamWithheld: {
+        "projects/acme": ["run.jobs.create", "cloudsql.backupRuns.create"],
+        "gs://acme-caelo-ops/install/": ["storage.objects.delete"],
+      },
+    });
+    const r = await runUpgraderJob(deps);
+    expect(r).toMatchObject({ exitCode: 0, status: "needs_cloud_shell" });
+    const end = q.end();
+    expect(end?.codes).toEqual(["iam-preflight"]);
+    for (const p of ["run.jobs.create", "cloudsql.backupRuns.create", "storage.objects.delete"]) {
+      expect(end?.reason).toContain(p);
+    }
+    // In plain words, with the one next step.
+    expect(end?.reason).toContain("back up the database before anything changes");
+    expect(end?.reason).toContain("Run the upgrade once with Cloud Shell");
+    expect(end?.reason?.startsWith("Nothing was changed")).toBe(true);
+    expect(order).not.toContain("lock");
+    expect(written).toEqual([]);
+    expect(order.some((l) => /backups create|services update|jobs update|^migrate/.test(l))).toBe(
+      false,
+    );
+  });
+
+  it("#818: IAM that cannot be asked fails the run before anything changes (never assumed fine)", async () => {
+    const { deps, order, q } = setup({ iamError: "projects/acme" });
+    const r = await runUpgraderJob(deps);
+    expect(r.status).toBe("failed");
+    expect(q.end()?.codes).toEqual(["iam-preflight"]);
+    expect(q.end()?.reason).toContain("could not check its access");
+    expect(order).not.toContain("lock");
+    expect(order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
+  });
+
+  it("#818: a stop verdict never asks IAM (it changes nothing that needs it)", async () => {
+    const { deps, order } = setup({ meta: { ...META, infraContractVersion: 1 } });
+    expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+    expect(order.some((l) => l.startsWith("iam "))).toBe(false);
   });
 
   it("#815: a release that needs Cloud Shell says so even when the lock is held or denied", async () => {

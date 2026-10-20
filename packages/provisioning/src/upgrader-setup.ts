@@ -46,6 +46,19 @@
  * is a converge, which only the operator runs ("Run in Cloud Shell").
  * {@link UPGRADER_FORBIDDEN_ROLES} names that line; the tests assert no
  * grant crosses it.
+ *
+ * Direct VPC egress (#818): the migration job and both services run with
+ * `--network/--subnet`. Google documents the compute permissions that needs
+ * (`compute.subnetworks.use`, `compute.addresses.createInternal`, …) on the
+ * Cloud Run service agent, which `roles/run.serviceAgent` already gives it
+ * (cloud.google.com/run/docs/configuring/vpc-direct-vpc), not on the
+ * principal that deploys. So the upgrader gets no compute role; the
+ * real-GCP upgrader smoke test (.github/workflows/upgrader-smoke.yml) shows
+ * it once a stable release was installed on the smoke install through
+ * Settings → Updates (the next tag cannot ship before). Every permission
+ * the job needs is checked by the job itself before it changes anything
+ * (upgrader-iam-preflight.ts);
+ * a grant added or removed here must keep that list in step.
  */
 
 import { ensureCloudSqlIamUser } from "./cloudsql-iam-user.js";

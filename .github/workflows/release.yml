@@ -187,6 +187,9 @@ jobs:
       contents: read
       packages: write
       id-token: write
+    outputs:
+      # The upgrader smoke test installs exactly this version.
+      version: ${{ steps.ver.outputs.version }}
 
     env:
       MANIFEST_IMAGE: ghcr.io/caelo-cms/release-manifest
@@ -314,6 +317,26 @@ jobs:
           if-no-files-found: error
 
   # ──────────────────────────────────────────────────────────────────
+  # Real-GCP upgrader smoke test (#818), gate mode: this release's signed
+  # manifest verifies, and the smoke install cleanly serves the release
+  # before it — installed through Settings → Updates, the only update
+  # path. Read-only; it never starts an update. Blocks npm and the GitHub
+  # Release.
+  # Controlled by the UPGRADER_SMOKE repository variable — `required` or
+  # `off`, never a silent skip (upgrader-smoke.yml, docs/dev/upgrader-smoke.md).
+  # ──────────────────────────────────────────────────────────────────
+  upgrader-smoke:
+    name: upgrader smoke test (real GCP)
+    needs: [release-manifest]
+    uses: ./.github/workflows/upgrader-smoke.yml
+    with:
+      candidate: ${{ needs.release-manifest.outputs.version }}
+    # No secrets: WIF only, and the smoke check is read-only.
+    permissions:
+      contents: read
+      id-token: write
+
+  # ──────────────────────────────────────────────────────────────────
   # Publish each non-private @caelo-cms/* package to npm with
   # provenance attestation. Provenance proves the artifact came from
   # this exact workflow + commit + tag — operators (and `npm audit`)
@@ -325,7 +348,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────
   publish-npm:
     name: publish ${{ matrix.package }} to npm
-    needs: [gate, docker, release-manifest]
+    needs: [gate, docker, release-manifest, upgrader-smoke]
     runs-on: ubuntu-latest
 
     strategy:
