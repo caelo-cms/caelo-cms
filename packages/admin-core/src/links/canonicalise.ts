@@ -25,6 +25,13 @@
  * resolved at build time as before; a renamed or deleted asset there is
  * caught by the media usage guards, not by a stored reference.
  *
+ * Inside a chat that rebuilds an active site import, a link to one of
+ * that run's planned-but-unbuilt pages is kept literal and recorded
+ * against the run (`import-targets.ts`) instead of refused, for the
+ * content values, module code and structured sets the run's
+ * finalisation (`imports.resolve_links`) can rewrite. Layout HTML and
+ * plugin-owned values keep the strict refusal.
+ *
  * Internal copies (fork, duplicate, chat merge, snapshot revert) copy
  * stored references verbatim and are not re-canonicalised. Undo restores
  * whatever was stored, references included.
@@ -42,6 +49,12 @@ import {
   normaliseLinkPath,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import {
+  type ActiveImportTargets,
+  type ImportLinkEntityKind,
+  loadActiveImportTargets,
+  type PendingLinkRecord,
+} from "./import-targets.js";
 import { type LinkTargets, loadLinkTargets } from "./link-targets.js";
 
 /**
@@ -84,11 +97,15 @@ export function probeLinkLookup<T>(apply: (run: LinkCanonicaliseRun) => T): {
  * @param extraOwnHosts hosts that count as this site besides the base
  *   URL and the public domains — an import passes the migrated site's
  *   host, whose absolute self-links mean its (now imported) pages.
+ * @param imports the active import runs of the writing chat (see
+ *   `import-targets.ts`): a planned page already rebuilt resolves to its
+ *   page, one not built yet is pending.
  */
 export async function loadLinkTargetLookup(
   tx: TransactionRunner,
   chatBranchId: string | null,
   extraOwnHosts: readonly string[] = [],
+  imports: ActiveImportTargets | null = null,
 ): Promise<LinkTargetLookup & { readonly targets: LinkTargets }> {
   const targets = await loadLinkTargets(tx, chatBranchId);
   const byPath = new Map<string, string>();
@@ -108,7 +125,9 @@ export async function loadLinkTargetLookup(
     redirects.map((r) => [normaliseLinkPath(r.from_path), normaliseLinkPath(r.to_path)]),
   );
 
-  const hosts = new Set<string>(extraOwnHosts.map((h) => h.toLowerCase()));
+  const hosts = new Set<string>(
+    [...extraOwnHosts, ...(imports?.sourceHosts ?? [])].map((h) => h.toLowerCase()),
+  );
   const base = (await tx.execute(sql`
     SELECT site_base_url FROM site_defaults WHERE id = 1 LIMIT 1
   `)) as unknown as { site_base_url: string | null }[];
@@ -132,18 +151,34 @@ export async function loadLinkTargetLookup(
       const direct = byPath.get(path);
       if (direct !== undefined) return direct;
       const to = redirectTo.get(path);
-      return to === undefined ? null : (byPath.get(to) ?? null);
+      const redirected = to === undefined ? undefined : byPath.get(to);
+      if (redirected !== undefined) return redirected;
+      // A planned page of the chat's import that is already rebuilt —
+      // possibly under a translated slug — is the page its source path names.
+      const rebuilt = imports?.rebuiltByPath.get(path);
+      return rebuilt !== undefined && pageIds.has(rebuilt) ? rebuilt : null;
     },
     mediaIdForSlug: (slug) => bySlug.get(slug) ?? null,
     pageExists: (id) => pageIds.has(id),
     mediaExists: (id) => mediaIds.has(id),
     isOwnHost: (host) => hosts.has(host),
+    ...(imports ? { isPendingPagePath: (path: string) => imports.runsByPath.has(path) } : {}),
   };
 }
 
 /** The outcome of canonicalising one write. */
 export type CanonicaliseOutcome<T> =
-  | { readonly ok: true; readonly value: T; readonly issues: readonly LinkCanonicaliseIssue[] }
+  | {
+      readonly ok: true;
+      readonly value: T;
+      readonly issues: readonly LinkCanonicaliseIssue[];
+      /**
+       * Links kept literal because they point at a page the chat's import
+       * run will still build; the op records them against the entity it
+       * wrote ({@link recordPendingImportLinks}). Null = none.
+       */
+      readonly pending: PendingLinkRecord | null;
+    }
   | {
       readonly ok: false;
       readonly message: string;
@@ -161,16 +196,29 @@ export type CanonicaliseOutcome<T> =
  * @param opts.mode `strict` refuses on any issue with an AI-actionable
  *   message; `report` (imports) keeps unresolved literals and returns
  *   them as issues.
+ * @param opts.pendingEntity the write records links to its chat's
+ *   planned import pages against an entity of this kind (see
+ *   `import-targets.ts`). Only writes that can record — and whose entity
+ *   the run's finalisation can rewrite — pass it; every other write
+ *   refuses such a link like any unknown path.
  */
 export async function canonicaliseLinksForWrite<T>(
   tx: TransactionRunner,
   ctx: ExecutionContext,
   apply: (run: LinkCanonicaliseRun) => T,
-  opts: { readonly previous?: unknown; readonly mode?: "strict" | "report" } = {},
+  opts: {
+    readonly previous?: unknown;
+    readonly mode?: "strict" | "report";
+    readonly pendingEntity?: ImportLinkEntityKind;
+  } = {},
 ): Promise<CanonicaliseOutcome<T>> {
   const probe = probeLinkLookup(apply);
-  if (!probe.needsLookup) return { ok: true, value: probe.value, issues: [] };
-  const lookup = await loadLinkTargetLookup(tx, ctx.chatBranchId ?? null);
+  if (!probe.needsLookup) return { ok: true, value: probe.value, issues: [], pending: null };
+  const imports =
+    opts.pendingEntity !== undefined && ctx.chatBranchId
+      ? await loadActiveImportTargets(tx, ctx.chatBranchId)
+      : null;
+  const lookup = await loadLinkTargetLookup(tx, ctx.chatBranchId ?? null, [], imports);
   const run = linkCanonicaliseRun(lookup, {
     mode: opts.mode ?? "strict",
     grandfathered: opts.previous === undefined ? new Set() : collectLinkLiterals(opts.previous),
@@ -179,5 +227,10 @@ export async function canonicaliseLinksForWrite<T>(
   if (run.mode === "strict" && run.issues.length > 0) {
     return { ok: false, message: describeLinkIssues(run.issues), issues: run.issues };
   }
-  return { ok: true, value, issues: run.issues };
+  return {
+    ok: true,
+    value,
+    issues: run.issues,
+    pending: imports && run.pending.length > 0 ? { targets: imports, pending: run.pending } : null,
+  };
 }

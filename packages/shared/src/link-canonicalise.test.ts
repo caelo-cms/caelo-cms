@@ -158,6 +158,28 @@ describe("canonicaliseUrl", () => {
     expect(r.issues).toEqual([]);
   });
 
+  it("keeps a link to a planned page literal and pending, never an issue", () => {
+    const planned = new Set(["/later", "/old/page.html"]);
+    const r = linkCanonicaliseRun({ ...lookup, isPendingPagePath: (p) => planned.has(p) });
+    expect(canonicaliseUrl("/later/#x", r, "values.cta_href")).toBe("/later/#x");
+    expect(canonicaliseUrl("https://example.com/old/page.html", r, "html")).toBe(
+      "https://example.com/old/page.html",
+    );
+    // An existing page still resolves; an unplanned path is still an issue.
+    expect(canonicaliseUrl("/company/about", r, "x")).toBe(`caelo:page/${ABOUT}`);
+    expect(canonicaliseUrl("/typo", r, "y")).toBe("/typo");
+    expect(r.pending).toEqual([
+      { value: "/later/#x", path: "/later", where: "values.cta_href" },
+      { value: "https://example.com/old/page.html", path: "/old/page.html", where: "html" },
+    ]);
+    expect(r.issues.map((i) => [i.kind, i.value])).toEqual([["unknown-page-path", "/typo"]]);
+    // Without an import run nothing is pending.
+    const strict = run();
+    canonicaliseUrl("/later", strict, "x");
+    expect(strict.pending).toEqual([]);
+    expect(strict.issues.map((i) => i.kind)).toEqual(["unknown-page-path"]);
+  });
+
   it("reports a malformed reference instead of passing it through", () => {
     const r = run();
     const bad = [

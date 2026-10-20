@@ -47,7 +47,7 @@ export async function canonicaliseInstanceValues(
   // field load and the site lookup.
   const widest = Object.keys(values).map((name) => ({ name, kind: "url" }));
   const probe = probeLinkLookup((run) => canonicaliseContentValues(widest, values, run));
-  if (!probe.needsLookup) return { ok: true, value: { ...values }, issues: [] };
+  if (!probe.needsLookup) return { ok: true, value: { ...values }, issues: [], pending: null };
   const fields = await loadModuleFields(tx, moduleId, ctx.chatBranchId ?? null);
   if (fields === null) {
     return {
@@ -62,7 +62,7 @@ export async function canonicaliseInstanceValues(
     tx,
     ctx,
     (run) => canonicaliseContentValues(fields, values, run),
-    { previous },
+    { previous, pendingEntity: "content_instance" },
   );
 }
 
@@ -85,7 +85,7 @@ export async function canonicaliseModuleCode<F extends CanonicaliseField>(
       html: code.html === undefined ? undefined : canonicaliseHtmlLinks(code.html, run, "html"),
       fields: code.fields === undefined ? undefined : canonicaliseFieldDefaults(code.fields, run),
     }),
-    { previous },
+    { previous, pendingEntity: "module" },
   );
 }
 
@@ -103,7 +103,7 @@ export async function canonicaliseSetItems(
     tx,
     ctx,
     (run) => canonicaliseJsonLinks(items, run, "items") as unknown[],
-    { previous },
+    { previous, pendingEntity: "structured_set" },
   );
 }
 
