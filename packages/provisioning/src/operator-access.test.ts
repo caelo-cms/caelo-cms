@@ -161,8 +161,17 @@ describe("ensureOperatorAccessSync", () => {
       "--args=--bun,/app/packages/admin-core/src/security/operator-access/sync-job.ts",
     );
     expect(deploy).toContain(
-      "--set-env-vars=^|^CAELO_OPERATOR_ACCESS_IAP_WEB=cloud_run-europe-west1/services/caelo-production-admin-abc|CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@p.iam.gserviceaccount.com|CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=user:owner@x.com|CAELO_OPERATOR_ACCESS_DB_HOST=10.0.0.3",
+      "--set-env-vars=^|^CAELO_OPERATOR_ACCESS_IAP_WEB=cloud_run-europe-west1/services/caelo-production-admin-abc|CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@p.iam.gserviceaccount.com|CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=user:owner@x.com|CAELO_OPERATOR_ACCESS_DB_HOST=10.0.0.3|CAELO_OPERATOR_OAUTH_CLIENT_SECRET=projects/p/secrets/caelo-production-operator-oauth-client",
     );
+  });
+
+  it("#914 — lets the job read exactly the Google sign-in client's secret, nothing else", async () => {
+    const { run, lines } = freshInstall();
+    await ensureOperatorAccessSync(target, { run, sleep: async () => {} });
+    const secretGrants = lines().filter((l) => l.startsWith("secrets add-iam-policy-binding"));
+    expect(secretGrants).toEqual([
+      `secrets add-iam-policy-binding caelo-production-operator-oauth-client --member=serviceAccount:${JOB_SA} --role=roles/secretmanager.secretAccessor --condition=None --project=p --quiet --format=none`,
+    ]);
   });
 
   it("schedules an hourly run as the job's own SA", async () => {
@@ -337,7 +346,7 @@ describe("caeloOperatorAccess role (#806)", () => {
       "iam.serviceAccounts.getIamPolicy",
       "iam.serviceAccounts.setIamPolicy",
       "iap.webServices.getIamPolicy",
-      // The admin IAP resource's programmatic_clients (remote MCP).
+      // The admin IAP resource's oauthSettings (Google sign-in, #914).
       "iap.webServices.getSettings",
       "iap.webServices.setIamPolicy",
       "iap.webServices.updateSettings",
