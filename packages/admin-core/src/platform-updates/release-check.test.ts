@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The release check's pure parts: the "Check now" cooldown and how GitHub's
- * answers (release, rate limit, error, no answer) become an outcome. GitHub
+ * The release check's pure parts: the "Check now" cooldown, how GitHub's
+ * answers (release, rate limit, error, no answer) become an outcome, and
+ * the route prediction's edges (the manifest comparison itself is
+ * release-facts.test.ts and the check-now integration test). GitHub
  * is replaced at the fetcher boundary; nothing here touches a database.
  */
 
 import { describe, expect, it } from "bun:test";
+import { CAELO_VERSION } from "@caelo-cms/shared";
 import {
   fetchLatestRelease,
+  predictReleaseRoute,
   RELEASE_CHECK_COOLDOWN_MS,
   type ReleaseFetch,
   releaseCheckCooldownMessage,
@@ -128,5 +132,39 @@ describe("fetchLatestRelease", () => {
       fetchImpl: answering(new Response("<html>", { status: 200 })),
     });
     expect(!garbage.reached && garbage.problem).toBe("malformed");
+  });
+});
+
+describe("predictReleaseRoute (#817)", () => {
+  const found = {
+    reached: true as const,
+    latestVersion: "99.0.0",
+    releaseUrl: null,
+    releaseNotes: null,
+    publishedAt: null,
+  };
+  let reads = 0;
+  const opts = {
+    provider: "gcp",
+    readManifest: async (version: string) => {
+      reads += 1;
+      return { ok: false as const, message: `no manifest for v${version}` };
+    },
+  };
+
+  it("passes a failed check through untouched", async () => {
+    const failed = { reached: false as const, problem: "unreachable" as const, message: "x" };
+    expect(await predictReleaseRoute(failed, opts)).toEqual(failed);
+  });
+
+  it("routes nothing when the release is not newer than what runs", async () => {
+    reads = 0;
+    const same = await predictReleaseRoute({ ...found, latestVersion: CAELO_VERSION }, opts);
+    expect(same).toEqual({ ...found, latestVersion: CAELO_VERSION, infraChange: null });
+    expect(reads).toBe(0);
+  });
+
+  it("leaves the route unknown when a manifest cannot be read", async () => {
+    expect(await predictReleaseRoute(found, opts)).toEqual({ ...found, infraChange: null });
   });
 });

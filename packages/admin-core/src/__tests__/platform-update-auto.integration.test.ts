@@ -129,6 +129,7 @@ const POLICY = {
   autoSecurity: true,
   autoPatch: true,
   autoMinor: false,
+  autoConverge: false,
   channel: "stable",
   windowStart: null,
   windowEnd: null,
@@ -144,7 +145,8 @@ async function setPolicy(over: Record<string, unknown> = {}): Promise<void> {
     (
       tx,
     ) => tx`UPDATE platform_update_policy SET mode = ${p.mode}, auto_security = ${p.autoSecurity},
-      auto_patch = ${p.autoPatch}, auto_minor = ${p.autoMinor}, soak_hours = ${p.soakHours},
+      auto_patch = ${p.autoPatch}, auto_minor = ${p.autoMinor},
+      auto_converge = ${p.autoConverge}, soak_hours = ${p.soakHours},
       security_soak_hours = ${p.securitySoakHours}, window_start = ${p.windowStart}::time,
       window_end = ${p.windowEnd}::time, window_timezone = ${p.windowTimezone} WHERE id = 1`,
   );
@@ -161,7 +163,10 @@ async function setLatest(version: string | null, publishedHoursAgo = 48): Promis
 const expireLease = () =>
   admin((tx) => tx`UPDATE platform_update_scheduler SET last_run_at = NULL WHERE id = 1`);
 
-async function tick(facts: unknown = FACTS, opts: { factsVersion?: string | null } = {}) {
+async function tick(
+  facts: unknown = FACTS,
+  opts: { factsVersion?: string | null; convergeAvailable?: boolean } = {},
+) {
   const latest = (
     await admin((tx) => tx`SELECT latest_version FROM release_check_cache WHERE id = 1`)
   )[0] as { latest_version: string | null };
@@ -171,6 +176,7 @@ async function tick(facts: unknown = FACTS, opts: { factsVersion?: string | null
     reason: string | null;
     requestId: string | null;
     restartRequestId: string | null;
+    startRoute: string | null;
     notificationsQueued: number;
   }>(SYSTEM, "platform_updates.scheduler_tick", {
     holder: "test-instance",
@@ -179,6 +185,7 @@ async function tick(facts: unknown = FACTS, opts: { factsVersion?: string | null
     facts,
     upgraderAvailable: true,
     upgraderProblem: null,
+    convergeAvailable: opts.convergeAvailable ?? true,
   });
 }
 
@@ -373,6 +380,7 @@ describe("platform_updates.scheduler_tick", () => {
         facts: FACTS,
         upgraderAvailable: true,
         upgraderProblem: null,
+        convergeAvailable: true,
       });
       expect(r.ok).toBe(false);
     }
@@ -476,16 +484,37 @@ describe("platform_updates.scheduler_tick", () => {
     expect((await requests())[0]?.auto_basis).toBe("security");
   });
 
-  it("infra-changing releases only notify (never queued)", async () => {
+  it("infra-changing releases on an install without a converge job only notify (never queued)", async () => {
     await setPolicy();
     await setLatest(NEXT_MINOR, 48);
-    await setPolicy({ autoMinor: true });
-    const r = await tick({ ...FACTS, infraChange: true });
+    await setPolicy({ autoMinor: true, autoConverge: true });
+    const r = await tick({ ...FACTS, infraChange: true }, { convergeAvailable: false });
     expect(r.action).toBe("needs_cloud_shell");
     expect(await requests()).toHaveLength(0);
     const [n] = await notifications();
     expect(n).toMatchObject({ kind: "needs_cloud_shell", target_version: NEXT_MINOR });
     expect(n?.body).toContain("Cloud Shell");
+  });
+
+  it("auto_converge off: an infra change is announced for the Owner to install, never queued", async () => {
+    await setLatest(NEXT_MINOR, 48);
+    await setPolicy({ autoMinor: true, autoConverge: false });
+    const r = await tick({ ...FACTS, infraChange: true });
+    expect(r.action).toBe("manual");
+    expect(await requests()).toHaveLength(0);
+  });
+
+  it("auto_converge on: the scheduler queues the infra change for the converge job (#819)", async () => {
+    await setLatest(NEXT_MINOR, 48);
+    await setPolicy({ autoMinor: true, autoConverge: true });
+    const r = await tick({ ...FACTS, infraChange: true });
+    expect(r.action).toBe("install");
+    expect(r.startRoute).toBe("converge");
+    const rows = (await admin((tx) => tx`SELECT route, trigger FROM platform_update_requests`)) as {
+      route: string;
+      trigger: string;
+    }[];
+    expect(rows).toEqual([{ route: "converge", trigger: "auto" }]);
   });
 
   it("notify mode emails once per release, and nothing when up to date", async () => {
@@ -553,6 +582,28 @@ describe("platform_updates.scheduler_tick", () => {
     const [n] = await notifications();
     expect(n).toMatchObject({ kind: "failed" });
     expect(n?.body).toContain("paused until you resume");
+  });
+
+  it("closes a Cloud Shell step for the running release, and audits it (#817)", async () => {
+    await setLatest(NEXT_PATCH, 48);
+    const rows = (await admin(
+      (tx) => tx`INSERT INTO platform_update_requests
+                   (target_version, from_version, trigger, auto_basis, status, status_reason,
+                    started_at, finished_at)
+                 VALUES (${CAELO_VERSION}, '0.0.1', 'auto', 'patch', 'needs_cloud_shell',
+                         'changes the cloud setup', now(), now())
+                 RETURNING id::text AS id`,
+    )) as unknown as { id: string }[];
+    const id = rows[0]?.id as string;
+    await tick();
+    expect((await requests()).find((r) => r.id === id)?.status).toBe("superseded");
+    const audits = (await admin(
+      (tx) => tx`SELECT result_summary FROM audit_events
+                  WHERE operation = 'platform_updates.scheduler_tick' AND entity_id = ${id}::uuid`,
+    )) as unknown as { result_summary: string }[];
+    expect(audits.map((a) => a.result_summary)).toEqual([
+      `superseded: No longer needed: this install runs v${CAELO_VERSION} now.`,
+    ]);
   });
 
   it("emails how automatic installs ended, once each", async () => {
@@ -702,6 +753,7 @@ describe("runAutoUpdateTick (the loop's body)", () => {
       adapter,
       registry,
       upgrader: () => ({ ok: true, trigger }),
+      converge: () => ({ ok: true, trigger: null }),
       readManifest: async (v) => manifest(v, 2),
       provider: "gcp",
       holder: "test",
@@ -743,6 +795,7 @@ describe("runAutoUpdateTick (the loop's body)", () => {
         adapter,
         registry,
         upgrader: () => ({ ok: true, trigger }),
+        converge: () => ({ ok: true, trigger: null }),
         // The installed release was converged to contract 2; the new one needs 3.
         readManifest: async (v) => manifest(v, v === CAELO_VERSION ? 2 : 3),
         provider: "gcp",
@@ -761,6 +814,39 @@ describe("runAutoUpdateTick (the loop's body)", () => {
     expect(n).toMatchObject({ delivery_status: "sent", recipients: [OWNER_EMAIL] });
   });
 
+  it("auto_converge on: starts the CONVERGE job for an infra-changing release, never the upgrader (#819)", async () => {
+    await setPolicy({ soakHours: 0, securitySoakHours: 0, autoConverge: true });
+    await setLatest(NEXT_PATCH, 1);
+    const convergeRuns: string[] = [];
+    const before = startedRuns.length;
+    const convergeJob: UpgraderTrigger = {
+      async start() {
+        convergeRuns.push("converge-1");
+        return "converge-1";
+      },
+      async latest() {
+        return null;
+      },
+    };
+    const out = await runAutoUpdateTick({
+      adapter,
+      registry,
+      upgrader: () => ({ ok: true, trigger }),
+      converge: () => ({ ok: true, trigger: convergeJob }),
+      readManifest: async (v) => manifest(v, v === CAELO_VERSION ? 2 : 3),
+      provider: "gcp",
+      holder: "test",
+      log: () => {},
+    });
+    expect(out).toMatchObject({ ran: true, action: "install" });
+    expect(convergeRuns).toEqual(["converge-1"]);
+    expect(startedRuns.length).toBe(before);
+    const rows = (await admin(
+      (tx) => tx`SELECT route FROM platform_update_requests WHERE id = ${out.requestId}::uuid`,
+    )) as { route: string }[];
+    expect(rows[0]?.route).toBe("converge");
+  });
+
   it("an unreadable manifest blocks and says so", async () => {
     await setPolicy({ soakHours: 0, securitySoakHours: 0 });
     await setLatest(NEXT_PATCH, 1);
@@ -768,6 +854,7 @@ describe("runAutoUpdateTick (the loop's body)", () => {
       adapter,
       registry,
       upgrader: () => ({ ok: true, trigger }),
+      converge: () => ({ ok: true, trigger: null }),
       readManifest: async () => ({ ok: false, message: "HTTP 404" }),
       provider: "gcp",
       holder: "test",
@@ -822,6 +909,7 @@ describe("runAutoUpdateTick on self-hosted: through the update agent", () => {
       registry,
       // What the admin wires on self-hosted (lib/server/upgrader.ts).
       upgrader: () => ({ ok: true, trigger: agentUpgraderTrigger(readAgent) }),
+      converge: () => ({ ok: true, trigger: null }),
       readManifest: async (v) => manifest(v),
       provider: "self-hosted",
       holder: "test",

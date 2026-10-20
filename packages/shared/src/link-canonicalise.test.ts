@@ -25,7 +25,17 @@ const GONE = "33333333-3333-4333-8333-333333333333";
 const HERO = "44444444-4444-4444-8444-444444444444";
 
 const lookup: LinkTargetLookup = {
-  pageIdForPath: (p) => ({ "/": HOME, "/company/about": ABOUT, "/old-about": ABOUT })[p] ?? null,
+  pageIdForPath: (p) =>
+    (
+      ({
+        "/": HOME,
+        "/company/about": ABOUT,
+        "/old-about": ABOUT,
+        // Old URLs an import redirected (301) to the page.
+        "/about.html": ABOUT,
+        "/about/index.html": ABOUT,
+      }) as Record<string, string>
+    )[p] ?? null,
   mediaIdForSlug: (s) => (s === "hero" ? HERO : null),
   pageExists: (id) => id === ABOUT || id === HOME,
   mediaExists: (id) => id === HERO,
@@ -66,7 +76,7 @@ describe("canonicaliseUrl", () => {
       "#pricing",
       "{{cta_href}}",
       "/robots.txt",
-      "/files/guide.pdf",
+      "/sitemap.xml",
       "/_assets/app.css",
       "/api/forms/contact",
       "relative/path",
@@ -90,6 +100,51 @@ describe("canonicaliseUrl", () => {
     ]);
   });
 
+  it("resolves file-shaped old URLs a page or redirect answers before treating them as files", () => {
+    const r = run();
+    expect(canonicaliseUrl("/about.html", r, "x")).toBe(`caelo:page/${ABOUT}`);
+    expect(canonicaliseUrl("/about/index.html#team", r, "x")).toBe(`caelo:page/${ABOUT}#team`);
+    expect(r.issues).toEqual([]);
+  });
+
+  it("reports a file path nothing serves (strict) and keeps it literal (report)", () => {
+    const strict = run();
+    expect(canonicaliseUrl("/files/guide.pdf", strict, "html")).toBe("/files/guide.pdf");
+    expect(canonicaliseUrl("/index.php", strict, "html")).toBe("/index.php");
+    expect(strict.issues.map((i) => [i.kind, i.value])).toEqual([
+      ["unknown-file", "/files/guide.pdf"],
+      ["unknown-file", "/index.php"],
+    ]);
+    const report = linkCanonicaliseRun(lookup, { mode: "report" });
+    expect(canonicaliseUrl("/files/guide.pdf", report, "html")).toBe("/files/guide.pdf");
+    expect(report.issues.map((i) => i.kind)).toEqual(["unknown-file"]);
+    expect(describeLinkIssues(strict.issues)).toContain("media library");
+  });
+
+  it("refuses a media link with a query or anchor instead of dropping it", () => {
+    const r = run();
+    expect(canonicaliseUrl("/_caelo/media/hero#page=3", r, "x")).toBe("/_caelo/media/hero#page=3");
+    expect(canonicaliseUrl("/_caelo/media/hero?download=1", r, "y")).toBe(
+      "/_caelo/media/hero?download=1",
+    );
+    expect(r.issues.map((i) => [i.kind, i.where])).toEqual([
+      ["unsupported-link-form", "x"],
+      ["unsupported-link-form", "y"],
+    ]);
+    const report = linkCanonicaliseRun(lookup, { mode: "report" });
+    expect(canonicaliseUrl("/_caelo/media/hero#page=3", report, "x")).toBe(
+      "/_caelo/media/hero#page=3",
+    );
+    expect(report.issues.map((i) => i.kind)).toEqual(["unsupported-link-form"]);
+  });
+
+  it("stores the orig variant as the plain media reference", () => {
+    const r = run();
+    expect(canonicaliseUrl("/_caelo/media/hero/orig", r, "x")).toBe(`caelo:media/${HERO}`);
+    expect(canonicaliseUrl(`/_caelo/media/${HERO}/orig`, r, "x")).toBe(`caelo:media/${HERO}`);
+    expect(r.issues).toEqual([]);
+  });
+
   it("grandfathers links already stored", () => {
     const r = run(["/nope", `caelo:page/${GONE}`]);
     canonicaliseUrl("/nope", r, "x");
@@ -101,6 +156,52 @@ describe("canonicaliseUrl", () => {
     const r = run();
     expect(canonicaliseUrl("/company/about", r, "x", "media")).toBe("/company/about");
     expect(r.issues).toEqual([]);
+  });
+
+  it("reports a malformed reference instead of passing it through", () => {
+    const r = run();
+    const bad = [
+      "caelo:page/1111", // truncated id
+      `caelo:page/${ABOUT}/team`, // stray path after the id
+      "caelo:page/ABCDEF01-1111-4111-8111-111111111111", // ids are lowercase
+      `caelo:media/${HERO}/WEBP`, // variant outside the grammar
+    ];
+    for (const v of bad) expect(canonicaliseUrl(v, r, "values.cta_href")).toBe(v);
+    expect(r.issues.map((i) => [i.kind, i.value])).toEqual(
+      bad.map((v) => ["malformed-link-ref", v]),
+    );
+    expect(describeLinkIssues(r.issues)).toContain("write the page's path");
+    // Grandfathered like any other stored literal.
+    const g = run(["caelo:page/1111"]);
+    canonicaliseUrl("caelo:page/1111", g, "x");
+    expect(g.issues).toEqual([]);
+  });
+
+  it("turns a query or anchor outside the grammar into an issue, never a throw", () => {
+    // `formatLinkRef` throws on a suffix it cannot parse back; the
+    // canonicaliser must validate with the grammar's own patterns first.
+    const r = run();
+    for (const v of [
+      "/company/about#a b",
+      "/company/about#x#y",
+      "/company/about?a=1?b=2",
+      '/company/about?q="x"',
+      `/company/about#${"a".repeat(257)}`,
+      `/company/about?${"q".repeat(513)}`,
+      "/company/about#über",
+    ]) {
+      expect(() => canonicaliseUrl(v, r, "x")).not.toThrow();
+      expect(canonicaliseUrl(v, run(), "x")).toBe(v);
+    }
+    expect(r.issues.every((i) => i.kind === "unsupported-link-form")).toBe(true);
+    expect(r.issues).toHaveLength(7);
+    // The longest suffixes the grammar allows still become references.
+    const ok = run();
+    const anchor = "a".repeat(256);
+    expect(canonicaliseUrl(`/company/about#${anchor}`, ok, "x")).toBe(
+      `caelo:page/${ABOUT}#${anchor}`,
+    );
+    expect(ok.issues).toEqual([]);
   });
 });
 
@@ -117,6 +218,59 @@ describe("HTML and JSON positions", () => {
         `<img data-src="/company/about" src="/company/about"><a href="{{href}}">t</a>`,
     );
     expect(r.issues).toEqual([]);
+  });
+
+  it("reads attributes only inside start tags, not in escaped code samples", () => {
+    const r = run();
+    const html =
+      '<pre><code>&lt;a href="/nope"&gt;Docs&lt;/a&gt;</code></pre>' +
+      `<a title="a > b" href="/company/about">x</a><img alt='it"s' src="/_caelo/media/hero">`;
+    expect(canonicaliseHtmlLinks(html, r, "html")).toBe(
+      '<pre><code>&lt;a href="/nope"&gt;Docs&lt;/a&gt;</code></pre>' +
+        `<a title="a > b" href="caelo:page/${ABOUT}">x</a><img alt='it"s' src="caelo:media/${HERO}">`,
+    );
+    expect(r.issues).toEqual([]);
+    // An unterminated quote does not hide the tags before it.
+    expect(canonicaliseHtmlLinks('<a href="/company/about">x</a><b title="oops>', run(), "h")).toBe(
+      `<a href="caelo:page/${ABOUT}">x</a><b title="oops>`,
+    );
+  });
+
+  it("reports malformed references in any HTML link position, once each", () => {
+    const r = run();
+    const html =
+      `<a href="caelo:page/${ABOUT}/team">A</a>` +
+      `<div data-href="caelo:page/1234">B</div>` +
+      `<img srcset="caelo:media/${HERO} 1x, caelo:media/abc 2x">` +
+      `<a href="caelo:page/${ABOUT}#ok">C</a>` +
+      "<p>Write caelo:page/&lt;id&gt; in prose: not a link.</p>";
+    expect(canonicaliseHtmlLinks(html, r, "html")).toBe(html);
+    expect(r.issues.map((i) => [i.kind, i.value])).toEqual([
+      ["malformed-link-ref", `caelo:page/${ABOUT}/team`],
+      ["malformed-link-ref", "caelo:media/abc"],
+      ["malformed-link-ref", "caelo:page/1234"],
+    ]);
+    // HTML without any attribute is still checked (a value that starts
+    // with the broken reference); element text is not a link position.
+    const t = run();
+    canonicaliseHtmlLinks("caelo:page/1234 <b>caelo:page/5678</b>", t, "html");
+    expect(t.issues.map((i) => i.value)).toEqual(["caelo:page/1234"]);
+  });
+
+  it("reports a malformed reference in a plain text value", () => {
+    const r = run();
+    expect(canonicaliseJsonLinks({ label: "caelo:page/1234" }, r, "values")).toEqual({
+      label: "caelo:page/1234",
+    });
+    expect(r.issues.map((i) => [i.kind, i.where])).toEqual([
+      ["malformed-link-ref", "values.label"],
+    ]);
+    // A stored malformed value is grandfathered by the next write.
+    const g = linkCanonicaliseRun(lookup, {
+      grandfathered: collectLinkLiterals({ label: "caelo:page/1234" }),
+    });
+    canonicaliseJsonLinks({ label: "caelo:page/1234" }, g, "values");
+    expect(g.issues).toEqual([]);
   });
 
   it("treats link-named keys as URLs and plain text as text", () => {

@@ -71,7 +71,6 @@ export const canonicaliseLinkValuesOp = defineOperation({
     const r = await canonicaliseLinksForWrite(
       tx,
       ctx,
-      input.values,
       (run) => canonicaliseContentValues(input.fields, input.values, run),
       input.previous === undefined ? {} : { previous: input.previous },
     );

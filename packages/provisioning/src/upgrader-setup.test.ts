@@ -75,7 +75,7 @@ describe("ensureUpgraderJob", () => {
     const mine = grants(calls).filter((g) => g.member === UPGRADER);
     expect(mine.map((g) => `${g.where} → ${g.role}`).sort()).toEqual(
       [
-        "projects add-iam-policy-binding acme → roles/run.developer",
+        "projects add-iam-policy-binding acme → projects/acme/roles/caeloUpgraderRun",
         "projects add-iam-policy-binding acme → roles/cloudsql.instanceUser",
         "projects add-iam-policy-binding acme → roles/logging.logWriter",
         "projects add-iam-policy-binding acme → projects/acme/roles/caeloUpgraderSqlBackup",
@@ -83,6 +83,7 @@ describe("ensureUpgraderJob", () => {
         "iam service-accounts add-iam-policy-binding caelo-production-gateway-sa@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "iam service-accounts add-iam-policy-binding caelo-production-upgrader@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "iam service-accounts add-iam-policy-binding caelo-mcp@acme.iam.gserviceaccount.com → roles/iam.serviceAccountTokenCreator",
+        "iam service-accounts add-iam-policy-binding caelo-production-audit@acme.iam.gserviceaccount.com → roles/iam.serviceAccountUser",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → roles/storage.objectUser",
         "storage buckets add-iam-policy-binding gs://acme-caelo-ops → projects/acme/roles/caeloUpgraderOpsList",
       ].sort(),
@@ -169,11 +170,11 @@ describe("ensureUpgraderJob", () => {
 
   it("stops at the first failed grant and says which", async () => {
     const { run, calls } = fakeGcloud([
-      [/add-iam-policy-binding acme .*run\.developer/, fail("PERMISSION_DENIED")],
+      [/add-iam-policy-binding acme .*caeloUpgraderRun/, fail("PERMISSION_DENIED")],
     ]);
     const r = await ensureUpgraderJob(TARGET, { run, sleep: async () => {} });
     expect(r.ok ? "" : r.error).toContain(
-      "grant the upgrader roles/run.developer: PERMISSION_DENIED",
+      "grant the upgrader projects/acme/roles/caeloUpgraderRun: PERMISSION_DENIED",
     );
     expect(calls.some((c) => c.slice(0, 3).join(" ") === "run jobs deploy")).toBe(false);
   });

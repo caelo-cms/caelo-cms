@@ -19,11 +19,12 @@ import {
   linkCanonicaliseRun,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { loadModuleStateWithBranchOverlay } from "../snapshots/load.js";
 import {
   type CanonicaliseOutcome,
   canonicaliseLinksForWrite,
   loadLinkTargetLookup,
-  mayContainInternalLink,
+  probeLinkLookup,
 } from "./canonicalise.js";
 
 /**
@@ -41,12 +42,25 @@ export async function canonicaliseInstanceValues(
   values: Readonly<Record<string, unknown>>,
   previous: unknown,
 ): Promise<CanonicaliseOutcome<Record<string, unknown>>> {
-  if (!mayContainInternalLink(values)) return { ok: true, value: { ...values }, issues: [] };
-  const fields = await loadModuleFields(tx, moduleId);
+  // Probe before loading the module's fields: with every value treated
+  // as a URL field (the widest reading), link-free values skip both the
+  // field load and the site lookup.
+  const widest = Object.keys(values).map((name) => ({ name, kind: "url" }));
+  const probe = probeLinkLookup((run) => canonicaliseContentValues(widest, values, run));
+  if (!probe.needsLookup) return { ok: true, value: { ...values }, issues: [] };
+  const fields = await loadModuleFields(tx, moduleId, ctx.chatBranchId ?? null);
+  if (fields === null) {
+    return {
+      ok: false,
+      message:
+        `Module ${moduleId} does not exist (or was deleted), so its content's links cannot be checked. ` +
+        "Next step: list_modules shows the modules that exist; use one of those.",
+      issues: [],
+    };
+  }
   return canonicaliseLinksForWrite(
     tx,
     ctx,
-    values,
     (run) => canonicaliseContentValues(fields, values, run),
     { previous },
   );
@@ -67,7 +81,6 @@ export async function canonicaliseModuleCode<F extends CanonicaliseField>(
   return canonicaliseLinksForWrite(
     tx,
     ctx,
-    code,
     (run) => ({
       html: code.html === undefined ? undefined : canonicaliseHtmlLinks(code.html, run, "html"),
       fields: code.fields === undefined ? undefined : canonicaliseFieldDefaults(code.fields, run),
@@ -89,10 +102,26 @@ export async function canonicaliseSetItems(
   return canonicaliseLinksForWrite(
     tx,
     ctx,
-    items,
     (run) => canonicaliseJsonLinks(items, run, "items") as unknown[],
     { previous },
   );
+}
+
+/**
+ * A layout's HTML (the page frame around the blocks). Links in it are
+ * stored as references exactly like module HTML.
+ *
+ * @param previousHtml the HTML this write replaces, or undefined.
+ */
+export async function canonicaliseLayoutHtml(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  html: string,
+  previousHtml: string | undefined,
+): Promise<CanonicaliseOutcome<string>> {
+  return canonicaliseLinksForWrite(tx, ctx, (run) => canonicaliseHtmlLinks(html, run, "html"), {
+    previous: previousHtml === undefined ? undefined : { html: previousHtml },
+  });
 }
 
 /** One link an import could not turn into a reference. */
@@ -110,6 +139,11 @@ export interface UnresolvedImportLink {
  *
  * Runs once after every page of the run exists, so a header composed
  * with the first page still resolves links to the last one.
+ *
+ * The UPDATE below rewrites module rows this same compose transaction
+ * just inserted (or upserted); it is the second half of that one write,
+ * not a separate edit, so it deliberately emits no snapshot and does not
+ * bump `updated_at` — it inherits whatever the compose does for the row.
  */
 export async function canonicaliseImportedModules(
   tx: TransactionRunner,
@@ -125,15 +159,15 @@ export async function canonicaliseImportedModules(
       sql`, `,
     )})
   `)) as unknown as { id: string; html: string }[];
-  const candidates = rows.filter((r) => mayContainInternalLink(r.html));
+  const candidates = rows.filter(
+    (r) => probeLinkLookup((run) => canonicaliseHtmlLinks(r.html, run, "html")).needsLookup,
+  );
   if (candidates.length === 0) return [];
-  let sourceHost: string[] = [];
-  try {
-    sourceHost = [new URL(sourceUrl).host];
-  } catch {
-    // An unparsable source URL only means its absolute links stay literal.
-  }
-  const lookup = await loadLinkTargetLookup(tx, ctx.chatBranchId ?? null, sourceHost);
+  const lookup = await loadLinkTargetLookup(
+    tx,
+    ctx.chatBranchId ?? null,
+    sourceSiteHosts(sourceUrl),
+  );
   const unresolved: UnresolvedImportLink[] = [];
   for (const r of candidates) {
     const run = linkCanonicaliseRun(lookup, { mode: "report" });
@@ -146,17 +180,38 @@ export async function canonicaliseImportedModules(
   return unresolved;
 }
 
+/**
+ * The migrated site's host and its www / apex twin: a site crawled at
+ * `https://example.com` links itself as `https://www.example.com/...` as
+ * often as not, and both mean its (now imported) pages. An unparsable
+ * source URL only means its absolute links stay literal (and reported).
+ */
+export function sourceSiteHosts(sourceUrl: string): string[] {
+  let u: URL;
+  try {
+    u = new URL(sourceUrl);
+  } catch {
+    return [];
+  }
+  const host = u.hostname.toLowerCase();
+  const port = u.port ? `:${u.port}` : "";
+  const twin = host.startsWith("www.") ? host.slice(4) : `www.${host}`;
+  return [`${host}${port}`, `${twin}${port}`];
+}
+
+/**
+ * The module's declared fields as the chat sees them (its branch's
+ * pending edits overlaid on main), or null when the module does not
+ * exist — never an empty list standing in for a missing module.
+ */
 async function loadModuleFields(
   tx: TransactionRunner,
   moduleId: string,
-): Promise<CanonicaliseField[]> {
-  const rows = (await tx.execute(sql`
-    SELECT fields FROM modules WHERE id = ${moduleId}::uuid LIMIT 1
-  `)) as unknown as { fields: unknown }[];
-  const raw = rows[0]?.fields;
-  const parsed = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
-  if (!Array.isArray(parsed)) return [];
-  return parsed.filter(
+  chatBranchId: string | null,
+): Promise<CanonicaliseField[] | null> {
+  const state = await loadModuleStateWithBranchOverlay(tx, moduleId, chatBranchId);
+  if (state === null || state.deletedAt !== null) return null;
+  return state.fields.filter(
     (f): f is CanonicaliseField =>
       typeof f === "object" &&
       f !== null &&

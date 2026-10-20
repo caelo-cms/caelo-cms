@@ -34,9 +34,13 @@ import { type AnyThemeToken, flattenTokens, type ThemeDocument } from "./themes.
 
 /** Renderer-level error for cyclic / unresolved aliases. */
 export class ThemeRenderError extends Error {
-  readonly kind: "cyclic-alias" | "missing-alias";
+  readonly kind: "cyclic-alias" | "missing-alias" | "invalid-selector";
   readonly path: string;
-  constructor(kind: "cyclic-alias" | "missing-alias", path: string, message: string) {
+  constructor(
+    kind: "cyclic-alias" | "missing-alias" | "invalid-selector",
+    path: string,
+    message: string,
+  ) {
     super(message);
     this.name = "ThemeRenderError";
     this.kind = kind;
@@ -74,6 +78,13 @@ export interface RenderThemeCssOptions {
  */
 export function renderThemeCss(tokens: ThemeDocument, options: RenderThemeCssOptions = {}): string {
   const selector = options.selector ?? ":root";
+  if (/[{};]|<\/style|<!--|--!?>/i.test(selector)) {
+    throw new ThemeRenderError(
+      "invalid-selector",
+      selector,
+      `Invalid CSS selector for theme rendering: '${selector}'`,
+    );
+  }
   const flat = flattenTokens(tokens);
   const resolveCache = new Map<string, unknown>();
   const lightLines: string[] = [];
@@ -337,6 +348,25 @@ function lookupPath(doc: ThemeDocument, path: string): AnyThemeToken | null {
 // Per-category CSS emission
 // ────────────────────────────────────────────────────────────────────
 
+/**
+ * Serialize a token-path segment as part of a CSS custom-property name, the
+ * way `CSS.escape` does: ASCII letters, digits, `-`, `_` and every
+ * non-ASCII character stay as they are (so `color.grün` is still
+ * `--color-grün`), anything else becomes a hex escape. A theme key can
+ * therefore never end the declaration, the rule, or the surrounding
+ * `<style>` element.
+ */
+function escapeCssIdentPart(part: string): string {
+  let out = "";
+  for (const ch of part) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp === 0) out += "\\fffd ";
+    else if (/[A-Za-z0-9_-]/.test(ch) || cp >= 0x80) out += ch;
+    else out += `\\${cp.toString(16)} `;
+  }
+  return out;
+}
+
 function emitTokenLines(
   category: string,
   path: string,
@@ -358,10 +388,12 @@ function emitTokenLines(
   // every category (color/spacing/radius/etc.) so any future
   // DTCG-group-with-DEFAULT-alias works the same way.
   const restRaw = path.slice(category.length + 1);
-  const rest = restRaw.endsWith(".DEFAULT")
-    ? restRaw.slice(0, -".DEFAULT".length).replace(/\./g, "-")
-    : restRaw.replace(/\./g, "-");
-  const baseName = `--${category === "ease" ? "ease" : category}-${rest}`;
+  const rest = escapeCssIdentPart(
+    restRaw.endsWith(".DEFAULT")
+      ? restRaw.slice(0, -".DEFAULT".length).replace(/\./g, "-")
+      : restRaw.replace(/\./g, "-"),
+  );
+  const baseName = `--${category === "ease" ? "ease" : escapeCssIdentPart(category)}-${rest}`;
 
   switch (category) {
     case "color":
@@ -430,9 +462,9 @@ function emitTypography(rest: string, value: unknown, out: string[]): void {
 
 function emitShadow(baseName: string, value: unknown, out: string[]): void {
   // Literal CSS box-shadow string (the tolerant `shadowValueString` form).
-  // Emit verbatim — the DTCG object form is expanded below.
+  // Scrubbed through sanitizeCssTokenValue like every other token value.
   if (typeof value === "string") {
-    const s = value.trim();
+    const s = sanitizeCssTokenValue(value.trim());
     if (s.length > 0) out.push(`${baseName}:${s};`);
     return;
   }

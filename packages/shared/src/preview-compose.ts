@@ -40,7 +40,9 @@ import {
   extractInnerOfTopLevelContentSlot,
   listSlotNames,
 } from "./preview-scanner.js";
+import { escapeStyleText, scriptNeedsEncoding, utf8ToBase64 } from "./raw-text-escape.js";
 import { stripCdataGuards } from "./strip-cdata.js";
+import { balanceTemplateCloses } from "./template-balance.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";
 import { renderThemeCss as renderThemeCssFromTokens } from "./theme-render.js";
 import type { ThemeDocument } from "./themes.js";
@@ -234,11 +236,11 @@ export function fontsHeadFragment(fonts: ComposeFonts | undefined): string | nul
   const links = fonts.preloads
     .map((href) => {
       const format = /\.(woff2?|ttf|otf)(?:[?#]|$)/.exec(href)?.[1];
-      return `<link rel="preload" as="font"${format ? ` type="font/${format}"` : ""} crossorigin href="${href}">`;
+      return `<link rel="preload" as="font"${format ? ` type="font/${format}"` : ""} crossorigin href="${escapeAttr(href)}">`;
     })
     .join("");
-  const style =
-    fonts.css.trim().length > 0 ? `<style data-source="fonts">${fonts.css}</style>` : "";
+  const safeCss = escapeStyleText(fonts.css);
+  const style = safeCss.trim().length > 0 ? `<style data-source="fonts">${safeCss}</style>` : "";
   const fragment = links + style;
   return fragment.length > 0 ? fragment : null;
 }
@@ -367,7 +369,7 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   );
 
   if (allCss.length > 0) {
-    const styleTag = `<style data-source="modules">\n${allCss.join("\n")}\n</style>`;
+    const styleTag = `<style data-source="modules">\n${escapeStyleText(allCss.join("\n"))}\n</style>`;
     html = injectBefore(html, HEAD_CLOSE_RE, styleTag);
   }
   if (allJs.length > 0) {
@@ -674,22 +676,30 @@ function wrapDeferredModule(
 ): string {
   const attr = (v: string): string =>
     v.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+  // Inside the inert <template>, only an element's own end tag ends a
+  // <style> / <script>; a `</template` there is text. So CSS needs just
+  // its own close escaped, JS that could end its <script> ships base64
+  // (the runtime decodes it, see consent-manager runtime.ts), and the
+  // markup needs its unmatched `</template>` closes neutralized
+  // (balanced nested templates stay).
+  const safeHtml = balanceTemplateCloses(moduleHtml);
   const gated = [module, ...nestedModules];
   const css = gated
     .filter((g) => g.css.trim().length > 0)
-    .map((g) => `<style data-source="module">${g.css}</style>`)
+    .map((g) => `<style data-source="module">${escapeStyleText(g.css)}</style>`)
     .join("");
   const js = gated
     .filter((g) => g.js.trim().length > 0)
-    .map(
-      (g) =>
-        `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}">${g.js}</script>`,
+    .map((g) =>
+      scriptNeedsEncoding(g.js)
+        ? `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}" data-caelo-encoding="base64">${utf8ToBase64(g.js)}</script>`
+        : `<script type="text/plain" data-caelo-deferred-script="${attr(g.moduleId)}">${g.js}</script>`,
     )
     .join("");
   return [
     `<div data-caelo-deferred="${attr(deferral.pluginSlug)}" data-reason="${attr(deferral.reason)}" data-module="${attr(module.slug)}">`,
     `<div data-caelo-deferred-placeholder>${deferral.placeholderHtml}</div>`,
-    `<template data-caelo-deferred-content>${css}${moduleHtml}${js}</template>`,
+    `<template data-caelo-deferred-content>${css}${safeHtml}${js}</template>`,
     `</div>`,
   ].join("");
 }
@@ -941,7 +951,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     html = injectBefore(
       html,
       HEAD_CLOSE_RE,
-      `<style data-source="modules">\n${cssParts.join("\n")}\n</style>`,
+      `<style data-source="modules">\n${escapeStyleText(cssParts.join("\n"))}\n</style>`,
     );
   }
   if (jsParts.length > 0) {

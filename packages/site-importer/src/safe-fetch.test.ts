@@ -54,7 +54,28 @@ describe("isPublicIpAddress", () => {
     "::ffff:10.0.0.1",
     "::ffff:192.168.0.1",
     "::ffff:169.254.169.254",
+    "::ffff:0:127.0.0.1", // SIIT v4-translated loopback
+    "::ffff:0:169.254.169.254", // SIIT v4-translated metadata
     "64:ff9b::7f00:1", // NAT64-embedded loopback
+    "64:ff9b:1::1", // RFC 8215 local-use NAT64
+    "100::1", // RFC 6666 discard-only prefix
+    "2001::1", // Teredo (2001:0000::/32)
+    "2001:2::1", // benchmarking (2001:2::/48)
+    "2001:20::1", // ORCHIDv2 (2001:20::/28)
+    "2002:7f00:1::1", // 6to4 loopback
+    "2002:a9fe:a9fe::1", // 6to4 metadata
+    "192.88.99.1", // 6to4 relay anycast (RFC 7526)
+    "::ffff:7f00:1", // v4-mapped loopback, hex spelling
+    "::ffff:a9fe:a9fe", // v4-mapped metadata, hex spelling
+    "::7f00:1", // v4-compatible loopback
+    "64:ff9b::a9fe:a9fe", // NAT64-embedded metadata
+    "64:ff9b:0:1::1", // rest of 64:ff9b::/32 (not the /96 well-known prefix)
+    "2001:1ff::1", // top of 2001::/23
+    "3fff::1", // documentation (RFC 9637)
+    "3fff:fff::1", // top of 3fff::/20
+    "5f00::1", // SRv6 SIDs (RFC 9602)
+    "4000::1", // outside 2000::/3 global unicast
+    "1::1", // outside 2000::/3 global unicast
     "not-an-ip",
     "",
   ];
@@ -72,6 +93,10 @@ describe("isPublicIpAddress", () => {
     "2600:1901::1",
     "2a00:1450:4001:829::200e",
     "::ffff:8.8.8.8", // v4-mapped public stays public
+    "64:ff9b::808:808", // NAT64-embedded public stays public
+    "2001:200::1", // just above 2001::/23
+    "3fff:1000::1", // just above 3fff::/20
+    "2c0f:fb50::1", // top of 2000::/3 still public
   ];
   it.each(blocked)("blocks %s", (ip) => {
     expect(isPublicIpAddress(ip)).toBe(false);
@@ -97,6 +122,18 @@ describe("assertPublicHttpUrl — static pre-checks", () => {
     "http://example.com:8080/", // non-default port
     "http://example.com:22/",
     "not a url",
+    // IPv4 literal disguises: WHATWG URL normalises all of these to 127.0.0.1
+    "http://0177.0.0.1/", // octal
+    "http://0x7f.0.0.1/", // hex octet
+    "http://127.1/", // short form
+    "http://127.0.0.1./", // trailing dot
+    "http://[::ffff:7f00:1]/",
+    "http://[::ffff:a9fe:a9fe]/latest/meta-data/",
+    "http://[64:ff9b::a9fe:a9fe]/",
+    // Trailing-dot FQDN spelling of the localhost family
+    "http://localhost./",
+    "http://sub.localhost./",
+    "http://LOCALHOST/",
   ];
   it.each(blockedUrls)("blocks %s", (url) => {
     expect(() => assertPublicHttpUrl(url)).toThrow(ExternalUrlBlockedError);
@@ -145,6 +182,17 @@ describe("safeExternalFetch — connect-time DNS guard", () => {
         timeoutMs: 5_000,
       }),
     ).rejects.toThrow(/non-public address.*10\.0\.0\.5/);
+  });
+
+  it("refuses metadata.google.internal (resolves to the link-local metadata address)", async () => {
+    // Names are never matched by string: the hostname passes the static
+    // check and the connect-time lookup refuses its 169.254.169.254 answer.
+    await expect(
+      safeExternalFetch("http://metadata.google.internal./computeMetadata/v1/", {
+        lookupFn: async () => [{ address: "169.254.169.254", family: 4 }],
+        timeoutMs: 5_000,
+      }),
+    ).rejects.toThrow(/non-public address.*169\.254\.169\.254/);
   });
 
   it("refuses a mixed public+private DNS answer outright", async () => {

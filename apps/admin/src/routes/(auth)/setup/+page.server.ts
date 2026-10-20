@@ -27,7 +27,13 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     "owner_bootstrap_tokens.any_issued",
     {},
   );
-  const tokenRequired = issued.ok ? (issued.value as { anyIssued: boolean }).anyIssued : false;
+  // CLAUDE.md §2 no-fallbacks: a failed probe must not render the form as
+  // if no token were required (users.create_first_owner enforces the gate
+  // either way; this only decides what the form asks for).
+  if (!issued.ok) {
+    throw error(500, `owner_bootstrap_tokens.any_issued failed: ${issued.error.kind}`);
+  }
+  const tokenRequired = (issued.value as { anyIssued: boolean }).anyIssued;
 
   const tokenFromQuery = url.searchParams.get("token") ?? "";
   return { tokenRequired, tokenFromQuery };
@@ -57,59 +63,26 @@ export const actions: Actions = {
     if (!email || !password || !displayName) {
       return fail(400, { email, displayName, error: "All fields are required." });
     }
-    if (password.length < 10) {
-      return fail(400, { email, displayName, error: "Password must be at least 10 characters." });
-    }
-
-    // Re-check the gate inside the action — load happens at GET time.
-    const issued = await execute(
-      registry,
-      adapter,
-      locals.ctx,
-      "owner_bootstrap_tokens.any_issued",
-      {},
-    );
-    const tokenRequired = issued.ok ? (issued.value as { anyIssued: boolean }).anyIssued : false;
-
-    if (tokenRequired) {
-      if (!token) {
-        return fail(400, {
-          email,
-          displayName,
-          error: "Bootstrap token required. Open /setup?token=<…> from the install output.",
-        });
-      }
-      const consumed = await execute(
-        registry,
-        adapter,
-        locals.ctx,
-        "owner_bootstrap_tokens.consume",
-        { token },
-      );
-      if (!consumed.ok) {
-        return fail(400, {
-          email,
-          displayName,
-          error: "Bootstrap token invalid, expired, or already used.",
-        });
-      }
-    }
-
+    // Password policy, the bootstrap-token gate and its single-use
+    // redemption all run inside users.create_first_owner's transaction, so
+    // a rejected attempt never burns the token (PR #863, L-06).
     const result = await execute(registry, adapter, locals.ctx, "users.create_first_owner", {
       email,
       password,
       displayName,
+      ...(token ? { bootstrapToken: token } : {}),
     });
     if (!result.ok) {
-      // Surfaces the password-strength reason, or "setup already complete".
-      return fail(400, {
-        email,
-        displayName,
-        error: opErrorMessage(
-          result.error,
-          "Setup failed — an owner account may already exist. Sign in at /login instead.",
-        ),
-      });
+      // Surfaces the password-strength / token reason, "setup already
+      // complete", or which field the schema rejected.
+      const message =
+        result.error.kind === "ValidationFailed"
+          ? `Check the form: ${result.error.issues.map((i) => `${i.path.join(".") || "input"} ${i.message}`).join("; ")}.`
+          : opErrorMessage(
+              result.error,
+              "Setup failed — an owner account may already exist. Sign in at /login instead.",
+            );
+      return fail(400, { email, displayName, error: message });
     }
     throw redirect(303, "/login");
   },

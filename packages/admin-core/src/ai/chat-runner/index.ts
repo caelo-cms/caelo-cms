@@ -99,7 +99,7 @@ export async function* runChatTurn(
         // Issue #658 — a caelo_chat call resuming its own paused turn with the
         // operator's decision (checked against chat_turn_approvals).
         ...(input.resumeDecidedApprovals === true ? { resumesDecidedApprovals: true } : {}),
-        ...(options.agentRunMcpTokenId ? { mcpTokenId: options.agentRunMcpTokenId } : {}),
+        ...(options.agentRunMcpAgent ? { mcpAgent: options.agentRunMcpAgent } : {}),
         ...(options.stopEpochAtArrival !== undefined
           ? { stopEpochAtArrival: options.stopEpochAtArrival }
           : {}),

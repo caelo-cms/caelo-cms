@@ -172,6 +172,48 @@ describe("fetchVerifiedReleaseManifest", () => {
     expect(r.ok ? "" : r.error.message).toContain("HTTP 404");
   });
 
+  it("regression #865: a missing manifest or blob (404) is not transient — a retry cannot find it", async () => {
+    const missing = await fetchVerifiedReleaseManifest(
+      "0.11.0",
+      fixture({ manifestStatus: 404 }).deps,
+    );
+    expect(missing.ok ? null : missing.error).toMatchObject({ code: "registry" });
+    expect(missing.ok ? null : missing.error.transient).toBeUndefined();
+    const { deps } = fixture();
+    const noBlob = await fetchVerifiedReleaseManifest("0.11.0", {
+      ...deps,
+      fetch: async (url, init) =>
+        url.includes("/blobs/") ? new Response("", { status: 404 }) : deps.fetch(url, init),
+    });
+    expect(noBlob.ok ? null : noBlob.error.code).toBe("registry");
+    expect(noBlob.ok ? null : noBlob.error.transient).toBeUndefined();
+  });
+
+  it("regression #865: 5xx, 429 and network failures are transient", async () => {
+    for (const status of [500, 503, 429]) {
+      const r = await fetchVerifiedReleaseManifest(
+        "0.11.0",
+        fixture({ manifestStatus: status }).deps,
+      );
+      expect(r.ok ? null : r.error).toMatchObject({ code: "registry", transient: true });
+    }
+    const { deps } = fixture();
+    const blob503 = await fetchVerifiedReleaseManifest("0.11.0", {
+      ...deps,
+      fetch: async (url, init) =>
+        url.includes("/blobs/") ? new Response("", { status: 503 }) : deps.fetch(url, init),
+    });
+    expect(blob503.ok ? null : blob503.error).toMatchObject({ code: "registry", transient: true });
+    const down = await fetchVerifiedReleaseManifest("0.11.0", {
+      ...deps,
+      fetch: async () => {
+        throw new TypeError("fetch failed: ECONNRESET");
+      },
+    });
+    expect(down.ok ? null : down.error).toMatchObject({ code: "registry", transient: true });
+    expect(down.ok ? "" : down.error.message).toContain("ECONNRESET");
+  });
+
   it("rejects a non-SemVer version without touching the network", async () => {
     const { deps, urls } = fixture();
     const r = await fetchVerifiedReleaseManifest("v0.11.0", deps);

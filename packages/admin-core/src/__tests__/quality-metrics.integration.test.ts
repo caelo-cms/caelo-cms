@@ -249,7 +249,7 @@ describe("Lighthouse metrics per audited page", () => {
       registry,
     } as ToolContext);
     expect(r.ok).toBe(true);
-    expect(r.content).toContain("Performance metrics (median of 1 Lighthouse run(s)");
+    expect(r.content).toContain("Performance metrics (best of 1 Lighthouse run(s)");
     expect(r.content).toContain("- LCP 4.1 s (Largest Contentful Paint) — score 0.21, POOR");
     expect(r.content).toContain("- LCP element: `body > h1` `<h1>` (Hello)");
     expect(r.content).toContain("Media element lacking an explicit size: body > img.hero");

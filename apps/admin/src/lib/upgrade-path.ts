@@ -69,6 +69,8 @@ export interface UpgradePathEnv {
    * CAELO_FAKE_IMAGE_PROVIDER.
    */
   readonly CAELO_E2E_UPDATES_PROVIDER?: string;
+  /** Test-only, same gate: `stopped` ends the fake job's latest run (server/upgrader.ts). */
+  readonly CAELO_E2E_RUN_STATE?: string;
   /** `projects/<id>/locations/<region>/jobs/<job>` — names the install's project. */
   readonly CAELO_UPGRADER_JOB?: string;
 }
@@ -140,25 +142,6 @@ export function resolveUpgradePath(env: UpgradePathEnv, version: string): Upgrad
     command: provisioningUpgradeCommand({ version, install }),
     docsUrl: UPGRADE_DOCS_URL,
   };
-}
-
-/**
- * The start of a release's notes for the Updates page: whole paragraphs up
- * to `maxChars`, shown as plain text (never rendered as HTML — the notes
- * come from GitHub). The full notes are one click away on GitHub.
- *
- * @returns the excerpt and whether anything was left out.
- */
-export function releaseNotesExcerpt(
-  notes: string,
-  maxChars = 1200,
-): { text: string; truncated: boolean } {
-  const trimmed = notes.replace(/\r\n/g, "\n").trim();
-  if (trimmed.length <= maxChars) return { text: trimmed, truncated: false };
-  const cut = trimmed.lastIndexOf("\n\n", maxChars);
-  // A first paragraph longer than the budget is cut at a word instead.
-  const end = cut > 0 ? cut : trimmed.lastIndexOf(" ", maxChars);
-  return { text: `${trimmed.slice(0, end > 0 ? end : maxChars).trimEnd()}\n…`, truncated: true };
 }
 
 /**

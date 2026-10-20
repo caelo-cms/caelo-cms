@@ -181,7 +181,8 @@ export async function runPluginRenderPass(args: {
       const re = placeholderRegex(plugin.slug, target.pageId);
       page.html = page.html.replace(
         re,
-        `<div data-caelo-plugin="${plugin.slug}" data-page-id="${target.pageId}" data-baked-at="${bakedAtIso}">${html}</div>`,
+        () =>
+          `<div data-caelo-plugin="${plugin.slug}" data-page-id="${target.pageId}" data-baked-at="${bakedAtIso}">${html}</div>`,
       );
     }
   }

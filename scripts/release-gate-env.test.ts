@@ -12,6 +12,9 @@
  *     missing at release time. That includes the superuser's password: the
  *     self-hosted role convergence suite logs in as the superuser, and its
  *     absence failed the v0.10.36 publish a second time.
+ * R3: every browser install ci.yml's check job runs before its tests also
+ *     runs in the release gate before "Test". The live Chromium suites fail
+ *     in CI without a browser (#869), which failed the v0.10.54 publish.
  */
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -22,6 +25,7 @@ const REPO_ROOT = resolve(import.meta.dir, "..");
 
 interface Step {
   readonly name?: string;
+  readonly run?: string;
   readonly env?: Record<string, unknown>;
 }
 interface Job {
@@ -58,5 +62,19 @@ describe("release gate env", () => {
     expect(ciVars.length).toBeGreaterThan(0);
     const gateVars = new Set(Object.keys(gate?.env ?? {}));
     expect(ciVars.filter((v) => !gateVars.has(v))).toEqual([]);
+  });
+
+  it("R3: installs every browser ci.yml's check job installs, before Test", () => {
+    const installs = (steps: readonly Step[] | undefined) =>
+      (steps ?? []).flatMap((s) =>
+        typeof s.run === "string" && /playwright\S* install/.test(s.run) ? [s.run.trim()] : [],
+      );
+    const ciInstalls = installs(workflow("ci.yml").jobs.check?.steps);
+    expect(ciInstalls.length).toBeGreaterThan(0);
+    const steps = gate?.steps ?? [];
+    const testIndex = steps.findIndex((s) => s.name === "Test");
+    expect(testIndex).toBeGreaterThan(0);
+    const gateInstalls = new Set(installs(steps.slice(0, testIndex)));
+    expect(ciInstalls.filter((cmd) => !gateInstalls.has(cmd))).toEqual([]);
   });
 });

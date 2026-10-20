@@ -77,7 +77,9 @@ export function sanitizePluginPreview(
         inStyle = name === "style";
       },
       ontext(text) {
-        if (!blocked) result += inStyle ? text : escapePreviewText(text);
+        if (!blocked) {
+          result += inStyle ? text.replace(/<\/style/gi, "\\3c /style") : escapePreviewText(text);
+        }
       },
       onclosetag(name) {
         if (blocked) {

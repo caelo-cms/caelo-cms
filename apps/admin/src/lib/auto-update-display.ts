@@ -11,26 +11,38 @@ import type { AutoUpdateAction, StoredUpdatePolicy } from "@caelo-cms/shared";
 
 const hours = (n: number) => (n === 0 ? "no wait" : `${n} hour${n === 1 ? "" : "s"}`);
 
+/**
+ * Line shown whenever the Owner allowed updates that change their Google
+ * Cloud project to install automatically (#819): Caelo's converge job runs
+ * them, under the same kinds, wait and window as every other update.
+ */
+export const AUTO_CONVERGE_ON =
+  "Updates that change your Google Cloud project install automatically too, by the same rules.";
+
 /** The policy as a few short sentences. */
 export function autoUpdateSummary(p: StoredUpdatePolicy): string[] {
-  if (p.mode === "off") return ["You are not told about new Caelo releases."];
   if (p.mode === "notify") {
-    return ["You are told about new Caelo releases and install them yourself."];
+    return [
+      "You are told about every new Caelo release, security fixes included, and install it yourself.",
+    ];
   }
   const kinds = [
     p.autoSecurity && "security fixes",
-    p.autoPatch && "patch releases",
-    p.autoMinor && "minor releases",
+    p.autoPatch && "bug fixes",
+    p.autoMinor && "new features",
   ].filter((k): k is string => typeof k === "string");
   const lines = [
     kinds.length > 0
-      ? `Installed automatically: ${kinds.join(", ")}. Everything else you install yourself.`
-      : "Automatic installs are on, but no kind of release is chosen yet, so you install everything yourself.",
+      ? `Installed automatically: ${kinds.join(", ")}. You are told about everything else and install it yourself.`
+      : "Install automatically is on, but no kind of update is ticked, so you install everything yourself.",
+  ];
+  if (p.autoConverge) lines.push(AUTO_CONVERGE_ON);
+  lines.push(
     p.windowStart
       ? `Only between ${p.windowStart} and ${p.windowEnd} (${p.windowTimezone}).`
       : "At any time of day.",
-    `A release waits ${hours(p.soakHours)} after it comes out${p.autoSecurity ? `; a security fix ${hours(p.securitySoakHours)}` : ""}.`,
-  ];
+    `Each update waits ${hours(p.soakHours)} after it comes out${p.autoSecurity ? `; a security fix ${hours(p.securitySoakHours)}` : ""}.`,
+  );
   return lines;
 }
 

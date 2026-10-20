@@ -8,11 +8,17 @@
  */
 
 export { openAgentQueue } from "./agent-db.js";
-export { createDbAgentQueue, createDbUpdateQueue, upgraderRegistry } from "./db-queue.js";
+export {
+  createDbAgentQueue,
+  createDbConvergeQueue,
+  createDbUpdateQueue,
+  upgraderRegistry,
+} from "./db-queue.js";
 export {
   agentHeartbeatOp,
   jobClaimOp,
   jobEventOp,
   jobFinishOp,
+  jobHandoverOp,
   jobRecordOp,
 } from "./ops.js";

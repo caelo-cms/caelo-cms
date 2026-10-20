@@ -188,7 +188,12 @@ export const INJECT_SCRIPT = `
   );
 
   // --- parent → iframe messages: set-edit-mode + reload ---------------
+  // Only the editor that embeds us may drive the iframe: the previewed
+  // site's own scripts (source = this window) and any other frame must not
+  // flip edit mode or force reloads (PR #863, M-08).
   window.addEventListener("message", function (ev) {
+    if (ev.source !== window.parent || window.parent === window) return;
+    if (ev.origin !== location.origin) return;
     if (!ev.data || typeof ev.data !== "object") return;
     if (ev.data.kind === "caelo:set-edit-mode") {
       setEditMode(!!ev.data.on);

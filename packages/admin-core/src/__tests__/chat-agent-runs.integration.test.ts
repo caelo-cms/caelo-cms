@@ -95,6 +95,13 @@ beforeAll(async () => {
   await withSql(async (tx) => {
     await tx`INSERT INTO actors (id, kind, display_name)
              VALUES (${OWNER.actorId}::uuid, 'human', 't664 owner') ON CONFLICT (id) DO NOTHING`;
+    // OWNER mints MCP tokens; a token only resolves for a live user holding a role.
+    await tx`INSERT INTO users (id, email, password_hash)
+             VALUES (${OWNER.actorId}::uuid, 't664-owner@example.test', 'test-only')
+             ON CONFLICT DO NOTHING`;
+    await tx`INSERT INTO user_roles (user_id, role_id)
+             SELECT ${OWNER.actorId}::uuid, id FROM roles WHERE name = 'owner'
+             ON CONFLICT DO NOTHING`;
   });
   await wipe();
   configureMcpBridge({ adapter, registry, resolveProvider: async () => null });
