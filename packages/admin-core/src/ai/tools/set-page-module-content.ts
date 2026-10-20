@@ -19,6 +19,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { setPageModuleContentToolInput } from "@caelo-cms/shared";
+import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setPageModuleContentTool: ToolDefinitionWithHandler<
@@ -35,7 +36,8 @@ export const setPageModuleContentTool: ToolDefinitionWithHandler<
     "`contentValues` is keyed by the module's declared field names (`{{fieldName}}` placeholders). " +
     "For nested fields (kind `module` / `module-list`) the value is `{ moduleId, contentInstanceId }` (or an array of them); the referenced module's stable `type` must be in the field's `allowedModuleTypes` when set (reuse a module of an allowed type — see `## Modules`). " +
     "Missing fields fall back to the module field's `default`. " +
-    "Pass an empty object to reset a placement to all defaults.",
+    "Pass an empty object to reset a placement to all defaults." +
+    INTERNAL_LINK_CONTRACT,
   schema: setPageModuleContentToolInput,
   inputSchema: {
     type: "object",

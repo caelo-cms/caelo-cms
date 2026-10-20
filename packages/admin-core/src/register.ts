@@ -296,6 +296,7 @@ import {
   updatePageCaptureOp,
   writeExtractedPagesOp,
 } from "./ops/imports.js";
+import { resolveImportLinksOp } from "./ops/links-import.js";
 import { listMcpApprovalHandoffsOp } from "./ops/mcp_approval_handoffs.js";
 import {
   executeMcpTokenProposalOp,
@@ -488,6 +489,12 @@ import {
   revokeMcpRemoteConnectionOp,
   setMcpRemoteConnectionCapOp,
 } from "./ops/security/mcp_remote_connections.js";
+import {
+  clearMcpRemoteOAuthClientOp,
+  getMcpRemoteOAuthClientOp,
+  mcpRemoteOAuthClientForSyncOp,
+  setMcpRemoteOAuthClientOp,
+} from "./ops/security/mcp_remote_oauth.js";
 import {
   createMcpTokenOp,
   listMcpTokensOp,
@@ -918,6 +925,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listMcpTokensOp);
   registry.register(createMcpTokenOp);
   registry.register(revokeMcpTokenOp);
+  // #806 — the remote-MCP Google OAuth client (ID only; the secret lives in
+  // Secret Manager) for the setup page and the operator-access sync job.
+  registry.register(getMcpRemoteOAuthClientOp);
+  registry.register(setMcpRemoteOAuthClientOp);
+  registry.register(clearMcpRemoteOAuthClientOp);
+  registry.register(mcpRemoteOAuthClientForSyncOp);
   registry.register(mcpSendChatOp);
   registry.register(mcpAuthorizeUploadOp);
   registry.register(mcpGetVersionOp);
@@ -1142,6 +1155,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acceptImportedPagesOp);
   registry.register(cleanupImportRunOp);
   registry.register(composeFromImportRunOp);
+  // Epic #724 — turn an import run's links to planned pages into references.
+  registry.register(resolveImportLinksOp);
   // Explicit, URL-driven media import (replaces the scan-and-download
   // migrate_media). The AI names the exact source asset URLs to import.
   registry.register(importMediaUrlsOp);

@@ -174,6 +174,18 @@ beforeAll(async () => {
     templateId,
     blocks: [{ name: "content", displayName: "Content", position: 0 }],
   });
+  // The pages exist before the footer that links to them: an internal
+  // link must name an existing page (#724), stored as a reference.
+  for (const slug of ["pricing", "about", "solo"]) {
+    const p = await sysOp<{ pageId: string }>("pages.create", {
+      slug: `${PFX}-${slug}`,
+      title: slug,
+      templateId,
+    });
+    if (slug === "pricing") ids.enPricing = p.pageId;
+    if (slug === "about") ids.enAbout = p.pageId;
+    if (slug === "solo") ids.enSolo = p.pageId;
+  }
   ids.footerModuleId = (
     await sysOp<{ moduleId: string }>("modules.create", {
       slug: `${PFX}-footer`,
@@ -208,16 +220,6 @@ beforeAll(async () => {
     moduleIds: [ids.footerModuleId],
   });
 
-  for (const slug of ["pricing", "about", "solo"]) {
-    const p = await sysOp<{ pageId: string }>("pages.create", {
-      slug: `${PFX}-${slug}`,
-      title: slug,
-      templateId,
-    });
-    if (slug === "pricing") ids.enPricing = p.pageId;
-    if (slug === "about") ids.enAbout = p.pageId;
-    if (slug === "solo") ids.enSolo = p.pageId;
-  }
   await op("set_locales", {
     locales: [
       { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
@@ -260,7 +262,9 @@ describe("#592 — menus and footer per language", () => {
     );
     // The English page is the source language: untouched, no flags.
     const en = await preview(ids.enPricing);
-    expect(en.html).toContain('<a href="/t592-about">About</a>');
+    // The footer's link is a stored reference (#724), rendered as the
+    // page's canonical path.
+    expect(en.html).toContain('<a href="/t592-about/">About</a>');
     expect(en.missingSlots.filter((m) => m.startsWith("content-variant:"))).toEqual([]);
 
     await expect(
@@ -357,7 +361,13 @@ describe("#592 — menus and footer per language", () => {
           targetKey: footerKey(),
           localeCode: "de",
           moduleId: ids.altFooterModuleId,
-          values: { nav: [{ label: "Kontakt", href: "/t592-solo" }] },
+          values: {
+            nav: [
+              { label: "Kontakt", href: "/t592-solo" },
+              // A stored reference (#724) is named by its page's path, never its id.
+              { label: "Team", href: `caelo:page/${ids.enSolo}#team` },
+            ],
+          },
         },
       ],
     });
@@ -368,6 +378,10 @@ describe("#592 — menus and footer per language", () => {
     expect(de.missingSlots.join("\n")).toContain(
       'the link "/t592-solo" goes to a page that has no Deutsch version',
     );
+    expect(de.missingSlots.join("\n")).toContain(
+      'the link "/t592-solo#team" goes to a page that has no Deutsch version',
+    );
+    expect(de.missingSlots.join("\n")).not.toContain("caelo:page/");
     // English still shows the source footer.
     expect((await preview(ids.enPricing)).html).toContain('<p class="tag">Made with care</p>');
 

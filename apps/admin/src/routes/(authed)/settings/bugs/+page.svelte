@@ -2,6 +2,7 @@
   // SPDX-License-Identifier: MPL-2.0
   import { Bug, Copy, Download, ExternalLink, Send } from "lucide-svelte";
   import { toast } from "svelte-sonner";
+  import { unsentReportsSummary } from "#lib/bug-forwarding-summary.js";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
@@ -19,6 +20,7 @@
   }: { data: { reports: BugReport[]; forwarding: BugForwarding; csrfToken: string } } = $props();
   const reports = $derived(data.reports);
   const forwarding = $derived(data.forwarding);
+  const unsentSummary = $derived(unsentReportsSummary(reports.map((r) => r.forwardingState)));
 
   // The exact payload per report, fetched on demand and kept in component
   // state only (never in the page's hydration data).
@@ -119,6 +121,9 @@
       <h1 class="text-2xl font-semibold tracking-tight">Detected bugs</h1>
       <p class="mt-1 max-w-2xl text-sm text-muted-foreground">
         Defects the AI flagged while working — it filed these and continued with a workaround.
+        <!-- With forwarding on, the card below offers the one-click send for
+             unsent reports; the manual-export hint only applies when off. -->
+        {#if unsentSummary && !forwarding.enabled}{unsentSummary}{/if}
       </p>
     </div>
     <div class="flex gap-2">

@@ -32,7 +32,7 @@ export interface ForwardableBugReport {
 
 /**
  * Build the redacted, schema-checked intake payload for one report. Rows
- * filed before migration 0318 have no stored fingerprint; it is computed
+ * filed before migration 0330 have no stored fingerprint; it is computed
  * here from the same fields, so they forward like any other row.
  */
 export async function buildIntakeReport(row: ForwardableBugReport): Promise<BugIntakeReport> {

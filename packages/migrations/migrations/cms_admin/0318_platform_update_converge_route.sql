@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0303 — updates that change the cloud setup run from Caelo (#819).
+-- 0318 — updates that change the cloud setup run from Caelo (#819).
 --
 -- Until now an update request was always for the upgrader job, whose
 -- narrow service account can only roll images. A release that raises the

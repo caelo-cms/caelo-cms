@@ -421,7 +421,9 @@ describe("Power-MCP surface (admin token)", () => {
         kind: "nav-menu",
         slug,
         displayName: "Power MCP test nav",
-        items: [{ label: "Home", href: "/" }],
+        // External: an internal link must name an existing page (#724),
+        // and this file seeds no homepage.
+        items: [{ label: "Home", href: "https://example.com/" }],
       },
     });
     expect(r.ok).toBe(true);

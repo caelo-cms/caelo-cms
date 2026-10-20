@@ -86,7 +86,11 @@ import {
   listUnpublishedChangesTool,
 } from "./history-tools.js";
 import { importMediaFromUrlsTool } from "./import-media-from-urls.js";
-import { acceptImportPagesTool, cleanupImportRunTool } from "./import-run-actions.js";
+import {
+  acceptImportPagesTool,
+  cleanupImportRunTool,
+  resolveImportLinksTool,
+} from "./import-run-actions.js";
 import { addImportPageNotesTool, getImportRunReportTool } from "./import-run-report.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
@@ -595,6 +599,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(deleteModulesManyTool);
   registry.register(acceptImportPagesTool);
   registry.register(cleanupImportRunTool);
+  registry.register(resolveImportLinksTool);
   registry.register(sendTestEmailTool);
   // Agent-tool parity, part 2: the operator dashboards and maintenance
   // reads/writes the exceptions file listed as gaps.
