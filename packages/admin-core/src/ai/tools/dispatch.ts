@@ -508,7 +508,7 @@ function nestingIntentHint(
     `You passed ${keyList} to nest repeating or sub-content — this tool has no such argument. ` +
     `Nesting is expressed as an entry in the \`fields\` array, NOT a top-level key:\n` +
     `- a nav / menu / list of links → one \`link-list\` field, e.g. ` +
-    `\`{name:"nav_links",kind:"link-list",label:"Navigation",default:[{label:"Home",href:"/"},{label:"About",href:"/about"}]}\`, ` +
+    `\`{name:"nav_links",kind:"link-list",label:"Navigation",default:[{label:"Home",href:"/"},{label:"About",href:"/about"}]}\` (each internal \`href\` must be the path of a page that exists), ` +
     `rendered in the HTML with \`{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}\`;\n` +
     `- a list of plain strings (tags, bullets) → one \`text-list\` field with a \`default\` array, rendered with \`{{#name}}…{{.}}…{{/name}}\`;\n` +
     `- repeating rich sub-modules (cards with image + title + body) → one \`module-list\` field ` +

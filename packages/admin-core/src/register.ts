@@ -127,6 +127,7 @@ import {
   setLayoutModulesOp,
   updateLayoutOp,
 } from "./ops/content/layouts.js";
+import { canonicaliseLinkValuesOp } from "./ops/content/link-canonicalise.js";
 import {
   createModuleOp,
   deleteModuleOp,
@@ -285,6 +286,12 @@ import {
   updatePageCaptureOp,
   writeExtractedPagesOp,
 } from "./ops/imports.js";
+import {
+  getLinkMigrationReportOp,
+  migrateLinksToReferencesOp,
+  revertLinkMigrationOp,
+} from "./ops/links.js";
+import { resolveImportLinksOp } from "./ops/links-import.js";
 import { listMcpApprovalHandoffsOp } from "./ops/mcp_approval_handoffs.js";
 import {
   executeMcpTokenProposalOp,
@@ -478,12 +485,6 @@ import {
   setMcpRemoteConnectionCapOp,
 } from "./ops/security/mcp_remote_connections.js";
 import {
-  clearMcpRemoteOAuthClientOp,
-  getMcpRemoteOAuthClientOp,
-  mcpRemoteOAuthClientForSyncOp,
-  setMcpRemoteOAuthClientOp,
-} from "./ops/security/mcp_remote_oauth.js";
-import {
   createMcpTokenOp,
   listMcpTokensOp,
   mcpAuthorizeUploadOp,
@@ -491,6 +492,12 @@ import {
   mcpSendChatOp,
   revokeMcpTokenOp,
 } from "./ops/security/mcp_tokens.js";
+import {
+  clearOperatorOAuthClientOp,
+  getOperatorOAuthClientOp,
+  operatorOAuthClientForSyncOp,
+  setOperatorOAuthClientOp,
+} from "./ops/security/operator_oauth.js";
 import { getTelemetryOp, setTelemetryOp, testSendTelemetryOp } from "./ops/security/telemetry.js";
 import {
   lookupLinksInModulesOp,
@@ -724,6 +731,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(planPageMovesOp);
   registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
+  registry.register(canonicaliseLinkValuesOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
   registry.register(listUrlMigrationPendingOp);
@@ -914,12 +922,13 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listMcpTokensOp);
   registry.register(createMcpTokenOp);
   registry.register(revokeMcpTokenOp);
-  // #806 — the remote-MCP Google OAuth client (ID only; the secret lives in
-  // Secret Manager) for the setup page and the operator-access sync job.
-  registry.register(getMcpRemoteOAuthClientOp);
-  registry.register(setMcpRemoteOAuthClientOp);
-  registry.register(clearMcpRemoteOAuthClientOp);
-  registry.register(mcpRemoteOAuthClientForSyncOp);
+  // #914 — the install's Google sign-in client (ID only; the secret lives in
+  // Secret Manager): IAP browser login, IAP programmatic access and the
+  // remote-MCP broker. Read by the setup pages and the operator-access sync job.
+  registry.register(getOperatorOAuthClientOp);
+  registry.register(setOperatorOAuthClientOp);
+  registry.register(clearOperatorOAuthClientOp);
+  registry.register(operatorOAuthClientForSyncOp);
   registry.register(mcpSendChatOp);
   registry.register(mcpAuthorizeUploadOp);
   registry.register(mcpGetVersionOp);
@@ -975,6 +984,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createRedirectsManyOp);
   registry.register(deleteRedirectsManyOp);
   registry.register(setStructuredSetOp);
+  // Epic #724 rollout E — literal links → references, report, revert.
+  registry.register(migrateLinksToReferencesOp);
+  registry.register(getLinkMigrationReportOp);
+  registry.register(revertLinkMigrationOp);
   registry.register(getStructuredSetOp);
   registry.register(listStructuredSetsOp);
   registry.register(deleteStructuredSetOp);
@@ -1133,6 +1146,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acceptImportedPagesOp);
   registry.register(cleanupImportRunOp);
   registry.register(composeFromImportRunOp);
+  // Epic #724 — turn an import run's links to planned pages into references.
+  registry.register(resolveImportLinksOp);
   // Explicit, URL-driven media import (replaces the scan-and-download
   // migrate_media). The AI names the exact source asset URLs to import.
   registry.register(importMediaUrlsOp);

@@ -139,9 +139,9 @@ beforeAll(async () => {
     contentValues: {
       title: "Welcome",
       tags: ["one", "two"],
-      links: [{ label: "Docs", href: "/docs" }],
-      photo: "/p.png",
-      cta: "/start",
+      links: [{ label: "Docs", href: "https://example.com/docs" }],
+      photo: "https://example.com/p.png",
+      cta: "https://example.com/start",
       count: 3,
     },
   });
@@ -182,8 +182,8 @@ describe("page_module_content.patch_fields (#917)", () => {
     const html = await previewHtml(pageId);
     expect(html).toContain("<h1>Fish &amp; &lt;chips&gt;</h1>");
     expect(html).toContain("<li>one</li><li>two</li>");
-    expect(html).toContain('<a href="/docs">Docs</a>');
-    expect(html).toContain('src="/p.png"');
+    expect(html).toContain('<a href="https://example.com/docs">Docs</a>');
+    expect(html).toContain('src="https://example.com/p.png"');
   });
 
   it("changes a text-list item and a link-list label by index", async () => {
@@ -199,7 +199,7 @@ describe("page_module_content.patch_fields (#917)", () => {
     });
     const html = await previewHtml(pageId);
     expect(html).toContain("<li>one</li><li>zwei</li>");
-    expect(html).toContain('<a href="/docs">Handbook</a>');
+    expect(html).toContain('<a href="https://example.com/docs">Handbook</a>');
   });
 
   it("refuses non-text kinds, bad indexes, unknown fields and synced placements", async () => {
@@ -239,7 +239,7 @@ describe("page_module_content.patch_fields (#917)", () => {
     });
     const html = await previewHtml(pageId);
     expect(html).toContain("<li>uno</li>");
-    expect(html).toContain('<a href="/docs">Guide</a>');
+    expect(html).toContain('<a href="https://example.com/docs">Guide</a>');
     const r = await run("page_module_content.patch_fields", {
       pageId,
       ...at,
@@ -269,15 +269,29 @@ describe("links, images and shared content (#918)", () => {
       pageId,
       ...at,
       edits: [
-        { field: "links", index: 0, part: "href", text: " /handbook " },
+        { field: "links", index: 0, part: "href", text: ` /${SHARED_PAGE_SLUG} ` },
         { field: "cta", text: "https://example.com/start?a=1" },
-        { field: "photo", text: "/m/cup.webp" },
+        { field: "photo", text: "https://example.com/m/cup.webp" },
       ],
     });
     const html = await previewHtml(pageId);
-    expect(html).toContain('<a href="/handbook">Guide</a>');
+    // Stored as a page reference (#724), rendered in the site's URL style.
+    expect(html).toContain(`<a href="/${SHARED_PAGE_SLUG}/">Guide</a>`);
     expect(html).toContain('<a class="cta" href="https://example.com/start?a=1">Go</a>');
-    expect(html).toContain('src="/m/cup.webp"');
+    expect(html).toContain('src="https://example.com/m/cup.webp"');
+  });
+
+  it("refuses a link target that is no page, with the next step", async () => {
+    // The write goes through content_instances.set_values, which checks
+    // internal links (#724): a typo in Live Edit's link editor is refused
+    // instead of stored as a dead link.
+    const r = await run("page_module_content.patch_fields", {
+      pageId,
+      ...at,
+      edits: [{ field: "links", index: 0, part: "href", text: "/no-such-page" }],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(JSON.stringify(r.error)).toContain("is not the path of any page");
   });
 
   it('"everywhere" changes every page that shows the shared content', async () => {

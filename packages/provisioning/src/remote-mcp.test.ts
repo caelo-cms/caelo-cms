@@ -16,6 +16,7 @@ import {
   type LiveUrlMap,
   planUrlMapPaths,
   type RemoteMcpTarget,
+  resolveGoogleOrgDomain,
   resolveRemoteMcpIdentity,
 } from "./remote-mcp.js";
 import {
@@ -33,15 +34,18 @@ import {
   GATEWAY_TIMEOUT_SECONDS,
   GATEWAY_TRUSTED_PROXY_HOPS,
   GENERATED_SECRET_FORMAT,
-  MCP_OAUTH_CLIENT_FILE,
+  OPERATOR_OAUTH_CLIENT_FILE,
   REMOTE_MCP_ENV,
+  RETIRED_RUNTIME_SECRETS,
+  RETIRED_SECRET_FILES,
+  RETIRED_SERVICE_ENV,
   remoteMcpIdentity,
   remoteMcpIdentityEnv,
   SERVICE_SECRET_FILES,
   secretFileVolumesTemplate,
   stackIamInvariants,
 } from "./stack-contract.js";
-import { planRequestTimeout, planSecretFiles } from "./stack-converge.js";
+import { deleteRetiredSecrets, planRequestTimeout, planSecretFiles } from "./stack-converge.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "" }) as GcloudResult;
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr }) as GcloudResult;
@@ -122,11 +126,13 @@ describe("remote-MCP identity (contract)", () => {
     expect(new URL(firebase.mcpPublicUrl).hostname.endsWith(".run.app")).toBe(true);
   });
 
-  it("gives the admin the audience + public URL and the gateway the admin + public URL", () => {
+  it("gives the admin the audience, public URL and its own URL, and the gateway the admin + public URL", () => {
     const env = remoteMcpIdentityEnv({ adminUrl: "A", mcpPublicUrl: "P", iapAudience: "AUD" });
     expect(env.admin).toEqual([
       { name: REMOTE_MCP_ENV.iapAudience, value: "AUD" },
       { name: REMOTE_MCP_ENV.mcpPublicUrl, value: "P" },
+      // #914 — Google sign-in's self-check opens the admin signed out.
+      { name: REMOTE_MCP_ENV.adminUrl, value: "A" },
     ]);
     expect(env.gateway).toEqual([
       { name: REMOTE_MCP_ENV.adminUrl, value: "A" },
@@ -136,7 +142,21 @@ describe("remote-MCP identity (contract)", () => {
       adminUrl: "CAELO_ADMIN_URL",
       mcpPublicUrl: "CAELO_MCP_PUBLIC_URL",
       iapAudience: "CAELO_IAP_AUDIENCE",
+      googleOrgDomain: "CAELO_GOOGLE_ORG_DOMAIN",
     });
+  });
+
+  it("#914 — gives the admin the organisation domain only when it was read", () => {
+    const known = remoteMcpIdentityEnv({
+      adminUrl: "A",
+      mcpPublicUrl: "P",
+      iapAudience: "AUD",
+      googleOrgDomain: "acme.com",
+    });
+    expect(known.admin).toContainEqual({ name: "CAELO_GOOGLE_ORG_DOMAIN", value: "acme.com" });
+    expect(known.gateway.map((e) => e.name)).not.toContain("CAELO_GOOGLE_ORG_DOMAIN");
+    const unknown = remoteMcpIdentityEnv({ adminUrl: "A", mcpPublicUrl: "P", iapAudience: "AUD" });
+    expect(unknown.admin.map((e) => e.name)).not.toContain("CAELO_GOOGLE_ORG_DOMAIN");
   });
 });
 
@@ -146,7 +166,7 @@ describe("remote-MCP secrets + IAM (contract)", () => {
   });
 
   it("starts the OAuth client as the {} placeholder and the seal key as 32 random bytes", () => {
-    expect(initialSecretValue("mcp-oauth-client")).toBe("{}");
+    expect(initialSecretValue("operator-oauth-client")).toBe("{}");
     const a = initialSecretValue("mcp-oauth-seal-key");
     expect(Buffer.from(a, "base64")).toHaveLength(32);
     expect(initialSecretValue("mcp-oauth-seal-key")).not.toBe(a);
@@ -160,9 +180,9 @@ describe("remote-MCP secrets + IAM (contract)", () => {
       );
       expect(adders).toEqual([
         expect.objectContaining({
-          stackResource: "admin-mcp-oauth-client-version-adder",
+          stackResource: "admin-operator-oauth-client-version-adder",
           member: "run-sa",
-          target: { kind: "secret", name: "mcp-oauth-client" },
+          target: { kind: "secret", name: "operator-oauth-client" },
           onFailure: "warn",
         }),
       ]);
@@ -171,7 +191,7 @@ describe("remote-MCP secrets + IAM (contract)", () => {
           i.member === "run-sa" &&
           i.role === "roles/secretmanager.secretAccessor" &&
           i.target.kind === "secret" &&
-          i.target.name.startsWith("mcp-oauth"),
+          (i.target.name.startsWith("mcp-oauth") || i.target.name === "operator-oauth-client"),
       );
       expect(adminReads).toEqual([]);
     }
@@ -179,18 +199,20 @@ describe("remote-MCP secrets + IAM (contract)", () => {
 
   it("mounts the OAuth client on the gateway only, at latest, as the file its env names", () => {
     expect(SERVICE_SECRET_FILES.admin).toEqual([]);
-    expect(SERVICE_SECRET_FILES.gateway).toEqual([MCP_OAUTH_CLIENT_FILE]);
+    expect(SERVICE_SECRET_FILES.gateway).toEqual([OPERATOR_OAUTH_CLIENT_FILE]);
     expect(secretFileVolumesTemplate("gateway", "production")).toEqual({
       volumes: [
         {
-          name: "mcp-oauth-client",
+          name: "operator-oauth-client",
           secret: {
-            secret: "caelo-production-mcp-oauth-client",
+            secret: "caelo-production-operator-oauth-client",
             items: [{ version: "latest", path: "client.json" }],
           },
         },
       ],
-      volumeMounts: [{ name: "mcp-oauth-client", mountPath: "/secrets/mcp-oauth-client" }],
+      volumeMounts: [
+        { name: "operator-oauth-client", mountPath: "/secrets/operator-oauth-client" },
+      ],
     });
     expect(secretFileVolumesTemplate("admin", "production")).toEqual({
       volumes: [],
@@ -203,38 +225,133 @@ describe("planSecretFiles / planRequestTimeout (upgrade)", () => {
   const empty = { executionEnvironment: null, volumes: [], mounts: [] };
 
   it("mounts a missing secret file with the documented --update-secrets path form", () => {
-    expect(planSecretFiles(empty, [MCP_OAUTH_CLIENT_FILE], "production")).toEqual({
+    expect(planSecretFiles(empty, [OPERATOR_OAUTH_CLIENT_FILE], "production")).toEqual({
       ok: true,
       flags: [
-        "--update-secrets=/secrets/mcp-oauth-client/client.json=caelo-production-mcp-oauth-client:latest",
+        "--update-secrets=/secrets/operator-oauth-client/client.json=caelo-production-operator-oauth-client:latest",
       ],
       changes: [
-        "secret file /secrets/mcp-oauth-client/client.json: (none) → caelo-production-mcp-oauth-client:latest",
+        "secret file /secrets/operator-oauth-client/client.json: (none) → caelo-production-operator-oauth-client:latest",
       ],
     });
   });
 
   it("leaves the file the stack (or an earlier upgrade) mounted alone, whatever its volume is called", () => {
-    for (const name of ["mcp-oauth-client", "secret-1a2b3c"]) {
+    for (const name of ["operator-oauth-client", "secret-1a2b3c"]) {
       const live = {
         executionEnvironment: null,
         volumes: [
           {
             name,
             secret: {
-              secretName: "projects/42/secrets/caelo-production-mcp-oauth-client",
+              secretName: "projects/42/secrets/caelo-production-operator-oauth-client",
               items: [{ key: "latest", path: "client.json" }],
             },
           },
         ],
-        mounts: [{ name, mountPath: "/secrets/mcp-oauth-client" }],
+        mounts: [{ name, mountPath: "/secrets/operator-oauth-client" }],
       };
-      expect(planSecretFiles(live, [MCP_OAUTH_CLIENT_FILE], "production")).toEqual({
+      expect(planSecretFiles(live, [OPERATOR_OAUTH_CLIENT_FILE], "production")).toEqual({
         ok: true,
         flags: [],
         changes: [],
       });
     }
+  });
+
+  it("#914 — moves the gateway from the retired mcp-oauth-client mount to the renamed secret in one roll", () => {
+    const live = {
+      executionEnvironment: null,
+      volumes: [
+        {
+          name: "mcp-oauth-client",
+          secret: {
+            secretName: "caelo-production-mcp-oauth-client",
+            items: [{ key: "latest", path: "client.json" }],
+          },
+        },
+      ],
+      mounts: [{ name: "mcp-oauth-client", mountPath: "/secrets/mcp-oauth-client" }],
+    };
+    expect(RETIRED_SECRET_FILES.gateway.map((f) => f.mountDir)).toEqual([
+      "/secrets/mcp-oauth-client",
+    ]);
+    const plan = planSecretFiles(
+      live,
+      [OPERATOR_OAUTH_CLIENT_FILE],
+      "production",
+      RETIRED_SECRET_FILES.gateway,
+    );
+    expect(plan.ok && plan.flags).toEqual([
+      "--remove-secrets=/secrets/mcp-oauth-client/client.json",
+      "--update-secrets=/secrets/operator-oauth-client/client.json=caelo-production-operator-oauth-client:latest",
+    ]);
+    // Converged: nothing left to remove or mount.
+    const after = {
+      executionEnvironment: null,
+      volumes: [
+        {
+          name: "operator-oauth-client",
+          secret: {
+            secretName: "caelo-production-operator-oauth-client",
+            items: [{ key: "latest", path: "client.json" }],
+          },
+        },
+      ],
+      mounts: [{ name: "operator-oauth-client", mountPath: "/secrets/operator-oauth-client" }],
+    };
+    expect(
+      planSecretFiles(
+        after,
+        [OPERATOR_OAUTH_CLIENT_FILE],
+        "production",
+        RETIRED_SECRET_FILES.gateway,
+      ),
+    ).toEqual({ ok: true, flags: [], changes: [] });
+  });
+
+  it("#914 — deletes the retired secret after the roll; an absent one is fine", async () => {
+    const install = {
+      provider: "gcp-firebase" as const,
+      projectId: "acme",
+      region: "europe-west1",
+      env: "production",
+    };
+    const present = fakeGcloud({
+      "secrets describe caelo-production-mcp-oauth-client": ok("projects/1/secrets/x\n"),
+      "secrets delete caelo-production-mcp-oauth-client": ok(),
+    });
+    expect(await deleteRetiredSecrets(install, { run: present.run })).toEqual([
+      {
+        id: "secret caelo-production-mcp-oauth-client",
+        status: "removed",
+        why: "the Google sign-in client moved to operator-oauth-client (#914)",
+      },
+    ]);
+    expect(present.calls).toContain(
+      "secrets delete caelo-production-mcp-oauth-client --project=acme --quiet",
+    );
+    const absent = fakeGcloud({
+      "secrets describe caelo-production-mcp-oauth-client": fail("NOT_FOUND: Secret not found"),
+    });
+    const outcomes = await deleteRetiredSecrets(install, { run: absent.run });
+    expect(outcomes.map((o) => o.status)).toEqual(["absent"]);
+    expect(absent.calls.some((c) => c.startsWith("secrets delete"))).toBe(false);
+    const denied = fakeGcloud({
+      "secrets describe caelo-production-mcp-oauth-client": ok("x"),
+      "secrets delete caelo-production-mcp-oauth-client": fail("PERMISSION_DENIED"),
+    });
+    expect((await deleteRetiredSecrets(install, { run: denied.run }))[0]).toMatchObject({
+      status: "failed",
+      error: "PERMISSION_DENIED",
+    });
+  });
+
+  it("#914 — retires the old secret and the old env names", () => {
+    expect(RETIRED_RUNTIME_SECRETS.map((s) => s.name)).toEqual(["mcp-oauth-client"]);
+    expect(RETIRED_SERVICE_ENV.gateway).toContain("CAELO_MCP_OAUTH_CLIENT_FILE");
+    expect(RETIRED_SERVICE_ENV.admin).toContain("CAELO_MCP_OAUTH_CLIENT_STORE");
+    expect(CLI_GENERATED_SECRETS).not.toContain("mcp-oauth-client" as never);
   });
 
   it("refuses something else mounted where the client belongs (a pinned version included)", () => {
@@ -244,16 +361,17 @@ describe("planSecretFiles / planRequestTimeout (upgrade)", () => {
         {
           name: "v",
           secret: {
-            secretName: "caelo-production-mcp-oauth-client",
+            secretName: "caelo-production-operator-oauth-client",
             items: [{ key: "3", path: "client.json" }],
           },
         },
       ],
-      mounts: [{ name: "v", mountPath: "/secrets/mcp-oauth-client" }],
+      mounts: [{ name: "v", mountPath: "/secrets/operator-oauth-client" }],
     };
-    const plan = planSecretFiles(live, [MCP_OAUTH_CLIENT_FILE], "production");
+    const plan = planSecretFiles(live, [OPERATOR_OAUTH_CLIENT_FILE], "production");
     expect(plan.ok).toBe(false);
-    if (!plan.ok) expect(plan.error).toContain("--remove-volume-mount=/secrets/mcp-oauth-client");
+    if (!plan.ok)
+      expect(plan.error).toContain("--remove-volume-mount=/secrets/operator-oauth-client");
   });
 
   it("raises the gateway's request timeout to the contract's", () => {
@@ -277,10 +395,20 @@ const firebase: RemoteMcpTarget = {
   services: { admin: "caelo-production-admin-aaa", gateway: "caelo-production-gateway-bbb" },
 };
 
+const ANCESTORS_IN_ORG = ok(
+  JSON.stringify([
+    { id: "acme", type: "project" },
+    { id: "555", type: "folder" },
+    { id: "123456", type: "organization" },
+  ]),
+);
+
 describe("resolveRemoteMcpIdentity", () => {
-  it("gcp-firebase: reads the project number and both services' URLs", async () => {
+  it("gcp-firebase: reads the project number, both services' URLs and the organisation", async () => {
     const { run } = fakeGcloud({
       "projects describe acme": ok("42\n"),
+      "projects get-ancestors acme": ANCESTORS_IN_ORG,
+      "organizations describe 123456": ok("Acme.com\n"),
       "run services describe caelo-production-admin-aaa": ok(
         "https://caelo-production-admin-aaa-xyz.a.run.app\n",
       ),
@@ -295,8 +423,24 @@ describe("resolveRemoteMcpIdentity", () => {
         adminUrl: "https://caelo-production-admin-aaa-xyz.a.run.app",
         mcpPublicUrl: "https://caelo-production-gateway-bbb-xyz.a.run.app",
         iapAudience: "/projects/42/locations/europe-west1/services/caelo-production-admin-aaa",
+        googleOrgDomain: "acme.com",
       },
     });
+  });
+
+  it("#914 — an unreadable organisation is reported, not fatal, and sets no domain", async () => {
+    const { run } = fakeGcloud({
+      "projects describe acme": ok("42\n"),
+      "projects get-ancestors acme": ANCESTORS_IN_ORG,
+      "organizations describe 123456": fail("PERMISSION_DENIED: organizations.get"),
+      "run services describe caelo-production-admin-aaa": ok("https://a-xyz.a.run.app\n"),
+      "run services describe caelo-production-gateway-bbb": ok("https://g-xyz.a.run.app\n"),
+    });
+    const r = await resolveRemoteMcpIdentity(firebase, { run });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.identity.googleOrgDomain).toBeUndefined();
+    expect(r.orgDomainError).toContain("Organization Viewer");
   });
 
   it("gcp: reads the IAP-enabled admin backend service's numeric id", async () => {
@@ -323,6 +467,34 @@ describe("resolveRemoteMcpIdentity", () => {
   });
 });
 
+describe("resolveGoogleOrgDomain (#914)", () => {
+  it("reads the organisation's domain through the project's ancestors", async () => {
+    const { run, calls } = fakeGcloud({
+      "projects get-ancestors acme": ANCESTORS_IN_ORG,
+      "organizations describe 123456": ok("acme.com\n"),
+    });
+    expect(await resolveGoogleOrgDomain("acme", { run })).toEqual({ ok: true, domain: "acme.com" });
+    expect(calls).toContain("organizations describe 123456 --format=value(displayName)");
+  });
+
+  it("answers `none` for a project in no organisation", async () => {
+    const { run } = fakeGcloud({
+      "projects get-ancestors acme": ok(JSON.stringify([{ id: "acme", type: "project" }])),
+    });
+    expect(await resolveGoogleOrgDomain("acme", { run })).toEqual({ ok: true, domain: "none" });
+  });
+
+  it("fails naming the missing role when the organisation cannot be read", async () => {
+    const { run } = fakeGcloud({
+      "projects get-ancestors acme": ANCESTORS_IN_ORG,
+      "organizations describe 123456": ok("not a domain\n"),
+    });
+    const r = await resolveGoogleOrgDomain("acme", { run });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("Organization Viewer");
+  });
+});
+
 describe("applyRemoteMcpIdentityEnv", () => {
   const identity = {
     adminUrl: "https://a.run.app",
@@ -337,6 +509,7 @@ describe("applyRemoteMcpIdentityEnv", () => {
       "run services describe caelo-production-admin-aaa": serviceJson([
         { name: "CAELO_IAP_AUDIENCE", value: identity.iapAudience },
         { name: "CAELO_MCP_PUBLIC_URL", value: identity.mcpPublicUrl },
+        { name: "CAELO_ADMIN_URL", value: identity.adminUrl },
       ]),
       "run services describe caelo-production-gateway-bbb": serviceJson([]),
       "run services update caelo-production-gateway-bbb": ok(),

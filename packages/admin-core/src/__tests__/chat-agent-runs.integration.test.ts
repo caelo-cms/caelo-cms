@@ -741,7 +741,9 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
     kind: "nav-menu",
     slug,
     displayName: "t664 nav",
-    items: [{ label: "Home", href: "/" }],
+    // External: an internal link must name an existing page (#724), and
+    // this file seeds no homepage.
+    items: [{ label: "Home", href: "https://example.com/" }],
   });
 
   it("refuses a Live Edit turn while the external agent works, lists it, and Stop blocks it until allowed", async () => {

@@ -6,7 +6,7 @@
  * An external agent reaches Caelo either with a bearer token (`mcp_tokens`,
  * the stdio shim) or over a remote connection authenticated by Google IAP
  * (`mcp_remote_connections`). Running-agent rows (0255) and paused approval
- * cards (0258) name exactly one of the two (migration 0310's CHECKs), and
+ * cards (0258) name exactly one of the two (migration 0319's CHECKs), and
  * every "this agent's own rows" lookup must match on both columns so a
  * token never reads or resumes a remote connection's rows and vice versa.
  *

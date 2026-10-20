@@ -419,8 +419,8 @@ export function rotationRefusal(name: string): string | null {
   if ((ROTATABLE_SECRETS as readonly string[]).includes(name)) return null;
   // #806 — two-step rotation with an overlap window (seal-key-rotation.ts).
   if (name === SEAL_KEY_SECRET) return null;
-  if (name === "mcp-oauth-client") {
-    return "mcp-oauth-client is the Google OAuth client of remote MCP; the Owner replaces it under Settings → MCP → Remote (create a new client secret in the Google console first).";
+  if (name === "operator-oauth-client") {
+    return "operator-oauth-client is the install's Google sign-in client (IAP sign-in and remote MCP); the Owner replaces it under Settings → Google sign-in (create a new client secret in the Google console first).";
   }
   if (name === "secret-kek") {
     return "secret-kek encrypts the AI provider keys and other at-rest secrets in cms_admin; a new KEK would make them unreadable. Rotating it needs a re-encryption step that does not exist yet.";

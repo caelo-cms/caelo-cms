@@ -49,7 +49,7 @@ const GCP_GATEWAY_SECRETS = [
   // #806 — the remote-MCP broker: its Google OAuth client (a file) and seal
   // key. Neither is a cms_admin credential.
   "mcp-oauth-seal-key",
-  "mcp-oauth-client",
+  "operator-oauth-client",
 ];
 
 /** The source of a stack program. */

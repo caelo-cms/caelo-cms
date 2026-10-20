@@ -15,6 +15,7 @@ const TPL_SLUG = `e2e-le-shared-tpl-${ts}`;
 const MOD_SLUG = `e2e-le-shared-mod-${ts}`;
 const PAGE_SLUG = `e2e-le-shared-page-${ts}`;
 const TWIN_SLUG = `e2e-le-shared-twin-${ts}`;
+const MEDIA_SLUG = `e2e-cup-${ts}`;
 
 function runBunInlineCapture(script: string, env: Record<string, string>): string {
   const r = spawnSync("bun", ["-e", script], {
@@ -45,10 +46,11 @@ test.afterAll(() => {
       await tx\`DELETE FROM modules WHERE slug = \${process.env.MOD_SLUG}\`;
       await tx\`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = \${process.env.TPL_SLUG})\`;
       await tx\`DELETE FROM templates WHERE slug = \${process.env.TPL_SLUG}\`;
+      await tx\`DELETE FROM media_assets WHERE slug = \${process.env.MEDIA_SLUG}\`;
     });
     await sql.end();
     `,
-    { TPL_SLUG, MOD_SLUG, PAGE_SLUG, TWIN_SLUG },
+    { TPL_SLUG, MOD_SLUG, PAGE_SLUG, TWIN_SLUG, MEDIA_SLUG },
   );
 });
 
@@ -97,12 +99,19 @@ test("link text + target, shared content scope, and image replace", async ({ pag
         INSERT INTO modules (slug, display_name, type, html, fields)
         VALUES (\${process.env.MOD_SLUG}, 'shared mod', \${process.env.MOD_SLUG}, \${html}, \${fields}::text::jsonb)
         RETURNING id::text AS id\`;
+      // Every value of the placement is link-checked on each save (#724),
+      // so the seed links nowhere internal; the picked image is a real asset.
       const values = JSON.stringify({
         title: "SHARED_TITLE",
-        links: [{ label: "Docs", href: "/docs" }],
-        photo: "/media/old-photo",
+        links: [{ label: "Docs", href: "https://example.com/docs" }],
+        photo: "https://example.com/old-photo.png",
         photo_alt: "Old photo",
       });
+      const media = await tx\`
+        INSERT INTO media_assets (sha256, original_name, mime, size_bytes, width, height, alt, storage_key, created_by, slug)
+        VALUES (\${process.env.MEDIA_SLUG}, 'e2e-cup.png', 'image/png', 1, 1, 1, 'A blue cup', \${process.env.MEDIA_SLUG}, (SELECT id FROM actors WHERE kind = 'system' ORDER BY created_at LIMIT 1), \${process.env.MEDIA_SLUG})
+        RETURNING id::text AS id\`;
+      out.media = media[0].id;
       const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${mod[0].id}::uuid, \${values}::text::jsonb) RETURNING id::text AS id\`;
       out.ci = ci[0].id;
       for (const [key, slug] of [["pg", process.env.PAGE_SLUG], ["twin", process.env.TWIN_SLUG]]) {
@@ -117,9 +126,9 @@ test("link text + target, shared content scope, and image replace", async ({ pag
     await sql.end();
     process.stdout.write(JSON.stringify(out));
     `,
-    { TPL_SLUG, MOD_SLUG, PAGE_SLUG, TWIN_SLUG },
+    { TPL_SLUG, MOD_SLUG, PAGE_SLUG, TWIN_SLUG, MEDIA_SLUG },
   );
-  const ids = JSON.parse(seed) as { pg: string; twin: string; ci: string };
+  const ids = JSON.parse(seed) as { pg: string; twin: string; ci: string; media: string };
 
   // The media library, as the picker lists it.
   await page.route(/\/api\/media\/list/, (route) =>
@@ -127,8 +136,8 @@ test("link text + target, shared content scope, and image replace", async ({ pag
       json: {
         assets: [
           {
-            id: "7b1f7a6e-2f3c-4d5e-8f90-918918918918",
-            slug: "e2e-cup",
+            id: ids.media,
+            slug: MEDIA_SLUG,
             mime: "image/png",
             originalName: "e2e-cup.png",
             width: 1,
@@ -157,15 +166,18 @@ test("link text + target, shared content scope, and image replace", async ({ pag
   await card.locator("nav a").click({ button: "right", position: { x: 4, y: 4 } });
   await preview.getByTestId("caelo-menu-edit-link").click();
   await preview.getByTestId("caelo-link-text").fill("Handbook");
-  await preview.getByTestId("caelo-link-href").fill("/handbook");
+  await preview.getByTestId("caelo-link-href").fill(`/${TWIN_SLUG}`);
   await preview.getByTestId("caelo-link-save").click();
   await expect(preview.getByTestId("caelo-scope")).toContainText("2 pages");
   let saved = save();
   await preview.getByTestId("caelo-scope-everywhere").click();
   expect((await saved).ok()).toBe(true);
   await expect(card.locator("nav a")).toHaveText("Handbook", { timeout: 15_000 });
-  await expect(card.locator("nav a")).toHaveAttribute("href", "/handbook");
-  expect(branchValues(ids.ci)?.links).toEqual([{ label: "Handbook", href: "/handbook" }]);
+  // Stored as a page reference (#724), rendered as the page's path.
+  await expect(card.locator("nav a")).toHaveAttribute("href", `/${TWIN_SLUG}/`);
+  expect(branchValues(ids.ci)?.links).toEqual([
+    { label: "Handbook", href: `caelo:page/${ids.twin}` },
+  ]);
 
   // 2. Shared title → "only on this page": this page detaches, the shared
   //    content keeps its title.

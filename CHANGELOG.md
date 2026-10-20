@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.10.57
+
+### Fixes
+- 757e624f let UPGRADER_SMOKE=off pass the release gate (#936)
+
+## v0.10.56
+
+### Features
+- fdd97978 remote MCP infra + guided Owner setup (#806, part D) (#894)
+- d3712a38 contract-bumping releases install from Caelo via a signed converge job (#819) (#883)
+- 1ffe7a6f IAM self-check + real-GCP upgrader smoke test per release (#818) (#879)
+- cc0340ce make the package listable in MCP directories (#841) (#886)
+- 67036cbf remote Streamable HTTP endpoints behind IAP + remote connections (#806, part B) (#892)
+- 79067cb1 one derived state and one primary action on Settings → Updates (#861, #817) (#867)
+
+### Fixes
+- 0c4c7c43 renumber unreleased cms_admin migrations above the shipped 0315 (#930)
+- 5b428d27 tag only a release PR merged onto the commit it was cut from (#900)
+- 08cfe272 decide before taking the state lock, lease-break dead locks, refresh the DB token (#815) (#872)
+- 8118b38d harden the remote-MCP OAuth broker and proxy (#806, part C follow-up) (#899)
+- 07ce7b15 heal install.json drift from signed releases; compare serving images by their deployed digest (#860) (#865)
+
 ## v0.10.55
 
 ### Features

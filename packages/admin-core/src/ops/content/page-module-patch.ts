@@ -46,10 +46,10 @@ function escapeFieldText(text: string): string {
 }
 
 /**
- * A link target or image address as the operator typed it. Stored as
- * typed (internal paths become page references at the write boundary
- * once that canonicaliser runs, epic #724); refused when it could break
- * out of the attribute it lands in.
+ * A link target or image address as the operator typed it; refused when
+ * it could break out of the attribute it lands in. Internal paths become
+ * page / media references in `content_instances.set_values` (#724), which
+ * also refuses a link to no page.
  */
 const TARGET = /^(\/|#|https?:\/\/|mailto:|tel:|caelo:)\S*$/;
 const IMAGE = /^(\/|https?:\/\/|caelo:media\/)\S*$/;

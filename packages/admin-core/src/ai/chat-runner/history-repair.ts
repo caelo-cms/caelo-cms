@@ -319,6 +319,46 @@ function stripDanglingServerCalls(
 }
 
 /**
+ * Drop client tool results inside one passthrough assembly whose id was
+ * already answered earlier in the replay (by a reconstruction tool row or
+ * another assembly), recording every id kept in `emitted`. A second result
+ * for one id is rejected outright ("each tool_use must have a single
+ * result"); pre-fix, a step mixing a valid call with an SDK-rejected one
+ * persisted the valid call's result twice — in its tool row AND in the
+ * assembly — wedging the chat for good. Tool messages left empty are dropped;
+ * an untouched assembly comes back as the same array (byte-stable replay).
+ */
+function dropRepeatedToolResults(
+  sdkMessages: readonly unknown[],
+  emitted: Set<string>,
+): { messages: readonly unknown[]; droppedIds: string[] } {
+  const droppedIds: string[] = [];
+  const out: unknown[] = [];
+  for (const msg of sdkMessages) {
+    const m = msg as { role?: unknown; content?: unknown } | null;
+    if (m === null || typeof m !== "object" || m.role !== "tool" || !Array.isArray(m.content)) {
+      out.push(msg);
+      continue;
+    }
+    const kept = m.content.filter((part) => {
+      const p = part as { type?: unknown; toolCallId?: unknown } | null;
+      if (p?.type !== "tool-result" || typeof p.toolCallId !== "string") return true;
+      if (emitted.has(p.toolCallId)) {
+        droppedIds.push(p.toolCallId);
+        return false;
+      }
+      emitted.add(p.toolCallId);
+      return true;
+    });
+    if (kept.length === m.content.length) out.push(msg);
+    else if (kept.length > 0) out.push({ ...(msg as Record<string, unknown>), content: kept });
+  }
+  return droppedIds.length === 0
+    ? { messages: sdkMessages, droppedIds }
+    : { messages: out, droppedIds };
+}
+
+/**
  * Drop orphan tool_results and strip unanswered tool_uses so every
  * surviving pair is complete. Duplicate tool_results for one id keep
  * only the first occurrence (a second one is the same 400 as an
@@ -431,21 +471,26 @@ export function repairToolCallPairing(
     // except that a dangling providerExecuted call nested inside is stripped
     // (the issue-#442 heal; deterministic + byte-stable, see the helper).
     if (isPassthroughRow(m)) {
-      const sdkMessages = m.sdkMessages ?? [];
+      let sdkMessages = m.sdkMessages ?? [];
       const rowDangling = new Set<string>();
       harvestSdkPairIds(sdkMessages, new Set(), new Set(), rowDangling);
       const toStrip = [...rowDangling].filter((id) => danglingServerCallIds.has(id));
-      if (toStrip.length === 0) {
-        pushWithInterruptedAnswers(m, index);
-        continue;
+      if (toStrip.length > 0) {
+        strippedServerToolCallIds.push(...toStrip);
+        sdkMessages = stripDanglingServerCalls(sdkMessages, danglingServerCallIds);
+        if (sdkMessages.length === 0) {
+          droppedEmptyAssistantMessages += 1;
+          continue;
+        }
       }
-      strippedServerToolCallIds.push(...toStrip);
-      const healed = stripDanglingServerCalls(sdkMessages, danglingServerCallIds);
-      if (healed.length > 0) {
-        pushWithInterruptedAnswers({ ...m, sdkMessages: healed }, index);
-      } else {
-        droppedEmptyAssistantMessages += 1;
+      const deduped = dropRepeatedToolResults(sdkMessages, emittedResultIds);
+      if (deduped.droppedIds.length > 0) {
+        droppedToolResultIds.push(...deduped.droppedIds);
+        sdkMessages = deduped.messages;
+        // Nothing but repeated results — the row has nothing left to say.
+        if (sdkMessages.length === 0) continue;
       }
+      pushWithInterruptedAnswers(sdkMessages === m.sdkMessages ? m : { ...m, sdkMessages }, index);
       continue;
     }
     if (m.role === "tool") {
