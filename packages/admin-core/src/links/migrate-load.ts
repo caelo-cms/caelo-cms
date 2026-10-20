@@ -127,6 +127,25 @@ export interface MainSetRow {
 }
 
 /** Every structured set; see {@link LoadOptions} for `lock`. */
+/** A layout as the migration reads it (main-only: layouts are not branched). */
+export interface MainLayoutRow {
+  readonly id: string;
+  readonly displayName: string;
+  readonly html: string;
+}
+
+/** Every live layout's own HTML (the page frame around the blocks). */
+export async function loadMainLayouts(
+  tx: TransactionRunner,
+  opts: LoadOptions,
+): Promise<MainLayoutRow[]> {
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, display_name, html FROM layouts WHERE deleted_at IS NULL ORDER BY id
+     ${forUpdate(opts)}
+  `)) as unknown as { id: string; display_name: string; html: string }[];
+  return rows.map((r) => ({ id: r.id, displayName: r.display_name, html: r.html }));
+}
+
 export async function loadMainSets(
   tx: TransactionRunner,
   opts: LoadOptions,

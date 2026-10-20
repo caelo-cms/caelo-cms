@@ -2,17 +2,18 @@
 
 /**
  * Epic #724 (rollout E) — the one-time migration of literal internal
- * links into references, the engine behind `links.migrate_to_references`
- * and an import's link finalisation (`imports.resolve_links`).
+ * links into references, the engine behind `links.migrate_to_references`.
+ * (An import run's links to pages it had not built yet are rollout C's:
+ * `imports.resolve_links` rewrites them through the normal write ops.)
  *
  * Surfaces, each converted with the shared canonicaliser in REPORT mode
  * (`migrate-convert.ts`): module HTML, module field defaults (layout
  * chrome content lives there), content-instance values (by the module's
  * declared field kinds, as the write path reads them), structured-set
- * items, and plugin storage the plugins name through their
- * `linkLocationsOperation` hook. Templates' and layouts' own HTML is
- * page structure, not a link surface: references resolve only inside
- * modules and sets (rollout B), so it is not touched.
+ * items, layouts' own HTML (main-only; rollout C stores it as references
+ * and the composer resolves them), and plugin storage the plugins name
+ * through their `linkLocationsOperation` hook. Templates' own HTML is
+ * page structure no write op canonicalises, so it is not touched.
  *
  * Scopes: main-line rows are converted in place under ONE site snapshot
  * (plugin rows ride the same header). Every chat branch with pending
@@ -66,6 +67,7 @@ import {
   loadAllModuleFields,
   loadBranchStates,
   loadMainInstances,
+  loadMainLayouts,
   loadMainModules,
   loadMainSets,
   loadPendingBranches,
@@ -76,7 +78,7 @@ import {
 /** One link the migration left literal. */
 export interface UnresolvedLink {
   readonly surface: LinkSurface;
-  readonly entityKind: "module" | "contentInstance" | "structuredSet" | "pluginRow";
+  readonly entityKind: "module" | "contentInstance" | "structuredSet" | "layout" | "pluginRow";
   readonly entityId: string;
   /** Null on main; the chat branch whose pending work holds it otherwise. */
   readonly branchId: string | null;
@@ -109,6 +111,14 @@ export type LinkMigrationChange =
       readonly branchId: string | null;
       readonly before: { readonly items: unknown[] };
       readonly after: { readonly items: unknown[] };
+    }
+  | {
+      /** Layouts are main-only (no chat branch writes them). */
+      readonly entityKind: "layout";
+      readonly entityId: string;
+      readonly branchId: null;
+      readonly before: { readonly html: string };
+      readonly after: { readonly html: string };
     }
   | {
       readonly entityKind: "pluginRow";
@@ -152,6 +162,13 @@ export interface LinkMigrationResult {
 export class ScopeBatch {
   readonly entities = new Map<string | null, SnapshotEntity[]>();
   readonly pluginRows = new Map<string | null, { ref: PluginRowRef; state: PluginRowState }[]>();
+  /**
+   * A write with no snapshot entity kind (a layout's HTML; layouts.update
+   * emits an entity-less header the same way) still gets its snapshot
+   * header, so the change shows in the history; the run's own
+   * before/after is what reverts it.
+   */
+  touchedWithoutEntity = false;
 
   addEntity(task: string | null, e: SnapshotEntity): void {
     const list = this.entities.get(task) ?? [];
@@ -166,7 +183,7 @@ export class ScopeBatch {
   }
 
   get empty(): boolean {
-    return this.entities.size === 0 && this.pluginRows.size === 0;
+    return this.entities.size === 0 && this.pluginRows.size === 0 && !this.touchedWithoutEntity;
   }
 
   /** One snapshot header per owning chat task (main: exactly one). */
@@ -178,6 +195,7 @@ export class ScopeBatch {
   ): Promise<string | null> {
     let first: string | null = null;
     const tasks = new Set([...this.entities.keys(), ...this.pluginRows.keys()]);
+    if (tasks.size === 0 && this.touchedWithoutEntity) tasks.add(null);
     for (const task of tasks) {
       const { siteSnapshotId } = await emitSnapshot(tx, {
         actorId: scope.actorId,
@@ -244,6 +262,7 @@ export async function migrateLinksToReferences(
     await migrateMainModules(tx, scope, cx, c, batch);
     await migrateMainInstances(tx, scope, cx, c, batch, moduleFields);
     await migrateMainSets(tx, scope, cx, c, batch);
+    await migrateMainLayouts(tx, scope, cx, c, batch);
     await migrateMainPluginRows(tx, scope, cx, c, batch, pluginMain, moduleFields);
     if (scope.apply && !batch.empty) {
       siteSnapshotId = await batch.emit(tx, scope, null, "links.migrate_to_references");
@@ -396,6 +415,52 @@ async function migrateMainSets(
     if (!scope.apply) continue;
     batch.addEntity(null, await writeMainSet(tx, s, out.next));
   }
+}
+
+/**
+ * Layouts' own HTML (the page frame): rollout C stores its links as
+ * references and the composer resolves them, so legacy literals there
+ * are converted like module HTML. Layouts are main-only.
+ */
+async function migrateMainLayouts(
+  tx: TransactionRunner,
+  scope: LinkMigrationScope,
+  cx: ConvertContext,
+  c: Collector,
+  batch: ScopeBatch,
+): Promise<void> {
+  for (const l of await loadMainLayouts(tx, { lock: scope.apply })) {
+    const out = convertModuleHtml(l.html, cx);
+    c.record(out, "layout_html", {
+      entityKind: "layout",
+      entityId: l.id,
+      branchId: null,
+      label: `layout "${l.displayName}"`,
+    });
+    if (!out.changed) continue;
+    c.entitiesChanged += 1;
+    c.changes.push({
+      entityKind: "layout",
+      entityId: l.id,
+      branchId: null,
+      before: { html: l.html },
+      after: { html: out.next },
+    });
+    if (!scope.apply) continue;
+    await writeMainLayout(tx, l.id, out.next);
+    batch.touchedWithoutEntity = true;
+  }
+}
+
+/** Write a main-line layout's HTML. */
+export async function writeMainLayout(
+  tx: TransactionRunner,
+  id: string,
+  html: string,
+): Promise<void> {
+  await tx.execute(sql`
+    UPDATE layouts SET html = ${html}, updated_at = now() WHERE id = ${id}::uuid
+  `);
 }
 
 /** Write a main-line set's items; returns its snapshot entity. */

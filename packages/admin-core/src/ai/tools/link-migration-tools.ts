@@ -53,6 +53,8 @@ const KIND_TEXT: Record<string, string> = {
   "dangling-page-ref": "the linked page was deleted",
   "dangling-media-ref": "the linked asset was deleted",
   "unsupported-link-form": "its ?query or #anchor cannot be stored in a reference",
+  "unknown-file": "a file path nothing on the site serves",
+  "malformed-link-ref": "a broken internal reference (truncated id or extra characters)",
 };
 
 const SURFACE_TEXT: Record<string, string> = {
@@ -60,6 +62,7 @@ const SURFACE_TEXT: Record<string, string> = {
   module_field_defaults: "module field defaults (layout chrome)",
   content_values: "page / shared content",
   structured_sets: "menus and link lists",
+  layout_html: "a layout's own HTML (the page frame; the Owner edits it under Settings → Layouts)",
 };
 
 export const getLinkMigrationReportTool: ToolDefinitionWithHandler<ReportInput> = {
@@ -71,7 +74,8 @@ export const getLinkMigrationReportTool: ToolDefinitionWithHandler<ReportInput> 
     "content / menu it sits in. Use when the operator asks about broken or old links after an update, or before fixing " +
     "links site-wide. Fix each listed link with the normal edit tools (edit_module, set_content_instance_values, " +
     "set_structured_set) by pointing it at an existing page's path (list_pages) or removing it; the edit stores the " +
-    "reference. Filter with `search` (matches the link, the label and the field). Running or reverting the migration " +
+    "reference. A link in a layout's own HTML (the page frame) is the Owner's to fix under Settings → Layouts: name " +
+    "the layout and the path to use. Filter with `search` (matches the link, the label and the field). Running or reverting the migration " +
     "is the Owner's (Settings → Internal links); you only read.",
   schema: reportInput,
   inputSchema: {

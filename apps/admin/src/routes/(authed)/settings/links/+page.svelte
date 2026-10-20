@@ -35,6 +35,7 @@
     module_field_defaults: "Layout header / footer content",
     content_values: "Page and shared content",
     structured_sets: "Menus and link lists",
+    layout_html: "Layout page frame",
   };
   const KINDS: Record<string, string> = {
     "unknown-page-path": "No page has this address",
@@ -42,6 +43,8 @@
     "dangling-page-ref": "The page was deleted",
     "dangling-media-ref": "The file was deleted",
     "unsupported-link-form": "The ?query or #anchor cannot be stored",
+    "unknown-file": "No file on the site has this address",
+    "malformed-link-ref": "A broken internal reference",
   };
   const surfaceLabel = (s: string) =>
     SURFACES[s] ?? (s.startsWith("plugin:") ? `Plugin ${s.slice(7)}` : s);

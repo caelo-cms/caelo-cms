@@ -66,7 +66,15 @@ const ids = {
   branchInstance: "",
   pluginRow: "",
   media: "",
+  layout: "",
 };
+
+async function layoutHtml(id: string): Promise<string> {
+  const rows = (await asSystem((tx) => tx`SELECT html FROM layouts WHERE id = ${id}::uuid`)) as {
+    html: string;
+  }[];
+  return rows[0]?.html ?? "";
+}
 let mediaSlug = "";
 
 async function asSystem<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
@@ -219,6 +227,8 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM modules WHERE slug LIKE ${`${PFX}%`} OR display_name LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${`${PFX}-tpl`})`;
     await tx`DELETE FROM templates WHERE slug = ${`${PFX}-tpl`}`;
+    await tx`DELETE FROM layout_blocks WHERE layout_id IN (SELECT id FROM layouts WHERE slug LIKE ${`${PFX}%`})`;
+    await tx`DELETE FROM layouts WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM media_variants WHERE asset_id IN (SELECT id FROM media_assets WHERE sha256 = ${SHA})`;
     await tx`DELETE FROM media_assets WHERE sha256 = ${SHA}`;
   });
@@ -330,6 +340,14 @@ beforeAll(async () => {
   });
   if (!put.ok) throw new Error(`put: ${put.error.message}`);
   ids.pluginRow = (put.value as { id: string }).id;
+  ids.layout = (
+    await run<{ layoutId: string }>("layouts.create", {
+      slug: `${PFX}-layout`,
+      displayName: `${PFX} frame`,
+      html: '<body><a class="frame" href="https://example.com/">x</a><caelo-slot name="content">_</caelo-slot></body>',
+      blocks: [{ name: "content", displayName: "Content", position: 0 }],
+    })
+  ).layoutId;
 
   // The pre-#724 state: literal paths everywhere.
   await asSystem(async (tx) => {
@@ -342,6 +360,8 @@ beforeAll(async () => {
       price_note: "/month",
       body_html: `<p>See <a href="${ABOUT}">about</a> and <a href="https://example.com/ext">ext</a></p>`,
     })}::jsonb WHERE id = ${ids.instance}::uuid`;
+    await tx`UPDATE layouts SET html = ${`<body><a class="frame" href="${ABOUT}">About</a><caelo-slot name="content">_</caelo-slot></body>`}
+             WHERE id = ${ids.layout}::uuid`;
     await tx`UPDATE structured_sets SET items = ${JSON.stringify([
       { label: "About", href: ABOUT, children: [{ label: "Pricing", href: PRICING }] },
       { label: "Gone", href: GONE },
@@ -451,6 +471,13 @@ describe("links.migrate_to_references", () => {
       },
       { label: "Gone", href: GONE },
     ]);
+
+    // A layout's own HTML (the page frame) is converted too: the composer
+    // resolves references there (rollout C).
+    expect(await layoutHtml(ids.layout)).toContain(
+      `<a class="frame" href="caelo:page/${ids.about}">About</a>`,
+    );
+    expect(out.run.counts.layout_html).toBeGreaterThanOrEqual(1);
 
     // The plugin hook: core converted the column the plugin named.
     const row = (await pluginRows()).find((r) => r.id === ids.pluginRow);
@@ -598,6 +625,7 @@ describe("links.migrate_to_references", () => {
     ]);
     expect((await instanceValues(ids.instance)).cta_href).toBe(PRICING);
     expect((await setItems(ids.setId))[0]?.label).toBe("About only"); // the edit was kept
+    expect(await layoutHtml(ids.layout)).toContain(`<a class="frame" href="${ABOUT}">About</a>`);
     const row = (await pluginRows()).find((r) => r.id === ids.pluginRow);
     expect(row?.payload.cta_href).toBe(PRICING);
     const branchState = (await asSystem(

@@ -30,6 +30,7 @@ export type LinkSurface =
   | "module_field_defaults"
   | "content_values"
   | "structured_sets"
+  | "layout_html"
   | `plugin:${string}`;
 
 /** The outcome of converting one part of one entity. */
