@@ -143,6 +143,9 @@ jobs:
       - name: Lockstep version check
         run: bun scripts/release.ts --check
 
+      - name: Power-MCP catalogue snapshot is this release's (#841)
+        run: bun scripts/power-catalogue.ts --check
+
   # ──────────────────────────────────────────────────────────────────
   # Build + push Docker images via the existing release-images workflow,
   # invoked here as a reusable workflow so this release-driver remains
@@ -184,6 +187,9 @@ jobs:
       contents: read
       packages: write
       id-token: write
+    outputs:
+      # The upgrader smoke test installs exactly this version.
+      version: ${{ steps.ver.outputs.version }}
 
     env:
       MANIFEST_IMAGE: ghcr.io/caelo-cms/release-manifest
@@ -311,6 +317,26 @@ jobs:
           if-no-files-found: error
 
   # ──────────────────────────────────────────────────────────────────
+  # Real-GCP upgrader smoke test (#818), gate mode: this release's signed
+  # manifest verifies, and the smoke install cleanly serves the release
+  # before it — installed through Settings → Updates, the only update
+  # path. Read-only; it never starts an update. Blocks npm and the GitHub
+  # Release.
+  # Controlled by the UPGRADER_SMOKE repository variable — `required` or
+  # `off`, never a silent skip (upgrader-smoke.yml, docs/dev/upgrader-smoke.md).
+  # ──────────────────────────────────────────────────────────────────
+  upgrader-smoke:
+    name: upgrader smoke test (real GCP)
+    needs: [release-manifest]
+    uses: ./.github/workflows/upgrader-smoke.yml
+    with:
+      candidate: ${{ needs.release-manifest.outputs.version }}
+    # No secrets: WIF only, and the smoke check is read-only.
+    permissions:
+      contents: read
+      id-token: write
+
+  # ──────────────────────────────────────────────────────────────────
   # Publish each non-private @caelo-cms/* package to npm with
   # provenance attestation. Provenance proves the artifact came from
   # this exact workflow + commit + tag — operators (and `npm audit`)
@@ -322,7 +348,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────────
   publish-npm:
     name: publish ${{ matrix.package }} to npm
-    needs: [gate, docker, release-manifest]
+    needs: [gate, docker, release-manifest, upgrader-smoke]
     runs-on: ubuntu-latest
 
     strategy:
@@ -608,3 +634,61 @@ jobs:
             release-manifest.json
             release-manifest.json.sigstore.json
           fail_on_unmatched_files: true
+
+  # ──────────────────────────────────────────────────────────────────
+  # Official MCP Registry entry (#841): packages/mcp-server/server.json,
+  # kept in lockstep by scripts/release.ts. Runs after verify-published
+  # because the registry checks that the npm version exists and carries
+  # the matching `mcpName`. Auth is this workflow's GitHub OIDC token,
+  # which the registry maps to the io.github.caelo-cms/* namespace, so no
+  # org Owner has to log in per release. PulseMCP mirrors the registry.
+  #
+  # Stable releases only: the registry marks the newest version latest,
+  # and an rc must not become what directories install. Not a dependency
+  # of github-release — the registry is in preview, and a listing hiccup
+  # must not hold back a release that is already on npm and GHCR.
+  # ──────────────────────────────────────────────────────────────────
+  publish-mcp-registry:
+    name: publish to the MCP Registry
+    needs: verify-published
+    if: ${{ !contains(github.event.inputs.tag || github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      MCP_PUBLISHER_VERSION: v1.8.1
+      MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # This job runs a downloaded third-party binary; nothing here
+          # pushes, so the checkout token must not sit in .git/config.
+          persist-credentials: false
+
+      - name: Install mcp-publisher (pinned + checksum-verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+
+      - name: Check server.json matches the tag
+        env:
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          V="${REF#v}"
+          jq -e --arg v "${V}" '.version == $v and all(.packages[]; .version == $v)' \
+            packages/mcp-server/server.json \
+            || { echo "::error::packages/mcp-server/server.json is not at ${V} — scripts/release.ts bumps it"; exit 1; }
+
+      - name: Publish
+        working-directory: packages/mcp-server
+        run: |
+          set -euo pipefail
+          "${GITHUB_WORKSPACE}/mcp-publisher" login github-oidc
+          "${GITHUB_WORKSPACE}/mcp-publisher" publish

@@ -7,22 +7,30 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { GOOGLE_AUTHORIZE_URL, GOOGLE_TOKEN_URL } from "../mcp/google.js";
 import {
+  approve,
   authorizeQuery,
   CLAUDE_REDIRECT,
+  defaultGoogle,
+  fakeIdToken,
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
+  type GoogleFake,
   harness,
   ISSUER,
   location,
   obtainCode,
+  openAccess,
   PUBLIC,
   pkce,
   postToken,
   registerClient,
+  SEAL_KEY_B64,
 } from "./__tests__/harness.js";
 import { seal } from "./seal.js";
+import { REFRESH_MAX_LIFETIME_SECONDS } from "./token.js";
 
 const CLAUDE_CODE_CIMD = "https://claude.ai/oauth/claude-code-client-metadata";
 const CHATGPT_CIMD = "https://chatgpt.com/oauth/client.json";
@@ -61,12 +69,22 @@ describe("discovery metadata", () => {
     }
   });
 
-  it("serves the AS metadata on every variant with the contract's fields", async () => {
+  it("does not pose as an OpenID Provider (no openid-configuration documents)", async () => {
+    const h = harness();
+    expect(
+      await h.router(new Request(`${PUBLIC}/.well-known/openid-configuration/api/mcp/oauth`), {
+        clientAddress: "198.51.100.7",
+        setIdleTimeout: () => {},
+      }),
+    ).toBeNull();
+    const appended = await h.send("/api/mcp/oauth/.well-known/openid-configuration");
+    expect(appended.status).toBe(404);
+  });
+
+  it("serves the AS metadata on both RFC 8414 variants with the contract's fields", async () => {
     const h = harness();
     for (const path of [
       "/.well-known/oauth-authorization-server/api/mcp/oauth",
-      "/.well-known/openid-configuration/api/mcp/oauth",
-      "/api/mcp/oauth/.well-known/openid-configuration",
       "/api/mcp/oauth/.well-known/oauth-authorization-server",
     ]) {
       const res = await h.send(path);
@@ -92,7 +110,10 @@ describe("discovery metadata", () => {
     const h = harness();
     for (const path of ["/api/plugin/x/y", "/.well-known/security.txt", "/api/mcpx"]) {
       expect(
-        await h.router(new Request(`${PUBLIC}${path}`), { disableIdleTimeout: () => {} }),
+        await h.router(new Request(`${PUBLIC}${path}`), {
+          clientAddress: "198.51.100.7",
+          setIdleTimeout: () => {},
+        }),
       ).toBeNull();
     }
   });
@@ -178,7 +199,7 @@ describe("not configured", () => {
     }
   });
 
-  it("reports the configured client as a hash and picks up a saved client within 60 s", async () => {
+  it("reports the configured client id (never the secret) and picks up a saved client within 60 s", async () => {
     let file = "{}";
     const h = harness({ clientFile: () => file });
     expect(await (await h.send("/api/mcp/oauth/status")).json()).toEqual({ configured: false });
@@ -208,7 +229,7 @@ describe("dynamic client registration", () => {
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
     });
-    expect(body.client_id).toStartWith("v1.");
+    expect(body.client_id).toStartWith("v2.");
     expect(body.client_secret).toBeUndefined();
   });
 
@@ -250,6 +271,59 @@ describe("dynamic client registration", () => {
     expect(((await res.json()) as { error: string }).error).toBe(error);
   });
 
+  it("refuses a registration whose client_id would not fit the sealed state and code", async () => {
+    const h = harness();
+    const uris = Array.from(
+      { length: 20 },
+      (_, i) => `http://127.0.0.1:${1000 + i}/${"p".repeat(150)}`,
+    );
+    const res = await h.send("/api/mcp/oauth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: uris, client_name: "x".repeat(200) }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_client_metadata");
+  });
+
+  it("completes a sign-in for the largest registration and client state it accepts", async () => {
+    // The search below registers many times; lift the per-address limit for it.
+    const roomy = { capacity: 1000, windowSeconds: 60 };
+    const h = harness({
+      rateLimits: {
+        authorize: roomy,
+        callback: roomy,
+        token: roomy,
+        register: roomy,
+        metadata: roomy,
+        proxy: roomy,
+      },
+    });
+    // One long loopback URI, as long as still fits under the client_id cap.
+    let clientId = "";
+    let redirectUri = "";
+    for (let len = 1500; len > 0; len -= 20) {
+      redirectUri = `http://127.0.0.1:4000/${"p".repeat(len)}`;
+      const res = await h.send("/api/mcp/oauth/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirect_uris: [redirectUri], client_name: "x".repeat(200) }),
+      });
+      if (res.status === 201) {
+        clientId = ((await res.json()) as { client_id: string }).client_id;
+        break;
+      }
+    }
+    expect(clientId.length).toBeGreaterThan(1900);
+    const { code } = await obtainCode(h, {
+      clientId,
+      redirectUri,
+      challenge: pkce().challenge,
+      state: "s".repeat(1024),
+    });
+    expect(code).toStartWith("v2.");
+  });
+
   it("refuses non-JSON and oversized bodies", async () => {
     const h = harness();
     expect(
@@ -278,24 +352,20 @@ describe("dynamic client registration", () => {
 });
 
 describe("authorize", () => {
-  it("redirects to Google with the client's challenge and a sealed state", async () => {
+  it("after consent, redirects to Google with the client's challenge and a sealed state", async () => {
     const h = harness();
     const clientId = await registerClient(h, [CLAUDE_REDIRECT]);
     const { challenge } = pkce();
-    const res = await h.send(
-      authorizeQuery({
-        response_type: "code",
-        client_id: clientId,
-        redirect_uri: CLAUDE_REDIRECT,
-        code_challenge: challenge,
-        code_challenge_method: "S256",
-        state: "client-state-xyz",
-        scope: "openid email",
-        resource: `${PUBLIC}/api/mcp/chat`,
-      }),
-    );
-    expect(res.status).toBe(302);
-    const g = location(res);
+    const { google: g } = await approve(h, {
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: CLAUDE_REDIRECT,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state: "client-state-xyz",
+      scope: "openid email",
+      resource: `${PUBLIC}/api/mcp/chat`,
+    });
     expect(`${g.origin}${g.pathname}`).toBe(GOOGLE_AUTHORIZE_URL);
     expect(Object.fromEntries(g.searchParams)).toMatchObject({
       client_id: GOOGLE_CLIENT_ID,
@@ -308,7 +378,7 @@ describe("authorize", () => {
       code_challenge_method: "S256",
     });
     const state = g.searchParams.get("state") ?? "";
-    expect(state).toStartWith("v1.");
+    expect(state).toStartWith("v2.");
     expect(state).not.toContain("client-state-xyz");
     expect(g.searchParams.has("client_secret")).toBe(false);
   });
@@ -372,6 +442,10 @@ describe("authorize", () => {
     ["no method (plain by default)", { code_challenge_method: undefined }, "invalid_request"],
     ["plain PKCE", { code_challenge_method: "plain" }, "invalid_request"],
     ["a malformed challenge", { code_challenge: "short" }, "invalid_request"],
+    // 43–128 chars is the verifier's range, not an S256 challenge's (exactly 43, base64url).
+    ["a 44-character challenge", { code_challenge: "A".repeat(44) }, "invalid_request"],
+    ["a 128-character challenge", { code_challenge: "A".repeat(128) }, "invalid_request"],
+    ["a challenge outside base64url", { code_challenge: `${"A".repeat(42)}~` }, "invalid_request"],
     ["response_type token", { response_type: "token" }, "unsupported_response_type"],
     ["a foreign resource", { resource: "https://evil.example/api/mcp/chat" }, "invalid_target"],
   ])("redirects %s back as an error with iss and state", async (_label, over, error) => {
@@ -436,6 +510,23 @@ describe("Client ID Metadata Documents", () => {
     expect(tok.status).toBe(200);
   });
 
+  it("caches a fetched document briefly instead of fetching it per request", async () => {
+    const h = harness({ other: () => cimdResponse(claudeCodeDoc) });
+    const query = authorizeQuery({
+      response_type: "code",
+      client_id: CLAUDE_CODE_CIMD,
+      redirect_uri: "http://localhost:3118/callback",
+      code_challenge: pkce().challenge,
+      code_challenge_method: "S256",
+    });
+    expect((await h.send(query)).status).toBe(200);
+    expect((await h.send(query)).status).toBe(200);
+    expect(h.calls.filter((c) => c.url === CLAUDE_CODE_CIMD)).toHaveLength(1);
+    h.advance(5 * 60 * 1000);
+    expect((await h.send(query)).status).toBe(200);
+    expect(h.calls.filter((c) => c.url === CLAUDE_CODE_CIMD)).toHaveLength(2);
+  });
+
   it("accepts ChatGPT's document (it lists private_key_jwt among its methods)", async () => {
     const h = harness({
       other: () =>
@@ -447,17 +538,14 @@ describe("Client ID Metadata Documents", () => {
           jwks_uri: "https://chatgpt.com/oauth/jwks.json",
         }),
     });
-    const res = await h.send(
-      authorizeQuery({
-        response_type: "code",
-        client_id: CHATGPT_CIMD,
-        redirect_uri: "https://chatgpt.com/connector_platform_oauth_redirect",
-        code_challenge: pkce().challenge,
-        code_challenge_method: "S256",
-      }),
-    );
-    expect(res.status).toBe(302);
-    expect(location(res).origin).toBe("https://accounts.google.com");
+    const { google } = await approve(h, {
+      response_type: "code",
+      client_id: CHATGPT_CIMD,
+      redirect_uri: "https://chatgpt.com/connector_platform_oauth_redirect",
+      code_challenge: pkce().challenge,
+      code_challenge_method: "S256",
+    });
+    expect(google.origin).toBe("https://accounts.google.com");
   });
 
   it.each([
@@ -580,30 +668,28 @@ describe("google-callback", () => {
     expect(`${clientRedirect.origin}${clientRedirect.pathname}`).toBe(CLAUDE_REDIRECT);
     expect(clientRedirect.searchParams.get("state")).toBe("abc");
     expect(clientRedirect.searchParams.get("iss")).toBe(ISSUER);
-    expect(code).toStartWith("v1.");
+    expect(code).toStartWith("v2.");
     expect(code).not.toContain("google-code");
   });
 
   it("forwards a Google error to the client with iss and state", async () => {
     const h = harness();
     const clientId = await registerClient(h, [CLAUDE_REDIRECT]);
-    const auth = await h.send(
-      authorizeQuery({
-        response_type: "code",
-        client_id: clientId,
-        redirect_uri: CLAUDE_REDIRECT,
-        code_challenge: pkce().challenge,
-        code_challenge_method: "S256",
-        state: "s9",
-      }),
-    );
-    const state = location(auth).searchParams.get("state") ?? "";
+    const { googleState: state, cookie } = await approve(h, {
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: CLAUDE_REDIRECT,
+      code_challenge: pkce().challenge,
+      code_challenge_method: "S256",
+      state: "s9",
+    });
     for (const [googleError, expected] of [
       ["access_denied", "access_denied"],
       ["admin_policy_enforced", "server_error"],
     ]) {
       const cb = await h.send(
         `/api/mcp/oauth/google-callback?error=${googleError}&state=${encodeURIComponent(state)}`,
+        { headers: { cookie } },
       );
       const loc = location(cb);
       expect(`${loc.origin}${loc.pathname}`).toBe(CLAUDE_REDIRECT);
@@ -616,7 +702,7 @@ describe("google-callback", () => {
   it("refuses a tampered, expired, wrong-purpose or missing state without redirecting", async () => {
     const h = harness();
     const clientId = await registerClient(h, [CLAUDE_REDIRECT]);
-    const { googleState, code } = await obtainCode(h, {
+    const { googleState, code, cookie } = await obtainCode(h, {
       clientId,
       redirectUri: CLAUDE_REDIRECT,
       challenge: pkce().challenge,
@@ -627,11 +713,15 @@ describe("google-callback", () => {
       redirect_uri: "https://evil.example/",
       client_state: null,
       resource: null,
+      code_challenge: pkce().challenge,
+      binding_id: "0000000000000000",
+      binding_nonce: "n",
       exp: 9_999_999_999,
     });
     for (const state of [tampered, code, clientId, forged, ""]) {
       const res = await h.send(
         `/api/mcp/oauth/google-callback?code=x&state=${encodeURIComponent(state)}`,
+        { headers: { cookie } },
       );
       expect(res.status).toBe(400);
       expect(res.headers.get("location")).toBeNull();
@@ -639,6 +729,7 @@ describe("google-callback", () => {
     h.advance(10 * 60 * 1000);
     const expired = await h.send(
       `/api/mcp/oauth/google-callback?code=x&state=${encodeURIComponent(googleState)}`,
+      { headers: { cookie } },
     );
     expect(expired.status).toBe(400);
     expect(expired.headers.get("location")).toBeNull();
@@ -658,7 +749,7 @@ describe("token: authorization_code", () => {
     return { h, clientId, verifier, code, googleState };
   }
 
-  it("exchanges at Google with the verifier and returns Google's access token + a sealed refresh token", async () => {
+  it("exchanges at Google with the verifier and returns Google's ID token (what IAP takes) + a sealed refresh token", async () => {
     const { h, clientId, verifier, code } = await flow();
     const res = await postToken(h, {
       grant_type: "authorization_code",
@@ -672,11 +763,19 @@ describe("token: authorization_code", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toMatchObject({
-      access_token: "ya29.google-access",
       token_type: "Bearer",
-      expires_in: 3599,
+      // From the ID token's exp, not Google's access-token expires_in (3599).
+      expires_in: 3600,
     });
-    expect(String(body.refresh_token)).toStartWith("v1.");
+    // The bearer is the ID token sealed with the surface it was granted for.
+    expect(openAccess(String(body.access_token), h.nowSeconds())).toEqual({
+      id_token: fakeIdToken({ aud: GOOGLE_CLIENT_ID, exp: h.nowSeconds() + 3600 }),
+      resource: `${PUBLIC}/api/mcp/admin`,
+      exp: h.nowSeconds() + 3600,
+    });
+    expect(String(body.access_token)).not.toContain(".eyJ");
+    expect(JSON.stringify(body)).not.toContain("ya29.");
+    expect(String(body.refresh_token)).toStartWith("v2.");
     expect(String(body.refresh_token)).not.toContain("google-refresh");
     expect(body.id_token).toBeUndefined();
     const form = h.googleForms[0];
@@ -753,7 +852,22 @@ describe("token: authorization_code", () => {
     expect(h.googleForms).toHaveLength(0);
   });
 
-  it("maps Google's invalid_grant (wrong verifier, reused code) to invalid_grant and other failures to 503", async () => {
+  it("checks the PKCE verifier itself: a wrong one is invalid_grant and Google is never called", async () => {
+    const { h, clientId, code } = await flow();
+    const res = await postToken(h, {
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: CLAUDE_REDIRECT,
+      client_id: clientId,
+      // Well-formed, just not the one whose hash went to /authorize.
+      code_verifier: pkce().verifier,
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_grant");
+    expect(h.calls.filter((c) => c.url === GOOGLE_TOKEN_URL)).toHaveLength(0);
+  });
+
+  it("maps Google's invalid_grant (reused or revoked code) to invalid_grant and other failures to 503", async () => {
     const google = { answer: Response.json({ error: "invalid_grant" }, { status: 400 }) };
     const h = harness({ google: () => google.answer });
     const clientId = await registerClient(h, [CLAUDE_REDIRECT]);
@@ -775,6 +889,71 @@ describe("token: authorization_code", () => {
     const text = await r2.text();
     expect(text).toContain("temporarily_unavailable");
     expect(text).not.toContain(GOOGLE_CLIENT_SECRET);
+  });
+
+  it.each([
+    ["no ID token (openid not granted)", (now: number) => ({ id_token: undefined, now })],
+    [
+      "an ID token for another client",
+      (now: number) => ({
+        id_token: fakeIdToken({ aud: "other.apps.googleusercontent.com", exp: now + 3600 }),
+      }),
+    ],
+    [
+      "an already expired ID token",
+      (now: number) => ({ id_token: fakeIdToken({ aud: GOOGLE_CLIENT_ID, exp: now }) }),
+    ],
+    ["a non-JWT ID token", () => ({ id_token: "not-a-jwt" })],
+  ])("answers 503 (never a token IAP would refuse) when Google returns %s", async (_l, over) => {
+    const h = harness({
+      google: (_form, now) =>
+        Response.json({
+          access_token: "ya29.x",
+          expires_in: 3599,
+          token_type: "Bearer",
+          refresh_token: "1//r",
+          ...over(now),
+        }),
+    });
+    const clientId = await registerClient(h, [CLAUDE_REDIRECT]);
+    const { verifier, challenge } = pkce();
+    const { code } = await obtainCode(h, { clientId, redirectUri: CLAUDE_REDIRECT, challenge });
+    const res = await postToken(h, {
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: CLAUDE_REDIRECT,
+      client_id: clientId,
+      code_verifier: verifier,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.text()).not.toContain("ya29.");
+  });
+
+  it("binds the grant to its resource (RFC 8707): a different resource is invalid_target", async () => {
+    const h = harness();
+    const clientId = await registerClient(h, [CLAUDE_REDIRECT]);
+    const { verifier, challenge } = pkce();
+    const { code } = await obtainCode(h, {
+      clientId,
+      redirectUri: CLAUDE_REDIRECT,
+      challenge,
+      resource: `${PUBLIC}/api/mcp/chat`,
+    });
+    const fields = {
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: CLAUDE_REDIRECT,
+      client_id: clientId,
+      code_verifier: verifier,
+    };
+    for (const resource of [`${PUBLIC}/api/mcp/admin`, "https://evil.example/api/mcp/chat"]) {
+      const res = await postToken(h, { ...fields, resource });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("invalid_target");
+    }
+    expect(h.googleForms).toHaveLength(0);
+    const ok = await postToken(h, { ...fields, resource: `${PUBLIC}/api/mcp/chat` });
+    expect(ok.status).toBe(200);
   });
 
   it("refuses client authentication (public clients only) and wrong content types", async () => {
@@ -804,11 +983,16 @@ describe("token: authorization_code", () => {
 });
 
 describe("token: refresh_token", () => {
-  async function tokens() {
-    const h = harness();
+  async function tokens(opts: { resource?: string; google?: GoogleFake } = {}) {
+    const h = harness(opts.google ? { google: opts.google } : {});
     const clientId = await registerClient(h, [CLAUDE_REDIRECT]);
     const { verifier, challenge } = pkce();
-    const { code } = await obtainCode(h, { clientId, redirectUri: CLAUDE_REDIRECT, challenge });
+    const { code } = await obtainCode(h, {
+      clientId,
+      redirectUri: CLAUDE_REDIRECT,
+      challenge,
+      ...(opts.resource ? { resource: opts.resource } : {}),
+    });
     const res = await postToken(h, {
       grant_type: "authorization_code",
       code,
@@ -820,7 +1004,7 @@ describe("token: refresh_token", () => {
     return { h, clientId, refresh: body.refresh_token, code };
   }
 
-  it("refreshes at Google and keeps the sealed refresh token when Google does not rotate", async () => {
+  it("refreshes at Google, returns the new ID token and a re-sealed refresh token", async () => {
     const { h, clientId, refresh } = await tokens();
     const res = await postToken(h, {
       grant_type: "refresh_token",
@@ -828,16 +1012,129 @@ describe("token: refresh_token", () => {
       client_id: clientId,
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({
-      access_token: "ya29.refreshed",
-      refresh_token: refresh,
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ expires_in: 3500 });
+    expect(openAccess(String(body.access_token), h.nowSeconds())).toEqual({
+      id_token: fakeIdToken({ aud: GOOGLE_CLIENT_ID, exp: h.nowSeconds() + 3500, refreshed: true }),
+      // The client never named a resource: consented (and valid) for both surfaces.
+      resource: null,
+      exp: h.nowSeconds() + 3500,
     });
+    expect(String(body.refresh_token)).toStartWith("v2.");
     expect(Object.fromEntries(h.googleForms[1] ?? [])).toEqual({
       grant_type: "refresh_token",
       refresh_token: "1//google-refresh",
       client_id: GOOGLE_CLIENT_ID,
       client_secret: GOOGLE_CLIENT_SECRET,
     });
+    // The re-sealed token works too.
+    const again = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: String(body.refresh_token),
+      client_id: clientId,
+    });
+    expect(again.status).toBe(200);
+  });
+
+  it("stops refreshing 30 days after the sign-in (iat), without calling Google", async () => {
+    const { h, clientId, refresh } = await tokens();
+    h.advance(REFRESH_MAX_LIFETIME_SECONDS * 1000 - 60_000);
+    const late = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      client_id: clientId,
+    });
+    expect(late.status).toBe(200);
+    const rolled = ((await late.json()) as { refresh_token: string }).refresh_token;
+    h.advance(60_000);
+    const before = h.googleForms.length;
+    // Neither the original nor the token re-sealed by a refresh outlives the sign-in.
+    for (const token of [refresh, rolled]) {
+      const res = await postToken(h, {
+        grant_type: "refresh_token",
+        refresh_token: token,
+        client_id: clientId,
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toBe("invalid_grant");
+    }
+    expect(h.googleForms).toHaveLength(before);
+  });
+
+  it("keeps the sign-in's iat when Google rotates the refresh token", async () => {
+    let n = 0;
+    const { h, clientId, refresh } = await tokens({
+      google: (form, now) =>
+        form.get("grant_type") === "refresh_token"
+          ? Response.json({
+              token_type: "Bearer",
+              expires_in: 3599,
+              refresh_token: `1//rotated-${++n}`,
+              id_token: fakeIdToken({ aud: GOOGLE_CLIENT_ID, exp: now + 3600 }),
+            })
+          : defaultGoogle(form, now),
+    });
+    h.advance(20 * 24 * 3600 * 1000);
+    const rotated = (await (
+      await postToken(h, {
+        grant_type: "refresh_token",
+        refresh_token: refresh,
+        client_id: clientId,
+      })
+    ).json()) as { refresh_token: string };
+    h.advance(11 * 24 * 3600 * 1000);
+    const res = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: rotated.refresh_token,
+      client_id: clientId,
+    });
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("refuses a refresh for another resource than the sign-in's (invalid_target)", async () => {
+    const { h, clientId, refresh } = await tokens({ resource: `${PUBLIC}/api/mcp/chat` });
+    const res = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      client_id: clientId,
+      resource: `${PUBLIC}/api/mcp/admin`,
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_target");
+    const foreign = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      client_id: clientId,
+      resource: "https://evil.example/api/mcp/chat",
+    });
+    expect(((await foreign.json()) as { error: string }).error).toBe("invalid_target");
+    expect(h.googleForms).toHaveLength(1);
+    const same = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      client_id: clientId,
+      resource: `${PUBLIC}/api/mcp/chat`,
+    });
+    expect(same.status).toBe(200);
+  });
+
+  it("binds a resource first named at refresh from then on", async () => {
+    const { h, clientId, refresh } = await tokens();
+    const first = (await (
+      await postToken(h, {
+        grant_type: "refresh_token",
+        refresh_token: refresh,
+        client_id: clientId,
+        resource: `${PUBLIC}/api/mcp/admin`,
+      })
+    ).json()) as { refresh_token: string };
+    const res = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: first.refresh_token,
+      client_id: clientId,
+      resource: `${PUBLIC}/api/mcp/chat`,
+    });
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_target");
   });
 
   it("refuses another client's refresh token", async () => {
@@ -868,10 +1165,10 @@ describe("token: refresh_token", () => {
   it("returns invalid_grant when Google revoked the grant", async () => {
     let revoked = false;
     const h = harness({
-      google: (form) =>
+      google: (form, now) =>
         revoked
           ? Response.json({ error: "invalid_grant" }, { status: 400 })
-          : defaultGoogleLike(form),
+          : defaultGoogle(form, now),
     });
     const clientId = await registerClient(h, [CLAUDE_REDIRECT]);
     const { verifier, challenge } = pkce();
@@ -896,13 +1193,53 @@ describe("token: refresh_token", () => {
   });
 });
 
-function defaultGoogleLike(form: URLSearchParams): Response {
-  return form.get("grant_type") === "authorization_code"
-    ? Response.json({
-        access_token: "ya29.a",
-        expires_in: 3599,
-        token_type: "Bearer",
-        refresh_token: "1//r",
+describe("seal-key rotation", () => {
+  it("keeps refresh tokens sealed under the previous key working while it is configured", async () => {
+    const h = harness();
+    const clientId = await registerClient(h, [CLAUDE_REDIRECT]);
+    const { verifier, challenge } = pkce();
+    const { code } = await obtainCode(h, { clientId, redirectUri: CLAUDE_REDIRECT, challenge });
+    const { refresh_token: refresh } = (await (
+      await postToken(h, {
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: CLAUDE_REDIRECT,
+        client_id: clientId,
+        code_verifier: verifier,
       })
-    : Response.json({ access_token: "ya29.b", expires_in: 3599, token_type: "Bearer" });
-}
+    ).json()) as { refresh_token: string };
+    const next = randomBytes(32).toString("base64");
+    const rotating = harness({
+      env: { CAELO_MCP_OAUTH_SEAL_KEY: next, CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS: SEAL_KEY_B64 },
+    });
+    const res = await postToken(rotating, {
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      client_id: clientId,
+    });
+    expect(res.status).toBe(200);
+    const moved = ((await res.json()) as { refresh_token: string }).refresh_token;
+    // Re-sealed under the new key: still good once the previous key is gone,
+    // while a token nobody refreshed during the rotation window is not.
+    const after = harness({ env: { CAELO_MCP_OAUTH_SEAL_KEY: next } });
+    const kept = await postToken(after, {
+      grant_type: "refresh_token",
+      refresh_token: moved,
+      client_id: clientId,
+    });
+    expect(kept.status).toBe(200);
+    const done = await postToken(after, {
+      grant_type: "refresh_token",
+      refresh_token: refresh,
+      client_id: clientId,
+    });
+    expect(((await done.json()) as { error: string }).error).toBe("invalid_grant");
+  });
+
+  it("refuses a malformed previous key instead of ignoring it", async () => {
+    const h = harness({ env: { CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS: "short" } });
+    const res = await h.send("/api/mcp/oauth/protected-resource/chat");
+    expect(res.status).toBe(503);
+    expect(await res.text()).toContain("CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS");
+  });
+});

@@ -37,6 +37,7 @@ import {
   type OpenSessionResponse,
   type RemoteTool,
 } from "./surfaces/admin-surface.js";
+import { ownVersion } from "./version-handshake.js";
 
 export interface StartAdminOpts {
   readonly adminUrl: string;
@@ -145,6 +146,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
       uploadImages: (args) => uploadImages(target, args),
     },
     {
+      serverVersion: ownVersion(),
       approvalWaitMs: resolveApprovalWaitMs,
       listChanged: true,
       ...(opts.approvalPollMs !== undefined ? { approvalPollMs: opts.approvalPollMs } : {}),

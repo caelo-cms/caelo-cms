@@ -23,48 +23,55 @@
  *
  * Every mode first matches its release to the admin's (#764, see
  * ./version-handshake.ts), so the `claude mcp add` command carries no
- * version and survives admin upgrades.
+ * version and survives admin upgrades. Without credentials the MCP modes
+ * start unconfigured instead (#841, see ./unconfigured.ts).
  */
 
 import { startAdminMcpServer } from "./admin-server.js";
 import { runExport } from "./export.js";
 import { startMcpServer } from "./server.js";
+import { missingCredentials, startUnconfiguredServer } from "./unconfigured.js";
 import { ensureAdminRelease } from "./version-handshake.js";
 
-const adminUrl = process.env.CAELO_ADMIN_URL;
-const token = process.env.CAELO_MCP_TOKEN;
-
-if (!adminUrl) {
-  console.error(
-    "CAELO_ADMIN_URL not set — point me at your admin install (e.g. https://admin.example.com)",
-  );
-  process.exit(2);
-}
-if (!token) {
-  console.error("CAELO_MCP_TOKEN not set — mint one at /settings/mcp on your admin install");
-  process.exit(2);
-}
-
-// #764 — run as the admin's own release (re-execs on a mismatch).
-await ensureAdminRelease({ adminUrl, token, bin: "caelo-mcp-server" });
-
 const command = process.argv[2];
-
-if (command === "export") {
-  const outFlag = process.argv.indexOf("--out");
-  const outDir = outFlag !== -1 ? process.argv[outFlag + 1] : undefined;
-  if (outFlag !== -1 && !outDir) {
-    console.error("--out needs a directory argument");
-    process.exit(2);
-  }
-  const written = await runExport({ adminUrl, token, outDir: outDir ?? process.cwd() });
-  for (const path of written) console.log(path);
-  console.log(`exported ${written.length} file(s) — re-run after skills or site memory change`);
-} else if (command === "admin") {
-  await startAdminMcpServer({ adminUrl, token });
-} else if (command !== undefined) {
+if (command !== undefined && command !== "admin" && command !== "export") {
   console.error(`unknown command: ${command} (expected no command, "admin", or "export")`);
   process.exit(2);
+}
+
+// #841 — the MCP modes start without credentials so directories can list
+// their tools; `export` is a one-shot CLI with nothing to list, so it
+// still exits.
+const missing = missingCredentials(process.env);
+if (missing.length > 0 && command !== "export") {
+  await startUnconfiguredServer({ mode: command === "admin" ? "admin" : "chat", missing });
 } else {
-  await startMcpServer({ adminUrl, token });
+  const adminUrl = process.env.CAELO_ADMIN_URL;
+  const token = process.env.CAELO_MCP_TOKEN;
+  if (!adminUrl || !token) {
+    console.error(
+      `${missing.join(" and ")} not set — export needs CAELO_ADMIN_URL and an ADMIN-scoped ` +
+        "CAELO_MCP_TOKEN minted at /settings/mcp on your admin install",
+    );
+    process.exit(2);
+  }
+
+  // #764 — run as the admin's own release (re-execs on a mismatch).
+  await ensureAdminRelease({ adminUrl, token, bin: "caelo-mcp-server" });
+
+  if (command === "export") {
+    const outFlag = process.argv.indexOf("--out");
+    const outDir = outFlag !== -1 ? process.argv[outFlag + 1] : undefined;
+    if (outFlag !== -1 && !outDir) {
+      console.error("--out needs a directory argument");
+      process.exit(2);
+    }
+    const written = await runExport({ adminUrl, token, outDir: outDir ?? process.cwd() });
+    for (const path of written) console.log(path);
+    console.log(`exported ${written.length} file(s) — re-run after skills or site memory change`);
+  } else if (command === "admin") {
+    await startAdminMcpServer({ adminUrl, token });
+  } else {
+    await startMcpServer({ adminUrl, token });
+  }
 }

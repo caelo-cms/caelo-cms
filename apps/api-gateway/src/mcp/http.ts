@@ -6,8 +6,10 @@
  * clients need.
  *
  * CORS is `*` on purpose: every MCP and OAuth endpoint here authenticates
- * with a bearer token or a sealed value in the request, never with a
- * cookie, so a cross-origin page gains nothing a non-browser client lacks.
+ * with a bearer token or a sealed value in the request, so a cross-origin
+ * page gains nothing a non-browser client lacks. The one cookie (the
+ * consent binding, consent.ts) is `SameSite=Lax`, so a cross-site request
+ * never carries it, and `*` never allows credentialed reads anyway.
  */
 
 /** Request headers a browser-based MCP client may send. */

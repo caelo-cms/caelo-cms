@@ -54,6 +54,7 @@ import {
   uploadImagesWith,
 } from "@caelo-cms/mcp-server/surfaces";
 import { execute } from "@caelo-cms/query-api";
+import { CAELO_VERSION } from "@caelo-cms/shared";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { isHttpError } from "@sveltejs/kit";
 import { mcpSystemCtx } from "./mcp-http.js";
@@ -261,11 +262,13 @@ export async function handleRemoteMcpRequest(
   const server =
     surface === "chat"
       ? createChatMcpServer(chatBackend(credential), {
+          serverVersion: CAELO_VERSION,
           uploadImagesTool: REMOTE_UPLOAD_IMAGES_TOOL,
           approvalWaitMs: () => DEFAULT_APPROVAL_WAIT_MS,
           resumeTimeoutMs: () => RESUME_RESERVE_MS,
         })
       : createAdminMcpServer(adminBackend(credential, resolved.value), {
+          serverVersion: CAELO_VERSION,
           uploadImagesTool: REMOTE_UPLOAD_IMAGES_TOOL,
           approvalWaitMs: () => DEFAULT_APPROVAL_WAIT_MS,
           listChanged: false,

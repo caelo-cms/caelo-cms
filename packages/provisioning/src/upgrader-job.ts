@@ -23,6 +23,9 @@
  *      release below its minFromVersion, an automatic run the policy does
  *      not allow; hand an infrastructure change back (the admin routes
  *      it to the converge job, #819; Cloud Shell on installs without one);
+ *   -- ask IAM whether the job's account holds every permission the rest
+ *      of the run needs (upgrader-iam-preflight.ts, #818); any missing one
+ *      ends the run as needs-Cloud-Shell, all of them named, nothing changed;
  *   -- only now take the install's state lock (#815), confirm install.json
  *      is unchanged since step 2, and write step 2's correction. Everything
  *      above only reads, so no lock problem can hide the verdict; a stop
@@ -73,6 +76,13 @@ import {
 import type { HealthProbe } from "./upgrade/health.js";
 import { releaseImageRef } from "./upgrade/release-images.js";
 import { assessUpgradeRequest, type RefusalCode } from "./upgrader-assess.js";
+import {
+  type IamTester,
+  preflightErrorReason,
+  preflightMissingReason,
+  runIamPreflight,
+  upgraderAccessChecks,
+} from "./upgrader-iam-preflight.js";
 import {
   findServingRelease,
   recordMatchesServing,
@@ -147,6 +157,11 @@ export interface UpgraderJobDeps {
   readonly env: string;
   /** This Cloud Run execution, for the log link; null outside Cloud Run. */
   readonly execution: string | null;
+  /**
+   * Asks IAM which permissions the job's own account holds (#818), for the
+   * self-check right after the decision. Never the action itself.
+   */
+  readonly iam: IamTester;
   /** fetchVerifiedReleaseManifest against the fixed registry. */
   readonly fetchManifest: (version: string) => Promise<ReleaseManifestResult>;
   /**
@@ -440,6 +455,25 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     r.info(
       `${meta.releaseVersion} → ${decision.manifest.version}: no cloud-setup change needed; installing.`,
     );
+
+    // #818 — decided to run: ask IAM for every permission the rest needs
+    // before the lock, the backup or the roll. A grant that looks right but
+    // cannot match (#799) ends the run here, all of them named, not halfway.
+    const access = await runIamPreflight(
+      upgraderAccessChecks({ projectId: deps.projectId, region: deps.region, env: deps.env }),
+      deps.iam,
+    );
+    if (access.kind === "missing") {
+      return stopWith(
+        "needs_cloud_shell",
+        ["iam-preflight"],
+        preflightMissingReason(access.missing),
+      );
+    }
+    if (access.kind === "error") {
+      return stopWith("failed", ["iam-preflight"], preflightErrorReason(access.errors));
+    }
+    r.info("The upgrader has every permission this update needs.");
 
     const m = decision.manifest;
     const images: Record<RollSlug, ReleaseImage> = {

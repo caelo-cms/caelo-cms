@@ -27,6 +27,7 @@ import {
 } from "../approval-wait.js";
 import {
   ADMIN_AWAIT_APPROVAL_TOOL,
+  ADMIN_LOCAL_TOOLS,
   ADMIN_MCP_INSTRUCTIONS,
   adminAwaitApprovalInput,
   GET_CONTEXT_TOOL,
@@ -99,6 +100,12 @@ export interface AdminSurfaceBackend {
 }
 
 export interface AdminSurfaceOptions {
+  /**
+   * serverInfo.version — the release this server belongs to (#841): the
+   * package's own version for the stdio bins, CAELO_VERSION for the admin's
+   * remote endpoint. Required so no surface reports a made-up version.
+   */
+  readonly serverVersion: string;
   /** The caelo_upload_images definition (local vs remote description). */
   readonly uploadImagesTool?: { name: string; description: string; inputSchema: object };
   /** The bounded wait on the operator (read per call). */
@@ -144,7 +151,7 @@ export function createAdminMcpServer(
 ): Server {
   const uploadTool = opts.uploadImagesTool ?? UPLOAD_IMAGES_TOOL;
   const server = new Server(
-    { name: "caelo-admin-mcp", version: "0.1.0" },
+    { name: "caelo-admin-mcp", version: opts.serverVersion },
     {
       capabilities: { tools: opts.listChanged ? { listChanged: true } : {} },
       instructions: ADMIN_MCP_INSTRUCTIONS,
@@ -153,10 +160,7 @@ export function createAdminMcpServer(
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
-      uploadTool,
-      OPEN_SESSION_TOOL,
-      GET_CONTEXT_TOOL,
-      ADMIN_AWAIT_APPROVAL_TOOL,
+      ...ADMIN_LOCAL_TOOLS.map((t) => (t === UPLOAD_IMAGES_TOOL ? uploadTool : t)),
       ...(await backend.listCatalogue()).map((t) => ({
         name: t.name,
         description: t.description,

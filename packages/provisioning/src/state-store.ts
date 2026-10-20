@@ -406,9 +406,13 @@ function lockGeneration(url: string, run: SyncGcloud): LockGeneration {
       : { kind: "error", error: d.stderr.trim() || `gcloud exited ${d.exitCode}` };
   }
   try {
+    // `gcloud storage objects describe` prints the generation as a string
+    // (`generation: '1706304784726341'`, cloud.google.com/storage/docs/
+    // viewing-editing-metadata); a JSON number would lose digits past 2^53,
+    // so only a string of digits is a generation the delete may match.
     const g = (JSON.parse(d.stdout) as { generation?: unknown }).generation;
-    if (typeof g === "string" || typeof g === "number") {
-      return { kind: "found", generation: String(g) };
+    if (typeof g === "string" && /^[1-9][0-9]*$/.test(g)) {
+      return { kind: "found", generation: g };
     }
   } catch {
     // Reported below with the same message as a missing field.
