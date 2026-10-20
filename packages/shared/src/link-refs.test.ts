@@ -301,6 +301,27 @@ describe("composer — nav-menu sets and pre-rendered modules", () => {
       },
     ]);
   });
+
+  it("resolves references in the layout's own HTML and flags a broken one", () => {
+    // Rollout C stores layout HTML links as references; the page frame
+    // must resolve them like module HTML, never ship `caelo:` hrefs.
+    const out = composePageWithLayout({
+      layoutHtml:
+        `<html><head></head><body><a class="home" href="caelo:page/${PAGE}#top">Home</a>` +
+        `<a class="old" href="caelo:page/${GONE}">Old</a><caelo-slot name="content"></caelo-slot></body></html>`,
+      layoutCss: "",
+      layoutBlocks: [],
+      templateHtml: '<caelo-slot name="content"></caelo-slot>',
+      templateCss: "",
+      blocks: [],
+      structuredSets: { byKindSlug: {} },
+      linkResolver: index().forPage(PAGE),
+    });
+    expect(out.html).toContain('<a class="home" href="/company/about/#top">Home</a>');
+    expect(out.html).toContain(`<a class="old" href="caelo:page/${GONE}">Old</a>`);
+    expect(out.missingSlots).toContain(`link-target-missing:page/${GONE}`);
+    expect(out.moduleFailures).toEqual([]);
+  });
 });
 
 describe("grammar edge cases — boundaries, contexts, malformed references", () => {

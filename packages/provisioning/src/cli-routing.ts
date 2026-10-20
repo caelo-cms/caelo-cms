@@ -111,7 +111,7 @@ export const CLI_COMMANDS: readonly CliCommandDoc[] = [
   },
   {
     name: "rotate-secret",
-    args: "<name>",
+    args: "<name> [--finish [--now]]",
     summary: "Rotate one of the install's runtime secrets; run without a name to list them.",
   },
   {

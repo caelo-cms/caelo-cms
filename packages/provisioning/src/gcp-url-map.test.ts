@@ -101,7 +101,15 @@ describe("gcp stack URL map (Pulumi mocks)", () => {
       },
     );
     expect(withRedirects.pathRules?.filter((r) => !isGcpRedirectRule(r))).toEqual([
-      { paths: ["/api/*"], service: "gateway-id" },
+      {
+        paths: [
+          "/api/*",
+          // #806 — the remote-MCP broker's discovery documents.
+          "/.well-known/oauth-protected-resource/*",
+          "/.well-known/oauth-authorization-server/*",
+        ],
+        service: "gateway-id",
+      },
     ]);
   });
 

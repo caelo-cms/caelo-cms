@@ -6,7 +6,9 @@
  * `cms-provision upgrade`, both as the operator's own gcloud identity.
  *
  * Trust boundary. Who may pass the admin's IAP gate and sign as `caelo-mcp`
- * follows the Caelo user list. The admin does NOT write that: its runtime
+ * follows the Caelo user list; which OAuth client may call the admin
+ * programmatically (IAP `programmatic_clients`, remote MCP #806) follows the
+ * client the Owner configured under Settings → MCP → Remote. The admin does NOT write that: its runtime
  * service account holds no IAM-policy rights. A Cloud Run job with its own
  * service account (admin-core security/operator-access/sync-job.ts) is the
  * only principal that may change those two bindings, and it only ever grants
@@ -19,7 +21,8 @@
  *
  * What this ensures, every step idempotent:
  *   1. the Cloud Scheduler API;
- *   2. the custom role `caeloOperatorAccess` (get/setIamPolicy only);
+ *   2. the custom role `caeloOperatorAccess` (get/setIamPolicy, and
+ *      get/updateSettings for `programmatic_clients`);
  *   3. the job's service account, bound to that role on exactly the admin's
  *      IAP resource and the `caelo-mcp` service account, plus
  *      `cloudsql.instanceUser` + `logging.logWriter`;
@@ -66,10 +69,17 @@ export const OPERATOR_ACCESS_ROLE: CustomRoleSpec = {
   roleId: "caeloOperatorAccess",
   title: "Caelo operator access",
   description:
-    "Lets the Caelo operator-access sync job set who passes the admin's IAP gate and who may sign as caelo-mcp. Bound only on those two resources, only to the job's service account.",
+    "Lets the Caelo operator-access sync job set who passes the admin's IAP gate, which OAuth client may call it programmatically (remote MCP), and who may sign as caelo-mcp. Bound only on those two resources, only to the job's service account.",
   permissions: [
     "iap.webServices.getIamPolicy",
     "iap.webServices.setIamPolicy",
+    // #806 — the admin IAP resource's `programmatic_clients` (the remote-MCP
+    // OAuth client). IAP settings permissions per resource level:
+    // cloud.google.com/iap/docs/customizing ("Web Services": getSettings /
+    // updateSettings); the role is bound on exactly the admin's IAP web
+    // service, so it reaches no other resource's settings.
+    "iap.webServices.getSettings",
+    "iap.webServices.updateSettings",
     "iam.serviceAccounts.getIamPolicy",
     "iam.serviceAccounts.setIamPolicy",
   ],

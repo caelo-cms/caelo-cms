@@ -6,6 +6,9 @@ import {
   mcpAddCommand,
   mcpConfigJson,
   mcpServerSpec,
+  remoteMcpAddCommand,
+  remoteMcpConfigJson,
+  remoteMcpServer,
   shellWord,
 } from "./mcp-command.js";
 
@@ -129,6 +132,44 @@ describe("mcpConfigJson", () => {
   it("keeps server names free of underscores (Gemini CLI rejects them)", () => {
     for (const scope of ["admin", "chat"]) {
       expect(mcpServerSpec({ ...base, scope, iapServiceAccount: null }).name).not.toContain("_");
+    }
+  });
+});
+
+describe("remote MCP snippets (#806)", () => {
+  const url = "https://caelo-production-gateway-bbb-xyz.a.run.app/api/mcp/admin";
+  const admin = remoteMcpServer("admin", url);
+
+  it("names the surfaces like the local servers", () => {
+    expect(admin).toEqual({ name: "caelo-admin", url });
+    expect(remoteMcpServer("chat", "u").name).toBe("caelo");
+  });
+
+  it("registers by URL in Claude Code (--transport http) and Codex (--url, then login)", () => {
+    expect(remoteMcpAddCommand("claude", admin)).toBe(
+      `claude mcp add --transport http caelo-admin ${url}`,
+    );
+    expect(remoteMcpAddCommand("codex", admin)).toBe(
+      `codex mcp add caelo-admin --url ${url}\ncodex mcp login caelo-admin`,
+    );
+  });
+
+  it("renders each file-configured client's remote key: url, type http + url, httpUrl", () => {
+    expect(JSON.parse(remoteMcpConfigJson("cursor", admin))).toEqual({
+      mcpServers: { "caelo-admin": { url } },
+    });
+    expect(JSON.parse(remoteMcpConfigJson("vscode", admin))).toEqual({
+      servers: { "caelo-admin": { type: "http", url } },
+    });
+    // Gemini CLI's `url` means SSE; Streamable HTTP is `httpUrl`.
+    expect(JSON.parse(remoteMcpConfigJson("gemini", admin))).toEqual({
+      mcpServers: { "caelo-admin": { httpUrl: url } },
+    });
+  });
+
+  it("carries no token or env: the client signs in through the browser", () => {
+    for (const f of ["cursor", "vscode", "gemini"] as const) {
+      expect(remoteMcpConfigJson(f, admin)).not.toMatch(/TOKEN|env|command/);
     }
   });
 });

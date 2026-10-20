@@ -43,7 +43,14 @@ const ADMIN_ACCESS = /cms_admin|admin_role|gateway_role|ADMIN_DATABASE|GATEWAY_D
 const ADMIN_SECRETS = ["postgres-password", "gateway-role-password"];
 
 /** The secrets the gateway reads on GCP: its own login and the staging gate key. */
-const GCP_GATEWAY_SECRETS = ["public-role-password", "staging-gate-secret"];
+const GCP_GATEWAY_SECRETS = [
+  "public-role-password",
+  "staging-gate-secret",
+  // #806 — the remote-MCP broker: its Google OAuth client (a file) and seal
+  // key. Neither is a cms_admin credential.
+  "mcp-oauth-seal-key",
+  "mcp-oauth-client",
+];
 
 /** The source of a stack program. */
 function stack(provider: "aws" | "azure" | "gcp" | "gcp-firebase"): string {

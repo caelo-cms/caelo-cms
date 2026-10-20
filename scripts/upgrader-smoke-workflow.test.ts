@@ -18,15 +18,22 @@
  *     environment reviewer or touches GCP.
  * S5: release.yml calls it without passing secrets, with only the
  *     permissions it needs, and npm + the GitHub Release wait for it.
+ * S6: `off` lets a release through (warning) but refuses a manual run. The
+ *     decision reads the `invoked_by` input, never github.event_name: a
+ *     called workflow sees the caller's event, and release.yml runs on
+ *     workflow_dispatch, so the event name failed v0.10.56's release.
  */
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import * as yaml from "js-yaml";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 
 interface Step {
+  readonly id?: string;
   readonly name?: string;
   readonly uses?: string;
   readonly run?: string;
@@ -95,5 +102,38 @@ describe("upgrader-smoke.yml", () => {
     expect(call?.secrets).toBeUndefined();
     expect(call?.permissions).toEqual({ contents: "read", "id-token": "write" });
     expect(release.jobs["publish-npm"]?.needs).toContain("upgrader-smoke");
+  });
+
+  it("S6: `off` passes a release, refuses a manual run, and never reads the event name", () => {
+    const step = smoke.jobs.decide?.steps?.find((st) => st.id === "mode");
+    const script = step?.run ?? "";
+    expect(script).not.toContain("EVENT");
+    const decide = (env: Record<string, string>) => {
+      const dir = mkdtempSync(resolve(tmpdir(), "smoke-decide-"));
+      const out = resolve(dir, "out");
+      try {
+        const r = spawnSync("bash", ["-c", script], {
+          env: { PATH: process.env.PATH ?? "", GITHUB_OUTPUT: out, CANDIDATE: "0.10.57", ...env },
+          encoding: "utf8",
+        });
+        const output = r.status === 0 ? readFileSync(out, "utf8") : "";
+        return { status: r.status, output };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+    expect(decide({ MODE: "off", INVOKED_BY: "release" })).toEqual({
+      status: 0,
+      output: "run=false\n",
+    });
+    expect(decide({ MODE: "off", INVOKED_BY: "dispatch" }).status).toBe(1);
+    expect(decide({ MODE: "required", INVOKED_BY: "release" })).toEqual({
+      status: 0,
+      output: "run=true\n",
+    });
+    expect(decide({ MODE: "", INVOKED_BY: "release" }).status).toBe(1);
+    // release.yml relies on the default: it must not pass a different value.
+    const call = release.jobs["upgrader-smoke"] as Job & { with?: Record<string, unknown> };
+    expect(call.with?.invoked_by ?? "release").toBe("release");
   });
 });
