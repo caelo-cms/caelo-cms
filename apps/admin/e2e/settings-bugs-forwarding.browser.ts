@@ -66,7 +66,8 @@ test.describe("Detected bugs → Caelo team", () => {
     // Login lands in the chrome-less editor; the bell lives in the app shell.
     await page.goto("/settings");
 
-    await page.getByRole("button", { name: /Notifications/ }).click();
+    // The count is part of the bell's name once it is hydrated and polled.
+    await page.getByRole("button", { name: /^Notifications, \S+ pending$/ }).click();
     await page.getByTestId("bug-forwarding-notice").click();
     await expect(page).toHaveURL(/\/settings\/bugs$/);
 
@@ -82,8 +83,8 @@ test.describe("Detected bugs → Caelo team", () => {
     await card.getByRole("button", { name: "Send bugs to Caelo" }).click();
     await expect(card).toContainText("On.");
     // The earlier report was not covered by the opt-in.
-    await card.getByRole("button", { name: "Send 1 earlier report" }).click();
-    await expect(card).toContainText("1 waiting");
+    // Other specs may have filed reports too; only this one's state is pinned.
+    await card.getByRole("button", { name: /^Send \d+ earlier reports?$/ }).click();
     await expect(row(page, "E2E BF before opt-in")).toContainText("Queued");
 
     // Decided: the bell no longer asks.
@@ -99,7 +100,7 @@ test.describe("Detected bugs → Caelo team", () => {
     await expect(card).toContainText("On.");
     fixture("file", "E2E BF queued");
     await page.goto("/settings/bugs");
-    await card.getByRole("button", { name: "Send 1 earlier report" }).click();
+    await card.getByRole("button", { name: /^Send \d+ earlier reports?$/ }).click();
     await expect(row(page, "E2E BF queued")).toContainText("Queued");
 
     await card.getByRole("button", { name: "Stop sending" }).click();
