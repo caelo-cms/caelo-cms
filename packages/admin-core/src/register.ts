@@ -128,6 +128,7 @@ import {
   updateLayoutOp,
 } from "./ops/content/layouts.js";
 import { canonicaliseLinkValuesOp } from "./ops/content/link-canonicalise.js";
+import { checkReferencesOp } from "./ops/content/link-integrity.js";
 import {
   createModuleOp,
   deleteModuleOp,
@@ -500,7 +501,6 @@ import {
 } from "./ops/security/operator_oauth.js";
 import { getTelemetryOp, setTelemetryOp, testSendTelemetryOp } from "./ops/security/telemetry.js";
 import {
-  lookupLinksInModulesOp,
   pagesSeoApplyTranslationOp,
   pagesSeoAutofillOp,
   pagesSeoGetOp,
@@ -508,7 +508,6 @@ import {
   pagesSeoOptimizeManyOp,
   pagesSeoOptimizeOp,
   pagesSeoSetOp,
-  rewriteModuleLinksOp,
   siteDefaultsGetSeoOp,
   siteDefaultsSeedSiteBaseUrlOp,
   siteDefaultsSetSeoOp,
@@ -732,6 +731,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
   registry.register(canonicaliseLinkValuesOp);
+  // Epic #724 (rollout F) — reference integrity read (check_links, Publish-live check).
+  registry.register(checkReferencesOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
   registry.register(listUrlMigrationPendingOp);
@@ -1256,7 +1257,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeAltOp);
   registry.register(listAltProposalsOp);
   registry.register(reviewAltProposalOp);
-  // P8 — SEO sidecar + slug-change link rewriter + site SEO defaults.
+  // P8 — SEO sidecar + site SEO defaults.
   registry.register(pagesSeoGetOp);
   registry.register(pagesSeoSetOp);
   // Bulk `_many` variant via the DRY defineBulkOp factory (CLAUDE.md §11).
@@ -1276,8 +1277,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeSiteDefaultsProposalOp);
   registry.register(rejectSiteDefaultsProposalOp);
   registry.register(listPendingSiteDefaultsProposalsOp);
-  registry.register(lookupLinksInModulesOp);
-  registry.register(rewriteModuleLinksOp);
   // P10A — skills system.
   registry.register(listSkillsOp);
   registry.register(getSkillOp);

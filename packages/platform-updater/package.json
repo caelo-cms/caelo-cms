@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/platform-updater",
-  "version": "0.10.57",
+  "version": "0.10.58",
   "private": true,
   "license": "MPL-2.0",
   "description": "The upgrader job's entry point (`caelo-ops upgrader`, epic #696): the provisioning package's runUpgraderJob wired to the database through the Query API as the platform_updater role.",

@@ -66,6 +66,10 @@ class FakeFirebase {
   live: string[] = []; // versionNames released on the live channel (newest first)
   blobs = new Map<string, Buffer>(); // sha256 → gzipped body
   deletedChannels: string[] = [];
+  /** channelId → its finite ttl; null once the channel never expires. */
+  channelExpiry = new Map<string, string | null>();
+  /** Channels whose DELETE answers 503, as a transient API failure would. */
+  failDelete = new Set<string>();
   private seq = 0;
 
   versionName(id: string): string {
@@ -150,22 +154,45 @@ class FakeFirebase {
       const all = [...this.channels.keys(), "live"];
       const page = params.get("pageToken") === "p2" ? all.slice(1) : all.slice(0, 1);
       return json({
-        channels: page.map((id) => ({ name: `sites/${SITE}/channels/${id}` })),
+        channels: page.map((id) => {
+          const expiry = this.channelExpiry.get(id);
+          return {
+            name: `sites/${SITE}/channels/${id}`,
+            // Firebase lists expireTime only for channels it deletes on its own.
+            ...(expiry ? { expireTime: `in ${expiry}` } : {}),
+          };
+        }),
         ...(params.get("pageToken") === "p2" ? {} : { nextPageToken: "p2" }),
       });
     }
     const channel = route.match(/^sites\/[^/]+\/channels\/([^/]+)$/);
     if (method === "DELETE" && channel) {
       if (channel[1] === "live") throw new Error("must never delete the live channel");
+      if (this.failDelete.has(channel[1]!)) {
+        return new Response(JSON.stringify({ error: "unavailable" }), { status: 503 });
+      }
       if (!this.channels.delete(channel[1]!)) {
         return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
       }
       this.deletedChannels.push(channel[1]!);
       return new Response("", { status: 200 });
     }
+    if (method === "PATCH" && channel) {
+      if (!this.channels.has(channel[1]!)) throw new Error("patch on unknown channel");
+      const mask = params.get("updateMask");
+      if (mask === "expireTime" && parsed.expireTime === null) {
+        this.channelExpiry.set(channel[1]!, null);
+      } else if (mask === "ttl" && typeof parsed.ttl === "string") {
+        this.channelExpiry.set(channel[1]!, parsed.ttl);
+      } else {
+        throw new Error(`unexpected channel patch ${mask} ${JSON.stringify(parsed)}`);
+      }
+      return json({});
+    }
     if (method === "POST" && route === `sites/${SITE}/channels`) {
       const channelId = params.get("channelId") ?? "";
       this.channels.set(channelId, []);
+      this.channelExpiry.set(channelId, parsed.ttl ?? null);
       return json({
         name: `sites/${SITE}/channels/${channelId}`,
         url: `https://${SITE}--${channelId}.web.app`,
@@ -339,9 +366,9 @@ describe("firebaseHostingPublisher — env-level robots per target", () => {
       runId: "run-2",
       target: STAGING,
     });
-    // #650 — the run's preview channel may be gone by now; rollback uses the
-    // Hosting version the run recorded.
-    await firebaseHostingPublisher.pruneStagingPreviews!({ keepRunId: null });
+    // #650 — the run's preview channel may be gone by now (a later Stage
+    // retired it); rollback uses the Hosting version the run recorded.
+    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: null });
     await firebaseHostingPublisher.rollback({
       targetBuildId: "run-2",
       sourceBuildDir: buildDir,
@@ -399,19 +426,76 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
     expect(fake.channels.size).toBe(0);
   });
 
-  it("pruneStagingPreviews deletes every older run channel, keeps the current one and never touches live", async () => {
+  it("selectStagingPreview deletes every other run channel, keeps the served one and never touches live", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     for (const runId of ["run-old-1", "run-old-2", "run-new"]) {
       await firebaseHostingPublisher.publishStaging({ buildDir, runId, target: STAGING });
     }
     fake.channels.set("someone-elses-channel", []);
-    const r = await firebaseHostingPublisher.pruneStagingPreviews!({ keepRunId: "run-new" });
-    expect(r.deleted.sort()).toEqual(["runid-run-old-1", "runid-run-old-2"]);
+    const r = await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-new" });
+    expect([...r.retired].sort()).toEqual(["runid-run-old-1", "runid-run-old-2"]);
+    expect(r.notRetired).toEqual([]);
     expect([...fake.channels.keys()].sort()).toEqual(["runid-run-new", "someone-elses-channel"]);
 
-    // After Publish live: the last one goes too.
-    await firebaseHostingPublisher.pruneStagingPreviews!({ keepRunId: null });
+    // Nothing served: every run channel goes.
+    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: null });
     expect([...fake.channels.keys()]).toEqual(["someone-elses-channel"]);
+  });
+
+  it("#908 publishStaging keeps the finite TTL: a Stage that fails before selection leaves nothing that never expires", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-dies", target: STAGING });
+    expect(fake.channels.get("runid-run-dies")?.length).toBe(1);
+    expect(fake.channelExpiry.get("runid-run-dies")).toBe("604800s");
+  });
+
+  it("#908 selection lifts the served channel's TTL, so an idle staging never expires into 404s", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-idle", target: STAGING });
+    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-idle" });
+    expect(fake.channelExpiry.get("runid-run-idle")).toBeNull();
+  });
+
+  it("#908 selection also lifts the TTL of a served channel staged before served channels stopped expiring", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    // Staged and recorded by the previous version: served, but still on
+    // its 7-day TTL. Publish live re-selects it and must keep it alive.
+    fake.seedVersion("runid-run-legacy", { headers: [] }, { "/index.html": "abc" });
+    fake.channelExpiry.set("runid-run-legacy", "604800s");
+    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-legacy" });
+    expect(fake.channels.has("runid-run-legacy")).toBe(true);
+    expect(fake.channelExpiry.get("runid-run-legacy")).toBeNull();
+  });
+
+  it("#908 a channel that stops being served gets its TTL back, so a failed delete still expires", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
+    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-a" });
+    expect(fake.channelExpiry.get("runid-run-a")).toBeNull();
+
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-b", target: STAGING });
+    fake.failDelete.add("runid-run-a");
+    const r = await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-b" });
+    expect(r.retired).toEqual([]);
+    expect(r.notRetired.map((n) => n.preview)).toEqual(["runid-run-a"]);
+    expect(fake.channels.has("runid-run-a")).toBe(true);
+    expect(fake.channelExpiry.get("runid-run-a")).toBe("604800s");
+    expect(fake.channelExpiry.get("runid-run-b")).toBeNull();
+
+    // The next selection retires it.
+    fake.failDelete.clear();
+    const next = await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-b" });
+    expect(next.retired).toEqual(["runid-run-a"]);
+    expect([...fake.channels.keys()]).toEqual(["runid-run-b"]);
+  });
+
+  it("#908 selecting a served channel that no longer exists fails loudly and retires nothing", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
+    await expect(
+      firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-gone" }),
+    ).rejects.toThrow("Stage again");
+    expect([...fake.channels.keys()]).toEqual(["runid-run-a"]);
   });
 });
 

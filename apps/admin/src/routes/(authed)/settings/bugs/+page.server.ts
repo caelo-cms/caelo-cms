@@ -26,6 +26,8 @@ export interface BugReport {
   status: string;
   /** 'ai' = model-filed via bug_report; 'auto' = chat-runner auto-captured. */
   source: string;
+  /** Where the report went (#902): local_only | queued | sent | failed. */
+  forwardingState: "local_only" | "queued" | "sent" | "failed";
 }
 
 export const load: PageServerLoad = async ({ locals }) => {

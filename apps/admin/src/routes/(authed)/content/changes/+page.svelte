@@ -67,8 +67,9 @@
         {#if form.staged.alsoIncludes.length > 0}
           Also staged, because they changed the same things: {form.staged.alsoIncludes.join(", ")}.
         {/if}
-        {#if form.staged.brokenInternalLinks.length > 0}
-          Broken internal links: {form.staged.brokenInternalLinks.join(", ")}.
+        {#if form.staged.linkWarnings.length > 0}
+          Link warnings (links to unpublished pages block Publish live):
+          {form.staged.linkWarnings.join(" · ")}
         {/if}
         {#if form.staged.unpublishedLinkWarning}
           {form.staged.unpublishedLinkWarning}

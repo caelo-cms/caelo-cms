@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.10.58
+
+### Features
+- 1d7cb69b select text / right-click → Ask AI with a precise reference (#916) (#929)
+- 9aaf55cc reference integrity blocks Stage and Publish live (#724, rollout F) (#893)
+- de808516 migrate literal internal links to references (#724, rollout E) (#880)
+- 84d6984f one Google sign-in client for IAP login, IAP programmatic access and remote MCP (#914) (#932)
+- 5e1407c2 link-resolve composition point; links resolve per language (#724, rollout D) (#877)
+- 7ccd8dd2 canonicalise internal links at write time (#724, rollout C) (#873)
+
+### Fixes
+- b77ce4b5 pin digests without listing the stack config; create a missing audit job (#938)
+- 99ff5c8f bug_report says honestly where a report went (#902) (#907)
+- 1a58cae3 keep serving the published build after Publish live; served channel never expires (#908) (#909)
+- db5268ad store each tool result once so a mixed invalid-call step cannot wedge the chat (#915)
+- b8e8eb64 capture desktop at the operator's live preview size (#913)
+- d02e46bd wrap numeric typography sub-fields and merge siblings (#912)
+- 9ffda1da build the notification bell's name from its content (#934)
+
 ## v0.10.57
 
 ### Fixes

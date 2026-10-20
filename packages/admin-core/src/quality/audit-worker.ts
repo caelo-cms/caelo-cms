@@ -28,7 +28,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { NOT_FOUND_PAGE_FILE } from "@caelo-cms/static-generator";
 import { trimTrailingSlashes, verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
 import { localBuildArchiveDir } from "../ops/deploy.js";
-import { linkSourcesFromOps } from "./checks/links-sources.js";
+import { linkSourcesFromOps, referenceSourcesFromOps } from "./checks/links-sources.js";
 import { type CheckRegistry, createCoreCheckRegistry } from "./checks/registry.js";
 import { runChecksOnStagedBuild } from "./checks/run-staged.js";
 import { structureSourcesFromOps } from "./checks/structure-sources.js";
@@ -299,6 +299,7 @@ function defaultChecks(deps: WorkerDeps): CheckRegistry {
     lighthouse: lighthouseRunnerFromEnv(process.env),
     structure: structureSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
     links: linkSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
+    references: referenceSourcesFromOps(deps.registry, deps.adapter, WORKER_CTX),
   });
   return coreChecks;
 }

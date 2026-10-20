@@ -88,7 +88,7 @@ export interface PathMove {
 
 /**
  * {@link recomputeCurrentPaths}, also reporting every persisted move —
- * the input the 301 + link-rewrite side effects need.
+ * the input the 301 side effects need.
  */
 export async function recomputeCurrentPathsWithMoves(
   tx: TransactionRunner,
@@ -221,7 +221,7 @@ export const refreshCurrentPathOp = defineOperation({
 
 /**
  * Recompose main-line paths after a merge, and give every page that moved
- * the full move treatment (301, chain collapse, link rewrites —
+ * the full move treatment (301, chain collapse, redirect reclaim —
  * {@link applyPathMoveEffects}). Two merge inputs can move URLs:
  *
  * - replayed page rows (a chat renamed or reparented pages): those pages

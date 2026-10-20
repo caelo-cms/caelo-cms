@@ -24,6 +24,7 @@ import {
   listCaeloUpdatesTool,
 } from "./caelo-updates.js";
 import { cancelProposalTool } from "./cancel-proposal.js";
+import { checkLinksTool } from "./check-links.js";
 import {
   getPageSeoTool,
   listImportRunsTool,
@@ -458,6 +459,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(optimizePageSeoTool);
   // P8 AI-first review pass — bulk variants + redirect surface.
   registry.register(findRedirectsTool);
+  // Epic #724 (rollout F) — reference integrity: what Stage / Publish live say about internal links.
+  registry.register(checkLinksTool);
   // #553 — quality gate read surface (Lighthouse audits after a Stage).
   registry.register(getQualityAuditTool);
   registry.register(checkStageAuditTool);
@@ -485,7 +488,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // metadata edits across many pages/modules in one tool call.
   registry.register(deletePagesManyTool);
   registry.register(updatePagesManyTool);
-  // 0263 — nested page URLs: reparent pages (subtree + 301s + link rewrites).
+  // 0263 — nested page URLs: reparent pages (subtree + 301s).
   registry.register(movePagesTool);
   registry.register(updateModulesManyTool);
   // v0.9.13 — singular + bulk status flip. Drafts are LIVE-EDIT ONLY;

@@ -70,7 +70,36 @@ export interface LinkSources {
   redirects(): Promise<readonly RedirectRow[]>;
   /** The site base URL and the public domains: absolute links there are same-site. */
   siteUrls(): Promise<readonly string[]>;
+  /**
+   * #724 (rollout F) — the stored links to unpublished pages the
+   * `references` check reports (a draft target blocks Publish live there).
+   * A rendered link this check can trace to one of them is skipped, so one
+   * defect is one finding; every other link to a draft page — plugin
+   * output, a literal whose redirects end at a draft — stays
+   * `links/broken-internal`, because nothing else blocks on it.
+   */
+  reportedDraftLinks(): Promise<readonly ReportedDraftLink[]>;
 }
+
+/** One stored link to a draft page, as the `references` check reports it. */
+export interface ReportedDraftLink {
+  /** The draft page's path. */
+  readonly targetPath: string;
+  /** Pages the link renders on; empty = every page (site-wide chrome). */
+  readonly pageIds: readonly string[];
+  /** What renders it, matched against the rendered link's module / plugin stamp. */
+  readonly origin: ReportedDraftLinkOrigin;
+}
+
+export type ReportedDraftLinkOrigin =
+  /** A module's HTML, field value or field default. */
+  | { readonly kind: "module"; readonly moduleId: string }
+  /** A nav-menu structured set, rendered by the module with this slug. */
+  | { readonly kind: "nav-menu"; readonly moduleSlug: string }
+  /** Plugin data named through the link-locations hook. */
+  | { readonly kind: "plugin"; readonly pluginSlug: string }
+  /** Layout or template markup: outside every module. */
+  | { readonly kind: "chrome" };
 
 /** What one same-site URL resolved to. */
 type Resolution =
@@ -105,13 +134,20 @@ export function createLinksCheck(sources: LinkSources): SiteCheck {
     scope: "site",
     timeoutMs: LINKS_CHECK_TIMEOUT_MS,
     async run({ pages, build }) {
-      const [modules, layouts, redirects, siteUrls] = await Promise.all([
+      const [modules, layouts, redirects, siteUrls, reportedDraftLinks] = await Promise.all([
         sources.modules(),
         sources.layouts(),
         sources.redirects(),
         sources.siteUrls(),
+        sources.reportedDraftLinks(),
       ]);
-      return linkFindings(pages, build, { modules, layouts, redirects, siteUrls });
+      return linkFindings(pages, build, {
+        modules,
+        layouts,
+        redirects,
+        siteUrls,
+        reportedDraftLinks,
+      });
     },
   };
 }
@@ -125,6 +161,7 @@ export async function linkFindings(
     readonly layouts: readonly LinkLayout[];
     readonly redirects: readonly RedirectRow[];
     readonly siteUrls: readonly string[];
+    readonly reportedDraftLinks: readonly ReportedDraftLink[];
   },
 ): Promise<Finding[]> {
   const hosts = siteHostsOf([build.baseUrl, build.displayBaseUrl, ...input.siteUrls]);
@@ -159,7 +196,7 @@ export async function linkFindings(
     layouts: input.layouts,
   };
   const findings = [
-    ...linkProblems(occurrences, resolutions, ctx),
+    ...linkProblems(occurrences, resolutions, ctx, input.reportedDraftLinks),
     ...orphanPages(pages, occurrences, resolutions),
   ];
   if (limits.length > 0) {
@@ -252,12 +289,28 @@ function linkProblems(
   occurrences: readonly Occurrence[],
   resolutions: ReadonlyMap<string, Resolution>,
   ctx: OriginContext,
+  reported: readonly ReportedDraftLink[],
 ): Finding[] {
+  const reportedByPath = new Map<string, ReportedDraftLink[]>();
+  for (const d of reported) {
+    const key = pathKey(d.targetPath);
+    reportedByPath.set(key, [...(reportedByPath.get(key) ?? []), d]);
+  }
   const groups = new Map<string, { first: Occurrence; ruleId: string; count: number }>();
   for (const o of occurrences) {
     const r = resolutions.get(o.target.requestPath);
     const ruleId = r ? ruleOf(o.kind, r) : null;
     if (!ruleId) continue;
+    // A stored link to a draft page is the `references` check's finding
+    // (#724 F) — but only that one: anything else ending at a draft page
+    // ships a 404 that only this finding blocks.
+    if (
+      ruleId === "links/broken-internal" &&
+      r?.kind === "missing" &&
+      (reportedByPath.get(pathKey(r.path)) ?? []).some((d) => reportedHere(d, o, ctx))
+    ) {
+      continue;
+    }
     const key = `${o.page.pageId}\u0000${ruleId}\u0000${o.target.requestPath}`;
     const g = groups.get(key);
     if (g) g.count++;
@@ -276,6 +329,25 @@ function linkProblems(
     });
   }
   return findings;
+}
+
+/** True when the rendered link `o` is the stored draft link `d` renders. */
+function reportedHere(d: ReportedDraftLink, o: Occurrence, ctx: OriginContext): boolean {
+  if (d.pageIds.length > 0 && !d.pageIds.includes(o.page.pageId)) return false;
+  switch (d.origin.kind) {
+    case "plugin":
+      return o.pluginSlug === d.origin.pluginSlug;
+    case "module":
+      return o.pluginSlug === null && o.moduleId === d.origin.moduleId;
+    case "nav-menu":
+      return (
+        o.pluginSlug === null &&
+        o.moduleId !== null &&
+        ctx.modules.get(o.moduleId)?.slug === d.origin.moduleSlug
+      );
+    case "chrome":
+      return o.pluginSlug === null && o.moduleId === null;
+  }
 }
 
 function ruleOf(kind: LinkKind, r: Resolution): string | null {
