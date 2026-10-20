@@ -610,3 +610,42 @@ describe("review fixes (#873)", () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe("malformed references (#724 A/B review carry-over)", () => {
+  it("refuses a content value that starts like a reference but breaks the grammar", async () => {
+    const moduleId = await makeModule("malformed", '<a href="{{cta_href}}">x</a>', CTA_FIELDS);
+    // No path, no own-domain URL: nothing here needs the site lookup, so
+    // the probe alone used to wave it through as link-free.
+    const message = await refused("content_instances.create", {
+      moduleId,
+      values: { cta_href: `caelo:page/${aboutId}/team` },
+    });
+    expect(message).toContain(`"caelo:page/${aboutId}/team" starts like an internal reference`);
+    expect(message).toContain("write the page's path");
+    const rows = await asSystem(
+      (tx) =>
+        tx`SELECT count(*)::int AS n FROM content_instances WHERE module_id = ${moduleId}::uuid`,
+    );
+    expect((rows as { n: number }[])[0]?.n).toBe(0);
+  });
+
+  it("refuses module HTML carrying a malformed reference in any link attribute", async () => {
+    const message = await refused("modules.create", {
+      slug: `${PFX}-malformed-html`,
+      displayName: `${PFX} malformed html`,
+      description: "Link canonicalisation fixture.",
+      html: '<div data-href="caelo:page/1234">x</div>',
+      fields: [],
+    });
+    expect(message).toContain('"caelo:page/1234" starts like an internal reference');
+  });
+
+  it("refuses an anchor the grammar cannot carry with a message, never a crash", async () => {
+    const moduleId = await makeModule("bad-anchor", '<a href="{{cta_href}}">x</a>', CTA_FIELDS);
+    const message = await refused("content_instances.create", {
+      moduleId,
+      values: { cta_href: `/${PFX}-about#a b` },
+    });
+    expect(message).toContain("query or #anchor a stored link cannot carry");
+  });
+});

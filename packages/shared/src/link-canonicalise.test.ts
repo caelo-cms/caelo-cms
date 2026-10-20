@@ -157,6 +157,52 @@ describe("canonicaliseUrl", () => {
     expect(canonicaliseUrl("/company/about", r, "x", "media")).toBe("/company/about");
     expect(r.issues).toEqual([]);
   });
+
+  it("reports a malformed reference instead of passing it through", () => {
+    const r = run();
+    const bad = [
+      "caelo:page/1111", // truncated id
+      `caelo:page/${ABOUT}/team`, // stray path after the id
+      "caelo:page/ABCDEF01-1111-4111-8111-111111111111", // ids are lowercase
+      `caelo:media/${HERO}/WEBP`, // variant outside the grammar
+    ];
+    for (const v of bad) expect(canonicaliseUrl(v, r, "values.cta_href")).toBe(v);
+    expect(r.issues.map((i) => [i.kind, i.value])).toEqual(
+      bad.map((v) => ["malformed-link-ref", v]),
+    );
+    expect(describeLinkIssues(r.issues)).toContain("write the page's path");
+    // Grandfathered like any other stored literal.
+    const g = run(["caelo:page/1111"]);
+    canonicaliseUrl("caelo:page/1111", g, "x");
+    expect(g.issues).toEqual([]);
+  });
+
+  it("turns a query or anchor outside the grammar into an issue, never a throw", () => {
+    // `formatLinkRef` throws on a suffix it cannot parse back; the
+    // canonicaliser must validate with the grammar's own patterns first.
+    const r = run();
+    for (const v of [
+      "/company/about#a b",
+      "/company/about#x#y",
+      "/company/about?a=1?b=2",
+      '/company/about?q="x"',
+      `/company/about#${"a".repeat(257)}`,
+      `/company/about?${"q".repeat(513)}`,
+      "/company/about#über",
+    ]) {
+      expect(() => canonicaliseUrl(v, r, "x")).not.toThrow();
+      expect(canonicaliseUrl(v, run(), "x")).toBe(v);
+    }
+    expect(r.issues.every((i) => i.kind === "unsupported-link-form")).toBe(true);
+    expect(r.issues).toHaveLength(7);
+    // The longest suffixes the grammar allows still become references.
+    const ok = run();
+    const anchor = "a".repeat(256);
+    expect(canonicaliseUrl(`/company/about#${anchor}`, ok, "x")).toBe(
+      `caelo:page/${ABOUT}#${anchor}`,
+    );
+    expect(ok.issues).toEqual([]);
+  });
 });
 
 describe("HTML and JSON positions", () => {
@@ -188,6 +234,43 @@ describe("HTML and JSON positions", () => {
     expect(canonicaliseHtmlLinks('<a href="/company/about">x</a><b title="oops>', run(), "h")).toBe(
       `<a href="caelo:page/${ABOUT}">x</a><b title="oops>`,
     );
+  });
+
+  it("reports malformed references in any HTML link position, once each", () => {
+    const r = run();
+    const html =
+      `<a href="caelo:page/${ABOUT}/team">A</a>` +
+      `<div data-href="caelo:page/1234">B</div>` +
+      `<img srcset="caelo:media/${HERO} 1x, caelo:media/abc 2x">` +
+      `<a href="caelo:page/${ABOUT}#ok">C</a>` +
+      "<p>Write caelo:page/&lt;id&gt; in prose: not a link.</p>";
+    expect(canonicaliseHtmlLinks(html, r, "html")).toBe(html);
+    expect(r.issues.map((i) => [i.kind, i.value])).toEqual([
+      ["malformed-link-ref", `caelo:page/${ABOUT}/team`],
+      ["malformed-link-ref", "caelo:media/abc"],
+      ["malformed-link-ref", "caelo:page/1234"],
+    ]);
+    // HTML without any attribute is still checked (a value that starts
+    // with the broken reference); element text is not a link position.
+    const t = run();
+    canonicaliseHtmlLinks("caelo:page/1234 <b>caelo:page/5678</b>", t, "html");
+    expect(t.issues.map((i) => i.value)).toEqual(["caelo:page/1234"]);
+  });
+
+  it("reports a malformed reference in a plain text value", () => {
+    const r = run();
+    expect(canonicaliseJsonLinks({ label: "caelo:page/1234" }, r, "values")).toEqual({
+      label: "caelo:page/1234",
+    });
+    expect(r.issues.map((i) => [i.kind, i.where])).toEqual([
+      ["malformed-link-ref", "values.label"],
+    ]);
+    // A stored malformed value is grandfathered by the next write.
+    const g = linkCanonicaliseRun(lookup, {
+      grandfathered: collectLinkLiterals({ label: "caelo:page/1234" }),
+    });
+    canonicaliseJsonLinks({ label: "caelo:page/1234" }, g, "values");
+    expect(g.issues).toEqual([]);
   });
 
   it("treats link-named keys as URLs and plain text as text", () => {

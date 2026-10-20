@@ -52,9 +52,11 @@ import { type LinkTargets, loadLinkTargets } from "./link-targets.js";
  * and srcset splitting the real run uses — a hand-written string test
  * drifted from those (` /about` with a leading space slipped past it).
  *
- * When the lookup is never asked, the canonicaliser cannot have recorded
- * an issue or produced a reference (both need an answer), so `value` is
- * the final result.
+ * When the lookup is never asked, the canonicaliser cannot have produced
+ * a reference (that needs an answer), so `value` is the final result. It
+ * CAN have recorded an issue that needs no answer — a malformed
+ * `caelo:page/…` reference is broken whatever the site holds — so a probe
+ * that recorded one also takes the real run, which reports it.
  */
 export function probeLinkLookup<T>(apply: (run: LinkCanonicaliseRun) => T): {
   readonly needsLookup: boolean;
@@ -65,16 +67,15 @@ export function probeLinkLookup<T>(apply: (run: LinkCanonicaliseRun) => T): {
     asked = true;
     return null;
   };
-  const value = apply(
-    linkCanonicaliseRun({
-      pageIdForPath: ask,
-      mediaIdForSlug: ask,
-      pageExists: () => ask() ?? false,
-      mediaExists: () => ask() ?? false,
-      isOwnHost: () => ask() ?? false,
-    }),
-  );
-  return { needsLookup: asked, value };
+  const run = linkCanonicaliseRun({
+    pageIdForPath: ask,
+    mediaIdForSlug: ask,
+    pageExists: () => ask() ?? false,
+    mediaExists: () => ask() ?? false,
+    isOwnHost: () => ask() ?? false,
+  });
+  const value = apply(run);
+  return { needsLookup: asked || run.issues.length > 0, value };
 }
 
 /**

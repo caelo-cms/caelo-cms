@@ -37,7 +37,13 @@
  *     (maintainer decision 3 on #724) instead of failing the import.
  */
 
-import { formatLinkRef, type LinkRef, parseLinkRef } from "./link-refs.js";
+import {
+  findMalformedLinkRefs,
+  formatLinkRef,
+  LINK_REF_PART_PATTERNS,
+  type LinkRef,
+  parseLinkRef,
+} from "./link-refs.js";
 import { MEDIA_URL_PREFIX } from "./media.js";
 
 /** What the canonicaliser needs to know about the site. */
@@ -64,7 +70,8 @@ export interface LinkCanonicaliseIssue {
     | "dangling-page-ref"
     | "dangling-media-ref"
     | "unknown-file"
-    | "unsupported-link-form";
+    | "unsupported-link-form"
+    | "malformed-link-ref";
   /** The link exactly as written. */
   readonly value: string;
   /** Where it was found: `values.cta_href`, `html`, `fields.nav.default[2].href`, `items[0].href`. */
@@ -98,13 +105,18 @@ export function linkCanonicaliseRun(
   };
 }
 
-// Same character classes as the reference grammar (link-refs.ts), so a
-// canonicalised query / anchor always round-trips through the parser.
-const QUERY_OK = /^[A-Za-z0-9_\-.~%=&;+/:@!$()*]{1,512}$/;
-const ANCHOR_OK = /^[A-Za-z0-9_\-.~%:]{1,256}$/;
+// The reference grammar's own part patterns (link-refs.ts): a query,
+// anchor or variant they accept always round-trips through
+// `formatLinkRef`, and one they reject is an issue, never a throw (a
+// thrown error would turn bad author input into a 500).
+const QUERY_OK = LINK_REF_PART_PATTERNS.query;
+const ANCHOR_OK = LINK_REF_PART_PATTERNS.anchor;
+const VARIANT_RE = LINK_REF_PART_PATTERNS.variant;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const MEDIA_SEGMENT_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const VARIANT_RE = /^[a-z][a-z0-9-]{0,63}$/;
+// Text that starts like a reference. When the grammar rejects it, it is
+// a broken reference, not some other URL (`malformed-link-ref`).
+const REF_LIKE_RE = /^caelo:(?:page|media)\//;
 // A last path segment with a file extension names a file, not a page —
 // unless a page or an old-URL redirect answers it (`/about.html` an import
 // redirected), which is checked first.
@@ -160,6 +172,24 @@ function issue(
   where: string,
 ): void {
   run.issues.push({ kind, value, where });
+}
+
+/**
+ * Record every malformed reference in `text` (HTML or a plain value).
+ * The render flags exactly these (`link-ref-malformed`, via the shared
+ * `findMalformedLinkRefs`), so a write that would ship one is refused up
+ * front. A snippet already recorded at the same position (the
+ * whole-value check in {@link canonicaliseUrl} saw it first) is not
+ * reported twice.
+ */
+function reportMalformedRefs(text: string, run: LinkCanonicaliseRun, where: string): void {
+  for (const raw of findMalformedLinkRefs(text)) {
+    if (run.grandfathered.has(raw)) continue;
+    const seen = run.issues.some(
+      (i) => i.kind === "malformed-link-ref" && i.where === where && i.value.startsWith(raw),
+    );
+    if (!seen) issue(run, "malformed-link-ref", raw, where);
+  }
 }
 
 /**
@@ -226,6 +256,13 @@ export function canonicaliseUrl(
     }
     return v;
   }
+  // Starts like a reference but breaks the grammar (a truncated id,
+  // stray characters after it): passing it through would store a link
+  // no render resolves (CLAUDE.md §2).
+  if (REF_LIKE_RE.test(v)) {
+    if (!run.grandfathered.has(v)) issue(run, "malformed-link-ref", v, where);
+    return value;
+  }
 
   let local: string;
   if (/^https?:\/\//i.test(v)) {
@@ -282,7 +319,10 @@ export function canonicaliseHtmlLinks(
   run: LinkCanonicaliseRun,
   where: string,
 ): string {
-  if (!html.includes("=")) return html;
+  if (!html.includes("=")) {
+    reportMalformedRefs(html, run, where);
+    return html;
+  }
   // Attributes are only read inside a start tag, so escaped markup in a
   // code sample (`&lt;a href="/x"&gt;` is text, not a link) is left alone.
   let out = "";
@@ -291,6 +331,9 @@ export function canonicaliseHtmlLinks(
     out += html.slice(from, start) + canonicaliseTagAttributes(html.slice(start, end), run, where);
     from = end;
   }
+  // Broken references anywhere the render looks (any attribute, a srcset
+  // entry), not only in the four attributes canonicalised above.
+  reportMalformedRefs(html, run, where);
   return from === 0 ? html : out + html.slice(from);
 }
 
@@ -372,7 +415,12 @@ export function canonicaliseJsonLinks(
 ): unknown {
   if (typeof value === "string") {
     if (asUrl) return canonicaliseUrl(value, run, where);
-    return value.includes("<") ? canonicaliseHtmlLinks(value, run, where) : value;
+    if (value.includes("<")) return canonicaliseHtmlLinks(value, run, where);
+    // A text value is never a link as a whole, but one that starts like a
+    // reference and breaks the grammar renders as a dead `caelo:` href
+    // wherever a module puts it in an attribute.
+    reportMalformedRefs(value, run, where);
+    return value;
   }
   if (Array.isArray(value)) {
     let changed = false;
@@ -495,6 +543,8 @@ const ISSUE_TEXT: Readonly<Record<LinkCanonicaliseIssue["kind"], string>> = {
     "is a file path nothing on this site serves (files are served from the media library: upload it, then link its media URL from find_media)",
   "unsupported-link-form":
     "has a query or #anchor a stored link cannot carry (page links allow plain query/anchor characters only; media links allow neither)",
+  "malformed-link-ref":
+    "starts like an internal reference (caelo:page/ or caelo:media/) but is broken, e.g. a truncated id or extra characters after it; write the page's path (/about#team) or the media URL (/_caelo/media/<slug>) instead, never a caelo: reference",
 };
 
 /**
