@@ -1513,29 +1513,19 @@
   }
 
   /**
-   * Ask AI from the preview: the prompt goes out right away with the
-   * reference chip when the chat is idle and the composer is empty. If the
-   * operator has a draft or a turn is running, the prompt joins the draft
-   * instead, so nothing they typed is sent or lost behind their back.
-   */
-  async function askAboutReference(prompt: string): Promise<void> {
-    if (!streaming && !uploadingImages && composer.trim().length === 0) {
-      composer = prompt;
-      await tick();
-      await sendMessage();
-      return;
-    }
-    composer = composer.trim().length > 0 ? `${composer}\n${prompt}` : prompt;
-    await tick();
-    autoSizeComposer();
-    composerEl?.focus();
-  }
-
-  /**
    * iframe → ChatPanel: a `caelo:chip` window CustomEvent (dispatched by
    * /edit/+page.svelte's postMessage handler) appends a new chip referring
    * to the clicked module. Append-only — multiple clicks accumulate so the
    * user can select N elements then send "make them all green" in one turn.
+   *
+   * Ask AI (`ask: true`) only adds the chip and focuses the composer; the
+   * operator types the instruction here and sends it with their own
+   * Enter / Send. Why not take the instruction from the preview and send
+   * it: the event originates in the preview iframe, which runs the site's
+   * module scripts (modules keep <script>, the preview has no CSP), so any
+   * of them can post the same message. A preview message must never make
+   * the AI act — at most it points at an element. The send stays one
+   * action for the operator, in the editor's own trusted UI.
    */
   onMount(() => {
     // Hydration gate — see the composer's `disabled` binding.
@@ -1545,9 +1535,9 @@
     // (the runner just queued or executed something).
     void loadPendingProposals();
     const handler = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail as (Chip & { prompt?: string }) | undefined;
+      const detail = (ev as CustomEvent).detail as (Chip & { ask?: boolean }) | undefined;
       if (!detail || typeof detail.moduleId !== "string") return;
-      const { prompt, ...chip } = detail;
+      const { ask, ...chip } = detail;
       // De-dupe: don't add a chip already present (pinned or not).
       const present = chips.some(
         (c) =>
@@ -1556,7 +1546,7 @@
           c.selectedText === chip.selectedText,
       );
       if (!present) chips = [...chips, chip];
-      if (typeof prompt === "string" && prompt.trim().length > 0) void askAboutReference(prompt.trim());
+      if (ask === true) composerEl?.focus();
     };
     window.addEventListener("caelo:chip", handler);
 

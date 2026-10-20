@@ -14,7 +14,9 @@
  *     picks "Ask AI" or "Add to chat" from the right-click menu or the
  *     selection toolbar. Carries the module id, the element path, the
  *     selected text + its surrounding text, the marked field it sits in
- *     (#917), and (Ask AI) the prompt.
+ *     (#917), and whether it was Ask AI. It never carries an instruction
+ *     for the AI: the preview runs the site's own scripts, so the
+ *     instruction is typed in the editor.
  *   - iframe → parent: `caelo:field-edit` when the operator finished
  *     editing marked values in place (#917, #918); the parent saves them
  *     and reloads the iframe.
@@ -55,8 +57,8 @@ export interface ElementReferencedMessage {
   field?: string;
   /** List item index for a `text-list` / `link-list` field. */
   index?: number;
-  /** Ask AI: what the operator typed; the parent sends it into the current chat. */
-  prompt?: string;
+  /** Ask AI: the parent focuses the chat composer for the operator's instruction. */
+  ask?: true;
 }
 
 /** One changed value of a placement, as `page_module_content.patch_fields` takes it. */
@@ -127,4 +129,27 @@ export function isCaeloMessage(value: unknown): value is CaeloMessage {
     k === "caelo:page-paths" ||
     k === "caelo:reload"
   );
+}
+
+/**
+ * The Caelo message a `message` event carries when it comes from the
+ * live-edit preview, else null. Both the sender window AND its origin must
+ * match: the preview follows external links (they are not intercepted), and
+ * the external page then IS `iframe.contentWindow` — the source check alone
+ * would let it post `caelo:field-edit` / `caelo:image-replace`, which the
+ * editor saves with the operator's CSRF token. Mirrors the iframe side,
+ * which checks source and origin on `caelo:reload` (inject-script).
+ *
+ * @param preview - the preview iframe's `contentWindow`.
+ * @param editorOrigin - the origin the preview is served from: the editor's
+ *   own (`window.location.origin`).
+ */
+export function previewMessage(
+  ev: Pick<MessageEvent, "source" | "origin" | "data">,
+  preview: Window | null | undefined,
+  editorOrigin: string,
+): CaeloMessage | null {
+  if (!preview || ev.source !== preview) return null;
+  if (ev.origin !== editorOrigin) return null;
+  return isCaeloMessage(ev.data) ? ev.data : null;
 }

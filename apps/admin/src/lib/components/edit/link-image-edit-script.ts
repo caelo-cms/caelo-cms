@@ -58,7 +58,7 @@ export const LINK_IMAGE_EDIT_SCRIPT = `
   function openLinkEditor(link, x, y) {
     var u = ensureUi();
     if (!u) return;
-    state.mode = "ask";
+    state.mode = "dialog";
     showOutline(link.a);
     u.panel.className = "panel";
     u.panel.textContent = "";
@@ -115,7 +115,7 @@ export const LINK_IMAGE_EDIT_SCRIPT = `
       });
     });
     var row = document.createElement("div");
-    row.className = "ask";
+    row.className = "actions";
     row.appendChild(button("Save", "caelo-link-save", save));
     u.panel.appendChild(row);
     place(pointRect(x, y), false);
