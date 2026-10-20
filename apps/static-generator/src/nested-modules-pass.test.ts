@@ -35,6 +35,21 @@ describe("assertNoRenderFailures", () => {
     );
   });
 
+  it("refuses a broken reference in the layout's own HTML", () => {
+    expect(() =>
+      assertNoRenderFailures([
+        {
+          pageSlug: "home",
+          html: "<p>ok</p>",
+          moduleFailures: [],
+          layoutLinkMarkers: ["link-target-missing:page/33333333-3333-4333-8333-333333333333"],
+        },
+      ]),
+    ).toThrow(
+      'page "home" layout HTML: link-target-missing:page/33333333-3333-4333-8333-333333333333',
+    );
+  });
+
   it("refuses the recursive-renderer escape hatch", () => {
     expect(() =>
       assertNoRenderFailures([
