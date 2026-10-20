@@ -177,6 +177,9 @@ test("link text + target, shared content scope, and image replace", async ({ pag
   await preview.getByTestId("caelo-scope-here").click();
   expect((await saved).ok()).toBe(true);
   await expect(card.locator("h1")).toHaveText("Only here", { timeout: 15_000 });
+  // The edited span shows the new text before the save lands; the preview
+  // has reloaded with the stored state once that span is gone.
+  await expect(preview.locator("[data-caelo-saving]")).toHaveCount(0, { timeout: 15_000 });
   expect(branchValues(ids.ci)?.title).toBe("SHARED_TITLE");
 
   // 3. Replace image: no scope question any more (detached), picker → save.
