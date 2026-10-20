@@ -87,4 +87,14 @@ describe("BugIntakeClient", () => {
       "http://localhost:8787",
     );
   });
+
+  // Regression (CodeQL js/polynomial-redos on #910): `/\/+$/` backtracks
+  // quadratically on a long run of `/` that is not at the end.
+  it("trims trailing slashes in linear time on a pathological URL", () => {
+    const evil = `http://x${"/".repeat(50_000)}a`;
+    const started = performance.now();
+    expect(bugIntakeUrl({ CAELO_BUG_INTAKE_URL: evil })).toBe(evil);
+    expect(bugIntakeUrl({ CAELO_BUG_INTAKE_URL: "http://x///" })).toBe("http://x");
+    expect(performance.now() - started).toBeLessThan(100);
+  });
 });

@@ -18,11 +18,12 @@ import {
   BUG_INTAKE_PROTOCOL_VERSION,
   type BugIntakeClusterInfo,
   type BugIntakeReport,
+  bugIntakeClusterInfo,
   bugIntakeErrorResponse,
-  bugIntakeReportResponse,
   bugIntakeSigningString,
   bugIntakeStatusResponse,
   CAELO_VERSION,
+  trimTrailingSlashes,
 } from "@caelo-cms/shared";
 import type { z } from "zod";
 
@@ -53,7 +54,7 @@ export interface BugIntakeClientOpts {
 
 /** Resolve the intake URL from the environment. */
 export function bugIntakeUrl(env: Record<string, string | undefined>): string {
-  return (env.CAELO_BUG_INTAKE_URL ?? DEFAULT_BUG_INTAKE_URL).replace(/\/+$/, "");
+  return trimTrailingSlashes(env.CAELO_BUG_INTAKE_URL ?? DEFAULT_BUG_INTAKE_URL);
 }
 
 export class BugIntakeClient {
@@ -62,7 +63,7 @@ export class BugIntakeClient {
   readonly #now: () => number;
 
   constructor(opts: BugIntakeClientOpts) {
-    this.#baseUrl = opts.baseUrl.replace(/\/+$/, "");
+    this.#baseUrl = trimTrailingSlashes(opts.baseUrl);
     this.#fetch = opts.fetchImpl ?? fetch;
     this.#now = opts.now ?? Date.now;
   }
@@ -84,7 +85,7 @@ export class BugIntakeClient {
     report: BugIntakeReport,
   ): Promise<IntakeOutcome<BugIntakeClusterInfo>> {
     return this.#post("/v1/reports", JSON.stringify(report), identity, (json) =>
-      bugIntakeReportResponse.parse(json),
+      bugIntakeClusterInfo.parse(json),
     );
   }
 
