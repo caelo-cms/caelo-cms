@@ -39,6 +39,7 @@ const BASELINE_ROUTES = [
   "/settings/costs",
   "/settings/ai",
   "/settings/updates",
+  "/settings/links",
 ];
 
 /**

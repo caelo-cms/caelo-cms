@@ -68,6 +68,7 @@ import {
   setChromeVariants,
   translateChrome,
 } from "./chrome-ops.js";
+import { chromeLinkLocations } from "./link-locations.js";
 import {
   type GlossaryRow,
   pageTranslationBasis,
@@ -827,6 +828,12 @@ export default definePlugin<PluginContextTier1>({
       const reg = await refreshLocaleCache(q, ctx);
       return { pages: await pageVariantPartition(q, pageIds, reg.byCode) };
     },
+
+    /**
+     * #724 rollout E — where this plugin stores internal links (the
+     * chrome variants' own values), for core's link migration. Read-only.
+     */
+    link_locations: async (ctx) => chromeLinkLocations(adminQueryOf(ctx), cmsOf(ctx)),
 
     /**
      * #592 — translate a language's shared chrome in one AI call. #741 —
@@ -1809,6 +1816,7 @@ export default definePlugin<PluginContextTier1>({
   contributionsOperation: "head_contributions",
   contentVariantsOperation: "content_variants",
   linkResolveOperation: "link_resolve",
+  linkLocationsOperation: "link_locations",
   /**
    * #399 — companion skills (CLAUDE.md §2: skills are the official way
    * to teach AI behaviour; no prompt scaffolding in tool handlers).
