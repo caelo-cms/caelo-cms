@@ -21,5 +21,5 @@ export function recordedRuns(): [LhrLike, LhrLike] {
 /** A fresh copy of the recorded page's metrics (the full run only):
  *  LCP 2.2 s, CLS 0.356 with one layout shift, LCP element h1. */
 export function sampleMetrics(): PerformanceMetrics {
-  return performanceMetricsFromRuns([recordedRuns()[0]]);
+  return performanceMetricsFromRuns([recordedRuns()[0]], 0);
 }

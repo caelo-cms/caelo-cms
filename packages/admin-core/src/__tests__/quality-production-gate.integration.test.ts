@@ -587,5 +587,11 @@ describe("the fix-quality-findings skill", () => {
     expect(body).toContain("`bug_report`");
     expect(body).toContain("`image-delivery-insight`");
     expect(body).not.toContain("propose an acceptance with `accept_quality_findings`");
+    // #874 (0302): the metrics are the best run's, the run the Performance
+    // score comes from; "median" would send the AI hunting noise.
+    expect(body).toContain(
+      "the best of the staged build's runs, the one the Performance score comes from,",
+    );
+    expect(body).not.toContain("median");
   });
 });

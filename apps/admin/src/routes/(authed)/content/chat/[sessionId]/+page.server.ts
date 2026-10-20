@@ -79,7 +79,7 @@ export const load: PageServerLoad = async ({ params, locals }): Promise<ChatPage
 
 export const actions: Actions = {
   rename: async ({ params, request, locals }) => {
-    requirePermission(locals, "content.read");
+    requirePermission(locals, "content.write");
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
@@ -96,7 +96,7 @@ export const actions: Actions = {
   // to a future setting surface (default 10000 covers every realistic
   // turn). Per-chat preference takes effect on the NEXT user send.
   set_extended_thinking: async ({ params, request, locals }) => {
-    requirePermission(locals, "content.read");
+    requirePermission(locals, "content.write");
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);

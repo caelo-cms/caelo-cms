@@ -7,6 +7,7 @@
  * by a different identity in the in-cloud upgrader job (epic #696).
  */
 
+import { z } from "zod";
 import type { GcloudRunner } from "../gcloud-retry.js";
 
 /**
@@ -102,16 +103,57 @@ export async function findCurrentRevision(
 }
 
 /**
- * The image digest the revision serving traffic runs (not the service
- * template's: after a rollback the template names the failed image while
- * traffic stays on the previous revision).
+ * The image the revision serving traffic runs, by every digest it is known
+ * by (not the service template's: after a rollback the template names the
+ * failed image while traffic stays on the previous revision).
+ *
+ * Why two digests (#860): Caelo's release images are OCI image *indexes*
+ * (buildx adds a provenance/SBOM attestation manifest even to a
+ * single-platform build), and the signed release manifest, install.json
+ * and every deploy pin the index digest. Cloud Run's `status.imageDigest`
+ * names what it resolved and pulled, the linux/amd64 *platform manifest*
+ * inside that index, so comparing it with a recorded index digest never
+ * matches. The digest the revision was deployed with
+ * (`spec.containers[0].image`, `…@sha256:<index>`) is the form everything
+ * else records; it is content-addressed, so the revision necessarily runs
+ * that index's image.
  */
-export async function findServingImageDigest(
+export interface ServingImage {
+  /** The digest the revision was deployed with; null when deployed by tag. */
+  readonly deployedDigest: string | null;
+  /** The digest Cloud Run resolved and runs (`status.imageDigest`); null when not reported. */
+  readonly resolvedDigest: string | null;
+}
+
+/** Every digest `image` is known by, deployed form first. */
+export function servingImageDigests(image: ServingImage): string[] {
+  const out: string[] = [];
+  for (const d of [image.deployedDigest, image.resolvedDigest]) {
+    if (d && !out.includes(d)) out.push(d);
+  }
+  return out;
+}
+
+const PINNED_DIGEST = /@(sha256:[0-9a-f]{64})$/;
+
+/** The fields of `gcloud run revisions describe --format=json` the lookup reads. */
+const RevisionJsonSchema = z.object({
+  spec: z
+    .object({ containers: z.array(z.object({ image: z.string().optional() })).optional() })
+    .optional(),
+  status: z.object({ imageDigest: z.string().optional() }).optional(),
+});
+
+/**
+ * The serving revision's {@link ServingImage}, or null when the revision or
+ * any digest of it cannot be read.
+ */
+export async function findServingImage(
   run: GcloudRunner,
   projectId: string,
   region: string,
   serviceName: string,
-): Promise<string | null> {
+): Promise<ServingImage | null> {
   const revision = await findCurrentRevision(run, projectId, region, serviceName);
   if (!revision) return null;
   const r = await run([
@@ -123,11 +165,26 @@ export async function findServingImageDigest(
     region,
     "--project",
     projectId,
-    "--format=value(status.imageDigest)",
+    "--format=json",
   ]);
   if (!r.ok) return null;
-  const m = /@(sha256:[0-9a-f]{64})\s*$/.exec(r.stdout.trim());
-  return m?.[1] ?? null;
+  let json: unknown;
+  try {
+    json = JSON.parse(r.stdout);
+  } catch {
+    return null;
+  }
+  // gcloud output is a boundary (CLAUDE.md §4): an unexpected shape (`null`,
+  // an array, a non-string image) reads as "unknown" instead of throwing.
+  const parsed = RevisionJsonSchema.safeParse(json);
+  if (!parsed.success) return null;
+  const digestOf = (ref: string | undefined): string | null =>
+    ref === undefined ? null : (PINNED_DIGEST.exec(ref.trim())?.[1] ?? null);
+  const image: ServingImage = {
+    deployedDigest: digestOf(parsed.data.spec?.containers?.[0]?.image),
+    resolvedDigest: digestOf(parsed.data.status?.imageDigest),
+  };
+  return servingImageDigests(image).length > 0 ? image : null;
 }
 
 /** The service's own `run.app` URL. */

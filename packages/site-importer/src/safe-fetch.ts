@@ -98,6 +98,7 @@ function isPublicIpv4(ip: string): boolean {
   if (a === 172 && b >= 16 && b <= 31) return false; // RFC1918
   if (a === 192 && b === 0 && c === 0) return false; // 192.0.0.0/24 IETF protocol
   if (a === 192 && b === 0 && c === 2) return false; // TEST-NET-1
+  if (a === 192 && b === 88 && c === 99) return false; // 192.88.99.0/24 6to4 relay anycast (deprecated, RFC 7526)
   if (a === 192 && b === 168) return false; // RFC1918
   if (a === 198 && (b === 18 || b === 19)) return false; // 198.18.0.0/15 benchmarking
   if (a === 198 && b === 51 && c === 100) return false; // TEST-NET-2
@@ -175,6 +176,7 @@ function isPublicIpv6(ip: string): boolean {
   if (g?.length !== 8) return false;
   const g0 = g[0] ?? 0;
   const g1 = g[1] ?? 0;
+  const g2 = g[2] ?? 0;
   const allZeroHead = g.slice(0, 5).every((x) => x === 0);
 
   // :: (unspecified) and ::1 (loopback)
@@ -184,15 +186,31 @@ function isPublicIpv6(ip: string): boolean {
   if (allZeroHead && (g[5] === 0xffff || g[5] === 0)) {
     return isPublicIpv4(groupsToV4(g[6] ?? 0, g[7] ?? 0));
   }
-  // NAT64 64:ff9b::/96 → judge the embedded v4
-  if (g0 === 0x64 && g1 === 0xff9b && g.slice(2, 6).every((x) => x === 0)) {
+  // SIIT v4-translated ::ffff:0:a.b.c.d (RFC 2765) → judge the embedded v4
+  if (g.slice(0, 4).every((x) => x === 0) && g[4] === 0xffff && g[5] === 0) {
     return isPublicIpv4(groupsToV4(g[6] ?? 0, g[7] ?? 0));
   }
-  if ((g0 & 0xfe00) === 0xfc00) return false; // fc00::/7 ULA
-  if ((g0 & 0xffc0) === 0xfe80) return false; // fe80::/10 link-local
-  if ((g0 & 0xffc0) === 0xfec0) return false; // fec0::/10 deprecated site-local
-  if ((g0 & 0xff00) === 0xff00) return false; // ff00::/8 multicast
-  if (g0 === 0x2001 && g1 === 0x0db8) return false; // documentation
+  // NAT64 64:ff9b::/96 (RFC 6052) → judge the embedded v4;
+  // local-use NAT64 64:ff9b:1::/48 (RFC 8215) → always non-public.
+  if (g0 === 0x64 && g1 === 0xff9b) {
+    if (g.slice(2, 6).every((x) => x === 0)) {
+      return isPublicIpv4(groupsToV4(g[6] ?? 0, g[7] ?? 0));
+    }
+    if (g2 === 1) return false;
+  }
+  // Allowlist, not blocklist: only 2000::/3 is global unicast. Everything
+  // else is non-public by allocation — 0100::/64 discard-only (RFC 6666),
+  // 5f00::/16 SRv6 SIDs (RFC 9602), fc00::/7 ULA, fe80::/10 link-local,
+  // fec0::/10 site-local, ff00::/8 multicast, and the rest of 64:ff9b::/32
+  // — so a range nobody listed here cannot slip through.
+  if ((g0 & 0xe000) !== 0x2000) return false;
+  // Special-purpose blocks inside 2000::/3:
+  // 2001::/23 IETF protocol assignments (includes Teredo 2001:0000::/32,
+  // benchmarking 2001:2::/48, ORCHIDv2 2001:20::/28)
+  if (g0 === 0x2001 && (g1 & 0xfe00) === 0x0000) return false;
+  if (g0 === 0x2001 && g1 === 0x0db8) return false; // 2001:db8::/32 documentation
+  if (g0 === 0x2002) return false; // 6to4 2002::/16 (RFC 3056, deprecated RFC 7526)
+  if (g0 === 0x3fff && (g1 & 0xf000) === 0) return false; // 3fff::/20 documentation (RFC 9637)
   return true;
 }
 
@@ -277,7 +295,10 @@ export function assertPublicHttpUrl(rawUrl: string, opts?: SafeFetchOptions): UR
   if (u.port !== "") {
     throw new ExternalUrlBlockedError(rawUrl, `non-default port ${u.port} is not allowed`);
   }
-  if (bareHost === "localhost" || bareHost.endsWith(".localhost")) {
+  // A trailing dot is the fully-qualified spelling of the same name
+  // (`localhost.`); WHATWG URL keeps it, so strip it before comparing.
+  const fqdnHost = bareHost.endsWith(".") ? bareHost.slice(0, -1) : bareHost;
+  if (fqdnHost === "localhost" || fqdnHost.endsWith(".localhost")) {
     throw new ExternalUrlBlockedError(rawUrl, "localhost is not a public host");
   }
   if (isIP(bareHost) !== 0 && !isPublicIpAddress(bareHost)) {

@@ -9,6 +9,7 @@
 
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
+import type { McpAgentRef } from "../../ops/chat/mcp-agent.js";
 
 import type { AIProvider } from "../provider.js";
 import type { SubagentResultCapture } from "../tools/dispatch.js";
@@ -168,8 +169,11 @@ export interface ChatRunnerOptions {
    * registration refuses the turn — it was sent before the Stop.
    */
   readonly stopEpochAtArrival?: number;
-  /** caelo_chat (issue #665): the MCP token driving the turn — its Stop block applies. */
-  readonly agentRunMcpTokenId?: string;
+  /**
+   * caelo_chat (issue #665): the external agent driving the turn — its MCP
+   * token or remote connection (#806). Its Stop block applies.
+   */
+  readonly agentRunMcpAgent?: McpAgentRef;
   /**
    * The running-agents row of THIS turn — set by `runChatTurn` itself after
    * registration, read by the spawn handler to parent its subagents.

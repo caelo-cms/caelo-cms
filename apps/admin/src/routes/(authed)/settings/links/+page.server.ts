@@ -15,9 +15,8 @@ import type { Actions, PageServerLoad } from "./$types";
 
 interface RunSummary {
   runId: string;
-  mode: "dry_run" | "apply" | "import";
-  trigger: "boot" | "manual" | "import";
-  importRunId: string | null;
+  mode: "dry_run" | "apply";
+  trigger: "boot" | "manual";
   createdAt: string;
   counts: Record<string, number>;
   entitiesChanged: number;

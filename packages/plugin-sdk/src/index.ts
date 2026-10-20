@@ -438,10 +438,20 @@ export type ContentVariantResolution = z.infer<typeof contentVariantResolution>;
  * chrome. A target with no member in V is a loud failure, never a link
  * into another variant (CLAUDE.md §2). URLs stay core's: the plugin
  * names pages, core builds their URLs.
+ *
+ * `variant` is a plain token (letters, digits, `-`, `_`: BCP-47 codes
+ * like `de`, `pt-BR`, `zh-Hant`): core interpolates it into missing-slot
+ * markers (`link-variant-missing:page/<id>:<variant>`) and AI-facing
+ * text, where a `:` or whitespace would corrupt the marker.
  */
 export const linkResolvePageVariant = z
   .object({
-    variant: z.string().min(1).max(64),
+    variant: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        "variant must be 1-64 letters, digits, '-' or '_' (e.g. a locale code like pt-BR)",
+      ),
     group: z.string().min(1).max(200).nullable(),
   })
   .strict();

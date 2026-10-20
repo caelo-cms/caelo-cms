@@ -348,11 +348,7 @@ import {
   proposeSetStagingAccessOp,
   proposeSetStagingHostOp,
 } from "./ops/owner_settings_staging.js";
-import {
-  anyBootstrapTokenIssuedOp,
-  consumeBootstrapTokenOp,
-  insertBootstrapTokenOp,
-} from "./ops/owner-bootstrap-tokens.js";
+import { anyBootstrapTokenIssuedOp, insertBootstrapTokenOp } from "./ops/owner-bootstrap-tokens.js";
 import { appendPageLogOp, listPageLogOp } from "./ops/page_log.js";
 import { listPendingProposalsAcrossDomainsOp } from "./ops/pending_proposals.js";
 import { appliedAdminMigrationsOp, appliedPublicMigrationsOp } from "./ops/platform_health.js";
@@ -365,10 +361,12 @@ import {
 } from "./ops/platform-update-policy.js";
 import {
   platformUpdatesCancelOp,
+  platformUpdatesContinueOp,
   platformUpdatesGetOp,
   platformUpdatesListOp,
   platformUpdatesRecordTriggerOp,
   platformUpdatesRequestOp,
+  platformUpdatesSupersedeStaleOp,
 } from "./ops/platform-update-requests.js";
 import {
   platformUpdatesNotificationClaimOp,
@@ -479,6 +477,12 @@ import {
   mcpListToolsOp,
   mcpOpenSessionOp,
 } from "./ops/security/mcp_power.js";
+import {
+  listMcpRemoteConnectionsOp,
+  restoreMcpRemoteConnectionOp,
+  revokeMcpRemoteConnectionOp,
+  setMcpRemoteConnectionCapOp,
+} from "./ops/security/mcp_remote_connections.js";
 import {
   createMcpTokenOp,
   listMcpTokensOp,
@@ -627,7 +631,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createFirstOwnerOp);
   registry.register(isSetupCompleteOp);
   registry.register(insertBootstrapTokenOp);
-  registry.register(consumeBootstrapTokenOp);
   registry.register(anyBootstrapTokenIssuedOp);
   // P15 — provisioning outputs + DNS guidance.
   registry.register(setProvisioningOutputsOp);
@@ -925,6 +928,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // back to the external agent (read-only for the agent).
   registry.register(mcpGetApprovalOutcomeOp);
   registry.register(listMcpApprovalHandoffsOp);
+  // Issue #806 — remote MCP connections (IAP identity, no bearer): the
+  // Owner's list / revoke / restore / cap controls.
+  registry.register(listMcpRemoteConnectionsOp);
+  registry.register(revokeMcpRemoteConnectionOp);
+  registry.register(restoreMcpRemoteConnectionOp);
+  registry.register(setMcpRemoteConnectionCapOp);
   // v0.2.27 — mcp_tokens propose/execute pairs (create / revoke).
   // AI proposes new tokens by displayName + cap; the Owner approves
   // at /settings/mcp/pending and the plaintext token is generated
@@ -960,12 +969,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createRedirectsManyOp);
   registry.register(deleteRedirectsManyOp);
   registry.register(setStructuredSetOp);
-  // Epic #724 rollout E — literal links → references, report, revert,
-  // and an import run's link finalisation.
+  // Epic #724 rollout E — literal links → references, report, revert.
   registry.register(migrateLinksToReferencesOp);
   registry.register(getLinkMigrationReportOp);
   registry.register(revertLinkMigrationOp);
-  registry.register(resolveImportLinksOp);
   registry.register(getStructuredSetOp);
   registry.register(listStructuredSetsOp);
   registry.register(deleteStructuredSetOp);
@@ -1124,6 +1131,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acceptImportedPagesOp);
   registry.register(cleanupImportRunOp);
   registry.register(composeFromImportRunOp);
+  // Epic #724 — turn an import run's links to planned pages into references.
+  registry.register(resolveImportLinksOp);
   // Explicit, URL-driven media import (replaces the scan-and-download
   // migrate_media). The AI names the exact source asset URLs to import.
   registry.register(importMediaUrlsOp);
@@ -1162,9 +1171,11 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // the upgrader job does the install. list/get/policy.get are AI-readable.
   registry.register(platformUpdatesRequestOp);
   registry.register(platformUpdatesCancelOp);
+  registry.register(platformUpdatesContinueOp);
   registry.register(platformUpdatesRecordTriggerOp);
   registry.register(platformUpdatesListOp);
   registry.register(platformUpdatesGetOp);
+  registry.register(platformUpdatesSupersedeStaleOp);
   registry.register(platformUpdatesAgentStatusOp);
   registry.register(platformUpdatePolicyGetOp);
   registry.register(platformUpdatePolicySetOp);

@@ -172,7 +172,7 @@
           {#each data.recentRuns as r (r.runId)}
             <li>
               <a class="underline" href={`?run=${r.runId}`}>{new Date(r.createdAt).toLocaleString()}</a>
-              — {r.mode === "dry_run" ? "dry run" : r.mode === "import" ? "site import" : "applied"},
+              — {r.mode === "dry_run" ? "dry run" : "applied"},
               {total(r.counts)} converted, {r.unresolvedCount} not
               {#if r.revertedAt}(reverted){/if}
             </li>

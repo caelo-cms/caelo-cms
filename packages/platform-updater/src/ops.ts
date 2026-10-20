@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * The upgrader job's Query API ops (epic #696). Registered only in the
- * job's own registry, run as a `system` actor over the `platform_updater`
- * database role (migration 0267): that role can read requests and the
- * policy, move a request through its run columns, append events, set the
- * policy's pause and write its own audit rows — which is exactly what these
- * ops do. The admin's ops (request, cancel, list, get, policy) live in
- * admin-core.
+ * The update jobs' Query API ops (epic #696, #819). Registered only in
+ * the jobs' own registry, run as a `system` actor over the
+ * `platform_updater` database role (migration 0267): that role can read
+ * requests and the policy, move a request through its run columns, append
+ * events, set the policy's pause and write its own audit rows — which is
+ * exactly what these ops do. Two jobs use them, each for its own route
+ * (`platform_update_requests.route`, migration 0303): the upgrader job and
+ * the self-hosted agent claim `app_roll` requests, the converge job
+ * `converge` ones. The admin's ops (request, cancel, list, get, policy)
+ * live in admin-core.
  */
 
 import { defineOperation, recordAudit, SYSTEM_ACTOR_ID } from "@caelo-cms/query-api";
@@ -18,20 +21,24 @@ import {
   PLATFORM_UPDATE_EVENT_LEVELS,
   PLATFORM_UPDATE_EVENT_MAX,
   PLATFORM_UPDATE_PHASES,
+  PLATFORM_UPDATE_ROUTES,
   PLATFORM_UPDATE_STALE_MINUTES,
   PLATFORM_UPDATE_STALE_REASON,
   PLATFORM_UPDATE_TRIGGERS,
   type StoredUpdatePolicy,
+  UPDATE_POLICY_CHANNELS,
+  UPDATE_POLICY_MODES,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 
 const policySchema = z.object({
-  mode: z.enum(["off", "notify", "auto"]),
+  mode: z.enum(UPDATE_POLICY_MODES),
   autoSecurity: z.boolean(),
   autoPatch: z.boolean(),
   autoMinor: z.boolean(),
-  channel: z.enum(["stable", "rc", "beta", "alpha"]),
+  autoConverge: z.boolean(),
+  channel: z.enum(UPDATE_POLICY_CHANNELS),
   windowStart: z.string().nullable(),
   windowEnd: z.string().nullable(),
   windowTimezone: z.string(),
@@ -55,17 +62,30 @@ const claimOutput = z.object({
       trigger: z.enum(PLATFORM_UPDATE_TRIGGERS),
       autoBasis: z.enum(AUTO_UPDATE_BASES).nullable(),
       policy: policySchema,
+      /**
+       * The request was already running (converge route only): a stage-1
+       * run handed it over, or a run that died left it to be continued.
+       */
+      resume: z.boolean(),
+      /** The execution the request names now. */
+      execution: z.string().nullable(),
     })
     .nullable(),
 });
 
 export const jobClaimOp = defineOperation({
   name: "platform_updates.job_claim",
-  // Why system-only: the upgrader job's own claim of the next request; the
+  // Why system-only: an update job's own claim of the next request; the
   // admin writes requests through platform_updates.request.
   actorScope: ["system"],
   database: "cms_admin",
-  input: z.object({ execution: z.string().min(1).max(200).nullable() }).strict(),
+  input: z
+    .object({
+      execution: z.string().min(1).max(200).nullable(),
+      /** Which job claims (#819). Default `app_roll`: the upgrader job and the agent. */
+      route: z.enum(PLATFORM_UPDATE_ROUTES).default("app_roll"),
+    })
+    .strict(),
   output: claimOutput,
   handler: async (_ctx, input, tx) => {
     const stale = (await tx.execute(sql`
@@ -93,27 +113,46 @@ export const jobClaimOp = defineOperation({
          WHERE id = 1
       `);
     }
-    const claimed = (await tx.execute(sql`
-      UPDATE platform_update_requests
-         SET status = 'running', started_at = now(), execution = ${input.execution}
-       WHERE id = (
-         SELECT id FROM platform_update_requests
-          WHERE status = 'pending'
-          ORDER BY requested_at
-          LIMIT 1
-          FOR UPDATE SKIP LOCKED
-       )
-       RETURNING id::text AS id, target_version, trigger, auto_basis
-    `)) as unknown as {
+    type Row = {
       id: string;
       target_version: string;
       trigger: "manual" | "auto";
       auto_basis: AutoUpdateBasis | null;
-    }[];
-    const row = claimed[0];
+      execution: string | null;
+    };
+    // #819 — the converge job continues the converge request that is still
+    // running (handed over by its stage 1, or left by a run that died); it
+    // decides itself, from Cloud Run and the state lock, whether it may.
+    // The row is not changed here: platform_updates.job_handover does that.
+    const running =
+      input.route === "converge"
+        ? ((await tx.execute(sql`
+            SELECT id::text AS id, target_version, trigger, auto_basis, execution
+              FROM platform_update_requests
+             WHERE status = 'running' AND route = 'converge'
+             ORDER BY requested_at
+             LIMIT 1
+          `)) as unknown as Row[])
+        : [];
+    const resumed = running[0];
+    const claimed = resumed
+      ? []
+      : ((await tx.execute(sql`
+          UPDATE platform_update_requests
+             SET status = 'running', started_at = now(), execution = ${input.execution}
+           WHERE id = (
+             SELECT id FROM platform_update_requests
+              WHERE status = 'pending' AND route = ${input.route}
+              ORDER BY requested_at
+              LIMIT 1
+              FOR UPDATE SKIP LOCKED
+           )
+           RETURNING id::text AS id, target_version, trigger, auto_basis, execution
+        `)) as unknown as Row[]);
+    const row = resumed ?? claimed[0];
     if (!row) return ok({ recovered: stale.map((s) => s.id), claimed: null });
     const policies = (await tx.execute(sql`
-      SELECT mode, auto_security, auto_patch, auto_minor, channel,
+      SELECT mode, auto_security, auto_patch, auto_minor, auto_converge, channel,
              to_char(window_start, 'HH24:MI') AS window_start,
              to_char(window_end, 'HH24:MI') AS window_end,
              window_timezone, soak_hours, security_soak_hours, paused, paused_reason,
@@ -124,6 +163,7 @@ export const jobClaimOp = defineOperation({
       auto_security: boolean;
       auto_patch: boolean;
       auto_minor: boolean;
+      auto_converge: boolean;
       channel: StoredUpdatePolicy["channel"];
       window_start: string | null;
       window_end: string | null;
@@ -150,11 +190,14 @@ export const jobClaimOp = defineOperation({
         targetVersion: row.target_version,
         trigger: row.trigger,
         autoBasis: row.auto_basis,
+        resume: resumed !== undefined,
+        execution: row.execution,
         policy: {
           mode: p.mode,
           autoSecurity: p.auto_security,
           autoPatch: p.auto_patch,
           autoMinor: p.auto_minor,
+          autoConverge: p.auto_converge,
           channel: p.channel,
           windowStart: p.window_start,
           windowEnd: p.window_end,
@@ -170,6 +213,52 @@ export const jobClaimOp = defineOperation({
         },
       },
     });
+  },
+});
+
+export const jobHandoverOp = defineOperation({
+  name: "platform_updates.job_handover",
+  // Why system-only: the converge job (#819) points its running request at
+  // the execution that continues it — stage 1 releases it for its stage 2,
+  // which adopts it, as does a run continuing a request whose run died.
+  // Never the admin's to move.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z
+    .object({
+      requestId: z.string().uuid(),
+      /** The execution the request must still name (null: none). */
+      from: z.string().min(1).max(200).nullable(),
+      /** The execution that continues it; null releases it for the next run to adopt. */
+      to: z.string().min(1).max(200).nullable(),
+    })
+    .strict(),
+  output: z.object({ handedOver: z.boolean() }),
+  handler: async (ctx, input, tx) => {
+    // started_at restarts too: the stale-run window (90 minutes) is per run,
+    // so a continued update is not ended under the run continuing it.
+    const rows = (await tx.execute(sql`
+      UPDATE platform_update_requests
+         SET execution = ${input.to}, started_at = now()
+       WHERE id = ${input.requestId}::uuid AND status = 'running' AND route = 'converge'
+         AND execution IS NOT DISTINCT FROM ${input.from}
+       RETURNING id
+    `)) as unknown as { id: string }[];
+    await recordAudit(tx, {
+      actorId: SYSTEM_ACTOR_ID,
+      requestId: ctx.requestId,
+      operation: "platform_updates.job_handover",
+      input: { requestId: input.requestId, from: input.from, to: input.to },
+      succeeded: rows.length > 0,
+      entityId: input.requestId,
+      resultSummary:
+        rows.length > 0
+          ? input.to === null
+            ? "released for the next run"
+            : `run ${input.to}`
+          : "not handed over (moved on)",
+    });
+    return ok({ handedOver: rows.length > 0 });
   },
 });
 

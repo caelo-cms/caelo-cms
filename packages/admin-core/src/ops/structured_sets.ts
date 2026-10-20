@@ -22,6 +22,7 @@ import { ZodError, z } from "zod";
 import { recordAudit } from "../audit.js";
 import { canonicaliseSetItems } from "../links/canonicalise-writes.js";
 import { withHumanisedLinks } from "../links/humanise.js";
+import { recordPendingImportLinks } from "../links/import-targets.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { emitSnapshot } from "../snapshots/index.js";
 import { jsonbParam } from "../sql-helpers.js";
@@ -417,6 +418,8 @@ export const setStructuredSetOp = defineOperation({
       }
     }
 
+    // Epic #724 — links to pages the chat's import run will still build.
+    await recordPendingImportLinks(tx, linkCanon.pending, { kind: "structured_set", id });
     return ok({ setId: id });
   },
 });

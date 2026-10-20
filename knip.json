@@ -54,7 +54,7 @@
       "entry": ["stacks/*/index.ts"]
     },
     "packages/platform-updater": {
-      "entry": ["src/main.ts"]
+      "entry": ["src/main.ts", "src/converge-main.ts"]
     }
   }
 }

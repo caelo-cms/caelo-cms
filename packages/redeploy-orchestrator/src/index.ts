@@ -890,13 +890,25 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
     }
   }
 
+  // One tick at a time. A tick slower than `pollMs` (a slow database, a
+  // short test interval) must not overlap the next: both would read the
+  // same visitor events before either commits the watermark, report a
+  // dropped event twice and race `lastSeenAt`. The interval skips while
+  // one runs; the next interval picks up whatever is left.
+  let tickRunning = false;
   const pollHandle = setInterval(() => {
+    if (tickRunning) return;
+    tickRunning = true;
     // A failed tick leaves its events (and the watermark) for the next one.
     // The whole error, not only its message: drizzle's "Failed query"
     // message leaves out the Postgres cause.
-    tick().catch((e: unknown) => {
-      console.error("[redeploy-orchestrator] tick failed", e);
-    });
+    tick()
+      .catch((e: unknown) => {
+        console.error("[redeploy-orchestrator] tick failed", e);
+      })
+      .finally(() => {
+        tickRunning = false;
+      });
   }, pollMs);
   const gcHandle = setInterval(() => {
     void gcSweep();

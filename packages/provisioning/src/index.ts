@@ -46,6 +46,14 @@ export {
   selfHostedCdnCopy,
 } from "./cdn-copy.js";
 export { type ComposeSpec, generateDockerCompose, type RolePasswords } from "./compose.js";
+export {
+  type ConvergeClaim,
+  type ConvergeJobDeps,
+  type ConvergeQueue,
+  type ConvergeUpgradeOutcome,
+  runConvergeJob,
+} from "./converge-job.js";
+export { convergeExecutionNameError, gcpConvergeDeps } from "./converge-job-gcp.js";
 export { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
 export {
   INFRA_CONTRACT_PATHS,

@@ -22,7 +22,7 @@ import {
   type LinkTargetLookup,
   linkCanonicaliseRun,
 } from "@caelo-cms/shared";
-import { mayContainInternalLink } from "./canonicalise.js";
+import { probeLinkLookup } from "./canonicalise.js";
 
 /** Where a link lives, for counts and the report. */
 export type LinkSurface =
@@ -45,8 +45,6 @@ export interface PartOutcome<T> {
 /** How the run is configured: the site lookup plus the import filter. */
 export interface ConvertContext {
   readonly lookup: LinkTargetLookup;
-  /** See `LinkCanonicaliseRun.only`. */
-  readonly only?: ReadonlySet<string>;
 }
 
 /** Well-formed references in a value — prose mentioning "caelo:" does not count. */
@@ -59,11 +57,13 @@ function convert<T>(
   cx: ConvertContext,
   apply: (run: ReturnType<typeof linkCanonicaliseRun>) => T,
 ): PartOutcome<T> {
-  if (!mayContainInternalLink(value))
+  // The probe asks the canonicaliser itself whether anything here needs
+  // the site lookup (C's review: a string pre-check missed ` /about` and
+  // srcset media); no lookup asked = nothing to convert or report.
+  if (!probeLinkLookup(apply).needsLookup)
     return { next: value, changed: false, converted: 0, issues: [] };
   const run = linkCanonicaliseRun(cx.lookup, {
     mode: "report",
-    ...(cx.only ? { only: cx.only } : {}),
   });
   const next = apply(run);
   const changed = stableJson(next) !== stableJson(value);

@@ -224,16 +224,53 @@ export function parseFontsCss(cssText: string): ParsedFontFace[] {
   return faces;
 }
 
+const FONT_STYLE_RE = /^(?:normal|italic|oblique(?: +-?\d{1,3}(?:\.\d+)?deg){0,2})$/i;
+const FONT_WEIGHT_RE = /^(?:normal|bold|\d{1,4}(?: +\d{1,4})?)$/i;
+const UNICODE_RANGE_ITEM = "U\\+[0-9A-F?]{1,6}(?:-[0-9A-F]{1,6})?";
+const UNICODE_RANGE_RE = new RegExp(`^${UNICODE_RANGE_ITEM}(?:, *${UNICODE_RANGE_ITEM})*$`, "i");
+/** A same-site asset path: no quotes, parens, whitespace or `<`. */
+const FONT_URL_RE = /^[A-Za-z0-9._~/:%+-]+$/;
+
+/**
+ * Why `face` cannot be emitted as an `@font-face` rule, or null when it can.
+ * The descriptors come from a remote fonts-CSS payload, so each one is held
+ * to the grammar a real descriptor has instead of being scrubbed: a value
+ * outside it could close the surrounding `<style>` or add rules, and a
+ * scrubbed value would ship a silently different font.
+ */
+export function fontFaceProblem(face: ResolvedFontFace): string | null {
+  if (!FONT_STYLE_RE.test(face.style)) return `font-style ${JSON.stringify(face.style)}`;
+  if (!FONT_WEIGHT_RE.test(face.weight)) return `font-weight ${JSON.stringify(face.weight)}`;
+  if (face.unicodeRange !== null && !UNICODE_RANGE_RE.test(face.unicodeRange)) {
+    return `unicode-range ${JSON.stringify(face.unicodeRange)}`;
+  }
+  if (!FONT_URL_RE.test(face.publicUrl)) return `url ${JSON.stringify(face.publicUrl)}`;
+  return null;
+}
+
 /**
  * Emit self-hosted @font-face CSS. `font-display: swap` always — text
  * must render in the fallback while the woff2 loads.
+ *
+ * Throws on a face {@link fontFaceProblem} refuses; the resolver checks
+ * faces first and reports a bad family as unresolved, so reaching the
+ * throw means a caller skipped that check.
  */
 export function buildFontFaceCss(faces: readonly ResolvedFontFace[]): string {
   return faces
     .map((f) => {
+      const problem = fontFaceProblem(f);
+      if (problem !== null) {
+        throw new Error(
+          `fonts: refusing the @font-face for ${JSON.stringify(f.family)} — invalid ${problem}. Re-fetch the family or pick another font.`,
+        );
+      }
+      // A CSS string; `<` is written as its CSS escape so no family name
+      // can spell `</style` in the surrounding HTML.
+      const family = JSON.stringify(f.family).replaceAll("<", "\\3c ");
       const range = f.unicodeRange !== null ? `unicode-range:${f.unicodeRange};` : "";
       return (
-        `@font-face{font-family:${JSON.stringify(f.family)};` +
+        `@font-face{font-family:${family};` +
         `font-style:${f.style};font-weight:${f.weight};font-display:swap;` +
         `src:url(${f.publicUrl}) format('woff2');${range}}`
       );

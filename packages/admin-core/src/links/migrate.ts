@@ -135,8 +135,6 @@ export interface LinkMigrationScope {
   readonly branches: "all" | readonly string[];
   /** Hosts whose absolute URLs mean this site (an import's source host). */
   readonly extraOwnHosts?: readonly string[];
-  /** Only these literals (an import's recorded links); see LinkCanonicaliseRun.only. */
-  readonly only?: ReadonlySet<string>;
 }
 
 /** What a migration did (or, dry, would do). */
@@ -241,7 +239,7 @@ export async function migrateLinksToReferences(
 
   if (scope.includeMain) {
     const lookup = await loadLinkTargetLookup(tx, null, scope.extraOwnHosts ?? []);
-    const cx: ConvertContext = { lookup, ...(scope.only ? { only: scope.only } : {}) };
+    const cx: ConvertContext = { lookup };
     const batch = new ScopeBatch();
     await migrateMainModules(tx, scope, cx, c, batch);
     await migrateMainInstances(tx, scope, cx, c, batch, moduleFields);
@@ -254,7 +252,7 @@ export async function migrateLinksToReferences(
 
   for (const b of branches) {
     const lookup = await loadLinkTargetLookup(tx, b, scope.extraOwnHosts ?? []);
-    const cx: ConvertContext = { lookup, ...(scope.only ? { only: scope.only } : {}) };
+    const cx: ConvertContext = { lookup };
     const batch = new ScopeBatch();
     if (scope.apply) await lockBranchEntities(tx, b);
     await migrateBranch(tx, b, cx, c, batch, pluginByBranch.get(b) ?? [], moduleFields);

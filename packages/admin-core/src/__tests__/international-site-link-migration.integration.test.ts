@@ -229,6 +229,20 @@ describe("international-site link hook", () => {
     expect((await variantValues(ORPHAN_KEY)).nav[0]?.href).toBe(`/${PFX}-solo`);
     expect(out.unresolved.some((u) => u.label.includes(ORPHAN_KEY))).toBe(false);
 
+    // The risk rollout D left for E: D removed the plugin's render-time
+    // remap of literal paths. After the migration the German page's
+    // footer links go to the German page — both the English path the
+    // German menu was written with and the `/de/…` path — never to the
+    // English page.
+    const de = await sysOp<{ html: string; missingSlots: string[] }>("pages.render_preview", {
+      pageId: deSoloId,
+    });
+    const deFooter = de.html.slice(de.html.indexOf("<footer"));
+    expect(deFooter).toContain(`<a href="/de/${PFX}-solo-de/">Kontakt</a>`);
+    expect(deFooter).toContain(`<a href="/de/${PFX}-solo-de/">Allein</a>`);
+    expect(deFooter).not.toContain(`href="/${PFX}-solo/"`);
+    expect(de.missingSlots.filter((m) => m.startsWith("link-variant-missing:"))).toEqual([]);
+
     await sysOp("links.revert_migration", { runId: out.run.runId });
     expect((await variantValues()).nav[0]?.href).toBe(`/${PFX}-solo`);
   });
