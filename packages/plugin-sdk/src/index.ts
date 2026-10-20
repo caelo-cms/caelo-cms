@@ -102,6 +102,7 @@ export const pluginCapability = z.enum([
   "image_generation",
   "site_media_read",
   "content_variants",
+  "link_resolve",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -424,6 +425,39 @@ export const contentVariantResolution = z
 
 export type ContentVariantResolution = z.infer<typeof contentVariantResolution>;
 
+/**
+ * Epic #724 (rollout D) — one page's answer at the `link-resolve`
+ * composition point: which VARIANT of the site the page belongs to
+ * (international-site: its locale code) and which GROUP of pages are
+ * versions of each other (its variant group; null = no other version).
+ *
+ * Core resolves every internal page reference (`caelo:page/<id>`) on a
+ * page of variant V to the member of the target's group in V — the
+ * same-language version of the linked page — wherever the link lives:
+ * module HTML, rich text, link fields, link lists, nav-menu sets,
+ * chrome. A target with no member in V is a loud failure, never a link
+ * into another variant (CLAUDE.md §2). URLs stay core's: the plugin
+ * names pages, core builds their URLs.
+ *
+ * `variant` is a plain token (letters, digits, `-`, `_`: BCP-47 codes
+ * like `de`, `pt-BR`, `zh-Hant`): core interpolates it into missing-slot
+ * markers (`link-variant-missing:page/<id>:<variant>`) and AI-facing
+ * text, where a `:` or whitespace would corrupt the marker.
+ */
+export const linkResolvePageVariant = z
+  .object({
+    variant: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        "variant must be 1-64 letters, digits, '-' or '_' (e.g. a locale code like pt-BR)",
+      ),
+    group: z.string().min(1).max(200).nullable(),
+  })
+  .strict();
+
+export type LinkResolvePageVariant = z.infer<typeof linkResolvePageVariant>;
+
 export const pluginManifest = z
   .object({
     // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
@@ -479,6 +513,10 @@ export const pluginManifest = z
      *  the `content_variants` capability: it changes what every page
      *  renders. */
     hasContentVariants: z.boolean().default(false),
+    /** See `PluginDefinition.linkResolveOperation` (#724). Requires the
+     *  `link_resolve` capability: it changes where every internal link
+     *  on a page goes. */
+    hasLinkResolve: z.boolean().default(false),
     /** Grants this plugin asks for. A request grants nothing: the Owner
      *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
@@ -1350,10 +1388,30 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * its layout and page placements) and returning `{resolutions:
    * Record<pageId, Record<placementKey, ContentVariantResolution>>}`.
    * Without a plugin every placement renders as stored. The preview and
-   * the static build both call it, so they cannot disagree. Requires the
+   * the static build both call it, so they cannot disagree. Internal
+   * links inside the values need no rewriting here: core resolves them
+   * per page through the `link-resolve` point. Requires the
    * `content_variants` capability.
    */
   readonly contentVariantsOperation?: string;
+  /**
+   * Epic #724 (rollout D) — the link-resolve composition point: where an
+   * internal page link goes on THIS page. An operation in `operations`
+   * taking `{pageIds: string[]}` (every page a render can link to — the
+   * whole site in the render's scope) and returning `{pages:
+   * Record<pageId, LinkResolvePageVariant>}`. Core maps each page
+   * reference to the target's sibling in the rendering page's variant
+   * (see {@link linkResolvePageVariant}); a page absent from the answer
+   * is one the plugin has no opinion about. Called once per preview and
+   * once per build, so preview, live-edit and the static build resolve
+   * identically. Requires the `link_resolve` capability.
+   *
+   * @example
+   *   link_resolve: async (_ctx, { pageIds }) => ({
+   *     pages: { [pageIds[0]]: { variant: "de", group: "pricing" } },
+   *   }),
+   */
+  readonly linkResolveOperation?: string;
   /**
    * The I/O half of `dataLists`: an operation in `operations` taking
    * `{pageIds: string[], pageUrlStyle: PageUrlStyle}` (page links come
@@ -1401,6 +1459,7 @@ export function manifestFromDefinition(def: {
   readonly buildAssets?: unknown;
   readonly deferralsOperation?: string;
   readonly contentVariantsOperation?: string;
+  readonly linkResolveOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
   readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
@@ -1433,6 +1492,7 @@ export function manifestFromDefinition(def: {
     hasBuildAssets: Boolean(def.buildAssets),
     hasDeferrals: Boolean(def.deferralsOperation),
     hasContentVariants: Boolean(def.contentVariantsOperation),
+    hasLinkResolve: Boolean(def.linkResolveOperation),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
     ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),

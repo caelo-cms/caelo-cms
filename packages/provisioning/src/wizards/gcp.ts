@@ -1165,7 +1165,7 @@ async function stepRemoteMcp(
   const failed = (error: string) => {
     s.stop(yellow(`Remote MCP not prepared: ${error}`));
     log.warn(
-      `The install works; Settings → MCP reports remote MCP as unavailable until ${bold(selfCommand("upgrade"))} prepares it.`,
+      `The install works; Settings → Google sign-in and Settings → MCP report this install as not prepared until ${bold(selfCommand("upgrade"))} prepares it.`,
     );
     return false;
   };
@@ -1181,7 +1181,16 @@ async function stepRemoteMcp(
     services: { admin, gateway },
   });
   if (!env.ok) return failed(env.error);
-  s.stop(green(`Remote MCP prepared (${env.identity.mcpPublicUrl})`));
+  s.stop(green(`Remote MCP and Google sign-in prepared (${env.identity.mcpPublicUrl})`));
+  if (env.orgDomainError) {
+    // #914 — without the organisation's domain the admin cannot tell who
+    // IAP's built-in sign-in admits, so it refuses new users until the
+    // Owner sets up Google sign-in. Say so now rather than at the first
+    // invite.
+    log.warn(
+      `Could not read this project's Google organisation (${env.orgDomainError}). Set up Google sign-in under Settings → Google sign-in before adding users, or re-run ${bold(selfCommand("upgrade"))} as an account with the Organization Viewer role.`,
+    );
+  }
   return true;
 }
 

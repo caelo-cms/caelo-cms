@@ -31,6 +31,7 @@ import {
   adminMediaVolume,
   type CloudRunEnvVar,
   GATEWAY_TIMEOUT_SECONDS,
+  RETIRED_SECRET_FILES,
   SERVICE_SECRET_FILES,
 } from "../stack-contract.js";
 import {
@@ -197,12 +198,17 @@ export async function planAppRoll(
   );
   if (!media.ok)
     return { ok: false, error: `the admin's media volume can't be set up: ${media.error}` };
-  // #806 — each service's secret files (the gateway's remote-MCP OAuth
+  // #806/#914 — each service's secret files (the gateway's Google sign-in
   // client). A file the roll cannot mount fails the plan: the new gateway
   // reads its path from the env contract.
   const secretFiles = {} as Record<RollSlug, { flags: string[]; changes: string[] }>;
   for (const s of services) {
-    const files = planSecretFiles(s.liveVolumes, SERVICE_SECRET_FILES[s.slug], install.env);
+    const files = planSecretFiles(
+      s.liveVolumes,
+      SERVICE_SECRET_FILES[s.slug],
+      install.env,
+      RETIRED_SECRET_FILES[s.slug],
+    );
     if (!files.ok) {
       return { ok: false, error: `the ${s.slug}'s secret files can't be mounted: ${files.error}` };
     }

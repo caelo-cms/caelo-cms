@@ -158,6 +158,29 @@ describe("server-side backend selection", () => {
     expect(recorded[0]?.opts?.width).toBe(375);
   });
 
+  it("renders at an explicit width and states it as the requested width", async () => {
+    const recorded: RecordedCapture[] = [];
+    installFakeScreenshotter(recorded);
+    const result = await screenshotPageTool.handler(
+      aiCtx,
+      { pageId: PAGE_ID, width: 1920 },
+      toolCtx(),
+    );
+    expect(result.ok).toBe(true);
+    expect(recorded[0]?.opts?.width).toBe(1920);
+    expect(recorded[0]?.opts?.height).toBe(800);
+    expect(result.content).toContain("Rendered at 1920px wide (the width you requested)");
+  });
+
+  it("flags the desktop preset as possibly not the operator's view", async () => {
+    const recorded: RecordedCapture[] = [];
+    installFakeScreenshotter(recorded);
+    const result = await screenshotPageTool.handler(aiCtx, { pageId: PAGE_ID }, toolCtx());
+    expect(result.content).toContain(
+      "1280×800px desktop preset — NOT necessarily the operator's view",
+    );
+  });
+
   it("forwards the selector for element crops", async () => {
     const recorded: RecordedCapture[] = [];
     installFakeScreenshotter(recorded);

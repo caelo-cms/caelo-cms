@@ -96,11 +96,11 @@ export default defineConfig({
       // on; the worker must never reach the real Caelo intake from CI. A
       // closed loopback port keeps every send a recorded, retried failure.
       CAELO_BUG_INTAKE_URL: "http://127.0.0.1:9",
-      // #806 — Settings → MCP → Remote sees a Google Cloud install's
-      // remote-MCP env without a cloud; its Google calls fail loudly
-      // (lib/server/remote-mcp.ts). Test-only, ignored when
+      // #806 / #914 — Settings → Google sign-in and Settings → MCP → Remote
+      // see a Google Cloud install's env without a cloud; their Google calls fail loudly
+      // (lib/server/google-iap.ts). Test-only, ignored when
       // NODE_ENV=production.
-      CAELO_E2E_REMOTE_MCP: "1",
+      CAELO_E2E_GOOGLE_IAP: "1",
     },
   },
 });
