@@ -327,6 +327,16 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason: "previews for the Owner exactly what telemetry would send before they consent",
   },
+  "bug_forwarding.get": {
+    kind: "internal",
+    reason:
+      "backs the Owner's consent card on /settings/bugs (bug_forwarding.set is human-only); the agent learns where each report went from the bug_report result and list_bug_reports",
+  },
+  "bug_forwarding.preview": {
+    kind: "internal",
+    reason:
+      "shows the Owner the exact bytes one bug report would send to the Caelo team before or after they consent",
+  },
 
   // ── #553 quality gate ─────────────────────────────────────────────────
   "quality_audits.list_pending": PENDING_QUEUE,

@@ -12,15 +12,17 @@
  * stays green, because the AI is routing around defects, not failing).
  *
  * Every row carries a `forwardingState` (#902) saying where the report
- * went. Until forwarding to the Caelo team ships (#904) it is always
- * `local_only`, and the tool result says so instead of implying the
- * Caelo team was told.
+ * went: `queued` when the Owner opted in to sending reports to the Caelo
+ * team (bug_forwarding.set), otherwise `local_only`. The tool result says
+ * which, instead of implying the Caelo team was told. The row also stores
+ * its defect fingerprint (shared/bug-intake.ts) so the intake can merge the
+ * same defect across installs.
  *
  * Not audited: internal AI telemetry, same stance as ai_moduleize_attempts.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { ok } from "@caelo-cms/shared";
+import { computeBugFingerprint, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 
@@ -66,10 +68,17 @@ export const createBugReportOp = defineOperation({
       `)) as unknown as Array<{ id: string; forwardingState: BugForwardingState }>;
       if (dup[0]) return ok(dup[0]);
     }
+    const fingerprint = await computeBugFingerprint({
+      source: input.source,
+      suspectedTool: input.suspectedTool ?? null,
+      title: input.title,
+      whatHappened: input.whatHappened,
+    });
     const rows = (await tx.execute(sql`
       INSERT INTO ai_bug_reports
         (chat_session_id, actor_id, title, what_happened, expected,
-         suspected_tool, evidence, severity, blocked_task, source)
+         suspected_tool, evidence, severity, blocked_task, source,
+         fingerprint, forwarding_state, next_forward_at)
       VALUES (
         ${input.chatSessionId ?? null}::uuid,
         ${ctx.actorId}::uuid,
@@ -80,7 +89,12 @@ export const createBugReportOp = defineOperation({
         ${input.evidence ?? null},
         ${input.severity},
         ${input.blockedTask},
-        ${input.source}
+        ${input.source},
+        ${fingerprint},
+        CASE WHEN (SELECT bug_forwarding_enabled FROM telemetry_settings WHERE id = 1)
+             THEN 'queued' ELSE 'local_only' END,
+        CASE WHEN (SELECT bug_forwarding_enabled FROM telemetry_settings WHERE id = 1)
+             THEN now() END
       )
       RETURNING id::text AS id, forwarding_state AS "forwardingState"
     `)) as unknown as Array<{ id: string; forwardingState: BugForwardingState }>;
@@ -113,6 +127,12 @@ const bugReportRow = z.object({
   /** 'ai' (model-filed via bug_report) or 'auto' (chat-runner auto-captured). */
   source: z.string(),
   forwardingState: bugForwardingState,
+  /** Last send failure, shown so the Owner sees why a report did not go out. */
+  forwardError: z.string().nullable(),
+  /** Upstream state once sent: open | fixed | regression | wontfix. */
+  upstreamStatus: z.string().nullable(),
+  upstreamIssueUrl: z.string().nullable(),
+  upstreamFixedIn: z.string().nullable(),
 });
 
 export const listBugReportsOp = defineOperation({
@@ -137,6 +157,10 @@ export const listBugReportsOp = defineOperation({
              status,
              source,
              forwarding_state AS "forwardingState",
+             forward_error AS "forwardError",
+             upstream_status AS "upstreamStatus",
+             upstream_issue_url AS "upstreamIssueUrl",
+             upstream_fixed_in AS "upstreamFixedIn",
              count(*) OVER ()::int AS total
       FROM ai_bug_reports
       ${where}

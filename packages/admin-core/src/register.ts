@@ -10,6 +10,18 @@ import {
 // The gateway runs these too, so they live in plugin-host (gateway-ops.ts, #634).
 import { commentArchiveListForPageOp } from "@caelo-cms/plugin-host";
 import type { OperationRegistry } from "@caelo-cms/query-api";
+import {
+  bugClustersToRefreshOp,
+  bugForwardingIdentityOp,
+  claimDueBugReportsOp,
+  getBugForwardingOp,
+  markBugIntakeRegisteredOp,
+  previewBugForwardingOp,
+  queueEarlierBugReportsOp,
+  recordBugClusterStatusOp,
+  recordBugForwardResultOp,
+  setBugForwardingOp,
+} from "./ops/ai/bug-forwarding.js";
 import { createBugReportOp, listBugReportsOp } from "./ops/ai/bug-reports.js";
 import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
 import {
@@ -1051,6 +1063,17 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(logModuleizeAttemptOp);
   // 2026-07 — AI-filed bug reports (info source + per-run metric).
   registry.register(createBugReportOp);
+  // Epic #901 — forwarding bug reports to the Caelo team (opt-in).
+  registry.register(getBugForwardingOp);
+  registry.register(setBugForwardingOp);
+  registry.register(queueEarlierBugReportsOp);
+  registry.register(previewBugForwardingOp);
+  registry.register(claimDueBugReportsOp);
+  registry.register(recordBugForwardResultOp);
+  registry.register(bugForwardingIdentityOp);
+  registry.register(markBugIntakeRegisteredOp);
+  registry.register(bugClustersToRefreshOp);
+  registry.register(recordBugClusterStatusOp);
   registry.register(listBugReportsOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);

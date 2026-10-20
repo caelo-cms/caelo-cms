@@ -62,6 +62,12 @@ export * from "./ai/system-prompt.js";
 export { describeError } from "./ai/tools/_describe-error.js";
 export * from "./ai/tools/index.js";
 export * from "./audit.js";
+export {
+  BugIntakeClient,
+  bugIntakeUrl,
+  DEFAULT_BUG_INTAKE_URL,
+} from "./bug-forwarding/client.js";
+export { startBugForwardingWorker, stopBugForwardingWorker } from "./bug-forwarding/worker.js";
 // v0.2.37 — proposal GC sidecar (sweeps stale pending rows daily).
 export {
   startChatImageGcWorker,

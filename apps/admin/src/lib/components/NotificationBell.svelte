@@ -25,6 +25,8 @@
     releaseUrl: string | null;
     /** #696 — where the Owner installs the update (Settings → Updates). */
     updatesPath: string;
+    /** Epic #901 — the Owner has not yet decided whether detected bugs go to the Caelo team. */
+    bugForwardingUndecided: boolean;
     total: number;
   }
 
@@ -36,6 +38,7 @@
     latestVersion: null,
     releaseUrl: null,
     updatesPath: "/settings/updates",
+    bugForwardingUndecided: false,
     total: 0,
   });
   let loaded = $state(false);
@@ -167,6 +170,17 @@
               >
                 <Badge variant="outline">{counts.staleBranches}</Badge>
                 <span>Chats inactive for 14+ days</span>
+              </a>
+            {/if}
+            {#if counts.bugForwardingUndecided}
+              <a
+                href="/settings/bugs"
+                class="-mx-1 flex items-center gap-2 rounded-md px-2 py-2 hover:bg-accent"
+                data-testid="bug-forwarding-notice"
+                onclick={() => (open = false)}
+              >
+                <Badge variant="outline">?</Badge>
+                <span>Send detected bugs to the Caelo team?</span>
               </a>
             {/if}
             {#if counts.upgradeAvailable && counts.latestVersion}
