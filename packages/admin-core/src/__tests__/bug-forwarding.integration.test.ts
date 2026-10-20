@@ -30,6 +30,7 @@ import { SQL } from "bun";
 import { BugIntakeClient } from "../bug-forwarding/client.js";
 import { forwardDueReports, refreshClusterStatus } from "../bug-forwarding/worker.js";
 import { registerAdminOps } from "../register.js";
+import { _setKekForTests } from "../security/secret-box.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -174,7 +175,11 @@ async function rows() {
 }
 
 beforeAll(async () => {
-  adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  // The install's intake signing key is sealed with the KEK. Set it here
+  // rather than relying on CAELO_SECRET_KEK or on another test file having
+  // left one behind: that ordering dependency is what broke this suite.
+  _setKekForTests(new Uint8Array(32).fill(23));
+  adapter =new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
 });
@@ -187,6 +192,7 @@ beforeEach(async () => {
 afterAll(async () => {
   await reset();
   await adapter.close();
+  _setKekForTests(null);
 });
 
 describe("bug forwarding", () => {
