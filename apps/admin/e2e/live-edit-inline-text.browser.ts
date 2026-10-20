@@ -127,10 +127,15 @@ test("right-click → Edit text saves one field in place; Escape restores", asyn
       `
       import { SQL } from "bun";
       const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-      const live = await sql\`SELECT "values"->>'title' AS t FROM content_instances WHERE id = \${process.env.CI}::uuid\`;
-      const snap = await sql\`SELECT cis.state->'values'->>'title' AS t FROM content_instance_snapshots cis JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id WHERE cis.content_instance_id = \${process.env.CI}::uuid ORDER BY ss.created_at DESC LIMIT 1\`;
+      // RLS is forced for the owner role too: read as the system actor.
+      const out = await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const live = await tx\`SELECT "values"->>'title' AS t FROM content_instances WHERE id = \${process.env.CI}::uuid\`;
+        const snap = await tx\`SELECT cis.state->'values'->>'title' AS t FROM content_instance_snapshots cis JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id WHERE cis.content_instance_id = \${process.env.CI}::uuid ORDER BY ss.created_at DESC LIMIT 1\`;
+        return { live: live[0]?.t ?? null, branch: snap[0]?.t ?? null };
+      });
       await sql.end();
-      process.stdout.write(JSON.stringify({ live: live[0].t, branch: snap[0]?.t ?? null }));
+      process.stdout.write(JSON.stringify(out));
       `,
       { CI: ids.ci },
     ),
