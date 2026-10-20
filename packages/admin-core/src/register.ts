@@ -477,6 +477,12 @@ import {
   setMcpRemoteConnectionCapOp,
 } from "./ops/security/mcp_remote_connections.js";
 import {
+  clearMcpRemoteOAuthClientOp,
+  getMcpRemoteOAuthClientOp,
+  mcpRemoteOAuthClientForSyncOp,
+  setMcpRemoteOAuthClientOp,
+} from "./ops/security/mcp_remote_oauth.js";
+import {
   createMcpTokenOp,
   listMcpTokensOp,
   mcpAuthorizeUploadOp,
@@ -906,6 +912,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listMcpTokensOp);
   registry.register(createMcpTokenOp);
   registry.register(revokeMcpTokenOp);
+  // #806 — the remote-MCP Google OAuth client (ID only; the secret lives in
+  // Secret Manager) for the setup page and the operator-access sync job.
+  registry.register(getMcpRemoteOAuthClientOp);
+  registry.register(setMcpRemoteOAuthClientOp);
+  registry.register(clearMcpRemoteOAuthClientOp);
+  registry.register(mcpRemoteOAuthClientForSyncOp);
   registry.register(mcpSendChatOp);
   registry.register(mcpAuthorizeUploadOp);
   registry.register(mcpGetVersionOp);
