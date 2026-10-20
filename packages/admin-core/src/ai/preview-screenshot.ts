@@ -29,7 +29,8 @@ import { externalFetchAllowedHosts } from "./tools/_external-fetch-budget.js";
 import { getExternalScreenshotter } from "./tools/_external-screenshotter.js";
 import { pngDimensions } from "./tools/screenshot-external-page.js";
 
-/** Same viewport presets ChatPanel applies to the SSE-path iframe, so the
+/** Same viewport presets the operator-browser path uses when no live
+ *  preview is open (`apps/admin/.../chat/screenshot-viewport.ts`), so the
  *  two backends of `screenshot_page` show comparable framing. */
 export const PREVIEW_SCREENSHOT_VIEWPORTS = {
   desktop: { width: 1280, height: 800 },
@@ -46,6 +47,9 @@ export type PreviewScreenshotResult =
       /** Pixel size of the captured PNG (IHDR), when readable. */
       readonly widthPx?: number;
       readonly heightPx?: number;
+      /** Layout viewport the page was rendered in (CSS px). */
+      readonly viewportWidth: number;
+      readonly viewportHeight: number;
     }
   | {
       readonly ok: false;
@@ -91,6 +95,8 @@ export async function capturePreviewScreenshot(args: {
   readonly pageId: string;
   readonly chatBranchId?: string;
   readonly viewport?: PreviewScreenshotViewport;
+  /** Explicit layout width in CSS px; overrides the preset's width (height stays the preset's). */
+  readonly width?: number;
   readonly selector?: string;
 }): Promise<PreviewScreenshotResult> {
   const origin = resolvePreviewSelfOrigin();
@@ -110,7 +116,8 @@ export async function capturePreviewScreenshot(args: {
         "on self-hosted installs)",
     };
   }
-  const vp = PREVIEW_SCREENSHOT_VIEWPORTS[args.viewport ?? "desktop"];
+  const preset = PREVIEW_SCREENSHOT_VIEWPORTS[args.viewport ?? "desktop"];
+  const vp = { width: args.width ?? preset.width, height: preset.height };
   const token = mintPreviewScreenshotToken({
     pageId: args.pageId,
     ...(args.chatBranchId ? { chatBranchId: args.chatBranchId } : {}),
@@ -144,6 +151,8 @@ export async function capturePreviewScreenshot(args: {
       ok: true,
       image: { base64: Buffer.from(shot.bytes).toString("base64"), mediaType: "image/png" },
       ...(dims ? { widthPx: dims.width, heightPx: dims.height } : {}),
+      viewportWidth: vp.width,
+      viewportHeight: vp.height,
     };
   } catch (e) {
     return {

@@ -66,7 +66,7 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { pendingSnapshotSql } from "../../draft.js";
-import { loadLinkTargets, siteLinkIndexFrom } from "../../links/link-targets.js";
+import { loadPreviewLinkIndex } from "../../links/link-targets.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 import { resolvePreviewContentVariants } from "./preview-variants.js";
 import { loadPublishPageUrlStyle } from "./public-urls.js";
@@ -745,11 +745,10 @@ export const renderPagePreviewOp = defineOperation({
     // Epic #724 — internal references (`caelo:page/<id>`, `caelo:media/<id>`)
     // resolve against the chat's view of the site (its renames, moves and
     // new pages included) in the publish target's URL style, so a link in
-    // the iframe navigates to the same path `preview-by-path` looks up.
-    const linkResolver = siteLinkIndexFrom(
-      await loadLinkTargets(tx, chatBranchId ?? null),
-      "preview",
-      pageUrlStyle,
+    // the iframe navigates to the same path `preview-by-path` looks up —
+    // and, through the link-resolve point, to the page's own language.
+    const linkResolver = (
+      await loadPreviewLinkIndex(tx, chatBranchId ?? null, "preview", pageUrlStyle, renderScope)
     ).forPage(input.pageId);
     const resolvedLists = await resolveDataLists([input.pageId], renderScope, pageUrlStyle);
     const pluginLists = {
@@ -832,7 +831,6 @@ export const renderPagePreviewOp = defineOperation({
       valuesByInstance,
       chatBranchId: chatBranchId ?? null,
       renderScope,
-      pageUrlStyle,
     });
     for (const [key, values] of variants.pageValues) {
       const binding = placementBindings.get(key);

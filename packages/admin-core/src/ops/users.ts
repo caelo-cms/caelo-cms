@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../audit.js";
 import { hashPassword, validatePasswordStrength, verifyPassword } from "../password.js";
+import { currentIdentityGate, identityGateMessage } from "../security/identity-gate.js";
 import { withSystemRls } from "./_helpers.js";
 
 /**
@@ -274,6 +275,25 @@ export const listUsersOp = defineOperation({
   },
 });
 
+type OpTx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
+
+/**
+ * #914 — why `email` could never get past the install's identity gate
+ * (security/identity-gate.ts), as an AI- and operator-actionable message;
+ * null when it can. Reads whether the Google sign-in client is set up in the
+ * caller's transaction, so a proposal approved after the client was
+ * removed is refused at apply time too.
+ */
+export async function identityGateRefusal(tx: OpTx, email: string): Promise<string | null> {
+  const gate = currentIdentityGate();
+  if (gate.kind === "none") return null;
+  const rows = (await tx.execute(
+    sql`SELECT 1 AS configured FROM operator_oauth_client LIMIT 1`,
+  )) as unknown as { configured: number }[];
+  const verdict = gate.check(email, { signInClientConfigured: rows.length > 0 });
+  return verdict.ok ? null : identityGateMessage(verdict);
+}
+
 export const createUserOp = defineOperation({
   name: "users.create",
   // Why human-only: Owner-only — security domain.
@@ -304,6 +324,13 @@ export const createUserOp = defineOperation({
         operation: "users.create",
         message: "email already exists",
       });
+    }
+
+    // #914 — never create a user the identity gate in front of the admin
+    // will refuse (CLAUDE.md §2: fail loudly with the next step).
+    const refusal = await identityGateRefusal(tx, input.email);
+    if (refusal) {
+      return err({ kind: "HandlerError", operation: "users.create", message: refusal });
     }
 
     const strength = validatePasswordStrength(input.password, {

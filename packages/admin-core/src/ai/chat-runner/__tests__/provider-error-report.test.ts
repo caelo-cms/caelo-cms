@@ -60,4 +60,46 @@ describe("summarizeHistoryForBugReport", () => {
     const digest = summarizeHistoryForBugReport(messages);
     expect(digest).toContain("toolu_stray)!ORPHAN");
   });
+
+  it("pairs across passthrough rows and flags a result stored twice", () => {
+    const X = "toolu_01Up8jx7MZZxjE2JvKUGDQTn";
+    const messages: ChatMessageInput[] = [
+      { role: "user", content: "lighter headings" },
+      {
+        role: "assistant",
+        content: "",
+        sdkMessages: [
+          { role: "assistant", content: [{ type: "tool-call", toolCallId: "toolu_a" }] },
+        ],
+      },
+      { role: "tool", content: "ok", toolCallId: "toolu_a" },
+      {
+        role: "assistant",
+        content: "",
+        sdkMessages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "tool-call", toolCallId: X },
+              { type: "tool-call", toolCallId: "toolu_bad" },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              { type: "tool-result", toolCallId: X },
+              { type: "tool-result", toolCallId: "toolu_bad" },
+            ],
+          },
+        ],
+      },
+      { role: "tool", content: "ok", toolCallId: X },
+    ];
+    const digest = summarizeHistoryForBugReport(messages);
+    // A healthy passthrough call answered by a tool row is not an orphan.
+    expect(digest).toContain("#2 tool tool_result(toolu_a)\n");
+    expect(digest).not.toContain(")!ORPHAN");
+    expect(digest).toContain(`tool_use[${X},toolu_bad]`);
+    expect(digest).toContain(`#4 tool tool_result(${X})!DUPLICATE`);
+  });
 });

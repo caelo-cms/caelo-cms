@@ -312,13 +312,13 @@ describe("planContractEnv", () => {
     // #650 — the same roll converges the protected staging domain's host
     // and gate key onto an install that predates it.
     expect(plan.services.admin.flags).toEqual([
-      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_CONVERGE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-converge,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_MCP_OAUTH_CLIENT_STORE=projects/acme/secrets/caelo-production-mcp-oauth-client,CAELO_STAGING_HOST=staging.acme.com",
+      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_CONVERGE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-converge,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_OPERATOR_OAUTH_CLIENT_STORE=projects/acme/secrets/caelo-production-operator-oauth-client,CAELO_STAGING_HOST=staging.acme.com",
       "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
     expect(plan.services.gateway.flags).toEqual([
       // The gateway learns which forwarded address is the visitor (#845).
       // #806 — and where the remote-MCP broker's client file and seal key are.
-      "--update-env-vars=CAELO_TRUSTED_PROXY_HOPS=1,CAELO_MCP_OAUTH_CLIENT_FILE=/secrets/mcp-oauth-client/client.json",
+      "--update-env-vars=CAELO_TRUSTED_PROXY_HOPS=1,CAELO_OPERATOR_OAUTH_CLIENT_FILE=/secrets/operator-oauth-client/client.json",
       "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest,CAELO_MCP_OAUTH_SEAL_KEY=caelo-production-mcp-oauth-seal-key:latest",
     ]);
   });
@@ -789,12 +789,12 @@ describe("ensureStackInvariants", () => {
         `secrets add-iam-policy-binding caelo-production-staging-gate-secret --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
         // #806 — the remote-MCP broker's seal key and OAuth client file.
         `secrets add-iam-policy-binding caelo-production-mcp-oauth-seal-key --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
-        `secrets add-iam-policy-binding caelo-production-mcp-oauth-client --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+        `secrets add-iam-policy-binding caelo-production-operator-oauth-client --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
       ]);
       // #806 — the admin may add versions to the OAuth client secret, and to no other.
       const adders = calls.filter((c) => c.includes("roles/secretmanager.secretVersionAdder"));
       expect(adders).toEqual([
-        `secrets add-iam-policy-binding caelo-production-mcp-oauth-client --project=acme --member=${RUN_SA} --role=roles/secretmanager.secretVersionAdder --quiet --format=none`,
+        `secrets add-iam-policy-binding caelo-production-operator-oauth-client --project=acme --member=${RUN_SA} --role=roles/secretmanager.secretVersionAdder --quiet --format=none`,
       ]);
       for (const secret of ["internal-secret", "tool-approval-secret", "secret-kek"]) {
         expect(calls).toContain(

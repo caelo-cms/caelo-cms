@@ -18,6 +18,11 @@
  * link the chat writes to a page it just renamed resolves to that page.
  */
 
+import {
+  hasLinkResolveContributors,
+  type RenderScope,
+  resolveLinkVariants,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   createSiteLinkIndex,
@@ -121,11 +126,33 @@ export async function loadLinkTargets(
   return { pages: [...pages.values()], media };
 }
 
-/** Build the render-time link index for a preview or a build. */
-export function siteLinkIndexFrom(
-  targets: LinkTargets,
+/**
+ * Build the render-time link index for a preview: the scope's link
+ * targets plus the link-resolve composition point's page-variant
+ * partition (rollout D), asked with the render's branch scope so a page
+ * the chat just created as a German version maps like a published one.
+ * The static generator builds its twin in `link-index.ts`.
+ */
+export async function loadPreviewLinkIndex(
+  tx: TransactionRunner,
+  chatBranchId: string | null,
   env: LinkRenderEnv,
   pageUrlStyle: PageUrlStyle,
-): SiteLinkIndex {
-  return createSiteLinkIndex({ pages: targets.pages, media: targets.media, env, pageUrlStyle });
+  renderScope: RenderScope,
+): Promise<SiteLinkIndex> {
+  const targets = await loadLinkTargets(tx, chatBranchId);
+  const pageVariants =
+    targets.pages.length > 0 && hasLinkResolveContributors()
+      ? await resolveLinkVariants(
+          targets.pages.map((p) => p.id),
+          renderScope,
+        )
+      : undefined;
+  return createSiteLinkIndex({
+    pages: targets.pages,
+    media: targets.media,
+    env,
+    pageUrlStyle,
+    ...(pageVariants ? { pageVariants } : {}),
+  });
 }

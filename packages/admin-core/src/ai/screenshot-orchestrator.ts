@@ -50,7 +50,25 @@ export interface ScreenshotCaptureMeta {
   canvasHeight: number;
   pageWidth: number;
   pageHeight: number;
+  /**
+   * Viewport the page was laid out in, and where that size came from.
+   * Optional for tabs still running an older client. Stated in the tool
+   * result because a fixed 1280px capture once showed the AI a 3-line
+   * headline the operator's wider preview wrapped onto 4 lines — the AI
+   * must know whether it is looking at the operator's own view.
+   */
+  viewportWidth?: number;
+  viewportHeight?: number;
+  viewportSource?: ScreenshotViewportSource;
 }
+
+/**
+ * - `operator-preview`: the operator's live preview pane size (what they see).
+ * - `requested`: the `width` the AI asked for.
+ * - `preset`: the fixed preset for the viewport name (no live preview open,
+ *   or tablet/mobile).
+ */
+export type ScreenshotViewportSource = "operator-preview" | "requested" | "preset";
 
 export interface ScreenshotImage {
   base64: string;

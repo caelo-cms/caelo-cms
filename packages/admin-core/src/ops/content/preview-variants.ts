@@ -23,7 +23,6 @@ import {
 } from "@caelo-cms/plugin-host";
 import type { ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import type { PageUrlStyle } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
 /** The module row shape the preview loads (layout and page modules). */
@@ -85,7 +84,6 @@ export async function resolvePreviewContentVariants(
     valuesByInstance: ReadonlyMap<string, Record<string, unknown>>;
     chatBranchId: string | null;
     renderScope: RenderScope;
-    pageUrlStyle: PageUrlStyle;
   },
 ): Promise<PreviewContentVariants> {
   if (!hasContentVariantContributors()) return NONE;
@@ -135,11 +133,7 @@ export async function resolvePreviewContentVariants(
   }
 
   const resolved = (
-    await resolveContentVariants(
-      [{ pageId: input.pageId, placements }],
-      input.renderScope,
-      input.pageUrlStyle,
-    )
+    await resolveContentVariants([{ pageId: input.pageId, placements }], input.renderScope)
   ).get(input.pageId);
   if (!resolved) return NONE;
 

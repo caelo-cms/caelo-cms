@@ -6,10 +6,11 @@
  * `cms-provision upgrade`, both as the operator's own gcloud identity.
  *
  * Trust boundary. Who may pass the admin's IAP gate and sign as `caelo-mcp`
- * follows the Caelo user list; which OAuth client may call the admin
- * programmatically (IAP `programmatic_clients`, remote MCP #806) follows the
- * client the Owner configured under Settings → MCP → Remote. The admin does NOT write that: its runtime
- * service account holds no IAM-policy rights. A Cloud Run job with its own
+ * follows the Caelo user list; which OAuth client IAP signs people in with
+ * and accepts programmatically (IAP `oauthSettings`: browser client, its
+ * secret and `programmaticClients`, #914) follows the Google sign-in client
+ * the Owner configured under Settings → Google sign-in. The admin does NOT
+ * write that: its runtime service account holds no IAM-policy rights. A Cloud Run job with its own
  * service account (admin-core security/operator-access/sync-job.ts) is the
  * only principal that may change those two bindings, and it only ever grants
  * individual `user:` emails read from the database. The admin may only start
@@ -22,10 +23,12 @@
  * What this ensures, every step idempotent:
  *   1. the Cloud Scheduler API;
  *   2. the custom role `caeloOperatorAccess` (get/setIamPolicy, and
- *      get/updateSettings for `programmatic_clients`);
+ *      get/updateSettings for `oauthSettings`);
  *   3. the job's service account, bound to that role on exactly the admin's
- *      IAP resource and the `caelo-mcp` service account, plus
- *      `cloudsql.instanceUser` + `logging.logWriter`;
+ *      IAP resource and the `caelo-mcp` service account, `secretAccessor`
+ *      on exactly the Google sign-in client's secret (#914: IAP needs the
+ *      client secret too), plus `cloudsql.instanceUser` +
+ *      `logging.logWriter`;
  *   4. removal of the admin run SA's operator-access grants an earlier
  *      revision of this feature gave it;
  *   5. Cloud SQL IAM database authentication (flag + the job's IAM database
@@ -45,6 +48,7 @@ import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import {
   gcpNamePrefix,
+  gcpSecretId,
   mcpIapServiceAccountEmail,
   operatorAccessJobName,
   operatorAccessScheduleName,
@@ -53,6 +57,7 @@ import {
   runServiceAccountEmail,
 } from "./gcp-names.js";
 import { type IapResource, iapResourceArgs } from "./mcp-iap.js";
+import { operatorOAuthClientSecretResource } from "./stack-contract.js";
 
 type Run = (args: string[]) => Promise<GcloudResult>;
 
@@ -69,12 +74,12 @@ export const OPERATOR_ACCESS_ROLE: CustomRoleSpec = {
   roleId: "caeloOperatorAccess",
   title: "Caelo operator access",
   description:
-    "Lets the Caelo operator-access sync job set who passes the admin's IAP gate, which OAuth client may call it programmatically (remote MCP), and who may sign as caelo-mcp. Bound only on those two resources, only to the job's service account.",
+    "Lets the Caelo operator-access sync job set who passes the admin's IAP gate, which OAuth client IAP signs people in with and accepts programmatically (Google sign-in, remote MCP), and who may sign as caelo-mcp. Bound only on those two resources, only to the job's service account.",
   permissions: [
     "iap.webServices.getIamPolicy",
     "iap.webServices.setIamPolicy",
-    // #806 — the admin IAP resource's `programmatic_clients` (the remote-MCP
-    // OAuth client). IAP settings permissions per resource level:
+    // #914 — the admin IAP resource's `oauthSettings` (the install's Google
+    // sign-in client). IAP settings permissions per resource level:
     // cloud.google.com/iap/docs/customizing ("Web Services": getSettings /
     // updateSettings); the role is bound on exactly the admin's IAP web
     // service, so it reaches no other resource's settings.
@@ -196,6 +201,12 @@ export interface OperatorAccessSyncTarget {
 /** Env var of the sync job listing {@link OperatorAccessSyncTarget.mcpSigners}. */
 export const MCP_SIGNERS_ENV = "CAELO_OPERATOR_ACCESS_MCP_SIGNERS";
 
+/** #914 — env var of the sync job naming the Google sign-in client's secret. */
+export const OPERATOR_OAUTH_CLIENT_SECRET_ENV = "CAELO_OPERATOR_OAUTH_CLIENT_SECRET";
+
+/** The role the job holds on exactly the Google sign-in client's secret (#914). */
+export const OPERATOR_OAUTH_CLIENT_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
+
 export type OperatorAccessSyncResult =
   | { readonly ok: true; readonly done: string[] }
   | { readonly ok: false; readonly done: string[]; readonly error: string };
@@ -286,6 +297,22 @@ export async function ensureOperatorAccessSync(
     if (!r.ok) return fail(`grant the job ${g.what}`, r);
     done.push(`job: ${g.what}`);
   }
+  // #914 — the job hands the Google sign-in client to IAP (`oauthSettings`
+  // needs the secret too), so it reads that one secret; no other.
+  const clientSecret = gcpSecretId(env, "operator-oauth-client");
+  const accessor = await retry([
+    "secrets",
+    "add-iam-policy-binding",
+    clientSecret,
+    `--member=${jobMember}`,
+    `--role=${OPERATOR_OAUTH_CLIENT_ACCESSOR_ROLE}`,
+    "--condition=None",
+    project,
+    "--quiet",
+    "--format=none",
+  ]);
+  if (!accessor.ok) return fail(`grant the job read access to ${clientSecret}`, accessor);
+  done.push(`job: ${OPERATOR_OAUTH_CLIENT_ACCESSOR_ROLE} on ${clientSecret}`);
   for (const role of ["roles/cloudsql.instanceUser", "roles/logging.logWriter"]) {
     const r = await retry([
       "projects",
@@ -364,6 +391,7 @@ export async function ensureOperatorAccessSync(
     `CAELO_MCP_IAP_SERVICE_ACCOUNT=${mcpSa}`,
     `CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=${installIapAllowlist(target.ownerEmail).join(",")}`,
     `CAELO_OPERATOR_ACCESS_DB_HOST=${target.databaseHost}`,
+    `${OPERATOR_OAUTH_CLIENT_SECRET_ENV}=${operatorOAuthClientSecretResource(projectId, env)}`,
     ...(target.mcpSigners && target.mcpSigners.length > 0
       ? [`${MCP_SIGNERS_ENV}=${target.mcpSigners.join(",")}`]
       : []),

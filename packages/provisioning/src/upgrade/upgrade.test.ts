@@ -684,7 +684,7 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(gateway).toContain(`CAELO_ADMIN_URL=https://${ADMIN}-xyz.a.run.app`);
     expect(gateway).toContain(`CAELO_MCP_PUBLIC_URL=https://${GATEWAY}-xyz.a.run.app`);
     expect(gateway).toContain(
-      "--update-secrets=/secrets/mcp-oauth-client/client.json=caelo-production-mcp-oauth-client:latest",
+      "--update-secrets=/secrets/operator-oauth-client/client.json=caelo-production-operator-oauth-client:latest",
     );
     expect(gateway).toContain("--timeout=3600");
     expect(admin).not.toContain("--timeout");

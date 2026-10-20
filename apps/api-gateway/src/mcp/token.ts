@@ -100,7 +100,7 @@ function googleFailure(result: Extract<GoogleTokenResult, { ok: false }>, what: 
   console.error(`[api-gateway] mcp oauth: Google ${what} call failed (${result.detail})`);
   return oauthError(
     "temporarily_unavailable",
-    "Google sign-in is unavailable for this site right now. If it persists, an Owner checks the Google OAuth client under Settings → MCP.",
+    "Google sign-in is unavailable for this site right now. If it persists, an Owner checks the Google sign-in client under Settings → Google sign-in.",
     503,
   );
 }
