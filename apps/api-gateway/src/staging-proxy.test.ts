@@ -216,11 +216,11 @@ describe("handleStagingRequest — gate", () => {
     expect(await r.text()).toContain("cms-provision upgrade");
   });
 
-  it("says nothing is staged after Publish live", async () => {
+  it("says nothing has been staged before the first Stage", async () => {
     const h = harness({ originUrl: null });
     const r = await h.serve("/", { headers: { cookie: await sessionCookieHeader() } });
     expect(r.status).toBe(503);
-    expect(await r.text()).toContain("Nothing is staged");
+    expect(await r.text()).toContain("Nothing has been staged yet");
     expect(h.calls).toEqual([]);
   });
 });
