@@ -101,10 +101,10 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
           : `${inputs.adminMinInstances} min-instance${inputs.adminMinInstances > 1 ? "s" : ""} (no cold start)`,
     },
     {
-      name: "Quality checks (Lighthouse on the admin)",
-      monthlyUsd: 1,
+      name: "Quality checks (Cloud Run audit job)",
+      monthlyUsd: 2,
       notes:
-        "~2-4 min of admin CPU per audited Stage (up to 5 pages x 5 runs); ~$1/mo at a few Stages a day",
+        "one container per Lighthouse run, all in parallel (up to 5 pages x 3 runs, ~90 s at 2 vCPU each): ~$0.05 per audited Stage, partly in the free tier; results bucket ~$0",
     },
     {
       name: "Cloud Run gateway",
@@ -138,6 +138,14 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
               ? "Adaptive protection (ML-based bot mitigation)"
               : "Free tier — rate limit + OWASP basic rules",
           },
+          {
+            // #806 — the remote-MCP throttle (src/remote-mcp-edge.ts) is one
+            // more rule on the gateway's policy; Cloud Armor Standard bills
+            // each rule at about $1/mo.
+            name: "Cloud Armor rule: remote MCP throttle",
+            monthlyUsd: 1,
+            notes: "Per-IP throttle for /api/mcp/* (remote MCP clients)",
+          },
         ] satisfies CostLine[])
       : ([
           {
@@ -155,9 +163,10 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       notes: "~5 GB storage + low egress; growth roughly $0.02/GB",
     },
     {
-      name: "Secret Manager (5 secrets)",
-      monthlyUsd: 0,
-      notes: "Free tier",
+      name: "Secret Manager (runtime secrets)",
+      monthlyUsd: 0.2,
+      notes:
+        "6 active versions free, then ~$0.06 each; remote MCP (#806) adds the OAuth client and its seal key",
     },
     {
       name: "BigQuery edge log sink",

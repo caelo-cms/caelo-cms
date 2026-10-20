@@ -7,16 +7,20 @@
  * CLI-generated runtime secrets, the stack's IAM/CDN/firewall invariants,
  * MCP access through IAP, public_role's Cloud SQL role memberships (#633),
  * the gateway's and public_role's database logins, the operator-access sync
- * job, and dropping bindings nothing reads any more.
+ * job, the quality-audit job (#875), the remote-MCP load-balancer rules and
+ * identity env (#806), and dropping bindings nothing reads any more.
  *
- * It needs the rights of whoever provisioned the install, so only
- * `cms-provision upgrade` (the operator's own identity) runs it — never the
- * in-cloud upgrader job, which only app-rolls and refuses while
- * {@link needsConverge} says the install is behind.
+ * It needs the rights of whoever provisioned the install: `cms-provision
+ * upgrade` runs it as the operator's own identity, and the converge job
+ * (#819, converge-job.ts) runs the same upgrade as the install's
+ * `caelo-provisioner` account. Never the in-cloud upgrader job, which only
+ * app-rolls and refuses while {@link needsConverge} says the install is
+ * behind.
  *
  * The keyless-provisioner step (#696, provisioner-identity.ts) is converge
  * too; it needs the operator's local install dir, so the CLI injects it as
- * {@link ConvergeDeps.provisionerIdentity}.
+ * {@link ConvergeDeps.provisionerIdentity} (the converge job, which IS the
+ * provisioner, has nothing to move and passes none).
  *
  * Some steps must sit between app-roll steps (a role migration 0248 creates
  * gets its password after migrations, before the gateway rolls onto it), so
@@ -24,6 +28,8 @@
  * {@link AppRollHooks} the app-roll calls in between, and a part after it.
  */
 
+import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
+import { ensureConvergeJob } from "../converge-job-setup.js";
 import { findSqlInstance, planPublicRoleSwitch } from "../gateway-credentials.js";
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import { upgraderServiceAccountEmail } from "../gcp-names.js";
@@ -31,6 +37,7 @@ import type { InstallMetadata } from "../install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "../mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "../operator-access.js";
 import { revokePublicRoleMemberships } from "../public-role-isolation.js";
+import { ensureRemoteMcpEdge, resolveRemoteMcpIdentity } from "../remote-mcp.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
@@ -40,8 +47,13 @@ import {
 } from "../runtime-secrets.js";
 import { selfCommand } from "../self-command.js";
 import {
+  AUDIT_JOB_ENV_VAR,
+  AUDIT_RESULTS_BUCKET_ENV_VAR,
+  type CloudRunEnvVar,
+  CONVERGE_JOB_ENV_VAR,
   MCP_ENV_VAR,
   OPERATOR_ACCESS_JOB_ENV_VAR,
+  remoteMcpIdentityEnv,
   UPGRADER_JOB_ENV_VAR,
 } from "../stack-contract.js";
 import {
@@ -268,6 +280,101 @@ export function startConverge(
     incomplete = true;
   }
 
+  async function auditJob(): Promise<void> {
+    // #875 — the job the quality audit fans its Lighthouse runs out to.
+    // Deployed with the admin's CURRENT image (the admin still runs it until
+    // the app-roll moves both together, and the job refuses a batch from
+    // another version). A failure only costs Stage audits, so it warns and
+    // the admin keeps its current env.
+    const s = r.step("Ensuring the quality-audit job (parallel Lighthouse runs)...");
+    const image = await resolveAdminImage(
+      { projectId: install.projectId, region: install.region, env: install.env },
+      { run },
+    );
+    const aj = image.ok
+      ? await ensureAuditJob(
+          {
+            provider: install.provider,
+            projectId: install.projectId,
+            region: install.region,
+            env: install.env,
+            adminImageRef: image.imageRef,
+          },
+          runDeps,
+        )
+      : { ok: false as const, done: [], error: image.error };
+    for (const step of aj.done) r.info(`  ${step}`);
+    if (aj.ok) {
+      s.done("Quality-audit job ready (Stage audits run in parallel)");
+      return;
+    }
+    s.warned(`Quality-audit job not set up: ${aj.error}`);
+    r.warn(
+      "The upgrade continues; Stage audits fail with the missing job until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    incomplete = true;
+    leaveUntouched.push(AUDIT_JOB_ENV_VAR, AUDIT_RESULTS_BUCKET_ENV_VAR);
+  }
+
+  async function remoteMcpEdge(): Promise<void> {
+    // #806 — on `gcp` the load balancer routes the remote-MCP discovery
+    // paths to the gateway and Cloud Armor lets agent traffic through on
+    // /api/mcp/* (remote-mcp-edge.ts). Only remote MCP depends on it, so a
+    // failure warns.
+    if (install.provider !== "gcp") return;
+    const s = r.step("Ensuring the load balancer's remote-MCP routes and Cloud Armor rule...");
+    const edge = await ensureRemoteMcpEdge(
+      {
+        provider: install.provider,
+        projectId: install.projectId,
+        env: install.env,
+        domain: install.domain,
+      },
+      { ...runDeps, ...(deps.http ? { http: deps.http } : {}) },
+    );
+    if (edge.ok) {
+      for (const line of edge.done) r.info(`  ${line}`);
+      s.done("Remote-MCP load-balancer rules ready");
+      return;
+    }
+    s.warned(`Remote-MCP load-balancer rules not set up: ${edge.error}`);
+    r.warn(
+      "The upgrade continues; remote MCP (Settings → MCP → Remote) cannot be reached through the site's domain until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    incomplete = true;
+  }
+
+  async function remoteMcpIdentity(): Promise<Record<RollSlug, CloudRunEnvVar[]> | null> {
+    // #806 — CAELO_ADMIN_URL / CAELO_MCP_PUBLIC_URL / CAELO_IAP_AUDIENCE
+    // name identities the env contract cannot (stack-contract.ts
+    // RemoteMcpIdentity). Resolved here, read-only, and set by the rolls
+    // (AppRollHooks.afterMigrations `extraEnv`), so they ride the new
+    // revisions. A failure leaves the vars as the services have them and
+    // warns: only remote MCP depends on them.
+    const s = r.step("Resolving the remote-MCP URLs and IAP audience...");
+    const resolved = await resolveRemoteMcpIdentity(
+      {
+        provider: install.provider,
+        projectId: install.projectId,
+        region: install.region,
+        env: install.env,
+        domain: install.domain,
+        services,
+      },
+      runDeps,
+    );
+    if (resolved.ok) {
+      s.done(`Remote MCP can be set up under Settings → MCP (${resolved.identity.mcpPublicUrl})`);
+      return remoteMcpIdentityEnv(resolved.identity);
+    }
+    s.warned(`Remote-MCP env not resolved: ${resolved.error}`);
+    r.warn(
+      "The upgrade continues; Settings → MCP reports remote MCP as not prepared on this install until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    incomplete = true;
+    return null;
+  }
+
   /** The admin's IAP resource: the service on gcp-firebase, the LB backend on gcp. */
   async function adminIapResource(): Promise<IapResource | null> {
     if (install.provider === "gcp-firebase") {
@@ -354,6 +461,54 @@ export function startConverge(
     leaveUntouched.push(UPGRADER_JOB_ENV_VAR);
   }
 
+  async function convergeJob(): Promise<void> {
+    // #819 — the job "Install update" starts for the next release that
+    // changes the cloud setup, on this release's ops image. After
+    // migrations: its database login gets the role migration 0267 creates.
+    // A failure only costs in-Caelo converges (the terminal path stays), so
+    // it warns.
+    const s = r.step("Ensuring the converge job (cloud-setup updates from Settings → Updates)...");
+    const resolved = deps.opsImageRef
+      ? await resolveUpgraderTarget(
+          {
+            projectId: install.projectId,
+            region: install.region,
+            env: install.env,
+            opsImageRef: deps.opsImageRef,
+          },
+          { run },
+        )
+      : { ok: false as const, error: "the release's caelo-ops image could not be resolved" };
+    const cj = resolved.ok
+      ? await ensureConvergeJob(resolved.target, runDeps)
+      : { ok: false as const, done: [], error: resolved.error };
+    for (const step of cj.done) r.info(`  ${step}`);
+    if (cj.ok) {
+      s.done("Converge job ready (updates that change the cloud setup install from the admin)");
+      return;
+    }
+    if (cj.reason === "no-provisioner") {
+      // #883 review — optional for contract 9: an install without a
+      // provisioner (installed before it existed) has nothing the job could
+      // run as, and creating one is a privileged identity no update should
+      // mint. It stays fully converged; its admin keeps no
+      // CAELO_CONVERGE_JOB and so routes cloud-setup releases to the
+      // terminal, saying so on Settings → Updates.
+      s.done("No converge job: this install has no caelo-provisioner to run it as");
+      r.info(
+        "Updates that change the cloud setup keep installing from Cloud Shell or the computer you installed from; Settings → Updates says so when one comes.",
+      );
+      leaveUntouched.push(CONVERGE_JOB_ENV_VAR);
+      return;
+    }
+    s.warned(`Converge job not set up: ${cj.error}`);
+    r.warn(
+      "The upgrade continues; releases that change the cloud setup keep installing from a terminal until this succeeds.",
+    );
+    incomplete = true;
+    leaveUntouched.push(CONVERGE_JOB_ENV_VAR);
+  }
+
   async function operatorAccess(): Promise<void> {
     // The job that keeps IAP in step with the user list (operator-access.ts).
     // After migrations: its database user gets the role migration 0239
@@ -406,6 +561,8 @@ export function startConverge(
       if (!(await publicRoleIsolation())) return false;
       await mcpAccess();
       await urlMapRedirectsAccess();
+      await auditJob();
+      await remoteMcpEdge();
       return true;
     },
 
@@ -413,8 +570,14 @@ export function startConverge(
       async afterMigrations() {
         if (!(await databaseLogins())) return { ok: false };
         await upgraderJob();
+        await convergeJob();
         await operatorAccess();
-        return { ok: true, leaveUntouched: [...leaveUntouched] };
+        const extraEnv = await remoteMcpIdentity();
+        return {
+          ok: true,
+          leaveUntouched: [...leaveUntouched],
+          ...(extraEnv ? { extraEnv } : {}),
+        };
       },
       async beforeRoll(slug) {
         if (slug !== "gateway" || !publicRole) return { ok: true };

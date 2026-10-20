@@ -35,6 +35,7 @@
     module_field_defaults: "Layout header / footer content",
     content_values: "Page and shared content",
     structured_sets: "Menus and link lists",
+    layout_html: "Layout page frame",
   };
   const KINDS: Record<string, string> = {
     "unknown-page-path": "No page has this address",
@@ -42,6 +43,8 @@
     "dangling-page-ref": "The page was deleted",
     "dangling-media-ref": "The file was deleted",
     "unsupported-link-form": "The ?query or #anchor cannot be stored",
+    "unknown-file": "No file on the site has this address",
+    "malformed-link-ref": "A broken internal reference",
   };
   const surfaceLabel = (s: string) =>
     SURFACES[s] ?? (s.startsWith("plugin:") ? `Plugin ${s.slice(7)}` : s);
@@ -80,7 +83,9 @@
 
   <Card>
     <CardHeader>
-      <CardTitle class="text-base">Latest conversion</CardTitle>
+      <CardTitle class="text-base">
+        {data.run?.mode === "dry_run" ? "Latest check (dry run)" : "Latest conversion"}
+      </CardTitle>
       {#if data.run}
         <CardDescription>
           {data.run.mode === "dry_run" ? "Dry run (nothing changed)" : "Applied"},
@@ -113,11 +118,13 @@
           <input type="hidden" name="dryRun" value="false" />
           <Button type="submit" size="sm">Convert now</Button>
         </form>
-        {#if data.run && data.run.mode === "apply" && !data.run.revertedAt}
+        {#if data.revertableRun}
           <form method="post" action="?/revert">
             <input type="hidden" name="_csrf" value={data.csrfToken} />
-            <input type="hidden" name="runId" value={data.run.runId} />
-            <Button type="submit" variant="destructive" size="sm">Revert this conversion</Button>
+            <input type="hidden" name="runId" value={data.revertableRun.runId} />
+            <Button type="submit" variant="destructive" size="sm">
+              Revert the conversion of {new Date(data.revertableRun.createdAt).toLocaleString()}
+            </Button>
           </form>
         {/if}
       </div>
@@ -168,7 +175,7 @@
           {#each data.recentRuns as r (r.runId)}
             <li>
               <a class="underline" href={`?run=${r.runId}`}>{new Date(r.createdAt).toLocaleString()}</a>
-              — {r.mode === "dry_run" ? "dry run" : r.mode === "import" ? "site import" : "applied"},
+              — {r.mode === "dry_run" ? "dry run" : "applied"},
               {total(r.counts)} converted, {r.unresolvedCount} not
               {#if r.revertedAt}(reverted){/if}
             </li>

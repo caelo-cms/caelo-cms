@@ -116,4 +116,15 @@ describe("e2e-livedit.yml — main runs once per release, gated in release-cut",
     expect(step?.run ?? "").toContain("head_sha=$SHA");
     expect(step?.run ?? "").toContain('.conclusion == \\"success\\"');
   });
+
+  it("N3: waits by polling run and AI-job status, not `gh run watch`", () => {
+    // `gh run watch || true` returned on a transient HTTP 502 and the gate
+    // read the still-running suite as failed (v0.10.54 cut).
+    const steps = cut.jobs.cut?.steps ?? [];
+    const run =
+      steps.find((s) => (s.run ?? "").includes('gh workflow run "$WORKFLOW_FILE"'))?.run ?? "";
+    expect(run).not.toContain("gh run watch");
+    expect(run).toContain('[ "$run_state" = "completed" ] && [ "$job_state" = "completed" ]');
+    expect(run).toContain('|| job_state="api-error"');
+  });
 });

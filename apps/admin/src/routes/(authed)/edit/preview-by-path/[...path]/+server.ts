@@ -23,7 +23,7 @@
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
-import { INJECT_SCRIPT } from "#lib/components/edit/inject-script.js";
+import { injectEditOverlay } from "#lib/server/edit-overlay.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
@@ -34,8 +34,6 @@ interface PageRow {
   currentPath: string;
   parentPageId: string | null;
 }
-
-const BODY_CLOSE_RE = /<\/body\s*>/i;
 
 export const GET: RequestHandler = async ({ params, url, locals }) => {
   requirePermission(locals, "content.write");
@@ -103,11 +101,11 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
   // The inject-script needs to know its own pageId/slug so it can
   // post `caelo:navigated` to the parent on every iframe load. We thread
   // those through `window.__caelo` before the runtime executes.
-  const ctx = `window.__caelo=${JSON.stringify({ pageId: page.id, slug: page.slug, path: page.currentPath })};`;
-  const scriptTag = `<script data-caelo-edit-overlay>${ctx}${INJECT_SCRIPT}</script>`;
-  const html = BODY_CLOSE_RE.test(out.html)
-    ? out.html.replace(BODY_CLOSE_RE, `${scriptTag}</body>`)
-    : out.html + scriptTag;
+  const html = injectEditOverlay(out.html, {
+    pageId: page.id,
+    slug: page.slug,
+    path: page.currentPath,
+  });
 
   return new Response(html, {
     headers: {

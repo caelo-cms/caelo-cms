@@ -18,6 +18,7 @@
       "!**/output",
       "!claude-workflow",
       "!packages/plugins/*/manifest.json",
+      "!packages/mcp-server/power-catalogue.json",
       "!**/data/fonts",
       "!**/__tests__/fixtures"
     ]

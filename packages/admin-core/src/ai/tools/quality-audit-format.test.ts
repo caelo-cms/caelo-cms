@@ -109,7 +109,7 @@ describe("get_quality_audit Performance metrics", () => {
   it("shows each metric with its rating, the LCP element and the layout shifts", () => {
     const lines = formatPage({ ...page([]), status: "clean", metrics: sampleMetrics() });
     expect(lines).toContain(
-      "Performance metrics (median of 1 Lighthouse run(s) on the staged build; data behind the Performance score, not problems):",
+      "Performance metrics (best of 1 Lighthouse run(s) on the staged build; data behind the Performance score, not problems):",
     );
     expect(lines).toContain("- LCP 2.2 s (Largest Contentful Paint) — score 0.95, good");
     expect(lines).toContain("- CLS 0.356 (Cumulative Layout Shift) — score 0.31, POOR");

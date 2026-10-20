@@ -12,6 +12,24 @@ Every Stage gets a quality audit (epic #727). It runs against the **staged build
 
 Findings checks are cheap and run on every Stage (SEO-only Stages too) over all published pages. Lighthouse keeps its own Stage classification and page limit.
 
+## Where Lighthouse runs (#875)
+
+Lighthouse simulates the CPU slowdown from observed task durations, so a run that shares a CPU with another run or with the editor's requests measures that interference. The runner is picked per provider (`lighthouse-runner-select.ts`):
+
+| Provider | Runner | Notes |
+|---|---|---|
+| `gcp`, `gcp-firebase` | Cloud Run job `caelo-<env>-audit`, one task per run, all in parallel (`parallel-runner.ts`, `gcp-audit-launcher.ts`) | CLI-owned (`packages/provisioning/src/audit-job-setup.ts`): created by the wizard and by `cms-provision upgrade`; the app-roll moves its image with the admin's. Its identity reads the staged build, creates results in `<project>-caelo-<env>-audit-results` and writes logs, nothing else. |
+| `self-hosted`, dev | the in-process child (`lighthouse-runner.ts`), runs one after another | no extra machines |
+| `aws`, `azure` | none yet: every Lighthouse audit fails with the gap | issues #749 / #750 (nothing is staged there before them either) |
+
+A cloud install never falls back to the in-process child (CLAUDE.md §2).
+
+Troubleshooting (the audit's failure message names which one):
+
+- **`CAELO_AUDIT_JOB / CAELO_AUDIT_RESULTS_BUCKET are not set`** or **`could not start the audit tasks`**: the job is missing. Run `cms-provision upgrade`; its "Ensuring the quality-audit job" step says what failed.
+- **`the audit job runs Caelo X but the admin runs Y`**: the app-roll could not move the job's image. Run `cms-provision upgrade` again.
+- **`audit task(s) ... stopped without a result`**: a task crashed or hit its 5-minute timeout; the job's execution log in Cloud Logging names the cause.
+
 ## Core check: `structure` (#820)
 
 Free markup that should be a module: `structure/repeated-markup`, `structure/duplicate-module` (errors), `structure/similar-markup`, `structure/layout-css-module-specific` (warnings). See `checks/structure.ts`.

@@ -79,7 +79,7 @@ export type SnapshotOpKind =
   // displayName) emits its own kind so the history view can
   // distinguish a token rewrite from a metadata change.
   | "themes.update_meta"
-  // Epic #724 rollout E — the literal-link → reference migration (0293).
+  // Epic #724 rollout E — the literal-link → reference migration (0326).
   | "links.migrate_to_references"
   | "links.revert_migration";
 

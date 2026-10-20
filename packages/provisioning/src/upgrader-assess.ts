@@ -27,6 +27,8 @@
  * | target not newer than installed (downgrade/same)    | refused           |
  * | installed below the release's minFromVersion        | refused           |
  * | release raises the infrastructure contract          | needs_cloud_shell |
+ * |   … on the converge route (#819, the converge job)  | proceed           |
+ * |   … converge route, automatic, autoConverge off     | refused           |
  * | contract (destructive) migrations, automatic run    | refused           |
  * | contract migrations, Owner's click                  | proceed + warning |
  * | automatic run the update policy does not allow      | refused           |
@@ -38,6 +40,13 @@
  * that rolls the images. So for them `installed.infraContractVersion` is
  * null and the infra-contract row never applies; every "needs_cloud_shell"
  * stop names the upgrade command on the server instead of Cloud Shell.
+ *
+ * The converge job (#819, converge-job.ts) asks with `route: "converge"`:
+ * it runs as the install's provisioner, so an infrastructure change is what
+ * it is for — every other row still applies. An automatic run on the
+ * converge route needs the Owner's `autoConverge` (#864) on top of
+ * everything an automatic install needs; the scheduler queues one only
+ * then, and the job re-checks it here against the policy it claimed.
  */
 
 import {
@@ -60,6 +69,7 @@ import { needsConverge } from "./upgrade/converge.js";
 /** Machine-readable reason codes (`platform_update_requests.refusal_codes`). */
 export type RefusalCode =
   | "registry"
+  | "manifest-missing"
   | "signature"
   | "manifest-unreadable"
   | "install-version-unknown"
@@ -134,6 +144,11 @@ export function assessUpgradeRequest(input: {
   readonly now: Date;
   /** Default `cloud-shell` (the GCP upgrader job). */
   readonly manualPath?: ManualUpgradePath;
+  /**
+   * Which job asks (#819). `converge` = the converge job: an infrastructure
+   * contract bump is installed, not handed to Cloud Shell. Default `app_roll`.
+   */
+  readonly route?: "app_roll" | "converge";
 }): RequestDecision {
   const { request, installed } = input;
   const by = manualRun(input.manualPath ?? "cloud-shell");
@@ -142,10 +157,20 @@ export function assessUpgradeRequest(input: {
     const e = input.manifest.error;
     switch (e.code) {
       case "registry":
+        // Only an outage is worth retrying: a manifest the registry says
+        // does not exist (404 / other 4xx) never appears, so retrying would
+        // loop on "try again later" forever.
+        if (e.transient) {
+          return stop(
+            "failed",
+            "registry",
+            `Could not reach the Caelo release registry to verify v${target} (${e.message}). Nothing was changed; try again later.`,
+          );
+        }
         return stop(
-          "failed",
-          "registry",
-          `Could not reach the Caelo release registry to verify v${target} (${e.message}). Nothing was changed; try again later.`,
+          "refused",
+          "manifest-missing",
+          `v${target} has no signed release manifest in the Caelo release registry, so it cannot be verified and will not be installed. Nothing was changed; retrying will not help. (${e.message})`,
         );
       case "schema":
         return stop(
@@ -170,7 +195,18 @@ export function assessUpgradeRequest(input: {
       manifest,
     );
   }
-  if (compareSemver(target, installed.version) <= 0) {
+  const order = compareSemver(target, installed.version);
+  if (order === 0) {
+    // Reached after a run that rolled but could not record it (#860): the
+    // next run re-records the serving release, which then is the target.
+    return stop(
+      "refused",
+      "not-newer",
+      `v${target} already serves on this install, so there is nothing to install. Nothing was changed.`,
+      manifest,
+    );
+  }
+  if (order < 0) {
     return stop(
       "refused",
       "not-newer",
@@ -188,20 +224,33 @@ export function assessUpgradeRequest(input: {
   }
   // Self-hosted: the target's own CLI renders the host setup in this run.
   const infraContractVersion = installed.infraContractVersion ?? manifest.infraContractVersion;
-  if (
+  const converge = input.route === "converge";
+  const infraChange =
     installed.infraContractVersion !== null &&
-    needsConverge({ infraContractVersion }, manifest.infraContractVersion)
-  ) {
+    needsConverge({ infraContractVersion }, manifest.infraContractVersion);
+  if (infraChange && !converge) {
     return stop(
       "needs_cloud_shell",
       "infra-contract",
-      `v${target} changes this install's cloud setup (infrastructure contract ${infraContractVersion} → ${manifest.infraContractVersion}: ${infraStepsText(infraContractVersion, manifest.infraContractVersion)}). The admin may not change cloud permissions, so this release is installed once with your own Google account in Cloud Shell.`,
+      `v${target} changes this install's cloud setup (infrastructure contract ${infraContractVersion} → ${manifest.infraContractVersion}: ${infraStepsText(infraContractVersion, manifest.infraContractVersion)}). The upgrader may not change cloud permissions, so Caelo installs this release with its converge job: start it again from Settings → Updates. On an install without the converge job, install it once with your own Google account in Cloud Shell.`,
       manifest,
     );
   }
+  if (converge && request.trigger === "auto" && !input.policy.autoConverge) {
+    return stop(
+      "refused",
+      "policy",
+      `Not installed automatically: v${target} changes this install's cloud setup, and the update policy does not install those automatically. Install it from Settings → Updates.`,
+      manifest,
+    );
+  }
+  // On the converge route the contract bump is the job's work, not a
+  // reason for a manual install: only the migrations decide below.
   const assessment = assessAutoInstall(manifest, {
     version: installed.version,
-    infraContractVersion,
+    infraContractVersion: converge
+      ? Math.max(infraContractVersion, manifest.infraContractVersion)
+      : infraContractVersion,
   });
   const destructive = assessment.mode === "manual";
   const warnings: string[] = [];

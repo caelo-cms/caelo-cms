@@ -27,7 +27,12 @@
 import type { GcloudRunner, Sleep } from "../gcloud-retry.js";
 import { gatewayServiceAccountEmail, runServiceAccountEmail } from "../gcp-names.js";
 import type { ImageDigests } from "../install-state.js";
-import { adminMediaVolume } from "../stack-contract.js";
+import {
+  adminMediaVolume,
+  type CloudRunEnvVar,
+  GATEWAY_TIMEOUT_SECONDS,
+  SERVICE_SECRET_FILES,
+} from "../stack-contract.js";
 import {
   type DeployedService,
   type EnvChange,
@@ -35,13 +40,17 @@ import {
   type LiveVolumes,
   liveContainerEnv,
   liveContainerMemory,
+  liveTimeoutSeconds,
   liveVolumes,
   planAdminMemory,
   planContractEnv,
   planMediaVolume,
+  planRequestTimeout,
+  planSecretFiles,
   rollService,
   serviceRollArgs,
 } from "../stack-converge.js";
+import { describeAuditJobImage, setAuditJobImage } from "./audit-job-roll.js";
 import { restoreCommand, type SqlBackup } from "./backup.js";
 import {
   describeServiceJson,
@@ -88,15 +97,25 @@ export interface ServicePlan {
   /** Container memory limit now (null = Cloud Run's default). */
   readonly liveMemory: string | null;
   readonly liveVolumes: LiveVolumes;
+  /** Request timeout now, in seconds (null = Cloud Run's default). */
+  readonly liveTimeout: number | null;
 }
 
 /** A service plan plus the changes its roll applies. */
 export interface RollPlan extends ServicePlan {
   readonly envFlags: readonly string[];
   readonly envChanges: readonly EnvChange[];
-  /** #553 — e.g. `--memory=2Gi` when the admin runs below the stack default. */
+  /**
+   * #553 — e.g. `--memory=2Gi` when the admin runs below the stack default;
+   * #806 — `--timeout=3600` when the gateway runs below its contract timeout.
+   */
   readonly resourceFlags: readonly string[];
-  /** The admin's media bucket volume when it is (partly) missing; empty otherwise. */
+  readonly resourceChanges: readonly string[];
+  /**
+   * The admin's media bucket volume when it is (partly) missing, the
+   * service's secret files (#806, the gateway's OAuth client) when not
+   * mounted; empty otherwise.
+   */
   readonly volumeFlags: readonly string[];
   readonly volumeChanges: readonly string[];
 }
@@ -163,9 +182,10 @@ export async function planAppRoll(
       liveEnv: liveContainerEnv(json),
       liveMemory: liveContainerMemory(json),
       liveVolumes: liveVolumes(json),
+      liveTimeout: liveTimeoutSeconds(json),
     });
   }
-  const env = planEnv(install, services, []);
+  const env = planEnv(install, services, {});
   if (!env.ok)
     return { ok: false, error: `the install's env contract can't be applied: ${env.error}` };
   // Without the media volume every upload is lost on the next revision or
@@ -177,28 +197,60 @@ export async function planAppRoll(
   );
   if (!media.ok)
     return { ok: false, error: `the admin's media volume can't be set up: ${media.error}` };
+  // #806 — each service's secret files (the gateway's remote-MCP OAuth
+  // client). A file the roll cannot mount fails the plan: the new gateway
+  // reads its path from the env contract.
+  const secretFiles = {} as Record<RollSlug, { flags: string[]; changes: string[] }>;
+  for (const s of services) {
+    const files = planSecretFiles(s.liveVolumes, SERVICE_SECRET_FILES[s.slug], install.env);
+    if (!files.ok) {
+      return { ok: false, error: `the ${s.slug}'s secret files can't be mounted: ${files.error}` };
+    }
+    secretFiles[s.slug] = files;
+  }
   const warnings: string[] = [];
   const rolls = services.map((s): RollPlan => {
     // #553 — the admin runs the Lighthouse quality audit; raise it to the
     // stack's memory default (never lowered; an unparsable value is kept).
     const memory = s.slug === "admin" ? planAdminMemory(s.liveMemory) : null;
     if (memory && !memory.ok) warnings.push(`admin memory left as is: ${memory.error}`);
+    // #806 — the gateway streams remote-MCP chat turns (stack-contract.ts
+    // GATEWAY_TIMEOUT_SECONDS). The admin's timeout is the stacks' alone.
+    const timeout =
+      s.slug === "gateway" ? planRequestTimeout(s.liveTimeout, GATEWAY_TIMEOUT_SECONDS) : null;
+    const memoryFlags = memory?.ok ? memory.flags : [];
+    const timeoutFlags = timeout?.ok ? timeout.flags : [];
     return {
       ...s,
       envFlags: env.services[s.slug].flags,
       envChanges: env.services[s.slug].changes,
-      resourceFlags: memory?.ok ? memory.flags : [],
-      volumeFlags: s.slug === "admin" ? media.flags : [],
-      volumeChanges: s.slug === "admin" ? media.changes : [],
+      resourceFlags: [...memoryFlags, ...timeoutFlags],
+      resourceChanges: [
+        ...memoryFlags.map((f) => `${s.liveMemory ?? "(default)"} → ${f}`),
+        ...(timeout?.ok ? timeout.changes : []),
+      ],
+      volumeFlags: [...(s.slug === "admin" ? media.flags : []), ...secretFiles[s.slug].flags],
+      volumeChanges: [...(s.slug === "admin" ? media.changes : []), ...secretFiles[s.slug].changes],
     };
   });
   return { ok: true, plan: { install, services: rolls, warnings } };
 }
 
+/** Env the converge half adds to, or keeps out of, the rolls ({@link AppRollHooks.afterMigrations}). */
+export interface EnvAdjustments {
+  /** Contract vars to leave exactly as the services have them. */
+  readonly leaveUntouched?: readonly string[];
+  /**
+   * Vars outside the env contract the rolls set too — #806's remote-MCP
+   * identity env, which only the converge (operator identity) can resolve.
+   */
+  readonly extraEnv?: Readonly<Partial<Record<RollSlug, readonly CloudRunEnvVar[]>>>;
+}
+
 function planEnv(
   install: AppRollInstall,
   services: readonly ServicePlan[],
-  leaveUntouched: readonly string[],
+  adjust: EnvAdjustments,
 ) {
   const deployed = Object.fromEntries(
     services.map((s) => [s.slug, { serviceName: s.serviceName, liveEnv: s.liveEnv }]),
@@ -213,17 +265,22 @@ function planEnv(
       stagingHost: install.stagingHost,
     },
     deployed,
-    { leaveUntouched },
+    {
+      leaveUntouched: adjust.leaveUntouched ?? [],
+      ...(adjust.extraEnv ? { extraEnv: adjust.extraEnv } : {}),
+    },
   );
 }
 
 /**
- * The plan with `names` left exactly as the services have them — for env
- * vars that point at something a converge step could not set up.
+ * The plan with the converge's adjustments: vars left exactly as the
+ * services have them (they point at something a converge step could not set
+ * up) and vars outside the contract the rolls set too.
  */
-export function leavingEnvUntouched(plan: AppRollPlan, names: readonly string[]): AppRollPlan {
-  if (names.length === 0) return plan;
-  const env = planEnv(plan.install, plan.services, names);
+export function adjustingEnv(plan: AppRollPlan, adjust: EnvAdjustments): AppRollPlan {
+  const extra = Object.values(adjust.extraEnv ?? {}).some((v) => (v?.length ?? 0) > 0);
+  if ((adjust.leaveUntouched?.length ?? 0) === 0 && !extra) return plan;
+  const env = planEnv(plan.install, plan.services, adjust);
   if (!env.ok) return plan;
   return {
     ...plan,
@@ -239,10 +296,8 @@ export function leavingEnvUntouched(plan: AppRollPlan, names: readonly string[])
 export function reportPlan(plan: AppRollPlan, reporter: UpgradeReporter): void {
   for (const w of plan.warnings) reporter.warn(w);
   for (const s of plan.services) {
-    for (const c of s.volumeChanges) reporter.info(`${s.slug} media: ${c}`);
-    for (const f of s.resourceFlags) {
-      reporter.info(`${s.slug} resources: ${s.liveMemory ?? "(default)"} → ${f}`);
-    }
+    for (const c of s.volumeChanges) reporter.info(`${s.slug} volumes: ${c}`);
+    for (const c of s.resourceChanges) reporter.info(`${s.slug} resources: ${c}`);
     for (const c of s.envChanges) {
       reporter.info(
         `${s.slug} env ${c.name}: ${c.from === undefined ? "(unset)" : c.from} → ${c.to === undefined ? "(removed)" : c.to}`,
@@ -259,7 +314,11 @@ export interface AppRollHooks {
    * not be set up; `ok: false` aborts the upgrade (nothing rolled yet).
    */
   afterMigrations?(): Promise<
-    { readonly ok: true; readonly leaveUntouched: readonly string[] } | { readonly ok: false }
+    | ({ readonly ok: true; readonly leaveUntouched: readonly string[] } & Pick<
+        EnvAdjustments,
+        "extraEnv"
+      >)
+    | { readonly ok: false }
   >;
   /** Right before `slug` rolls; `ok: false` aborts and rolls back what rolled. */
   beforeRoll?(
@@ -308,6 +367,13 @@ export type AppRollResult =
       readonly phase: AppRollPhase;
       /** Whether migrations ran before the failure (the backup matters then). */
       readonly migrated: boolean;
+      /**
+       * Whether services had rolled and EVERY one of them was pinned back to
+       * the revision that served before — i.e. the previous release serves
+       * again. False when nothing had rolled, or when a pin failed (then a
+       * person must pin it; the reporter named which).
+       */
+      readonly rolledBack: boolean;
     };
 
 /** Run the app-roll. See the file comment for the sequence. */
@@ -319,10 +385,13 @@ export async function executeAppRoll(
   const { reporter: r, run } = deps;
   const { install } = input.plan;
   let plan = input.plan;
+  /** Set by {@link rollBack}: null until one ran with services to restore. */
+  let rollbackOk: boolean | null = null;
   const fail = (phase: AppRollPhase, migrated: boolean): AppRollResult => ({
     ok: false,
     phase,
     migrated,
+    rolledBack: rollbackOk === true,
   });
 
   // A probe that cannot reach the install now would only fail after the
@@ -362,14 +431,28 @@ export async function executeAppRoll(
   if (hooks.afterMigrations) {
     const converged = await hooks.afterMigrations();
     if (!converged.ok) return fail("converge", true);
-    plan = leavingEnvUntouched(plan, converged.leaveUntouched);
+    plan = adjustingEnv(plan, {
+      leaveUntouched: converged.leaveUntouched,
+      ...(converged.extraEnv ? { extraEnv: converged.extraEnv } : {}),
+    });
   }
 
   const rolled: RollPlan[] = [];
+  /** The audit job's image before this roll moved it (#875); null = not moved. */
+  let auditJobPriorImage: string | null = null;
   const rollBack = async (alsoCurrent?: RollPlan): Promise<void> => {
+    if (auditJobPriorImage) {
+      const back = await setAuditJobImage(run, install, auditJobPriorImage);
+      if (back.ok) r.info(`  audit job image restored to ${auditJobPriorImage.slice(-19)}`);
+      else
+        r.error(
+          `  audit job rollback FAILED (${back.error}) — set its image to ${auditJobPriorImage} by hand`,
+        );
+    }
     const services = alsoCurrent ? [...rolled, alsoCurrent] : rolled;
     if (services.length === 0) return;
     r.warn(`Rolling back ${services.length} service(s) to the revisions that served before...`);
+    rollbackOk = true;
     for (const p of [...services].reverse()) {
       const ok = await pinTraffic(
         run,
@@ -379,7 +462,10 @@ export async function executeAppRoll(
         p.priorRevision,
       );
       if (ok) r.info(`  ${p.slug} traffic restored to ${p.priorRevision}`);
-      else r.error(`  ${p.slug} rollback FAILED — pin ${p.priorRevision} by hand`);
+      else {
+        rollbackOk = false;
+        r.error(`  ${p.slug} rollback FAILED — pin ${p.priorRevision} by hand`);
+      }
       await hooks.afterRollback?.(p.slug);
     }
   };
@@ -445,6 +531,34 @@ export async function executeAppRoll(
     }
     s.done(`${p.slug} rolled to ${p.digest.slice(0, 19)}...`);
     rolled.push(p);
+  }
+
+  // #875 — the audit job runs the admin's image; it follows the admin. A
+  // failure here does not undo the release: audits then fail loudly with
+  // the version mismatch and the fix, until the next upgrade moves it.
+  const sAudit = r.step("Moving the quality-audit job onto the admin's image...");
+  const described = await describeAuditJobImage(run, install);
+  const auditPrior = described.ok ? described.image : null;
+  if (!described.ok) {
+    sAudit.warned(
+      `Could not read the quality-audit job (${described.error}); Stage audits fail until the next upgrade moves it.`,
+    );
+  } else if (!auditPrior) {
+    sAudit.warned(
+      "The install has no quality-audit job yet; Stage audits fail until `cms-provision upgrade` sets it up.",
+    );
+  } else if (auditPrior === admin.imageRef) {
+    sAudit.done("Quality-audit job already on the admin's image");
+  } else {
+    const moved = await setAuditJobImage(run, install, admin.imageRef);
+    if (moved.ok) {
+      auditJobPriorImage = auditPrior;
+      sAudit.done(`Quality-audit job on ${admin.digest.slice(0, 19)}...`);
+    } else {
+      sAudit.warned(
+        `Quality-audit job not moved (${moved.error}); Stage audits fail until the next upgrade moves it.`,
+      );
+    }
   }
 
   if (deps.health) {

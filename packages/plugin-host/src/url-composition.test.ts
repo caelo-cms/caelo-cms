@@ -203,4 +203,25 @@ describe("#390 — exclusive slots", () => {
     expect(decodePagePath("/x/pricing").slug).toBe("pricing");
     expect(() => decodePagePath("/unknown")).toThrow(/cannot decode/);
   });
+
+  it("full-path and host reject path traversal segments and malformed hosts", () => {
+    urlContributionsRegistry.register("bad-full", [
+      {
+        slot: "full-path",
+        encode: () => "/a/../escape",
+        decode: () => null,
+      },
+    ]);
+    expect(() => resolvePageUrl(page("pricing"))).toThrow(/invalid path segment/);
+
+    urlContributionsRegistry.reset();
+    urlContributionsRegistry.register("bad-host", [
+      {
+        slot: "host",
+        encode: () => "evil.example.com/injected",
+        decode: () => null,
+      },
+    ]);
+    expect(() => resolvePageUrl(page("pricing"))).toThrow(/invalid host/);
+  });
 });

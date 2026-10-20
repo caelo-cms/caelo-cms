@@ -13,6 +13,7 @@
 
 import { resolve as resolvePath } from "node:path";
 import * as pulumi from "@pulumi/pulumi/automation";
+import { AUDIT_PARALLELISM_DEFAULT } from "../audit-job-setup.js";
 import { checkpointableOutputs } from "../checkpoint-secrets.js";
 import { GCP_STACK_ENV } from "../gcp-names.js";
 import type { ImageDigests } from "../install-state.js";
@@ -36,6 +37,12 @@ export const GCP_STACK_KNOB_DEFAULTS = {
   adminMemory: ADMIN_MEMORY_DEFAULT,
   gatewayMinInstances: 0,
   wafAdaptiveProtection: false,
+  /**
+   * #875 — audit tasks at once. Not stack config: the audit job is
+   * CLI-owned (audit-job-setup.ts), so the wizard passes it to the job and
+   * `upgrade` keeps whatever the job has.
+   */
+  auditParallelism: AUDIT_PARALLELISM_DEFAULT,
 } as const;
 
 export interface PulumiUpInputs {

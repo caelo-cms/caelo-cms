@@ -4,6 +4,9 @@ import { expect, test } from "@playwright/test";
 import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
+// One Reviewer fixture for the file: the seed in beforeAll must run once,
+// so the specs share a worker instead of each seeding the same email.
+test.describe.configure({ mode: "serial" });
 
 /**
  * Reviewer role has `content.read` but not `content.write`. They can browse
@@ -113,4 +116,105 @@ test("Reviewer can read /content but cannot mutate", async ({ page, request }) =
     maxRedirects: 0,
   });
   expect(res.status()).toBe(403);
+
+  // PR #863 (H-03) — the AI chat is a mutation surface: a turn writes pages
+  // and modules on the operator's behalf, so every chat write needs
+  // content.write too. Pre-fix each of these accepted content.read. A
+  // random session id is enough: the permission check runs before the
+  // session lookup, so a Reviewer gets 403, never 404.
+  const sessionId = crypto.randomUUID();
+  const form = (fields: Record<string, string>) => {
+    const f = new URLSearchParams({ _csrf: csrf, ...fields });
+    return {
+      headers: {
+        cookie: cookieHeader,
+        origin: "http://localhost:4173",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      data: f.toString(),
+      maxRedirects: 0,
+    };
+  };
+  const jsonPost = (data: unknown) => ({
+    headers: {
+      cookie: cookieHeader,
+      origin: "http://localhost:4173",
+      "content-type": "application/json",
+      "x-csrf-token": csrf,
+    },
+    data: JSON.stringify(data),
+    maxRedirects: 0,
+  });
+  const chatWrites: [string, Promise<{ status(): number }>][] = [
+    ["create chat", request.post("/content/chat?/create", form({ title: "nope" }))],
+    ["rename chat", request.post(`/content/chat/${sessionId}?/rename`, form({ title: "nope" }))],
+    [
+      "toggle extended thinking",
+      request.post(`/content/chat/${sessionId}?/set_extended_thinking`, form({ enabled: "on" })),
+    ],
+    ["send a turn", request.post(`/content/chat/${sessionId}/stream`, jsonPost({ text: "hi" }))],
+    [
+      "decide an approval card",
+      request.post(
+        `/content/chat/${sessionId}/approvals`,
+        jsonPost({ approvalId: crypto.randomUUID(), approved: true }),
+      ),
+    ],
+    [
+      "stop the chat's agents",
+      request.post(`/content/chat/${sessionId}/agents`, jsonPost({ action: "cancel" })),
+    ],
+    [
+      "stop agents site-wide",
+      request.post("/api/agents", jsonPost({ action: "cancel", chatSessionId: sessionId })),
+    ],
+    [
+      "answer a screenshot request",
+      request.post(
+        `/content/chat/${sessionId}/screenshot/${crypto.randomUUID()}`,
+        jsonPost({ base64: "AAAA" }),
+      ),
+    ],
+  ];
+  for (const [what, pending] of chatWrites) {
+    expect({ what, status: (await pending).status() }).toEqual({ what, status: 403 });
+  }
+
+  // Reading stays open: the chat list renders for a Reviewer.
+  const list = await request.get("/content/chat", { headers: { cookie: cookieHeader } });
+  expect(list.status()).toBe(200);
+});
+
+// PR #863 (L-07) — logout ends a live session only with the form's CSRF
+// token; the sidebar's Log out button (which carries it) keeps working.
+test("logout needs the CSRF token, and the Log out button still signs out", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(REVIEWER_EMAIL);
+  await page.getByLabel("Password").fill(REVIEWER_PASSWORD);
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL("/", { timeout: 15_000 });
+
+  const cookies = await page.context().cookies();
+  const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+  const forged = await request.post("/logout", {
+    headers: {
+      cookie: cookieHeader,
+      origin: "http://localhost:4173",
+      "content-type": "application/x-www-form-urlencoded",
+    },
+    data: "",
+    maxRedirects: 0,
+  });
+  expect(forged.status()).toBe(403);
+  // The session survived the forged request.
+  await page.goto("/content");
+  await expect(page.getByRole("heading", { name: "Content" })).toBeVisible();
+
+  await page.getByRole("button", { name: /log out/i }).click();
+  await expect(page).toHaveURL("/login", { timeout: 15_000 });
+  await page.goto("/content");
+  await expect(page).toHaveURL(/\/login/, { timeout: 15_000 });
 });

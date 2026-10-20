@@ -9,6 +9,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { createContentInstanceToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const createContentInstanceTool: ToolDefinitionWithHandler<
@@ -20,7 +21,8 @@ export const createContentInstanceTool: ToolDefinitionWithHandler<
     '**Required v0.12.0 input:** `purpose` — a one-line rationale for why this is a shared row ("The brand footer used across the whole marketing site", "Pricing CTA — appears at the bottom of every pricing-adjacent page"). The `## Content Library` block surfaces this so your future self can decide reuse vs fork without asking the operator. ' +
     "**When NOT to use:** for one-off per-page content, prefer `set_page_module_content` — that path auto-mints an unsynced (private) instance per placement, no shared semantics, no decision needed. Only mint a shared instance when reuse is the actual intent. " +
     "**Decision rule before calling:** check `## Content Library` first. If a row with the matching purpose + module + appropriate placement pattern already exists, BIND to it via `set_placement_content` instead of minting a new one. Duplicate shared rows defeat the point. " +
-    "`values` keys are the module's declared field names (`{{fieldName}}` placeholders); `slug` is an optional kebab-case handle (must be unique per module) for easy AI-side reference.",
+    "`values` keys are the module's declared field names (`{{fieldName}}` placeholders); `slug` is an optional kebab-case handle (must be unique per module) for easy AI-side reference." +
+    INTERNAL_LINK_CONTRACT,
   schema: createContentInstanceToolInput,
   inputSchema: {
     type: "object",

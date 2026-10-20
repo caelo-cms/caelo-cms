@@ -468,7 +468,9 @@ test("an English page shows the English footer, its German counterpart the Germa
     expect(en.status()).toBe(200);
     const enHtml = await en.text();
     expect(enHtml).toContain('<p class="tag">Made with care</p>');
-    expect(enHtml).toMatch(new RegExp(`<a href="/${PFX}-about/?">About</a>`));
+    // References render in the default deploy target's URL style; the
+    // e2e stack keeps the column default (`directory` → trailing slash).
+    expect(enHtml).toContain(`<a href="/${PFX}-about/">About</a>`);
 
     const de = await request.get(`${BASE}/edit/preview/${s.dePageId}`, { headers });
     expect(de.status()).toBe(200);

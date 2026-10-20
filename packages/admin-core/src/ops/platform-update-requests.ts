@@ -4,16 +4,24 @@
  * Installing a Caelo release from Settings → Updates (epic #696 Phase 2).
  *
  *   platform_updates.request         the Owner asks for the newest release
+ *                                    (routed to the upgrader or, for a
+ *                                    cloud-setup change, the converge job, #819)
  *   platform_updates.cancel          …and withdraws it before the job ran
+ *   platform_updates.continue        …or continues a converge whose run died
+ *                                    (#819; the converge job resumes it)
  *   platform_updates.record_trigger  the admin notes whether it could start
  *                                    the upgrader job
+ *   platform_updates.supersede_stale at admin boot: closes requests that
+ *                                    asked the Owner to act but no longer
+ *                                    apply (#817)
  *   platform_updates.list / .get     history + one run's timeline (AI-readable)
  *
  * The admin never installs anything itself. A request is a row the upgrader
  * job (packages/provisioning/src/upgrader-job.ts, its own service account)
- * picks up; the job decides — from the signed release manifest, not from
- * this row — whether the release may be installed, and narrates its run into
- * `platform_update_events`.
+ * or the converge job (converge-job.ts, the install's provisioner; #819)
+ * picks up, by the request's `route`; the job decides — from the signed
+ * release manifest, not from this row — whether the release may be
+ * installed, and narrates its run into `platform_update_events`.
  *
  * The writes are human-only (CLAUDE.md §2: deployment is locked from the
  * AI; #696 maintainer decision 3: the AI only informs) and each needs the
@@ -36,6 +44,7 @@ import {
   ok,
   PLATFORM_UPDATE_EVENT_LEVELS,
   PLATFORM_UPDATE_PHASES,
+  PLATFORM_UPDATE_ROUTES,
   PLATFORM_UPDATE_STALE_MINUTES,
   PLATFORM_UPDATE_STALE_REASON,
   PLATFORM_UPDATE_STATUSES,
@@ -77,6 +86,8 @@ export const platformUpdateRequestSchema = z.object({
   infraContractRequired: z.number().nullable(),
   infraContractInstalled: z.number().nullable(),
   backupId: z.string().nullable(),
+  /** Which job installs it (#819): the upgrader (`app_roll`) or the converge job. */
+  route: z.enum(PLATFORM_UPDATE_ROUTES),
 });
 /** One update request as the page and the AI see it. */
 export type PlatformUpdateRequest = z.infer<typeof platformUpdateRequestSchema>;
@@ -109,13 +120,15 @@ interface RequestRow {
   infra_contract_required: number | null;
   infra_contract_installed: number | null;
   backup_id: string | null;
+  route: PlatformUpdateRequest["route"];
 }
 
 const REQUEST_COLUMNS = sql`
   r.id::text AS id, r.target_version, r.from_version, r.trigger,
   u.email AS requested_by_email, r.requested_at, r.status, r.status_reason,
   r.refusal_codes, r.execution, r.started_at, r.finished_at, r.manifest_security,
-  r.contract_migrations, r.infra_contract_required, r.infra_contract_installed, r.backup_id
+  r.contract_migrations, r.infra_contract_required, r.infra_contract_installed, r.backup_id,
+  r.route
 `;
 
 function toRequest(r: RequestRow): PlatformUpdateRequest {
@@ -137,6 +150,7 @@ function toRequest(r: RequestRow): PlatformUpdateRequest {
     infraContractRequired: r.infra_contract_required,
     infraContractInstalled: r.infra_contract_installed,
     backupId: r.backup_id,
+    route: r.route,
   };
 }
 
@@ -202,6 +216,83 @@ export async function endStaleRuns(tx: TransactionRunner): Promise<string[]> {
   return stale.map((s) => s.id);
 }
 
+/** Why a superseded request no longer asks for anything (its timeline's last line). */
+export const SUPERSEDED_INSTALLED = (installed: string) =>
+  `No longer needed: this install runs v${installed} now.`;
+export const SUPERSEDED_NEWER = "No longer needed: a newer update was requested after this one.";
+
+/**
+ * Close the requests that asked the Owner to act (`needs_cloud_shell`) but
+ * no longer apply (#817): their target is installed by now (e.g. the Owner
+ * ran the upgrade from Cloud Shell, which never touches this database), or
+ * a newer request exists. They become `superseded` and stay in the history
+ * with a timeline line saying why; Settings → Updates no longer offers a
+ * step for a release the install already runs.
+ *
+ * Only `needs_cloud_shell` is closed: every other end state records what
+ * happened (installed, rolled back, failed) and stays true.
+ *
+ * @param installedVersion the release this admin runs (CAELO_VERSION)
+ * @returns each request it closed, with the reason it recorded
+ *   ({@link SUPERSEDED_INSTALLED} or {@link SUPERSEDED_NEWER})
+ */
+export async function supersedeRequests(
+  tx: TransactionRunner,
+  installedVersion: string,
+): Promise<{ readonly id: string; readonly reason: string }[]> {
+  const open = (await tx.execute(sql`
+    SELECT r.id::text AS id, r.target_version,
+           EXISTS (SELECT 1 FROM platform_update_requests n
+                    WHERE n.requested_at > r.requested_at) AS has_newer
+      FROM platform_update_requests r
+     WHERE r.status = 'needs_cloud_shell'
+  `)) as unknown as { id: string; target_version: string; has_newer: boolean }[];
+  const closed: { id: string; reason: string }[] = [];
+  for (const r of open) {
+    // SemVer order, not text order: 0.10.9 < 0.10.10.
+    const installed = !isNewerVersion(r.target_version, installedVersion);
+    if (!installed && !r.has_newer) continue;
+    const reason = installed ? SUPERSEDED_INSTALLED(installedVersion) : SUPERSEDED_NEWER;
+    const rows = (await tx.execute(sql`
+      UPDATE platform_update_requests
+         SET status = 'superseded', status_reason = ${reason}
+       WHERE id = ${r.id}::uuid AND status = 'needs_cloud_shell'
+       RETURNING id
+    `)) as unknown as { id: string }[];
+    if (rows.length === 0) continue;
+    await appendEvent(tx, r.id, "finish", "info", reason);
+    closed.push({ id: r.id, reason });
+  }
+  return closed;
+}
+
+/**
+ * {@link supersedeRequests} plus one audit row per request it closed, under
+ * `operation` (the op that ran it: boot, a new request, the scheduler).
+ * Every caller goes through here, so no request changes status unaudited.
+ *
+ * @returns the ids of the requests it closed
+ */
+export async function supersedeRequestsAudited(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  operation: string,
+): Promise<string[]> {
+  const closed = await supersedeRequests(tx, CAELO_VERSION);
+  for (const { id, reason } of closed) {
+    // The reason the row itself records: the release runs now, or a newer
+    // request replaced it (the install may still run an older release).
+    await recordAuditFromCtx(tx, ctx, {
+      operation,
+      input: { event: "superseded", requestId: id },
+      succeeded: true,
+      entityId: id,
+      resultSummary: `superseded: ${reason}`,
+    });
+  }
+  return closed.map((c) => c.id);
+}
+
 export const platformUpdatesRequestOp = defineOperation({
   name: "platform_updates.request",
   // Why human-only: installing a Caelo release is a deployment (CLAUDE.md
@@ -209,14 +300,24 @@ export const platformUpdatesRequestOp = defineOperation({
   // Owner permission + a password confirmation, checked in the handler.
   actorScope: ["human"],
   database: "cms_admin",
-  input: z.object({ targetVersion: releaseVersionSchema, sessionHash: sessionHashSchema }).strict(),
+  input: z
+    .object({
+      targetVersion: releaseVersionSchema,
+      sessionHash: sessionHashSchema,
+      /**
+       * Which job installs it (#819, update-route.ts). The route only picks
+       * the job: either re-checks the release against its signed manifest.
+       */
+      route: z.enum(PLATFORM_UPDATE_ROUTES).default("app_roll"),
+    })
+    .strict(),
   output: z.object({ requestId: z.string() }),
   handler: async (ctx, input, tx) => {
     const op = "platform_updates.request";
     const refuse = async (message: string) => {
       await recordAuditFromCtx(tx, ctx, {
         operation: op,
-        input: { targetVersion: input.targetVersion },
+        input: { targetVersion: input.targetVersion, route: input.route },
         succeeded: false,
         resultSummary: message.slice(0, 200),
       });
@@ -263,8 +364,8 @@ export const platformUpdatesRequestOp = defineOperation({
     }
 
     const inserted = (await tx.execute(sql`
-      INSERT INTO platform_update_requests (target_version, from_version, trigger, requested_by)
-      VALUES (${input.targetVersion}, ${CAELO_VERSION}, 'manual', ${ctx.actorId}::uuid)
+      INSERT INTO platform_update_requests (target_version, from_version, trigger, requested_by, route)
+      VALUES (${input.targetVersion}, ${CAELO_VERSION}, 'manual', ${ctx.actorId}::uuid, ${input.route})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const requestId = inserted[0]?.id as string;
@@ -273,15 +374,19 @@ export const platformUpdatesRequestOp = defineOperation({
       requestId,
       "queued",
       "info",
-      `Update to ${input.targetVersion} requested (confirmed with the Owner's password).`,
+      input.route === "converge"
+        ? `Update to ${input.targetVersion} requested (confirmed with the Owner's password). It also changes this install's cloud setup, so Caelo's converge job installs it.`
+        : `Update to ${input.targetVersion} requested (confirmed with the Owner's password).`,
     );
+    // The new request answers any older one that asked for a Cloud Shell step.
+    await supersedeRequestsAudited(tx, ctx, op);
     await consumeStepUp(tx, ctx.actorId, input.sessionHash);
     await recordAuditFromCtx(tx, ctx, {
       operation: op,
-      input: { targetVersion: input.targetVersion },
+      input: { targetVersion: input.targetVersion, route: input.route },
       succeeded: true,
       entityId: requestId,
-      resultSummary: `requested ${CAELO_VERSION} → ${input.targetVersion}`,
+      resultSummary: `requested ${CAELO_VERSION} → ${input.targetVersion} (${input.route})`,
     });
     return ok({ requestId });
   },
@@ -326,6 +431,57 @@ export const platformUpdatesCancelOp = defineOperation({
       entityId: input.requestId,
     });
     return ok({ cancelled: true as const });
+  },
+});
+
+export const platformUpdatesContinueOp = defineOperation({
+  name: "platform_updates.continue",
+  // Why human-only: re-starts a deployment the Owner asked for (CLAUDE.md
+  // §2; same gate as platform_updates.request: Owner permission + a
+  // password confirmation, checked in the handler).
+  actorScope: ["human"],
+  database: "cms_admin",
+  input: z.object({ requestId: z.string().uuid(), sessionHash: sessionHashSchema }).strict(),
+  output: z.object({ targetVersion: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const op = "platform_updates.continue";
+    const refusal = await guardedActionRefusal(tx, ctx, {
+      operation: "continue a Caelo update",
+      permission: "platform.update",
+      sessionHash: input.sessionHash,
+      purpose: "platform_update",
+    });
+    if (refusal) return handlerError(op, refusal);
+    // Only a converge (#819) can be continued: its job resumes from the
+    // checkpoint in the ops bucket. A dead app-roll run is ended by the
+    // next request (endStaleRuns) and simply tried again.
+    const rows = (await tx.execute(sql`
+      SELECT target_version FROM platform_update_requests
+       WHERE id = ${input.requestId}::uuid AND status = 'running' AND route = 'converge'
+    `)) as unknown as { target_version: string }[];
+    const row = rows[0];
+    if (!row) {
+      return handlerError(
+        op,
+        "Only an update that Caelo's converge job was installing, and that is still marked as running, can be continued. Reload the page: it shows what to do instead.",
+      );
+    }
+    await appendEvent(
+      tx,
+      input.requestId,
+      "queued",
+      "info",
+      "Continued by the Owner (confirmed with the Owner's password).",
+    );
+    await consumeStepUp(tx, ctx.actorId, input.sessionHash);
+    await recordAuditFromCtx(tx, ctx, {
+      operation: op,
+      input: { requestId: input.requestId },
+      succeeded: true,
+      entityId: input.requestId,
+      resultSummary: `continue the update to ${row.target_version}`,
+    });
+    return ok({ targetVersion: row.target_version });
   },
 });
 
@@ -396,6 +552,21 @@ export const platformUpdatesRecordTriggerOp = defineOperation({
       entityId: input.requestId,
     });
     return ok({ recorded: true as const });
+  },
+});
+
+export const platformUpdatesSupersedeStaleOp = defineOperation({
+  name: "platform_updates.supersede_stale",
+  // Why system-only: the admin's own bookkeeping at boot (#817) — after an
+  // upgrade from Cloud Shell the new admin closes the request that asked
+  // for it. Nothing for the Owner or the AI to decide.
+  actorScope: ["system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({ superseded: z.array(z.string()) }),
+  handler: async (ctx, _input, tx) => {
+    const superseded = await supersedeRequestsAudited(tx, ctx, "platform_updates.supersede_stale");
+    return ok({ superseded });
   },
 });
 

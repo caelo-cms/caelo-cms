@@ -34,6 +34,7 @@ import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { describeError } from "../ai/tools/_describe-error.js";
 import type { DraftPagesSummary } from "../deploy/draft-pages.js";
+import type { UnpublishedLinkTarget } from "../deploy/unpublished-links.js";
 import type { AffectedChat } from "../draft.js";
 import { STAGE_CHANGED_PREFIX } from "../ops/chat/publish.js";
 import { kickQualityAuditWorker } from "../quality/audit-worker.js";
@@ -81,6 +82,8 @@ export interface StagedChats {
   readonly alsoIncludes: readonly AffectedChat[];
   /** #678 — main's draft pages, which the build does NOT contain. */
   readonly draftPages: DraftPagesSummary;
+  /** #724 — links in the build to pages it does NOT contain (a Stage warning). */
+  readonly unpublishedLinks: readonly UnpublishedLinkTarget[];
 }
 
 /** One merge of a Stage: the shared draft's chats, or one isolated chat. */
@@ -425,6 +428,7 @@ export async function stageChatSessions(
     fileCount: number;
     previewUrl?: string;
     draftPages: DraftPagesSummary;
+    unpublishedLinkTargets: UnpublishedLinkTarget[];
   };
   // The audit's findings go to one chat: the first selected chat whose
   // changes need an audit (else the first chat) — its fix-round counter
@@ -458,6 +462,7 @@ export async function stageChatSessions(
       })),
       alsoIncludes: merged.flatMap((m) => m.alsoIncludes),
       draftPages: summary.draftPages,
+      unpublishedLinks: summary.unpublishedLinkTargets,
     },
   };
 }

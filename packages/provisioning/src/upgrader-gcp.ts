@@ -3,8 +3,8 @@
 /**
  * The real side effects of the upgrader job on Google Cloud (epic #696):
  * gcloud as the job's own service account, the install's ops bucket for
- * install.json, the fixed release registry, the migration job and the IAP
- * health probe. upgrader-job.ts takes them as {@link UpgraderJobDeps}; the
+ * install.json, the fixed release registry, the migration job, the IAP
+ * health probe and the IAM self-check (#818). upgrader-job.ts takes them as {@link UpgraderJobDeps}; the
  * database queue and the job log come from `@caelo-cms/platform-updater`,
  * which owns the Query API connection.
  *
@@ -24,12 +24,14 @@ import { readAdminConfig, runMigrationsViaCloudRunJob } from "./migration-runner
 import { fetchVerifiedReleaseManifest } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import { opsBucketName } from "./state-backend.js";
-import { acquireBucketStateLock, GcsStateStore } from "./state-store.js";
+import { acquireBucketStateLock, GcsStateStore, realSyncGcloud } from "./state-store.js";
 import type { AppRollPlan } from "./upgrade/app-roll.js";
 import { findServiceUrl } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe } from "./upgrade/health.js";
+import { restIamTester } from "./upgrader-iam-preflight.js";
 import type { UpdateQueue, UpgraderJobDeps } from "./upgrader-job.js";
 import type { JobLog } from "./upgrader-reporter.js";
+import { UPGRADER_TASK_TIMEOUT_MINUTES } from "./upgrader-setup.js";
 
 /** Where the job runs, from the metadata server. */
 export interface UpgraderPlacement {
@@ -55,8 +57,11 @@ export async function upgraderDatabaseHost(
   return cfg.databaseHost;
 }
 
-/** The IAP-backed deep health probe for `plan`'s install. */
-async function healthProbeFor(run: GcloudRunner, http: HttpFetch, plan: AppRollPlan) {
+/**
+ * The IAP-backed deep health probe for `plan`'s install (the upgrader job;
+ * the converge job, #819, too).
+ */
+export async function healthProbeFor(run: GcloudRunner, http: HttpFetch, plan: AppRollPlan) {
   const { install } = plan;
   const urls: Partial<Record<"admin" | "gateway", string>> = {};
   for (const s of plan.services) {
@@ -102,12 +107,46 @@ export function gcpUpgraderDeps(
     region: placement.region,
     env: GCP_STACK_ENV,
     execution: placement.execution,
+    // #818 — the IAM self-check asks as the job's own account (gcloud's
+    // token from the metadata server), so it sees exactly the job's grants.
+    iam: restIamTester({
+      http,
+      token: async () => {
+        const t = await run(["auth", "print-access-token"]);
+        if (!t.ok) throw new Error(`gcloud auth print-access-token: ${t.stderr.trim()}`);
+        return t.stdout.trim();
+      },
+    }),
     // The default deps: the fixed registry and signer, never overridden.
     fetchManifest: (version) => fetchVerifiedReleaseManifest(version),
-    lockState: () =>
-      acquireBucketStateLock(opsBucketName(placement.projectId), "caelo upgrader job"),
+    // #815 — the lock names this execution, so a later run can break it
+    // once Cloud Run says this one has ended (killed at its task timeout,
+    // OOM). Outside Cloud Run there is no execution to vouch for it.
+    lockState: (onBreak) =>
+      acquireBucketStateLock(
+        opsBucketName(placement.projectId),
+        "caelo upgrader job",
+        realSyncGcloud,
+        {
+          onBreak,
+          ...(placement.execution
+            ? {
+                holder: {
+                  execution: {
+                    projectId: placement.projectId,
+                    region: placement.region,
+                    name: placement.execution,
+                  },
+                  maxRuntimeMs: UPGRADER_TASK_TIMEOUT_MINUTES * 60_000,
+                },
+              }
+            : {}),
+        },
+      ),
+    // Uncached on purpose: the job re-reads install.json once it holds the
+    // lock to see whether another writer changed it meanwhile (#815).
     readInstall: () => {
-      const text = store.read("install.json");
+      const text = store.peek("install.json");
       return text === null ? null : (JSON.parse(text) as InstallMetadata);
     },
     writeInstall: (meta) => store.write("install.json", meta),

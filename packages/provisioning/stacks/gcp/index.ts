@@ -31,6 +31,7 @@ import {
   staticPublisherServiceAccountId,
 } from "../../dist/gcp-names.js";
 import { createSiteUrlMap } from "../../dist/gcp-url-map.js";
+import { mcpArmorRuleArgs } from "../../dist/remote-mcp-edge.js";
 import {
   ADMIN_MEMORY_DEFAULT,
   adminEnvContract,
@@ -40,10 +41,12 @@ import {
   type CloudRunSlug,
   databaseUrls,
   defaultStagingHost,
+  GATEWAY_TIMEOUT_SECONDS,
   gatewayEnvContract,
   type RuntimeSecret,
   runtimeSecretBindings,
   STATIC_CDN_POLICY,
+  secretFileVolumesTemplate,
 } from "../../dist/stack-contract.js";
 
 const cfg = new pulumi.Config();
@@ -251,6 +254,10 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
   "tool-approval-secret": gcpSecretId(env, "tool-approval-secret"),
   "staging-gate-secret": gcpSecretId(env, "staging-gate-secret"),
   "public-role-password": gcpSecretId(env, "public-role-password"),
+  // #806 — remote MCP: the Owner-set Google OAuth client (a placeholder
+  // until then) and the broker's seal key, both CLI-generated.
+  "mcp-oauth-client": gcpSecretId(env, "mcp-oauth-client"),
+  "mcp-oauth-seal-key": gcpSecretId(env, "mcp-oauth-seal-key"),
 };
 
 // #613 — public_role's own password (CLI-generated, stack-contract.ts
@@ -472,6 +479,20 @@ for (const binding of runtimeSecretBindings()) {
   );
 }
 
+// #806 — the Owner's remote-MCP setup (Settings → MCP → Remote) stores the
+// Google OAuth client in this one secret. Add-version only: the admin can
+// replace the client the gateway reads, never read it back or touch any
+// other secret (stack-contract.ts GCP_COMMON says why).
+new gcp.secretmanager.SecretIamMember(
+  `${namePrefix}-admin-mcp-oauth-client-version-adder`,
+  {
+    secretId: runtimeSecretIds["mcp-oauth-client"],
+    role: "roles/secretmanager.secretVersionAdder",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
+
 new gcp.storage.BucketIAMMember(
   `${namePrefix}-media-rw`,
   {
@@ -627,8 +648,8 @@ interface CloudRunArgs {
    * Per-request timeout. Cloud Run's default is 300s (5min), which is too
    * short for the admin's SSE chat-stream — a multi-tool compose-page session
    * regularly runs 5–15 min. Pass an explicit "<n>s" Pulumi-style duration
-   * string. Gateway stays on the default; visitor-facing endpoints don't
-   * legitimately need longer.
+   * string. The gateway gets the same (#806): it proxies remote-MCP chat
+   * streams to the admin.
    */
   readonly timeout?: string;
   /**
@@ -689,16 +710,23 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
         },
         timeout: args.timeout,
         ...(args.mediaVolume
-          ? {
-              executionEnvironment: args.mediaVolume.executionEnvironment,
-              volumes: [...args.mediaVolume.volumes],
-            }
+          ? { executionEnvironment: args.mediaVolume.executionEnvironment }
           : {}),
+        // The admin's media bucket, plus each service's secret files (#806:
+        // the gateway's remote-MCP OAuth client) — both from the contract
+        // upgrade applies to existing installs.
+        volumes: [
+          ...(args.mediaVolume?.volumes ?? []),
+          ...secretFileVolumesTemplate(args.serviceName, env).volumes,
+        ],
         containers: [
           {
             image: imageTag(args.serviceName),
             envs: [...args.contractEnv],
-            ...(args.mediaVolume ? { volumeMounts: [...args.mediaVolume.volumeMounts] } : {}),
+            volumeMounts: [
+              ...(args.mediaVolume?.volumeMounts ?? []),
+              ...secretFileVolumesTemplate(args.serviceName, env).volumeMounts,
+            ],
             resources: { limits: { cpu: "1", memory: args.memory } },
           },
         ],
@@ -749,6 +777,11 @@ const gatewaySvc = cloudRunService({
   minInstances: gatewayMinInstances,
   maxInstances: 100,
   memory: "512Mi",
+  // #806 — remote MCP: chat turns stream through the gateway for minutes,
+  // so it gets the admin's 3600 s instead of Cloud Run's 300 s default
+  // (stack-contract.ts GATEWAY_TIMEOUT_SECONDS). The LB in front imposes no
+  // shorter limit on serverless NEG backends.
+  timeout: `${GATEWAY_TIMEOUT_SECONDS}s`,
   // public_role on cms_public only: no cms_admin login of any role
   // (#613, #635, CLAUDE.md §2).
   contractEnv: gatewayEnvContract(envContractInputs),
@@ -784,6 +817,12 @@ const wafPolicy = new gcp.compute.SecurityPolicy(
   {
     description: `Caelo ${env} Cloud Armor — rate limit + OWASP`,
     rules: [
+      // #806 — remote MCP (/api/mcp/*): a per-IP throttle sized for agent
+      // traffic behind shared connector IPs, evaluated first; below it the
+      // rule allows, so the OWASP packs (MCP bodies carry HTML) and the
+      // general ban below do not apply there. src/remote-mcp-edge.ts says
+      // why; `cms-provision upgrade` adds the same rule to existing installs.
+      mcpArmorRuleArgs(),
       // Rate limit per source IP — 100 req / min sliding window.
       {
         action: "rate_based_ban",
@@ -983,6 +1022,19 @@ new gcp.iap.WebBackendServiceIamMember(
   },
   opts,
 );
+
+// =========================================================================
+// Quality-audit job — deliberately NOT here
+// =========================================================================
+//
+// #875 — every Stage audit's Lighthouse runs execute in parallel in a Cloud
+// Run job, one task per run, under its own service account (results bucket
+// create-only, staged build read-only, no secrets, no VPC). The CLI owns the
+// job, its account, the results bucket and the grants
+// (packages/provisioning/src/audit-job-setup.ts, run by the wizard after
+// `pulumi up` and by `upgrade`), because `upgrade` never runs Pulumi: a
+// bucket or job both this program and `upgrade` created would collide on
+// the next wizard run. The app-roll moves the job's image with the admin's.
 
 // =========================================================================
 // Operator access — deliberately NOT here

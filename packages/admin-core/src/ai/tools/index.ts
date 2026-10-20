@@ -87,14 +87,18 @@ import {
   listUnpublishedChangesTool,
 } from "./history-tools.js";
 import { importMediaFromUrlsTool } from "./import-media-from-urls.js";
-import { acceptImportPagesTool, cleanupImportRunTool } from "./import-run-actions.js";
+import {
+  acceptImportPagesTool,
+  cleanupImportRunTool,
+  resolveImportLinksTool,
+} from "./import-run-actions.js";
 import { addImportPageNotesTool, getImportRunReportTool } from "./import-run-report.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectDesignDraftTool } from "./inspect-design-draft.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
-import { getLinkMigrationReportTool, resolveImportLinksTool } from "./link-migration-tools.js";
+import { getLinkMigrationReportTool } from "./link-migration-tools.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
 import { listImportPagesTool } from "./list-import-pages.js";
 import { listLayoutsTool } from "./list-layouts.js";
@@ -333,8 +337,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #197 — rebuild notes + the migration's closing report.
   registry.register(addImportPageNotesTool);
   registry.register(getImportRunReportTool);
-  // Epic #724 rollout E — import link finalisation + the link migration report.
-  registry.register(resolveImportLinksTool);
+  // Epic #724 rollout E — the link migration report.
   registry.register(getLinkMigrationReportTool);
   // issue #280 — migration cost gate: record the operator's budget +
   // check cumulative spend against it (pause-and-ask, not auto-stop).
@@ -602,6 +605,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(deleteModulesManyTool);
   registry.register(acceptImportPagesTool);
   registry.register(cleanupImportRunTool);
+  registry.register(resolveImportLinksTool);
   registry.register(sendTestEmailTool);
   // Agent-tool parity, part 2: the operator dashboards and maintenance
   // reads/writes the exceptions file listed as gaps.

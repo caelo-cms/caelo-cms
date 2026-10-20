@@ -25,7 +25,11 @@ import {
   parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
-import { createMcpTokenOp, revokeMcpTokenOp } from "./security/mcp_tokens.js";
+import {
+  createMcpTokenOp,
+  mcpTokenNotVisibleMessage,
+  revokeMcpTokenOp,
+} from "./security/mcp_tokens.js";
 
 // ─── propose_create ──────────────────────────────────────────────────
 
@@ -92,7 +96,9 @@ export const proposeMcpTokenRevokeOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "mcp_tokens.propose_revoke",
-        message: `token ${input.tokenId} not found`,
+        // RLS (migration 0315) hides other users' tokens unless the chat's
+        // person is an Owner, so "not yours" reads as not found here too.
+        message: mcpTokenNotVisibleMessage(input.tokenId),
       });
     }
     if (t.revoked_at) {

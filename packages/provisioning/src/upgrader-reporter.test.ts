@@ -9,6 +9,12 @@ describe("phaseOfStep", () => {
     ["Applying DB migrations (idempotent)...", "migrations"],
     ["Rolling admin → sha256:aaaa...", "roll"],
     ["Deep health check (database, migrations, version)...", "health"],
+    // #819 — the full upgrade the converge job runs.
+    ["Pre-flight: resolving services + image digests + current revisions...", "verify"],
+    ["Taking a pre-upgrade Cloud SQL backup...", "backup"],
+    ["Ensuring the gateway service account + generated runtime secrets...", "converge"],
+    ["Removing public_role from the Cloud SQL superuser group...", "converge"],
+    ["Preparing the gateway's database login (public_role)...", "converge"],
     ["Something else", null],
   ])("%s → %s", (label, phase) => {
     expect(phaseOfStep(label)).toBe(phase as never);

@@ -124,8 +124,9 @@ beforeAll(async () => {
   // #846 — a page whose content values exercise every field kind. Only the
   // link-bearing kinds (link / url default / link-list / richtext / nested
   // sub-module) may be reported; image + text + text-list paths never.
-  // The dead links are written as `https://legacy.invalid/…` (#724 refuses
-  // an internal link to no page) and turned into the legacy literals
+  // The dead links and the legacy image paths are written as
+  // `https://legacy.invalid/…` (#724 refuses an internal link to no page
+  // and a file path nothing serves) and turned into the legacy literals
   // below, underneath the ops.
   const kinds = await execute(registry, adapter, systemCtx, "pages.build_page", {
     page: { slug: KINDS_SLUG, title: "LINT Kinds", templateId },
@@ -146,7 +147,7 @@ beforeAll(async () => {
           values: {
             card_label: "/shop/nested-text",
             card_href: "https://legacy.invalid/missing-nested-link",
-            card_image: "/media/nested.webp",
+            card_image: "https://legacy.invalid/media/nested.webp",
           },
         },
       },
@@ -176,7 +177,7 @@ beforeAll(async () => {
         content: {
           source: "inline",
           values: {
-            hero_image: "/media/foo.webp",
+            hero_image: "https://legacy.invalid/media/foo.webp",
             alert_text: "/shop/xyz",
             tags: ["/shop/tag-path"],
             primary_link: "https://legacy.invalid/missing-link",

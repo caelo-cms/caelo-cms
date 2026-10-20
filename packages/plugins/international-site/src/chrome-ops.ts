@@ -432,25 +432,43 @@ export async function writeChromeTranslation(
   p: PreparedChromeTranslation,
   payload: ChromeTranslationPayload,
 ): Promise<number> {
-  let translated = 0;
+  // Two passes, like set_chrome_variants: every answer's links are
+  // checked before the first row is written. Rich text carries the
+  // source's stored links (`caelo:page/<id>` references) into the
+  // translation and back; a translator that rewrote one into a path, or
+  // broke it, goes through core's write-time canonicalisation like any
+  // other write (#724) — the path becomes a reference, a broken
+  // reference refuses the batch instead of shipping a dead link. Links
+  // the source already holds are grandfathered (its own literals are
+  // E's and F's to report).
+  const rows: { existing: ChromeVariantRow | undefined; row: Omit<ChromeVariantRow, "id"> }[] = [];
   for (const answer of payload.targets) {
     const o = p.offered.find((x) => x.id === answer.target);
     if (!o) continue; // validateChromeTranslation refused these
     const existing = p.variants.find(
       (x) => x.target_key === o.target.key && x.locale_code === p.locale.code,
     );
-    await upsertVariant(deps.q, existing, {
-      target_key: o.target.key,
-      locale_code: p.locale.code,
-      mode: "translated",
-      module_id: null,
-      values: applyStrings(o.target.values, answer.strings),
-      translation_status: "up_to_date",
-      source_hash: sourceFingerprint(o.target.fields, o.target.values),
+    const values = await canonicaliseChromeLinks(
+      deps.cms,
+      o.target.fields,
+      applyStrings(o.target.values, answer.strings),
+      o.target.values,
+    );
+    rows.push({
+      existing,
+      row: {
+        target_key: o.target.key,
+        locale_code: p.locale.code,
+        mode: "translated",
+        module_id: null,
+        values,
+        translation_status: "up_to_date",
+        source_hash: sourceFingerprint(o.target.fields, o.target.values),
+      },
     });
-    translated += 1;
   }
-  return translated;
+  for (const { existing, row } of rows) await upsertVariant(deps.q, existing, row);
+  return rows.length;
 }
 
 /** The install-side pass: prepare → the install's AI → write, in ONE call. */
@@ -518,7 +536,10 @@ export async function setChromeVariants(
   const args = setVariantsArgs.parse(rawArgs);
   const targets = new Map((await loadChromeTargets(deps.cms)).map((t) => [t.key, t]));
   const variants = await loadChromeVariants(deps.q);
-  const updated: { targetKey: string; localeCode: string }[] = [];
+  // Two passes so the batch is all-or-nothing (CLAUDE.md §11): every
+  // variant is checked and its links canonicalised BEFORE the first row
+  // is written — a refused variant N must not leave 0..N-1 stored.
+  const rows: { existing: ChromeVariantRow | undefined; row: Omit<ChromeVariantRow, "id"> }[] = [];
   for (const v of args.variants) {
     requireTargetLocale(deps, v.localeCode);
     const target = targets.get(v.targetKey);
@@ -541,40 +562,48 @@ export async function setChromeVariants(
             deps.cms,
             v.moduleId ? [] : target.fields,
             v.values,
-            existing,
+            existing?.values ?? undefined,
           )
         : v.moduleId
           ? {}
           : (existing?.values ?? { ...target.values });
-    await upsertVariant(deps.q, existing, {
-      target_key: v.targetKey,
-      locale_code: v.localeCode,
-      mode: "independent",
-      module_id: v.moduleId ?? (v.values === undefined ? (existing?.module_id ?? null) : null),
-      values,
-      translation_status: "up_to_date",
-      source_hash: null,
+    rows.push({
+      existing,
+      row: {
+        target_key: v.targetKey,
+        locale_code: v.localeCode,
+        mode: "independent",
+        module_id: v.moduleId ?? (v.values === undefined ? (existing?.module_id ?? null) : null),
+        values,
+        translation_status: "up_to_date",
+        source_hash: null,
+      },
     });
-    updated.push({ targetKey: v.targetKey, localeCode: v.localeCode });
   }
-  return { updated };
+  for (const { existing, row } of rows) await upsertVariant(deps.q, existing, row);
+  return {
+    updated: rows.map(({ row }) => ({ targetKey: row.target_key, localeCode: row.locale_code })),
+  };
 }
 
 /**
- * Core's write-time link canonicalisation for a variant's own values.
+ * Core's write-time link canonicalisation for a variant's values.
  * A swapped-in module's field kinds are not known here; core still
  * recognises link keys (`href`, `*_url`, …) and HTML attributes.
+ *
+ * @param previous the values this write replaces or derives from; their
+ *   link literals are grandfathered, as for a core update.
  */
 async function canonicaliseChromeLinks(
   cms: ChromeCms,
   fields: readonly ChromeField[],
   values: Record<string, unknown>,
-  existing: ChromeVariantRow | undefined,
+  previous: Readonly<Record<string, unknown>> | undefined,
 ): Promise<Record<string, unknown>> {
   const r = await cms.call<{ values: Record<string, unknown> }>("links.canonicalise_values", {
     fields: fields.map((f) => ({ name: f.name, kind: f.kind })),
     values,
-    ...(existing?.values ? { previous: existing.values } : {}),
+    ...(previous ? { previous } : {}),
   });
   return r.values;
 }

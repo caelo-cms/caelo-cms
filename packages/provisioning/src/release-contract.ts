@@ -11,8 +11,9 @@
  * The admin's upgrader job (Phase 2) only rolls images: it holds no IAM
  * write, no secret create, no resource create. Anything a release needs
  * beyond "new image digests + expand-only migrations" must therefore be
- * declared here, so the upgrader refuses it and sends the Owner to the
- * "Run in Cloud Shell" path instead of half-applying it.
+ * declared here, so the upgrader refuses it and the admin routes the
+ * release to the converge job (#819; the provisioner's identity) instead
+ * of half-applying it.
  */
 
 /**
@@ -49,6 +50,11 @@ export const INFRA_CONTRACT_PATHS: readonly string[] = [
   // The in-cloud upgrader job's service account, custom roles and bucket
   // grants (#799 added one without the checks noticing).
   "packages/provisioning/src/upgrader-setup.ts",
+  // #875 — the quality-audit job, its service account, results bucket and
+  // grants.
+  "packages/provisioning/src/audit-job-setup.ts",
+  // #819 — the converge job, its database login and the admin's grant on it.
+  "packages/provisioning/src/converge-job-setup.ts",
 ];
 
 /**
