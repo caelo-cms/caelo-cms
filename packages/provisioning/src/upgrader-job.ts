@@ -13,15 +13,23 @@
  *
  *   1. claim the oldest pending request (ending a run that died mid-way);
  *   2. read what the install runs from install.json in its ops bucket; when
- *      it names other images than the ones serving, re-record the serving
- *      release if a signed release manifest names both its images, else
- *      stop (upgrader-records.ts, #860);
+ *      it names other images than the ones serving, judge against the
+ *      serving release if a signed release manifest names both its images,
+ *      else stop (upgrader-records.ts, #860);
  *   3. fetch the release manifest from the FIXED registry and verify its
  *      signature (release-manifest.ts) — no registry, identity or digest
  *      ever comes from the request, the env or argv;
  *   4. decide (upgrader-assess.ts): refuse a bad signature, a downgrade, a
  *      release below its minFromVersion, an automatic run the policy does
  *      not allow; hand an infrastructure change to Cloud Shell;
+ *   -- only now take the install's state lock (#815), confirm install.json
+ *      is unchanged since step 2, and write step 2's correction. Everything
+ *      above only reads, so no lock problem can hide the verdict; a stop
+ *      verdict still corrects the records when the lock is free. Only a
+ *      verdict judged on drift asks for the lock even when it stops: the
+ *      serving images were read without it, and a run that holds it may be
+ *      half-way through its own roll — then the answer is "another install
+ *      operation is running", never a drift or Cloud Shell verdict;
  *   5. take a Cloud SQL backup — no backup, no change;
  *   6. app-roll (upgrade/app-roll.ts) with no converge hooks: migrations
  *      with the new admin image, admin then gateway, deep health check,
@@ -141,12 +149,14 @@ export interface UpgraderJobDeps {
   /** fetchVerifiedReleaseManifest against the fixed registry. */
   readonly fetchManifest: (version: string) => Promise<ReleaseManifestResult>;
   /**
-   * Take the install's state lock (the one `pulumi up` and `state migrate`
-   * hold) for the whole run; returns its release. Throws when another run
-   * holds it.
+   * Take the install's state lock (the one `pulumi up`, `state migrate` and
+   * the CLI `upgrade` hold) right before the run's first write; returns its
+   * release. Breaks a lock whose holder has ended and reports that through
+   * `onBreak` (state-store.ts). Throws StateLockHeldError when a live run
+   * holds it, any other error when it cannot be taken or judged.
    */
-  readonly lockState: () => () => void;
-  /** install.json from the install's ops bucket (null when absent). */
+  readonly lockState: (onBreak: (message: string) => void) => () => void;
+  /** install.json as the ops bucket holds it NOW (null when absent) — never cached. */
   readonly readInstall: () => InstallMetadata | null;
   readonly writeInstall: (meta: InstallMetadata) => void;
   /** Runs both migration targets with the NEW admin image. */
@@ -170,7 +180,23 @@ export interface UpgraderRunResult {
   readonly status: UpdateEndStatus | null;
 }
 
+/** Why the run cannot go on: how its request ends. */
+interface Blocked {
+  readonly status: UpdateEndStatus;
+  readonly codes: readonly string[];
+  readonly reason: string;
+}
+
+type LockOutcome = { readonly ok: true } | ({ readonly ok: false } & Blocked);
+
 const ROLLED_PHASES = new Set(["roll", "health"]);
+
+/**
+ * Lock outcomes that mean another run is changing the install right now
+ * (#815): a verdict judged from serving images read without the lock may
+ * describe that run's half-finished roll, so it is not reported.
+ */
+const STALE_VERDICT: ReadonlySet<string> = new Set(["state-locked", "install-state-changed"]);
 
 /** Attempts at recording a request's end state before the run fails. */
 const FINISH_ATTEMPTS = 3;
@@ -234,25 +260,34 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       `Upgrader started${deps.execution ? ` (run ${deps.execution})` : ""}: installing Caelo ${request.targetVersion}.`,
     );
 
-    // Exclusive against the installer's own state writers for the whole run.
-    try {
-      releaseLock = deps.lockState();
-    } catch (e) {
-      if (e instanceof StateLockHeldError) {
-        return stopWith(
-          "failed",
-          ["state-locked"],
-          `Nothing was changed: another install operation is running on this site (${errorText(e)}). Try again when it has finished.`,
-        );
+    // #815 — the state lock is taken only right before the first write
+    // (lockBeforeWrite below), never before the decision: any lock problem
+    // must not hide the verdict (needs Cloud Shell, refused), and a run
+    // that changes nothing has no business blocking another.
+    const lockBeforeWrite = (): LockOutcome => {
+      try {
+        releaseLock = deps.lockState((message) => r.info(message));
+        return { ok: true };
+      } catch (e) {
+        if (e instanceof StateLockHeldError) {
+          return {
+            ok: false,
+            status: "failed",
+            codes: ["state-locked"],
+            reason: `Nothing was changed: another install operation is running on this site (${errorText(e)}). Try again when it has finished.`,
+          };
+        }
+        // Not contention: the job cannot reach its own ops bucket or ask
+        // Cloud Run about the holder. Retrying will not help; a Cloud Shell
+        // upgrade re-converges the job's grants.
+        return {
+          ok: false,
+          status: "needs_cloud_shell",
+          codes: ["state-access"],
+          reason: `Nothing was changed: the upgrader could not take the install's state lock (${errorText(e)}). Run the upgrade once with Cloud Shell; it repairs the upgrader's access.`,
+        };
       }
-      // Not contention: the job cannot reach its own ops bucket. Retrying
-      // will not help; a Cloud Shell upgrade re-converges the job's grants.
-      return stopWith(
-        "needs_cloud_shell",
-        ["state-access"],
-        `Nothing was changed: the upgrader could not take the install's state lock (${errorText(e)}). Run the upgrade once with Cloud Shell; it repairs the upgrader's access.`,
-      );
-    }
+    };
 
     // 2. What the install runs — from its own state, never from the admin.
     r.phase("verify");
@@ -276,6 +311,53 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       ...read,
       provider: read.provider,
     };
+    /** The corrected records (#860), when install.json is stale; written under the lock. */
+    let heal: InstallMetadata | null = null;
+
+    /**
+     * Take the lock, confirm install.json is still what was judged, and
+     * write the pending correction. Returns null when all of that held.
+     */
+    const lockAndHeal = (): Blocked | null => {
+      const locked = lockBeforeWrite();
+      if (!locked.ok) return locked;
+      // Another writer may have changed the records between our read and
+      // the lock; everything above was judged against the old ones.
+      // A failed re-read is a Blocked like any other, never a throw: on the
+      // stop-verdict path a throw here would replace the verdict with
+      // failed/internal.
+      let now: InstallMetadata | null;
+      try {
+        now = deps.readInstall();
+      } catch (e) {
+        return {
+          status: "failed",
+          codes: ["install-state-read"],
+          reason: `Nothing was changed: the install's records (install.json) could not be read again once the lock was held (${errorText(e)}). Try again.`,
+        };
+      }
+      if (JSON.stringify(now) !== JSON.stringify(read)) {
+        return {
+          status: "failed",
+          codes: ["install-state-changed"],
+          reason:
+            "Nothing was changed: another install operation changed the install's records (install.json) while this update was being checked. Try again.",
+        };
+      }
+      if (!heal) return null;
+      const v = heal.releaseVersion;
+      try {
+        deps.writeInstall(heal);
+      } catch (e) {
+        return {
+          status: "failed",
+          codes: ["install-state-write"],
+          reason: `Nothing was changed: the install's records (install.json) name another release than the one that serves (v${v}), and they could not be corrected (${errorText(e)}).`,
+        };
+      }
+      r.success(`Caelo refreshed its install records: v${v} serves.`);
+      return null;
+    };
 
     // install.json must describe what actually serves: if a previous run
     // rolled but could not record it, the recorded version is stale and
@@ -290,30 +372,28 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       const found = await findServingRelease(meta, serving.digests, deps);
       if (!found.ok) {
         if (found.retryable) return stopWith("failed", ["registry"], found.reason);
+        // #815 — the serving images were read without the lock: a run that
+        // holds it may be half-way through its roll, and that is not drift.
+        // Only once this run holds the lock (or cannot take it at all) is
+        // the mismatch the install's real state.
+        const blocked = lockAndHeal();
+        if (blocked && STALE_VERDICT.has(blocked.codes[0] ?? "")) {
+          return stopWith(blocked.status, blocked.codes, blocked.reason);
+        }
         return stopWith("needs_cloud_shell", ["install-state-drift"], found.reason);
       }
-      const v = found.manifest.version;
       // The manifest's digests, not the serving ones: the signed form is the
       // one every later comparison and deploy uses (gcp-lookup.ts ServingImage).
-      const refreshed = {
+      meta = {
         ...meta,
         imageDigests: {
           admin: found.manifest.digests.admin,
           gateway: found.manifest.digests.gateway,
         },
-        releaseVersion: v,
+        releaseVersion: found.manifest.version,
       };
-      try {
-        deps.writeInstall(refreshed);
-        meta = refreshed;
-      } catch (e) {
-        return stopWith(
-          "failed",
-          ["install-state-write"],
-          `Nothing was changed: the install's records (install.json) name another release than the one that serves (v${v}), and they could not be corrected (${errorText(e)}).`,
-        );
-      }
-      r.success(`Caelo refreshed its install records: v${v} serves.`);
+      // Judged against now, written under the lock once decided (#815).
+      heal = meta;
     }
 
     // 3 + 4. The signed manifest decides.
@@ -337,6 +417,21 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     }
     if (decision.kind === "stop") {
       r.phase("assess");
+      if (heal) {
+        // The records still get corrected, but the verdict is the answer:
+        // a lock or write problem here must not replace it (#815).
+        // Except when another run holds the lock or changed the records:
+        // then the drift this verdict was judged on may be that run's
+        // half-finished work, and "try again once it has finished" is the
+        // true answer.
+        const blocked = lockAndHeal();
+        if (blocked && STALE_VERDICT.has(blocked.codes[0] ?? "")) {
+          return stopWith(blocked.status, blocked.codes, blocked.reason);
+        }
+        if (blocked) {
+          r.warn(`The install's records could not be corrected this time: ${blocked.reason}`);
+        }
+      }
       return stopWith(decision.status, decision.codes, decision.reason);
     }
     r.phase("assess");
@@ -369,6 +464,11 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       return stopWith("failed", ["plan"], `Nothing was changed: ${planned.error}.`);
     }
     for (const w of planned.plan.warnings) r.warn(w);
+
+    // Decided, planned: the backup (or the records correction) is the first
+    // write. Held through the roll, install.json and the self-update.
+    const blocked = lockAndHeal();
+    if (blocked) return stopWith(blocked.status, blocked.codes, blocked.reason);
 
     // 5. No backup, no change.
     r.phase("backup");

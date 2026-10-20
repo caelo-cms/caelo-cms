@@ -186,12 +186,18 @@ describe("state locks", () => {
       }
       if (args[1] === "cat")
         return objects.has(url) ? ok(objects.get(url)) : fail("matched no objects");
+      if (args[1] === "objects") {
+        const target = args[3] ?? "";
+        return objects.has(target)
+          ? ok(JSON.stringify({ generation: "1" }))
+          : fail("matched no objects");
+      }
       if (args[1] === "rm") return objects.delete(url) ? ok() : fail("matched no objects");
       return fail("unexpected");
     };
     const release = acquireBucketStateLock("acme-site-caelo-ops", "state migrate", run);
     expect(() => acquireBucketStateLock("acme-site-caelo-ops", "installer pulumi up", run)).toThrow(
-      /gcloud storage rm gs:\/\/acme-site-caelo-ops\/install\/state.lock/,
+      /held by state migrate .*lease runs until/,
     );
     release();
     acquireBucketStateLock("acme-site-caelo-ops", "installer pulumi up", run)();

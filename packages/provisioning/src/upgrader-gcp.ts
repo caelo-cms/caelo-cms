@@ -24,12 +24,13 @@ import { readAdminConfig, runMigrationsViaCloudRunJob } from "./migration-runner
 import { fetchVerifiedReleaseManifest } from "./release-manifest.js";
 import type { HttpFetch } from "./runtime-secrets.js";
 import { opsBucketName } from "./state-backend.js";
-import { acquireBucketStateLock, GcsStateStore } from "./state-store.js";
+import { acquireBucketStateLock, GcsStateStore, realSyncGcloud } from "./state-store.js";
 import type { AppRollPlan } from "./upgrade/app-roll.js";
 import { findServiceUrl } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe } from "./upgrade/health.js";
 import type { UpdateQueue, UpgraderJobDeps } from "./upgrader-job.js";
 import type { JobLog } from "./upgrader-reporter.js";
+import { UPGRADER_TASK_TIMEOUT_MINUTES } from "./upgrader-setup.js";
 
 /** Where the job runs, from the metadata server. */
 export interface UpgraderPlacement {
@@ -104,10 +105,34 @@ export function gcpUpgraderDeps(
     execution: placement.execution,
     // The default deps: the fixed registry and signer, never overridden.
     fetchManifest: (version) => fetchVerifiedReleaseManifest(version),
-    lockState: () =>
-      acquireBucketStateLock(opsBucketName(placement.projectId), "caelo upgrader job"),
+    // #815 — the lock names this execution, so a later run can break it
+    // once Cloud Run says this one has ended (killed at its task timeout,
+    // OOM). Outside Cloud Run there is no execution to vouch for it.
+    lockState: (onBreak) =>
+      acquireBucketStateLock(
+        opsBucketName(placement.projectId),
+        "caelo upgrader job",
+        realSyncGcloud,
+        {
+          onBreak,
+          ...(placement.execution
+            ? {
+                holder: {
+                  execution: {
+                    projectId: placement.projectId,
+                    region: placement.region,
+                    name: placement.execution,
+                  },
+                  maxRuntimeMs: UPGRADER_TASK_TIMEOUT_MINUTES * 60_000,
+                },
+              }
+            : {}),
+        },
+      ),
+    // Uncached on purpose: the job re-reads install.json once it holds the
+    // lock to see whether another writer changed it meanwhile (#815).
     readInstall: () => {
-      const text = store.read("install.json");
+      const text = store.peek("install.json");
       return text === null ? null : (JSON.parse(text) as InstallMetadata);
     },
     writeInstall: (meta) => store.write("install.json", meta),

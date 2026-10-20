@@ -124,8 +124,14 @@ export const UPGRADER_FORBIDDEN_ROLES = [
 /** Database role migration 0267 creates for the job. */
 export const UPGRADER_DB_ROLE = "platform_updater";
 
-/** The job's resources: enough for a backup + roll; the job ends within it. */
-const JOB_TASK_TIMEOUT = "60m";
+/**
+ * The job's task timeout in minutes: enough for a backup + roll; the job
+ * ends within it. It is also the lease on the state lock the job takes
+ * (#815, state-lock-lease.ts): after it, Cloud Run has killed the run.
+ */
+export const UPGRADER_TASK_TIMEOUT_MINUTES = 60;
+
+const JOB_TASK_TIMEOUT = `${UPGRADER_TASK_TIMEOUT_MINUTES}m`;
 
 export interface UpgraderSetupTarget {
   readonly projectId: string;
