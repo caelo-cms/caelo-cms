@@ -14,7 +14,7 @@ import { LINK_IMAGE_EDIT_SCRIPT } from "./link-image-edit-script.js";
  *      the parent's activePageId/URL/chat-branch context follows.
  *   3. **Editing affordances** (`EDIT_AFFORDANCES_SCRIPT`) — right-click
  *      menu + selection toolbar that post `caelo:element-referenced`
- *      (optionally with an Ask AI prompt). There is no edit mode: left
+ *      (Ask AI only flags it; no instruction). There is no edit mode: left
  *      clicks always behave like the live site. `FIELD_EDIT_SCRIPT` adds
  *      in-place text editing of marked fields (#917), `LINK_IMAGE_EDIT_SCRIPT`
  *      link and image editing (#918).
