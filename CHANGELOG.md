@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.57
+
+### Fixes
+- 757e624f let UPGRADER_SMOKE=off pass the release gate (#936)
+
 ## v0.10.56
 
 ### Features

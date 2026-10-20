@@ -91,23 +91,26 @@
 </script>
 
 <div class="relative" bind:this={dropdownEl}>
+  <!-- The accessible name is built from the button's content, not an
+       aria-label: the badge shows the count, and a label that does not
+       contain the visible text fails WCAG 2.5.3 (axe
+       label-content-name-mismatch). Name: "Notifications, 3 pending". -->
   <Button
     variant="ghost"
     size="icon"
-    aria-label={counts.total > 0
-      ? `Notifications (${counts.total} pending)`
-      : "Notifications"}
     aria-expanded={open}
     onclick={(e) => {
       e.stopPropagation();
       open = !open;
     }}
   >
-    <Bell class="size-4" />
+    <Bell class="size-4" aria-hidden="true" />
+    <span class="sr-only">Notifications{counts.total > 0 ? ", " : ""}</span>
     {#if counts.total > 0}
       <span
         class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium leading-none text-destructive-foreground"
-        aria-hidden="true">{counts.total > 9 ? "9+" : counts.total}</span>
+        >{counts.total > 9 ? "9+" : counts.total}<span class="sr-only"> pending</span></span
+      >
     {/if}
   </Button>
   <!-- P6.6 polish — aria-live region announces count changes to
