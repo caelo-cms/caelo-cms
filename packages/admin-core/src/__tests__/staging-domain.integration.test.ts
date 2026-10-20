@@ -73,8 +73,10 @@ const EDITOR_ID = "00000000-0000-0000-0000-0000000678a2";
 class FakeFirebase {
   versions = new Map<string, { config: unknown; files: Record<string, string> }>();
   channels = new Map<string, string>(); // channelId → url
-  /** channelId → expireTime; null once the channel never expires. */
+  /** channelId → its finite ttl; null once the channel never expires. */
   expiry = new Map<string, string | null>();
+  /** When set, lifting a channel's expiry answers 503 (transient API failure). */
+  failExpiryClear = false;
   live: string[] = [];
   blobs = new Map<string, Buffer>();
   private seq = 0;
@@ -124,9 +126,14 @@ class FakeFirebase {
     }
     if (method === "GET" && route === `sites/${SITE}/channels`) {
       return json({
-        channels: [...this.channels.keys(), "live"].map((id) => ({
-          name: `sites/${SITE}/channels/${id}`,
-        })),
+        channels: [...this.channels.keys(), "live"].map((id) => {
+          const ttl = this.expiry.get(id);
+          // Firebase lists expireTime only for channels it deletes on its own.
+          return {
+            name: `sites/${SITE}/channels/${id}`,
+            ...(ttl ? { expireTime: `in ${ttl}` } : {}),
+          };
+        }),
       });
     }
     const channel = route.match(/^sites\/[^/]+\/channels\/([^/]+)$/);
@@ -135,7 +142,13 @@ class FakeFirebase {
       return new Response("", { status: 200 });
     }
     if (method === "PATCH" && channel && params.get("updateMask") === "expireTime") {
-      this.expiry.set(channel[1] ?? "", parsed.expireTime ?? null);
+      if (parsed.expireTime !== null) throw new Error("expireTime is only ever cleared");
+      if (this.failExpiryClear) return new Response("{}", { status: 503 });
+      this.expiry.set(channel[1] ?? "", null);
+      return json({});
+    }
+    if (method === "PATCH" && channel && params.get("updateMask") === "ttl") {
+      this.expiry.set(channel[1] ?? "", parsed.ttl);
       return json({});
     }
     if (method === "POST" && /channels\/[^/]+\/releases$/.test(route)) return json({});
@@ -360,6 +373,61 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       { origin_url: stagedRun!.preview_url, origin_run_id: staged.runId },
     ]);
     expect([...fake.channels.keys()]).toEqual([`runid-${staged.runId}`]);
+  });
+
+  it("#908 Publish live keeps alive a served preview staged before served previews stopped expiring", async () => {
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    // What the previous version left behind: served, but on its 7-day TTL.
+    fake.expiry.set(`runid-${staged.runId}`, "604800s");
+    await markAudited(staged.runId);
+    await ok("deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
+    expect(fake.expiry.get(`runid-${staged.runId}`)).toBeNull();
+  });
+
+  it("#908 a Stage whose preview cannot be kept alive fails, leaves that preview on its TTL and staging on the previous build", async () => {
+    const served = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    const channelsBefore = new Set(fake.channels.keys());
+    fake.failExpiryClear = true;
+    try {
+      const r = await execute(registry, adapter, SYSTEM, "deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      expect(r.ok).toBe(false);
+      expect(JSON.stringify(r.ok ? null : r.error)).toContain("Stage again");
+    } finally {
+      fake.failExpiryClear = false;
+    }
+    const failed = [...fake.channels.keys()].filter((id) => !channelsBefore.has(id));
+    expect(failed).toHaveLength(1);
+    // The failed Stage's preview expires on its own; the served one is untouched.
+    expect(fake.expiry.get(failed[0]!)).toBe("604800s");
+    expect(fake.channels.has(`runid-${served.runId}`)).toBe(true);
+    expect(fake.expiry.get(`runid-${served.runId}`)).toBeNull();
+    expect((await stagingRow())[0]?.origin_run_id).toBe(served.runId);
+    const [run] = (await withSql(
+      (tx) => tx`SELECT status FROM deploy_runs
+                 WHERE id = ${failed[0]!.slice("runid-".length)}::uuid`,
+    )) as { status: string }[];
+    expect(run?.status).toBe("failed");
+
+    // The next Stage retires the failed Stage's leftover preview.
+    const next = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    expect([...fake.channels.keys()]).toEqual([`runid-${next.runId}`]);
   });
 
   it("a Stage waits for an in-flight Stage / Publish live before it publishes and prunes (codex review on #652)", async () => {

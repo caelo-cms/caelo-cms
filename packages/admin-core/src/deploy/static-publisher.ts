@@ -150,14 +150,22 @@ export interface StaticPublisher {
   }): Promise<PromoteSummary>;
 
   /**
-   * #650 — retire public preview artefacts of staged builds that are no
-   * longer served: every one except `keepRunId`, the run staging serves
-   * (after Publish live still the published run, so staging keeps showing
-   * the live state), or all of them when nothing is served
-   * (`keepRunId: null`). Absent on publishers whose staging is not publicly
-   * reachable per run.
+   * #650 / #908 — make `servedRunId`'s public preview the one staging
+   * serves, and retire every other one. This is the only place a preview's
+   * lifetime changes: a preview is created with a finite TTL, so a Stage
+   * that fails before it is selected leaves nothing that outlives the TTL;
+   * selection lifts the served preview's expiry (an idle staging must not
+   * expire into 404s); a retired preview gets a finite TTL back before it
+   * is deleted, so one whose delete fails still expires. `servedRunId: null`
+   * retires them all.
+   *
+   * Throws when the served preview cannot be kept alive (including when it
+   * no longer exists) — the caller must not record it as served. Previews
+   * that could not be retired are reported in `notRetired`, not thrown:
+   * the next selection retries them. Absent on publishers whose staging is
+   * not publicly reachable per run.
    */
-  pruneStagingPreviews?(args: { keepRunId: string | null }): Promise<{ deleted: string[] }>;
+  selectStagingPreview?(args: { servedRunId: string | null }): Promise<StagingPreviewSelection>;
 }
 
 /**
@@ -188,4 +196,12 @@ export async function loadStaticPublisher(provider?: string): Promise<StaticPubl
         `loadStaticPublisher: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | gcp-firebase | aws | azure.`,
       );
   }
+}
+
+/** What {@link StaticPublisher.selectStagingPreview} did with the other previews. */
+export interface StagingPreviewSelection {
+  /** Previews deleted (or already gone). */
+  readonly retired: readonly string[];
+  /** Previews that are still there, each with why its retirement failed. */
+  readonly notRetired: readonly { readonly preview: string; readonly error: string }[];
 }
