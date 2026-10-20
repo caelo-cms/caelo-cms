@@ -285,6 +285,7 @@ import {
   updatePageCaptureOp,
   writeExtractedPagesOp,
 } from "./ops/imports.js";
+import { resolveImportLinksOp } from "./ops/links-import.js";
 import { listMcpApprovalHandoffsOp } from "./ops/mcp_approval_handoffs.js";
 import {
   executeMcpTokenProposalOp,
@@ -1121,6 +1122,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acceptImportedPagesOp);
   registry.register(cleanupImportRunOp);
   registry.register(composeFromImportRunOp);
+  // Epic #724 — turn an import run's links to planned pages into references.
+  registry.register(resolveImportLinksOp);
   // Explicit, URL-driven media import (replaces the scan-and-download
   // migrate_media). The AI names the exact source asset URLs to import.
   registry.register(importMediaUrlsOp);

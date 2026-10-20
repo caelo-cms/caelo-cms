@@ -35,6 +35,10 @@
  *     reports those.
  *   - report mode: imports keep unresolved literals and report them
  *     (maintainer decision 3 on #724) instead of failing the import.
+ *   - pending: while a chat rebuilds a site import, a link to a page of
+ *     that run not built yet is kept and listed in `run.pending`; the
+ *     caller records it and the run's finalisation converts it (or
+ *     reports it) once the run's pages exist.
  */
 
 import {
@@ -60,6 +64,25 @@ export interface LinkTargetLookup {
   mediaExists(mediaId: string): boolean;
   /** True when `host` (lowercase, may carry a port) is the site's own. */
   isOwnHost(host: string): boolean;
+  /**
+   * True when `path` names a page that does not exist YET but is planned:
+   * a page of the site import the writing chat is rebuilding, not built
+   * so far (#724 rollout C, maintainer decision on open point 1). Such a
+   * link keeps its literal path and lands in
+   * {@link LinkCanonicaliseRun.pending} instead of being an issue; the
+   * import converts it once the page exists. Absent = nothing is pending
+   * (every write outside an import run).
+   */
+  isPendingPagePath?(path: string): boolean;
+}
+
+/** A link to a planned (not yet built) page, kept literal for now. */
+export interface PendingLinkTarget {
+  /** The link exactly as written (trimmed). */
+  readonly value: string;
+  /** Its normalised path: the planned page's path. */
+  readonly path: string;
+  readonly where: string;
 }
 
 /** One link the canonicaliser could not turn into a reference. */
@@ -90,6 +113,8 @@ export interface LinkCanonicaliseRun {
   /** Link literals already present in the stored state; see file header. */
   readonly grandfathered: ReadonlySet<string>;
   readonly issues: LinkCanonicaliseIssue[];
+  /** Links to planned pages (see {@link LinkTargetLookup.isPendingPagePath}). */
+  readonly pending: PendingLinkTarget[];
 }
 
 /** Start a run. */
@@ -102,6 +127,7 @@ export function linkCanonicaliseRun(
     mode: opts.mode ?? "strict",
     grandfathered: opts.grandfathered ?? new Set(),
     issues: [],
+    pending: [],
   };
 }
 
@@ -288,7 +314,14 @@ export function canonicaliseUrl(
   // and the gateway (`/api/…`).
   if (path.startsWith("/_") || path === "/api" || path.startsWith("/api/")) return value;
 
-  const pageId = run.lookup.pageIdForPath(normaliseLinkPath(path));
+  const normalised = normaliseLinkPath(path);
+  const pageId = run.lookup.pageIdForPath(normalised);
+  if (pageId === null && run.lookup.isPendingPagePath?.(normalised)) {
+    // A page the import run will still build: kept as written and
+    // recorded by the caller; the run's finalisation converts it.
+    run.pending.push({ value: v, path: normalised, where });
+    return value;
+  }
   if (pageId === null) {
     const lastSegment = path.slice(path.lastIndexOf("/") + 1);
     const isFile = FILE_EXT_RE.test(lastSegment);
