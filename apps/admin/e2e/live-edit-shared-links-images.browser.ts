@@ -59,9 +59,14 @@ function branchValues(ci: string): { title?: unknown; links?: unknown } | null {
       `
       import { SQL } from "bun";
       const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-      const r = await sql\`SELECT cis.state->'values' AS v FROM content_instance_snapshots cis JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id WHERE cis.content_instance_id = \${process.env.CI}::uuid ORDER BY ss.created_at DESC LIMIT 1\`;
+      // RLS is forced for the owner role too: read as the system actor.
+      const v = await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const r = await tx\`SELECT cis.state->'values' AS v FROM content_instance_snapshots cis JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id WHERE cis.content_instance_id = \${process.env.CI}::uuid ORDER BY ss.created_at DESC LIMIT 1\`;
+        return r[0]?.v ?? null;
+      });
       await sql.end();
-      process.stdout.write(JSON.stringify(r[0]?.v ?? null));
+      process.stdout.write(JSON.stringify(typeof v === "string" ? JSON.parse(v) : v));
       `,
       { CI: ci },
     ),
