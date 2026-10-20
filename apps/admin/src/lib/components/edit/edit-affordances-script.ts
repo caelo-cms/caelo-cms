@@ -9,7 +9,7 @@ export const EDIT_OVERLAY_COLOR = "#2a64b8";
 
 /**
  * Stylesheet of the shadow root that hosts the context menu, the
- * selection toolbar, the Ask AI field and the target outline. It sits in
+ * selection toolbar and the target outline. It sits in
  * a shadow root so the site's CSS cannot restyle it and it cannot
  * restyle the site; nothing here touches the site's own elements (an
  * earlier version forced `position:relative` on the hovered module and
@@ -24,11 +24,7 @@ export const EDIT_UI_CSS =
   ".caption{padding:6px 8px 4px;color:#52525b;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}" +
   "button{all:unset;box-sizing:border-box;display:block;width:100%;padding:6px 8px;border-radius:5px;cursor:pointer;color:inherit;font:inherit;}" +
   ".bar button{width:auto;white-space:nowrap;}" +
-  `button:hover,button:focus-visible{background:${EDIT_OVERLAY_COLOR};color:#fff;}` +
-  ".ask{display:flex;gap:4px;padding:4px;}" +
-  "input{all:unset;box-sizing:border-box;flex:1;min-width:0;padding:6px 8px;border:1px solid #d4d4d8;border-radius:5px;background:#fff;color:#1a1a1a;font:inherit;}" +
-  `input:focus{border-color:${EDIT_OVERLAY_COLOR};}` +
-  `.ask button{width:auto;background:${EDIT_OVERLAY_COLOR};color:#fff;}`;
+  `button:hover,button:focus-visible{background:${EDIT_OVERLAY_COLOR};color:#fff;}`;
 
 /**
  * Limits mirror `chatSendMessageInput.chips` in `@caelo-cms/shared` so a
@@ -46,8 +42,8 @@ export const REFERENCE_LIMITS = {
  * editing surface without an edit mode: left click keeps browsing, a
  * right-click inside a module opens the Caelo menu (Shift+right-click
  * keeps the browser's own), and selecting text inside a module shows a
- * small toolbar. Both offer "Ask AI" (an inline prompt sent straight
- * into the current chat) and "Add to chat" (reference chip only). The
+ * small toolbar. Both offer "Ask AI" (reference chip + the chat composer
+ * focused for the instruction) and "Add to chat" (reference chip only). The
  * reference carries the selected text and its surrounding text, so the
  * AI knows exactly what the operator meant (CLAUDE.md §1A).
  *
@@ -60,9 +56,9 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   var UI_CSS = ${JSON.stringify(EDIT_UI_CSS)};
   var LIMITS = ${JSON.stringify(REFERENCE_LIMITS)};
   var ui = null;
-  // mode: idle | menu | toolbar | ask. Selection changes only drive the
-  // toolbar; the menu and the Ask field stay until closed explicitly.
-  var state = { mode: "idle", outlined: null };
+  // mode: idle | menu | toolbar. Selection changes only drive the
+  // toolbar; the menu stays until closed explicitly.
+  var state = { mode: "idle" };
 
   function clip(s, n) {
     s = String(s || "").replace(/\\s+/g, " ").trim();
@@ -176,7 +172,6 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   function showOutline(el) {
     var u = ensureUi();
     if (!u) return;
-    state.outlined = el;
     var r = el.getBoundingClientRect();
     u.outline.style.left = r.left + "px";
     u.outline.style.top = r.top + "px";
@@ -187,7 +182,6 @@ export const EDIT_AFFORDANCES_SCRIPT = `
 
   function close() {
     state.mode = "idle";
-    state.outlined = null;
     if (!ui) return;
     ui.panel.hidden = true;
     ui.panel.textContent = "";
@@ -236,7 +230,10 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     return c;
   }
 
-  function post(ref, prompt) {
+  // ask: the operator picked Ask AI. The message carries no instruction:
+  // the instruction is typed and sent in the editor's own composer, never
+  // taken from this frame (see ChatPanel's caelo:chip handler).
+  function post(ref, ask) {
     var msg = {
       kind: "caelo:element-referenced",
       moduleId: ref.moduleId,
@@ -245,7 +242,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     };
     if (ref.selectedText) msg.selectedText = ref.selectedText;
     if (ref.context) msg.context = ref.context;
-    if (prompt) msg.prompt = prompt;
+    if (ask) msg.ask = true;
     parent.postMessage(msg, origin());
   }
 
@@ -254,44 +251,6 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   function refCaption(ref) {
     var text = ref.selectedText || ref.context;
     return text ? "\\u201c" + clip(text, 48) + "\\u201d" : "This section";
-  }
-
-  function openAsk(ref, anchor) {
-    var u = ensureUi();
-    if (!u) return;
-    state.mode = "ask";
-    u.panel.className = "panel";
-    u.panel.textContent = "";
-    u.panel.setAttribute("data-testid", "caelo-ask");
-    u.panel.appendChild(caption(refCaption(ref)));
-    var row = document.createElement("div");
-    row.className = "ask";
-    var input = document.createElement("input");
-    input.type = "text";
-    input.placeholder = "What should the AI do here?";
-    input.setAttribute("aria-label", "Ask AI");
-    input.setAttribute("data-testid", "caelo-ask-input");
-    function submit() {
-      var prompt = input.value.trim();
-      if (!prompt) return;
-      post(ref, prompt);
-      close();
-    }
-    input.addEventListener("keydown", function (ev) {
-      ev.stopPropagation();
-      if (ev.key === "Enter") {
-        ev.preventDefault();
-        submit();
-      } else if (ev.key === "Escape") {
-        ev.preventDefault();
-        close();
-      }
-    });
-    row.appendChild(input);
-    row.appendChild(button("Send", "caelo-ask-send", submit));
-    u.panel.appendChild(row);
-    place(anchor, false);
-    input.focus();
   }
 
   function openMenu(ref, moduleEl, x, y) {
@@ -306,7 +265,8 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     u.panel.appendChild(caption(refCaption(ref)));
     u.panel.appendChild(
       button(ref.selectedText ? "Ask AI about this text\\u2026" : "Ask AI about this\\u2026", "caelo-menu-ask", function () {
-        openAsk(ref, pointRect(x, y));
+        post(ref, true);
+        close();
       }),
     );
     u.panel.appendChild(
@@ -342,7 +302,8 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     u.panel.setAttribute("data-testid", "caelo-selection-toolbar");
     u.panel.appendChild(
       button("Ask AI", "caelo-toolbar-ask", function () {
-        openAsk(ref, anchor);
+        post(ref, true);
+        close();
       }),
     );
     u.panel.appendChild(
@@ -355,7 +316,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   }
 
   function refreshToolbar() {
-    if (state.mode === "menu" || state.mode === "ask") return;
+    if (state.mode === "menu") return;
     var s = currentSelection();
     if (s) openToolbar(s);
     else if (state.mode === "toolbar") close();
@@ -412,7 +373,6 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   function onViewportChange() {
     if (state.mode === "menu") close();
     else if (state.mode === "toolbar") refreshToolbar();
-    else if (state.mode === "ask" && state.outlined) showOutline(state.outlined);
   }
   window.addEventListener("scroll", onViewportChange, true);
   window.addEventListener("resize", onViewportChange);

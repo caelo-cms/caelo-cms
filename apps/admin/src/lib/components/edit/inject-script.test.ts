@@ -28,6 +28,15 @@ describe("edit affordance UI (#916)", () => {
     expect(EDIT_UI_CSS).not.toContain("position:relative");
   });
 
+  it("never carries an AI instruction out of the preview", () => {
+    // The preview runs the site's module scripts, which can post the same
+    // messages as this runtime. Ask AI therefore only flags the reference
+    // (`ask`); the instruction is typed and sent in the editor's composer.
+    expect(EDIT_AFFORDANCES_SCRIPT).toContain("msg.ask = true");
+    expect(EDIT_AFFORDANCES_SCRIPT).not.toContain("prompt");
+    expect(EDIT_AFFORDANCES_SCRIPT).not.toContain('createElement("input")');
+  });
+
   it("is spliced into the injected runtime, which still parses", () => {
     expect(INJECT_SCRIPT).toContain(EDIT_AFFORDANCES_SCRIPT);
     expect(() => new Function(INJECT_SCRIPT)).not.toThrow();

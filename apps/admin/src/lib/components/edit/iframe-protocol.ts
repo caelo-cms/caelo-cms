@@ -13,7 +13,9 @@
  *   - iframe → parent: `caelo:element-referenced` when the operator
  *     picks "Ask AI" or "Add to chat" from the right-click menu or the
  *     selection toolbar. Carries the module id, the element path, the
- *     selected text + its surrounding text, and (Ask AI) the prompt.
+ *     selected text + its surrounding text, and whether it was Ask AI.
+ *     It never carries an instruction for the AI: the preview runs the
+ *     site's own scripts, so the instruction is typed in the editor.
  *   - parent → iframe: `caelo:reload` to refetch the iframe's source
  *     after a tool result lands a new branch snapshot.
  */
@@ -41,8 +43,8 @@ export interface ElementReferencedMessage {
   selectedText?: string;
   /** Text of the block the reference sits in (paragraph, heading, list item, …). */
   context?: string;
-  /** Ask AI: what the operator typed; the parent sends it into the current chat. */
-  prompt?: string;
+  /** Ask AI: the parent focuses the chat composer for the operator's instruction. */
+  ask?: true;
 }
 
 export interface ReloadMessage {
