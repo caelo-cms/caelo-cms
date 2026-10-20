@@ -29,6 +29,8 @@ import { hostname } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
   assertDurableMediaRoot,
+  BugIntakeClient,
+  bugIntakeUrl,
   buildEmailTransport,
   configureMcpBridge,
   configurePluginUninstallFinalizer,
@@ -42,6 +44,7 @@ import {
   makePluginImageProvider,
   makePluginTextProvider,
   startAutoUpdateScheduler,
+  startBugForwardingWorker,
   startChatImageGcWorker,
   startDomainEventGcWorker,
   startProposalGcWorker,
@@ -359,6 +362,21 @@ function bootstrapQualityAudits(): void {
   startQualityAuditWorker({ adapter, registry });
 }
 
+// Epic #901 — sends AI bug reports to the Caelo bug intake once the Owner
+// opted in on /settings/bugs. Idle (one cheap read per minute) while off.
+// CAELO_BUG_INTAKE_URL points a fork or a test run at another intake.
+let bugForwardingBootstrapped = false;
+function bootstrapBugForwarding(): void {
+  if (bugForwardingBootstrapped) return;
+  bugForwardingBootstrapped = true;
+  const { adapter, registry } = getQueryContext();
+  startBugForwardingWorker({
+    adapter,
+    registry,
+    client: new BugIntakeClient({ baseUrl: bugIntakeUrl(process.env) }),
+  });
+}
+
 // P13 — debounced auto-redeploy + gateway log GC. Polls audit_events
 // for "publishable" op kinds (driven by site_settings.auto_redeploy_*)
 // and fires deploy.trigger after `auto_redeploy_debounce_ms` of quiet.
@@ -546,6 +564,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapMcpBridge();
   bootstrapDomainEventGc();
   bootstrapQualityAudits();
+  bootstrapBugForwarding();
   bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   await seedSiteBaseUrl();

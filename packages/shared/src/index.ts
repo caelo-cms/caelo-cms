@@ -6,6 +6,7 @@ export * from "./ai-tools.js";
 export * from "./auth-forms.js";
 export * from "./auto-update.js";
 export * from "./base-css.js";
+export * from "./bug-intake.js";
 export * from "./build-page.js";
 export * from "./cap-failures.js";
 export * from "./cloud-shell-install.js";

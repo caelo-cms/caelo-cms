@@ -92,6 +92,10 @@ export default defineConfig({
       // upgrader job starts nothing (lib/server/upgrader.ts).
       // Test-only, ignored when NODE_ENV=production.
       CAELO_E2E_FAKE_UPGRADER: "1",
+      // Epic #901 — settings-bugs-forwarding.browser.ts turns bug forwarding
+      // on; the worker must never reach the real Caelo intake from CI. A
+      // closed loopback port keeps every send a recorded, retried failure.
+      CAELO_BUG_INTAKE_URL: "http://127.0.0.1:9",
     },
   },
 });

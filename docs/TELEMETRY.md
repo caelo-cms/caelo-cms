@@ -46,6 +46,33 @@ When enabled, structured-log entries with `level: "error"` are sent to a public-
 
 The category enum is the only human-readable field. Categories are pre-defined in `apps/admin/src/lib/server/telemetry-categories.ts`; the operator can review the mapping at `docs/TELEMETRY.md#error-categories` before opting in.
 
+### Bug reports (opt-in, separate consent)
+
+When the AI finds a bug in Caelo itself it files a report (`bug_report` tool, `ai_bug_reports` table, shown at `/settings/bugs`). The Owner can choose to send these reports to the Caelo team, on `/settings/bugs` or from the one-time question in the notification bell. This is its own consent: it is not implied by the two toggles above, and it can be withdrawn at any time (reports not yet sent go back to "this site only").
+
+When enabled, each report is sent to the Caelo bug intake at `https://bugs.caelo-cms.com` (override: `CAELO_BUG_INTAKE_URL`), signed with a per-install key. The payload (`packages/shared/src/bug-intake.ts`, `bugIntakeReport`) is:
+
+```json
+{
+  "protocolVersion": 1,
+  "reportId": "<the report's id on this install>",
+  "caeloVersion": "0.10.55",
+  "fingerprint": "<sha256 of source + tool + normalised error text>",
+  "source": "ai | auto",
+  "severity": "blocking | degraded | cosmetic",
+  "blockedTask": false,
+  "suspectedTool": "build_page",
+  "title": "<redacted>",
+  "whatHappened": "<redacted>",
+  "expected": "<redacted>",
+  "evidence": "<redacted excerpt, max 4000 chars>"
+}
+```
+
+Unlike the categories above, a bug report carries **text**: the AI's description of the defect and an evidence excerpt, which for auto-captured reports includes the failing tool call's arguments. Before a report is queued, email addresses, links, IP addresses, phone numbers, tokens and keys are removed (`redactBugText`), and the Owner can open any report and see the exact bytes ("What gets sent"). On the intake, `evidence` stays private to the Caelo maintainers; the public GitHub issue is built from the structured fields and the redacted description only.
+
+Not sent: chat transcripts, pages, modules, the site's address, user accounts, visitor data, or anything not listed in the payload above.
+
 ### What is NEVER collected, regardless of opt-in
 
 - Page content, module HTML, template HTML, plugin data.
@@ -55,7 +82,7 @@ The category enum is the only human-readable field. Categories are pre-defined i
 - Database rows from any table.
 - Source code or config files.
 
-These are off-limits even with both telemetry toggles enabled. Code paths that touch any of these are forbidden from calling the telemetry sink.
+These are off-limits even with both telemetry toggles enabled. Code paths that touch any of these are forbidden from calling the telemetry sink. The one exception is the redacted excerpt inside a bug report (see "Bug reports" above), which the Owner consents to separately and can inspect per report before it is sent.
 
 ## Owner UI
 
