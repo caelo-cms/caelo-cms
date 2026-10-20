@@ -95,7 +95,7 @@ test("link text + target, shared content scope, and image replace", async ({ pag
       const html = '<section class="card"><h1>{{title}}</h1><nav>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav><img src="{{photo}}" alt="{{photo_alt}}" width="48" height="48"></section>';
       const mod = await tx\`
         INSERT INTO modules (slug, display_name, type, html, fields)
-        VALUES (\${process.env.MOD_SLUG}, 'shared mod', \${process.env.MOD_SLUG}, \${html}, \${fields}::jsonb)
+        VALUES (\${process.env.MOD_SLUG}, 'shared mod', \${process.env.MOD_SLUG}, \${html}, \${fields}::text::jsonb)
         RETURNING id::text AS id\`;
       const values = JSON.stringify({
         title: "SHARED_TITLE",
@@ -103,7 +103,7 @@ test("link text + target, shared content scope, and image replace", async ({ pag
         photo: "/media/old-photo",
         photo_alt: "Old photo",
       });
-      const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${mod[0].id}::uuid, \${values}::jsonb) RETURNING id::text AS id\`;
+      const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${mod[0].id}::uuid, \${values}::text::jsonb) RETURNING id::text AS id\`;
       out.ci = ci[0].id;
       for (const [key, slug] of [["pg", process.env.PAGE_SLUG], ["twin", process.env.TWIN_SLUG]]) {
         const pg = await tx\`

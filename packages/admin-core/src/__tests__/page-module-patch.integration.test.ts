@@ -313,7 +313,12 @@ describe("shared content on a chat branch (#918)", () => {
   it('"here" detaches the placement on the branch only', async () => {
     const r = await must<{ contentInstanceId: string }>(
       "page_module_content.patch_fields",
-      { pageId: sharedPageId, ...at, edits: [{ field: "title", text: "Branch fork" }], scope: "here" },
+      {
+        pageId: sharedPageId,
+        ...at,
+        edits: [{ field: "title", text: "Branch fork" }],
+        scope: "here",
+      },
       CHAT_BRANCH_ID,
     );
     expect(r.contentInstanceId).not.toBe(sharedInstanceId);
