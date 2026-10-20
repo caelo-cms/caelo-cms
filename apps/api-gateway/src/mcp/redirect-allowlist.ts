@@ -40,7 +40,17 @@ export const REDIRECT_URI_ALLOWLIST: readonly string[] = [
   "https://claude.com/api/mcp/auth_callback",
   // ChatGPT, for an AS that advertises and returns `iss` (this one does).
   "https://chatgpt.com/connector_platform_oauth_redirect",
-  // VS Code on the web / desktop (via vscode.dev) and Insiders.
+  // VS Code on the web / desktop (via vscode.dev) and Insiders. These pages
+  // forward the code to the URL in `state`, which whoever starts the flow
+  // chooses — so they are only safe if that forward cannot leave the
+  // user's machine. Probed 2026-10-19 (vscode.dev x-commit 514b2709): it
+  // 302s only to `vscode:` / `vscode-insiders:` URLs and to
+  // `http(s)://127.0.0.1` / `http://localhost`; every other target
+  // (`https://evil.example/`, `http://127.0.0.1@evil.com/`,
+  // `http://127.0.0.1.evil.com/`, other schemes) ends at a 400
+  // "Unsupported redirect target"; insiders.vscode.dev behaves the same. If
+  // a probe ever shows otherwise, both entries go. A code reaching the user's own VS Code
+  // or loopback is the same exposure as the loopback entries below.
   "https://vscode.dev/redirect",
   "https://insiders.vscode.dev/redirect",
   // Cursor: the app's URL scheme and its hosted agents.
