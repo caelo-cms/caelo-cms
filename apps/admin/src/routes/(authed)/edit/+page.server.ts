@@ -649,20 +649,27 @@ export const actions: Actions = {
     };
   },
   /**
-   * #917 — in-place text edit from the preview iframe: one field (or list
-   * item) of one placement, written on the active chat's branch through
-   * `page_module_content.patch_fields` (snapshot, so chat Undo reverts it).
-   * The page posts here with fetch + `applyAction`, so the layout's toast
-   * effect reports the outcome like any form action.
+   * #917 / #918 — in-place edits from the preview iframe: one or more
+   * values of one placement (text, link target, image), written on the
+   * active chat's branch through `page_module_content.patch_fields`
+   * (snapshot, so chat Undo reverts it). `scope` answers "everywhere or
+   * only here?" for shared content. The page posts here with fetch +
+   * `applyAction`, so the layout's toast effect reports the outcome.
    */
-  editFieldText: async ({ request, locals }) => {
+  editFields: async ({ request, locals }) => {
     requirePermission(locals, "content.write");
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const chatBranchId = String(form.get("chatBranchId") ?? "");
     const chatSessionId = String(form.get("chatSessionId") ?? "");
-    const index = form.get("index");
+    let edits: unknown;
+    try {
+      edits = JSON.parse(String(form.get("edits") ?? ""));
+    } catch {
+      return fail(400, { error: "Not saved: the change could not be read." });
+    }
+    const scope = form.get("scope");
     const ctx: ExecutionContext = chatBranchId
       ? { ...locals.ctx, chatBranchId, ...(chatSessionId ? { chatTaskId: chatSessionId } : {}) }
       : locals.ctx;
@@ -671,13 +678,8 @@ export const actions: Actions = {
       pageId: String(form.get("pageId") ?? ""),
       blockName: String(form.get("blockName") ?? ""),
       position: Number(form.get("position")),
-      edits: [
-        {
-          field: String(form.get("field") ?? ""),
-          ...(index !== null && index !== "" ? { index: Number(index) } : {}),
-          text: String(form.get("text") ?? ""),
-        },
-      ],
+      edits,
+      ...(typeof scope === "string" && scope.length > 0 ? { scope } : {}),
     });
     if (!r.ok && r.error.kind === "BranchNotFound") return fail(404, { error: "Branch not found" });
     if (!r.ok) {
@@ -687,11 +689,12 @@ export const actions: Actions = {
         r.error.kind === "HandlerError" && "message" in r.error
           ? String(r.error.message)
           : describeError(r.error);
-      return fail(r.error.kind === "HandlerError" ? 409 : 400, {
-        error: `Text not saved: ${message}`,
-      });
+      return fail(r.error.kind === "HandlerError" ? 409 : 400, { error: `Not saved: ${message}` });
     }
-    return { ok: "Text saved." };
+    // `savedAt` makes every save a distinct result: the layout's toast
+    // effect skips a form result identical to the previous one, which would
+    // swallow the confirmation of a second edit in a row.
+    return { ok: "Saved.", savedAt: new Date().toISOString() };
   },
   /**
    * v0.7.0 — /edit's split-button Stage path. One click does the full

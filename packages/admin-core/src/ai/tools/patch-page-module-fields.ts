@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #917 — AI tool: patch_page_module_fields. Changes individual text values
- * of ONE placement (a heading, one list item, one link label) without
- * re-sending the placement's whole value set. Wraps
+ * #917 / #918 — AI tool: patch_page_module_fields. Changes individual
+ * values of ONE placement (a heading, one list item, a link's text or
+ * target, an image) without re-sending the placement's whole value set. Wraps
  * `page_module_content.patch_fields`, the op Live Edit's in-place text
  * editing uses, so the AI and the operator write through the same path.
  */
@@ -18,11 +18,11 @@ export const patchPageModuleFieldsTool: ToolDefinitionWithHandler<
 > = {
   name: "patch_page_module_fields",
   description:
-    "Change individual TEXT values of ONE module placement — a heading, one bullet of a text-list, one link label of a link-list — and leave every other value of that placement untouched. " +
+    "Change individual values of ONE module placement — a heading, one bullet of a text-list, a link-list entry's text or target, a `url` field, an `image` field — and leave every other value of that placement untouched. " +
     "Use this for targeted wording fixes ('the hero says Welcom, fix it', 'rename the second menu item to Pricing', or a reference chip naming `placement=(blockName, position), field=…[index]`): you send only the changed values instead of the placement's whole contentValues. " +
-    "`text` is plain text exactly as it should read (it is HTML-escaped for you — never send markup). `index` addresses a `text-list` item or a `link-list` entry (its label). Several edits of one placement go in one call (all or none). " +
-    "Use `set_page_module_content` (NOT this tool) to replace a placement's values wholesale or to set non-text fields (images, links' targets, nested modules); `set_page_module_content_many` for passes across several placements; `edit_module` for structure. " +
-    "SYNCED placements (content shared with other pages) are refused with guidance: `fork_placement_content` to detach first, or `set_content_instance_values` to change it everywhere. " +
+    '`text` is the new value: plain text for text fields (it is HTML-escaped for you — never send markup), a path / https URL for `url` / `image` fields and link targets. `index` addresses a `text-list` item or a `link-list` entry; `part: "href"` sets that entry\'s target instead of its text. Several edits of one placement go in one call (all or none). ' +
+    "Use `set_page_module_content` (NOT this tool) to replace a placement's values wholesale or to set nested modules; `set_page_module_content_many` for passes across several placements; `edit_module` for structure. " +
+    'SYNCED placements (content shared with other pages) need `scope`: `"everywhere"` changes it on every page that shows it, `"here"` detaches this page first and changes only it — ask the operator which they mean when it is not clear. ' +
     'Typical call: `{pageId: "…", blockName: "content", position: 0, edits: [{field: "hero_title", text: "Welcome"}, {field: "nav_items", index: 1, text: "Pricing"}]}`.',
   schema: patchPageModuleFieldsInput,
   inputSchema: {
@@ -44,10 +44,12 @@ export const patchPageModuleFieldsTool: ToolDefinitionWithHandler<
           properties: {
             field: { type: "string", minLength: 1, maxLength: 200 },
             index: { type: "integer", minimum: 0 },
+            part: { type: "string", enum: ["label", "href"] },
             text: { type: "string", maxLength: 10000 },
           },
         },
       },
+      scope: { type: "string", enum: ["everywhere", "here"] },
     },
   },
   handler: async (ctx, input, toolCtx) => {

@@ -30,8 +30,14 @@
   import { localPluginPreview, previewFromResult } from "#lib/components/edit/plugin-preview.js";
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
   import Overlay from "#lib/components/edit/Overlay.svelte";
+  import MediaPicker from "#lib/components/MediaPicker.svelte";
   import StageDeployButton from "#lib/components/edit/StageDeployButton.svelte";
-  import { type FieldEditMessage, previewMessage } from "#lib/components/edit/iframe-protocol.js";
+  import {
+    type FieldEdit,
+    type FieldEditMessage,
+    type ImageReplaceMessage,
+    previewMessage,
+  } from "#lib/components/edit/iframe-protocol.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Combobox } from "#lib/components/ui/combobox/index.js";
   import { cn } from "#lib/utils.js";
@@ -215,7 +221,19 @@
         const { kind: _kind, ...detail } = msg;
         window.dispatchEvent(new CustomEvent("caelo:chip", { detail }));
       } else if (msg.kind === "caelo:field-edit") {
-        void saveFieldText(msg);
+        void saveFields(msg);
+      } else if (msg.kind === "caelo:image-replace") {
+        imageReplace = msg;
+        imagePickerOpen = true;
+      } else if (msg.kind === "caelo:ready") {
+        // Link-target suggestions for the preview's link editor (#918).
+        iframe?.contentWindow?.postMessage(
+          {
+            kind: "caelo:page-paths",
+            pages: data.pages.map((p) => ({ path: p.currentPath, title: p.title })),
+          },
+          window.location.origin,
+        );
       } else if (msg.kind === "caelo:navigated") {
         displayPath = msg.path || null;
         // Click-through navigation inside the iframe — sync activePageId
@@ -293,13 +311,13 @@
   }
 
   /**
-   * #917 — save an in-place text edit from the preview through the
-   * `editFieldText` action on this chat's branch, then reload the preview;
-   * it shows the stored text either way (the new one, or the old one when
+   * #917 / #918 — save in-place edits from the preview through the
+   * `editFields` action on this chat's branch, then reload the preview; it
+   * shows the stored values either way (the new ones, or the old ones when
    * the save was refused). `applyAction` hands the outcome to the layout's
    * toast effect like any form action.
    */
-  async function saveFieldText(msg: FieldEditMessage): Promise<void> {
+  async function saveFields(msg: Omit<FieldEditMessage, "kind">): Promise<void> {
     const body = new FormData();
     body.set("_csrf", data.csrfToken);
     body.set("chatSessionId", data.activeChat.id);
@@ -307,11 +325,10 @@
     body.set("pageId", msg.pageId);
     body.set("blockName", msg.blockName);
     body.set("position", String(msg.position));
-    body.set("field", msg.field);
-    if (msg.index !== undefined) body.set("index", String(msg.index));
-    body.set("text", msg.text);
+    body.set("edits", JSON.stringify(msg.edits));
+    if (msg.scope) body.set("scope", msg.scope);
     try {
-      const res = await fetch("?/editFieldText", {
+      const res = await fetch("?/editFields", {
         method: "POST",
         body,
         headers: { "x-sveltekit-action": "true" },
@@ -324,7 +341,7 @@
           ? {
               type: "failure",
               status: 500,
-              data: { error: "Text not saved: the server failed." },
+              data: { error: "Not saved: the server failed." },
               location: result.location ?? `${location.pathname}${location.search}`,
             }
           : result;
@@ -333,6 +350,25 @@
       void refreshAll();
       scheduleReload();
     }
+  }
+
+  // #918 — "Replace image…" in the preview: the picked image goes into the
+  // marked `src` field, its alt text into the marked `alt` field (if any).
+  let imageReplace = $state<ImageReplaceMessage | null>(null);
+  let imagePickerOpen = $state(false);
+  function onImagePicked(m: { url: string; alt: string }): void {
+    const req = imageReplace;
+    imageReplace = null;
+    if (!req) return;
+    const edits: FieldEdit[] = [{ ...req.src, text: m.url }];
+    if (req.alt && m.alt.trim().length > 0) edits.push({ ...req.alt, text: m.alt });
+    void saveFields({
+      pageId: req.pageId,
+      blockName: req.blockName,
+      position: req.position,
+      edits,
+      ...(req.scope ? { scope: req.scope } : {}),
+    });
   }
 
   function onAiToolResult(payload: {
@@ -593,7 +629,14 @@
 
   <!-- Dock beside plugin documents so the chat never covers the selected page. -->
   <div class={pluginPreviewUrl ? "h-[45vh] shrink-0 md:h-full md:w-[420px]" : "contents"}>
-  <Overlay
+  <!-- #918 — "Replace image…" from the preview's right-click menu. -->
+<MediaPicker
+  bind:open={imagePickerOpen}
+  onClose={() => (imageReplace = null)}
+  onPick={onImagePicked}
+/>
+
+<Overlay
     docked={!!pluginPreviewUrl}
     chromeBottom={bannerHeight + toolbarHeight}
     previewSelection={previewSelection ?? previewContext}

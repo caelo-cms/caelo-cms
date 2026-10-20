@@ -151,14 +151,18 @@ test("the pinned chat column never covers the toolbar while the cross-chat banne
   const toolbar = page.getByTestId("edit-toolbar");
   const column = page.getByRole("toolbar", { name: "Live-edit overlay controls" });
   await expect(column).toBeVisible();
-  const toolbarBox = await toolbar.boundingBox();
-  const columnBox = await column.boundingBox();
-  expect(toolbarBox).not.toBeNull();
-  expect(columnBox).not.toBeNull();
-  // The column starts below the toolbar, not on top of it.
-  expect(columnBox?.y ?? 0).toBeGreaterThanOrEqual(
-    (toolbarBox?.y ?? 0) + (toolbarBox?.height ?? 0),
-  );
+  // The column starts below the toolbar, not on top of it. Polled: the
+  // banner pushes the toolbar down first and the column follows on the
+  // next layout pass (its top is derived from the measured chrome height),
+  // so a single measurement can land between the two under load.
+  await expect
+    .poll(async () => {
+      const toolbarBox = await toolbar.boundingBox();
+      const columnBox = await column.boundingBox();
+      if (!toolbarBox || !columnBox) return Number.NEGATIVE_INFINITY;
+      return columnBox.y - (toolbarBox.y + toolbarBox.height);
+    })
+    .toBeGreaterThanOrEqual(0);
 
   // And the toolbar's right-hand controls take clicks: a trial click fails
   // when another element (the column) would receive it instead.

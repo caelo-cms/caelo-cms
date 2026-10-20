@@ -15,9 +15,15 @@ There is no edit mode. In the preview iframe:
   *Add to chat as reference*, *Select whole section*. **Shift+right-click** keeps
   the browser's own menu; a right-click outside any module does too.
 - **Edit text** (menu) / **Edit** (toolbar) makes exactly that field's text
-  editable in place. Enter or clicking elsewhere saves, Escape restores. Text
-  used on other pages too (a synced placement) is not edited in place yet; the
-  item is disabled and says to ask the AI.
+  editable in place. Enter or clicking elsewhere saves, Escape restores.
+- **Edit link…** (on a link whose target and/or text is a field) edits the
+  text and the target together, with the site's pages as suggestions.
+- **Replace image…** (on an image whose address is a field) opens the media
+  library; the pick replaces the image, and its alt text fills the image's
+  alt field when that field is not also shown as text on the page.
+- Content shared with other pages (a synced placement on more than one page)
+  asks first: **Change on all N pages** or **Only on this page** (the page
+  gets its own copy).
 - **Ask AI** adds the reference to the *current* chat (chips append, never
   fork — CLAUDE.md §2), expands a collapsed chat and focuses its composer. The
   operator types the instruction there and sends it with Enter.
@@ -46,7 +52,8 @@ site's fixed navigation cannot hide them.
 | What the AI reads | `buildUserContent` in `packages/admin-core/src/ai/chat-runner/persistence.ts` |
 | Field markers in the preview | `packages/shared/src/edit-markers.ts`, used by `pages.render_preview` with `editMarkers: true` |
 | In-place editing runtime | `apps/admin/src/lib/components/edit/field-edit-script.ts` |
-| Saving an edit | `editFieldText` action in `apps/admin/src/routes/(authed)/edit/+page.server.ts` → `page_module_content.patch_fields` (`packages/admin-core/src/ops/content/page-module-patch.ts`) |
+| Link editor, image replace | `apps/admin/src/lib/components/edit/link-image-edit-script.ts` |
+| Saving an edit | `editFields` action in `apps/admin/src/routes/(authed)/edit/+page.server.ts` → `page_module_content.patch_fields` (`packages/admin-core/src/ops/content/page-module-patch.ts`) |
 
 ## The reference
 
@@ -89,20 +96,36 @@ iframe asks for, wraps every plain-text value of a page placement in comments:
 <h1><!--caelo:f p=content%230 s=0 f=title-->Welcome<!--/caelo:f--></h1>
 ```
 
-`p` is the placement (`<blockName>#<position>`, URI-encoded), `s=1` marks a
-synced (shared) placement, `f` the field path: `title`, `tags.1` (text-list
-item), `links.0.label` (link-list label). Values that carry markup, empty
-values and other field kinds are not marked. A value used in an attribute,
+`p` is the placement (`<blockName>#<position>`, URI-encoded), `s` is 0 for a
+placement with its own content and, for a synced (shared) one, the number of
+pages showing it; `f` is the field path: `title`, `tags.1` (text-list item),
+`links.0.label` / `links.0.href` (link-list text / target). Values that carry
+markup, empty values and other field kinds are not marked.
+
+A tag whose `href`, `src` or `alt` is exactly one marked value (#918) gets the
+same information as attributes, e.g.
+`<a href="/docs" data-caelo-fields="href=links.0.href" data-caelo-placement="content%230" data-caelo-shared="0">`.
+An attribute assembled from several parts (`href="/blog/{{slug}}"`) is not
+editable and not marked. A value used in an attribute,
 comment, `<script>`, `<style>`, `<title>` or `<textarea>` renders exactly as
 without markers. Variant content (#592) and layout chrome are not marked.
 Published output never contains markers.
 
 Saving goes through `page_module_content.patch_fields`
-`{pageId, blockName, position, edits: [{field, index?, text}]}` (bulk-first:
+`{pageId, blockName, position, edits: [{field, index?, part?, text}], scope?}` (bulk-first:
 several values of one placement in one call and one snapshot): it resolves the
 placement through the caller's branch-overlaid layout (the view the preview
 renders), refuses synced placements, escapes `&`, `<`, `>` once (text fields
 are substituted unescaped), patches only those fields or items (all or none), and writes via
 `content_instances.set_values` (lock, version check, snapshot), so chat Undo
 reverts it. The preview reloads after every save, success or not.
+
+`part` picks a link-list item's text (`label`, default) or target (`href`).
+Link targets (`url` fields, link-list hrefs) must be a path, `#…`, `http(s)://`,
+`mailto:`, `tel:` or `caelo:` reference; image addresses a path, `http(s)://`
+or `caelo:media/` reference; neither may contain quotes, angle brackets or
+spaces. Both are stored as typed (the write-boundary canonicaliser of epic
+#724 turns internal paths into page references once it runs). A synced
+placement needs `scope`: `everywhere` writes the shared instance, `here` runs
+`placement.fork_content` first and writes the copy, in the same transaction.
 
