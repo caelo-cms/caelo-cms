@@ -284,8 +284,14 @@ export function normalizeTokens(input: Record<string, unknown>): NormalizeResult
     // resulting document validates. applyDtcgWrites merges this into
     // any existing typography composite at the path so partial updates
     // don't erase sibling sub-fields.
+    // Numbers wrap too: the admin form coerces `.lineHeight` / `.fontWeight`
+    // to numbers, and an unwrapped `1.6` would replace the whole composite.
     let storedValue: unknown = rawValue;
-    if (resolved.compositeWrap && typeof rawValue === "string" && !ALIAS_REGEX.test(rawValue)) {
+    if (
+      resolved.compositeWrap &&
+      (typeof rawValue === "number" ||
+        (typeof rawValue === "string" && !ALIAS_REGEX.test(rawValue)))
+    ) {
       storedValue = { [resolved.compositeWrap]: rawValue };
     } else if (
       resolved.inferredType === "gradient" &&
@@ -303,10 +309,17 @@ export function normalizeTokens(input: Record<string, unknown>): NormalizeResult
       // rather than us silently inventing a gradient (CLAUDE.md §2).
       storedValue = gradientObjectToCss(rawValue as Record<string, unknown>) ?? rawValue;
     }
+    // Several sub-field inputs (`typography.body.fontSize` +
+    // `typography.body.lineHeight`) collapse onto the same composite
+    // path; merge them so the last one doesn't silently drop the others.
+    const prior = set[resolved.path];
+    if (resolved.compositeWrap && isPlainObject(prior) && isPlainObject(storedValue)) {
+      storedValue = { ...prior, ...storedValue };
+    }
     set[resolved.path] = storedValue;
     types[resolved.path] = resolved.inferredType;
     if (envelopeDescription !== undefined) descriptions[resolved.path] = envelopeDescription;
-    paths.push(resolved.path);
+    if (!paths.includes(resolved.path)) paths.push(resolved.path);
   }
 
   return { set, types, descriptions, canonicalPaths: paths };
@@ -720,4 +733,8 @@ function similarity(a: string, b: string): number {
 
 function tokenise(s: string): string[] {
   return s.split(/[.\-_]/).filter((p) => p.length > 0);
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
 }
