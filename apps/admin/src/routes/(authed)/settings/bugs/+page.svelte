@@ -26,6 +26,13 @@
         ? "bg-amber-500/15 text-amber-700 dark:text-amber-400"
         : "bg-muted text-muted-foreground";
 
+  const forwardingLabel: Record<BugReport["forwardingState"], { label: string; hint: string }> = {
+    local_only: { label: "This site only", hint: "Stored on this site. The Caelo team has not received it." },
+    queued: { label: "Queued", hint: "Will be sent to the Caelo team automatically." },
+    sent: { label: "Sent", hint: "The Caelo team received this report." },
+    failed: { label: "Not sent", hint: "Sending to the Caelo team failed. It is stored on this site." },
+  };
+
   // A fenced code block's fence must be LONGER than any backtick run it
   // contains (CommonMark), else evidence with a ``` snippet breaks the export.
   function fenceFor(s: string): string {
@@ -83,8 +90,9 @@
     <div>
       <h1 class="text-2xl font-semibold tracking-tight">Detected bugs</h1>
       <p class="mt-1 max-w-2xl text-sm text-muted-foreground">
-        Defects the AI flagged while working — it filed these and continued with a workaround. Hit a
-        problem? Export the list and send it to us, or paste it into a GitHub issue.
+        Defects the AI flagged while working — it filed these and continued with a workaround. They are
+        stored on this site; the Caelo team only sees them if you send them. Export the list and send it
+        to us, or paste it into a GitHub issue.
       </p>
     </div>
     <div class="flex gap-2">
@@ -112,6 +120,7 @@
             <th class="px-4 py-2 font-medium">Source</th>
             <th class="px-4 py-2 font-medium">Severity</th>
             <th class="px-4 py-2 font-medium">Status</th>
+            <th class="px-4 py-2 font-medium">Caelo team</th>
             <th class="px-4 py-2 font-medium">Suspected tool</th>
             <th class="px-4 py-2 font-medium">When</th>
           </tr>
@@ -148,6 +157,12 @@
                 </span>
               </td>
               <td class="px-4 py-2 text-muted-foreground">{r.status}</td>
+              <td
+                class="px-4 py-2 whitespace-nowrap text-xs text-muted-foreground"
+                title={forwardingLabel[r.forwardingState].hint}
+              >
+                {forwardingLabel[r.forwardingState].label}
+              </td>
               <td class="px-4 py-2 font-mono text-xs text-muted-foreground">{r.suspectedTool ?? "—"}</td>
               <td class="px-4 py-2 whitespace-nowrap text-xs text-muted-foreground">
                 {new Date(r.createdAt).toLocaleString()}
@@ -155,7 +170,7 @@
             </tr>
             {#if expanded[r.id]}
               <tr class="border-b bg-muted/20 last:border-0">
-                <td colspan="6" class="space-y-3 px-4 py-3 text-sm">
+                <td colspan="7" class="space-y-3 px-4 py-3 text-sm">
                   <div>
                     <div class="text-xs font-semibold uppercase text-muted-foreground">What happened</div>
                     <p class="mt-0.5 whitespace-pre-wrap">{r.whatHappened}</p>
