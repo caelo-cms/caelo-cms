@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0290 — epic #724, rollout C: internal links to pages an import run will
+-- 0325 — epic #724, rollout C: internal links to pages an import run will
 -- still build (maintainer decision on open point 1 of #873: option b).
 --
 -- Rollout C stores internal links as page references and refuses a link
