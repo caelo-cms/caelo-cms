@@ -21,7 +21,8 @@
  *      `WWW-Authenticate: Basic` when basic auth is on, else 403 with a
  *      short page pointing to the admin.
  *   3. An admitted request is forwarded to the preview channel the admin
- *      recorded for the current Stage (`staging_access.origin_url`), and the
+ *      recorded for the latest Stage (`staging_access.origin_url` — after
+ *      Publish live still that build, now identical to live), and the
  *      answer comes back unchanged — status, redirects (their Location
  *      re-addressed from the preview origin to the staging host), headers,
  *      compressed body — so staging behaves exactly like Hosting serves the
@@ -64,7 +65,10 @@ export interface StagingState {
   /** The staging host setting (`staging_access.staging_host`); null until configured. */
   readonly host: string | null;
   readonly settings: StagingAccessSettings;
-  /** Origin of the current staged build (the preview channel); null when nothing is staged. */
+  /**
+   * Origin of the current staged build (the preview channel); it stays set
+   * after Publish live. Null only until the first Stage.
+   */
   readonly originUrl: string | null;
 }
 
@@ -329,8 +333,8 @@ export async function handleStagingRequest(
   if (state.originUrl === null) {
     return gatePage(
       503,
-      "Nothing is staged right now",
-      "The last staged build has been published live. Stage changes in the Caelo admin to see them here.",
+      "Nothing has been staged yet",
+      "Stage changes in the Caelo admin to see them here. After that, staging always shows the last staged build — also once it is live.",
     );
   }
   return proxy(
