@@ -37,7 +37,7 @@ A slug change (`pages.update` / `update_many`), a subtree move (`pages.move_many
 
 It rewrites **no stored link**. The 301s exist for links from outside the site: search engines, bookmarks, other sites. Links on the site follow the page because they are references. Up to rollout G a text rewriter (`path-link-rewrite.ts`, `pages.rewrite_module_links`, the structured-set rewrite in `path-moves.ts`) patched literal paths after every move. It was removed: it missed field defaults (where layout chrome content lives), plugin data and full-origin hrefs.
 
-For the AI this means: write internal links as paths, and never update or re-check links after a rename or move. The `move_pages` and `update_pages_many` tool descriptions, the static system prompt and the `manage-redirects` skill (migration 0298) say so.
+For the AI this means: write internal links as paths, and never update or re-check links after a rename or move. The `move_pages` and `update_pages_many` tool descriptions, the static system prompt and the `manage-redirects` skill (migration 0331) say so.
 
 ## Literal links left from before #724
 

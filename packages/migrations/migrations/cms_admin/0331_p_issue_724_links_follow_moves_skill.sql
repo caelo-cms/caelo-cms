@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0298 — epic #724 rollout G: links on the site follow renames and moves.
+-- 0331 — epic #724 rollout G: links on the site follow renames and moves.
 --
 -- Internal links are stored as page references, so a slug change or a
 -- page move no longer rewrites any stored link (the text rewriter and
