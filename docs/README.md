@@ -20,6 +20,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [dev/public-admin-boundary.md](./dev/public-admin-boundary.md) — the public/admin boundary: the public side is assumed compromised.
 - [dev/public-admin-read-paths.md](./dev/public-admin-read-paths.md) — every path where the admin reads `cms_public` data, and how each treats it as untrusted.
 - [dev/password-management.md](./dev/password-management.md) — password policy, change, reset and Owner reset in code.
+- [internal/bug-intake.md](./internal/bug-intake.md) — maintainer runbook for the Caelo-operated bug intake that files one GitHub issue per defect.
 
 ## AI internals
 
