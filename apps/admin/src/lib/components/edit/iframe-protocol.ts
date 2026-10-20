@@ -14,7 +14,9 @@
  *     picks "Ask AI" or "Add to chat" from the right-click menu or the
  *     selection toolbar. Carries the module id, the element path, the
  *     selected text + its surrounding text, the marked field it sits in
- *     (#917), and (Ask AI) the prompt.
+ *     (#917), and whether it was Ask AI. It never carries an instruction
+ *     for the AI: the preview runs the site's own scripts, so the
+ *     instruction is typed in the editor.
  *   - iframe → parent: `caelo:field-edit` when the operator finished
  *     editing a marked field's text in place (#917); the parent saves
  *     it and reloads the iframe.
@@ -51,8 +53,8 @@ export interface ElementReferencedMessage {
   field?: string;
   /** List item index for a `text-list` / `link-list` field. */
   index?: number;
-  /** Ask AI: what the operator typed; the parent sends it into the current chat. */
-  prompt?: string;
+  /** Ask AI: the parent focuses the chat composer for the operator's instruction. */
+  ask?: true;
 }
 
 /** #917 — the operator edited one marked field's text in place. */

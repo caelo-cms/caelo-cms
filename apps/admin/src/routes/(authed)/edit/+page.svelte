@@ -213,7 +213,7 @@
       if (!isCaeloMessage(ev.data)) return;
       const msg = ev.data as CaeloMessage;
       if (msg.kind === "caelo:element-referenced") {
-        // Chip (+ Ask AI prompt) for the chat; the Overlay expands itself
+        // Chip (+ Ask AI composer focus) for the chat; the Overlay expands itself
         // first when collapsed so ChatPanel is mounted to receive it.
         const { kind: _kind, ...detail } = msg;
         window.dispatchEvent(new CustomEvent("caelo:chip", { detail }));

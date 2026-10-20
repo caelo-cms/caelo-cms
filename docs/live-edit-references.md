@@ -18,12 +18,17 @@ There is no edit mode. In the preview iframe:
   editable in place. Enter or clicking elsewhere saves, Escape restores. Text
   used on other pages too (a synced placement) is not edited in place yet; the
   item is disabled and says to ask the AI.
-- **Ask AI** opens a one-line prompt at the spot. Enter sends it into the
-  *current* chat together with the reference (chips append, never fork —
-  CLAUDE.md §2). If the operator has a draft or a turn is running, the prompt
-  joins the composer draft instead of being sent.
+- **Ask AI** adds the reference to the *current* chat (chips append, never
+  fork — CLAUDE.md §2), expands a collapsed chat and focuses its composer. The
+  operator types the instruction there and sends it with Enter.
 
-The menu, toolbar, prompt and target outline live in a shadow root appended
+Why the instruction is not typed in the preview: the preview runs the site's
+own module scripts, so anything the iframe posts can come from those scripts
+as well as from the operator. A message from the preview may point at an
+element (add a chip); it never carries an instruction and never sends one.
+The send is always the operator's own action in the editor.
+
+The menu, toolbar and target outline live in a shadow root appended
 to the site's `<body>`: site CSS cannot restyle them and they never touch the
 site's own elements. Panels flip below/above and clamp into the viewport so a
 site's fixed navigation cannot hide them.
@@ -33,9 +38,9 @@ site's fixed navigation cannot hide them.
 | Piece | File |
 |---|---|
 | Runtime injected into the preview (navigation, reload) | `apps/admin/src/lib/components/edit/inject-script.ts` |
-| Menu, toolbar, Ask AI, reference building | `apps/admin/src/lib/components/edit/edit-affordances-script.ts` |
+| Menu, toolbar, reference building | `apps/admin/src/lib/components/edit/edit-affordances-script.ts` |
 | postMessage types (`caelo:element-referenced`) | `apps/admin/src/lib/components/edit/iframe-protocol.ts` |
-| Chip + Ask AI handling in the chat | `apps/admin/src/lib/components/chat/ChatPanel.svelte` (`caelo:chip` window event) |
+| Chip + Ask AI (composer focus) in the chat | `apps/admin/src/lib/components/chat/ChatPanel.svelte` (`caelo:chip` window event) |
 | Expanding a collapsed chat on a reference | `apps/admin/src/lib/components/edit/Overlay.svelte` |
 | Chip schema (Zod, validated by the stream endpoint) | `chatChipSchema` in `packages/shared/src/ai-tools.ts` |
 | What the AI reads | `buildUserContent` in `packages/admin-core/src/ai/chat-runner/persistence.ts` |
