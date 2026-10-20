@@ -242,7 +242,18 @@ export const claimDueBugReportsOp = defineOperation({
     `)) as unknown as Array<ForwardableBugReport & { attempt: number }>;
     const reports = [];
     for (const row of rows) {
-      reports.push({ id: row.id, attempt: row.attempt, payload: await buildIntakeReport(row) });
+      try {
+        reports.push({ id: row.id, attempt: row.attempt, payload: await buildIntakeReport(row) });
+      } catch (e) {
+        // A row that cannot become a valid payload would fail every claim
+        // forever; it stops here with the reason, the rest go out.
+        await tx.execute(sql`
+          UPDATE ai_bug_reports
+             SET forwarding_state = 'failed', next_forward_at = NULL,
+                 forward_error = ${`Could not build the report to send: ${(e as Error).message}`.slice(0, 1000)}
+           WHERE id = ${row.id}::uuid
+        `);
+      }
     }
     return ok({ reports });
   },

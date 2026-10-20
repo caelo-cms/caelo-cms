@@ -277,6 +277,21 @@ describe("bug forwarding", () => {
     expect(row?.forwardError).toContain("report too large");
   });
 
+  it("a report that cannot be built stops with the reason instead of blocking the queue", async () => {
+    await op(HUMAN, "bug_forwarding.set", { enabled: true });
+    const broken = await file("BF broken");
+    const fine = await file("BF fine");
+    // A fingerprint the wire schema refuses (only possible through old or hand-edited rows).
+    await admin(
+      (tx) => tx`UPDATE ai_bug_reports SET fingerprint = 'not-hex' WHERE id = ${broken.id}::uuid`,
+    );
+    await forwardDueReports(worker());
+    const all = await rows();
+    expect(all.find((r) => r.id === broken.id)).toMatchObject({ forwardingState: "failed" });
+    expect(all.find((r) => r.id === broken.id)?.forwardError).toContain("Could not build");
+    expect(all.find((r) => r.id === fine.id)?.forwardingState).toBe("sent");
+  });
+
   it("withdrawn consent un-queues what has not left; earlier reports need an explicit send", async () => {
     const early = await file("BF early");
     await op(HUMAN, "bug_forwarding.set", { enabled: true });
