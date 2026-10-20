@@ -179,7 +179,7 @@ beforeAll(async () => {
   // rather than relying on CAELO_SECRET_KEK or on another test file having
   // left one behind: that ordering dependency is what broke this suite.
   _setKekForTests(new Uint8Array(32).fill(23));
-  adapter =new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
+  adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
 });
