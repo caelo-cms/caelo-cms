@@ -202,6 +202,11 @@ export interface RenderedPageForGate {
   readonly pageSlug: string;
   readonly html: string;
   readonly moduleFailures: readonly ComposeModuleFailure[];
+  /**
+   * Link failure markers of the layout's own HTML (the page frame, not a
+   * module) — a reference there that could not resolve (#724).
+   */
+  readonly layoutLinkMarkers?: readonly string[];
 }
 
 /**
@@ -225,6 +230,10 @@ export function assertNoRenderFailures(pages: readonly RenderedPageForGate[]): v
       lines.push(
         `page "${page.pageSlug}" module "${f.moduleSlug}" (block ${f.blockName})${field}: ${f.reason}`,
       );
+    }
+    for (const marker of page.layoutLinkMarkers ?? []) {
+      structured += 1;
+      lines.push(`page "${page.pageSlug}" layout HTML: ${marker}`);
     }
     // Backstop for markers that did not come through the structured
     // channel (e.g. a marker comment stored inside module HTML).

@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0318 — issues #904 / #905 / #906: forward AI bug reports to the Caelo team.
+-- 0330 — issues #904 / #905 / #906: forward AI bug reports to the Caelo team.
 --
 -- telemetry_settings (the opt-in singleton of P16) gains the bug-forwarding
 -- consent and the install's signing identity for the Caelo bug intake:

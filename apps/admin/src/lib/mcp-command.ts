@@ -104,3 +104,52 @@ export function mcpConfigJson(format: "mcpServers" | "vscode", args: McpCommandA
   const key = format === "vscode" ? "servers" : "mcpServers";
   return JSON.stringify({ [key]: { [spec.name]: entry } }, null, 2);
 }
+
+// ===========================================================================
+// Remote MCP (#806): clients connect by URL and sign in with Google
+// ===========================================================================
+
+/** One remote MCP surface: the URL a client connects to and the name it is listed under. */
+export interface RemoteMcpServer {
+  /** `caelo` (caelo_chat) or `caelo-admin` (Power-MCP), as for the local server. */
+  name: string;
+  /** `<public origin>/api/mcp/chat` or `/api/mcp/admin`. */
+  url: string;
+}
+
+/** The remote server for `surface`, named like the local one. */
+export function remoteMcpServer(surface: "chat" | "admin", url: string): RemoteMcpServer {
+  return { name: surface === "admin" ? "caelo-admin" : "caelo", url };
+}
+
+/**
+ * Terminal registration of a remote server. Claude Code: `--transport http`
+ * then `/mcp` → Authenticate (code.claude.com/docs/en/mcp). Codex: `--url`
+ * then `codex mcp login` (Codex MCP docs). Both sign in through the browser
+ * with a loopback redirect, which the broker allows.
+ */
+export function remoteMcpAddCommand(cli: "claude" | "codex", server: RemoteMcpServer): string {
+  return cli === "claude"
+    ? `claude mcp add --transport http ${server.name} ${shellWord(server.url)}`
+    : `codex mcp add ${server.name} --url ${shellWord(server.url)}\ncodex mcp login ${server.name}`;
+}
+
+/**
+ * JSON config for file-configured clients. Cursor reads `url` in
+ * `mcpServers`; VS Code `"type": "http"` + `url` in `servers`; Gemini CLI
+ * `httpUrl` (its `url` key means SSE). Each discovers the sign-in from the
+ * server's 401 and runs the OAuth flow itself.
+ */
+export function remoteMcpConfigJson(
+  format: "cursor" | "vscode" | "gemini",
+  server: RemoteMcpServer,
+): string {
+  const entry =
+    format === "vscode"
+      ? { type: "http", url: server.url }
+      : format === "gemini"
+        ? { httpUrl: server.url }
+        : { url: server.url };
+  const key = format === "vscode" ? "servers" : "mcpServers";
+  return JSON.stringify({ [key]: { [server.name]: entry } }, null, 2);
+}

@@ -330,3 +330,17 @@ describe("resolveOperatorAccessTarget", () => {
     expect(r2.ok === false && r2.error).toContain("exactly one");
   });
 });
+
+describe("caeloOperatorAccess role (#806)", () => {
+  it("holds IAM-policy and IAP-settings rights on web services and the MCP SA — nothing else", () => {
+    expect([...OPERATOR_ACCESS_ROLE.permissions].sort()).toEqual([
+      "iam.serviceAccounts.getIamPolicy",
+      "iam.serviceAccounts.setIamPolicy",
+      "iap.webServices.getIamPolicy",
+      // The admin IAP resource's programmatic_clients (remote MCP).
+      "iap.webServices.getSettings",
+      "iap.webServices.setIamPolicy",
+      "iap.webServices.updateSettings",
+    ]);
+  });
+});

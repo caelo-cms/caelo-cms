@@ -38,6 +38,7 @@ import {
   FAVICON_VARIANT,
   fontUnresolvableMarker,
   isRasterImageMime,
+  linkMarkersOf,
   type ModuleFieldKind,
   redirectTargetIssue,
   type ThemeDocument,
@@ -973,6 +974,8 @@ export async function generateSite(args: {
       pageSlug: page.slug,
       html: composed.html,
       moduleFailures: composed.moduleFailures,
+      // #724 — a reference in the layout's own HTML that did not resolve.
+      layoutLinkMarkers: linkMarkersOf(composed.missingSlots),
     });
     const seenTargets = new Set<string>();
     for (const o of linkResolver.observed) {

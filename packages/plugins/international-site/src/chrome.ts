@@ -197,6 +197,22 @@ export function splitHref(href: string): { path: string; suffix: string } | null
     : { path: href.slice(0, cut), suffix: href.slice(cut) };
 }
 
+// FIXME(issue #724, rollout D): core stores internal links as
+// `caelo:page/<id>[?query][#anchor]` references since rollout C. Until
+// the `link-resolve` composition point replaces mapLinks, the chrome
+// link map recognises the reference form as well as a literal path, so
+// a language's chrome keeps pointing at same-language pages. The pattern
+// mirrors core's grammar (shared `link-refs.ts`); this plugin depends on
+// the SDK only, so it is repeated here instead of imported.
+const PAGE_REF_RE =
+  /^caelo:page\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})([?#][^\s"'<>]*)?$/;
+
+/** Split a stored page reference into its page id and `?query#hash` suffix. */
+export function splitPageRef(href: string): { pageId: string; suffix: string } | null {
+  const m = PAGE_REF_RE.exec(href);
+  return m ? { pageId: m[1] as string, suffix: m[2] ?? "" } : null;
+}
+
 /** `/de/preise/` and `/de/preise` name the same page. */
 export function normalizePath(path: string): string {
   const trimmed = path.replace(/\/+$/, "");

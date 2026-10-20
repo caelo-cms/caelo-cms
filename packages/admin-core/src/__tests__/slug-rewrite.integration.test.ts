@@ -61,14 +61,30 @@ beforeAll(async () => {
   // shape); the extractor would otherwise move the href to a field
   // default and the rewriter would miss it. The v0.12-aware variant
   // (rewriter walks field defaults too) lands in a follow-up.
+  //
+  // Since #724 the write ops store internal links as page references and
+  // refuse links to no page, so a literal href only exists in content
+  // written before; the rewriter exists for that content. Seed it the
+  // same way: create the module, then write the legacy HTML underneath
+  // the ops.
   const m1 = await execute(registry, adapter, systemCtx, "modules.create", {
     slug: MOD_SLUG_REF,
     displayName: "Ref module",
-    html: `<p>See <a href="/${OLD_SLUG}">our page</a>.</p>`,
+    html: `<p>See our page.</p>`,
     fields: [{ name: "body", kind: "text", label: "Body" } as never],
   });
   if (!m1.ok) throw new Error("seed m1");
   modIdRef = (m1.value as { moduleId: string }).moduleId;
+  const legacy = new SQL(ADMIN_URL!);
+  try {
+    await legacy.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE modules SET html = ${`<p>See <a href="/${OLD_SLUG}">our page</a>.</p>`}
+               WHERE id = ${modIdRef}::uuid`;
+    });
+  } finally {
+    await legacy.end();
+  }
   // Module 2: no reference to the slug.
   const m2 = await execute(registry, adapter, systemCtx, "modules.create", {
     slug: MOD_SLUG_NOREF,

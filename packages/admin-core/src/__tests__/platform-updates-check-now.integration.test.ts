@@ -141,7 +141,7 @@ const manifest = (version: string, infraContractVersion: number): ReleaseManifes
   migrations: {
     contract: false,
     lastContractVersion: null,
-    head: "0300_platform_update_superseded",
+    head: "0317_platform_update_superseded",
   },
   security: false,
   advisories: [],
