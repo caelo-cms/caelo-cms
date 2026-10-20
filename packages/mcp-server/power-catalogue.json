@@ -1,5 +1,5 @@
 {
-  "version": "0.10.58",
+  "version": "0.10.59",
   "tools": [
     {
       "name": "edit_module",
@@ -346,6 +346,76 @@
           "contentValues": {
             "type": "object",
             "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "name": "patch_page_module_fields",
+      "description": "Change individual values of ONE module placement — a heading, one bullet of a text-list, a link-list entry's text or target, a `url` field, an `image` field — and leave every other value of that placement untouched. Use this for targeted wording fixes ('the hero says Welcom, fix it', 'rename the second menu item to Pricing', or a reference chip naming `placement=(blockName, position), field=…[index]`): you send only the changed values instead of the placement's whole contentValues. `text` is the new value: plain text for text fields (it is HTML-escaped for you — never send markup), a path / https URL for `url` / `image` fields and link targets. `index` addresses a `text-list` item or a `link-list` entry; `part: \"href\"` sets that entry's target instead of its text. Several edits of one placement go in one call (all or none). Use `set_page_module_content` (NOT this tool) to replace a placement's values wholesale or to set nested modules; `set_page_module_content_many` for passes across several placements; `edit_module` for structure. SYNCED placements (content shared with other pages) need `scope`: `\"everywhere\"` changes it on every page that shows it, `\"here\"` detaches this page first and changes only it — ask the operator which they mean when it is not clear. Typical call: `{pageId: \"…\", blockName: \"content\", position: 0, edits: [{field: \"hero_title\", text: \"Welcome\"}, {field: \"nav_items\", index: 1, text: \"Pricing\"}]}`.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pageId",
+          "blockName",
+          "position",
+          "edits"
+        ],
+        "properties": {
+          "pageId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "blockName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "edits": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "field",
+                "text"
+              ],
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "index": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "part": {
+                  "type": "string",
+                  "enum": [
+                    "label",
+                    "href"
+                  ]
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 10000
+                }
+              }
+            }
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "everywhere",
+              "here"
+            ]
           }
         }
       }
@@ -4829,7 +4899,7 @@
     },
     {
       "name": "update_pages_many",
-      "description": "Edit page metadata — the ONE tool for it, for 1 page or 200 (pass a single-item `updates` array for one page; there is no separate rename/retitle/reslug tool). Use for 'rename this page', 'change the browser-tab title', 'move this to /pricing', 'archive all draft posts', 'move these pages to the {tpl} template'. **A page has THREE independently-editable identifiers — never substitute one for another:** `name` = the internal editor label (page picker / breadcrumbs; not public), `title` = the HTML <title> tag (browser tab + search results), `slug` = the URL path. If the operator just says 'rename' without saying which, ASK before guessing — 'rename' usually means `name`. **Changing `slug` moves the page's public URL — and the URL of every page nested below it**: a 301 from each old URL is created automatically and every nav-menu / link-list / module / content link pointing at them is rewritten, in one transaction. A rename that moves 10+ URLs (the page plus its subtree) needs one Owner click in chat before it runs. To put a page under another page (or back at the top level) use move_pages, not this tool. Pass `redirectFromOld: 'skip'` ONLY when the operator explicitly says the old URL should 404 — the default keeps inbound links alive. Per-item failures (not-found, version conflict) are reported; the rest of the batch still applies. DO NOT use for SEO sidecar (`pages_seo.set_many`) or modules (`update_modules_many`) — those have their own bulk tools.\n\nOver MCP: when this call needs the operator's approval, it queues an approval card in their Caelo admin (Live Edit chat and the pending-approvals page) and returns the outcome once they decide — tell them to approve the card; never ask them to paste a prompt into the Caelo chat.",
+      "description": "Edit page metadata — the ONE tool for it, for 1 page or 200 (pass a single-item `updates` array for one page; there is no separate rename/retitle/reslug tool). Use for 'rename this page', 'change the browser-tab title', 'move this to /pricing', 'archive all draft posts', 'move these pages to the {tpl} template'. **A page has THREE independently-editable identifiers — never substitute one for another:** `name` = the internal editor label (page picker / breadcrumbs; not public), `title` = the HTML <title> tag (browser tab + search results), `slug` = the URL path. If the operator just says 'rename' without saying which, ASK before guessing — 'rename' usually means `name`. **Changing `slug` moves the page's public URL — and the URL of every page nested below it**: a 301 from each old URL is created automatically in the same transaction, for links from outside the site. Links on this site (nav menus, link lists, modules, content) follow the page on their own — do not update them after a rename. A rename that moves 10+ URLs (the page plus its subtree) needs one Owner click in chat before it runs. To put a page under another page (or back at the top level) use move_pages, not this tool. Pass `redirectFromOld: 'skip'` ONLY when the operator explicitly says the old URL should 404 — the default keeps inbound links alive. Per-item failures (not-found, version conflict) are reported; the rest of the batch still applies. DO NOT use for SEO sidecar (`pages_seo.set_many`) or modules (`update_modules_many`) — those have their own bulk tools.\n\nOver MCP: when this call needs the operator's approval, it queues an approval card in their Caelo admin (Live Edit chat and the pending-approvals page) and returns the outcome once they decide — tell them to approve the card; never ask them to paste a prompt into the Caelo chat.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4872,7 +4942,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 120,
-                  "description": "URL path. Changing it auto-creates a 301 from the old URL and rewrites links pointing at it."
+                  "description": "URL path. Changing it auto-creates a 301 from the old URL; links on the site follow the page automatically."
                 },
                 "templateId": {
                   "type": "string",
@@ -4902,7 +4972,7 @@
     },
     {
       "name": "move_pages",
-      "description": "Put pages under other pages (nested URLs), or back at the top level — for 1 page or 200 in one call. Use for 'put Alerts under SEO Monitoring', 'move the pricing page into Products', 'make this a top-level page again', 'group these 5 guides under /guides'. A page's URL is its parent's URL + '/' + its slug, so moving `/alerts` under `/seo-monitoring` makes it `/seo-monitoring/alerts`; every page below a moved page moves with it. Each move: `page` = the page's id or current URL path, `parent` = the new parent's id or path, or null for the top level, optional `newSlug` to rename in the same step. Everything happens in one transaction: 301s from every old URL, and nav menus, link lists, module and content links are rewritten to the new URLs. If the target URL is already taken, the call changes nothing and names the clash — retry with `newSlug`. The homepage can neither move under a page nor have child pages; nesting is limited to 6 levels. Moving 10+ URLs in one call (pages + their subtrees) needs one Owner click in chat before it runs. To change only a page's name/title/slug use update_pages_many; to create a page under a parent use build_page with page.parentPageId.\n\nOver MCP: when this call needs the operator's approval, it queues an approval card in their Caelo admin (Live Edit chat and the pending-approvals page) and returns the outcome once they decide — tell them to approve the card; never ask them to paste a prompt into the Caelo chat.",
+      "description": "Put pages under other pages (nested URLs), or back at the top level — for 1 page or 200 in one call. Use for 'put Alerts under SEO Monitoring', 'move the pricing page into Products', 'make this a top-level page again', 'group these 5 guides under /guides'. A page's URL is its parent's URL + '/' + its slug, so moving `/alerts` under `/seo-monitoring` makes it `/seo-monitoring/alerts`; every page below a moved page moves with it. Each move: `page` = the page's id or current URL path, `parent` = the new parent's id or path, or null for the top level, optional `newSlug` to rename in the same step. Everything happens in one transaction, with a 301 from every old URL for links from outside the site. Links on this site (nav menus, link lists, module and content links) follow the pages automatically — there is no link-update step after a move. If the target URL is already taken, the call changes nothing and names the clash — retry with `newSlug`. The homepage can neither move under a page nor have child pages; nesting is limited to 6 levels. Moving 10+ URLs in one call (pages + their subtrees) needs one Owner click in chat before it runs. To change only a page's name/title/slug use update_pages_many; to create a page under a parent use build_page with page.parentPageId.\n\nOver MCP: when this call needs the operator's approval, it queues an approval card in their Caelo admin (Live Edit chat and the pending-approvals page) and returns the outcome once they decide — tell them to approve the card; never ask them to paste a prompt into the Caelo chat.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
