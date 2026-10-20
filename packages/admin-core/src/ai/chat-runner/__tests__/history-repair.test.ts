@@ -480,3 +480,107 @@ describe("repairToolCallPairing — results separated by an interleaved turn (is
     expect(out[3]?.content).toBe("Fix round 1 of 2: fix the findings.");
   });
 });
+
+describe("repairToolCallPairing — a result stored twice (each tool_use must have a single result)", () => {
+  // The live wedge: one step called a valid tool (X) and one the SDK rejected
+  // at parse time (Y). The step's stored assembly kept the SDK's tool message
+  // [X result, Y error result] whole, and X's result was ALSO persisted as its
+  // own tool row — every later turn replayed X twice and 400'd.
+  const X = "toolu_01Up8jx7MZZxjE2JvKUGDQTn";
+  const Y = "toolu_invalid";
+  function poisonedHistory(): ChatMessageInput[] {
+    return [
+      { role: "user", content: "make the headings lighter" },
+      {
+        role: "assistant",
+        content: "",
+        sdkMessages: [
+          {
+            role: "assistant",
+            content: [
+              { type: "tool-call", toolCallId: X, toolName: "set_theme_tokens", input: {} },
+              { type: "tool-call", toolCallId: Y, toolName: "no_such_tool", input: {} },
+            ],
+          },
+          {
+            role: "tool",
+            content: [
+              {
+                type: "tool-result",
+                toolCallId: X,
+                toolName: "set_theme_tokens",
+                output: { type: "text", value: "ok" },
+              },
+              {
+                type: "tool-result",
+                toolCallId: Y,
+                toolName: "no_such_tool",
+                output: { type: "error-text", value: "no such tool" },
+              },
+            ],
+          },
+        ],
+      },
+      { role: "tool", content: "ok", toolCallId: X },
+      { role: "assistant", content: "Done." },
+      { role: "user", content: "a bit more spacing too" },
+    ];
+  }
+
+  function resultIds(messages: readonly ChatMessageInput[]): string[] {
+    const ids: string[] = [];
+    for (const m of messages) {
+      if (m.sdkMessages) {
+        for (const sm of m.sdkMessages as {
+          role: string;
+          content: { type: string; toolCallId?: string }[];
+        }[]) {
+          if (sm.role !== "tool") continue;
+          for (const p of sm.content)
+            if (p.type === "tool-result" && p.toolCallId) ids.push(p.toolCallId);
+        }
+      } else if (m.role === "tool" && m.toolCallId) {
+        ids.push(m.toolCallId);
+      }
+    }
+    return ids;
+  }
+
+  it("replays each result exactly once and reports the dropped copy", () => {
+    const r = repairToolCallPairing(poisonedHistory());
+    expect(resultIds(r.messages).sort()).toEqual([X, Y].sort());
+    expect(r.droppedToolResultIds).toEqual([X]);
+    expect(r.strippedToolCallIds).toEqual([]);
+  });
+
+  it("drops the repeat inside an assembly when the tool row came first", () => {
+    const h = poisonedHistory();
+    const [user, assembly, row, ...rest] = h;
+    if (!user || !assembly || !row) throw new Error("fixture shape");
+    // Reconstruction row ahead of a later assembly that repeats the result.
+    const reordered: ChatMessageInput[] = [
+      user,
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: X, name: "set_theme_tokens", arguments: {} }],
+      },
+      row,
+      {
+        ...assembly,
+        sdkMessages: (assembly.sdkMessages ?? []).slice(1),
+      },
+      ...rest,
+    ];
+    const r = repairToolCallPairing(reordered);
+    expect(resultIds(r.messages).filter((id) => id === X)).toHaveLength(1);
+    expect(r.droppedToolResultIds).toEqual([X]);
+  });
+
+  it("leaves an assembly without repeats byte-identical", () => {
+    const h = poisonedHistory().filter((m) => !(m.role === "tool" && m.toolCallId === X));
+    const r = repairToolCallPairing(h);
+    expect(r.messages[1]).toBe(h[1]);
+    expect(r.droppedToolResultIds).toEqual([]);
+  });
+});

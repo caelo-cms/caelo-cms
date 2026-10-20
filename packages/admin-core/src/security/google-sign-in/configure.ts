@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #806 — what Settings → MCP → Remote's buttons do, in order, so a
+ * Issue #914 — what Settings → Google sign-in's buttons do, in order, so a
  * failure part-way reports exactly which link is missing (setup.ts explains
  * the chain):
  *
- *   save:  validate → Secret Manager version → `mcp_remote_oauth.set` →
- *          operator-access sync (IAP programmatic_clients) → self-check
- *   off:   `{}` version → `mcp_remote_oauth.clear` → sync (clears the list)
- *          → self-check (the gateway reports "not configured")
- *   check: sync again → self-check, for "Run the checks again"
+ *   save:    validate → Secret Manager version → `operator_oauth.set` →
+ *            operator-access sync (IAP oauthSettings) → self-check
+ *   remove:  `{}` version → `operator_oauth.clear` → sync (clears IAP's
+ *            oauthSettings; IAP falls back to its Google-managed client) →
+ *            self-check
+ *   check:   sync again → self-check, for "Run the checks again"
  *
  * The secret version comes first: if it fails nothing else changed. The DB
  * row comes before the sync because the sync job reads it. The client
@@ -21,21 +22,21 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
-import { googleOAuthClientIdSchema } from "../../ops/security/mcp_remote_oauth.js";
+import { googleOAuthClientIdSchema } from "../../ops/security/operator_oauth.js";
 import { type OperatorAccessSync, syncOperatorAccess } from "../../ops/user_access.js";
 import { defaultGoogleDeps, type GoogleDeps } from "../operator-access/google-iam.js";
 import {
   addSecretVersion,
   GOOGLE_OAUTH_CLIENT_SECRET,
+  type GoogleSignInAvailability,
   oauthClientFile,
-  type RemoteMcpAvailability,
-  runSelfCheck,
+  runSignInSelfCheck,
   type SelfCheckDeps,
   type SelfCheckLine,
 } from "./setup.js";
 
 /** The form the Owner submits (step 2 of the setup). */
-export const remoteMcpClientInputSchema = z.object({
+export const googleSignInClientInputSchema = z.object({
   clientId: googleOAuthClientIdSchema,
   clientSecret: z
     .string()
@@ -45,9 +46,9 @@ export const remoteMcpClientInputSchema = z.object({
       "paste the client secret exactly as the Google console shows it (it starts with GOCSPX-)",
     ),
 });
-export type RemoteMcpClientInput = z.infer<typeof remoteMcpClientInputSchema>;
+export type GoogleSignInClientInput = z.infer<typeof googleSignInClientInputSchema>;
 
-export type RemoteMcpConfigureResult =
+export type GoogleSignInConfigureResult =
   | { readonly ok: true; readonly checks: SelfCheckLine[] }
   | {
       readonly ok: false;
@@ -62,19 +63,19 @@ export interface ConfigureDeps {
   readonly check?: SelfCheckDeps;
   /** Swaps the sync job in tests; production starts the real one. */
   readonly sync?: () => Promise<OperatorAccessSync>;
-  readonly gatewayTimeoutMs?: number;
+  readonly timeoutMs?: number;
 }
 
-type Available = Extract<RemoteMcpAvailability, { status: "available" }>;
+type Available = Extract<GoogleSignInAvailability, { status: "available" }>;
 
-function secretFailure(e: unknown): RemoteMcpConfigureResult {
+function secretFailure(e: unknown): GoogleSignInConfigureResult {
   const message = e instanceof Error ? e.message : String(e);
   return {
     ok: false,
     step: "secret",
     error: `the client could not be stored in Secret Manager: ${message}`,
     nextStep: /HTTP 403/.test(message)
-      ? "The admin may not add versions to the remote-MCP secret yet. Run `cms-provision upgrade` (it grants that), then save again."
+      ? "The admin may not add versions to the Google sign-in secret yet. Run `cms-provision upgrade` (it grants that), then save again."
       : "Nothing was changed. Try again; if it keeps failing, report it with `bug_report`.",
   };
 }
@@ -85,27 +86,29 @@ async function finish(
   ctx: ExecutionContext,
   available: Available,
   clientId: string | null,
+  removedClientId: string | null,
   deps: ConfigureDeps,
-): Promise<RemoteMcpConfigureResult> {
+): Promise<GoogleSignInConfigureResult> {
   const sync = await (deps.sync ?? (() => syncOperatorAccess(registry, adapter, ctx)))();
-  const checks = await runSelfCheck(deps.check ?? { fetch }, {
-    mcpPublicUrl: available.mcpPublicUrl,
+  const checks = await runSignInSelfCheck(deps.check ?? { fetch }, {
+    adminUrl: available.adminUrl,
     clientId,
+    removedClientId,
     sync,
-    ...(deps.gatewayTimeoutMs !== undefined ? { gatewayTimeoutMs: deps.gatewayTimeoutMs } : {}),
+    ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
   });
   return { ok: true, checks };
 }
 
-/** Store the Owner's OAuth client and turn remote MCP on, then self-check. */
-export async function saveRemoteMcpClient(
+/** Store the Owner's Google sign-in client, hand it to IAP, then self-check. */
+export async function saveGoogleSignInClient(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   ctx: ExecutionContext,
   available: Available,
-  input: RemoteMcpClientInput,
+  input: GoogleSignInClientInput,
   deps: ConfigureDeps = {},
-): Promise<RemoteMcpConfigureResult> {
+): Promise<GoogleSignInConfigureResult> {
   try {
     await addSecretVersion(
       deps.google ?? defaultGoogleDeps(),
@@ -115,29 +118,35 @@ export async function saveRemoteMcpClient(
   } catch (e) {
     return secretFailure(e);
   }
-  const set = await execute(registry, adapter, ctx, "mcp_remote_oauth.set", {
+  const set = await execute(registry, adapter, ctx, "operator_oauth.set", {
     clientId: input.clientId,
   });
   if (!set.ok) {
     return {
       ok: false,
       step: "database",
-      error: `the client was stored for the gateway, but not recorded: ${JSON.stringify(set.error)}`,
+      error: `the client was stored in Secret Manager, but not recorded: ${JSON.stringify(set.error)}`,
       nextStep:
-        "Save again (storing the same client twice is harmless). Until then Google IAP does not accept sign-ins from it.",
+        "Save again (storing the same client twice is harmless). Until then Google IAP keeps its current sign-in client.",
     };
   }
-  return finish(registry, adapter, ctx, available, input.clientId, deps);
+  return finish(registry, adapter, ctx, available, input.clientId, null, deps);
 }
 
-/** Turn remote MCP off: the gateway gets `{}`, IAP no programmatic client. */
-export async function disableRemoteMcp(
+/**
+ * Remove the Google sign-in client: the secret becomes `{}`, the row goes,
+ * and the sync clears IAP's oauthSettings — IAP signs people in with its
+ * Google-managed client again (only the organisation's accounts) and remote
+ * MCP stops. The page warns, naming the users who lose access, first.
+ */
+export async function removeGoogleSignInClient(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   ctx: ExecutionContext,
   available: Available,
+  removedClientId: string | null,
   deps: ConfigureDeps = {},
-): Promise<RemoteMcpConfigureResult> {
+): Promise<GoogleSignInConfigureResult> {
   try {
     await addSecretVersion(
       deps.google ?? defaultGoogleDeps(),
@@ -147,26 +156,27 @@ export async function disableRemoteMcp(
   } catch (e) {
     return secretFailure(e);
   }
-  const cleared = await execute(registry, adapter, ctx, "mcp_remote_oauth.clear", {});
+  const cleared = await execute(registry, adapter, ctx, "operator_oauth.clear", {});
   if (!cleared.ok) {
     return {
       ok: false,
       step: "database",
-      error: `the gateway stopped using the client, but it is still recorded: ${JSON.stringify(cleared.error)}`,
-      nextStep: "Turn remote MCP off again; Google IAP keeps accepting the client until then.",
+      error: `the client was emptied in Secret Manager, but it is still recorded: ${JSON.stringify(cleared.error)}`,
+      nextStep:
+        "Remove it again. Until then the sync job leaves Google IAP's sign-in client as it is.",
     };
   }
-  return finish(registry, adapter, ctx, available, null, deps);
+  return finish(registry, adapter, ctx, available, null, removedClientId, deps);
 }
 
 /** Re-run the sync and the self-check against what is configured now. */
-export async function recheckRemoteMcp(
+export async function recheckGoogleSignIn(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   ctx: ExecutionContext,
   available: Available,
   clientId: string | null,
   deps: ConfigureDeps = {},
-): Promise<RemoteMcpConfigureResult> {
-  return finish(registry, adapter, ctx, available, clientId, deps);
+): Promise<GoogleSignInConfigureResult> {
+  return finish(registry, adapter, ctx, available, clientId, null, deps);
 }

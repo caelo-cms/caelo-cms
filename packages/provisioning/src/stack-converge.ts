@@ -43,8 +43,10 @@ import {
   type MediaVolumeContract,
   memoryQuantityMiB,
   RETIRED_IAM_BINDINGS,
+  RETIRED_RUNTIME_SECRETS,
   RETIRED_SERVICE_ENV,
   type RetiredIamBinding,
+  type RetiredSecretFile,
   type RuntimeEnvInputs,
   type SecretFileContract,
   type ServiceEnvInputs,
@@ -682,6 +684,53 @@ export async function removeRetiredIamBindings(
   return outcomes;
 }
 
+/**
+ * Delete the secrets older contracts created and nothing reads any more
+ * ({@link RETIRED_RUNTIME_SECRETS}) — run by upgrade AFTER both services
+ * rolled onto revisions that no longer reference them (Cloud Run would
+ * refuse a revision whose secret is gone). Deleting a secret drops its IAM
+ * bindings with it. An absent secret is `absent`; never throws for a
+ * gcloud failure.
+ */
+export async function deleteRetiredSecrets(
+  install: Pick<InstallTarget, "projectId" | "env">,
+  deps: {
+    run?: GcloudRunner;
+    retired?: readonly { readonly name: string; readonly why: string }[];
+  } = {},
+): Promise<RetiredBindingOutcome[]> {
+  const run = deps.run ?? defaultGcloud;
+  const outcomes: RetiredBindingOutcome[] = [];
+  for (const s of deps.retired ?? RETIRED_RUNTIME_SECRETS) {
+    const id = `secret ${gcpSecretId(install.env, s.name)}`;
+    const project = `--project=${install.projectId}`;
+    const describe = await run([
+      "secrets",
+      "describe",
+      gcpSecretId(install.env, s.name),
+      project,
+      "--format=value(name)",
+    ]);
+    if (!describe.ok && RESOURCE_MISSING.test(describe.stderr)) {
+      outcomes.push({ id, status: "absent", why: s.why });
+      continue;
+    }
+    const del = await run([
+      "secrets",
+      "delete",
+      gcpSecretId(install.env, s.name),
+      project,
+      "--quiet",
+    ]);
+    outcomes.push(
+      del.ok || RESOURCE_MISSING.test(del.stderr)
+        ? { id, status: del.ok ? "removed" : "absent", why: s.why }
+        : { id, status: "failed", why: s.why, error: del.stderr.trim() },
+    );
+  }
+  return outcomes;
+}
+
 /** The memory limit of the service's container (`512Mi`, `2Gi`), or null
  *  when the service declares none (Cloud Run then runs it with 512Mi). */
 export function liveContainerMemory(serviceJson: string): string | null {
@@ -895,9 +944,21 @@ export function planSecretFiles(
   live: LiveVolumes,
   files: readonly SecretFileContract[],
   env: string,
+  retired: readonly RetiredSecretFile[] = [],
 ): RollAdditionsPlan {
   const flags: string[] = [];
   const changes: string[] = [];
+  // #914 — mounts an older contract made and nothing reads any more
+  // (RETIRED_SECRET_FILES) go in the same revision that mounts their
+  // replacement. `--remove-secrets=<dir>/<file>` drops the file, and the
+  // mount with it when it was the volume's only file (gcloud
+  // `_PruneManagedVolumeMapping`). Repeated `--remove-secrets` /
+  // `--update-secrets` flags merge (gcloud map flags use UpdateAction).
+  for (const old of retired) {
+    if (!live.mounts.some((m) => m.mountPath === old.mountDir)) continue;
+    flags.push(`--remove-secrets=${old.mountDir}/${old.fileName}`);
+    changes.push(`secret file ${old.mountDir}/${old.fileName}: removed (${old.why})`);
+  }
   for (const file of files) {
     const secretId = gcpSecretId(env, file.secret);
     const mount = live.mounts.find((m) => m.mountPath === file.mountDir);
