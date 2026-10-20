@@ -400,6 +400,11 @@ ${serviceRuntime(spec.images, "gateway", "bun run apps/api-gateway/src/server.ts
       GATEWAY_PORT: "${COMPOSE_GATEWAY_PORT}"
       # Caddy is the one proxy in front (client-ip.ts in the gateway).
       ${TRUSTED_PROXY_HOPS_ENV}: "${GATEWAY_TRUSTED_PROXY_HOPS["self-hosted"]}"
+      # #806 — no remote MCP here: it rides Google IAP, which this install
+      # does not have. CAELO_ADMIN_URL / CAELO_MCP_PUBLIC_URL /
+      # CAELO_OPERATOR_OAUTH_CLIENT_FILE stay unset, so the gateway's /api/mcp/*
+      # answers 503 remote_mcp_not_configured and Settings → MCP says
+      # "not available on this install".
       NODE_ENV: production`;
 }
 

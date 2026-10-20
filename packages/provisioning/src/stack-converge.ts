@@ -18,6 +18,9 @@
  *   - {@link planMediaVolume}: the admin's media bucket volume (gen2 + Cloud
  *     Storage volume + mount), added in the same `services update` when
  *     missing.
+ *   - {@link planSecretFiles} / {@link planRequestTimeout} (#806): the
+ *     gateway's secret file (the remote-MCP OAuth client) and its request
+ *     timeout, in the same `services update`.
  */
 
 import { removeDefaultFirewallRules } from "./default-firewall.js";
@@ -40,11 +43,15 @@ import {
   type MediaVolumeContract,
   memoryQuantityMiB,
   RETIRED_IAM_BINDINGS,
+  RETIRED_RUNTIME_SECRETS,
   RETIRED_SERVICE_ENV,
   type RetiredIamBinding,
+  type RetiredSecretFile,
   type RuntimeEnvInputs,
+  type SecretFileContract,
   type ServiceEnvInputs,
   STATIC_CDN_POLICY,
+  secretFilePath,
   stackIamInvariants,
   staticBackendBucketPrefix,
 } from "./stack-contract.js";
@@ -285,6 +292,12 @@ export function planContractEnv(
   opts: {
     /** Contract vars to leave exactly as the services have them. */
     readonly leaveUntouched?: readonly string[];
+    /**
+     * Vars beyond the contract to set as well (#806: the remote-MCP identity
+     * env, resolved by the converge). A name the contract also sets is
+     * refused rather than silently doubled.
+     */
+    readonly extraEnv?: Readonly<Partial<Record<CloudRunSlug, readonly CloudRunEnvVar[]>>>;
   } = {},
 ):
   | {
@@ -320,16 +333,25 @@ export function planContractEnv(
     inputs = { ...runtime, provider: "gcp" };
   }
   const skip = new Set(opts.leaveUntouched ?? []);
-  const owned = (contract: readonly CloudRunEnvVar[]) => contract.filter((e) => !skip.has(e.name));
-  const admin = planEnvUpdate(
-    services.admin.liveEnv,
-    owned(adminEnvContract(inputs)),
-    RETIRED_SERVICE_ENV.admin,
-  );
+  const desired = (slug: CloudRunSlug, contract: readonly CloudRunEnvVar[]) => {
+    const extra = opts.extraEnv?.[slug] ?? [];
+    const clash = extra.find((e) => contract.some((c) => c.name === e.name));
+    if (clash) throw new Error(`${slug}: ${clash.name} is both in the contract and extra env`);
+    return [...contract, ...extra].filter((e) => !skip.has(e.name));
+  };
+  let adminDesired: CloudRunEnvVar[];
+  let gatewayDesired: CloudRunEnvVar[];
+  try {
+    adminDesired = desired("admin", adminEnvContract(inputs));
+    gatewayDesired = desired("gateway", gatewayEnvContract(runtime));
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+  const admin = planEnvUpdate(services.admin.liveEnv, adminDesired, RETIRED_SERVICE_ENV.admin);
   if (!admin.ok) return { ok: false, error: `admin: ${admin.error}` };
   const gateway = planEnvUpdate(
     services.gateway.liveEnv,
-    owned(gatewayEnvContract(runtime)),
+    gatewayDesired,
     RETIRED_SERVICE_ENV.gateway,
   );
   if (!gateway.ok) return { ok: false, error: `gateway: ${gateway.error}` };
@@ -662,6 +684,53 @@ export async function removeRetiredIamBindings(
   return outcomes;
 }
 
+/**
+ * Delete the secrets older contracts created and nothing reads any more
+ * ({@link RETIRED_RUNTIME_SECRETS}) — run by upgrade AFTER both services
+ * rolled onto revisions that no longer reference them (Cloud Run would
+ * refuse a revision whose secret is gone). Deleting a secret drops its IAM
+ * bindings with it. An absent secret is `absent`; never throws for a
+ * gcloud failure.
+ */
+export async function deleteRetiredSecrets(
+  install: Pick<InstallTarget, "projectId" | "env">,
+  deps: {
+    run?: GcloudRunner;
+    retired?: readonly { readonly name: string; readonly why: string }[];
+  } = {},
+): Promise<RetiredBindingOutcome[]> {
+  const run = deps.run ?? defaultGcloud;
+  const outcomes: RetiredBindingOutcome[] = [];
+  for (const s of deps.retired ?? RETIRED_RUNTIME_SECRETS) {
+    const id = `secret ${gcpSecretId(install.env, s.name)}`;
+    const project = `--project=${install.projectId}`;
+    const describe = await run([
+      "secrets",
+      "describe",
+      gcpSecretId(install.env, s.name),
+      project,
+      "--format=value(name)",
+    ]);
+    if (!describe.ok && RESOURCE_MISSING.test(describe.stderr)) {
+      outcomes.push({ id, status: "absent", why: s.why });
+      continue;
+    }
+    const del = await run([
+      "secrets",
+      "delete",
+      gcpSecretId(install.env, s.name),
+      project,
+      "--quiet",
+    ]);
+    outcomes.push(
+      del.ok || RESOURCE_MISSING.test(del.stderr)
+        ? { id, status: del.ok ? "removed" : "absent", why: s.why }
+        : { id, status: "failed", why: s.why, error: del.stderr.trim() },
+    );
+  }
+  return outcomes;
+}
+
 /** The memory limit of the service's container (`512Mi`, `2Gi`), or null
  *  when the service declares none (Cloud Run then runs it with 512Mi). */
 export function liveContainerMemory(serviceJson: string): string | null {
@@ -713,6 +782,11 @@ const EXECUTION_ENVIRONMENT_ANNOTATION = "run.googleapis.com/execution-environme
 
 interface KnativeVolume {
   readonly name: string;
+  /** A Secret Manager volume (#806 secret files). */
+  readonly secret?: {
+    readonly secretName?: string;
+    readonly items?: readonly { readonly key?: string; readonly path?: string }[];
+  };
   readonly csi?: {
     readonly driver?: string;
     readonly readOnly?: boolean;
@@ -841,6 +915,87 @@ export function planMediaVolume(live: LiveVolumes, desired: MediaVolumeContract)
     changes.push(`volume mount: (none) → ${desired.volumeName} at ${desired.mountPath}`);
   }
   return { ok: true, flags, changes };
+}
+
+// ===========================================================================
+// Secret files + request timeout (#806)
+// ===========================================================================
+
+export type RollAdditionsPlan =
+  | { readonly ok: true; readonly flags: string[]; readonly changes: string[] }
+  | { readonly ok: false; readonly error: string };
+
+/** `projects/<p>/secrets/<id>` or `<id>` → `<id>`. */
+function bareSecretId(name: string | undefined): string {
+  return (name ?? "").slice((name ?? "").lastIndexOf("/") + 1);
+}
+
+/**
+ * The flags that mount each of `files` (stack-contract.ts
+ * SERVICE_SECRET_FILES) where the stacks mount it, adding only what is
+ * missing — `--update-secrets=<dir>/<file>=<secret>:latest`, the form
+ * cloud.google.com/run/docs/configuring/services/secrets documents (gcloud
+ * names the volume itself). A file already mounted from the same secret at
+ * `latest` is converged whatever its volume is called. Anything else at that
+ * directory is refused with what was found: replacing it could feed the
+ * gateway a different credential.
+ */
+export function planSecretFiles(
+  live: LiveVolumes,
+  files: readonly SecretFileContract[],
+  env: string,
+  retired: readonly RetiredSecretFile[] = [],
+): RollAdditionsPlan {
+  const flags: string[] = [];
+  const changes: string[] = [];
+  // #914 — mounts an older contract made and nothing reads any more
+  // (RETIRED_SECRET_FILES) go in the same revision that mounts their
+  // replacement. `--remove-secrets=<dir>/<file>` drops the file, and the
+  // mount with it when it was the volume's only file (gcloud
+  // `_PruneManagedVolumeMapping`). Repeated `--remove-secrets` /
+  // `--update-secrets` flags merge (gcloud map flags use UpdateAction).
+  for (const old of retired) {
+    if (!live.mounts.some((m) => m.mountPath === old.mountDir)) continue;
+    flags.push(`--remove-secrets=${old.mountDir}/${old.fileName}`);
+    changes.push(`secret file ${old.mountDir}/${old.fileName}: removed (${old.why})`);
+  }
+  for (const file of files) {
+    const secretId = gcpSecretId(env, file.secret);
+    const mount = live.mounts.find((m) => m.mountPath === file.mountDir);
+    if (mount) {
+      const volume = live.volumes.find((v) => v.name === mount.name);
+      const item = volume?.secret?.items?.find((i) => i.path === file.fileName);
+      const inShape =
+        bareSecretId(volume?.secret?.secretName) === secretId && item?.key === file.version;
+      if (inShape) continue;
+      return {
+        ok: false,
+        error: `the service mounts volume "${mount.name}" at ${file.mountDir}, where ${secretId}:${file.version} belongs as ${file.fileName}. Remove it (gcloud run services update <service> --remove-volume-mount=${file.mountDir}) only if nothing else needs it, then re-run upgrade.`,
+      };
+    }
+    flags.push(`--update-secrets=${secretFilePath(file)}=${secretId}:${file.version}`);
+    changes.push(`secret file ${secretFilePath(file)}: (none) → ${secretId}:${file.version}`);
+  }
+  return { ok: true, flags, changes };
+}
+
+/** The request timeout of a described service, in seconds (null: Cloud Run's default, 300). */
+export function liveTimeoutSeconds(serviceJson: string): number | null {
+  const svc = JSON.parse(serviceJson) as {
+    spec?: { template?: { spec?: { timeoutSeconds?: number | string } } };
+  };
+  const t = svc.spec?.template?.spec?.timeoutSeconds;
+  return t === undefined ? null : Number(t);
+}
+
+/** `--timeout=<desired>` when the live timeout differs; nothing when it matches. */
+export function planRequestTimeout(live: number | null, desired: number): RollAdditionsPlan {
+  if (live === desired) return { ok: true, flags: [], changes: [] };
+  return {
+    ok: true,
+    flags: [`--timeout=${desired}`],
+    changes: [`request timeout: ${live === null ? "(default 300)" : live}s → ${desired}s`],
+  };
 }
 
 /**

@@ -342,6 +342,10 @@ describe("upgrading a v0.10.35 install: the gateway leaves admin_role (#613)", (
     expect(plan.ok && plan.services.gateway.changes.map((c) => c.name).sort()).toEqual([
       "ADMIN_DATABASE_PASSWORD",
       "ADMIN_DATABASE_URL",
+      // #806 — the remote-MCP broker's seal key and (#914) the Google
+      // sign-in client file path.
+      "CAELO_MCP_OAUTH_SEAL_KEY",
+      "CAELO_OPERATOR_OAUTH_CLIENT_FILE",
       // #650 — the staging gate key arrives in the same roll.
       "CAELO_STAGING_GATE_SECRET",
       // #845 — and which forwarded address is the visitor.

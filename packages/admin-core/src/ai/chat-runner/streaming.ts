@@ -204,43 +204,82 @@ interface StepState {
 }
 
 /**
- * Drop the step's OWN client-tool-result message from the SDK's per-step
- * slice. Our wrappers persist every client tool result as a role='tool'
+ * Drop the step's OWN client tool results from the SDK's per-step slice.
+ * Our wrappers persist every client tool result as a role='tool'
  * chat_messages row (dedup cache, UI transcript), and the replay
  * reconstructs those rows into tool-result messages — keeping the slice's
- * copy too would double every result on replay. Everything else in the
- * slice (reasoning + signatures, text, client AND providerExecuted
- * tool-calls, providerExecuted tool-results, approval-request parts) stays
- * verbatim — that is exactly the pre-#442 per-iteration Option-C shape,
- * proven in production replay.
+ * copy too would double every result on replay ("each tool_use must have a
+ * single result"). Everything else in the slice (reasoning + signatures,
+ * text, client AND providerExecuted tool-calls, providerExecuted
+ * tool-results, approval-request parts) stays verbatim — that is exactly the
+ * pre-#442 per-iteration Option-C shape, proven in production replay.
+ *
+ * Per PART, not per message: the SDK puts ALL of a step's client results in
+ * ONE tool message, including the error results it answers by itself for a
+ * call it rejected at parse time (unknown tool name, unparseable input —
+ * `invalid` calls never reach our execute, so no tool row exists for them).
+ * A step mixing a valid call with an invalid one therefore yields
+ * `[own result, SDK error result]`; keeping that message whole re-sent our
+ * result next to its tool row and wedged the chat.
  */
 function stripOwnClientToolResults(
   slice: readonly ProviderResponseMessage[],
   executedIds: ReadonlySet<string>,
 ): ProviderResponseMessage[] {
-  return slice.filter((msg) => {
-    if (msg === null || typeof msg !== "object") return true;
-    const m = msg as { role?: unknown; content?: unknown };
-    if (m.role !== "tool" || !Array.isArray(m.content)) return true;
-    const allOwn = m.content.every((part) => {
-      if (part === null || typeof part !== "object") return false;
+  const out: ProviderResponseMessage[] = [];
+  for (const msg of slice) {
+    const m = msg as { role?: unknown; content?: unknown } | null;
+    if (m === null || typeof m !== "object" || m.role !== "tool" || !Array.isArray(m.content)) {
+      out.push(msg);
+      continue;
+    }
+    const kept = m.content.filter((part) => {
+      if (part === null || typeof part !== "object") return true;
       const p = part as { type?: unknown; toolCallId?: unknown };
-      return (
+      return !(
         p.type === "tool-result" &&
         typeof p.toolCallId === "string" &&
         executedIds.has(p.toolCallId)
       );
     });
-    if (!allOwn && m.content.length > 0) {
-      // A tool message mixing our results with something else would be a new
-      // SDK shape — keep it verbatim but say so loudly (§2 no-fallbacks:
-      // never silently drop content we don't understand).
-      console.error("[chat-runner] step slice tool message kept — unrecognized mix", {
-        parts: m.content.length,
+    const unrecognized = kept.filter(
+      (part) =>
+        part === null ||
+        typeof part !== "object" ||
+        (part as { type?: unknown }).type !== "tool-result",
+    );
+    if (unrecognized.length > 0) {
+      // Anything but a tool result in a step's tool message is a new SDK
+      // shape — keep it verbatim but say so loudly (§2 no-fallbacks: never
+      // silently drop content we don't understand).
+      console.error("[chat-runner] step slice tool message kept — unrecognized parts", {
+        parts: unrecognized.length,
       });
     }
-    return !allOwn;
-  });
+    if (kept.length === m.content.length) out.push(msg);
+    else if (kept.length > 0) out.push({ ...(msg as Record<string, unknown>), content: kept });
+  }
+  return out;
+}
+
+/**
+ * Client tool calls the SDK already answered inside the step's own messages
+ * — the error results of calls it rejected at parse time. They must not be
+ * answered a second time by our skipped-call dispatch.
+ */
+function sdkAnsweredClientCallIds(slice: readonly ProviderResponseMessage[]): Set<string> {
+  const ids = new Set<string>();
+  for (const msg of slice) {
+    const m = msg as { role?: unknown; content?: unknown } | null;
+    if (m === null || typeof m !== "object" || m.role !== "tool" || !Array.isArray(m.content)) {
+      continue;
+    }
+    for (const part of m.content) {
+      const p = part as { type?: unknown; toolCallId?: unknown } | null;
+      if (p?.type === "tool-result" && typeof p.toolCallId === "string") ids.add(p.toolCallId);
+    }
+  }
+  return ids;
 }
 
 export async function* streamProviderTurn(
@@ -489,13 +528,21 @@ export async function* streamProviderTurn(
    * those calls unanswered. Dispatch them here, through the same wrapper,
    * so the pairing invariant holds whatever the stop reason. A gated tool
    * is never applied this way (its execute is the post-approval apply); a
-   * call that already has an approval request is answered on resume.
+   * call that already has an approval request is answered on resume, and a
+   * call the SDK rejected at parse time already carries its error result in
+   * the step's messages.
    */
-  const dispatchCallsTheSdkSkipped = async (s: StepState, finishReason: string) => {
+  const dispatchCallsTheSdkSkipped = async (
+    s: StepState,
+    finishReason: string,
+    sdkAnswered: ReadonlySet<string>,
+  ) => {
     if (finishReason === "stop" || finishReason === "tool-calls") return;
     const awaitingApproval = new Set(result.approvalRequests.map((r) => r.toolCallId));
     for (const call of s.clientCalls) {
-      if (s.executedIds.has(call.id) || awaitingApproval.has(call.id)) continue;
+      if (s.executedIds.has(call.id) || awaitingApproval.has(call.id) || sdkAnswered.has(call.id)) {
+        continue;
+      }
       const gated = args.filteredTools.find((t) => t.name === call.name)?.execute !== undefined;
       if (gated) {
         await ensureAnchor(s);
@@ -531,7 +578,11 @@ export async function* streamProviderTurn(
       throw new Error("[chat-runner] onStepFinish without an active step — sequencing broke");
     }
     if (result.sessionGone) return;
-    await dispatchCallsTheSdkSkipped(s, info.finishReason);
+    await dispatchCallsTheSdkSkipped(
+      s,
+      info.finishReason,
+      sdkAnsweredClientCallIds(info.responseMessages),
+    );
     const text = s.text.join("");
     const slice = [
       ...info.initialResponseMessages,

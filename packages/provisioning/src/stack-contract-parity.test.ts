@@ -146,11 +146,28 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
     expect(src).not.toMatch(/serviceName: "gateway",[^}]*mediaVolume:/);
     // No volume, mount or execution environment besides the contract's.
     expect(src.match(/executionEnvironment:/g)).toHaveLength(1);
-    expect(src).toContain("executionEnvironment: args.mediaVolume.executionEnvironment,");
+    expect(src).toContain("? { executionEnvironment: args.mediaVolume.executionEnvironment }");
     expect(src.match(/volumes:/g)).toHaveLength(1);
-    expect(src).toContain("volumes: [...args.mediaVolume.volumes],");
+    expect(src).toMatch(
+      /volumes: \[\s*\.\.\.\(args\.mediaVolume\?\.volumes \?\? \[\]\),\s*\.\.\.secretFileVolumesTemplate\(args\.serviceName, env\)\.volumes,\s*\]/,
+    );
     expect(src.match(/volumeMounts:/g)).toHaveLength(1);
-    expect(src).toContain("volumeMounts: [...args.mediaVolume.volumeMounts]");
+    expect(src).toMatch(
+      /volumeMounts: \[\s*\.\.\.\(args\.mediaVolume\?\.volumeMounts \?\? \[\]\),\s*\.\.\.secretFileVolumesTemplate\(args\.serviceName, env\)\.volumeMounts,\s*\]/,
+    );
+  });
+
+  it("#806 — mounts each service's secret files from the contract upgrade applies", () => {
+    // secretFileVolumesTemplate(service) is SERVICE_SECRET_FILES — the same
+    // table stack-converge.ts planSecretFiles adds to existing installs.
+    expect(src).toContain("secretFileVolumesTemplate,");
+    expect(src.match(/secretFileVolumesTemplate\(args\.serviceName, env\)/g)).toHaveLength(2);
+  });
+
+  it("#806 — gives the gateway the contract's request timeout upgrade applies", () => {
+    expect(src).toMatch(
+      /serviceName: "gateway",[\s\S]*?timeout: `\$\{GATEWAY_TIMEOUT_SECONDS\}s`,[\s\S]*?contractEnv: gatewayEnvContract\(/,
+    );
   });
 
   it("sets no env var outside the contract (C1: no secret value in a plain var)", () => {

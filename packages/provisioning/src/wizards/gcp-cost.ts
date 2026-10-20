@@ -138,6 +138,14 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
               ? "Adaptive protection (ML-based bot mitigation)"
               : "Free tier — rate limit + OWASP basic rules",
           },
+          {
+            // #806 — the remote-MCP throttle (src/remote-mcp-edge.ts) is one
+            // more rule on the gateway's policy; Cloud Armor Standard bills
+            // each rule at about $1/mo.
+            name: "Cloud Armor rule: remote MCP throttle",
+            monthlyUsd: 1,
+            notes: "Per-IP throttle for /api/mcp/* (remote MCP clients)",
+          },
         ] satisfies CostLine[])
       : ([
           {
@@ -155,9 +163,10 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       notes: "~5 GB storage + low egress; growth roughly $0.02/GB",
     },
     {
-      name: "Secret Manager (5 secrets)",
-      monthlyUsd: 0,
-      notes: "Free tier",
+      name: "Secret Manager (runtime secrets)",
+      monthlyUsd: 0.2,
+      notes:
+        "6 active versions free, then ~$0.06 each; the Google sign-in client (#914) and the remote-MCP seal key (#806)",
     },
     {
       name: "BigQuery edge log sink",

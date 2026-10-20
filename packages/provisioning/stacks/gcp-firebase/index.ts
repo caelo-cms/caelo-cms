@@ -46,9 +46,11 @@ import {
   type CloudRunSlug,
   databaseUrls,
   defaultStagingHost,
+  GATEWAY_TIMEOUT_SECONDS,
   gatewayEnvContract,
   type RuntimeSecret,
   runtimeSecretBindings,
+  secretFileVolumesTemplate,
 } from "../../dist/stack-contract.js";
 
 const cfg = new pulumi.Config();
@@ -224,6 +226,11 @@ const runtimeSecretIds: Record<RuntimeSecret, pulumi.Input<string>> = {
   "tool-approval-secret": gcpSecretId(env, "tool-approval-secret"),
   "staging-gate-secret": gcpSecretId(env, "staging-gate-secret"),
   "public-role-password": gcpSecretId(env, "public-role-password"),
+  // #914 / #806 — the Owner-set Google sign-in client (a placeholder until
+  // then; IAP login, IAP programmatic access and the remote-MCP broker) and
+  // the broker's seal key, both CLI-generated.
+  "operator-oauth-client": gcpSecretId(env, "operator-oauth-client"),
+  "mcp-oauth-seal-key": gcpSecretId(env, "mcp-oauth-seal-key"),
 };
 
 // #613 — public_role's own password (CLI-generated, stack-contract.ts
@@ -375,6 +382,20 @@ for (const binding of runtimeSecretBindings()) {
     ),
   );
 }
+
+// #914 — the Owner's Google sign-in setup (Settings → Google sign-in) stores
+// the install's Google OAuth client in this one secret. Add-version only: the
+// admin can replace the client the gateway and the operator-access job read, never read it back or touch any
+// other secret (stack-contract.ts GCP_COMMON says why).
+new gcp.secretmanager.SecretIamMember(
+  `${namePrefix}-admin-operator-oauth-client-version-adder`,
+  {
+    secretId: runtimeSecretIds["operator-oauth-client"],
+    role: "roles/secretmanager.secretVersionAdder",
+    member: pulumi.interpolate`serviceAccount:${runSa.email}`,
+  },
+  opts,
+);
 
 new gcp.storage.BucketIAMMember(
   `${namePrefix}-media-rw`,
@@ -551,16 +572,23 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
         },
         timeout: args.timeout,
         ...(args.mediaVolume
-          ? {
-              executionEnvironment: args.mediaVolume.executionEnvironment,
-              volumes: [...args.mediaVolume.volumes],
-            }
+          ? { executionEnvironment: args.mediaVolume.executionEnvironment }
           : {}),
+        // The admin's media bucket, plus each service's secret files (#806:
+        // the gateway's remote-MCP OAuth client) — both from the contract
+        // upgrade applies to existing installs.
+        volumes: [
+          ...(args.mediaVolume?.volumes ?? []),
+          ...secretFileVolumesTemplate(args.serviceName, env).volumes,
+        ],
         containers: [
           {
             image: imageRef(args.serviceName),
             envs: [...args.contractEnv],
-            ...(args.mediaVolume ? { volumeMounts: [...args.mediaVolume.volumeMounts] } : {}),
+            volumeMounts: [
+              ...(args.mediaVolume?.volumeMounts ?? []),
+              ...secretFileVolumesTemplate(args.serviceName, env).volumeMounts,
+            ],
             resources: { limits: { cpu: "1", memory: args.memory } },
           },
         ],
@@ -613,7 +641,11 @@ const gatewaySvc = cloudRunService({
   minInstances: gatewayMinInstances,
   maxInstances: 100,
   memory: "512Mi",
-  timeout: "60s",
+  // #806 — remote MCP: chat turns stream through the gateway for minutes
+  // (stack-contract.ts GATEWAY_TIMEOUT_SECONDS). The Firebase Hosting
+  // rewrite keeps its own 60 s cut; MCP clients use the gateway's Cloud Run
+  // URL directly.
+  timeout: `${GATEWAY_TIMEOUT_SECONDS}s`,
   // #650 — all traffic: the gateway also serves staging.<domain> through
   // a Cloud Run domain mapping (`cms-provision staging-domain enable`),
   // and Cloud Run refuses domain-mapped requests under an internal-only

@@ -34,7 +34,7 @@ describe("server routing (#806)", () => {
     writeFileSync(file, CONFIGURED_FILE);
     Object.assign(process.env, {
       ...BASE_ENV,
-      CAELO_MCP_OAUTH_CLIENT_FILE: file,
+      CAELO_OPERATOR_OAUTH_CLIENT_FILE: file,
       [TRUSTED_PROXY_HOPS_ENV]: "0",
     });
     const meta = await handleRequest(

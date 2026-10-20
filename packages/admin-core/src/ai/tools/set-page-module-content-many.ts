@@ -10,6 +10,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { pageModuleContentSetManySchema } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setPageModuleContentManyTool: ToolDefinitionWithHandler<
@@ -21,7 +22,8 @@ export const setPageModuleContentManyTool: ToolDefinitionWithHandler<
     "Each item is the exact `set_page_module_content` shape: `{pageId, blockName, position, contentValues}` with `contentValues` keyed by the module's declared field names; each fully replaces that placement's values. Items may span multiple pages. " +
     "Same UNSYNCED-only contract as the singular tool: a SYNCED placement in the batch aborts it with the fork/commit guidance — fork_placement_content that placement (or set_content_instance_values deliberately) and resend. " +
     "**When NOT to use:** when the page and its modules don't exist yet, `build_page` places modules WITH their content in one call — never build a page as add_module + set_page_module_content_many when one build_page call does both. For one placement the singular tool is fine. " +
-    'Typical call: `{items: [{pageId: "…", blockName: "content", position: 0, contentValues: {hero_title: "…"}}, {pageId: "…", blockName: "content", position: 1, contentValues: {body: "…"}}]}`.',
+    'Typical call: `{items: [{pageId: "…", blockName: "content", position: 0, contentValues: {hero_title: "…"}}, {pageId: "…", blockName: "content", position: 1, contentValues: {body: "…"}}]}`.' +
+    INTERNAL_LINK_CONTRACT,
   schema: pageModuleContentSetManySchema,
   inputSchema: {
     type: "object",

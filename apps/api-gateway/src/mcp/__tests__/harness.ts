@@ -21,7 +21,7 @@ export const ADMIN = "https://admin.example.com";
 export const GOOGLE_CLIENT_ID = "1234-abc.apps.googleusercontent.com";
 export const GOOGLE_CLIENT_SECRET = "GOCSPX-test-secret";
 export const SEAL_KEY_B64 = randomBytes(32).toString("base64");
-export const CLIENT_FILE = "/secrets/mcp-oauth-client/latest";
+export const CLIENT_FILE = "/secrets/operator-oauth-client/latest";
 export const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 /** The client address every harness request comes from (unless a test says otherwise). */
 export const CLIENT_IP = "198.51.100.7";
@@ -30,7 +30,7 @@ export const BASE_ENV: Record<string, string> = {
   CAELO_MCP_PUBLIC_URL: PUBLIC,
   CAELO_ADMIN_URL: ADMIN,
   CAELO_MCP_OAUTH_SEAL_KEY: SEAL_KEY_B64,
-  CAELO_MCP_OAUTH_CLIENT_FILE: CLIENT_FILE,
+  CAELO_OPERATOR_OAUTH_CLIENT_FILE: CLIENT_FILE,
 };
 
 export const CONFIGURED_FILE = JSON.stringify({

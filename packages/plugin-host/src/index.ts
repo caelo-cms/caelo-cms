@@ -111,6 +111,11 @@ export {
 } from "./image-ledger.js";
 export { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
 export {
+  hasLinkResolveContributors,
+  type ResolvedLinkVariants,
+  resolveLinkVariants,
+} from "./link-resolve.js";
+export {
   activateApprovedExternalPlugin,
   type BootstrapOpts,
   bootstrap,

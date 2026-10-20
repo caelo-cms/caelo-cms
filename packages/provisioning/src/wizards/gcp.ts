@@ -102,6 +102,7 @@ import {
 } from "../provisioner-identity.js";
 import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
+import { ensureRemoteMcpEdge, ensureRemoteMcpIdentityEnv } from "../remote-mcp.js";
 import type { RunMode } from "../run-mode.js";
 import { selfCommand } from "../self-command.js";
 import { ABSENT_DEFAULT_FIREWALL_RULES } from "../stack-contract.js";
@@ -116,6 +117,7 @@ import {
   resolveBackend,
 } from "../state-backend.js";
 import { acquireStateLock, GcsStateStore } from "../state-store.js";
+import { resolveGcpResourceName } from "../upgrade/gcp-lookup.js";
 import {
   releaseVersionForDigest,
   resolveOpsImageRef,
@@ -477,11 +479,18 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     keepSigner ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`] : [],
   );
 
+  // === 11.6. Remote MCP (#806): LB rules (gcp) + the identity env ===
+  // After `pulumi up` on every pass: the identity env names services Pulumi
+  // generated, so the stack cannot declare it, and an `up` that changed a
+  // service's template dropped it (remote-mcp.ts).
+  const remoteMcpReady = await stepRemoteMcp(projectId, region, provider, domain);
+
   // A fresh install ran every converge step above, so it is at this CLI's
   // infrastructure contract — recorded only when the upgrader and the
-  // converge job are in place (the steps contract bumps 2 and 8 added).
-  // With the release version, the admin can install the next update itself.
-  if (upgraderReady && convergeReady) {
+  // converge job are in place (the steps contract bumps 2 and 9 added) and
+  // remote MCP's steps (#806, bump 10) succeeded. With the release version,
+  // the admin can install the next update itself.
+  if (upgraderReady && convergeReady && remoteMcpReady) {
     const version = releaseVersion;
     recordImageDigests(installId, imageDigests, version);
     recordInfraContractVersion(installId, INFRA_CONTRACT_VERSION);
@@ -1122,6 +1131,67 @@ async function stepOperatorAccessSync(
     process.exit(1);
   }
   s.stop(green(`Operator-access sync job ready (${r.done.length} steps)`));
+}
+
+/**
+ * #806 — the CLI's part of remote MCP (remote-mcp.ts): on `gcp` the load
+ * balancer's discovery routes and Cloud Armor rule, on both providers the
+ * env vars naming the admin URL, the broker's public URL and the IAP
+ * audience. Remote MCP stays off until the Owner sets it up under Settings →
+ * MCP, so a failure does not stop the install: it warns, and the next pass
+ * or `upgrade` retries. Idempotent.
+ *
+ * @returns whether every part is in place
+ */
+async function stepRemoteMcp(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+  domain: string,
+): Promise<boolean> {
+  const s = spinner();
+  s.start(
+    "Preparing remote MCP (ChatGPT / claude.ai connectors; off until the Owner enables it)...",
+  );
+  const name = (slug: "admin" | "gateway") =>
+    resolveGcpResourceName(
+      gcloud,
+      "run-service",
+      `caelo-${GCP_STACK_ENV}-${slug}`,
+      projectId,
+      region,
+    );
+  const [admin, gateway] = [await name("admin"), await name("gateway")];
+  const failed = (error: string) => {
+    s.stop(yellow(`Remote MCP not prepared: ${error}`));
+    log.warn(
+      `The install works; Settings → Google sign-in and Settings → MCP report this install as not prepared until ${bold(selfCommand("upgrade"))} prepares it.`,
+    );
+    return false;
+  };
+  if (!admin || !gateway) return failed("the admin or gateway Cloud Run service was not found");
+  const edge = await ensureRemoteMcpEdge({ provider, projectId, env: GCP_STACK_ENV, domain });
+  if (!edge.ok) return failed(edge.error);
+  const env = await ensureRemoteMcpIdentityEnv({
+    provider,
+    projectId,
+    region,
+    env: GCP_STACK_ENV,
+    domain,
+    services: { admin, gateway },
+  });
+  if (!env.ok) return failed(env.error);
+  s.stop(green(`Remote MCP and Google sign-in prepared (${env.identity.mcpPublicUrl})`));
+  if (env.orgDomainError) {
+    // #914 — without the organisation's domain the admin cannot tell who
+    // IAP's built-in sign-in admits, so it refuses new users until the
+    // Owner sets up Google sign-in. Say so now rather than at the first
+    // invite.
+    log.warn(
+      `Could not read this project's Google organisation (${env.orgDomainError}). Set up Google sign-in under Settings → Google sign-in before adding users, or re-run ${bold(selfCommand("upgrade"))} as an account with the Organization Viewer role.`,
+    );
+  }
+  return true;
 }
 
 /**

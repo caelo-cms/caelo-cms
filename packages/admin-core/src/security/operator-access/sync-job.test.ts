@@ -27,6 +27,7 @@ const config: SyncJobConfig = {
   staticMembers: "user:owner@x.com",
   databaseHost: "10.0.0.3",
   mcpSigners: "",
+  oauthClientSecret: "projects/p/secrets/caelo-production-operator-oauth-client",
 };
 
 /** Fake IAP + IAM policy endpoints holding real state. */
@@ -35,6 +36,10 @@ function fakeGoogle(policies: Record<string, unknown>, failSetFor?: string) {
   const deps: GoogleDeps = {
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes(":iapSettings")) {
+        // #914 — oauthSettings; empty settings, accepted as sent.
+        return new Response(JSON.stringify({}), { status: 200 });
+      }
       const base = url.replace(/:(get|set)IamPolicy.*$/, "");
       if (url.includes(":getIamPolicy")) {
         return new Response(JSON.stringify(policies[base] ?? {}), { status: 200 });
@@ -82,7 +87,13 @@ describe("runSync", () => {
       },
     });
     const { logs, log } = collect();
-    const r = await runSync(config, { google: deps, readEmails: async () => ["anna@x.com"], log });
+    const r = await runSync(config, {
+      google: deps,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
+      readEmails: async () => ["anna@x.com"],
+      log,
+    });
     expect(r.ok).toBe(true);
     expect(membersOf(policies[IAP], IAP_ACCESSOR_ROLE)).toEqual([
       MCP,
@@ -109,7 +120,13 @@ describe("runSync", () => {
     const { log } = collect();
     const r = await runSync(
       { ...config, mcpSigners: UPGRADER },
-      { google: deps, readEmails: async () => [], log },
+      {
+        google: deps,
+        readOAuthClientId: async () => null,
+        readOAuthClientFile: async () => ({}),
+        readEmails: async () => [],
+        log,
+      },
     );
     expect(r.ok).toBe(true);
     expect(membersOf(policies[SA], TOKEN_CREATOR_ROLE)).toEqual(["user:owner@x.com", UPGRADER]);
@@ -122,7 +139,13 @@ describe("runSync", () => {
       [SA]: { bindings: [{ role: TOKEN_CREATOR_ROLE, members: ["user:owner@x.com"] }] },
     });
     const { log } = collect();
-    const r = await runSync(config, { google: deps, readEmails: async () => [], log });
+    const r = await runSync(config, {
+      google: deps,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
+      readEmails: async () => [],
+      log,
+    });
     expect(r.ok).toBe(true);
     expect(sets).toEqual([]);
   });
@@ -132,7 +155,13 @@ describe("runSync", () => {
     const { logs, log } = collect();
     const r = await runSync(
       { ...config, staticMembers: "user:owner@x.com,allUsers,domain:x.com" },
-      { google: deps, readEmails: async () => ["not an email", "*@x.com"], log },
+      {
+        google: deps,
+        readOAuthClientId: async () => null,
+        readOAuthClientFile: async () => ({}),
+        readEmails: async () => ["not an email", "*@x.com"],
+        log,
+      },
     );
     expect(r.ok).toBe(false);
     expect(membersOf(policies[IAP], IAP_ACCESSOR_ROLE)).toEqual([MCP, "user:owner@x.com"]);
@@ -145,7 +174,13 @@ describe("runSync", () => {
   it("a failed write fails the run but still reconciles the other binding", async () => {
     const { deps, policies } = fakeGoogle({}, IAP);
     const { logs, log } = collect();
-    const r = await runSync(config, { google: deps, readEmails: async () => ["anna@x.com"], log });
+    const r = await runSync(config, {
+      google: deps,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
+      readEmails: async () => ["anna@x.com"],
+      log,
+    });
     expect(r.ok).toBe(false);
     expect(logs.some((l) => l.severity === "ERROR" && String(l.message).includes("HTTP 403"))).toBe(
       true,
@@ -161,6 +196,8 @@ describe("runSync", () => {
     const { log } = collect();
     const r = await runSync(config, {
       google: deps,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
       readEmails: async () => {
         throw new Error("permission denied for table users");
       },
@@ -174,7 +211,7 @@ describe("runSync", () => {
 describe("configFromEnv", () => {
   it("names every missing variable", () => {
     expect(() => configFromEnv({ CAELO_MCP_IAP_SERVICE_ACCOUNT: "x" })).toThrow(
-      "missing env CAELO_OPERATOR_ACCESS_IAP_WEB, CAELO_OPERATOR_ACCESS_STATIC_MEMBERS, CAELO_OPERATOR_ACCESS_DB_HOST",
+      "missing env CAELO_OPERATOR_ACCESS_IAP_WEB, CAELO_OPERATOR_ACCESS_STATIC_MEMBERS, CAELO_OPERATOR_ACCESS_DB_HOST, CAELO_OPERATOR_OAUTH_CLIENT_SECRET",
     );
   });
 });

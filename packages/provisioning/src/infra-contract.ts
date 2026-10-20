@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 9;
+export const INFRA_CONTRACT_VERSION = 11;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -68,6 +68,23 @@ export const INFRA_CONTRACT_VERSION = 9;
 //       caelo-provisioner reaches 9 without the job: there is nothing it
 //       could run as, so its admin keeps routing cloud-setup releases to
 //       the terminal (upgrade/converge.ts, update-route.ts).
+//  10 — #806: remote MCP. Two CLI-generated secrets (the Google OAuth client
+//       placeholder, the broker's seal key) the gateway's new revision
+//       references — a secret volume and a secret env var Cloud Run refuses
+//       to deploy without — plus the gateway SA's accessor and the admin
+//       SA's version-adder bindings on them, the operator-access role's
+//       IAP-settings permissions, and on `gcp` the URL-map routes and the
+//       Cloud Armor rule. The in-cloud upgrader can create none of these.
+//  11 — #914: the remote-MCP OAuth client becomes the install's Google
+//       sign-in client (IAP browser login + programmatic access + broker).
+//       Its secret is renamed (`operator-oauth-client`, CLI-generated; the
+//       old `mcp-oauth-client` is deleted after the roll), so the gateway's
+//       secret volume and env var, the admin's store env var and both
+//       services' bindings on it move; the operator-access job's SA gets
+//       `secretAccessor` on it (IAP needs the client secret) and the job a
+//       new env var; the admin gets CAELO_ADMIN_URL and the project's
+//       organisation domain. A new secret, new IAM and a job redeploy —
+//       nothing the in-cloud upgrader may do.
 
 /**
  * What each contract version adds, in operator terms — the upgrader's
@@ -84,6 +101,8 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   7: "the gateway's trusted proxy hop count, CAELO_TRUSTED_PROXY_HOPS (#845)",
   8: "the quality-audit job, its service account, results bucket and grants (#875)",
   9: "the converge job that installs cloud-setup changes from Settings → Updates, and a narrower Cloud Run role for the upgrader (#819)",
+  10: "remote MCP: the OAuth client and seal-key secrets, their IAM, the gateway's secret file and timeout, IAP programmatic-client sync and the load-balancer rules (#806)",
+  11: "Google sign-in: the renamed sign-in client secret, its IAM and mounts, the operator-access job's read access to it, and the admin's URL and organisation domain (#914)",
 };
 
 /**
