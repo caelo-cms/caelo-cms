@@ -10,6 +10,10 @@
  * so a link's label + target or an image + its alt text land in one call
  * and one snapshot. A single text edit is the one-element case.
  *
+ * #918 — a synced (shared) placement needs `scope`: "everywhere" writes
+ * the shared instance (every page that shows it changes), "here" forks
+ * the placement first (`placement.fork_content`) and writes the copy.
+ *
  * The placement is resolved through the caller's branch-overlaid layout,
  * the same view the preview renders (so the text the operator clicked is
  * the text that changes). Read + patch + write run in one transaction
@@ -27,7 +31,7 @@ import {
   loadModuleStateWithBranchOverlay,
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
-import { setContentInstanceValuesOp } from "./content-instances.js";
+import { forkPlacementContentOp, setContentInstanceValuesOp } from "./content-instances.js";
 
 const OP = "page_module_content.patch_fields";
 
@@ -41,13 +45,28 @@ function escapeFieldText(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/**
+ * A link target or image address as the operator typed it. Stored as
+ * typed (internal paths become page references at the write boundary
+ * once that canonicaliser runs, epic #724); refused when it could break
+ * out of the attribute it lands in.
+ */
+const TARGET = /^(\/|#|https?:\/\/|mailto:|tel:|caelo:)\S*$/;
+const IMAGE = /^(\/|https?:\/\/|caelo:media\/)\S*$/;
+const ATTRIBUTE_BREAKOUT = /["'<>\s]/;
+
 const editSchema = z
   .object({
     /** Field name as the module declares it. */
     field: z.string().min(1).max(200),
-    /** Item index for a `text-list` item or a `link-list` label. */
+    /** Item index for a `text-list` item or a `link-list` entry. */
     index: z.number().int().nonnegative().optional(),
-    /** Plain text as the operator typed it; escaped before storing. */
+    /** Which part of a `link-list` entry: its text (default) or its target. */
+    part: z.enum(["label", "href"]).optional(),
+    /**
+     * The new value as the operator typed it: plain text for text, a URL /
+     * path for `url`, `image` and link targets.
+     */
     text: z.string().max(10_000),
   })
   .strict();
@@ -55,15 +74,29 @@ type Edit = z.infer<typeof editSchema>;
 
 type Patch = { ok: true; value: unknown } | { ok: false; message: string };
 
+function address(value: string, pattern: RegExp, what: string): Patch {
+  const v = value.trim();
+  if (!pattern.test(v) || ATTRIBUTE_BREAKOUT.test(v)) {
+    return {
+      ok: false,
+      message: `"${value}" is not a valid ${what} (use a path like /pricing or a full https:// address)`,
+    };
+  }
+  return { ok: true, value: v };
+}
+
 /** The field's new value with the edit applied, or a reason it cannot be. */
 function applyEdit(kind: string, current: unknown, edit: Edit): Patch {
-  const text = escapeFieldText(edit.text);
-  if (kind === "text") {
-    if (edit.index !== undefined) return { ok: false, message: "a text field takes no index" };
-    return { ok: true, value: text };
+  if (kind === "text" || kind === "url" || kind === "image") {
+    if (edit.index !== undefined || edit.part !== undefined) {
+      return { ok: false, message: `a ${kind} field takes no index or part` };
+    }
+    if (kind === "url") return address(edit.text, TARGET, "link target");
+    if (kind === "image") return address(edit.text, IMAGE, "image address");
+    return { ok: true, value: escapeFieldText(edit.text) };
   }
   if (kind !== "text-list" && kind !== "link-list") {
-    return { ok: false, message: `a ${kind} field cannot be edited as plain text` };
+    return { ok: false, message: `a ${kind} field cannot be edited here` };
   }
   if (edit.index === undefined) {
     return { ok: false, message: `a ${kind} field needs the item index` };
@@ -77,13 +110,20 @@ function applyEdit(kind: string, current: unknown, edit: Edit): Patch {
   }
   const next = [...items];
   if (kind === "text-list") {
-    next[edit.index] = text;
+    if (edit.part !== undefined) return { ok: false, message: "a text-list item has no part" };
+    next[edit.index] = escapeFieldText(edit.text);
+    return { ok: true, value: next };
+  }
+  const item = items[edit.index];
+  if (typeof item !== "object" || item === null) {
+    return { ok: false, message: `item ${edit.index} is not a link` };
+  }
+  if (edit.part === "href") {
+    const target = address(edit.text, TARGET, "link target");
+    if (!target.ok) return target;
+    next[edit.index] = { ...item, href: target.value };
   } else {
-    const item = items[edit.index];
-    if (typeof item !== "object" || item === null) {
-      return { ok: false, message: `item ${edit.index} is not a link` };
-    }
-    next[edit.index] = { ...item, label: text };
+    next[edit.index] = { ...item, label: escapeFieldText(edit.text) };
   }
   return { ok: true, value: next };
 }
@@ -105,6 +145,12 @@ export const patchPageModuleFieldsOp = defineOperation({
       blockName: z.string().min(1),
       position: z.number().int().nonnegative(),
       edits: z.array(editSchema).min(1).max(20),
+      /**
+       * #918 — for a synced (shared) placement: change the shared content on
+       * every page that shows it, or detach this placement first and change
+       * it only here. Required for a synced placement, ignored otherwise.
+       */
+      scope: z.enum(["everywhere", "here"]).optional(),
     })
     .strict(),
   output: z.object({ contentInstanceId: z.string(), version: z.number().int().positive() }),
@@ -122,21 +168,30 @@ export const patchPageModuleFieldsOp = defineOperation({
         `This section is no longer on the page (no placement at ${input.blockName} #${input.position}). Reload the preview and try again.`,
       );
     }
+    let targetId = placement.contentInstanceId;
     if (placement.syncMode === "synced") {
-      return fail(
-        "This text is shared with other pages, so it is not edited in place. Ask the AI to change it everywhere or only on this page.",
-        {
-          tool: "fork_placement_content",
-          args: { pageId: input.pageId, blockName: input.blockName, position: input.position },
-          reason:
-            "detach this placement so the edit stays on this page, or call set_content_instance_values to change it everywhere",
-        },
-      );
+      if (input.scope === undefined) {
+        return fail(
+          'This content is shared with other pages. Say whether to change it everywhere (scope "everywhere") or only on this page (scope "here").',
+        );
+      }
+      if (input.scope === "here") {
+        const forked = await forkPlacementContentOp.handler(
+          ctx,
+          { pageId: input.pageId, blockName: input.blockName, position: input.position },
+          tx,
+        );
+        if (!forked.ok) {
+          const inner = forked.error as { message?: string };
+          return fail(inner.message ?? "detaching this section from the shared content failed");
+        }
+        targetId = forked.value.contentInstanceId;
+      }
     }
 
     const instance = await loadContentInstanceStateWithBranchOverlay(
       tx,
-      placement.contentInstanceId,
+      targetId,
       ctx.chatBranchId,
     );
     const module = instance
@@ -164,7 +219,7 @@ export const patchPageModuleFieldsOp = defineOperation({
 
     const written = await setContentInstanceValuesOp.handler(
       ctx,
-      { id: placement.contentInstanceId, values, expectedVersion: instance.version },
+      { id: targetId, values, expectedVersion: instance.version },
       tx,
     );
     if (!written.ok) {
@@ -178,9 +233,9 @@ export const patchPageModuleFieldsOp = defineOperation({
       operation: OP,
       input,
       succeeded: true,
-      entityId: placement.contentInstanceId,
-      resultSummary: `fields=${input.edits.map((e) => (e.index !== undefined ? `${e.field}[${e.index}]` : e.field)).join(",")}`,
+      entityId: targetId,
+      resultSummary: `scope=${placement.syncMode === "synced" ? input.scope : "own"} fields=${input.edits.map((e) => (e.index !== undefined ? `${e.field}[${e.index}]` : e.field)).join(",")}`,
     });
-    return ok({ contentInstanceId: placement.contentInstanceId, version: written.value.version });
+    return ok({ contentInstanceId: targetId, version: written.value.version });
   },
 });

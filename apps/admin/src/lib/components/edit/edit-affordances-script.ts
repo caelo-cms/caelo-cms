@@ -29,7 +29,10 @@ export const EDIT_UI_CSS =
   ".ask{display:flex;gap:4px;padding:4px;}" +
   "input{all:unset;box-sizing:border-box;flex:1;min-width:0;padding:6px 8px;border:1px solid #d4d4d8;border-radius:5px;background:#fff;color:#1a1a1a;font:inherit;}" +
   `input:focus{border-color:${EDIT_OVERLAY_COLOR};}` +
-  `.ask button{width:auto;background:${EDIT_OVERLAY_COLOR};color:#fff;}`;
+  `.ask button{width:auto;background:${EDIT_OVERLAY_COLOR};color:#fff;}` +
+  ".field{display:block;padding:4px 8px;font-size:12px;color:#52525b;}" +
+  ".field span{display:block;margin-bottom:2px;}" +
+  ".field input{display:block;width:100%;color:#1a1a1a;}";
 
 /**
  * Limits mirror `chatSendMessageInput.chips` in `@caelo-cms/shared` so a
@@ -61,10 +64,11 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   var UI_CSS = ${JSON.stringify(EDIT_UI_CSS)};
   var LIMITS = ${JSON.stringify(REFERENCE_LIMITS)};
   var ui = null;
-  // mode: idle | menu | toolbar | ask | edit (#917, in-place text edit).
+  // mode: idle | menu | toolbar | ask | edit (#917, in-place text edit) |
+  // scope (#918, shared content: change everywhere or only here?).
   // Selection changes only drive the toolbar; the menu, the Ask field and
   // an edit stay until closed explicitly.
-  var state = { mode: "idle", outlined: null };
+  var state = { mode: "idle", outlined: null, onClose: null };
 
   function clip(s, n) {
     s = String(s || "").replace(/\\s+/g, " ").trim();
@@ -188,8 +192,13 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   }
 
   function close() {
+    // A pending choice (shared content: where does the change apply?)
+    // that is closed without an answer is a cancel.
+    var onClose = state.onClose;
+    state.onClose = null;
     state.mode = "idle";
     state.outlined = null;
+    if (onClose) onClose();
     if (!ui) return;
     ui.panel.hidden = true;
     ui.panel.textContent = "";
@@ -307,9 +316,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     input.focus();
   }
 
-  var SHARED_TEXT = "Used on other pages too \u2014 ask the AI to change it everywhere or only here";
-
-  function openMenu(ref, moduleEl, x, y, f) {
+  function openMenu(ref, moduleEl, x, y, f, t) {
     var u = ensureUi();
     if (!u) return;
     state.mode = "menu";
@@ -321,7 +328,22 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     u.panel.appendChild(caption(refCaption(ref)));
     if (f) {
       u.panel.appendChild(
-        button("Edit text", "caelo-menu-edit", function () { startEdit(f); }, f.synced ? SHARED_TEXT : ""),
+        button("Edit text", "caelo-menu-edit", function () { startEdit(f); }),
+      );
+    }
+    var link = t ? linkAt(t, moduleEl) : null;
+    if (link) {
+      u.panel.appendChild(
+        button("Edit link\u2026", "caelo-menu-edit-link", function () { openLinkEditor(link, x, y); }),
+      );
+    }
+    var image = imageAt(t);
+    if (image) {
+      u.panel.appendChild(
+        button("Replace image\u2026", "caelo-menu-replace-image", function () {
+          close();
+          requestImageReplace(image, moduleEl, x, y);
+        }),
       );
     }
     u.panel.appendChild(
@@ -361,7 +383,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     u.panel.textContent = "";
     u.panel.setAttribute("role", "toolbar");
     u.panel.setAttribute("data-testid", "caelo-selection-toolbar");
-    if (f && !f.synced) {
+    if (f) {
       u.panel.appendChild(button("Edit", "caelo-toolbar-edit", function () { startEdit(f); }));
     }
     u.panel.appendChild(
@@ -379,7 +401,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   }
 
   function refreshToolbar() {
-    if (state.mode === "menu" || state.mode === "ask" || state.mode === "edit") return;
+    if (state.mode !== "idle" && state.mode !== "toolbar") return;
     var s = currentSelection();
     if (s) openToolbar(s);
     else if (state.mode === "toolbar") close();
@@ -407,7 +429,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
         inSelection ? buildRef(s.el, moduleEl, s.text) : buildRef(t, moduleEl, ""),
         f,
       );
-      openMenu(ref, moduleEl, ev.clientX, ev.clientY, f);
+      openMenu(ref, moduleEl, ev.clientX, ev.clientY, f, t);
     },
     true,
   );

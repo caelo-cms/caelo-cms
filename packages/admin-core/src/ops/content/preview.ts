@@ -875,6 +875,25 @@ export const renderPagePreviewOp = defineOperation({
       return id;
     }
 
+    // #918 — how many pages show each synced instance, so the editor can
+    // say "this text is on N pages" before an in-place edit.
+    const sharedPageCounts = new Map<string, number>();
+    const syncedIds = [...placementBindings.values()]
+      .filter((b) => b.synced && !b.contentInstanceId.startsWith("variant:"))
+      .map((b) => b.contentInstanceId);
+    if (input.editMarkers === true && syncedIds.length > 0) {
+      const counts = (await tx.execute(sql`
+        SELECT content_instance_id::text AS id, count(DISTINCT page_id)::int AS pages
+        FROM page_modules
+        WHERE content_instance_id IN (${sql.join(
+          [...new Set(syncedIds)].map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})
+        GROUP BY content_instance_id
+      `)) as unknown as { id: string; pages: number }[];
+      for (const r of counts) sharedPageCounts.set(r.id, Number(r.pages));
+    }
+
     const nestedCssJsByModuleId = new Map<string, NestedModuleResource>();
     // Epic #724 — broken internal references of the page's modules; the
     // layout modules' and nav menus' join from the composer's failures.
@@ -896,7 +915,15 @@ export const renderPagePreviewOp = defineOperation({
         pluginLists,
         linkResolver,
       );
-      m.html = markers ? finalizeEditMarkers(result.html, key, binding.synced) : result.html;
+      m.html = markers
+        ? finalizeEditMarkers(
+            result.html,
+            key,
+            // A synced placement this chat created is not in live
+            // page_modules yet: then this page is the only one showing it.
+            binding.synced ? (sharedPageCounts.get(binding.contentInstanceId) ?? 1) : 0,
+          )
+        : result.html;
       pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
       // CSS/JS dedup: emit CSS/JS for every module the recursion touched
       // (in addition to this top-level module). The existing composer

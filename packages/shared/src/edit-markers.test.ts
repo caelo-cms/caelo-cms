@@ -11,11 +11,14 @@ const FIELDS = [
   { name: "photo", kind: "image" },
 ] as const;
 
-function render(html: string, values: Record<string, unknown>, synced = false): string {
+function render(html: string, values: Record<string, unknown>, sharedPages = 0): string {
   const wrapped = wrapEditableValues(values, FIELDS);
   const rendered = renderTemplate({ html, fields: [...FIELDS], contentValues: wrapped }).html;
-  return finalizeEditMarkers(rendered, "content#2", synced);
+  return finalizeEditMarkers(rendered, "content#2", sharedPages);
 }
+
+const marked = (fields: string, shared = 0) =>
+  ` data-caelo-fields="${fields}" data-caelo-placement="content%232" data-caelo-shared="${shared}"`;
 
 const open = (f: string, s = 0) => `<!--caelo:f p=content%232 s=${s} f=${f}-->`;
 const close = "<!--/caelo:f-->";
@@ -27,8 +30,8 @@ describe("edit markers (#917)", () => {
     );
   });
 
-  it("flags a synced placement", () => {
-    expect(render("<h1>{{title}}</h1>", { title: "Hi" }, true)).toContain(open("title", 1));
+  it("carries how many pages share a synced placement", () => {
+    expect(render("<h1>{{title}}</h1>", { title: "Hi" }, 4)).toContain(open("title", 4));
   });
 
   it("marks text-list items and link-list labels with their index", () => {
@@ -40,18 +43,40 @@ describe("edit markers (#917)", () => {
       },
     );
     expect(html).toContain(`<li>${open("tags.1")}b${close}</li>`);
-    expect(html).toContain(`<a href="/docs">${open("links.0.label")}Docs${close}</a>`);
+    expect(html).toContain(
+      `<a href="/docs"${marked("href=links.0.href")}>${open("links.0.label")}Docs${close}</a>`,
+    );
   });
 
-  it("leaves attributes, scripts, styles and titles byte-identical", () => {
+  it("leaves other attributes, scripts, styles and titles byte-identical", () => {
     const html = render(
-      '<img alt="{{title}}" data-x=\'{{title}}\'><script>var t = "{{title}}";</script><style>/* {{title}} */</style><title>{{title}}</title><!-- {{title}} -->',
+      '<div data-x=\'{{title}}\' title="{{title}}"></div><script>var t = "{{title}}";</script><style>/* {{title}} */</style><title>{{title}}</title><!-- {{title}} -->',
       { title: "Hi > there" },
     );
     expect(html).toBe(
-      '<img alt="Hi > there" data-x=\'Hi > there\'><script>var t = "Hi > there";</script><style>/* Hi > there */</style><title>Hi > there</title><!-- Hi > there -->',
+      '<div data-x=\'Hi > there\' title="Hi > there"></div><script>var t = "Hi > there";</script><style>/* Hi > there */</style><title>Hi > there</title><!-- Hi > there -->',
     );
     expect(html).not.toMatch(/[\uE000-\uE002]/);
+  });
+
+  it("marks link targets, images and alt text on their tag (#918)", () => {
+    const html = render(
+      '{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}<img src="{{photo}}" alt="{{title}}"/>',
+      { links: [{ label: "Docs", href: "/docs" }], photo: "/m/cup.webp", title: "A cup" },
+      2,
+    );
+    expect(html).toContain(
+      `<a href="/docs"${marked("href=links.0.href", 2)}>${open("links.0.label", 2)}Docs${close}</a>`,
+    );
+    expect(html).toContain(
+      `<img src="/m/cup.webp" alt="A cup"${marked("src=photo alt=title", 2)}/>`,
+    );
+  });
+
+  it("does not mark an attribute assembled from several parts", () => {
+    expect(render('<a href="/tags/{{title}}">x</a>', { title: "cups" })).toBe(
+      '<a href="/tags/cups">x</a>',
+    );
   });
 
   it("does not mark values that carry markup, empty values, or non-text kinds", () => {
@@ -60,7 +85,7 @@ describe("edit markers (#917)", () => {
       tags: [" "],
     });
     expect(html).toBe("<h1><b>Bold</b></h1><p> </p>");
-    expect(wrapEditableValues({ photo: "x.png" }, FIELDS)).toEqual({ photo: "x.png" });
+    expect(wrapEditableValues({ n: 3 }, [{ name: "n", kind: "number" }])).toEqual({ n: 3 });
   });
 
   it("keeps conditional sections working on wrapped values", () => {
@@ -74,13 +99,13 @@ describe("edit markers (#917)", () => {
     const out = finalizeEditMarkers(
       wrapEditableValues({ "a--b": "x" }, [{ name: "a--b", kind: "text" }])["a--b"] as string,
       "main--slot#0",
-      false,
+      0,
     );
     expect(out).toBe("<!--caelo:f p=main%2D%2Dslot%230 s=0 f=a%2D%2Db-->x<!--/caelo:f-->");
   });
 
   it("is a no-op on HTML without sentinels", () => {
     const html = "<h1>Plain</h1><!-- caelo:missing reason=x -->";
-    expect(finalizeEditMarkers(html, "content#0", false)).toBe(html);
+    expect(finalizeEditMarkers(html, "content#0", 0)).toBe(html);
   });
 });

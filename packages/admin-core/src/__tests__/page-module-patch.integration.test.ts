@@ -26,6 +26,7 @@ const TPL_SLUG = "i917-patch-tpl";
 const MOD_SLUG = "i917-patch-mod";
 const PAGE_SLUG = "i917-patch-page";
 const SHARED_PAGE_SLUG = "i917-patch-shared";
+const SHARED_TWIN_SLUG = "i918-patch-shared-twin";
 const SYSTEM_ACTOR = "00000000-0000-0000-0000-00000000ffff";
 const CHAT_BRANCH_ID = "33333333-3333-4333-8333-917917917917";
 
@@ -33,6 +34,8 @@ let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let pageId = "";
 let sharedPageId = "";
+let twinPageId = "";
+let sharedInstanceId = "";
 
 function ctx(branchId?: string): ExecutionContext {
   return {
@@ -48,7 +51,7 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      const pages = [PAGE_SLUG, SHARED_PAGE_SLUG];
+      const pages = [PAGE_SLUG, SHARED_PAGE_SLUG, SHARED_TWIN_SLUG];
       await tx`DELETE FROM page_layout_snapshots WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${sql(pages)})`;
       await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN ${sql(pages)})`;
       await tx`DELETE FROM pages WHERE slug IN ${sql(pages)}`;
@@ -102,17 +105,19 @@ beforeAll(async () => {
   const { moduleId } = await must<{ moduleId: string }>("modules.create", {
     slug: MOD_SLUG,
     displayName: "patch_fields mod",
-    html: '<section><h1>{{title}}</h1><ul>{{#tags}}<li>{{.}}</li>{{/tags}}</ul><nav>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav><img src="{{photo}}" alt="{{title}}"></section>',
+    html: '<section><h1>{{title}}</h1><ul>{{#tags}}<li>{{.}}</li>{{/tags}}</ul><nav>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav><img src="{{photo}}" alt="{{title}}"><a class="cta" href="{{cta}}">Go</a><b>{{count}}</b></section>',
     css: "",
     js: "",
     fields: [
       { name: "title", kind: "text", label: "Title" },
       { name: "tags", kind: "text-list", label: "Tags" },
       { name: "links", kind: "link-list", label: "Links" },
-      { name: "photo", kind: "url", label: "Photo" },
+      { name: "photo", kind: "image", label: "Photo" },
+      { name: "cta", kind: "url", label: "Button target" },
+      { name: "count", kind: "number", label: "Count" },
     ],
   });
-  for (const slug of [PAGE_SLUG, SHARED_PAGE_SLUG]) {
+  for (const slug of [PAGE_SLUG, SHARED_PAGE_SLUG, SHARED_TWIN_SLUG]) {
     const { pageId: id } = await must<{ pageId: string }>("pages.create", {
       slug,
       name: slug,
@@ -124,7 +129,8 @@ beforeAll(async () => {
       blocks: [{ blockName: "content", moduleIds: [moduleId] }],
     });
     if (slug === PAGE_SLUG) pageId = id;
-    else sharedPageId = id;
+    else if (slug === SHARED_PAGE_SLUG) sharedPageId = id;
+    else twinPageId = id;
   }
   await must("page_module_content.set", {
     pageId,
@@ -135,9 +141,11 @@ beforeAll(async () => {
       tags: ["one", "two"],
       links: [{ label: "Docs", href: "/docs" }],
       photo: "/p.png",
+      cta: "/start",
+      count: 3,
     },
   });
-  // A synced placement: bind the second page to a shared instance.
+  // Synced placements: two pages show the same shared instance.
   const { contentInstanceId } = await must<{ contentInstanceId: string }>(
     "content_instances.create",
     {
@@ -145,13 +153,16 @@ beforeAll(async () => {
       values: { title: "Shared" },
     },
   );
-  await must("placement.set_content", {
-    pageId: sharedPageId,
-    blockName: "content",
-    position: 0,
-    contentInstanceId,
-    syncMode: "synced",
-  });
+  sharedInstanceId = contentInstanceId;
+  for (const id of [sharedPageId, twinPageId]) {
+    await must("placement.set_content", {
+      pageId: id,
+      blockName: "content",
+      position: 0,
+      contentInstanceId,
+      syncMode: "synced",
+    });
+  }
 });
 
 afterAll(async () => {
@@ -202,12 +213,19 @@ describe("page_module_content.patch_fields (#917)", () => {
       expect(r.ok).toBe(false);
       if (!r.ok) expect((r.error as { message?: string }).message ?? "").toMatch(pattern);
     };
-    await refused({ field: "photo" }, /cannot be edited as plain text/);
+    await refused({ field: "count" }, /cannot be edited here/);
     await refused({ field: "tags", index: 9 }, /item 9 does not exist/);
     await refused({ field: "tags" }, /needs the item index/);
-    await refused({ field: "title", index: 0 }, /takes no index/);
+    await refused({ field: "title", index: 0 }, /takes no index or part/);
     await refused({ field: "nope" }, /no field "nope"/);
     await refused({ pageId: sharedPageId, field: "title" }, /shared with other pages/);
+    await refused({ field: "cta", text: "javascript:alert(1)" }, /not a valid link target/);
+    await refused({ field: "cta", text: '/x" onmouseover="alert(1)' }, /not a valid link target/);
+    await refused(
+      { field: "links", index: 0, part: "href", text: "no spaces allowed" },
+      /not a valid link target/,
+    );
+    await refused({ field: "photo", text: "mailto:a@b.c" }, /not a valid image address/);
   });
 
   it("applies all edits of a call or none", async () => {
@@ -227,7 +245,7 @@ describe("page_module_content.patch_fields (#917)", () => {
       ...at,
       edits: [
         { field: "title", text: "Never stored" },
-        { field: "photo", text: "x" },
+        { field: "count", text: "x" },
       ],
     });
     expect(r.ok).toBe(false);
@@ -242,6 +260,52 @@ describe("page_module_content.patch_fields (#917)", () => {
     );
     expect(await previewHtml(pageId, CHAT_BRANCH_ID)).toContain("<h1>Branch only</h1>");
     expect(await previewHtml(pageId)).not.toContain("Branch only");
+  });
+});
+
+describe("links, images and shared content (#918)", () => {
+  it("changes a link's label and target, a url field and an image in one call", async () => {
+    await must("page_module_content.patch_fields", {
+      pageId,
+      ...at,
+      edits: [
+        { field: "links", index: 0, part: "href", text: " /handbook " },
+        { field: "cta", text: "https://example.com/start?a=1" },
+        { field: "photo", text: "/m/cup.webp" },
+      ],
+    });
+    const html = await previewHtml(pageId);
+    expect(html).toContain('<a href="/handbook">Guide</a>');
+    expect(html).toContain('<a class="cta" href="https://example.com/start?a=1">Go</a>');
+    expect(html).toContain('src="/m/cup.webp"');
+  });
+
+  it('"everywhere" changes every page that shows the shared content', async () => {
+    await must("page_module_content.patch_fields", {
+      pageId: sharedPageId,
+      ...at,
+      edits: [{ field: "title", text: "Shared, changed" }],
+      scope: "everywhere",
+    });
+    expect(await previewHtml(sharedPageId)).toContain("<h1>Shared, changed</h1>");
+    expect(await previewHtml(twinPageId)).toContain("<h1>Shared, changed</h1>");
+  });
+
+  it('"here" detaches this page and changes only it', async () => {
+    const r = await must<{ contentInstanceId: string }>("page_module_content.patch_fields", {
+      pageId: twinPageId,
+      ...at,
+      edits: [{ field: "title", text: "Only the twin" }],
+      scope: "here",
+    });
+    expect(r.contentInstanceId).not.toBe(sharedInstanceId);
+    expect(await previewHtml(twinPageId)).toContain("<h1>Only the twin</h1>");
+    expect(await previewHtml(sharedPageId)).toContain("<h1>Shared, changed</h1>");
+    const marked = await must<{ html: string }>("pages.render_preview", {
+      pageId: twinPageId,
+      editMarkers: true,
+    });
+    expect(marked.html).toContain("<!--caelo:f p=content%230 s=0 f=title-->");
   });
 });
 
@@ -266,6 +330,12 @@ describe("pages.render_preview edit markers (#917)", () => {
       pageId: sharedPageId,
       editMarkers: true,
     });
-    expect(shared.html).toContain("<!--caelo:f p=content%230 s=1 f=title-->Shared<!--/caelo:f-->");
+    // The twin detached above, so the shared content is on one page now.
+    expect(shared.html).toContain(
+      "<!--caelo:f p=content%230 s=1 f=title-->Shared, changed<!--/caelo:f-->",
+    );
+    expect(marked.html).toContain(
+      '<a class="cta" href="https://example.com/start?a=1" data-caelo-fields="href=cta" data-caelo-placement="content%230" data-caelo-shared="0">',
+    );
   });
 });

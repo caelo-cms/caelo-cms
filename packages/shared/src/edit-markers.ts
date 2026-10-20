@@ -16,9 +16,10 @@
  *      text content becomes a pair of HTML comments around the value:
  *      `<!--caelo:f p=<placement> s=<0|1> f=<path>-->value<!--/caelo:f-->`.
  *      Comments do not affect layout or CSS selectors. A sentinel in a
- *      tag (an attribute), a comment, or a raw-text element (`<script>`,
- *      `<style>`, `<title>`, `<textarea>`) is removed and the value stays
- *      as it was, so attributes and scripts render byte-identical.
+ *      comment or a raw-text element (`<script>`, `<style>`, `<title>`,
+ *      `<textarea>`) is removed and the value stays as it was. In a tag
+ *      it is removed too; an `href` / `src` / `alt` that is exactly one
+ *      marked value also gets `data-caelo-fields` on its tag (#918).
  *
  * Only the editor preview runs this. Published output never carries
  * markers: the static generator and every other caller of
@@ -36,8 +37,15 @@ const SENTINELS = /[\uE000-\uE002]/g;
 /** Comment prefix of an opening marker; the closing marker is `/caelo:f`. */
 export const EDIT_MARKER_PREFIX = "caelo:f";
 
-/** Field kinds whose text can be edited in place (`link-list`: each label). */
-const EDITABLE_KINDS = new Set(["text", "text-list", "link-list"]);
+/**
+ * Field kinds the preview marks: text (`text`, `text-list` items,
+ * `link-list` labels) and link / image targets (`url`, `image`,
+ * `link-list` hrefs, #918) — the latter usually land in `href` / `src`.
+ */
+const EDITABLE_KINDS = new Set(["text", "text-list", "link-list", "url", "image"]);
+
+/** Attributes whose marked value the editor can change (link target, image, alt text). */
+const MARKABLE_ATTRIBUTES = new Set(["href", "src", "alt"]);
 
 /** Field shape {@link wrapEditableValues} needs: name + kind. */
 export interface EditableFieldDef {
@@ -57,8 +65,9 @@ function wrap(path: string, value: string): string {
  * Wrap the editable text of a content instance's values in sentinels.
  * Returns a new object; non-editable values pass through untouched.
  *
- * Paths: `<field>` for a `text` field, `<field>.<i>` for a `text-list`
- * item, `<field>.<i>.label` for a `link-list` item's label.
+ * Paths: `<field>` for a `text` / `url` / `image` field, `<field>.<i>`
+ * for a `text-list` item, `<field>.<i>.label` / `<field>.<i>.href` for a
+ * `link-list` item's label / target.
  *
  * @example
  * wrapEditableValues({ hero_title: "Hi" }, [{ name: "hero_title", kind: "text" }]);
@@ -73,14 +82,19 @@ export function wrapEditableValues(
     const kind = f.kind ?? "text";
     if (!EDITABLE_KINDS.has(kind)) continue;
     const v = values[f.name];
-    if (kind === "text") {
+    if (kind === "text" || kind === "url" || kind === "image") {
       if (editable(v)) out[f.name] = wrap(f.name, v);
     } else if (kind === "text-list" && Array.isArray(v)) {
       out[f.name] = v.map((item, i) => (editable(item) ? wrap(`${f.name}.${i}`, item) : item));
     } else if (kind === "link-list" && Array.isArray(v)) {
       out[f.name] = v.map((item, i) => {
-        const label = (item as { label?: unknown } | null)?.label;
-        return editable(label) ? { ...item, label: wrap(`${f.name}.${i}.label`, label) } : item;
+        if (typeof item !== "object" || item === null) return item;
+        const { label, href } = item as { label?: unknown; href?: unknown };
+        return {
+          ...item,
+          ...(editable(label) ? { label: wrap(`${f.name}.${i}.label`, label) } : {}),
+          ...(editable(href) ? { href: wrap(`${f.name}.${i}.href`, href) } : {}),
+        };
       });
     }
   }
@@ -114,13 +128,20 @@ function tagEnd(html: string, i: number): number {
  * Turn sentinels in rendered module HTML into marker comments (text
  * content) or drop them (everywhere else). See the file header.
  *
+ * A tag whose `href` / `src` / `alt` value is exactly one marked value
+ * gets `data-caelo-fields="href=<path> …"` plus the placement
+ * (`data-caelo-placement`, `data-caelo-shared`), so the editor can offer
+ * "Edit link" / "Replace image" (#918). A value assembled from several
+ * parts (`href="/blog/{{slug}}"`) is not editable and is not marked.
+ *
  * @param placement The placement key, `<blockName>#<position>`.
- * @param synced Whether the placement is bound to a synced (shared) instance.
+ * @param sharedPages 0 for a placement with its own content; for a synced
+ *   (shared) one, the number of pages that show the same content.
  */
-export function finalizeEditMarkers(html: string, placement: string, synced: boolean): string {
+export function finalizeEditMarkers(html: string, placement: string, sharedPages: number): string {
   if (!html.includes(START)) return html;
   const open = (path: string) =>
-    `<!--${EDIT_MARKER_PREFIX} p=${attr(placement)} s=${synced ? 1 : 0} f=${attr(path)}-->`;
+    `<!--${EDIT_MARKER_PREFIX} p=${attr(placement)} s=${sharedPages} f=${attr(path)}-->`;
   const close = `<!--/${EDIT_MARKER_PREFIX}-->`;
   let out = "";
   let i = 0;
@@ -136,7 +157,7 @@ export function finalizeEditMarkers(html: string, placement: string, synced: boo
     if (c === "<" && /[a-zA-Z/!?]/.test(html[i + 1] ?? "")) {
       const stop = tagEnd(html, i);
       const tag = html.slice(i, stop);
-      out += stripSentinels(tag);
+      out += markTag(tag, placement, sharedPages);
       i = stop;
       const name = /^<([a-zA-Z][a-zA-Z0-9-]*)/.exec(tag)?.[1]?.toLowerCase();
       if (name && RAW_TEXT_ELEMENTS.has(name) && !tag.endsWith("/>")) {
@@ -160,6 +181,30 @@ export function finalizeEditMarkers(html: string, placement: string, synced: boo
     i += 1;
   }
   return out;
+}
+
+const ATTRIBUTE = /([^\s"'=<>/]+)(\s*=\s*)(?:"([^"]*)"|'([^']*)')/g;
+const WHOLE_VALUE = /^\uE000([^\uE001]*)\uE001[^\uE002]*\uE002$/;
+
+/** Strip sentinels from a tag and mark its editable attributes (see finalizeEditMarkers). */
+function markTag(tag: string, placement: string, sharedPages: number): string {
+  if (!tag.includes(START)) return tag;
+  const marks: string[] = [];
+  const cleaned = stripSentinels(
+    tag.replace(ATTRIBUTE, (m, name: string, eq: string, dq?: string, sq?: string) => {
+      const value = dq ?? sq ?? "";
+      if (!value.includes(START)) return m;
+      const whole = WHOLE_VALUE.exec(value);
+      const lower = name.toLowerCase();
+      if (whole?.[1] && MARKABLE_ATTRIBUTES.has(lower)) marks.push(`${lower}=${attr(whole[1])}`);
+      const quote = dq !== undefined ? '"' : "'";
+      return `${name}${eq}${quote}${stripSentinels(value)}${quote}`;
+    }),
+  );
+  if (marks.length === 0) return cleaned;
+  const extra = ` data-caelo-fields="${marks.join(" ")}" data-caelo-placement="${attr(placement)}" data-caelo-shared="${sharedPages}"`;
+  const at = cleaned.endsWith("/>") ? cleaned.length - 2 : cleaned.length - 1;
+  return `${cleaned.slice(0, at)}${extra}${cleaned.slice(at)}`;
 }
 
 /** Drop sentinels and the path they carry, keeping the wrapped value. */
