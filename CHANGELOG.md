@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.10.59
+
+### Features
+- ed4edb8c Caelo-operated intake that files one GitHub issue per defect (#903, #906) (#911)
+- 8710edf0 forward AI bug reports to the Caelo team on the Owner's opt-in (#904, #905, #906) (#910)
+- 677fd881 edit links, replace images and change shared content in place (#918) (#933)
+- a5ab24d4 edit text in place in the preview, no AI round-trip (#917) (#931)
+
+### Refactors
+- 056e10fa delete the text-rewrite-on-move path (#724, rollout G) (#878)
+
 ## v0.10.58
 
 ### Features
