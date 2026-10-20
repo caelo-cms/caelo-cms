@@ -40,7 +40,7 @@ const createBugReportInput = z
   })
   .strict();
 
-/** Where a bug report went — see migration 0317 for the meaning of each state. */
+/** Where a bug report went — see migration 0329 for the meaning of each state. */
 export const bugForwardingState = z.enum(["local_only", "queued", "sent", "failed"]);
 export type BugForwardingState = z.infer<typeof bugForwardingState>;
 

@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0317 — issue #902: every AI bug report records where it went.
+-- 0329 — issue #902: every AI bug report records where it went.
 --
 -- The `bug_report` tool used to answer as if the Caelo team now knew about
 -- the defect, while the row only ever lived in this install's database.
