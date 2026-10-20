@@ -1335,21 +1335,17 @@ export const forkPlacementContentOp = defineOperation({
       );
     }
 
-    const placementRows = (await tx.execute(sql`
-      SELECT module_id::text AS module_id,
-             content_instance_id::text AS content_instance_id,
-             sync_mode
-      FROM page_modules
-      WHERE page_id = ${input.pageId}::uuid
-        AND block_name = ${input.blockName}
-        AND position = ${input.position}
-      LIMIT 1
-    `)) as unknown as {
-      module_id: string;
-      content_instance_id: string;
-      sync_mode: "synced" | "unsynced";
-    }[];
-    const placement = placementRows[0];
+    // Resolve the placement and the values it shows through the caller's
+    // BRANCH-OVERLAID view, like placement.set_content: on a chat branch the
+    // placement may exist only in page_layout_snapshots, and the shared
+    // instance may carry branch edits the fork must start from.
+    const overlaidLayout = await loadPageLayoutStateWithBranchOverlay(
+      tx,
+      input.pageId,
+      ctx.chatBranchId ?? null,
+    );
+    const placement = overlaidLayout.blocks.find((b) => b.blockName === input.blockName)
+      ?.placements?.[input.position];
     if (!placement) {
       return err({
         kind: "HandlerError",
@@ -1359,14 +1355,12 @@ export const forkPlacementContentOp = defineOperation({
     }
 
     // Read the source instance's values so the fork starts as a deep copy.
-    const srcRows = (await tx.execute(sql`
-      SELECT "values" AS values
-      FROM content_instances
-      WHERE id = ${placement.content_instance_id}::uuid
-      LIMIT 1
-    `)) as unknown as { values: unknown }[];
-    const srcValues = srcRows[0]?.values ?? {};
-    const valuesJson = typeof srcValues === "string" ? srcValues : JSON.stringify(srcValues);
+    const source = await loadContentInstanceStateWithBranchOverlay(
+      tx,
+      placement.contentInstanceId,
+      ctx.chatBranchId,
+    );
+    const valuesJson = JSON.stringify(source?.values ?? {});
 
     // Mint the new (unsynced) content_instance, copy values, and bind
     // the placement to it.
@@ -1374,7 +1368,7 @@ export const forkPlacementContentOp = defineOperation({
       INSERT INTO content_instances
         (module_id, "values", updated_by, chat_branch_id)
       VALUES (
-        ${placement.module_id}::uuid,
+        ${placement.moduleId}::uuid,
         ${jsonbParam(valuesJson)},
         ${ctx.actorId}::uuid,
         ${ctx.chatBranchId ?? null}::uuid
@@ -1407,9 +1401,28 @@ export const forkPlacementContentOp = defineOperation({
 
     // Emit a content_instance snapshot for the new row (so revert + audit
     // see the fork) plus a pageLayout snapshot reflecting the rebound
-    // placement.
+    // placement. On a chat branch live page_modules stays as it is, so the
+    // rebinding exists only in this snapshot: the branch-overlaid layout
+    // with this placement swapped to the new, unsynced instance (the same
+    // shape placement.set_content emits).
     const ciState = await loadContentInstanceState(tx, newCiId);
-    const layoutState = await loadPageLayoutState(tx, input.pageId);
+    const layoutState = ctx.chatBranchId
+      ? {
+          schemaVersion: 1 as const,
+          blocks: overlaidLayout.blocks.map((b) =>
+            b.blockName !== input.blockName
+              ? b
+              : {
+                  ...b,
+                  placements: (b.placements ?? []).map((p, i) =>
+                    i === input.position
+                      ? { ...p, contentInstanceId: newCiId, syncMode: "unsynced" as const }
+                      : p,
+                  ),
+                },
+          ),
+        }
+      : await loadPageLayoutState(tx, input.pageId);
     await emitSnapshot(tx, {
       actorId: ctx.actorId,
       opKind: "placement.fork_content",

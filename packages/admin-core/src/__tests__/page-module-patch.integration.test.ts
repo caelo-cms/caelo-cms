@@ -309,6 +309,26 @@ describe("links, images and shared content (#918)", () => {
   });
 });
 
+describe("shared content on a chat branch (#918)", () => {
+  it('"here" detaches the placement on the branch only', async () => {
+    const r = await must<{ contentInstanceId: string }>(
+      "page_module_content.patch_fields",
+      { pageId: sharedPageId, ...at, edits: [{ field: "title", text: "Branch fork" }], scope: "here" },
+      CHAT_BRANCH_ID,
+    );
+    expect(r.contentInstanceId).not.toBe(sharedInstanceId);
+    expect(await previewHtml(sharedPageId, CHAT_BRANCH_ID)).toContain("<h1>Branch fork</h1>");
+    const marked = await must<{ html: string }>(
+      "pages.render_preview",
+      { pageId: sharedPageId, chatBranchId: CHAT_BRANCH_ID, editMarkers: true },
+      CHAT_BRANCH_ID,
+    );
+    expect(marked.html).toContain("<!--caelo:f p=content%230 s=0 f=title-->Branch fork");
+    // Live is untouched: still the shared content.
+    expect(await previewHtml(sharedPageId)).not.toContain("Branch fork");
+  });
+});
+
 describe("pages.render_preview edit markers (#917)", () => {
   it("marks placement text only when asked, never attributes", async () => {
     const plain = await must<{ html: string }>("pages.render_preview", { pageId });
