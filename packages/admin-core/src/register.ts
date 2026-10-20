@@ -471,17 +471,17 @@ import {
   mcpOpenSessionOp,
 } from "./ops/security/mcp_power.js";
 import {
-  clearMcpRemoteOAuthClientOp,
-  getMcpRemoteOAuthClientOp,
-  mcpRemoteOAuthClientForSyncOp,
-  setMcpRemoteOAuthClientOp,
-} from "./ops/security/mcp_remote_oauth.js";
-import {
   listMcpRemoteConnectionsOp,
   restoreMcpRemoteConnectionOp,
   revokeMcpRemoteConnectionOp,
   setMcpRemoteConnectionCapOp,
 } from "./ops/security/mcp_remote_connections.js";
+import {
+  clearMcpRemoteOAuthClientOp,
+  getMcpRemoteOAuthClientOp,
+  mcpRemoteOAuthClientForSyncOp,
+  setMcpRemoteOAuthClientOp,
+} from "./ops/security/mcp_remote_oauth.js";
 import {
   createMcpTokenOp,
   listMcpTokensOp,

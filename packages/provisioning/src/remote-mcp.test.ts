@@ -31,6 +31,7 @@ import { initialSecretValue } from "./runtime-secrets.js";
 import {
   CLI_GENERATED_SECRETS,
   GATEWAY_TIMEOUT_SECONDS,
+  GATEWAY_TRUSTED_PROXY_HOPS,
   GENERATED_SECRET_FORMAT,
   MCP_OAUTH_CLIENT_FILE,
   REMOTE_MCP_ENV,
@@ -90,6 +91,35 @@ describe("remote-MCP identity (contract)", () => {
       mcpPublicUrl: "https://caelo-production-gateway-bbb-xyz.a.run.app",
       iapAudience: "/projects/42/locations/europe-west1/services/caelo-production-admin-aaa",
     });
+  });
+
+  it("puts the broker on the path its CAELO_TRUSTED_PROXY_HOPS describes (per-client rate limits)", () => {
+    // The broker's per-address buckets read the client from X-Forwarded-For
+    // with the deployment's hop count (api-gateway client-ip.ts). gcp: the
+    // broker answers on the site host, through the LB (client + LB = 2).
+    // gcp-firebase: on the gateway's own run.app URL, never through the
+    // Firebase Hosting rewrite, so Cloud Run's front end appends the real
+    // client (1). A broker URL on the Hosting path would pool every client
+    // behind one CDN edge address.
+    expect(GATEWAY_TRUSTED_PROXY_HOPS.gcp).toBe(2);
+    expect(
+      remoteMcpIdentity({
+        provider: "gcp",
+        domain: "acme.com",
+        projectNumber: "42",
+        adminBackendServiceId: "1",
+      }).mcpPublicUrl,
+    ).toBe("https://acme.com");
+    expect(GATEWAY_TRUSTED_PROXY_HOPS["gcp-firebase"]).toBe(1);
+    const firebase = remoteMcpIdentity({
+      provider: "gcp-firebase",
+      projectNumber: "42",
+      region: "europe-west1",
+      adminServiceName: "a",
+      adminServiceUrl: "https://a-xyz.a.run.app",
+      gatewayServiceUrl: "https://g-xyz.a.run.app",
+    });
+    expect(new URL(firebase.mcpPublicUrl).hostname.endsWith(".run.app")).toBe(true);
   });
 
   it("gives the admin the audience + public URL and the gateway the admin + public URL", () => {
@@ -329,7 +359,7 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     expect(MCP_ARMOR_RULE.expression).toBe(`request.path.matches('${MCP_ARMOR_PATH_PATTERN}')`);
   });
 
-  it("covers exactly the broker's paths; a traversal never borrows the MCP rule", () => {
+  it("covers exactly the broker's paths; a traversal never borrows the MCP rule", async () => {
     // RE2 and JS agree on this pattern (anchors, alternation, classes only).
     const re = new RegExp(MCP_ARMOR_PATH_PATTERN);
     for (const p of [
@@ -355,8 +385,36 @@ describe("gcp load balancer (remote-mcp-edge)", () => {
     ]) {
       expect(re.test(p)).toBe(false);
     }
+    // Every /api/mcp/ route the gateway documents — the consent page's
+    // POST /api/mcp/oauth/authorize included — is covered.
+    const routes = await Bun.file(
+      new URL("../../../apps/api-gateway/src/mcp/routes.ts", import.meta.url),
+    ).text();
+    const documented = [...routes.matchAll(/^ \* {3}[A-Z|]+ +(\/api\/mcp\/[^\s]+)/gm)]
+      .map((m) => m[1] as string)
+      .flatMap((p) =>
+        p.includes("{") ? ["chat", "admin"].map((s) => p.replace(/\{(chat,admin|s)\}/, s)) : [p],
+      );
+    expect(documented).toContain("/api/mcp/oauth/authorize");
+    expect(documented.length).toBeGreaterThanOrEqual(8);
+    for (const p of documented) expect(re.test(p)).toBe(true);
     // Why it matters: the gateway's URL parser resolves such a path to a public write.
     expect(new URL("https://h/api/mcp/%2e%2e/comments/post").pathname).toBe("/api/comments/post");
+  });
+
+  it("throttles at the edge exactly where the gateway's own proxy bucket does (#899)", async () => {
+    // Both key on the client address (Cloud Armor: the LB's view; the
+    // gateway: CAELO_TRUSTED_PROXY_HOPS). Neither may be the tighter one by
+    // accident — a lower edge limit would 429 traffic the broker allows.
+    const src = await Bun.file(
+      new URL("../../../apps/api-gateway/src/mcp/rate-limit.ts", import.meta.url),
+    ).text();
+    const proxy = /proxy: \{ capacity: (\d+), windowSeconds: (\d+) \}/.exec(src);
+    expect(proxy).not.toBeNull();
+    expect([Number(proxy?.[1]), Number(proxy?.[2])]).toEqual([
+      MCP_ARMOR_RULE.count,
+      MCP_ARMOR_RULE.intervalSec,
+    ]);
   });
 
   it("the stack shape and the gcloud flags describe the same rule", () => {

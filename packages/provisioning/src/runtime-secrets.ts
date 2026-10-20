@@ -402,6 +402,13 @@ export const ROTATABLE_SECRETS = [
 export type RotatableSecret = (typeof ROTATABLE_SECRETS)[number];
 
 /**
+ * #806 — the remote-MCP seal key rotates in two steps with an overlap
+ * window (`rotate-secret mcp-oauth-seal-key`, then `--finish`), not through
+ * {@link rotateRuntimeSecret}: see seal-key-rotation.ts.
+ */
+export const SEAL_KEY_SECRET = "mcp-oauth-seal-key" satisfies RuntimeSecret;
+
+/**
  * Why `name` cannot be rotated, or `null` when it can.
  *
  * The KEK is refused: AI provider keys and other at-rest secrets in
@@ -410,16 +417,15 @@ export type RotatableSecret = (typeof ROTATABLE_SECRETS)[number];
  */
 export function rotationRefusal(name: string): string | null {
   if ((ROTATABLE_SECRETS as readonly string[]).includes(name)) return null;
+  // #806 — two-step rotation with an overlap window (seal-key-rotation.ts).
+  if (name === SEAL_KEY_SECRET) return null;
   if (name === "mcp-oauth-client") {
     return "mcp-oauth-client is the Google OAuth client of remote MCP; the Owner replaces it under Settings → MCP → Remote (create a new client secret in the Google console first).";
-  }
-  if (name === "mcp-oauth-seal-key") {
-    return "mcp-oauth-seal-key seals the remote-MCP broker's refresh tokens; rotating it is not supported yet (every connected MCP client would have to sign in again, and the gateway would need a new revision to pick it up).";
   }
   if (name === "secret-kek") {
     return "secret-kek encrypts the AI provider keys and other at-rest secrets in cms_admin; a new KEK would make them unreadable. Rotating it needs a re-encryption step that does not exist yet.";
   }
-  return `${name} is not a runtime secret of this install. Rotatable: ${ROTATABLE_SECRETS.join(", ")}.`;
+  return `${name} is not a runtime secret of this install. Rotatable: ${[...ROTATABLE_SECRETS, SEAL_KEY_SECRET].join(", ")}.`;
 }
 
 /** The deployed install `rotateRuntimeSecret` works on. */

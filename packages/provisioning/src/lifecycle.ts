@@ -54,7 +54,9 @@ import {
   rolesOfSecret,
   rotateRuntimeSecret,
   rotationRefusal,
+  SEAL_KEY_SECRET,
 } from "./runtime-secrets.js";
+import { finishSealKeyRotation, startSealKeyRotation } from "./seal-key-rotation.js";
 import { selfCommand } from "./self-command.js";
 import {
   backendShellEnv,
@@ -749,10 +751,13 @@ async function backupOf(meta: InstallMetadata): Promise<boolean> {
 // rotate-secret <name>
 // =========================================================================
 
-export async function rotateSecretCommand(name: string | undefined): Promise<void> {
+export async function rotateSecretCommand(
+  name: string | undefined,
+  opts: { readonly finish?: boolean; readonly now?: boolean } = {},
+): Promise<void> {
   if (!name) {
-    log.error(red("Usage: caelo-cms rotate-secret <name>"));
-    log.warn(`Names: ${ROTATABLE_SECRETS.join(", ")}`);
+    log.error(red("Usage: caelo-cms rotate-secret <name> [--finish]"));
+    log.warn(`Names: ${[...ROTATABLE_SECRETS, SEAL_KEY_SECRET].join(", ")}`);
     process.exit(2);
   }
   const refusal = rotationRefusal(name);
@@ -760,7 +765,10 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
     log.error(red(refusal));
     process.exit(2);
   }
-  const secret = name as RotatableSecret;
+  if (opts.finish && name !== SEAL_KEY_SECRET) {
+    log.error(red(`--finish applies to ${SEAL_KEY_SECRET} only; ${name} rotates in one step.`));
+    process.exit(2);
+  }
   const { meta } = await requireInstall("rotate-secret");
   if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") {
     log.warn(`rotate-secret for provider ${meta.provider} not yet implemented.`);
@@ -768,6 +776,32 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
   }
   if (!meta.projectId) return;
   const region = installRegion(meta);
+
+  if (name === SEAL_KEY_SECRET) {
+    const gatewayService = await resolveGcpResourceName(
+      gcloud,
+      "run-service",
+      "caelo-production-gateway",
+      meta.projectId,
+      region,
+    );
+    if (!gatewayService) {
+      log.error(
+        red("Could not find the caelo-production-gateway* Cloud Run service — nothing rotated"),
+      );
+      return;
+    }
+    const target = { projectId: meta.projectId, region, env: GCP_STACK_ENV, gatewayService };
+    const report = opts.finish
+      ? await finishSealKeyRotation(target, {}, { now: opts.now === true })
+      : await startSealKeyRotation(target);
+    for (const step of report.steps) log.info(`  ${step}`);
+    if (report.ok)
+      log.success(green(opts.finish ? "seal-key rotation finished" : "seal-key rotation started"));
+    else log.error(red(report.error ?? "seal-key rotation failed"));
+    return;
+  }
+  const secret = name as RotatableSecret;
 
   const s = spinner();
   s.start(`Rotating ${secret}...`);

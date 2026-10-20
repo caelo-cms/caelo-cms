@@ -165,14 +165,15 @@ export function assertGcpRedirectBudget(
  * The site's own routing in the `public` path matcher (stack + budget): the
  * paths the load balancer sends to the gateway instead of the static bucket.
  * `/api/*` is the gateway's whole API, the remote-MCP broker included
- * (#806). The `/.well-known/oauth-*` and `openid-configuration` prefixes are
- * the broker's discovery documents, which MCP clients look up at the host
- * root (RFC 9728 protected-resource metadata, RFC 8414 authorization-server
- * metadata) — they must reach the gateway, not 404 in the bucket.
+ * (#806). The two `/.well-known/oauth-*` prefixes are the broker's
+ * discovery documents, which MCP clients look up at the host root (RFC 9728
+ * protected-resource metadata, RFC 8414 authorization-server metadata) —
+ * they must reach the gateway, not 404 in the bucket. No
+ * `openid-configuration` prefix: the broker is not an OpenID provider and
+ * serves no such document (#899), so the site keeps that path.
  */
 export const GCP_PUBLIC_BASE_PATHS: readonly string[] = [
   "/api/*",
   "/.well-known/oauth-protected-resource/*",
   "/.well-known/oauth-authorization-server/*",
-  "/.well-known/openid-configuration/*",
 ];

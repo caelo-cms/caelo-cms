@@ -154,7 +154,7 @@ describe("GCP URL-map rules", () => {
 
   it("refuses a plan over the 1,000-predicate quota with the counts, before any change", () => {
     // The base rule routes /api/* and the remote-MCP discovery paths (#806).
-    expect(GCP_PUBLIC_BASE_PATHS).toHaveLength(4);
+    expect(GCP_PUBLIC_BASE_PATHS).toHaveLength(3);
     const base = [{ paths: [...GCP_PUBLIC_BASE_PATHS] }];
     const rows = (n: number) => Array.from({ length: n }, (_, i) => row(`/p${i}`, "/x"));
     expect(() => assertGcpRedirectBudget(planOf(rows(498)), base)).not.toThrow();
@@ -163,12 +163,12 @@ describe("GCP URL-map rules", () => {
       throw new Error("expected GcpUrlMapBudgetError");
     } catch (e) {
       expect(e).toBeInstanceOf(GcpUrlMapBudgetError);
-      expect((e as GcpUrlMapBudgetError).predicatesNeeded).toBe(1002);
-      expect((e as Error).message).toContain("499 redirect(s) need 1002 paths");
+      expect((e as GcpUrlMapBudgetError).predicatesNeeded).toBe(1001);
+      expect((e as Error).message).toContain("499 redirect(s) need 1001 paths");
       expect((e as Error).message).toContain("bulk_delete_redirects");
     }
     // File-like paths cost one predicate each.
-    const files = Array.from({ length: 996 }, (_, i) => row(`/p${i}.html`, "/x"));
+    const files = Array.from({ length: 997 }, (_, i) => row(`/p${i}.html`, "/x"));
     expect(() => assertGcpRedirectBudget(planOf(files), base)).not.toThrow();
   });
 

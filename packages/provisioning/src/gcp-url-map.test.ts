@@ -107,7 +107,6 @@ describe("gcp stack URL map (Pulumi mocks)", () => {
           // #806 — the remote-MCP broker's discovery documents.
           "/.well-known/oauth-protected-resource/*",
           "/.well-known/oauth-authorization-server/*",
-          "/.well-known/openid-configuration/*",
         ],
         service: "gateway-id",
       },
