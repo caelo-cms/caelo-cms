@@ -285,6 +285,11 @@ import {
   updatePageCaptureOp,
   writeExtractedPagesOp,
 } from "./ops/imports.js";
+import {
+  getLinkMigrationReportOp,
+  migrateLinksToReferencesOp,
+  revertLinkMigrationOp,
+} from "./ops/links.js";
 import { resolveImportLinksOp } from "./ops/links-import.js";
 import { listMcpApprovalHandoffsOp } from "./ops/mcp_approval_handoffs.js";
 import {
@@ -977,6 +982,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createRedirectsManyOp);
   registry.register(deleteRedirectsManyOp);
   registry.register(setStructuredSetOp);
+  // Epic #724 rollout E — literal links → references, report, revert.
+  registry.register(migrateLinksToReferencesOp);
+  registry.register(getLinkMigrationReportOp);
+  registry.register(revertLinkMigrationOp);
   registry.register(getStructuredSetOp);
   registry.register(listStructuredSetsOp);
   registry.register(deleteStructuredSetOp);
