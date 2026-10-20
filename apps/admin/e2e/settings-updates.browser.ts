@@ -188,6 +188,24 @@ const FIXTURE_SCRIPT = `
                    VALUES (\${r.id}, 'verify', 'success', 'Release information verified.'),
                           (\${r.id}, 'finish', 'warn', 'Stopped: needs one step by hand.')\`;
         });
+    } else if (op === "converge-stalled") {
+      // #819 review: a converge whose stage 1 handed over and whose stage-2
+      // run never started — running, route converge, NO execution.
+      await tx\`DELETE FROM platform_update_requests\`;
+      const [owner] = await tx\`SELECT id FROM users WHERE email = 'dev-owner@example.com'\`;
+      const [r] = await tx\`INSERT INTO platform_update_requests
+                 (target_version, from_version, trigger, requested_by, status, route, started_at)
+               VALUES (\${process.env.E2E_LATEST}, '0.10.45', 'manual', \${owner.id}, 'running',
+                 'converge', now())
+               RETURNING id\`;
+      for (const [phase, level, message] of [
+        ["verify", "success", "Release information verified: signed by Caelo's release workflow."],
+        ["backup", "success", "Backup 1760000000000 taken."],
+        ["converge", "info", "Handing over to the new release's installer."],
+      ]) {
+        await tx\`INSERT INTO platform_update_events (request_id, phase, level, message)
+                 VALUES (\${r.id}, \${phase}, \${level}, \${message})\`;
+      }
     } else if (op === "auto-reset") {
       await tx\`DELETE FROM platform_update_notifications\`;
       await tx\`UPDATE platform_update_scheduler SET lease_holder = NULL, last_run_at = NULL,
@@ -311,9 +329,19 @@ async function openSection(page: Page, testid: string): Promise<void> {
 /** Exactly one primary action on the page: none of the others render in the card. */
 async function expectOnlyAction(
   page: Page,
-  action: "open-install-dialog" | "open-cloud-shell" | "upgrade-command" | "none",
+  action:
+    | "open-install-dialog"
+    | "open-cloud-shell"
+    | "upgrade-command"
+    | "continue-update"
+    | "none",
 ): Promise<void> {
-  for (const id of ["open-install-dialog", "open-cloud-shell", "upgrade-command"] as const) {
+  for (const id of [
+    "open-install-dialog",
+    "open-cloud-shell",
+    "upgrade-command",
+    "continue-update",
+  ] as const) {
     await expect(card(page).getByTestId(id)).toHaveCount(id === action ? 1 : 0);
   }
 }
@@ -554,14 +582,29 @@ test("rolled_back: the release failed its test; the site is unchanged, Try again
   await expectOnlyAction(page, "open-install-dialog");
 });
 
-test("break_glass: a run that needs Cloud Shell shows only the Cloud Shell step", async ({
+/**
+ * Show this browser an install without the converge job (#819; test-only
+ * cookie, lib/server/upgrader.ts): set up before the job existed, or with no
+ * caelo-provisioner to run it as.
+ */
+async function withoutConvergeJob(page: Page, baseURL: string | undefined): Promise<void> {
+  await page
+    .context()
+    .addCookies([
+      { name: "caelo_e2e_converge_job", value: "absent", url: baseURL ?? "http://localhost:4173" },
+    ]);
+}
+
+test("break_glass: without the converge job, a run that needs Cloud Shell shows only the Cloud Shell step", async ({
   page,
+  baseURL,
 }) => {
   runBunInline(FIXTURE_SCRIPT, {
     E2E_OP: "needs-shell",
     E2E_EMAIL: REVIEWER_EMAIL,
     E2E_LATEST: LATEST,
   });
+  await withoutConvergeJob(page, baseURL);
   await login(page, "dev-owner@example.com", OWNER_PASSWORD);
   await page.goto("/settings/updates");
   await expect(card(page)).toHaveAttribute("data-state", "break_glass");
@@ -581,11 +624,13 @@ test("break_glass: a run that needs Cloud Shell shows only the Cloud Shell step"
   );
 });
 
-test("break_glass: a release that changes the cloud setup is recognised before the click (#817)", async ({
+test("break_glass: without the converge job, a release that changes the cloud setup is recognised before the click (#817)", async ({
   page,
+  baseURL,
 }) => {
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "converge-predicted", E2E_EMAIL: REVIEWER_EMAIL });
+  await withoutConvergeJob(page, baseURL);
   await login(page, "dev-owner@example.com", OWNER_PASSWORD);
   await page.goto("/settings/updates");
   await expect(card(page)).toHaveAttribute("data-state", "break_glass");
@@ -595,6 +640,31 @@ test("break_glass: a release that changes the cloud setup is recognised before t
   await expectOnlyAction(page, "open-cloud-shell");
   // No job was started: nothing in the history.
   await expect(page.getByTestId("section-history")).toHaveCount(0);
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+});
+
+test("#819: with the converge job, a cloud-setup release installs from here like any other", async ({
+  page,
+}) => {
+  // The upgrader handed the release back (infra-contract): the converge job
+  // takes it, so the page offers Install, never Cloud Shell.
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "needs-shell",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: LATEST,
+  });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "update_available");
+  await expectOnlyAction(page, "open-install-dialog");
+
+  // Predicted before any click (#817): Install too, with what to expect.
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "converge-predicted", E2E_EMAIL: REVIEWER_EMAIL });
+  await page.reload();
+  await expect(card(page)).toHaveAttribute("data-state", "update_available");
+  await expect(page.getByTestId("update-state-detail")).toContainText("takes a little longer");
+  await expectOnlyAction(page, "open-install-dialog");
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
 });
 
@@ -650,6 +720,54 @@ test("up_to_date: no action, Check now as a small link", async ({ page }) => {
   await expectOnlyAction(page, "none");
   await expect(page.getByTestId("check-releases-now")).toHaveText("Check now");
   await expect(page.getByTestId("section-other-ways")).toHaveCount(0);
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+});
+
+test("#819: a converge whose next run never started offers Continue, confirmed with the password", async ({
+  page,
+  baseURL,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "converge-stalled",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: LATEST,
+  });
+  // The (stand-in) converge job has no live run (test-only cookie,
+  // lib/server/upgrader.ts) — Continue must not wait for the 90-minute
+  // stale cut-off.
+  await page
+    .context()
+    .addCookies([
+      { name: "caelo_e2e_upgrader_run", value: "ended", url: baseURL ?? "http://localhost:4173" },
+    ]);
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+
+  await expect(card(page)).toHaveAttribute("data-state", "interrupted");
+  await expect(page.getByTestId("update-state-sentence")).toContainText(
+    "picks up where it stopped",
+  );
+  await expectOnlyAction(page, "continue-update");
+  await page.getByTestId("continue-update").click();
+  let dialog = page.getByTestId("continue-dialog");
+  await expect(dialog).toContainText(`Continue the update to v${LATEST}?`);
+  await expect(dialog).toContainText("backup");
+
+  // A wrong password is refused in the dialog; nothing is started.
+  await dialog.getByTestId("continue-dialog-password").fill("not the password");
+  await dialog.getByTestId("continue-dialog-submit").click();
+  dialog = page.getByTestId("continue-dialog");
+  await expect(dialog.getByTestId("continue-dialog-error")).toContainText("Wrong password");
+  await expect(page.getByTestId("update-timeline")).not.toContainText("Continued by the Owner");
+
+  // The right one continues: the timeline names it and the job's new run.
+  await dialog.getByTestId("continue-dialog-password").fill(OWNER_PASSWORD);
+  await dialog.getByTestId("continue-dialog-submit").click();
+  const timeline = page.getByTestId("update-timeline");
+  await expect(timeline).toContainText("Continued by the Owner", { timeout: 15_000 });
+  await expect(timeline).toContainText("started (run e2e-upgrader-");
+
+  await page.context().clearCookies({ name: "caelo_e2e_upgrader_run" });
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
 });
 
@@ -798,9 +916,7 @@ test("Automatic updates: collapsed with a summary; each change confirmed with th
   await expect(policyCard.getByTestId("policy-auto-kinds")).toBeVisible();
   await policyCard.getByTestId("policy-auto-patch").check();
   await policyCard.getByTestId("policy-auto-converge").check();
-  await expect(policyCard.getByTestId("policy-auto-converge-pending")).toContainText(
-    "Not yet in effect",
-  );
+  await expect(policyCard.getByTestId("policy-auto-converge-hint")).toContainText("same wait");
   // Window and waiting times live under the collapsed "More settings".
   await expect(policyCard.getByTestId("policy-window-enabled")).toBeHidden();
   await policyCard.getByText("More settings").click();
@@ -822,7 +938,7 @@ test("Automatic updates: collapsed with a summary; each change confirmed with th
   await confirmPolicy(page);
 
   await expect(summary).toContainText("Installed automatically: bug fixes.");
-  await expect(summary).toContainText("Google Cloud project still need you for now");
+  await expect(summary).toContainText("Google Cloud project install automatically too");
   await expect(summary).toContainText("Only between 02:00 and 05:00 (Europe/Berlin).");
   await expect(summary).toContainText("waits 48 hours");
   await expect(line).toContainText("Installs bug-fix releases automatically.");

@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { StoredUpdatePolicy } from "@caelo-cms/shared";
-import { AUTO_CONVERGE_PENDING, autoUpdateSummary, pauseSummary } from "./auto-update-display.js";
+import { AUTO_CONVERGE_ON, autoUpdateSummary, pauseSummary } from "./auto-update-display.js";
 
 const POLICY: StoredUpdatePolicy = {
   mode: "auto",
@@ -42,12 +42,12 @@ describe("autoUpdateSummary", () => {
       "no kind of update is ticked",
     );
   });
-  it("says the Google Cloud choice is not in effect yet (#819)", () => {
-    expect(autoUpdateSummary({ ...POLICY, autoConverge: true })).toContain(AUTO_CONVERGE_PENDING);
-    expect(autoUpdateSummary(POLICY)).not.toContain(AUTO_CONVERGE_PENDING);
+  it("says when updates that change the Google Cloud project install automatically too (#819)", () => {
+    expect(autoUpdateSummary({ ...POLICY, autoConverge: true })).toContain(AUTO_CONVERGE_ON);
+    expect(autoUpdateSummary(POLICY)).not.toContain(AUTO_CONVERGE_ON);
     // Only relevant while installing automatically.
     expect(autoUpdateSummary({ ...POLICY, mode: "notify", autoConverge: true })).not.toContain(
-      AUTO_CONVERGE_PENDING,
+      AUTO_CONVERGE_ON,
     );
   });
   it("uses no developer words", () => {

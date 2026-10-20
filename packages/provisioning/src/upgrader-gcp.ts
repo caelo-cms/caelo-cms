@@ -57,8 +57,11 @@ export async function upgraderDatabaseHost(
   return cfg.databaseHost;
 }
 
-/** The IAP-backed deep health probe for `plan`'s install. */
-async function healthProbeFor(run: GcloudRunner, http: HttpFetch, plan: AppRollPlan) {
+/**
+ * The IAP-backed deep health probe for `plan`'s install (the upgrader job;
+ * the converge job, #819, too).
+ */
+export async function healthProbeFor(run: GcloudRunner, http: HttpFetch, plan: AppRollPlan) {
   const { install } = plan;
   const urls: Partial<Record<"admin" | "gateway", string>> = {};
   for (const s of plan.services) {

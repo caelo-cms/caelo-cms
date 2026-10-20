@@ -408,6 +408,101 @@ describe("platform_updates.request rules", () => {
   });
 });
 
+describe("the converge route (#819)", () => {
+  it("records which job installs the request; the default stays the upgrader", async () => {
+    await stepUp(owner, ownerSession);
+    const first = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+    });
+    const got = await okValue<{ request: { route: string } }>(AI, "platform_updates.get", {
+      requestId: first.requestId,
+    });
+    expect(got.request.route).toBe("app_roll");
+    await admin(
+      (tx) =>
+        tx`UPDATE platform_update_requests SET status = 'cancelled', cancelled_at = now(), finished_at = now() WHERE id = ${first.requestId}::uuid`,
+    );
+
+    await stepUp(owner, ownerSession);
+    const { requestId } = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+      route: "converge",
+    });
+    const converge = await okValue<{
+      request: { route: string };
+      events: { message: string }[];
+    }>(AI, "platform_updates.get", { requestId });
+    expect(converge.request.route).toBe("converge");
+    expect(converge.events[0]?.message).toContain("Caelo's converge job installs it");
+  });
+
+  it("continues only a running converge, with the Owner's password, once per confirmation", async () => {
+    await stepUp(owner, ownerSession);
+    const { requestId } = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+      route: "converge",
+    });
+    // Still pending: nothing to continue.
+    await stepUp(owner, ownerSession);
+    const pending = await run(owner, "platform_updates.continue", {
+      requestId,
+      sessionHash: ownerSession,
+    });
+    expect(message(pending)).toContain("Only an update that Caelo's converge job was installing");
+
+    await admin(
+      (tx) =>
+        tx`UPDATE platform_update_requests SET status = 'running', started_at = now(), execution = 'conv-dead' WHERE id = ${requestId}::uuid`,
+    );
+    // The refusal above left the confirmation unused; it authorizes this
+    // one continue, and the next needs a new one. Never the AI or another user.
+    const continued = await run(owner, "platform_updates.continue", {
+      requestId,
+      sessionHash: ownerSession,
+    });
+    expect(continued.ok).toBe(true);
+    const again = await run(owner, "platform_updates.continue", {
+      requestId,
+      sessionHash: ownerSession,
+    });
+    expect(again.ok).toBe(false);
+    expect(
+      (await run(AI, "platform_updates.continue", { requestId, sessionHash: ownerSession })).ok,
+    ).toBe(false);
+    await stepUp(editor, editorSession);
+    expect(
+      (await run(editor, "platform_updates.continue", { requestId, sessionHash: editorSession }))
+        .ok,
+    ).toBe(false);
+
+    const got = await okValue<{ events: { message: string }[] }>(AI, "platform_updates.get", {
+      requestId,
+    });
+    expect(got.events.some((e) => e.message.startsWith("Continued by the Owner"))).toBe(true);
+  });
+
+  it("an app-roll that died is not continued (the next request ends and retries it)", async () => {
+    await stepUp(owner, ownerSession);
+    const { requestId } = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+    });
+    await admin(
+      (tx) =>
+        tx`UPDATE platform_update_requests SET status = 'running', started_at = now() WHERE id = ${requestId}::uuid`,
+    );
+    await stepUp(owner, ownerSession);
+    const r = await run(owner, "platform_updates.continue", {
+      requestId,
+      sessionHash: ownerSession,
+    });
+    expect(message(r)).toContain("Only an update that Caelo's converge job was installing");
+  });
+});
+
 /** A finished request that asked for a Cloud Shell step, `minutesAgo` back. */
 async function needsShell(target: string, minutesAgo: number): Promise<string> {
   const rows = await admin(

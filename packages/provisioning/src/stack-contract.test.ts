@@ -74,6 +74,7 @@ describe("adminEnvContract", () => {
       CAELO_OPERATOR_ACCESS_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
       CAELO_UPGRADER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
+      CAELO_CONVERGE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-converge",
       CAELO_AUDIT_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-audit",
       CAELO_AUDIT_RESULTS_BUCKET: "acme-caelo-production-audit-results",
       CAELO_STATIC_BUCKET: "acme-caelo-production-static",
@@ -106,6 +107,7 @@ describe("adminEnvContract", () => {
       CAELO_OPERATOR_ACCESS_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
       CAELO_UPGRADER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
+      CAELO_CONVERGE_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-converge",
       CAELO_AUDIT_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-audit",
       CAELO_AUDIT_RESULTS_BUCKET: "acme-caelo-production-audit-results",
       CAELO_FIREBASE_SITE: "caelo-production-site-abc123",

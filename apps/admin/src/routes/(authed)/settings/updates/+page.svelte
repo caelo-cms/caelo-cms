@@ -50,6 +50,8 @@
   const latestRequest = $derived(data.latest.request);
   let confirmOpen = $state(false);
   let cancelOpen = $state(false);
+  /** #819 — "Continue" for a converge whose run died. */
+  let continueOpen = $state(false);
   /** A wrong or missing password: the dialog it was typed into opens again with the message. */
   const stepUpError = $derived(
     form && "stepUpRequired" in form && form.stepUpRequired && "action" in form
@@ -59,6 +61,7 @@
   $effect(() => {
     if (stepUpError?.action === "install") confirmOpen = true;
     if (stepUpError?.action === "cancel") cancelOpen = true;
+    if (stepUpError?.action === "continueUpdate") continueOpen = true;
   });
 
   const status = $derived(data.status);
@@ -87,6 +90,7 @@
       request: latestRequest,
       events: data.latest.events,
       deadRunLogsUrl: data.deadRun?.logsUrl ?? null,
+      deadRunContinuable: data.deadRun?.continuable ?? false,
       scheduler: data.scheduler,
       policy: data.policy,
       now,
@@ -282,6 +286,38 @@
             consoleUrl={data.cloudShell.consoleUrl}
             commands={data.cloudShell.commands}
             prominent
+          />
+        {:else if action.kind === "continue" && latestRequest}
+          <form id="continue-update-form" method="post" action="?/continueUpdate">
+            <input type="hidden" name="_csrf" value={data.csrfToken} />
+            <input type="hidden" name="requestId" value={latestRequest.id} />
+          </form>
+          <div class="flex flex-wrap items-center gap-3">
+            <Button
+              type="button"
+              data-testid="continue-update"
+              onclick={() => (continueOpen = true)}
+            >
+              Continue the update…
+            </Button>
+            <a
+              href={action.logsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-sm underline underline-offset-4"
+              data-testid="upgrader-log"
+            >
+              The installer's log
+            </a>
+          </div>
+          <PasswordConfirmDialog
+            bind:open={continueOpen}
+            formId="continue-update-form"
+            title={`Continue the update to v${action.version}?`}
+            description="Caelo starts its installer again. It keeps the backup it took before the update began, finishes what is left, tests the new version and goes back automatically if the test fails."
+            submitLabel="Continue the update"
+            error={stepUpError?.action === "continueUpdate" ? stepUpError.error : null}
+            testid="continue-dialog"
           />
         {:else if action.kind === "logs"}
           <a

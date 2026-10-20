@@ -446,15 +446,22 @@ bun scripts/migration-lint.ts --since v0.10.30
 `INFRA_CONTRACT_VERSION` in `packages/provisioning/src/infra-contract.ts`
 (the same number the upgrade's `needsConverge` checks) says which IAM bindings, secrets, service accounts and cloud resources
 the release's images need. The upgrader job can only roll images, so an
-install whose recorded value is lower must upgrade with the operator's
-own identity (Cloud Shell / CLI).
+install whose recorded value is lower installs the release through the
+converge job instead (#819): the Owner clicks the same Update button, the
+admin routes the release to `caelo-<env>-converge`, which runs the whole
+upgrade (backup, converge, roll, health check, rollback) from the
+release's own signed ops image as the install's `caelo-provisioner`.
+Installs set up before contract 9 (which adds that job) take one last
+converge from a terminal (Cloud Shell / CLI); `./run.sh upgrade` stays
+the break-glass path for when the job itself cannot run.
 
 **Bump it by one** in any release whose stacks or upgrade-time converge
 add, remove or change IAM, secrets, service accounts or resources. The
 release checks diff the files in `INFRA_CONTRACT_PATHS` (the stacks,
 `stack-contract.ts`, `stack-converge.ts`, `runtime-secrets.ts`,
 `operator-access.ts`, `gcp-names.ts`, and the upgrade-time mutators
-`upgrade/converge.ts`, `mcp-iap.ts`, `default-firewall.ts`; listed in
+`upgrade/converge.ts`, `mcp-iap.ts`, `default-firewall.ts`, the
+upgrader's and the converge job's setup; listed in
 `release-contract.ts`; tests and READMEs excluded) against the previous stable tag: if any changed and the number did
 not, the cut is refused. When the change is infra-neutral (a comment, a
 refactor, a log line), re-cut with `ack_infra_neutral`

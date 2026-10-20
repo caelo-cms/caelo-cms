@@ -7,6 +7,7 @@ import {
   finishLabel,
   historySummary,
   phaseLabel,
+  progressSentence,
   RELEASE_CHECK_STALE_MS,
   stoppedBeforeChange,
   UPDATE_PAGE_STATES,
@@ -44,6 +45,7 @@ describe("updatePageState (#861): one state, one primary action", () => {
     targetVersion: LATEST,
     fromVersion: INSTALLED,
     statusReason: null,
+    refusalCodes: [],
     ...over,
   });
   const input = (over: Partial<UpdatePageInput> = {}): UpdatePageInput => ({
@@ -59,6 +61,7 @@ describe("updatePageState (#861): one state, one primary action", () => {
     request: null,
     events: [],
     deadRunLogsUrl: null,
+    deadRunContinuable: false,
     scheduler: { lastRunAt: null, lastAction: null, lastVersion: null, lastWaitUntil: null },
     policy: AUTO_POLICY,
     now: NOW,
@@ -173,6 +176,56 @@ describe("updatePageState (#861): one state, one primary action", () => {
       input({ request: request({ status: "failed" }), events: [{ phase: "roll" }] }),
     );
     expect(partway.sentence).toContain("was interrupted");
+  });
+
+  it("#819: a dead converge the Owner may continue offers Continue, with the log beside it", () => {
+    const s = updatePageState(
+      input({
+        convergeJob: true,
+        request: request({ status: "running" }),
+        deadRunLogsUrl: "https://logs/x",
+        deadRunContinuable: true,
+      }),
+    );
+    expect(s.kind).toBe("interrupted");
+    expect(s.action).toEqual({ kind: "continue", version: LATEST, logsUrl: "https://logs/x" });
+    expect(s.sentence).toContain("picks up where it stopped");
+  });
+
+  it("#819: with the converge job, a cloud-setup change the upgrader handed back installs from here", () => {
+    const handedBack = request({
+      status: "needs_cloud_shell",
+      statusReason: "infrastructure contract 8 → 9",
+      refusalCodes: ["infra-contract"],
+    });
+    const s = updatePageState(input({ convergeJob: true, request: handedBack }));
+    expect(s.kind).toBe("update_available");
+    expect(s.action).toEqual({ kind: "install", version: LATEST, label: `Install v${LATEST}…` });
+    // Without the job it stays the step by hand; any other refusal does too.
+    expect(updatePageState(input({ request: handedBack })).kind).toBe("break_glass");
+    const drift = request({ status: "needs_cloud_shell", refusalCodes: ["install-state-drift"] });
+    expect(updatePageState(input({ convergeJob: true, request: drift })).kind).toBe("break_glass");
+    // A predicted change (#817) installs from here too.
+    const predicted = updatePageState(
+      input({
+        convergeJob: true,
+        status: {
+          installedVersion: INSTALLED,
+          latestVersion: LATEST,
+          upgradeAvailable: true,
+          checkedAt: minutesAgo(2),
+          infraChange: true,
+        },
+      }),
+    );
+    expect(predicted.kind).toBe("update_available");
+    expect(predicted.action.kind).toBe("install");
+  });
+
+  it("#819: the converge job's opening phase counts as checking the release", () => {
+    expect(
+      progressSentence({ status: "running", targetVersion: LATEST }, [{ phase: "converge" }]),
+    ).toContain("Step 1 of 5: checking the release");
   });
 
   it("rolled_back: says the site is unchanged and offers Try again", () => {

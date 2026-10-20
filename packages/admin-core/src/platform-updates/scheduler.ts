@@ -32,7 +32,11 @@ import {
   type OperationRegistry,
   SYSTEM_ACTOR_ID,
 } from "@caelo-cms/query-api";
-import type { ExecutionContext, PlatformUpdateAgentStatus } from "@caelo-cms/shared";
+import type {
+  ExecutionContext,
+  PlatformUpdateAgentStatus,
+  PlatformUpdateRoute,
+} from "@caelo-cms/shared";
 import { buildEmailTransport, type EmailConfigRow } from "../email/transport.js";
 import { startUpgraderFor } from "../ops/platform-update-requests.js";
 import type { PlatformUpdateStatus } from "../ops/platform-updates.js";
@@ -53,6 +57,11 @@ export interface AutoUpdateSchedulerOpts {
   readonly adapter: DatabaseAdapter;
   readonly registry: OperationRegistry;
   readonly upgrader: UpgraderResolver;
+  /**
+   * The converge job (#819): releases that change the cloud setup install
+   * through it, automatically only when the Owner's `autoConverge` allows.
+   */
+  readonly converge: UpgraderResolver;
   readonly readManifest: ManifestReader;
   /**
    * The install's provider as Settings → Updates resolves it (`self-hosted`
@@ -124,12 +133,17 @@ export async function runAutoUpdateTick(opts: AutoUpdateSchedulerOpts): Promise<
     }
   }
 
+  const converge = opts.converge();
+  if (!converge.ok) log(`[auto-update] the converge job is misconfigured: ${converge.error}`);
+  const convergeTrigger = converge.ok ? converge.trigger : null;
+
   const tick = await call<{
     ran: boolean;
     action: string | null;
     reason: string | null;
     requestId: string | null;
     restartRequestId: string | null;
+    startRoute: PlatformUpdateRoute | null;
   }>("platform_updates.scheduler_tick", {
     holder: opts.holder,
     intervalSeconds: Math.floor((opts.intervalMs ?? AUTO_UPDATE_TICK_MS) / 1000),
@@ -137,14 +151,19 @@ export async function runAutoUpdateTick(opts: AutoUpdateSchedulerOpts): Promise<
     facts,
     upgraderAvailable: trigger !== null,
     upgraderProblem,
+    convergeAvailable: convergeTrigger !== null,
   });
   if (tick.ran) log(`[auto-update] ${tick.action}: ${tick.reason}`);
 
   const toStart = tick.requestId ?? tick.restartRequestId;
-  if (toStart && trigger) {
-    const started = await startUpgraderFor(registry, adapter, systemCtx(), toStart, trigger);
+  // The request names its job: a cloud-setup release goes to the converge job.
+  const startWith = tick.startRoute === "converge" ? convergeTrigger : trigger;
+  if (toStart && startWith) {
+    const started = await startUpgraderFor(registry, adapter, systemCtx(), toStart, startWith);
     if (!started.ok) {
-      log(`[auto-update] could not start the upgrader: ${started.error} ${started.nextStep}`);
+      log(
+        `[auto-update] could not start the ${tick.startRoute === "converge" ? "converge job" : "upgrader"}: ${started.error} ${started.nextStep}`,
+      );
     }
   }
 

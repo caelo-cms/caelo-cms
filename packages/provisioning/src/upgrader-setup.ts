@@ -17,9 +17,19 @@
  * The job's own service account, `caelo-<env>-upgrader`, may do exactly
  * what an app-roll needs (upgrade/app-roll.ts):
  *
- *   - `roles/run.developer` on the project: deploy admin/gateway revisions,
- *     move traffic, recreate the migration job, update its own job image.
- *     It includes no `*.setIamPolicy`.
+ *   - the custom role `caeloUpgraderRun` on the project
+ *     ({@link UPGRADER_RUN_ROLE}): deploy admin/gateway revisions, move
+ *     traffic, recreate and run the migration job, update its own job image.
+ *     NOT `roles/run.developer`: that role holds `run.jobs.runWithOverrides`
+ *     on every job of the project, including the converge job and the
+ *     install job, which run as `caelo-provisioner` — the upgrader could run
+ *     them with its own args (destroy, owner-reset) or env (CLOUDSDK_*,
+ *     PULUMI_*) and so act as the provisioner (#883 review). The custom role
+ *     has no `runWithOverrides` and no `*.setIamPolicy`. Updating another
+ *     job (the converge job's image, say) additionally needs `actAs` on its
+ *     service account, which the upgrader holds only on the admin, gateway
+ *     and its own. A grant of `roles/run.developer` left by an earlier
+ *     setup is removed.
  *   - `roles/iam.serviceAccountUser` on exactly the admin's and the
  *     gateway's runtime service accounts (a revision runs as them), on
  *     itself (its own job) and on the quality-audit job's account (the
@@ -104,12 +114,64 @@ export const UPGRADER_OPS_LIST_ROLE: CustomRoleSpec = {
   permissions: ["storage.objects.list"],
 };
 
-/** Project-level roles of the upgrader's service account. */
+/**
+ * What an app-roll does on Cloud Run (upgrade/app-roll.ts, migration-runner.ts,
+ * the self-update, the #815 lock lease) — `roles/run.developer` minus
+ * everything else, above all `run.jobs.runWithOverrides` (see the file
+ * header). Keep in step with upgrader-iam-preflight.ts.
+ */
+export const UPGRADER_RUN_ROLE: CustomRoleSpec = {
+  roleId: "caeloUpgraderRun",
+  title: "Caelo upgrader: roll Cloud Run",
+  description:
+    "Lets the Caelo upgrader job deploy admin/gateway revisions, run the migration job and update its own image. Cannot start any job with changed arguments or env, cannot change IAM.",
+  permissions: [
+    "run.configurations.get",
+    "run.configurations.list",
+    "run.executions.get",
+    "run.executions.list",
+    "run.jobs.create",
+    "run.jobs.delete",
+    "run.jobs.get",
+    "run.jobs.list",
+    "run.jobs.run",
+    "run.jobs.update",
+    "run.operations.get",
+    "run.revisions.get",
+    "run.revisions.list",
+    "run.routes.get",
+    "run.routes.list",
+    "run.services.get",
+    "run.services.list",
+    "run.services.update",
+    "run.tasks.get",
+    "run.tasks.list",
+  ],
+};
+
+/** Project-level predefined roles of the upgrader's service account. */
 export const UPGRADER_PROJECT_ROLES = [
-  "roles/run.developer",
   "roles/cloudsql.instanceUser",
   "roles/logging.logWriter",
 ] as const;
+
+/**
+ * Predefined roles that hold `run.jobs.runWithOverrides`. Neither the
+ * upgrader nor the admin may hold any of them anywhere: with it, either
+ * could run the converge or install job — which run as caelo-provisioner —
+ * with its own arguments or environment (#883 review).
+ */
+export const RUN_WITH_OVERRIDES_ROLES = [
+  "roles/owner",
+  "roles/editor",
+  "roles/run.admin",
+  "roles/run.developer",
+  "roles/run.invoker",
+  "roles/run.jobsExecutorWithOverrides",
+] as const;
+
+/** A project-level grant an earlier setup gave the upgrader; removed on every setup. */
+const LEGACY_UPGRADER_PROJECT_ROLES = ["roles/run.developer"] as const;
 
 /**
  * Roles the upgrader must never hold anywhere — they would let it change
@@ -117,9 +179,7 @@ export const UPGRADER_PROJECT_ROLES = [
  * Prefix matches (`roles/compute.` = every compute role).
  */
 export const UPGRADER_FORBIDDEN_ROLES = [
-  "roles/owner",
-  "roles/editor",
-  "roles/run.admin",
+  ...RUN_WITH_OVERRIDES_ROLES,
   "roles/iam.serviceAccountAdmin",
   "roles/iam.serviceAccountKeyAdmin",
   "roles/iam.securityAdmin",
@@ -216,7 +276,7 @@ export async function ensureUpgraderJob(
   }
 
   // 1. The backup and ops-bucket-list roles.
-  for (const role of [UPGRADER_SQL_BACKUP_ROLE, UPGRADER_OPS_LIST_ROLE]) {
+  for (const role of [UPGRADER_RUN_ROLE, UPGRADER_SQL_BACKUP_ROLE, UPGRADER_OPS_LIST_ROLE]) {
     const roleError = await ensureCustomRole(run, projectId, role);
     if (roleError) return { ok: false, done, error: roleError };
     done.push(`custom role ${role.roleId}`);
@@ -248,6 +308,7 @@ export async function ensureUpgraderJob(
   // 3. Project-level roles.
   for (const role of [
     ...UPGRADER_PROJECT_ROLES,
+    customRoleName(projectId, UPGRADER_RUN_ROLE.roleId),
     customRoleName(projectId, UPGRADER_SQL_BACKUP_ROLE.roleId),
   ]) {
     const r = await retry([
@@ -262,6 +323,34 @@ export async function ensureUpgraderJob(
     ]);
     if (!r.ok) return fail(`grant the upgrader ${role}`, r);
     done.push(`upgrader: ${role} on the project`);
+  }
+
+  // 3b. The project-wide roles/run.developer an earlier setup granted holds
+  //     run.jobs.runWithOverrides on the provisioner's jobs: take it away.
+  //     Only after the custom role above is bound, so a running upgrade
+  //     never loses its Cloud Run rights in between.
+  const policy = await run(["projects", "get-iam-policy", projectId, "--format=json"]);
+  if (!policy.ok) return fail("read the project's IAM policy", policy);
+  for (const role of LEGACY_UPGRADER_PROJECT_ROLES) {
+    let held: boolean;
+    try {
+      held = projectPolicyHas(policy.stdout, role, member);
+    } catch (e) {
+      return { ok: false, done, error: `read the project's IAM policy: ${String(e)}` };
+    }
+    if (!held) continue;
+    const r = await retry([
+      "projects",
+      "remove-iam-policy-binding",
+      projectId,
+      `--member=${member}`,
+      `--role=${role}`,
+      "--all",
+      "--quiet",
+      "--format=none",
+    ]);
+    if (!r.ok) return fail(`remove the upgrader's ${role}`, r);
+    done.push(`upgrader: removed ${role} on the project`);
   }
 
   // 4. Resource-level grants on single service accounts.
@@ -390,6 +479,15 @@ export async function ensureUpgraderJob(
     done.push(`admin: ${role} on ${job}`);
   }
   return { ok: true, done };
+}
+
+/** Whether a gcloud IAM policy (JSON) grants `role` to `member`. */
+export function projectPolicyHas(policyJson: string, role: string, member: string): boolean {
+  // Throws on unreadable JSON: the caller reports it, never guesses "absent".
+  const policy = JSON.parse(policyJson.trim() || "{}") as {
+    bindings?: { role: string; members?: string[] }[];
+  };
+  return (policy.bindings ?? []).some((b) => b.role === role && (b.members ?? []).includes(member));
 }
 
 /**

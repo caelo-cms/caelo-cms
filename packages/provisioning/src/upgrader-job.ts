@@ -21,7 +21,8 @@
  *      ever comes from the request, the env or argv;
  *   4. decide (upgrader-assess.ts): refuse a bad signature, a downgrade, a
  *      release below its minFromVersion, an automatic run the policy does
- *      not allow; hand an infrastructure change to Cloud Shell;
+ *      not allow; hand an infrastructure change back (the admin routes
+ *      it to the converge job, #819; Cloud Shell on installs without one);
  *   -- ask IAM whether the job's account holds every permission the rest
  *      of the run needs (upgrader-iam-preflight.ts, #818); any missing one
  *      ends the run as needs-Cloud-Shell, all of them named, nothing changed;
@@ -629,7 +630,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
  * @returns whether the end was written (false after the last attempt failed)
  */
 export async function recordUpdateEnd(
-  queue: UpdateQueue,
+  queue: Pick<UpdateQueue, "finish">,
   requestId: string,
   end: UpdateEnd,
   log: JobLog,

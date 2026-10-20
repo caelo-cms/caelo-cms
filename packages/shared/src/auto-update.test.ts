@@ -57,6 +57,7 @@ function input(over: Partial<AutoUpdateInput> & { version?: string; publishedHou
     release: { version, publishedAt: hoursAgo(publishedHoursAgo) },
     facts: FACTS,
     upgraderAvailable: true,
+    convergeAvailable: true,
     now: NOW,
     ...rest,
   } satisfies AutoUpdateInput;
@@ -245,10 +246,12 @@ describe("decideAutoUpdate — pause", () => {
 
 describe("decideAutoUpdate — releases that never install automatically", () => {
   const cases: [string, Partial<AutoUpdateInput>, string][] = [
-    ["infra change", { facts: { ...FACTS, infraChange: true } }, "needs_cloud_shell"],
+    // autoConverge is off by default: the Owner installs it (#819).
+    ["infra change", { facts: { ...FACTS, infraChange: true } }, "manual"],
+    ["infra change on a security fix", { facts: { ...SECURITY, infraChange: true } }, "manual"],
     [
-      "infra change on a security fix",
-      { facts: { ...SECURITY, infraChange: true } },
+      "infra change, no converge job on this install",
+      { facts: { ...FACTS, infraChange: true }, convergeAvailable: false },
       "needs_cloud_shell",
     ],
     ["destructive migrations", { facts: { ...FACTS, contractMigrations: true } }, "manual"],
@@ -260,7 +263,7 @@ describe("decideAutoUpdate — releases that never install automatically", () =>
     expect(decideAutoUpdate({ ...input({}), ...over }).action).toBe(action);
   });
 
-  it("auto_converge on still never installs a cloud-setup change before #819 (inert)", () => {
+  it("auto_converge on installs a cloud-setup change through the converge job (#819)", () => {
     const everything = {
       ...POLICY,
       autoSecurity: true,
@@ -274,15 +277,51 @@ describe("decideAutoUpdate — releases that never install automatically", () =>
     ]) {
       for (const version of [VERSIONS.patch, VERSIONS.minor]) {
         const d = decideAutoUpdate(input({ policy: everything, facts, version }));
-        expect(d.action).toBe("needs_cloud_shell");
-        expect(d.reason).toContain("takes effect once Caelo can run them itself");
+        expect(d.action).toBe("install");
+        expect(d.action === "install" && d.route).toBe("converge");
       }
     }
   });
 
-  it("auto_converge off says nothing about the Owner's choice", () => {
+  it("auto_converge only widens WHERE a release may install, never WHICH kinds", () => {
+    const d = decideAutoUpdate(
+      input({
+        policy: { ...POLICY, autoPatch: false, autoSecurity: false, autoConverge: true },
+        facts: { ...FACTS, infraChange: true },
+      }),
+    );
+    expect(d.action).toBe("notify");
+  });
+
+  it("auto_converge still waits for the soak period and never takes destructive migrations", () => {
+    const on = { ...POLICY, autoPatch: true, autoConverge: true };
+    const soaking = decideAutoUpdate(
+      input({ policy: on, facts: { ...FACTS, infraChange: true }, publishedHoursAgo: 1 }),
+    );
+    expect(soaking.action).toBe("wait");
+    expect(soaking.action === "wait" && soaking.route).toBe("converge");
+    const destructive = decideAutoUpdate(
+      input({ policy: on, facts: { ...FACTS, infraChange: true, contractMigrations: true } }),
+    );
+    expect(destructive.action).toBe("manual");
+  });
+
+  it("a converge-route install needs the converge job, not the upgrader", () => {
+    const on = { ...POLICY, autoPatch: true, autoConverge: true };
+    const d = decideAutoUpdate(
+      input({ policy: on, facts: { ...FACTS, infraChange: true }, upgraderAvailable: false }),
+    );
+    expect(d.action).toBe("install");
+    const none = decideAutoUpdate(
+      input({ policy: on, facts: { ...FACTS, infraChange: true }, convergeAvailable: false }),
+    );
+    expect(none.action).toBe("needs_cloud_shell");
+  });
+
+  it("auto_converge off: the Owner installs it from Settings → Updates", () => {
     const d = decideAutoUpdate(input({ facts: { ...FACTS, infraChange: true } }));
-    expect(d.reason).not.toContain("takes effect");
+    expect(d.action).toBe("manual");
+    expect(d.reason).toContain("Settings → Updates");
   });
 
   it("auto_converge does not touch releases without a cloud-setup change", () => {

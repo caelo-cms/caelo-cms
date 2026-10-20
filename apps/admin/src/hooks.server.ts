@@ -69,7 +69,7 @@ import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
 import { releaseManifestReader } from "#lib/server/release-check.js";
-import { upgraderTrigger } from "#lib/server/upgrader.js";
+import { convergeTrigger, upgraderTrigger } from "#lib/server/upgrader.js";
 import { updatesProvider } from "#lib/upgrade-path.js";
 
 // Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
@@ -419,6 +419,8 @@ function bootstrapAutoUpdates(): void {
     adapter,
     registry,
     upgrader: () => upgraderTrigger(process.env, readAgent),
+    // #819 — releases that change the cloud setup, when autoConverge allows.
+    converge: () => convergeTrigger(process.env),
     readManifest: releaseManifestReader(),
     provider: updatesProvider(process.env),
     holder: `${process.env.K_REVISION ?? hostname()}/${process.pid}`,

@@ -162,7 +162,9 @@ describe("the status document", () => {
 
   it("fails loudly on a malformed document and on an unreadable bucket", () => {
     const objects = new Map([[installJobStatusUrl(BUCKET), '{"statusVersion":9}']]);
-    expect(() => readInstallJobStatus(BUCKET, fakeBucket(objects))).toThrow(/not an install-job/);
+    expect(() => readInstallJobStatus(BUCKET, fakeBucket(objects))).toThrow(
+      /not a job status this CLI understands/,
+    );
     expect(() => readInstallJobStatus(BUCKET, () => fail("403 Forbidden"))).toThrow(/403/);
   });
 });

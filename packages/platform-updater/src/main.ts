@@ -41,14 +41,21 @@ export async function metadata(path: string, fetchFn: typeof fetch = fetch): Pro
 }
 
 /** The job's service-account access token, with its expiry. */
-async function accessToken(): Promise<AccessToken> {
+export async function accessToken(): Promise<AccessToken> {
   const text = await metadata("instance/service-accounts/default/token");
   return parseMetadataToken(text, Date.now());
 }
 
-const log: JobLog = (entry) => console.log(JSON.stringify(entry));
+/** One structured Cloud Logging line per entry (stdout). */
+export const log: JobLog = (entry) => console.log(JSON.stringify(entry));
 
-async function main(): Promise<void> {
+/** Where a job runs and as whom: the metadata server, plus this execution's name. */
+export async function jobPlacement(): Promise<{
+  readonly projectId: string;
+  readonly region: string;
+  readonly email: string;
+  readonly execution: string | null;
+}> {
   const projectId = await metadata("project/project-id");
   // `projects/<number>/regions/<region>`
   const region = (await metadata("instance/region")).split("/").pop() ?? "";
@@ -56,7 +63,11 @@ async function main(): Promise<void> {
   if (!projectId || !region || !email) {
     throw new Error("the metadata server did not name the project, region and service account");
   }
-  const execution = process.env.CLOUD_RUN_EXECUTION?.trim() || null;
+  return { projectId, region, email, execution: process.env.CLOUD_RUN_EXECUTION?.trim() || null };
+}
+
+async function main(): Promise<void> {
+  const { projectId, region, email, execution } = await jobPlacement();
   const host = await upgraderDatabaseHost({ projectId, region });
   const db = tokenRefreshingQueue({
     fetchToken: accessToken,

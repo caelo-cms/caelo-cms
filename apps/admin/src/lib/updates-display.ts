@@ -26,6 +26,7 @@ export const PHASE_LABELS: Readonly<Record<Exclude<PlatformUpdatePhase, "finish"
   verify: "Checking the release is genuine",
   assess: "Checking it fits this site",
   backup: "Backing up your database",
+  converge: "Updating your cloud setup",
   "health-baseline": "Making sure the site can be tested",
   migrations: "Updating the database",
   roll: "Switching to the new version",
@@ -162,7 +163,8 @@ const PROGRESS_STEPS: readonly {
   readonly label: string;
   readonly phases: readonly PlatformUpdatePhase[];
 }[] = [
-  { label: "checking the release", phases: ["verify", "assess"] },
+  // #819 — the converge job opens with `converge`, before its backup.
+  { label: "checking the release", phases: ["verify", "assess", "converge"] },
   { label: "backing up your database", phases: ["backup", "health-baseline"] },
   { label: "updating the database", phases: ["migrations"] },
   { label: "switching to the new version", phases: ["roll"] },
@@ -231,6 +233,11 @@ export type PrimaryAction =
   | { readonly kind: "timeline"; readonly cancellable: boolean }
   /** The log of an upgrader run that died without reporting back. */
   | { readonly kind: "logs"; readonly url: string }
+  /**
+   * #819 — the password-confirmed Continue of a converge whose run died: the
+   * converge job starts again and resumes from its checkpoint.
+   */
+  | { readonly kind: "continue"; readonly version: string; readonly logsUrl: string }
   /** Ask GitHub for the newest release now. */
   | { readonly kind: "check_now" };
 
@@ -268,11 +275,18 @@ export interface UpdatePageInput {
     readonly targetVersion: string;
     readonly fromVersion: string;
     readonly statusReason: string | null;
+    /** Why the job stopped, as codes (`infra-contract`, …); empty when it did not. */
+    readonly refusalCodes: readonly string[];
   } | null;
   /** The request's timeline. */
   readonly events: readonly { readonly phase: PlatformUpdatePhase }[];
   /** The request is `running` but its upgrader run is over (died without reporting); its log. */
   readonly deadRunLogsUrl: string | null;
+  /**
+   * #819 — that dead run was a converge the viewer may continue: it resumes
+   * from its checkpoint instead of waiting for the stale cut-off.
+   */
+  readonly deadRunContinuable: boolean;
   /** The auto-update scheduler's last decision. */
   readonly scheduler: {
     /** When that decision was made; null = the scheduler never ran. */
@@ -399,6 +413,20 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
   }
 
   // 3. The last attempt at this release did not finish.
+  if (active !== null && input.deadRunLogsUrl !== null && input.deadRunContinuable) {
+    return {
+      kind: "interrupted",
+      badge: { label: "Interrupted", tone: "destructive" },
+      sentence: `The update to v${active.targetVersion} stopped before it finished. Continue it: Caelo picks up where it stopped.`,
+      detail:
+        "It keeps the backup it took before the update began, finishes what is left, tests the new version and goes back automatically if the test fails.",
+      action: {
+        kind: "continue",
+        version: active.targetVersion,
+        logsUrl: input.deadRunLogsUrl,
+      },
+    };
+  }
   if (active !== null && input.deadRunLogsUrl !== null) {
     return {
       kind: "interrupted",
@@ -434,7 +462,11 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
 
   // 5. Only the Owner's own account can do it: Cloud Shell (or, self-hosted,
   //    the server). Never next to an Install button for the same release.
-  const askedForHand = attempt?.status === "needs_cloud_shell" ? attempt : null;
+  // #819 — a cloud-setup change the upgrader handed back is no step by hand
+  // when this install has the converge job: Install hands it to that job.
+  const convergeInstead =
+    input.convergeJob && (attempt?.refusalCodes.includes("infra-contract") ?? false);
+  const askedForHand = attempt?.status === "needs_cloud_shell" && !convergeInstead ? attempt : null;
   const predictedConverge =
     latest !== null && status.infraChange === true && !input.convergeJob && !input.selfHosted;
   const needsHand = latest !== null && canAct && (askedForHand !== null || predictedConverge);

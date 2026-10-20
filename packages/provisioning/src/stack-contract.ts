@@ -37,6 +37,7 @@
 import type { SupportedProvider } from "./adapter.js";
 import {
   auditJobResource,
+  convergeJobResource,
   gatewayServiceAccountEmail,
   gcpBucketName,
   gcpNamePrefix,
@@ -169,6 +170,13 @@ export const OPERATOR_ACCESS_JOB_ENV_VAR = "CAELO_OPERATOR_ACCESS_JOB";
  * could not set the job up.
  */
 export const UPGRADER_JOB_ENV_VAR = "CAELO_UPGRADER_JOB";
+
+/**
+ * The admin env var naming the converge job (#819) — what "Install update"
+ * starts for a release that changes the cloud setup. `upgrade` leaves it
+ * untouched when it could not set the job up.
+ */
+export const CONVERGE_JOB_ENV_VAR = "CAELO_CONVERGE_JOB";
 
 /**
  * #875 — the admin env vars naming the parallel quality-audit job and the
@@ -452,6 +460,9 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     // #696 — the job "Install update" starts (upgrader-setup.ts); the admin
     // may only run it, never override it.
     { name: UPGRADER_JOB_ENV_VAR, value: upgraderJobResource(projectId, inputs.region, env) },
+    // #819 — the job "Install update" starts for a release that changes the
+    // cloud setup (converge-job-setup.ts); start-only as well.
+    { name: CONVERGE_JOB_ENV_VAR, value: convergeJobResource(projectId, inputs.region, env) },
     // #875 — the job the quality audit fans its Lighthouse runs out to, and
     // where the tasks write their results (audit-job-setup.ts).
     { name: AUDIT_JOB_ENV_VAR, value: auditJobResource(projectId, inputs.region, env) },

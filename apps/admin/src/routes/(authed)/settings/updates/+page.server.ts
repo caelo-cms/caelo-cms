@@ -16,13 +16,15 @@
  *     holds `platform.update` (the Owner): a confirmation of what will
  *     happen with the Owner's password (step-up), then the request + the job start,
  *     and a live timeline of the job's run that survives the admin restarting
- *     (it is in the database). A release that changes the cloud setup ends as
- *     "needs Cloud Shell" with the commands to run there.
- *   - #817: the release check predicts that route before the click (the
- *     release's manifest raises the infrastructure contract); until the
- *     in-admin converge job exists (#819) such a release is offered only
- *     through Cloud Shell, and `install` refuses it instead of starting a
- *     job that would refuse.
+ *     (it is in the database).
+ *   - #819: a release that changes the cloud setup installs the same way —
+ *     same button, same password, same timeline — but `install` hands it
+ *     to the converge job (admin-core update-route.ts picks the job from
+ *     the release manifest and the last attempt). A converge whose run died
+ *     is offered "Continue" (`continueUpdate`), which starts the job again; it
+ *     resumes from its checkpoint. Cloud Shell stays only for installs
+ *     without the converge job (break-glass); #817's release check predicts
+ *     that route before the click.
  *
  * "Check now" asks GitHub for the newest release right away (otherwise the
  * release-check worker does, hourly) — for anyone who may open this page.
@@ -53,7 +55,13 @@ import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { releaseCheckFetch, releaseManifestReader } from "#lib/server/release-check.js";
 import { confirmStepUp } from "#lib/server/step-up.js";
-import { updatesEnv, upgraderTrigger } from "#lib/server/upgrader.js";
+import {
+  convergeTrigger,
+  updateRouteFor,
+  updatesEnv,
+  upgraderTrigger,
+} from "#lib/server/upgrader.js";
+import { deadRunOf } from "#lib/update-dead-run.js";
 import type { InstallRoute } from "#lib/updates-display.js";
 import {
   cloudShellUpgrade,
@@ -62,13 +70,6 @@ import {
   updatesProvider,
 } from "#lib/upgrade-path.js";
 import type { Actions, PageServerLoad } from "./$types";
-
-/**
- * #819 — the in-admin converge job. Until it exists, a release that raises
- * the infrastructure contract installs only from Cloud Shell; the page and
- * `actions.install` read this one switch.
- */
-const CONVERGE_JOB_AVAILABLE = false;
 
 /** Whether an email transport is set up (the update emails need one). */
 async function readEmailConfigured(ctx: App.Locals["ctx"]): Promise<boolean> {
@@ -133,15 +134,28 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
   const agent = selfHosted && canInstall ? await readAgent(locals.ctx) : null;
   const agentProblem = selfHosted && canInstall ? agentUnavailable(agent) : null;
   const upgrader = upgraderTrigger(env, () => readAgent(locals.ctx));
+  // #819 — the converge job, for releases that change the cloud setup.
+  const converge = convergeTrigger(env);
+  const convergeJob = converge.ok && converge.trigger !== null;
   // A run that died (out of memory, timeout) never writes its end; Cloud
   // Run knows. Say so instead of showing "Installing" until the next run
-  // ends it.
-  let deadRun: { logsUrl: string } | null = null;
+  // ends it. Each route asks its own job. A converge whose stage-2 run
+  // never started names no execution at all; it counts as dead once the
+  // job has no live run (lib/update-dead-run.ts), and may be continued.
+  let deadRun: { logsUrl: string; continuable: boolean } | null = null;
   const active = latest.request;
-  if (active?.status === "running" && active.execution && upgrader.ok && upgrader.trigger) {
-    const run = await upgrader.trigger.latest().catch(() => null);
-    if (run && run.execution === active.execution && run.state !== "running") {
-      deadRun = { logsUrl: run.logsUrl };
+  const activeJob = active?.route === "converge" ? converge : upgrader;
+  if (active?.status === "running" && activeJob.ok && activeJob.trigger) {
+    // A failed lookup decides nothing: the page keeps showing the timeline.
+    const run = await activeJob.trigger.latest().then(
+      (r) => ({ ok: true as const, run: r }),
+      () => ({ ok: false as const }),
+    );
+    if (run.ok) {
+      deadRun = deadRunOf(active, run.run, {
+        canInstall,
+        logsUrl: "https://console.cloud.google.com/run/jobs",
+      });
     }
   }
   // Cloud Shell for the newest release: the break-glass step when the page
@@ -172,7 +186,7 @@ export const load: PageServerLoad = async ({ locals, cookies }) => {
       problem: upgrader.ok ? null : `${upgrader.error} ${upgrader.nextStep}`,
     },
     installRoute,
-    convergeJob: CONVERGE_JOB_AVAILABLE,
+    convergeJob,
     // Whether the step by hand exists for this install at all — Google
     // Cloud: the Cloud Shell walkthrough; self-hosted: the upgrade command
     // on the server (both need a buildable upgrade command). The page never
@@ -247,52 +261,97 @@ export const actions: Actions = {
     };
   },
 
-  /** Request the newest release and start the upgrader job. */
+  /**
+   * Request the newest release and start the job that installs it: the
+   * upgrader, or for a release that changes the cloud setup the converge
+   * job (#819). The route is decided before the password is checked, so a
+   * release this install cannot take from here costs no confirmation.
+   */
   install: async ({ request, locals, cookies }) => {
     requirePermission(locals, "platform.update");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const version = String(form.get("version") ?? "");
-    const upgrader = upgraderTrigger(updatesEnv(cookies), () => readAgent(locals.ctx));
+    const env = updatesEnv(cookies);
+    const upgrader = upgraderTrigger(env, () => readAgent(locals.ctx));
     if (!upgrader.ok) return fail(500, { error: `${upgrader.error} ${upgrader.nextStep}` });
     if (!upgrader.trigger) {
       return fail(400, {
         error: "This install has no upgrader yet; run the upgrade command shown on this page.",
       });
     }
-    // #817: a release that changes the cloud setup would only be refused
-    // by the job; the page offers Cloud Shell for it instead (#819 lifts this).
+    const converge = convergeTrigger(env);
+    if (!converge.ok) return fail(500, { error: `${converge.error} ${converge.nextStep}` });
     const { adapter, registry } = getQueryContext();
-    if (!CONVERGE_JOB_AVAILABLE && updatesProvider(updatesEnv(cookies)) !== "self-hosted") {
-      const st = await execute(registry, adapter, locals.ctx, "platform_updates.status", {});
-      if (!st.ok) return opFailure(st.error, "Could not read the update status.");
-      if ((st.value as PlatformUpdateStatus).infraChange === true) {
-        return fail(400, {
-          error: `v${version} also changes settings in your Google Cloud project, which Caelo can't do by itself yet. Install it from Google Cloud Shell as this page shows.`,
-        });
-      }
-    }
+    const last = await execute(registry, adapter, locals.ctx, "platform_updates.get", {});
+    if (!last.ok) return opFailure(last.error, "Could not read the last update.");
+    // Network (the release manifests), outside any transaction.
+    const route = await updateRouteFor({
+      env,
+      targetVersion: version,
+      lastAttempt: (last.value as { request: PlatformUpdateRequest | null }).request,
+      convergeAvailable: converge.trigger !== null,
+    });
+    if (!route.ok) return fail(400, { error: route.error });
+    const trigger = route.route === "converge" ? converge.trigger : upgrader.trigger;
+    if (!trigger) return fail(400, { error: "This install has no job for that update." });
     const check = await confirmStepUp(locals, cookies, form, "platform_update", "install");
     if (!check.ok) return check.failure;
     const r = await execute(registry, adapter, locals.ctx, "platform_updates.request", {
       targetVersion: version,
       sessionHash: check.sessionHash,
+      route: route.route,
     });
     if (!r.ok) return opFailure(r.error, "Could not request the update.");
     const requestId = (r.value as { requestId: string }).requestId;
-    const started = await startUpgraderFor(
-      registry,
-      adapter,
-      locals.ctx,
-      requestId,
-      upgrader.trigger,
-    );
+    const started = await startUpgraderFor(registry, adapter, locals.ctx, requestId, trigger);
     if (!started.ok) {
       return fail(502, {
         error: `The upgrader could not be started: ${started.error} ${started.nextStep}`,
       });
     }
     return { ok: `Installing v${version} — follow along below.` };
+  },
+
+  /**
+   * #819 — continue a converge whose run died: the Owner's password, then
+   * the converge job is started again and resumes from its checkpoint.
+   */
+  continueUpdate: async ({ request, locals, cookies }) => {
+    requirePermission(locals, "platform.update");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const converge = convergeTrigger(updatesEnv(cookies));
+    if (!converge.ok) return fail(500, { error: `${converge.error} ${converge.nextStep}` });
+    if (!converge.trigger) {
+      return fail(400, {
+        error:
+          "This install has no converge job to continue the update with; run the upgrade from a terminal as this page shows.",
+      });
+    }
+    const check = await confirmStepUp(locals, cookies, form, "platform_update", "continueUpdate");
+    if (!check.ok) return check.failure;
+    const { adapter, registry } = getQueryContext();
+    const requestId = String(form.get("requestId") ?? "");
+    const r = await execute(registry, adapter, locals.ctx, "platform_updates.continue", {
+      requestId,
+      sessionHash: check.sessionHash,
+    });
+    if (!r.ok) return opFailure(r.error, "Could not continue the update.");
+    const version = (r.value as { targetVersion: string }).targetVersion;
+    const started = await startUpgraderFor(
+      registry,
+      adapter,
+      locals.ctx,
+      requestId,
+      converge.trigger,
+    );
+    if (!started.ok) {
+      return fail(502, {
+        error: `The converge job could not be started: ${started.error} ${started.nextStep}`,
+      });
+    }
+    return { ok: `Continuing the update to v${version} — follow along below.` };
   },
 
   /** Withdraw a request the upgrader has not picked up yet. */

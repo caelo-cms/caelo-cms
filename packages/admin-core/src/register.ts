@@ -354,6 +354,7 @@ import {
 } from "./ops/platform-update-policy.js";
 import {
   platformUpdatesCancelOp,
+  platformUpdatesContinueOp,
   platformUpdatesGetOp,
   platformUpdatesListOp,
   platformUpdatesRecordTriggerOp,
@@ -1156,6 +1157,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // the upgrader job does the install. list/get/policy.get are AI-readable.
   registry.register(platformUpdatesRequestOp);
   registry.register(platformUpdatesCancelOp);
+  registry.register(platformUpdatesContinueOp);
   registry.register(platformUpdatesRecordTriggerOp);
   registry.register(platformUpdatesListOp);
   registry.register(platformUpdatesGetOp);

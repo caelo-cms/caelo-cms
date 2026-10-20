@@ -25,6 +25,7 @@ import {
   UPGRADER_FORBIDDEN_ROLES,
   UPGRADER_OPS_LIST_ROLE,
   UPGRADER_PROJECT_ROLES,
+  UPGRADER_RUN_ROLE,
   UPGRADER_SQL_BACKUP_ROLE,
 } from "./upgrader-setup.js";
 
@@ -37,20 +38,6 @@ const TARGET = { projectId: "acme", region: "europe-west1", env: "production" };
  * are listed; a new check must find its permission here or in a custom role.
  */
 const PREDEFINED: Record<string, readonly string[]> = {
-  "roles/run.developer": [
-    "run.services.get",
-    "run.services.list",
-    "run.services.update",
-    "run.revisions.get",
-    "run.revisions.list",
-    "run.operations.get",
-    "run.jobs.create",
-    "run.jobs.delete",
-    "run.jobs.get",
-    "run.jobs.run",
-    "run.jobs.update",
-    "run.executions.get",
-  ],
   "roles/cloudsql.instanceUser": ["cloudsql.instances.get", "cloudsql.instances.login"],
   "roles/logging.logWriter": ["logging.logEntries.create"],
   "roles/iam.serviceAccountUser": ["iam.serviceAccounts.actAs"],
@@ -71,6 +58,9 @@ function setupGrants(): Map<string, Set<string>> {
   const of = (...roles: string[]) => new Set(roles.flatMap((r) => PREDEFINED[r] ?? []));
   const project = of(...UPGRADER_PROJECT_ROLES);
   for (const perm of UPGRADER_SQL_BACKUP_ROLE.permissions) project.add(perm);
+  // #883 — the Cloud Run rights come from the custom caeloUpgraderRun role
+  // (no run.developer: it would hold runWithOverrides on the provisioner's jobs).
+  for (const perm of UPGRADER_RUN_ROLE.permissions) project.add(perm);
   const bucketList = new Set(UPGRADER_OPS_LIST_ROLE.permissions);
   return new Map([
     [`projects/${p}`, project],
@@ -94,7 +84,7 @@ function setupGrants(): Map<string, Set<string>> {
       `projects/${p}/serviceAccounts/caelo-production-audit@${p}.iam.gserviceaccount.com`,
       of("roles/iam.serviceAccountUser"),
     ],
-    // Project-level run.developer reaches the job too.
+    // The project-level caeloUpgraderRun reaches the job too.
     [`projects/${p}/locations/europe-west1/jobs/caelo-production-upgrader`, project],
     [`gs://${p}-caelo-ops`, bucketList],
     // The install/-conditioned roles/storage.objectUser grant.

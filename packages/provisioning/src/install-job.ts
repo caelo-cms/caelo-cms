@@ -113,12 +113,12 @@ export function installJobStatusUrl(bucket: string): string {
 const NOT_FOUND = /matched no objects|No URLs matched|NotFound|NOT_FOUND|404|does not exist/i;
 
 /**
- * The install job's status as the ops bucket holds it now (never cached:
- * another process — the job — writes it), or null before the first start.
+ * A job status document (`install-job.json`, and the converge job's
+ * `converge-job.json`, #819) as the ops bucket holds it now — never cached:
+ * another process (the job) writes it — or null before the first start.
  * Throws when the bucket can't be read or the document is malformed.
  */
-export function readInstallJobStatus(bucket: string, run: SyncGcloud): InstallJobStatus | null {
-  const url = installJobStatusUrl(bucket);
+export function readJobStatusDoc<T>(url: string, schema: z.ZodType<T>, run: SyncGcloud): T | null {
   const r = run(["storage", "cat", url]);
   if (!r.ok) {
     if (NOT_FOUND.test(r.stderr)) return null;
@@ -128,15 +128,41 @@ export function readInstallJobStatus(bucket: string, run: SyncGcloud): InstallJo
   try {
     json = JSON.parse(r.stdout);
   } catch {
-    throw new Error(`${url} is not valid JSON; remove it and re-run to start the install again.`);
+    throw new Error(`${url} is not valid JSON; remove it and re-run to start again.`);
   }
-  const parsed = InstallJobStatusSchema.safeParse(json);
+  const parsed = schema.safeParse(json);
   if (!parsed.success) {
     throw new Error(
-      `${url} is not an install-job status this CLI understands (${parsed.error.message}); remove it and re-run.`,
+      `${url} is not a job status this CLI understands (${parsed.error.message}); remove it and re-run.`,
     );
   }
   return parsed.data;
+}
+
+/** Replace a job status document. Refuses secret material (#656). */
+export function writeJobStatusDoc<T>(
+  url: string,
+  schema: z.ZodType<T>,
+  status: T,
+  run: SyncGcloud,
+): void {
+  const parsed = schema.parse(status);
+  assertNoSecrets(parsed, url.split("/").pop() ?? url);
+  const r = run(
+    ["storage", "cp", "-", url, "--content-type=application/json"],
+    `${JSON.stringify(parsed, null, 2)}\n`,
+  );
+  if (!r.ok) {
+    throw new Error(`Could not write ${url}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}`);
+  }
+}
+
+/**
+ * The install job's status as the ops bucket holds it now, or null before
+ * the first start ({@link readJobStatusDoc}).
+ */
+export function readInstallJobStatus(bucket: string, run: SyncGcloud): InstallJobStatus | null {
+  return readJobStatusDoc(installJobStatusUrl(bucket), InstallJobStatusSchema, run);
 }
 
 /** Replace the status document. Refuses secret material (#656). */
@@ -145,16 +171,7 @@ export function writeInstallJobStatus(
   status: InstallJobStatus,
   run: SyncGcloud,
 ): void {
-  const parsed = InstallJobStatusSchema.parse(status);
-  assertNoSecrets(parsed, "install-job.json");
-  const url = installJobStatusUrl(bucket);
-  const r = run(
-    ["storage", "cp", "-", url, "--content-type=application/json"],
-    `${JSON.stringify(parsed, null, 2)}\n`,
-  );
-  if (!r.ok) {
-    throw new Error(`Could not write ${url}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}`);
-  }
+  writeJobStatusDoc(installJobStatusUrl(bucket), InstallJobStatusSchema, status, run);
 }
 
 /**

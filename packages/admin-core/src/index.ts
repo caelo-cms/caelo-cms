@@ -168,13 +168,24 @@ export {
   RELEASE_CHECK_COOLDOWN_MS,
   type ReleaseFetch,
 } from "./platform-updates/release-check.js";
-export { type ManifestReader, registryManifestReader } from "./platform-updates/release-facts.js";
+export {
+  type ManifestReader,
+  readReleaseFacts,
+  registryManifestReader,
+} from "./platform-updates/release-facts.js";
 export {
   runAutoUpdateTick,
   startAutoUpdateScheduler,
   stopAutoUpdateScheduler,
   type UpgraderResolver,
 } from "./platform-updates/scheduler.js";
+// #819 — which job installs a release (upgrader or converge job).
+export {
+  chooseUpdateRoute,
+  type LastUpdateAttempt,
+  type UpdateRoute,
+  type UpdateRouteInput,
+} from "./platform-updates/update-route.js";
 export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
 export * from "./public-projection.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).
@@ -212,6 +223,9 @@ export {
   agentUpgraderTrigger,
 } from "./security/upgrader/agent-trigger.js";
 export {
+  CONVERGE_SETUP_HINT,
+  type ConvergeJobEnv,
+  convergeTriggerFromEnv,
   UPGRADER_SETUP_HINT,
   type UpgraderExecution,
   type UpgraderTrigger,

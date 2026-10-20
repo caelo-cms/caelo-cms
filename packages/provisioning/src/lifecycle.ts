@@ -649,11 +649,12 @@ async function gcpHealthProbe(
 
 /**
  * Record the digests just rolled (upgrade/record-rolled.ts), wired to this
- * install's install.json and Pulumi stack.
+ * install's install.json and Pulumi stack. The converge job (#819,
+ * converge-job-gcp.ts) records through the same function as the terminal.
  *
  * @returns whether every record was written; false fails the upgrade.
  */
-function recordRolledRelease(
+export function recordRolledRelease(
   installId: string,
   provider: "gcp" | "gcp-firebase",
   digests: ImageDigests,

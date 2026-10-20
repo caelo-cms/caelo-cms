@@ -265,8 +265,8 @@
                 <input type="checkbox" name="autoConverge" checked={policy.autoConverge} class="mt-1" data-testid="policy-auto-converge" />
                 <span>
                   Updates that change your Google Cloud project
-                  <span class="block text-xs text-muted-foreground" data-testid="policy-auto-converge-pending">
-                    Not yet in effect: until Caelo can install these itself, you are told and install them yourself.
+                  <span class="block text-xs text-muted-foreground" data-testid="policy-auto-converge-hint">
+                    Only the kinds ticked above, after the same wait. If this site cannot make such changes itself, you are told and install them yourself.
                   </span>
                 </span>
               </label>
