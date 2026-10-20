@@ -8,13 +8,14 @@
  * One op, one transaction, for what would otherwise be a chain of calls
  * (CLAUDE.md §11): validate the tree change in the caller's branch view
  * ({@link planPageMoves}), write it, recompute every affected path, and
- * give each moved URL its 301 + link rewrites
- * ({@link applyPathMoveEffects}). A refused plan changes nothing.
+ * give each moved URL its 301 ({@link applyPathMoveEffects}). Links on
+ * the site are page references (epic #724) and follow the move without
+ * being touched. A refused plan changes nothing.
  *
  * Branch semantics match a slug change: inside a chat the move is a
  * pending page snapshot per moved page (the chat's preview and
- * pages.list see the new tree at once); the live URLs, redirects and
- * link rewrites happen when the chat is published.
+ * pages.list see the new tree at once); the live URLs and redirects
+ * happen when the chat is published.
  */
 
 import { defineOperation, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
@@ -51,21 +52,10 @@ const moveResultSchema = z.object({
   /** True inside a chat: the URLs change when the chat is published. */
   pendingPublish: z.boolean(),
   redirectsCreated: z.number().int(),
-  rewrittenLinkSets: z.number().int(),
-  rewrittenModules: z.number().int(),
-  rewrittenContentInstances: z.number().int(),
-  /** Link sets another chat holds; their old links reach the page via 301. */
-  blockedLinkSets: z.array(z.string()),
 });
 export type PageMoveResult = z.infer<typeof moveResultSchema>;
 
-const NO_EFFECTS: PathMoveEffects = {
-  redirectsCreated: 0,
-  rewrittenSets: 0,
-  rewrittenModules: 0,
-  rewrittenContentInstances: 0,
-  blockedSets: [],
-};
+const NO_EFFECTS: PathMoveEffects = { redirectsCreated: 0 };
 
 /**
  * Move pages — the shared engine behind `pages.move_many` and
@@ -163,10 +153,6 @@ export async function executePageMoves(
     moved: moved.map((m) => ({ pageId: m.pageId, from: m.from, to: m.to })),
     pendingPublish: branched,
     redirectsCreated: effects.redirectsCreated,
-    rewrittenLinkSets: effects.rewrittenSets,
-    rewrittenModules: effects.rewrittenModules,
-    rewrittenContentInstances: effects.rewrittenContentInstances,
-    blockedLinkSets: [...effects.blockedSets],
   });
 }
 

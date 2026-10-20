@@ -609,14 +609,14 @@ export const pageUpdateSchema = z
     templateId: z.string().uuid().optional(),
     status: pageStatusSchema.optional(),
     /**
-     * Only meaningful together with `slug`. A slug change rewrites the page's
-     * public URL, so the op creates a 301 from the old path by default and
-     * rewrites every nav-menu / link-list / module-body link that pointed at
-     * it — all inside the same transaction as the slug write.
+     * Only meaningful together with `slug`. A slug change moves the page's
+     * public URL, so the op creates a 301 from the old path by default,
+     * inside the same transaction as the slug write. Links on the site are
+     * page references (epic #724) and follow the page without a rewrite;
+     * the 301 is for links from outside the site.
      *
-     * `'skip'` suppresses ONLY the redirect (the link rewrites still run) and
-     * is for the rare case where the operator explicitly says the old URL
-     * should 404. Defaults to `'auto'`: silently dropping the 301 would strand
+     * `'skip'` suppresses the redirect and is for the rare case where the
+     * operator explicitly says the old URL should 404. Defaults to `'auto'`: silently dropping the 301 would strand
      * every inbound link, which is never a safe default (CLAUDE.md §2).
      */
     redirectFromOld: z.enum(["auto", "skip"]).optional(),

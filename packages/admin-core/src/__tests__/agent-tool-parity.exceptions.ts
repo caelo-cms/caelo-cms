@@ -255,11 +255,6 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason: "visitor request-path redirect resolution (hooks.server); the AI uses find_redirects",
   },
-  "pages.lookup_links_in_modules": {
-    kind: "internal",
-    reason:
-      "incoming-links lookup by page path (dashboard panel); the AI searches bodies with grep_content",
-  },
   "page_module_content.get": {
     kind: "internal",
     reason:

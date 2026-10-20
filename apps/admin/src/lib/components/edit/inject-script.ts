@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { EDIT_AFFORDANCES_SCRIPT } from "./edit-affordances-script.js";
+import { FIELD_EDIT_SCRIPT } from "./field-edit-script.js";
+import { LINK_IMAGE_EDIT_SCRIPT } from "./link-image-edit-script.js";
 
 /**
  * Runtime injected at the bottom of every `/edit/preview-by-path/...`
@@ -13,8 +15,11 @@ import { EDIT_AFFORDANCES_SCRIPT } from "./edit-affordances-script.js";
  *   3. **Editing affordances** (`EDIT_AFFORDANCES_SCRIPT`) — right-click
  *      menu + selection toolbar that post `caelo:element-referenced`
  *      (Ask AI only flags it; no instruction). There is no edit mode: left
- *      clicks always behave like the live site.
- *   4. Listen for `{kind: "caelo:reload"}` and `location.reload()`.
+ *      clicks always behave like the live site. `FIELD_EDIT_SCRIPT` adds
+ *      in-place text editing of marked fields (#917), `LINK_IMAGE_EDIT_SCRIPT`
+ *      link and image editing (#918).
+ *   4. Listen for `{kind: "caelo:reload"}` and `location.reload()`, and
+ *      for `caelo:page-paths` (link-target suggestions, #918).
  *
  * Plain clicks on same-origin absolute links are rewritten to the
  * preview-by-path equivalent so internal navigation stays inside the
@@ -76,6 +81,11 @@ export const INJECT_SCRIPT = `
     "click",
     function (ev) {
       var t = ev.target;
+      // A link label being edited in place must not navigate (#917).
+      if (t && t.nodeType === 1 && isEditing(t)) {
+        ev.preventDefault();
+        return;
+      }
       // Rewrite same-origin absolute hrefs into the
       // preview-by-path surface so the iframe stays inside /edit.
       var a = t && t.nodeType === 1 ? findLinkAncestor(t) : null;
@@ -129,6 +139,8 @@ export const INJECT_SCRIPT = `
 
   // --- right-click menu, selection toolbar, Ask AI --------------------
   ${EDIT_AFFORDANCES_SCRIPT}
+  ${FIELD_EDIT_SCRIPT}
+  ${LINK_IMAGE_EDIT_SCRIPT}
 
   // --- parent → iframe messages: reload --------------------------------
   // Only the editor that embeds us may drive the iframe: the previewed
@@ -139,6 +151,9 @@ export const INJECT_SCRIPT = `
     if (ev.origin !== location.origin) return;
     if (!ev.data || typeof ev.data !== "object") return;
     if (ev.data.kind === "caelo:reload") location.reload();
+    else if (ev.data.kind === "caelo:page-paths" && Array.isArray(ev.data.pages)) {
+      pagePaths = ev.data.pages;
+    }
   });
 })();
 `;

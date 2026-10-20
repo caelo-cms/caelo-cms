@@ -147,7 +147,7 @@ export const revertSiteOp = defineOperation({
       `);
     }
     // Restored slugs / parents move URLs (subtrees included): recompose
-    // and give every moved URL its 301 + link rewrites.
+    // and give every moved URL its 301.
     if (parsedPages.length > 0) {
       const recomputed = await recomputeCurrentPathsWithMoves(
         tx,

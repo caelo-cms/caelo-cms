@@ -158,6 +158,7 @@ import {
   setPageModuleContentManyOp,
   setPageModuleContentOp,
 } from "./ops/content/page-module-content.js";
+import { patchPageModuleFieldsOp } from "./ops/content/page-module-patch.js";
 import { movePagesManyOp, planPageMovesOp } from "./ops/content/page-moves.js";
 import {
   changeTemplateOp,
@@ -512,7 +513,6 @@ import {
 } from "./ops/security/operator_oauth.js";
 import { getTelemetryOp, setTelemetryOp, testSendTelemetryOp } from "./ops/security/telemetry.js";
 import {
-  lookupLinksInModulesOp,
   pagesSeoApplyTranslationOp,
   pagesSeoAutofillOp,
   pagesSeoGetOp,
@@ -520,7 +520,6 @@ import {
   pagesSeoOptimizeManyOp,
   pagesSeoOptimizeOp,
   pagesSeoSetOp,
-  rewriteModuleLinksOp,
   siteDefaultsGetSeoOp,
   siteDefaultsSeedSiteBaseUrlOp,
   siteDefaultsSetSeoOp,
@@ -763,6 +762,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
   registry.register(setPageModuleContentManyOp);
+  registry.register(patchPageModuleFieldsOp);
   // v0.12.0 — content_instances + placement binding ops.
   registry.register(listContentInstancesOp);
   registry.register(getContentInstanceOp);
@@ -1280,7 +1280,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeAltOp);
   registry.register(listAltProposalsOp);
   registry.register(reviewAltProposalOp);
-  // P8 — SEO sidecar + slug-change link rewriter + site SEO defaults.
+  // P8 — SEO sidecar + site SEO defaults.
   registry.register(pagesSeoGetOp);
   registry.register(pagesSeoSetOp);
   // Bulk `_many` variant via the DRY defineBulkOp factory (CLAUDE.md §11).
@@ -1300,8 +1300,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeSiteDefaultsProposalOp);
   registry.register(rejectSiteDefaultsProposalOp);
   registry.register(listPendingSiteDefaultsProposalsOp);
-  registry.register(lookupLinksInModulesOp);
-  registry.register(rewriteModuleLinksOp);
   // P10A — skills system.
   registry.register(listSkillsOp);
   registry.register(getSkillOp);

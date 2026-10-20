@@ -9,12 +9,13 @@
  *
  * Why a single table: every named-list editor surface ends up
  * structurally identical (CRUD on a `(kind, slug, items)` triple). One
- * primitive avoids a sprawl of one-off tables and gives `change_page_slug`
- * a single place to walk when retargeting links across menus + footers
- * + taxonomies + future kinds.
+ * primitive avoids a sprawl of one-off tables.
+ *
+ * Internal links in set items are stored as page references (epic #724,
+ * `canonicaliseSetItems`), so a page rename or move changes no set: the
+ * reference resolves to the page's current path at render time.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok, structuredSetKind, validateStructuredSetItems } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -516,74 +517,3 @@ export const deleteStructuredSetOp = defineOperation({
     return ok({});
   },
 });
-
-/**
- * P6.7.5 — slug-rewrite helper. Walks every nav-menu / link-list item
- * (and recursively into nav-menu children) and swaps any `href`
- * matching `oldPath` to `newPath`. Called from the page-update path
- * when the slug changes so menus stay valid in the same transaction
- * as the redirect insert.
- *
- * Path matching is exact — `oldPath = "/about-us"` doesn't touch
- * `"/about-us/team"`. That's deliberate; partial-match rewriting
- * lives in the cross-page link rewriter (P8).
- */
-export async function rewriteSlugReferences(
-  tx: TransactionRunner,
-  oldPath: string,
-  newPath: string,
-): Promise<{ rewrittenSets: number }> {
-  const sets = (await tx.execute(sql`
-    SELECT id::text AS id, kind, items::text AS items
-    FROM structured_sets
-    WHERE kind IN ('nav-menu', 'link-list')
-  `)) as unknown as { id: string; kind: string; items: string }[];
-
-  let touched = 0;
-  for (const s of sets) {
-    const items = JSON.parse(s.items) as unknown[];
-    const next = rewriteHrefsInArray(items, oldPath, newPath);
-    if (next.changed) {
-      // See note in setStructuredSetOp — cast through ::text first.
-      const nextJson = JSON.stringify(next.items);
-      await tx.execute(sql`
-        UPDATE structured_sets
-        SET items = ${nextJson}::text::jsonb, updated_at = now()
-        WHERE id = ${s.id}::uuid
-      `);
-      touched += 1;
-    }
-  }
-  return { rewrittenSets: touched };
-}
-
-interface HrefRewriteResult {
-  items: unknown[];
-  changed: boolean;
-}
-
-function rewriteHrefsInArray(
-  items: unknown[],
-  oldPath: string,
-  newPath: string,
-): HrefRewriteResult {
-  let changed = false;
-  const next = items.map((it) => {
-    if (!it || typeof it !== "object") return it;
-    const obj = it as Record<string, unknown>;
-    const out: Record<string, unknown> = { ...obj };
-    if (typeof obj.href === "string" && obj.href === oldPath) {
-      out.href = newPath;
-      changed = true;
-    }
-    if (Array.isArray(obj.children)) {
-      const child = rewriteHrefsInArray(obj.children as unknown[], oldPath, newPath);
-      if (child.changed) {
-        out.children = child.items;
-        changed = true;
-      }
-    }
-    return out;
-  });
-  return { items: next, changed };
-}

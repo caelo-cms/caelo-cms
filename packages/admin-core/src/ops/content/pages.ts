@@ -928,7 +928,7 @@ export const updatePageOp = defineOperation({
   // variant's translated title).
   // P6.7.5 — the three identifiers (name / title / slug) are separate optional
   // fields so a caller can never silently substitute one for another. A `slug`
-  // change additionally fires the URL side-effects (301 + link rewrites) in
+  // change additionally fires the URL side-effects (301, chain collapse) in
   // this same transaction — see applyPathMoveEffects (path-moves.ts).
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",

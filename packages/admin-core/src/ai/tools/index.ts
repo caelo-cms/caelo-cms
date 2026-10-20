@@ -129,6 +129,7 @@ import {
   listRateLimitProfilesTool,
 } from "./operator-dashboard-tools.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
+import { patchPageModuleFieldsTool } from "./patch-page-module-fields.js";
 import {
   listPluginGrantsTool,
   listPluginInstallationsTool,
@@ -264,6 +265,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(grepContentTool);
   // #820 — every field-value write carries the repeated-markup hint.
   registry.register(withFieldMarkupGuard(setPageModuleContentTool, (i) => [i.contentValues]));
+  // #917 — targeted text edits of one placement (escaped plain text, so no
+  // markup guard needed); the same op Live Edit's in-place editing uses.
+  registry.register(patchPageModuleFieldsTool);
   // issue #299 — bulk-first build path (CLAUDE.md §11): one call builds a
   // page (modules + content + placements); the _many variants batch
   // incremental passes on existing pages.
@@ -484,7 +488,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // metadata edits across many pages/modules in one tool call.
   registry.register(deletePagesManyTool);
   registry.register(updatePagesManyTool);
-  // 0263 — nested page URLs: reparent pages (subtree + 301s + link rewrites).
+  // 0263 — nested page URLs: reparent pages (subtree + 301s).
   registry.register(movePagesTool);
   registry.register(updateModulesManyTool);
   // v0.9.13 — singular + bulk status flip. Drafts are LIVE-EDIT ONLY;

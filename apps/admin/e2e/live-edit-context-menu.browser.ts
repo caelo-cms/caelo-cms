@@ -173,7 +173,7 @@ test("select → Ask AI sends a precise reference; right-click → chip", async 
   expect(body.chips[0]?.moduleId).toBe(ids.mod);
   expect(body.chips[0]?.selector).toBe("section.hero > h1");
   expect(body.chips[0]?.selectedText).toBe("HERO_CTX_TARGET");
-  await expect(page.getByText("On it.")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("On it.").last()).toBeVisible({ timeout: 15_000 });
   // A transient chip is consumed by the send.
   await expect(page.getByTestId("chip")).toHaveCount(0);
 

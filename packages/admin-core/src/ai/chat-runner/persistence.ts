@@ -75,8 +75,14 @@ export function buildUserContent(input: ChatSendMessageInput): string {
  */
 function chipLines(c: ChatChip): string {
   const element = c.selector ? `, element=${c.selector}` : "";
+  // #917 — the placement field the text comes from, in the coordinates
+  // set_page_module_content takes.
+  const field =
+    c.field && c.blockName !== undefined && c.position !== undefined
+      ? `, placement=(blockName=${c.blockName}, position=${c.position}), field=${c.field}${c.index !== undefined ? `[${c.index}]` : ""}`
+      : "";
   return [
-    `  - ${c.label} (module=${c.moduleId}${element})`,
+    `  - ${c.label} (module=${c.moduleId}${element}${field})`,
     ...(c.selectedText ? [`    selected text: ${JSON.stringify(c.selectedText)}`] : []),
     ...(c.context ? [`    surrounding text: ${JSON.stringify(c.context)}`] : []),
   ].join("\n");

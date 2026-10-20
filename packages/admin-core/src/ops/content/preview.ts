@@ -39,6 +39,7 @@ import {
   enrichResponsiveImages,
   err,
   extractMediaRefs,
+  finalizeEditMarkers,
   fontUnresolvableMarker,
   type ImageVariantInfo,
   injectSeoIntoHead,
@@ -57,6 +58,7 @@ import {
   type ThemeDocument,
   themeFaviconRendition,
   unknownCssVarMarker,
+  wrapEditableValues,
 } from "@caelo-cms/shared";
 import {
   defaultFontsCacheDir,
@@ -131,6 +133,13 @@ export const renderPagePreviewOp = defineOperation({
        * `chatBranchId` is omitted.
        */
       excludeBranchModules: z.array(z.string().uuid()).optional(),
+      /**
+       * #917 — mark which placement + field each piece of page text came
+       * from (HTML comments, see `edit-markers.ts`) so the Live Edit
+       * preview can edit it in place. Only the editor's preview iframe
+       * sets this; published output never carries markers.
+       */
+      editMarkers: z.boolean().optional(),
     })
     .strict(),
   output: z.object({
@@ -841,25 +850,78 @@ export const renderPagePreviewOp = defineOperation({
       placementBindings.set(key, { ...binding, contentInstanceId: id });
     }
 
+    // #917 — a copy of the placement's instance whose plain-text values
+    // carry edit-marker sentinels, registered under its own id so the
+    // real instance (which a nested slot elsewhere may also render) stays
+    // untouched. Variant content (#592) is resolved, not stored on this
+    // placement, so it is not editable in place.
+    function editMarkedInstance(
+      key: string,
+      binding: { contentInstanceId: string },
+      moduleId: string,
+    ): string | null {
+      if (binding.contentInstanceId.startsWith("variant:")) return null;
+      const ci = instanceByIdResource.get(binding.contentInstanceId);
+      const mod = moduleByIdResource.get(moduleId);
+      if (!ci || !mod) return null;
+      const id = `edit:${key}`;
+      instanceByIdResource.set(id, {
+        ...ci,
+        id,
+        values: wrapEditableValues(ci.values, mod.fields),
+      });
+      return id;
+    }
+
+    // #918 — how many pages show each synced instance, so the editor can
+    // say "this text is on N pages" before an in-place edit.
+    const sharedPageCounts = new Map<string, number>();
+    const syncedIds = [...placementBindings.values()]
+      .filter((b) => b.synced && !b.contentInstanceId.startsWith("variant:"))
+      .map((b) => b.contentInstanceId);
+    if (input.editMarkers === true && syncedIds.length > 0) {
+      const counts = (await tx.execute(sql`
+        SELECT content_instance_id::text AS id, count(DISTINCT page_id)::int AS pages
+        FROM page_modules
+        WHERE content_instance_id IN (${sql.join(
+          [...new Set(syncedIds)].map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})
+        GROUP BY content_instance_id
+      `)) as unknown as { id: string; pages: number }[];
+      for (const r of counts) sharedPageCounts.set(r.id, Number(r.pages));
+    }
+
     const nestedCssJsByModuleId = new Map<string, NestedModuleResource>();
     // Epic #724 — broken internal references of the page's modules; the
     // layout modules' and nav menus' join from the composer's failures.
     const pageLinkMarkers: string[] = [];
     for (const m of modRows) {
-      const binding = placementBindings.get(`${m.block_name}#${m.position}`);
+      const key = `${m.block_name}#${m.position}`;
+      const binding = placementBindings.get(key);
       if (!binding) {
         m.html = "";
         continue;
       }
+      const markers =
+        input.editMarkers === true ? editMarkedInstance(key, binding, m.module_id) : null;
       const result = renderModuleWithContent(
         m.module_id,
-        binding.contentInstanceId,
+        markers ?? binding.contentInstanceId,
         resolver,
         renderThemeAssets,
         pluginLists,
         linkResolver,
       );
-      m.html = result.html;
+      m.html = markers
+        ? finalizeEditMarkers(
+            result.html,
+            key,
+            // A synced placement this chat created is not in live
+            // page_modules yet: then this page is the only one showing it.
+            binding.synced ? (sharedPageCounts.get(binding.contentInstanceId) ?? 1) : 0,
+          )
+        : result.html;
       pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
       // CSS/JS dedup: emit CSS/JS for every module the recursion touched
       // (in addition to this top-level module). The existing composer
