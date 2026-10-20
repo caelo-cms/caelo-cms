@@ -118,6 +118,9 @@ test("right-click → Edit text saves one field in place; Escape restores", asyn
   await page.keyboard.press("Enter");
   expect((await saved).ok()).toBe(true);
   await expect(page.getByText("Text saved.")).toBeVisible({ timeout: 10_000 });
+  // The edited span shows the new text before the save lands; the preview
+  // has reloaded with the stored text once that span is gone.
+  await expect(preview.locator("[data-caelo-saving]")).toHaveCount(0, { timeout: 15_000 });
   await expect(h1).toHaveText("Fish & chips", { timeout: 15_000 });
   await expect(p).toHaveText("Body stays");
 
