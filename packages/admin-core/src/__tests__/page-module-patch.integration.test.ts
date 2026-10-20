@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #917 — `page_module_content.set_text` (Live Edit in-place text editing)
+ * #917 — `page_module_content.patch_fields` (Live Edit in-place text editing)
  * and the preview's edit markers.
  *
- * Pins: one field/item changes and nothing else; the operator's plain
+ * Pins: only the edited fields/items change, all edits of a call or none; the operator's plain
  * text is escaped once; non-text kinds, bad indexes and synced
  * placements are refused with an operator-readable message; a branched
  * edit stays on the chat's branch; `pages.render_preview` emits markers
@@ -22,10 +22,10 @@ const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
-const TPL_SLUG = "i917-set-text-tpl";
-const MOD_SLUG = "i917-set-text-mod";
-const PAGE_SLUG = "i917-set-text-page";
-const SHARED_PAGE_SLUG = "i917-set-text-shared";
+const TPL_SLUG = "i917-patch-tpl";
+const MOD_SLUG = "i917-patch-mod";
+const PAGE_SLUG = "i917-patch-page";
+const SHARED_PAGE_SLUG = "i917-patch-shared";
 const SYSTEM_ACTOR = "00000000-0000-0000-0000-00000000ffff";
 const CHAT_BRANCH_ID = "33333333-3333-4333-8333-917917917917";
 
@@ -91,7 +91,7 @@ beforeAll(async () => {
 
   const { templateId } = await must<{ templateId: string }>("templates.create", {
     slug: TPL_SLUG,
-    displayName: "set_text tpl",
+    displayName: "patch_fields tpl",
     html: `<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content"></caelo-slot></body></html>`,
     css: "",
   });
@@ -101,7 +101,7 @@ beforeAll(async () => {
   });
   const { moduleId } = await must<{ moduleId: string }>("modules.create", {
     slug: MOD_SLUG,
-    displayName: "set_text mod",
+    displayName: "patch_fields mod",
     html: '<section><h1>{{title}}</h1><ul>{{#tags}}<li>{{.}}</li>{{/tags}}</ul><nav>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav><img src="{{photo}}" alt="{{title}}"></section>',
     css: "",
     js: "",
@@ -161,13 +161,12 @@ afterAll(async () => {
 
 const at = { blockName: "content", position: 0 };
 
-describe("page_module_content.set_text (#917)", () => {
+describe("page_module_content.patch_fields (#917)", () => {
   it("changes one text field, escapes it once, and leaves the rest alone", async () => {
-    await must("page_module_content.set_text", {
+    await must("page_module_content.patch_fields", {
       pageId,
       ...at,
-      field: "title",
-      text: "Fish & <chips>",
+      edits: [{ field: "title", text: "Fish & <chips>" }],
     });
     const html = await previewHtml(pageId);
     expect(html).toContain("<h1>Fish &amp; &lt;chips&gt;</h1>");
@@ -177,19 +176,15 @@ describe("page_module_content.set_text (#917)", () => {
   });
 
   it("changes a text-list item and a link-list label by index", async () => {
-    await must("page_module_content.set_text", {
+    await must("page_module_content.patch_fields", {
       pageId,
       ...at,
-      field: "tags",
-      index: 1,
-      text: "zwei",
+      edits: [{ field: "tags", index: 1, text: "zwei" }],
     });
-    await must("page_module_content.set_text", {
+    await must("page_module_content.patch_fields", {
       pageId,
       ...at,
-      field: "links",
-      index: 0,
-      text: "Handbook",
+      edits: [{ field: "links", index: 0, text: "Handbook" }],
     });
     const html = await previewHtml(pageId);
     expect(html).toContain("<li>one</li><li>zwei</li>");
@@ -198,7 +193,12 @@ describe("page_module_content.set_text (#917)", () => {
 
   it("refuses non-text kinds, bad indexes, unknown fields and synced placements", async () => {
     const refused = async (input: Record<string, unknown>, pattern: RegExp) => {
-      const r = await run("page_module_content.set_text", { pageId, ...at, text: "x", ...input });
+      const { pageId: page = pageId, ...edit } = input;
+      const r = await run("page_module_content.patch_fields", {
+        pageId: page,
+        ...at,
+        edits: [{ text: "x", ...edit }],
+      });
       expect(r.ok).toBe(false);
       if (!r.ok) expect((r.error as { message?: string }).message ?? "").toMatch(pattern);
     };
@@ -210,10 +210,34 @@ describe("page_module_content.set_text (#917)", () => {
     await refused({ pageId: sharedPageId, field: "title" }, /shared with other pages/);
   });
 
+  it("applies all edits of a call or none", async () => {
+    await must("page_module_content.patch_fields", {
+      pageId,
+      ...at,
+      edits: [
+        { field: "tags", index: 0, text: "uno" },
+        { field: "links", index: 0, text: "Guide" },
+      ],
+    });
+    const html = await previewHtml(pageId);
+    expect(html).toContain("<li>uno</li>");
+    expect(html).toContain('<a href="/docs">Guide</a>');
+    const r = await run("page_module_content.patch_fields", {
+      pageId,
+      ...at,
+      edits: [
+        { field: "title", text: "Never stored" },
+        { field: "photo", text: "x" },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    expect(await previewHtml(pageId)).not.toContain("Never stored");
+  });
+
   it("keeps a branched edit on the chat's branch", async () => {
     await must(
-      "page_module_content.set_text",
-      { pageId, ...at, field: "title", text: "Branch only" },
+      "page_module_content.patch_fields",
+      { pageId, ...at, edits: [{ field: "title", text: "Branch only" }] },
       CHAT_BRANCH_ID,
     );
     expect(await previewHtml(pageId, CHAT_BRANCH_ID)).toContain("<h1>Branch only</h1>");
@@ -234,7 +258,7 @@ describe("pages.render_preview edit markers (#917)", () => {
     );
     expect(marked.html).toContain("<!--caelo:f p=content%230 s=0 f=tags.1-->zwei<!--/caelo:f-->");
     expect(marked.html).toContain(
-      "<!--caelo:f p=content%230 s=0 f=links.0.label-->Handbook<!--/caelo:f-->",
+      "<!--caelo:f p=content%230 s=0 f=links.0.label-->Guide<!--/caelo:f-->",
     );
     expect(marked.html).toContain('alt="Fish &amp; &lt;chips&gt;"');
     expect(marked.html).not.toMatch(/[\uE000-\uE002]/);

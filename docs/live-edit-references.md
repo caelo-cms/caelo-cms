@@ -41,7 +41,7 @@ site's fixed navigation cannot hide them.
 | What the AI reads | `buildUserContent` in `packages/admin-core/src/ai/chat-runner/persistence.ts` |
 | Field markers in the preview | `packages/shared/src/edit-markers.ts`, used by `pages.render_preview` with `editMarkers: true` |
 | In-place editing runtime | `apps/admin/src/lib/components/edit/field-edit-script.ts` |
-| Saving an edit | `editFieldText` action in `apps/admin/src/routes/(authed)/edit/+page.server.ts` → `page_module_content.set_text` (`packages/admin-core/src/ops/content/page-module-text.ts`) |
+| Saving an edit | `editFieldText` action in `apps/admin/src/routes/(authed)/edit/+page.server.ts` → `page_module_content.patch_fields` (`packages/admin-core/src/ops/content/page-module-patch.ts`) |
 
 ## The reference
 
@@ -92,11 +92,12 @@ comment, `<script>`, `<style>`, `<title>` or `<textarea>` renders exactly as
 without markers. Variant content (#592) and layout chrome are not marked.
 Published output never contains markers.
 
-Saving goes through `page_module_content.set_text`
-`{pageId, blockName, position, field, index?, text}`: it resolves the
+Saving goes through `page_module_content.patch_fields`
+`{pageId, blockName, position, edits: [{field, index?, text}]}` (bulk-first:
+several values of one placement in one call and one snapshot): it resolves the
 placement through the caller's branch-overlaid layout (the view the preview
 renders), refuses synced placements, escapes `&`, `<`, `>` once (text fields
-are substituted unescaped), patches only that field or item, and writes via
+are substituted unescaped), patches only those fields or items (all or none), and writes via
 `content_instances.set_values` (lock, version check, snapshot), so chat Undo
 reverts it. The preview reloads after every save, success or not.
 

@@ -651,7 +651,7 @@ export const actions: Actions = {
   /**
    * #917 — in-place text edit from the preview iframe: one field (or list
    * item) of one placement, written on the active chat's branch through
-   * `page_module_content.set_text` (snapshot, so chat Undo reverts it).
+   * `page_module_content.patch_fields` (snapshot, so chat Undo reverts it).
    * The page posts here with fetch + `applyAction`, so the layout's toast
    * effect reports the outcome like any form action.
    */
@@ -667,13 +667,17 @@ export const actions: Actions = {
       ? { ...locals.ctx, chatBranchId, ...(chatSessionId ? { chatTaskId: chatSessionId } : {}) }
       : locals.ctx;
     // The op's Zod schema validates the shape; a malformed post fails there.
-    const r = await execute(registry, adapter, ctx, "page_module_content.set_text", {
+    const r = await execute(registry, adapter, ctx, "page_module_content.patch_fields", {
       pageId: String(form.get("pageId") ?? ""),
       blockName: String(form.get("blockName") ?? ""),
       position: Number(form.get("position")),
-      field: String(form.get("field") ?? ""),
-      ...(index !== null && index !== "" ? { index: Number(index) } : {}),
-      text: String(form.get("text") ?? ""),
+      edits: [
+        {
+          field: String(form.get("field") ?? ""),
+          ...(index !== null && index !== "" ? { index: Number(index) } : {}),
+          text: String(form.get("text") ?? ""),
+        },
+      ],
     });
     if (!r.ok && r.error.kind === "BranchNotFound") return fail(404, { error: "Branch not found" });
     if (!r.ok) {

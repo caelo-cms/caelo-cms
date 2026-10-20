@@ -144,7 +144,7 @@ import {
   setPageModuleContentManyOp,
   setPageModuleContentOp,
 } from "./ops/content/page-module-content.js";
-import { setPageModuleTextOp } from "./ops/content/page-module-text.js";
+import { patchPageModuleFieldsOp } from "./ops/content/page-module-patch.js";
 import { movePagesManyOp, planPageMovesOp } from "./ops/content/page-moves.js";
 import {
   changeTemplateOp,
@@ -741,7 +741,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
   registry.register(setPageModuleContentManyOp);
-  registry.register(setPageModuleTextOp);
+  registry.register(patchPageModuleFieldsOp);
   // v0.12.0 — content_instances + placement binding ops.
   registry.register(listContentInstancesOp);
   registry.register(getContentInstanceOp);

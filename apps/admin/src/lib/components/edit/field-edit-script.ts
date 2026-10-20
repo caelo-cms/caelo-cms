@@ -9,7 +9,7 @@ import { EDIT_OVERLAY_COLOR } from "./edit-affordances-script.js";
  * see `edit-markers.ts` in `@caelo-cms/shared`). This runtime finds the
  * marked field under a right-click or a selection, makes exactly that
  * text editable, and on Enter / blur posts `caelo:field-edit` to the
- * editor, which saves it through `page_module_content.set_text` and
+ * editor, which saves it through `page_module_content.patch_fields` and
  * reloads the preview. Escape restores the text.
  *
  * Spliced into `INJECT_SCRIPT`'s closure next to
