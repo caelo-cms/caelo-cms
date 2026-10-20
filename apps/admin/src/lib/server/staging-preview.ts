@@ -18,6 +18,7 @@
 import { readStagedBuildFiles, readStagedObject, StagedRunError } from "@caelo-cms/admin-core";
 import type { Bucket } from "@google-cloud/storage";
 import { error, type RequestHandler } from "@sveltejs/kit";
+import { mediaSecurityHeaders } from "./media-headers.js";
 
 /** The private staging bucket and the live static bucket of a GCP install. */
 export interface StagingPreviewBuckets {
@@ -133,10 +134,14 @@ export function createStagingPreviewHandler(
       );
     }
     if (!object) throw error(404, `Not in staging build ${runId}: ${key}`);
+    const contentType = object.contentType ?? "application/octet-stream";
     return new Response(new Uint8Array(object.body), {
       status: 200,
       headers: {
-        "Content-Type": object.contentType ?? "application/octet-stream",
+        "Content-Type": contentType,
+        // The staged build's `_assets/` holds the site's uploaded media,
+        // served here from the ADMIN origin — same guard as /_caelo/media.
+        ...mediaSecurityHeaders(contentType),
         // Don't let the operator's browser cache the staging preview —
         // they may re-Stage and want fresh bytes immediately.
         "Cache-Control": "private, no-cache, max-age=0, must-revalidate",

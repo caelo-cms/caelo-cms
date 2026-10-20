@@ -364,6 +364,14 @@ const SITE_SETTING_NEXT_STEPS: Readonly<Record<string, string>> = {
  * the AI searches for.
  */
 function brokenLinkNextStep(marker: string): string | undefined {
+  if (marker.startsWith("link-ref-malformed:")) {
+    const raw = marker.slice("link-ref-malformed:".length);
+    return (
+      `A link on this page is written as "${raw}", which is not a valid link to a page or file. ` +
+      `Find it with grep_content("${raw}") or get_content_instance, then set it to the path of an existing page (list_pages) ` +
+      "or an existing image (find_media), or remove it. Publishing is blocked until it is fixed."
+    );
+  }
   const m = /^link-target-missing:(page|media)\/([0-9a-f-]{36})$/.exec(marker);
   if (!m) return undefined;
   const what = m[1] === "page" ? "a page" : "an image or file";

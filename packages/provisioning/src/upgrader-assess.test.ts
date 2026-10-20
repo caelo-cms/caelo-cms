@@ -30,6 +30,7 @@ const POLICY: StoredUpdatePolicy = {
   autoSecurity: true,
   autoPatch: true,
   autoMinor: true,
+  autoConverge: false,
   channel: "stable",
   windowStart: null,
   windowEnd: null,
@@ -53,7 +54,11 @@ const verified = (m: Partial<ReleaseManifest> = {}): ReleaseManifestResult => ({
 });
 const broken = (
   code: "registry" | "signature" | "schema" | "blob-digest" | "version-mismatch" | "artifact-shape",
-): ReleaseManifestResult => ({ ok: false, error: { code, message: `${code} problem` } });
+  transient?: true,
+): ReleaseManifestResult => ({
+  ok: false,
+  error: { code, message: `${code} problem`, ...(transient ? { transient } : {}) },
+});
 
 interface Row {
   readonly name: string;
@@ -72,9 +77,16 @@ const ROWS: readonly Row[] = [
   { name: "a signed, newer, app-only release", expect: "proceed" },
   {
     name: "registry unreachable",
-    manifest: broken("registry"),
+    manifest: broken("registry", true),
     expect: "failed/registry",
-    reasonContains: "Nothing was changed",
+    reasonContains: "try again later",
+  },
+  {
+    // Regression #865: a 404 never heals, so it must not end retryable.
+    name: "no signed manifest for the target (404)",
+    manifest: broken("registry"),
+    expect: "refused/manifest-missing",
+    reasonContains: "has no signed release manifest",
   },
   { name: "bad signature", manifest: broken("signature"), expect: "refused/signature" },
   { name: "tampered blob", manifest: broken("blob-digest"), expect: "refused/signature" },
@@ -94,6 +106,7 @@ const ROWS: readonly Row[] = [
     name: "same version",
     installed: { version: "0.11.0", infraContractVersion: 2 },
     expect: "refused/not-newer",
+    reasonContains: "v0.11.0 already serves on this install",
   },
   {
     name: "downgrade",
@@ -324,5 +337,82 @@ describe("assessUpgradeRequest — self-hosted (the host agent, #696 Phase 4c)",
         }),
       ),
     ).toBe("refused/contract-migrations");
+  });
+});
+
+describe("assessUpgradeRequest — the converge route (#819)", () => {
+  const assess = (row: {
+    manifest?: ReleaseManifestResult;
+    installed?: InstalledState;
+    trigger?: "manual" | "auto";
+    policy?: Partial<StoredUpdatePolicy>;
+  }) =>
+    assessUpgradeRequest({
+      request: { targetVersion: "0.11.0", trigger: row.trigger ?? "manual" },
+      manifest: row.manifest ?? verified({ infraContractVersion: 3 }),
+      installed: row.installed ?? INSTALLED,
+      policy: { ...POLICY, ...row.policy },
+      now: NOW,
+      route: "converge",
+    });
+  const code = (d: ReturnType<typeof assess>) =>
+    d.kind === "stop" ? `${d.status}/${d.codes.join(",")}` : d.kind;
+
+  it("installs a release that raises the infrastructure contract: that is its job", () => {
+    expect(code(assess({}))).toBe("proceed");
+  });
+
+  it("the contract bump is no reason to warn about destructive migrations", () => {
+    const d = assess({});
+    expect(d.kind === "proceed" ? d.warnings : ["stopped"]).toEqual([]);
+  });
+
+  it("converges automatically only with the Owner's autoConverge (#864), default off", () => {
+    expect(code(assess({ trigger: "auto" }))).toBe("refused/policy");
+    const off = assess({ trigger: "auto" });
+    expect(off.kind === "stop" ? off.reason : "").toContain("Settings → Updates");
+    expect(code(assess({ trigger: "auto", policy: { autoConverge: true } }))).toBe("proceed");
+  });
+
+  it("autoConverge never widens the rest of the policy: kinds, mode and pause still decide", () => {
+    const on = { autoConverge: true };
+    // 0.10.45 → 0.11.0 is a minor release.
+    expect(code(assess({ trigger: "auto", policy: { ...on, autoMinor: false } }))).toBe(
+      "refused/policy",
+    );
+    expect(code(assess({ trigger: "auto", policy: { ...on, mode: "notify" } }))).toBe(
+      "refused/policy",
+    );
+    expect(code(assess({ trigger: "auto", policy: { ...on, paused: true } }))).toBe(
+      "refused/policy",
+    );
+    // The Owner's click needs no autoConverge.
+    expect(code(assess({ trigger: "manual" }))).toBe("proceed");
+  });
+
+  it("keeps every other refusal: signature, downgrade, minFromVersion, unknown version", () => {
+    expect(code(assess({ manifest: broken("signature") }))).toBe("refused/signature");
+    expect(code(assess({ manifest: broken("blob-digest") }))).toBe("refused/signature");
+    expect(code(assess({ installed: { version: "0.11.0", infraContractVersion: 2 } }))).toBe(
+      "refused/not-newer",
+    );
+    expect(
+      code(assess({ manifest: verified({ infraContractVersion: 3, minFromVersion: "0.10.50" }) })),
+    ).toBe("refused/min-from-version");
+    expect(code(assess({ installed: { version: null, infraContractVersion: 2 } }))).toBe(
+      "needs_cloud_shell/install-version-unknown",
+    );
+  });
+
+  it("the upgrader's own route still hands the contract bump on, naming the converge job first", () => {
+    const d = assessUpgradeRequest({
+      request: { targetVersion: "0.11.0", trigger: "manual" },
+      manifest: verified({ infraContractVersion: 3 }),
+      installed: INSTALLED,
+      policy: POLICY,
+      now: NOW,
+    });
+    expect(code(d)).toBe("needs_cloud_shell/infra-contract");
+    expect(d.kind === "stop" ? d.reason : "").toContain("converge job");
   });
 });

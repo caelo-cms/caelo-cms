@@ -13,7 +13,9 @@
  *      release (repo files only; the docs pages on caelo-cms.com are CMS
  *      content, moved by the release's docs-sync draft, RELEASING.md).
  *   3. Updates root package.json + every workspace package.json `version`,
- *      and bun.lock, which records those versions.
+ *      bun.lock, which records those versions, the MCP Registry entry
+ *      (packages/mcp-server/server.json) and the Power-MCP catalogue
+ *      snapshot (packages/mcp-server/power-catalogue.json), both #841.
  *   4. Re-signs every Tier-1 plugin manifest under packages/plugins/<slug>/
  *      via apps/admin/scripts/sign-tier1-manifest.ts (the same script
  *      `bun run plugins:sign` uses).
@@ -51,6 +53,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { CLOUD_SHELL_LINK_FILES, pinCloudShellLinks } from "./cloud-shell-links.ts";
+import { writePowerCatalogue } from "./power-catalogue.ts";
 import {
   parseAdvisoryList,
   RELEASE_META_PATH,
@@ -63,6 +66,17 @@ import {
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const VERSION_FILE = resolve(REPO_ROOT, "packages/shared/src/version.ts");
 const ROOT_PKG = resolve(REPO_ROOT, "package.json");
+/**
+ * #841 — the official MCP Registry entry. release.yml publishes it after
+ * npm; the registry checks its npm package version exists, so it moves
+ * in lockstep like every package.json.
+ */
+const MCP_SERVER_JSON = resolve(REPO_ROOT, "packages/mcp-server/server.json");
+
+interface McpServerJson {
+  version: string;
+  packages: Array<{ version: string }>;
+}
 
 function arg(name: string): boolean {
   return process.argv.includes(`--${name}`);
@@ -178,6 +192,13 @@ function bumpJsonVersions(newVersion: string, dryRun: boolean): string[] {
     }
   }
   return changedPaths;
+}
+
+function bumpMcpServerJson(newVersion: string, dryRun: boolean): void {
+  const entry = JSON.parse(readFileSync(MCP_SERVER_JSON, "utf8")) as McpServerJson;
+  entry.version = newVersion;
+  for (const pkg of entry.packages) pkg.version = newVersion;
+  if (!dryRun) writeFileSync(MCP_SERVER_JSON, `${JSON.stringify(entry, null, 2)}\n`);
 }
 
 function bumpVersionFile(newVersion: string, dryRun: boolean): void {
@@ -338,6 +359,10 @@ function checkLockstep(target: string): { ok: boolean; mismatches: { file: strin
     const pkg = JSON.parse(readFileSync(p, "utf8")) as { version?: string };
     if (pkg.version && pkg.version !== target) mismatches.push({ file: p, v: pkg.version });
   }
+  const entry = JSON.parse(readFileSync(MCP_SERVER_JSON, "utf8")) as McpServerJson;
+  for (const v of [entry.version, ...entry.packages.map((pkg) => pkg.version)]) {
+    if (v !== target) mismatches.push({ file: MCP_SERVER_JSON, v });
+  }
   return { ok: mismatches.length === 0, mismatches };
 }
 
@@ -453,6 +478,12 @@ async function main(): Promise<void> {
 
   const changed = bumpJsonVersions(newVersion, dryRun);
   console.log(`✓ ${changed.length} package.json files updated`);
+
+  bumpMcpServerJson(newVersion, dryRun);
+  console.log(`✓ packages/mcp-server/server.json updated`);
+
+  writePowerCatalogue(newVersion, dryRun);
+  console.log(`✓ packages/mcp-server/power-catalogue.json regenerated`);
 
   refreshLockfile(dryRun);
   console.log(`✓ bun.lock updated`);

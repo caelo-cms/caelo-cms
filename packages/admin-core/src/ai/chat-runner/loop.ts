@@ -30,6 +30,7 @@
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { mcpAgentOpFields } from "../../ops/chat/mcp-agent.js";
 
 import type { AIProvider, ChatMessageInput, ProviderStepSummary } from "../provider.js";
 import { capWrapUpNoticeText, shouldWrapUpAtCap } from "../tools/subagent-budget.js";
@@ -57,6 +58,7 @@ import {
   recentTailCount,
   TOOL_RESULT_HEAD_CHARS,
 } from "./compaction.js";
+import { isE2eAutoApproveEnabled } from "./e2e-auto-approve.js";
 import { costCapUsd, microcents } from "./limits.js";
 import { evaluateLoopZeroDiagnostics } from "./passive-turn.js";
 import { persistApprovalResponse, persistAssistantTurn } from "./persistence.js";
@@ -855,7 +857,7 @@ export async function* runToolLoop(
         ),
         requiredPermissions: approverPermissionsForGatedCall(tools, registry, req.name),
       }));
-      const autoApprove = process.env.CAELO_E2E_AUTO_APPROVE_PROPOSALS === "1";
+      const autoApprove = isE2eAutoApproveEnabled();
       // Issue #658 — record each card with whose turn paused, so the Live
       // Edit chat shows it after a reload (and for a caelo_chat turn at all)
       // and the click continues the right agent. Without the record nobody
@@ -865,9 +867,7 @@ export async function* runToolLoop(
         const recorded = await execute(registry, adapter, humanCtx, "chat.record_turn_approvals", {
           chatSessionId,
           source: external ? "mcp_chat" : "live_edit",
-          ...(external && args.options.agentRunMcpTokenId
-            ? { mcpTokenId: args.options.agentRunMcpTokenId }
-            : {}),
+          ...(external ? mcpAgentOpFields(args.options.agentRunMcpAgent) : {}),
           approvals: cards.map(({ req, preview, requiredPermissions }) => ({
             approvalId: req.approvalId,
             toolCallId: req.toolCallId,

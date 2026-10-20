@@ -46,6 +46,13 @@ const platformUpdateStatus = z.object({
   publishedAt: z.string().nullable(),
   /** When the release check last ran; null when it has never run since the admin was installed. */
   checkedAt: z.string().nullable(),
+  /**
+   * The newest release raises the infrastructure contract over the running
+   * release, so the in-admin upgrader cannot install it (#817; read from the
+   * release manifests by the release check). null = not known, or no newer
+   * release. Display only: the upgrader job decides from the signed manifest.
+   */
+  infraChange: z.boolean().nullable(),
   /** Admin path where the Owner installs updates. */
   updatesPath: z.literal(UPDATES_PATH),
 });
@@ -68,7 +75,9 @@ export const platformUpdateStatusOp = defineOperation({
              -- The migration seeds the singleton with the epoch: "never checked".
              CASE WHEN fetched_at > 'epoch'::timestamptz
                   THEN to_char(fetched_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-             END AS checked_at
+             END AS checked_at,
+             latest_infra_change,
+             infra_change_from
         FROM release_check_cache
        WHERE id = 1
     `)) as unknown as {
@@ -77,6 +86,8 @@ export const platformUpdateStatusOp = defineOperation({
       release_notes: string | null;
       published_at: string | null;
       checked_at: string | null;
+      latest_infra_change: boolean | null;
+      infra_change_from: string | null;
     }[];
     const r = rows[0];
     if (!r) {
@@ -89,15 +100,20 @@ export const platformUpdateStatusOp = defineOperation({
           "release_check_cache has no row (id = 1); migration 0053 seeds it — re-run the database migrations.",
       });
     }
+    const upgradeAvailable =
+      r.latest_version !== null && isNewerVersion(r.latest_version, CAELO_VERSION);
     return ok({
       installedVersion: CAELO_VERSION,
       latestVersion: r.latest_version,
-      upgradeAvailable:
-        r.latest_version !== null && isNewerVersion(r.latest_version, CAELO_VERSION),
+      upgradeAvailable,
       releaseUrl: r.release_url,
       releaseNotes: r.release_notes,
       publishedAt: r.published_at,
       checkedAt: r.checked_at,
+      // Decided against another release (the install was upgraded since the
+      // check): not known for this one until the next check.
+      infraChange:
+        upgradeAvailable && r.infra_change_from === CAELO_VERSION ? r.latest_infra_change : null,
       updatesPath: UPDATES_PATH,
     });
   },

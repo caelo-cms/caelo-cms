@@ -6,6 +6,7 @@
  * Stage button and the Open changes overview (issue #620).
  */
 
+import { describeUnpublishedLinks, type UnpublishedLinkTarget } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { getQueryContext } from "./query.js";
@@ -28,6 +29,8 @@ export async function describeStagedBuild(
     readonly previewUrl?: string;
     /** #678 — the draft pages the build left out (deploy.trigger reports them). */
     readonly draftPages: { readonly count: number; readonly pages: readonly { title: string }[] };
+    /** #724 — links in the build to pages it does not contain. */
+    readonly unpublishedLinks: readonly UnpublishedLinkTarget[];
   },
   pageId: string | null,
 ): Promise<{
@@ -35,6 +38,7 @@ export async function describeStagedBuild(
   previewLabel: string;
   draftPageCount: number;
   draftPageTitles: string[];
+  unpublishedLinkWarning: string | null;
 }> {
   const { adapter, registry } = getQueryContext();
   let previewUrl: string;
@@ -75,5 +79,6 @@ export async function describeStagedBuild(
     previewLabel: previewLabel ?? previewUrl,
     draftPageCount: build.draftPages.count,
     draftPageTitles: build.draftPages.pages.map((p) => p.title),
+    unpublishedLinkWarning: describeUnpublishedLinks(build.unpublishedLinks),
   };
 }

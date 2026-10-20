@@ -41,10 +41,15 @@ export interface EventReporter extends UpgradeReporter {
 }
 
 /**
- * The phase an app-roll step belongs to, from its label (app-roll.ts names
- * its steps). Unknown labels keep the current phase.
+ * The phase an upgrade step belongs to, from its label (app-roll.ts,
+ * converge.ts and upgrade.ts name their steps). Unknown labels keep the
+ * current phase.
  */
 export function phaseOfStep(label: string): PlatformUpdatePhase | null {
+  // The full upgrade (upgrade/upgrade.ts) the converge job runs (#819).
+  if (label.startsWith("Pre-flight")) return "verify";
+  if (label.startsWith("Taking a pre-upgrade")) return "backup";
+  if (/^(Ensuring|Preparing|Removing) /.test(label)) return "converge";
   if (label.startsWith("Checking the health check")) return "health-baseline";
   if (label.startsWith("Applying DB migrations")) return "migrations";
   if (label.startsWith("Rolling ")) return "roll";

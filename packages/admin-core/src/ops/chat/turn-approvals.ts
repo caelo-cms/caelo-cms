@@ -34,7 +34,17 @@ import { recordAudit } from "../../audit.js";
 import type { Permission } from "../../permissions.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { approverRefusal } from "../_approver-permission.js";
-import { getMcpBridge, resolveMcpToken } from "../security/mcp_tokens.js";
+import { exactlyOneMcpCredential, mcpCredentialShape } from "../security/mcp_credential.js";
+import { mcpAgentRefOf } from "../security/mcp_principal.js";
+import { getMcpBridge, resolveMcpPrincipal } from "../security/mcp_tokens.js";
+import {
+  atMostOneMcpAgent,
+  type McpAgentFields,
+  mcpAgentInputShape,
+  mcpAgentOpFields,
+  namesMcpAgent,
+  sameMcpAgentSql,
+} from "./mcp-agent.js";
 import {
   type ChatApprovalState,
   chatApprovalStateOf,
@@ -156,8 +166,11 @@ export const recordTurnApprovalsOp = defineOperation({
     .object({
       chatSessionId: z.string().uuid(),
       source: turnApprovalSource,
-      /** caelo_chat: the token whose turn paused (only it resumes the turn). */
-      mcpTokenId: z.string().uuid().optional(),
+      /**
+       * caelo_chat: the agent whose turn paused — its token or remote
+       * connection (#806). Only that agent resumes the turn.
+       */
+      ...mcpAgentInputShape,
       approvals: z
         .array(
           z
@@ -176,8 +189,10 @@ export const recordTurnApprovalsOp = defineOperation({
         .max(50),
     })
     .strict()
-    .refine((v) => (v.source === "mcp_chat") === (v.mcpTokenId !== undefined), {
-      message: "mcpTokenId is required for an mcp_chat turn and only for one",
+    .refine(atMostOneMcpAgent.check, { message: atMostOneMcpAgent.message })
+    .refine((v) => (v.source === "mcp_chat") === namesMcpAgent(v), {
+      message:
+        "an mcp_chat turn names its agent (mcpTokenId / mcpRemoteConnectionId); a live_edit turn names none",
     }),
   output: z.object({ recorded: z.number().int().nonnegative() }),
   handler: async (ctx, input, tx) => {
@@ -185,10 +200,11 @@ export const recordTurnApprovalsOp = defineOperation({
     for (const a of input.approvals) {
       const rows = (await tx.execute(sql`
         INSERT INTO chat_turn_approvals
-          (chat_session_id, approval_id, source, mcp_token_id, tool_call_id, tool_name, preview,
-           required_permissions)
+          (chat_session_id, approval_id, source, mcp_token_id, mcp_remote_connection_id,
+           tool_call_id, tool_name, preview, required_permissions)
         VALUES (${input.chatSessionId}::uuid, ${a.approvalId}, ${input.source},
-                ${input.mcpTokenId ?? null}::uuid, ${a.toolCallId}, ${a.toolName}, ${a.preview},
+                ${input.mcpTokenId ?? null}::uuid, ${input.mcpRemoteConnectionId ?? null}::uuid,
+                ${a.toolCallId}, ${a.toolName}, ${a.preview},
                 ARRAY(SELECT jsonb_array_elements_text(${jsonbParam(a.requiredPermissions)})))
         ON CONFLICT (chat_session_id, approval_id) DO NOTHING
         RETURNING approval_id
@@ -295,15 +311,16 @@ export const claimTurnApprovalsOp = defineOperation({
       source: turnApprovalSource,
       /** live_edit: the operator's click, recorded as this turn starts. */
       decision: turnApprovalDecision.optional(),
-      /** mcp_chat: the token resuming its own paused turn. */
-      mcpTokenId: z.string().uuid().optional(),
+      /** mcp_chat: the agent (token or remote connection) resuming its own paused turn. */
+      ...mcpAgentInputShape,
     })
     .strict()
+    .refine(atMostOneMcpAgent.check, { message: atMostOneMcpAgent.message })
     .refine(
       (v) =>
         v.source === "live_edit"
-          ? v.decision !== undefined && v.mcpTokenId === undefined
-          : v.decision === undefined && v.mcpTokenId !== undefined,
+          ? v.decision !== undefined && !namesMcpAgent(v)
+          : v.decision === undefined && namesMcpAgent(v),
       {
         message:
           "a live_edit resume carries the operator's decision; an mcp_chat resume carries its token",
@@ -347,7 +364,7 @@ export const claimTurnApprovalsOp = defineOperation({
       const rows = (await tx.execute(sql`
         SELECT approval_id, status, approved, reason FROM chat_turn_approvals
         WHERE chat_session_id = ${input.chatSessionId}::uuid AND source = 'mcp_chat'
-          AND mcp_token_id = ${input.mcpTokenId ?? null}::uuid
+          AND ${sameMcpAgentSql(input)}
           AND status IN ('pending', 'approved', 'rejected')
         ORDER BY created_at
         FOR UPDATE
@@ -375,7 +392,7 @@ export const claimTurnApprovalsOp = defineOperation({
       await tx.execute(sql`
         UPDATE chat_turn_approvals SET status = 'resumed', resumed_at = now()
         WHERE chat_session_id = ${input.chatSessionId}::uuid AND source = 'mcp_chat'
-          AND mcp_token_id = ${input.mcpTokenId ?? null}::uuid
+          AND ${sameMcpAgentSql(input)}
           AND status IN ('approved', 'rejected')
       `);
       decisions = rows.map((r) => ({
@@ -526,15 +543,15 @@ export const decideTurnApprovalOp = defineOperation({
 /** See {@link ChatApprovalState}. */
 const chatApprovalState = z.enum(["pending", "decided", "superseded", "none"]);
 
-async function tokenApprovals(
+async function agentApprovals(
   tx: TransactionRunner,
   chatSessionId: string,
-  tokenId: string,
+  agent: McpAgentFields,
 ): Promise<Row[]> {
   return (await tx.execute(sql`
     SELECT ${COLUMNS} FROM chat_turn_approvals
     WHERE chat_session_id = ${chatSessionId}::uuid AND source = 'mcp_chat'
-      AND mcp_token_id = ${tokenId}::uuid
+      AND ${sameMcpAgentSql(agent)}
     ORDER BY created_at DESC
     LIMIT 50
   `)) as unknown as Row[];
@@ -548,10 +565,12 @@ export const mcpGetChatApprovalStateOp = defineOperation({
   database: "cms_admin",
   input: z
     .object({
-      plaintextToken: z.string().min(8).max(200),
+      /** A bearer token (stdio shim) or a remote IAP credential (#806). */
+      ...mcpCredentialShape,
       chatSessionId: z.string().uuid(),
     })
-    .strict(),
+    .strict()
+    .refine(exactlyOneMcpCredential.check, { message: exactlyOneMcpCredential.message }),
   output: z.object({ state: chatApprovalState, approvals: z.array(turnApprovalView) }),
   handler: async (_ctx, input, tx) => {
     const bridge = getMcpBridge();
@@ -562,18 +581,21 @@ export const mcpGetChatApprovalStateOp = defineOperation({
         message: "MCP bridge not configured",
       });
     }
-    const resolved = await resolveMcpToken(bridge.adapter, input.plaintextToken);
+    const resolved = await resolveMcpPrincipal(bridge.adapter, input, {
+      surface: "chat",
+      operation: "mcp.get_chat_approval_state",
+    });
     if (!resolved.ok) {
       return err({
         kind: "HandlerError",
         operation: "mcp.get_chat_approval_state",
-        message: `auth_error: token ${resolved.error}`,
+        message: resolved.message,
       });
     }
-    const rows = await tokenApprovals(
+    const rows = await agentApprovals(
       tx as TransactionRunner,
       input.chatSessionId,
-      resolved.value.tokenId,
+      mcpAgentOpFields(mcpAgentRefOf(resolved.principal)),
     );
     return ok(chatApprovalStateOf(rows.map(toView)));
   },

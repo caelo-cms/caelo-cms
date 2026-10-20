@@ -33,8 +33,10 @@ import { join } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { checkAdcImpersonation } from "../adc-impersonation.js";
+import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
 import { CERT_WAIT_TIMEOUT_MS, lbCertProbe, waitForCert } from "../cert-wait.js";
 import { redactCredentials } from "../checkpoint-secrets.js";
+import { ensureConvergeJob } from "../converge-job-setup.js";
 import { removeDefaultFirewallRules } from "../default-firewall.js";
 import {
   checkDeployedRuntimeEnv,
@@ -454,11 +456,17 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
 
   phase("Finishing: operator access, welcome page");
 
+  // === 11.3. The quality-audit job: parallel Lighthouse runs (#875) ===
+  // Before the upgrader, which gets actAs on the job's service account.
+  await stepAuditJob(projectId, region, provider);
+
   // === 11.4. The upgrader job: Settings → Updates → Install update (#696) ===
   // Before operator access, which keeps the upgrader's caelo-mcp grant.
   const releaseVersion = await releaseVersionForDigest(gcloud, "admin", imageDigests.admin);
   const upgraderReady = await stepUpgraderJob(projectId, region, releaseVersion);
   const keepSigner = upgraderReady || (await upgraderExists(projectId));
+  // === 11.45. The converge job: releases that change the cloud setup (#819) ===
+  const convergeReady = await stepConvergeJob(projectId, region, releaseVersion);
 
   // === 11.5. Operator access: IAP follows the Caelo user list ===
   await stepOperatorAccessSync(
@@ -470,10 +478,10 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   );
 
   // A fresh install ran every converge step above, so it is at this CLI's
-  // infrastructure contract — recorded only when the upgrader is in place
-  // (the last step a contract bump added). With the release version, the
-  // admin can install the next update itself.
-  if (upgraderReady) {
+  // infrastructure contract — recorded only when the upgrader and the
+  // converge job are in place (the steps contract bumps 2 and 8 added).
+  // With the release version, the admin can install the next update itself.
+  if (upgraderReady && convergeReady) {
     const version = releaseVersion;
     recordImageDigests(installId, imageDigests, version);
     recordInfraContractVersion(installId, INFRA_CONTRACT_VERSION);
@@ -974,6 +982,95 @@ async function stepUpgraderJob(
   }
   s.stop(green(`Upgrader job ready (${r.done.length} steps)`));
   return true;
+}
+
+/**
+ * Set up the converge job (converge-job-setup.ts, #819): what the admin's
+ * "Install update" starts for a release that changes the cloud setup. Same
+ * shape as {@link stepUpgraderJob}: after migrations (its database login
+ * gets migration 0267's role), only a verified ops image, and a failure
+ * only warns — such releases then install from a terminal until a later
+ * `upgrade` sets the job up. Idempotent.
+ *
+ * @returns whether the job is ready
+ */
+async function stepConvergeJob(
+  projectId: string,
+  region: string,
+  releaseVersion: string | null,
+): Promise<boolean> {
+  const opsImageRef = releaseVersion ? await resolveOpsImageRef(releaseVersion) : null;
+  const digest = opsImageRef ? /@(sha256:[0-9a-f]{64})$/.exec(opsImageRef)?.[1] : undefined;
+  // The job runs as the provisioner: only a verified image, ever.
+  if (digest && !(await verifyCosignAll([{ slug: "ops", digest }]))) {
+    log.warn(
+      `The converge job is not set up: its image's signature did not verify. The install works; ${bold(selfCommand("upgrade"))} sets it up later.`,
+    );
+    return false;
+  }
+  const s = spinner();
+  s.start("Setting up the converge job (cloud-setup updates from the admin)...");
+  const resolved = opsImageRef
+    ? await resolveUpgraderTarget({ projectId, region, env: GCP_STACK_ENV, opsImageRef })
+    : {
+        ok: false as const,
+        error: releaseVersion
+          ? `release ${releaseVersion} has no caelo-ops image in the registry`
+          : "the release this install runs could not be told from its images",
+      };
+  const r = resolved.ok
+    ? await ensureConvergeJob(resolved.target)
+    : { ok: false as const, done: [], error: resolved.error };
+  if (!r.ok && r.reason === "no-provisioner") {
+    // #883 review — not needed for the contract: such an install installs
+    // cloud-setup releases from a terminal, and its admin says so.
+    s.stop(yellow("No converge job: this install has no caelo-provisioner to run it as"));
+    log.info(
+      "Releases that change the cloud setup install from a terminal; Settings → Updates says so when one comes.",
+    );
+    return true;
+  }
+  if (!r.ok) {
+    s.stop(yellow(`Converge job not set up: ${r.error}`));
+    log.warn(
+      `The install works; releases that change the cloud setup install from a terminal until ${bold(selfCommand("upgrade"))} sets the job up.`,
+    );
+    return false;
+  }
+  s.stop(green(`Converge job ready (${r.done.length} steps)`));
+  return true;
+}
+
+/**
+ * Set up the quality-audit job (audit-job-setup.ts) on the deployed admin's
+ * image. A failure stops the wizard: without the job every Stage audit
+ * fails. Idempotent, so it runs on every wizard pass.
+ */
+async function stepAuditJob(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+): Promise<void> {
+  const s = spinner();
+  s.start("Setting up the quality-audit job (parallel Lighthouse runs)...");
+  const image = await resolveAdminImage({ projectId, region, env: GCP_STACK_ENV });
+  const r = image.ok
+    ? await ensureAuditJob({
+        provider,
+        projectId,
+        region,
+        env: GCP_STACK_ENV,
+        adminImageRef: image.imageRef,
+        parallelism: GCP_STACK_KNOB_DEFAULTS.auditParallelism,
+      })
+    : { ok: false as const, done: [], error: image.error };
+  if (!r.ok) {
+    s.stop(red(`Failed: ${r.error}`));
+    log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
+    cancel("Aborted.");
+    process.exit(1);
+  }
+  s.stop(green(`Quality-audit job ready (${r.done.length} steps)`));
 }
 
 /**

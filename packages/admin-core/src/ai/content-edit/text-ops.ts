@@ -81,7 +81,9 @@ export function applyStringEdits(source: string, edits: readonly ContentEdit[]):
     current =
       edit.replaceAll === true
         ? current.split(edit.oldString).join(edit.newString)
-        : current.replace(edit.oldString, edit.newString);
+        : // A function replacer: a string one would expand `$&` / `$1` / `$$`
+          // in the operator's new text instead of inserting it verbatim.
+          current.replace(edit.oldString, () => edit.newString);
     replacements += edit.replaceAll === true ? count : 1;
   }
   return { ok: true, content: current, replacements };

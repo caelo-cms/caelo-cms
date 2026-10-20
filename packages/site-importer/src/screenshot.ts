@@ -19,18 +19,31 @@
  * abstraction + a thin Playwright-backed factory.
  */
 
-import { lookup as dnsLookup } from "node:dns";
-import { isIP } from "node:net";
+import {
+  type BlackholeProxy,
+  lockedDownContextOptions,
+  NO_UNPROXIED_WEBRTC_UDP_ARG,
+  startBlackholeProxy,
+} from "./browser-egress.js";
 import { COLLECT_STYLE_SAMPLES_SCRIPT, type ElementStyleSample } from "./design-tokens.js";
 import { REMOVE_HIDDEN_ELEMENTS_SCRIPT } from "./hidden-elements.js";
-import { assertPublicHttpUrl, isPublicIpAddress } from "./safe-fetch.js";
+import {
+  assertPublicHttpUrl,
+  type SafeFetchOptions,
+  safeExternalFetchBinary,
+} from "./safe-fetch.js";
 
 /** Minimal Playwright route surface — typed locally so the package
  * doesn't need @types/playwright (Playwright stays a dynamic import). */
-interface PlaywrightRoute {
-  request(): { url(): string; headers(): Record<string, string> };
+export interface PlaywrightRoute {
+  request(): { url(): string; method(): string; headers(): Record<string, string> };
   abort(errorCode?: string): Promise<void>;
   continue(opts?: { headers?: Record<string, string> }): Promise<void>;
+  fulfill(opts: {
+    status: number;
+    headers?: Record<string, string>;
+    body?: Buffer | Uint8Array;
+  }): Promise<void>;
 }
 
 export interface Screenshot {
@@ -225,7 +238,8 @@ export type BundledChromiumLaunch =
  * the network in tests), and with it Lighthouse's `bf-cache` audit failed
  * on every page of every site ("Back/forward cache is disabled by flags /
  * by the command line", #667). The audit browser drops that one default;
- * the screenshotter keeps Playwright's defaults untouched.
+ * the screenshotter keeps Playwright's defaults and adds only the WebRTC
+ * UDP lock it needs to render untrusted pages (browser-egress.ts).
  */
 export function bundledChromiumLaunchOptions(remoteDebuggingPort?: number): {
   readonly headless: true;
@@ -237,7 +251,11 @@ export function bundledChromiumLaunchOptions(remoteDebuggingPort?: number): {
   // rather than the stripped chromium-headless-shell: the image installs
   // only the full build (#428), which also speaks the complete DevTools
   // protocol the Lighthouse audit needs (#553).
-  if (remoteDebuggingPort === undefined) return { headless: true, channel: "chromium" };
+  // The screenshotter renders untrusted pages: WebRTC must not send UDP
+  // around the black-hole proxy (see browser-egress.ts).
+  if (remoteDebuggingPort === undefined) {
+    return { headless: true, channel: "chromium", args: [NO_UNPROXIED_WEBRTC_UDP_ARG] };
+  }
   return {
     headless: true,
     channel: "chromium",
@@ -299,6 +317,75 @@ export async function launchBundledChromium(opts?: {
 }
 
 /**
+ * Browser request headers worth forwarding to the guarded fetch so the
+ * source site serves what a browser would get. Never cookies or
+ * credentials: the fulfilled responses carry no Set-Cookie, so the context
+ * holds none anyway.
+ */
+const FORWARDED_REQUEST_HEADERS = ["user-agent", "accept", "accept-language", "referer"] as const;
+
+/**
+ * Fulfill an external browser request via `safeExternalFetchBinary` so
+ * connect-time DNS validation (`makeGuardedLookup`), redirect re-validation,
+ * and response size caps apply with zero DNS-rebinding TOCTOU gap between
+ * route inspection and Chromium's socket connect. Non-GET/HEAD requests are
+ * aborted so rendered third-party pages cannot trigger cross-site state
+ * mutations.
+ *
+ * Redirects are followed by the guarded fetch, never handed to Chromium:
+ * Chromium follows a redirect (from `continue()` or a fulfilled 3xx) on its
+ * own network stack WITHOUT routing the next hop, so a 3xx to an internal
+ * address would bypass this guard entirely. The fulfilled response therefore
+ * never carries a `Location` header.
+ */
+export async function handleExternalRoute(
+  route: PlaywrightRoute,
+  opts: {
+    readonly allowedHosts: readonly string[];
+    readonly lookupFn?: SafeFetchOptions["lookupFn"];
+    readonly fetchBinaryFn?: typeof safeExternalFetchBinary;
+    readonly onFinalUrl?: (requestUrl: string, finalUrl: string) => void;
+  },
+): Promise<void> {
+  const req = route.request();
+  const method = req.method().toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    await route.abort("blockedbyclient");
+    return;
+  }
+  const requestUrl = req.url();
+  const fetchFn = opts.fetchBinaryFn ?? safeExternalFetchBinary;
+  try {
+    const browserHeaders = req.headers();
+    const headers: Record<string, string> = {};
+    for (const name of FORWARDED_REQUEST_HEADERS) {
+      const value = browserHeaders[name];
+      if (value !== undefined) headers[name] = value;
+    }
+    const res = await fetchFn(requestUrl, {
+      allowedHosts: opts.allowedHosts,
+      headers,
+      ...(opts.lookupFn ? { lookupFn: opts.lookupFn } : {}),
+    });
+    opts.onFinalUrl?.(requestUrl, res.finalUrl);
+    await route.fulfill({
+      status: res.status,
+      ...(res.contentType ? { headers: { "content-type": res.contentType } } : {}),
+      body: method === "HEAD" ? Buffer.alloc(0) : Buffer.from(res.bodyBytes),
+    });
+  } catch {
+    await route.abort("blockedbyclient");
+  }
+}
+
+/** A navigation URL as the browser requests it: normalized, no fragment. */
+function navigationKey(rawUrl: string): string {
+  const u = new URL(rawUrl);
+  u.hash = "";
+  return u.href;
+}
+
+/**
  * Returns a Playwright-backed screenshotter, or null if Playwright isn't
  * importable in the current runtime. issue #247: a null return is NOT a
  * silent skip anymore — the orchestrator records a loud
@@ -325,7 +412,14 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     return null;
   }
   const browser = launched.browser;
-  const allowedHosts = guardOpts?.allowedHosts ?? [];
+  let blackhole: BlackholeProxy;
+  try {
+    blackhole = await startBlackholeProxy();
+  } catch (e) {
+    await browser.close();
+    throw e;
+  }
+  const allowedHosts = (guardOpts?.allowedHosts ?? []).map((h) => h.toLowerCase());
 
   /**
    * Open an SSRF-guarded context + page, navigate (domcontentloaded + a short
@@ -342,7 +436,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       sameOriginHeaders?: Record<string, string>;
     },
     // biome-ignore lint/suspicious/noExplicitAny: Playwright page + response handles (dynamic import, no @types)
-    fn: (page: any, gotoResponse: any) => Promise<T>,
+    fn: (page: any, gotoResponse: any, navFinalUrl?: string) => Promise<T>,
   ): Promise<T> {
     if (opts.external) {
       // Static pre-check: scheme/port/IP-literal blocks fire before a
@@ -351,6 +445,9 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     }
     const ctx = await browser.newContext({
       viewport: { width: opts.width ?? 1280, height: opts.height ?? 800 },
+      // Non-routed egress (navigation preconnects, WebRTC) goes to the
+      // black hole and service workers are blocked — see browser-egress.ts.
+      ...(opts.external ? lockedDownContextOptions(blackhole.server) : {}),
     });
     if (opts.sameOriginHeaders) {
       // Deliberately NOT `newContext({ extraHTTPHeaders })`: that would send
@@ -371,35 +468,24 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
         await route.continue(patched ? { headers: patched } : undefined);
       });
     }
+    let navTarget = navigationKey(url);
+    let navFinalUrl: string | undefined;
     if (opts.external) {
-      // Guard every request the page makes (navigation + subresources).
-      // Hostnames are resolved at route time; the browser resolves again to
-      // connect, so a rebinding race is narrowed rather than eliminated — the
-      // primary target (direct navigation or an <img>/fetch to a metadata/
-      // loopback address) is fully blocked. The socket-level guarantee lives
-      // in safe-fetch.ts.
+      // Guard every request the page makes (navigation + subresources) by
+      // fulfilling it through safeExternalFetchBinary, eliminating the
+      // DNS-rebinding TOCTOU window between route-time DNS lookup and
+      // Chromium's own socket connection.
       await ctx.route("**/*", async (route: PlaywrightRoute) => {
-        const requestUrl = route.request().url();
-        try {
-          const u = assertPublicHttpUrl(requestUrl, { allowedHosts });
-          const bareHost = u.hostname.startsWith("[") ? u.hostname.slice(1, -1) : u.hostname;
-          if (isIP(bareHost) === 0 && !allowedHosts.includes(bareHost.toLowerCase())) {
-            const addresses = await new Promise<Array<{ address: string }>>((resolve, reject) => {
-              dnsLookup(bareHost, { all: true }, (err, addrs) => {
-                if (err) reject(err);
-                else resolve(addrs as Array<{ address: string }>);
-              });
-            });
-            if (addresses.some((a) => !isPublicIpAddress(a.address))) {
-              await route.abort("blockedbyclient");
-              return;
-            }
-          }
-          await route.continue();
-        } catch {
-          await route.abort("blockedbyclient");
-        }
+        await handleExternalRoute(route, {
+          allowedHosts,
+          onFinalUrl: (reqUrl, finalUrl) => {
+            if (navigationKey(reqUrl) === navTarget) navFinalUrl = finalUrl;
+          },
+        });
       });
+      // WebSockets bypass `ctx.route`; a rendered page must not open one to
+      // an internal address. Closing without connectToServer() never dials.
+      await ctx.routeWebSocket(/.*/, (ws: { close(): Promise<void> }) => ws.close());
     }
     const page = await ctx.newPage();
     try {
@@ -408,12 +494,23 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       // — capped so we never pay the old 30s `networkidle` timeout, which
       // routinely fired because the SSRF route-guard aborts blocked
       // subresources and `networkidle` then never settles.
-      const gotoResponse = await page.goto(url, {
+      let gotoResponse = await page.goto(url, {
         waitUntil: "domcontentloaded",
         timeout: 15_000,
       });
+      if (navFinalUrl !== undefined && navigationKey(navFinalUrl) !== navTarget) {
+        // The guarded fetch followed a redirect, but the browser rendered the
+        // final document under the ORIGINAL url, so relative URLs and the
+        // page's own `location` would be wrong. Navigate to where the
+        // redirect landed; that request goes through the guard again.
+        navTarget = navigationKey(navFinalUrl);
+        gotoResponse = await page.goto(navFinalUrl, {
+          waitUntil: "domcontentloaded",
+          timeout: 15_000,
+        });
+      }
       await page.waitForLoadState("networkidle", { timeout: 3_000 }).catch(() => undefined);
-      return await fn(page, gotoResponse);
+      return await fn(page, gotoResponse, navFinalUrl);
     } finally {
       await ctx.close();
     }
@@ -443,7 +540,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           height: opts?.height,
           ...(opts?.sameOriginHeaders ? { sameOriginHeaders: opts.sameOriginHeaders } : {}),
         },
-        async (page, gotoResponse) => {
+        async (page, gotoResponse, navFinalUrl) => {
           let png: Uint8Array;
           if (opts?.selector) {
             const loc = page.locator(opts.selector).first();
@@ -492,7 +589,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             bytes: new Uint8Array(png),
             width: opts?.width ?? 1280,
             height: opts?.height ?? 800,
-            finalUrl: page.url() as string,
+            finalUrl: navFinalUrl ?? (page.url() as string),
             ...(finalStatus !== undefined ? { finalStatus } : {}),
             ...(styleSamples ? { styleSamples } : {}),
             ...(renderedHtml !== undefined ? { renderedHtml } : {}),
@@ -507,7 +604,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       return withGuardedPage(
         url,
         { external: opts?.external, width: opts?.width, height: opts?.height },
-        async (page, gotoResponse) => {
+        async (page, gotoResponse, navFinalUrl) => {
           let styleSamples: ElementStyleSample[] | undefined;
           if (opts?.sampleStyles) {
             styleSamples = (await page.evaluate(
@@ -533,7 +630,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
             contentType = undefined;
           }
           return {
-            finalUrl: page.url() as string,
+            finalUrl: navFinalUrl ?? (page.url() as string),
             html,
             ...(contentType !== undefined ? { contentType } : {}),
             ...(styleSamples ? { styleSamples } : {}),
@@ -544,11 +641,18 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       );
     },
     async query(html, opts) {
-      const ctx = await browser.newContext();
+      // The HTML is a cached third-party DOM: no script runs (a script
+      // could open a WebSocket or WebRTC session `ctx.route` never sees),
+      // and every other egress path is black-holed like an external capture.
+      const ctx = await browser.newContext({
+        javaScriptEnabled: false,
+        ...lockedDownContextOptions(blackhole.server),
+      });
       try {
         // Structure only — block every subresource (SSRF + speed). The
         // document itself is set directly, so there is no navigation.
         await ctx.route("**/*", (route: PlaywrightRoute) => route.abort());
+        await ctx.routeWebSocket(/.*/, (ws: { close(): Promise<void> }) => ws.close());
         const page = await ctx.newPage();
         await page.setContent(html, { waitUntil: "domcontentloaded", timeout: 10_000 });
         const selector = opts.cssSelector
@@ -572,6 +676,7 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
     },
     async dispose() {
       await browser.close();
+      await blackhole.close();
     },
   };
 }

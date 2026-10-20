@@ -1,0 +1,37 @@
+#!/bin/sh
+# SPDX-License-Identifier: MPL-2.0
+#
+# The converge job's entry point (#819). The `caelo-<env>-converge` Cloud
+# Run job runs as the install's caelo-provisioner, so whoever could pass it
+# arguments or environment could act as the provisioner (#883 review):
+# `destroy`, `owner-reset`, `rotate-secret` as arguments, or CLOUDSDK_*,
+# PULUMI_*, BUN_* variables that redirect gcloud, Pulumi or Bun. Nobody is
+# granted run.jobs.runWithOverrides on the job (converge-job-setup.ts,
+# upgrader-setup.ts); this script makes an override useless as well:
+#
+#   - it accepts exactly one argument, `converge-job` (the deployed one),
+#     and refuses anything else before any code runs;
+#   - it starts the job with an EMPTY environment plus a fixed allowlist:
+#     the image's own settings and the task identity Cloud Run sets
+#     (CLOUD_RUN_* names are reserved; Cloud Run rejects user values).
+#
+# The job reads its only input, the update request, from the database.
+set -eu
+
+if [ "$#" -ne 1 ] || [ "$1" != "converge-job" ]; then
+  echo "caelo-converge-job: refused: the converge job takes exactly the argument 'converge-job', got: $*" >&2
+  exit 64
+fi
+
+exec env -i \
+  HOME=/home/caelo \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  PULUMI_SKIP_UPDATE_CHECK=true \
+  CLOUDSDK_CORE_DISABLE_PROMPTS=1 \
+  CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=true \
+  CLOUD_RUN_JOB="${CLOUD_RUN_JOB:-}" \
+  CLOUD_RUN_EXECUTION="${CLOUD_RUN_EXECUTION:-}" \
+  CLOUD_RUN_TASK_INDEX="${CLOUD_RUN_TASK_INDEX:-}" \
+  CLOUD_RUN_TASK_ATTEMPT="${CLOUD_RUN_TASK_ATTEMPT:-}" \
+  CLOUD_RUN_TASK_COUNT="${CLOUD_RUN_TASK_COUNT:-}" \
+  bun /opt/caelo-ops/packages/platform-updater/src/converge-main.ts

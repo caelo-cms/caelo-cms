@@ -42,6 +42,7 @@ import {
   rollService,
   serviceRollArgs,
 } from "../stack-converge.js";
+import { describeAuditJobImage, setAuditJobImage } from "./audit-job-roll.js";
 import { restoreCommand, type SqlBackup } from "./backup.js";
 import {
   describeServiceJson,
@@ -308,6 +309,13 @@ export type AppRollResult =
       readonly phase: AppRollPhase;
       /** Whether migrations ran before the failure (the backup matters then). */
       readonly migrated: boolean;
+      /**
+       * Whether services had rolled and EVERY one of them was pinned back to
+       * the revision that served before — i.e. the previous release serves
+       * again. False when nothing had rolled, or when a pin failed (then a
+       * person must pin it; the reporter named which).
+       */
+      readonly rolledBack: boolean;
     };
 
 /** Run the app-roll. See the file comment for the sequence. */
@@ -319,10 +327,13 @@ export async function executeAppRoll(
   const { reporter: r, run } = deps;
   const { install } = input.plan;
   let plan = input.plan;
+  /** Set by {@link rollBack}: null until one ran with services to restore. */
+  let rollbackOk: boolean | null = null;
   const fail = (phase: AppRollPhase, migrated: boolean): AppRollResult => ({
     ok: false,
     phase,
     migrated,
+    rolledBack: rollbackOk === true,
   });
 
   // A probe that cannot reach the install now would only fail after the
@@ -366,10 +377,21 @@ export async function executeAppRoll(
   }
 
   const rolled: RollPlan[] = [];
+  /** The audit job's image before this roll moved it (#875); null = not moved. */
+  let auditJobPriorImage: string | null = null;
   const rollBack = async (alsoCurrent?: RollPlan): Promise<void> => {
+    if (auditJobPriorImage) {
+      const back = await setAuditJobImage(run, install, auditJobPriorImage);
+      if (back.ok) r.info(`  audit job image restored to ${auditJobPriorImage.slice(-19)}`);
+      else
+        r.error(
+          `  audit job rollback FAILED (${back.error}) — set its image to ${auditJobPriorImage} by hand`,
+        );
+    }
     const services = alsoCurrent ? [...rolled, alsoCurrent] : rolled;
     if (services.length === 0) return;
     r.warn(`Rolling back ${services.length} service(s) to the revisions that served before...`);
+    rollbackOk = true;
     for (const p of [...services].reverse()) {
       const ok = await pinTraffic(
         run,
@@ -379,7 +401,10 @@ export async function executeAppRoll(
         p.priorRevision,
       );
       if (ok) r.info(`  ${p.slug} traffic restored to ${p.priorRevision}`);
-      else r.error(`  ${p.slug} rollback FAILED — pin ${p.priorRevision} by hand`);
+      else {
+        rollbackOk = false;
+        r.error(`  ${p.slug} rollback FAILED — pin ${p.priorRevision} by hand`);
+      }
       await hooks.afterRollback?.(p.slug);
     }
   };
@@ -445,6 +470,34 @@ export async function executeAppRoll(
     }
     s.done(`${p.slug} rolled to ${p.digest.slice(0, 19)}...`);
     rolled.push(p);
+  }
+
+  // #875 — the audit job runs the admin's image; it follows the admin. A
+  // failure here does not undo the release: audits then fail loudly with
+  // the version mismatch and the fix, until the next upgrade moves it.
+  const sAudit = r.step("Moving the quality-audit job onto the admin's image...");
+  const described = await describeAuditJobImage(run, install);
+  const auditPrior = described.ok ? described.image : null;
+  if (!described.ok) {
+    sAudit.warned(
+      `Could not read the quality-audit job (${described.error}); Stage audits fail until the next upgrade moves it.`,
+    );
+  } else if (!auditPrior) {
+    sAudit.warned(
+      "The install has no quality-audit job yet; Stage audits fail until `cms-provision upgrade` sets it up.",
+    );
+  } else if (auditPrior === admin.imageRef) {
+    sAudit.done("Quality-audit job already on the admin's image");
+  } else {
+    const moved = await setAuditJobImage(run, install, admin.imageRef);
+    if (moved.ok) {
+      auditJobPriorImage = auditPrior;
+      sAudit.done(`Quality-audit job on ${admin.digest.slice(0, 19)}...`);
+    } else {
+      sAudit.warned(
+        `Quality-audit job not moved (${moved.error}); Stage audits fail until the next upgrade moves it.`,
+      );
+    }
   }
 
   if (deps.health) {
