@@ -2,12 +2,12 @@
 
 /**
  * Issue #806 — the Owner's controls over remote MCP connections
- * (`mcp_remote_connections`, migration 0310): one row per (user, surface),
+ * (`mcp_remote_connections`, migration 0319): one row per (user, surface),
  * created on the user's first remote request (see mcp_principal.ts).
  *
  *   mcp_remote_connections.list    — the connections the caller may see
  *                                    (an Owner: all; others: their own —
- *                                    RLS, migration 0316), with emails.
+ *                                    RLS, migration 0322), with emails.
  *   mcp_remote_connections.revoke  — sticky: the user's next request is
  *                                    refused, and no request recreates it.
  *   mcp_remote_connections.restore — lift a revocation.
@@ -82,7 +82,7 @@ async function selectRows(
   id?: string,
 ): Promise<McpRemoteConnectionRow[]> {
   // The connections themselves are read under the CALLER's RLS (migration
-  // 0316): an Owner sees every user's, anyone else only their own. Only the
+  // 0322): an Owner sees every user's, anyone else only their own. Only the
   // emails of those visible rows are then read with system RLS (users RLS
   // is self-or-system) — never a join under system RLS, which would lift the
   // connection scope too.
@@ -112,7 +112,7 @@ async function selectRows(
 }
 
 /**
- * Apply an Owner's change to one connection. RLS (0316) lets only system or
+ * Apply an Owner's change to one connection. RLS (0322) lets only system or
  * a human Owner update, so "no row updated" means the id is unknown OR not
  * the caller's to change — the same answer either way, like mcp_tokens.
  */

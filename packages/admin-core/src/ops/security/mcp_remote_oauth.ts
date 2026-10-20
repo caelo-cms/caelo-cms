@@ -2,7 +2,7 @@
 
 /**
  * Issue #806 — the Google OAuth client remote MCP signs users in with, as
- * far as the database knows it: the client ID only (migration 0313).
+ * far as the database knows it: the client ID only (migration 0320).
  *
  * The secret lives in Secret Manager, written by the admin's setup flow
  * (security/remote-mcp/setup.ts) and read only by the gateway's broker. The
@@ -19,7 +19,7 @@ import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
 
 /**
  * A Google OAuth 2.0 client ID (`<project number>-<random>.apps.googleusercontent.com`).
- * Same pattern as the 0313 CHECK constraint.
+ * Same pattern as the 0320 CHECK constraint.
  */
 export const GOOGLE_OAUTH_CLIENT_ID = /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/;
 
@@ -122,7 +122,7 @@ export const clearMcpRemoteOAuthClientOp = defineOperation({
  * `mcp_remote_oauth.client_for_sync` — the client ID the operator-access
  * sync job allowlists in IAP `programmatic_clients`. Selects only
  * `client_id`: the job's `operator_access_reader` role may read nothing
- * else of the table (migration 0314).
+ * else of the table (migration 0321).
  */
 export const mcpRemoteOAuthClientForSyncOp = defineOperation({
   name: "mcp_remote_oauth.client_for_sync",

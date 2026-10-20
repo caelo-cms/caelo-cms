@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0300 — Settings → Updates answers "can I update, and how?" (#861, #817).
+-- 0317 — Settings → Updates answers "can I update, and how?" (#861, #817).
 --
 -- 1. `superseded`: an update request that asked the Owner to act
 --    (`needs_cloud_shell`) stops asking once the install runs its target
