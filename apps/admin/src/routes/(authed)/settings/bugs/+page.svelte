@@ -2,6 +2,7 @@
   // SPDX-License-Identifier: MPL-2.0
   import { Bug, Copy, Download } from "lucide-svelte";
   import { toast } from "svelte-sonner";
+  import { unsentReportsSummary } from "#lib/bug-forwarding-summary.js";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
   import { Button } from "#lib/components/ui/button/index.js";
   import { cn } from "#lib/utils.js";
@@ -9,6 +10,7 @@
 
   let { data }: { data: { reports: BugReport[] } } = $props();
   const reports = $derived(data.reports);
+  const unsentSummary = $derived(unsentReportsSummary(reports.map((r) => r.forwardingState)));
 
   let expanded = $state<Record<string, boolean>>({});
   const toggle = (id: string) => (expanded[id] = !expanded[id]);
@@ -90,9 +92,8 @@
     <div>
       <h1 class="text-2xl font-semibold tracking-tight">Detected bugs</h1>
       <p class="mt-1 max-w-2xl text-sm text-muted-foreground">
-        Defects the AI flagged while working — it filed these and continued with a workaround. They are
-        stored on this site; the Caelo team only sees them if you send them. Export the list and send it
-        to us, or paste it into a GitHub issue.
+        Defects the AI flagged while working — it filed these and continued with a workaround.
+        {#if unsentSummary}{unsentSummary}{/if}
       </p>
     </div>
     <div class="flex gap-2">
