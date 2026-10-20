@@ -11,6 +11,7 @@ import { describe, expect, it } from "bun:test";
 import type { GcloudResult } from "../gcloud.js";
 import type { GcloudRunner } from "../gcloud-retry.js";
 import type { HttpFetch } from "../runtime-secrets.js";
+import { planGatewayIngress } from "../stack-converge.js";
 import {
   type AppRollInstall,
   type AppRollPlan,
@@ -49,8 +50,9 @@ const secretRef = (name: string, secret: string) => ({
 });
 
 /** A described service, as `gcloud run services describe --format=json` returns it. */
-const serviceJson = (image: string, env: unknown[]) =>
+const serviceJson = (image: string, env: unknown[], ingress = "all") =>
   JSON.stringify({
+    metadata: { annotations: { "run.googleapis.com/ingress": ingress } },
     spec: {
       template: {
         metadata: {
@@ -690,6 +692,39 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(admin).not.toContain("--timeout");
     // No extra revision: everything rides the image rolls.
     expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(2);
+  });
+
+  it("#650 — opens a gcp-firebase gateway created load-balancer-only, in the image roll (regression: its /api answered Google's 404 and the health check rolled every upgrade back)", async () => {
+    const events: string[] = [];
+    const lbOnly = serviceJson(
+      "registry/gateway@sha256:old",
+      JSON.parse(GATEWAY_JSON).spec.template.spec.containers[0].env,
+      "internal-and-cloud-load-balancing",
+    );
+    const { deps, calls } = upgradeDeps(events, {
+      overrides: [[new RegExp(`describe ${GATEWAY} .*--format=json`), ok(lbOnly)]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const rolls = calls.filter((c) => /^run services update /.test(c));
+    expect(rolls.find((c) => c.startsWith(`run services update ${GATEWAY} `))).toContain(
+      "--ingress=all",
+    );
+    expect(rolls.find((c) => c.startsWith(`run services update ${ADMIN} `))).not.toContain(
+      "--ingress",
+    );
+    expect(rolls).toHaveLength(2);
+  });
+
+  it("#650 — leaves the ingress of an open gcp-firebase gateway and of any gcp gateway alone", async () => {
+    const events: string[] = [];
+    const { deps, calls } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    expect(calls.some((c) => c.includes("--ingress"))).toBe(false);
+    expect(planGatewayIngress("gcp", "internal-and-cloud-load-balancing")).toEqual({
+      ok: true,
+      flags: [],
+      changes: [],
+    });
   });
 
   it("#806 — on gcp, routes the discovery paths and adds the Cloud Armor rule before the roll", async () => {

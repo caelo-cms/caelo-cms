@@ -41,10 +41,12 @@ import {
   type LiveVolumes,
   liveContainerEnv,
   liveContainerMemory,
+  liveIngress,
   liveTimeoutSeconds,
   liveVolumes,
   planAdminMemory,
   planContractEnv,
+  planGatewayIngress,
   planMediaVolume,
   planRequestTimeout,
   planSecretFiles,
@@ -100,6 +102,8 @@ export interface ServicePlan {
   readonly liveVolumes: LiveVolumes;
   /** Request timeout now, in seconds (null = Cloud Run's default). */
   readonly liveTimeout: number | null;
+  /** Ingress now (`all`, `internal-and-cloud-load-balancing`, …; null = unset). */
+  readonly liveIngress: string | null;
 }
 
 /** A service plan plus the changes its roll applies. */
@@ -184,6 +188,7 @@ export async function planAppRoll(
       liveMemory: liveContainerMemory(json),
       liveVolumes: liveVolumes(json),
       liveTimeout: liveTimeoutSeconds(json),
+      liveIngress: liveIngress(json),
     });
   }
   const env = planEnv(install, services, {});
@@ -224,16 +229,21 @@ export async function planAppRoll(
     // GATEWAY_TIMEOUT_SECONDS). The admin's timeout is the stacks' alone.
     const timeout =
       s.slug === "gateway" ? planRequestTimeout(s.liveTimeout, GATEWAY_TIMEOUT_SECONDS) : null;
+    // The gcp-firebase gateway must be open to all traffic (planGatewayIngress).
+    const ingress =
+      s.slug === "gateway" ? planGatewayIngress(install.provider, s.liveIngress) : null;
     const memoryFlags = memory?.ok ? memory.flags : [];
     const timeoutFlags = timeout?.ok ? timeout.flags : [];
+    const ingressFlags = ingress?.ok ? ingress.flags : [];
     return {
       ...s,
       envFlags: env.services[s.slug].flags,
       envChanges: env.services[s.slug].changes,
-      resourceFlags: [...memoryFlags, ...timeoutFlags],
+      resourceFlags: [...memoryFlags, ...timeoutFlags, ...ingressFlags],
       resourceChanges: [
         ...memoryFlags.map((f) => `${s.liveMemory ?? "(default)"} → ${f}`),
         ...(timeout?.ok ? timeout.changes : []),
+        ...(ingress?.ok ? ingress.changes : []),
       ],
       volumeFlags: [...(s.slug === "admin" ? media.flags : []), ...secretFiles[s.slug].flags],
       volumeChanges: [...(s.slug === "admin" ? media.changes : []), ...secretFiles[s.slug].changes],

@@ -21,6 +21,8 @@
  *   - {@link planSecretFiles} / {@link planRequestTimeout} (#806): the
  *     gateway's secret file (the remote-MCP OAuth client) and its request
  *     timeout, in the same `services update`.
+ *   - {@link planGatewayIngress} (#650): a gcp-firebase gateway created
+ *     load-balancer-only is opened to all traffic, in the same update.
  */
 
 import { removeDefaultFirewallRules } from "./default-firewall.js";
@@ -995,6 +997,37 @@ export function planRequestTimeout(live: number | null, desired: number): RollAd
     ok: true,
     flags: [`--timeout=${desired}`],
     changes: [`request timeout: ${live === null ? "(default 300)" : live}s → ${desired}s`],
+  };
+}
+
+/** The ingress of a described service (`all`, `internal-and-cloud-load-balancing`, …; null: unset). */
+export function liveIngress(serviceJson: string): string | null {
+  const svc = JSON.parse(serviceJson) as {
+    metadata?: { annotations?: Record<string, string> };
+  };
+  return svc.metadata?.annotations?.["run.googleapis.com/ingress"] ?? null;
+}
+
+/**
+ * `--ingress=all` for a gcp-firebase gateway that is not open to all
+ * traffic. The gcp-firebase stack declares `INGRESS_TRAFFIC_ALL` since #650:
+ * there is no load balancer, so the Firebase Hosting `/api` rewrite, the
+ * staging domain mapping, remote-MCP clients and the upgrade's own health
+ * probe all reach the gateway's run.app URL. A gateway created before #650
+ * kept its load-balancer-only ingress through every image roll — its public
+ * API answered Google's 404 and each upgrade's health check rolled back.
+ * On `gcp` the ingress is left alone: the stack declares load-balancer-only
+ * and `staging-domain enable` (admin-domain.ts) opens it deliberately.
+ */
+export function planGatewayIngress(
+  provider: "gcp" | "gcp-firebase",
+  live: string | null,
+): RollAdditionsPlan {
+  if (provider !== "gcp-firebase" || live === "all") return { ok: true, flags: [], changes: [] };
+  return {
+    ok: true,
+    flags: ["--ingress=all"],
+    changes: [`ingress: ${live ?? "(unset)"} → all (the gcp-firebase stack's, #650)`],
   };
 }
 
