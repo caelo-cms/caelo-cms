@@ -64,6 +64,7 @@
     sdkApprovalRoute,
   } from "./approval-origin.js";
   import { parseProposalContent } from "./proposal-parser.js";
+  import { measureLivePreview, resolveScreenshotViewport } from "./screenshot-viewport.js";
   import {
     collapseStatusNotes,
     contextNoteLabel,
@@ -80,6 +81,10 @@
     moduleId: string;
     selector: string;
     label: string;
+    /** Text the operator selected in the preview (right-click / selection toolbar). */
+    selectedText?: string;
+    /** Text of the block the reference sits in. */
+    context?: string;
     /** When true the chip rides every send within this session (P6.7). */
     pinned?: boolean;
   }
@@ -993,15 +998,17 @@
     pageId: string;
     chatBranchId?: string;
     viewport: "desktop" | "tablet" | "mobile";
+    width?: number;
     selector?: string;
     toolCallId?: string;
   }): Promise<void> {
-    const VIEWPORT_DIMS = {
-      desktop: { width: 1280, height: 800 },
-      tablet: { width: 768, height: 1024 },
-      mobile: { width: 375, height: 812 },
-    };
-    const { width, height } = VIEWPORT_DIMS[req.viewport];
+    // Desktop captures at the operator's live preview size so the AI sees
+    // the same line breaks the operator sees (see screenshot-viewport.ts).
+    const { width, height, source } = resolveScreenshotViewport({
+      viewport: req.viewport,
+      ...(req.width !== undefined ? { width: req.width } : {}),
+      livePreview: measureLivePreview(document),
+    });
 
     const iframe = document.createElement("iframe");
     iframe.style.position = "fixed";
@@ -1128,12 +1135,17 @@
 
       // Capture geometry rides along so the tool result can state
       // crop-vs-full-page as a FACT (run B4: the model doubted a
-      // selector crop and nothing could confirm it after the fact).
+      // selector crop and nothing could confirm it after the fact). The
+      // viewport size + its source tell the AI whether it saw the
+      // operator's own view or a preset width.
       const meta = {
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,
         pageWidth: doc.body.scrollWidth,
         pageHeight: doc.body.scrollHeight,
+        viewportWidth: width,
+        viewportHeight: height,
+        viewportSource: source,
       };
       const res = await fetch(`/content/chat/${session.id}/screenshot/${req.requestId}`, {
         method: "POST",
@@ -1487,6 +1499,8 @@
   }
 
   async function persistPinned(): Promise<void> {
+    // A pin keeps the module + element reference across messages; the
+    // selected text belongs to the message it was picked for.
     const pinned = chips
       .filter((c) => c.pinned)
       .map((c) => ({ moduleId: c.moduleId, selector: c.selector, label: c.label }));
@@ -1506,6 +1520,15 @@
    * /edit/+page.svelte's postMessage handler) appends a new chip referring
    * to the clicked module. Append-only — multiple clicks accumulate so the
    * user can select N elements then send "make them all green" in one turn.
+   *
+   * Ask AI (`ask: true`) only adds the chip and focuses the composer; the
+   * operator types the instruction here and sends it with their own
+   * Enter / Send. Why not take the instruction from the preview and send
+   * it: the event originates in the preview iframe, which runs the site's
+   * module scripts (modules keep <script>, the preview has no CSP), so any
+   * of them can post the same message. A preview message must never make
+   * the AI act — at most it points at an element. The send stays one
+   * action for the operator, in the editor's own trusted UI.
    */
   onMount(() => {
     // Hydration gate — see the composer's `disabled` binding.
@@ -1515,11 +1538,18 @@
     // (the runner just queued or executed something).
     void loadPendingProposals();
     const handler = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail as Chip | undefined;
+      const detail = (ev as CustomEvent).detail as (Chip & { ask?: boolean }) | undefined;
       if (!detail || typeof detail.moduleId !== "string") return;
+      const { ask, ...chip } = detail;
       // De-dupe: don't add a chip already present (pinned or not).
-      if (chips.some((c) => c.moduleId === detail.moduleId && c.selector === detail.selector)) return;
-      chips = [...chips, { ...detail }];
+      const present = chips.some(
+        (c) =>
+          c.moduleId === chip.moduleId &&
+          c.selector === chip.selector &&
+          c.selectedText === chip.selectedText,
+      );
+      if (!present) chips = [...chips, chip];
+      if (ask === true) composerEl?.focus();
     };
     window.addEventListener("caelo:chip", handler);
 
@@ -1917,6 +1947,7 @@
                 pageId: String(ev["pageId"] ?? ""),
                 chatBranchId: typeof ev["chatBranchId"] === "string" ? ev["chatBranchId"] : undefined,
                 viewport: (ev["viewport"] as "desktop" | "tablet" | "mobile" | undefined) ?? "desktop",
+                width: typeof ev["width"] === "number" ? ev["width"] : undefined,
                 // Forward the CSS selector so an element-scoped capture frames
                 // that element — without this it silently fell back to the full
                 // body and cropped a footer to the top viewport.
@@ -2500,7 +2531,11 @@
                   c.pinned ? "bg-amber-500/15 ring-1 ring-amber-500/40" : "bg-primary/10",
                 )}
               >
-                {c.label}
+                <span title={c.selectedText ?? c.context ?? c.selector}>
+                  {c.label}{#if c.selectedText}<span class="text-muted-foreground">
+                      · “{c.selectedText.length > 40 ? `${c.selectedText.slice(0, 39)}…` : c.selectedText}”</span
+                    >{/if}
+                </span>
                 <button
                   type="button"
                   onclick={() => void togglePin(i)}

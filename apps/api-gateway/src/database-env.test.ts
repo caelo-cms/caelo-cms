@@ -63,7 +63,7 @@ describe("adminDatabaseAccessInEnv (#635)", () => {
   });
 
   it("accepts the remote-MCP broker's env and its OAuth client file (#806)", () => {
-    const clientFile = "/secrets/mcp-oauth-client/latest";
+    const clientFile = "/secrets/operator-oauth-client/latest";
     expect(
       check(
         {
@@ -71,7 +71,7 @@ describe("adminDatabaseAccessInEnv (#635)", () => {
           CAELO_MCP_PUBLIC_URL: "https://caelo-production-gateway-abc-ew.a.run.app",
           CAELO_ADMIN_URL: "https://caelo-production-admin-abc-ew.a.run.app",
           CAELO_MCP_OAUTH_SEAL_KEY: "q0pW0X9mY3l0ZXMtb2Yta2V5LW1hdGVyaWFsLTMyYg==",
-          CAELO_MCP_OAUTH_CLIENT_FILE: clientFile,
+          CAELO_OPERATOR_OAUTH_CLIENT_FILE: clientFile,
         },
         fakeFiles({
           [clientFile]: JSON.stringify({

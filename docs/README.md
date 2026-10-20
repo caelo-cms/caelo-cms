@@ -15,6 +15,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [typography-strategy.md](./typography-strategy.md) — the core font service: immutable font registry, licensing, themes and static builds.
 - [branch-aware-plugin-storage.md](./branch-aware-plugin-storage.md) — how plugin writes land on a chat's branch instead of live (CMS_REQUIREMENTS §14.7).
 - [plugin-live-preview.md](./plugin-live-preview.md) — plugin preview documents shown in Live Edit.
+- [live-edit-references.md](./live-edit-references.md) — right-click / selection references and Ask AI in the Live Edit preview, and what the AI receives.
 - [inspect-tooling-redesign.md](./inspect-tooling-redesign.md) — gist-first inspection of external pages and on-demand HTML queries.
 - [dev/public-admin-boundary.md](./dev/public-admin-boundary.md) — the public/admin boundary: the public side is assumed compromised.
 - [dev/public-admin-read-paths.md](./dev/public-admin-read-paths.md) — every path where the admin reads `cms_public` data, and how each treats it as untrusted.

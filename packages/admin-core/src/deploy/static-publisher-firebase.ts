@@ -46,11 +46,18 @@ import {
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
-import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
+import type {
+  PromoteSummary,
+  PublishSummary,
+  StagingPreviewSelection,
+  StaticPublisher,
+} from "./static-publisher.js";
 
 const FIREBASE_HOSTING_API = "https://firebasehosting.googleapis.com/v1beta1";
 const PARALLEL_UPLOADS = 50;
 const PREVIEW_CHANNEL_TTL_DAYS = 7;
+/** Firebase `ttl` duration of a preview channel staging does not serve. */
+const PREVIEW_CHANNEL_TTL = `${PREVIEW_CHANNEL_TTL_DAYS * 24 * 60 * 60}s`;
 
 export function siteName(): string {
   const site = process.env.CAELO_FIREBASE_SITE;
@@ -626,10 +633,19 @@ async function createVersionFromBuild(args: {
   };
 }
 
-/** Ids of every `runid-*` preview channel Stage created on the site (any order). */
-async function listRunPreviewChannels(site: string, token: string): Promise<string[]> {
-  type ListChannelsResponse = { channels?: { name: string }[]; nextPageToken?: string };
-  const ids: string[] = [];
+/** A `runid-*` preview channel Stage created; `neverExpires` once it was selected as served. */
+interface RunPreviewChannel {
+  readonly id: string;
+  readonly neverExpires: boolean;
+}
+
+/** Every `runid-*` preview channel Stage created on the site (any order). */
+async function listRunPreviewChannels(site: string, token: string): Promise<RunPreviewChannel[]> {
+  type ListChannelsResponse = {
+    channels?: { name: string; expireTime?: string | null }[];
+    nextPageToken?: string;
+  };
+  const found: RunPreviewChannel[] = [];
   let pageToken: string | undefined;
   do {
     const page = await firebaseFetch<ListChannelsResponse>(
@@ -638,11 +654,55 @@ async function listRunPreviewChannels(site: string, token: string): Promise<stri
     );
     for (const c of page.channels ?? []) {
       const id = c.name.split("/").pop() ?? "";
-      if (id.startsWith(RUN_CHANNEL_PREFIX)) ids.push(id);
+      // Firebase reports expireTime for every channel it will delete
+      // automatically; none means the channel never expires.
+      if (id.startsWith(RUN_CHANNEL_PREFIX)) found.push({ id, neverExpires: !c.expireTime });
     }
     pageToken = page.nextPageToken;
   } while (pageToken);
-  return ids;
+  return found;
+}
+
+function isNotFound(e: unknown): boolean {
+  return e instanceof FirebaseHostingHttpError && e.status === 404;
+}
+
+function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Retire a preview that staging no longer serves. A served preview never
+ * expires, so it first gets the finite TTL back: if the delete then fails
+ * (transient API error), the preview still disappears on its own instead
+ * of staying publicly reachable forever. Already gone counts as retired.
+ */
+async function retirePreviewChannel(
+  site: string,
+  channel: RunPreviewChannel,
+  token: string,
+): Promise<void> {
+  let ttlError: unknown = null;
+  if (channel.neverExpires) {
+    try {
+      await firebaseFetch(`sites/${site}/channels/${channel.id}?updateMask=ttl`, {
+        method: "PATCH",
+        body: JSON.stringify({ ttl: PREVIEW_CHANNEL_TTL }),
+        token,
+      });
+    } catch (e) {
+      if (!isNotFound(e)) ttlError = e;
+    }
+  }
+  try {
+    await firebaseFetch(`sites/${site}/channels/${channel.id}`, { method: "DELETE", token });
+  } catch (e) {
+    if (isNotFound(e)) return;
+    if (ttlError === null) throw e;
+    throw new Error(
+      `${messageOf(e)}; restoring its TTL failed too (${messageOf(ttlError)}), so it does not expire until a later Stage or Publish live retires it`,
+    );
+  }
 }
 
 export const firebaseHostingPublisher: StaticPublisher = {
@@ -659,15 +719,17 @@ export const firebaseHostingPublisher: StaticPublisher = {
     //    staging.<domain> to it behind the access gate, and it is never
     //    shown to operators or the AI. Firebase cannot lock a channel
     //    (preview channels are public by URL), so older channels are
-    //    deleted as soon as a newer Stage succeeds and the last one after
-    //    Publish live (pruneStagingPreviews), and the TTL is the backstop.
+    //    deleted as soon as a newer Stage succeeds. The TTL stays until
+    //    the Stage selects the channel as the one staging serves
+    //    (selectStagingPreview), so a Stage that fails after this point
+    //    leaves nothing public beyond the TTL.
     const channelId = channelIdFor(runId);
     const channel = await firebaseFetch<CreateChannelResponse>(
       `sites/${site}/channels?channelId=${channelId}`,
       {
         method: "POST",
         body: JSON.stringify({
-          ttl: `${PREVIEW_CHANNEL_TTL_DAYS * 24 * 60 * 60}s`,
+          ttl: PREVIEW_CHANNEL_TTL,
           retainedReleaseCount: 1,
         }),
         token,
@@ -712,22 +774,46 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return summary;
   },
 
-  async pruneStagingPreviews({ keepRunId }) {
+  async selectStagingPreview({ servedRunId }): Promise<StagingPreviewSelection> {
     const site = siteName();
     const token = await googleAuthToken();
-    const keep = keepRunId === null ? null : channelIdFor(keepRunId);
-    const deleted: string[] = [];
-    for (const id of await listRunPreviewChannels(site, token)) {
-      if (id === keep) continue;
-      try {
-        await firebaseFetch(`sites/${site}/channels/${id}`, { method: "DELETE", token });
-      } catch (e) {
-        // Already gone (expired, deleted by a concurrent prune) is the goal.
-        if (!(e instanceof FirebaseHostingHttpError && e.status === 404)) throw e;
+    const channels = await listRunPreviewChannels(site, token);
+    const servedId = servedRunId === null ? null : channelIdFor(servedRunId);
+
+    // The served preview first: staging.<domain> proxies to it until the
+    // next Stage — after Publish live too, where it shows the published
+    // state — so an idle week must not expire it into a 404 on every page.
+    // A null expireTime is Firebase's "never delete automatically". This
+    // also lifts the TTL of a preview selected before served previews were
+    // kept alive (an upgrade between its Stage and the next Publish live).
+    if (servedId !== null) {
+      const served = channels.find((c) => c.id === servedId);
+      if (!served) {
+        throw new Error(
+          `staging serves build ${servedRunId}, but its preview channel ${servedId} no longer exists on Firebase Hosting (it expired or was deleted), so staging cannot serve it. Stage again, then retry.`,
+        );
       }
-      deleted.push(id);
+      if (!served.neverExpires) {
+        await firebaseFetch(`sites/${site}/channels/${servedId}?updateMask=expireTime`, {
+          method: "PATCH",
+          body: JSON.stringify({ expireTime: null }),
+          token,
+        });
+      }
     }
-    return { deleted };
+
+    const retired: string[] = [];
+    const notRetired: { preview: string; error: string }[] = [];
+    for (const channel of channels) {
+      if (channel.id === servedId) continue;
+      try {
+        await retirePreviewChannel(site, channel, token);
+        retired.push(channel.id);
+      } catch (e) {
+        notRetired.push({ preview: channel.id, error: messageOf(e) });
+      }
+    }
+    return { retired, notRetired };
   },
 
   async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl }) {
@@ -768,7 +854,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
     const token = await googleAuthToken();
     // The Hosting version the run released, as its publish summary recorded
     // it — not the run's preview channel, which #650 deletes once a newer
-    // Stage succeeds or the build is published. A promoted run's version is
+    // Stage succeeds. A promoted run's version is
     // already production-shaped; a staging run's carries staging's robots,
     // so the release is re-derived for the rollback target either way —
     // a no-op rewrite for a version that already matches it.

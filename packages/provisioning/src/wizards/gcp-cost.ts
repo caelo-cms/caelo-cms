@@ -166,7 +166,7 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
       name: "Secret Manager (runtime secrets)",
       monthlyUsd: 0.2,
       notes:
-        "6 active versions free, then ~$0.06 each; remote MCP (#806) adds the OAuth client and its seal key",
+        "6 active versions free, then ~$0.06 each; the Google sign-in client (#914) and the remote-MCP seal key (#806)",
     },
     {
       name: "BigQuery edge log sink",

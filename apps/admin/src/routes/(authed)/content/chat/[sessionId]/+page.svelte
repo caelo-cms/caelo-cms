@@ -85,6 +85,7 @@
         bind:this={iframe}
         src={previewSrc}
         title="Live preview"
+        data-caelo-live-preview
         class="h-full w-full border-0"
       ></iframe>
       <button

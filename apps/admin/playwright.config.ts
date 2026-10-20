@@ -92,11 +92,11 @@ export default defineConfig({
       // upgrader job starts nothing (lib/server/upgrader.ts).
       // Test-only, ignored when NODE_ENV=production.
       CAELO_E2E_FAKE_UPGRADER: "1",
-      // #806 — Settings → MCP → Remote sees a Google Cloud install's
-      // remote-MCP env without a cloud; its Google calls fail loudly
-      // (lib/server/remote-mcp.ts). Test-only, ignored when
+      // #806 / #914 — Settings → Google sign-in and Settings → MCP → Remote
+      // see a Google Cloud install's env without a cloud; their Google calls fail loudly
+      // (lib/server/google-iap.ts). Test-only, ignored when
       // NODE_ENV=production.
-      CAELO_E2E_REMOTE_MCP: "1",
+      CAELO_E2E_GOOGLE_IAP: "1",
     },
   },
 });
