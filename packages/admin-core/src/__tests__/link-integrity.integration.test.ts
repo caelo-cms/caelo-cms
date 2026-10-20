@@ -260,19 +260,24 @@ describe("reference integrity over legacy literal links (#846 field kinds)", () 
     ).not.toContainEqual(expect.objectContaining({ severity: "block" }));
   });
 
-  it("#846: scans content values by declared field kind — image/text paths are never links", async () => {
+  it("#846: scans content values by declared field kind — text paths are never links", async () => {
     const broken = await brokenLiterals();
-    // Not links: image paths, plain text / text-list copy that starts with
-    // `/`, and a stored value with no declared field.
+    // Not links: plain text / text-list copy that starts with `/`, and a
+    // stored value with no declared field.
     for (const notALink of [
-      "/media/foo.webp",
       "/shop/xyz",
       "/shop/tag-path",
-      "/media/nested.webp",
       "/shop/nested-text",
       "/missing-undeclared",
     ]) {
       expect(broken).not.toContain(notALink);
+    }
+    // An image value is a file reference since rollout C (the write path
+    // refuses a file nothing serves, `unknown-file`), so a legacy image
+    // path nothing serves is reported as the broken file link it is —
+    // never as a page link.
+    for (const deadFile of ["/media/foo.webp", "/media/nested.webp"]) {
+      expect(broken).toContain(deadFile);
     }
     // Still links, still reported when they point at no page: link value,
     // url field default (what renders when no value is set), link-list

@@ -114,19 +114,25 @@ function remedy(problem: ReferenceProblem, target: string, variant: string | nul
   }
 }
 
-/** The tool that changes the link where it is stored. */
+/**
+ * The tool that changes the link where it is stored.
+ *
+ * @param instanceLevel content that must be fixed on its content instance:
+ *   shared by several pages, or shown through a synced placement (which
+ *   set_page_module_content refuses).
+ */
 export function fixFor(
   problem: ReferenceProblem,
   place: ReferencePlace,
   target: string,
   variant: string | null,
   where: string,
-  shared: boolean,
+  instanceLevel: boolean,
 ): ReferenceFix {
   const what = remedy(problem, target, variant);
   switch (place.kind) {
     case "content":
-      return place.nested || shared
+      return place.nested || instanceLevel
         ? {
             tool: "set_content_instance_values",
             hint: clip(
