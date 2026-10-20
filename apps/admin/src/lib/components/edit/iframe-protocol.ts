@@ -13,7 +13,11 @@
  *   - iframe → parent: `caelo:element-referenced` when the operator
  *     picks "Ask AI" or "Add to chat" from the right-click menu or the
  *     selection toolbar. Carries the module id, the element path, the
- *     selected text + its surrounding text, and (Ask AI) the prompt.
+ *     selected text + its surrounding text, the marked field it sits in
+ *     (#917), and (Ask AI) the prompt.
+ *   - iframe → parent: `caelo:field-edit` when the operator finished
+ *     editing a marked field's text in place (#917); the parent saves
+ *     it and reloads the iframe.
  *   - parent → iframe: `caelo:reload` to refetch the iframe's source
  *     after a tool result lands a new branch snapshot.
  */
@@ -41,15 +45,36 @@ export interface ElementReferencedMessage {
   selectedText?: string;
   /** Text of the block the reference sits in (paragraph, heading, list item, …). */
   context?: string;
+  /** #917 — the marked placement field the reference sits in, when there is one. */
+  blockName?: string;
+  position?: number;
+  field?: string;
+  /** List item index for a `text-list` / `link-list` field. */
+  index?: number;
   /** Ask AI: what the operator typed; the parent sends it into the current chat. */
   prompt?: string;
+}
+
+/** #917 — the operator edited one marked field's text in place. */
+export interface FieldEditMessage {
+  kind: "caelo:field-edit";
+  pageId: string;
+  blockName: string;
+  position: number;
+  field: string;
+  index?: number;
+  text: string;
 }
 
 export interface ReloadMessage {
   kind: "caelo:reload";
 }
 
-export type IframeToParent = ReadyMessage | NavigatedMessage | ElementReferencedMessage;
+export type IframeToParent =
+  | ReadyMessage
+  | NavigatedMessage
+  | ElementReferencedMessage
+  | FieldEditMessage;
 export type ParentToIframe = ReloadMessage;
 export type CaeloMessage = IframeToParent | ParentToIframe;
 
@@ -60,6 +85,7 @@ export function isCaeloMessage(value: unknown): value is CaeloMessage {
     k === "caelo:ready" ||
     k === "caelo:navigated" ||
     k === "caelo:element-referenced" ||
+    k === "caelo:field-edit" ||
     k === "caelo:reload"
   );
 }

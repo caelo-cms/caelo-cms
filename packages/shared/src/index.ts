@@ -16,6 +16,7 @@ export * from "./css-var-scan.js";
 export * from "./database-url.js";
 export * from "./design-draft-shell.js";
 export * from "./document-language.js";
+export * from "./edit-markers.js";
 export * from "./font-assets.js";
 export * from "./font-axis-policy.js";
 export * from "./font-usage.js";

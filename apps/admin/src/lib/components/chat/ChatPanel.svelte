@@ -84,6 +84,11 @@
     selectedText?: string;
     /** Text of the block the reference sits in. */
     context?: string;
+    /** #917 — the marked placement field the reference sits in. */
+    blockName?: string;
+    position?: number;
+    field?: string;
+    index?: number;
     /** When true the chip rides every send within this session (P6.7). */
     pinned?: boolean;
   }

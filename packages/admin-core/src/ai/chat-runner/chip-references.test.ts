@@ -27,6 +27,24 @@ describe("element references in the persisted user message (#916)", () => {
     expect(text).toContain('    surrounding text: "Welcome to our shop, \\"est. 1990\\""');
   });
 
+  test("names the placement field a marked text comes from (#917)", () => {
+    const text = render([
+      {
+        moduleId: MODULE_ID,
+        selector: "nav > a",
+        label: "nav",
+        selectedText: "Docs",
+        blockName: "header",
+        position: 0,
+        field: "links",
+        index: 2,
+      },
+    ]);
+    expect(text).toContain(
+      `(module=${MODULE_ID}, element=nav > a, placement=(blockName=header, position=0), field=links[2])`,
+    );
+  });
+
   test("a dropdown-picked module (no element) renders without an element path", () => {
     const text = render([{ moduleId: MODULE_ID, selector: "", label: "hero — Hero" }]);
     expect(text).toContain(`  - hero — Hero (module=${MODULE_ID})`);

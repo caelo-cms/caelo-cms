@@ -87,6 +87,8 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
     pageId: page.id,
     ...(branch ? { chatBranchId: branch } : {}),
     ...(excludeBranchModules ? { excludeBranchModules } : {}),
+    // #917 — field markers for in-place text editing.
+    editMarkers: true,
   });
   if (!composed.ok) {
     if (composed.error.kind === "BranchNotFound") throw error(404, "Branch not found");

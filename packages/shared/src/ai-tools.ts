@@ -430,7 +430,10 @@ export const CHAT_MAX_ATTACHMENTS = 4;
  * module picked from the composer's module dropdown. `selectedText` and
  * `context` come from a right-click / text selection in the live-edit
  * preview (#916): what the operator selected and the text of the block
- * around it, so the AI knows exactly what was meant.
+ * around it, so the AI knows exactly what was meant. `blockName` /
+ * `position` / `field` / `index` (#917) name the placement field the text
+ * comes from when the preview marked it, so the AI can address it in
+ * `set_page_module_content` without inspecting the page first.
  */
 export const chatChipSchema = z
   .object({
@@ -439,6 +442,10 @@ export const chatChipSchema = z
     label: z.string().min(1).max(200),
     selectedText: z.string().min(1).max(2000).optional(),
     context: z.string().min(1).max(500).optional(),
+    blockName: z.string().min(1).max(80).optional(),
+    position: z.number().int().nonnegative().optional(),
+    field: z.string().min(1).max(200).optional(),
+    index: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type ChatChip = z.infer<typeof chatChipSchema>;
