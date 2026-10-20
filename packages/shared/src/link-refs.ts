@@ -104,6 +104,21 @@ const QUERY_SRC = "[A-Za-z0-9_\\-.~%=&;+/:@!$()*]{1,512}";
 // Fragment: what an HTML id / URL fragment realistically carries.
 const ANCHOR_SRC = "[A-Za-z0-9_\\-.~%:]{1,256}";
 const VARIANT_SRC = "[a-z][a-z0-9-]{0,63}";
+
+/**
+ * Whole-string tests for the query, anchor and media-variant parts of a
+ * reference — built from the grammar's own sources, so a writer that
+ * validates author input with them (write-time canonicalisation, #724
+ * rollout C) accepts exactly what {@link formatLinkRef} accepts and a bad
+ * suffix is a validation issue, never a thrown error.
+ */
+export const LINK_REF_PART_PATTERNS: Readonly<{ query: RegExp; anchor: RegExp; variant: RegExp }> =
+  {
+    query: new RegExp(`^${QUERY_SRC}$`),
+    anchor: new RegExp(`^${ANCHOR_SRC}$`),
+    variant: new RegExp(`^${VARIANT_SRC}$`),
+  };
+
 // `caelo:` is a scheme only where a scheme can start: `xcaelo:page/…`
 // is some other scheme's text, not a reference.
 const REF_START_SRC = "(?<![A-Za-z0-9+.\\-])caelo:";

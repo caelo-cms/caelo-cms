@@ -228,9 +228,17 @@ describe("pages.render_preview — internal references", () => {
     const page = await buildPage(
       `${PFX}-mal`,
       "published",
-      `<a class="m" href="caelo:page/${target}/team">Team</a>`,
-      {},
-      [],
+      "<p>{{body_text}}</p>",
+      { body_text: "M" },
+      TEXT,
+    );
+    // Write-time canonicalisation (rollout C) refuses a malformed
+    // reference, so the broken markup is seeded underneath the ops.
+    await asSystem(
+      (
+        tx,
+      ) => tx`UPDATE modules SET html = ${`<a class="m" href="caelo:page/${target}/team">Team</a>`}
+                 WHERE display_name = ${`${PFX} ${PFX}-mal Body`}`,
     );
     const out = await preview(page);
     expect(out.html).toContain(`href="caelo:page/${target}/team"`);
@@ -278,11 +286,19 @@ describe("pages.render_preview — internal references", () => {
       `${PFX}-twolinks`,
       "published",
       '<a class="n" href="{{fresh_href}}">N</a><a class="k" href="{{kept_href}}">K</a>',
-      { fresh_href: `caelo:page/${fresh}`, kept_href: `caelo:page/${kept}` },
+      { fresh_href: `caelo:page/${kept}`, kept_href: `caelo:page/${kept}` },
       [
         { name: "fresh_href", kind: "url", label: "New" },
         { name: "kept_href", kind: "url", label: "Kept" },
       ],
+    );
+    // A main page cannot link to a page that exists only on a chat branch
+    // (write-time canonicalisation refuses it, rollout C), so that link
+    // is seeded underneath the ops.
+    await asSystem(
+      (tx) => tx`UPDATE content_instances
+                 SET "values" = jsonb_set("values", '{fresh_href}', to_jsonb(${`caelo:page/${fresh}`}::text))
+                 WHERE module_id IN (SELECT id FROM modules WHERE display_name = ${`${PFX} ${PFX}-twolinks Body`})`,
     );
     const deleted = await execute(registry, adapter, chatCtx, "pages.delete", { pageId: kept });
     if (!deleted.ok) throw new Error(`branch delete: ${JSON.stringify(deleted.error)}`);

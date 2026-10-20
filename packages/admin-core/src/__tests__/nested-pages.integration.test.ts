@@ -150,7 +150,11 @@ describe("nested page URLs — create + compose", () => {
 });
 
 describe("nested page URLs — pages.move_many", () => {
-  it("moves a subtree with 301s, nav + module link rewrites, chain collapse", async () => {
+  // Since #724 nav and module links are stored as page references, so a
+  // move rewrites no stored link: reads show the new paths. Only legacy
+  // literal links (content written before #724) still go through the
+  // text rewrite, which must leave a look-alike path alone.
+  it("moves a subtree with 301s, links following by reference, chain collapse", async () => {
     const target = await makePage("tgt");
     const page = await makePage("mv");
     const sub = await makePage("mv-sub", page);
@@ -172,11 +176,17 @@ describe("nested page URLs — pages.move_many", () => {
     const mod = await execute(registry, adapter, SYSTEM, "modules.create", {
       slug: `${PFX}-links`,
       displayName: "Links",
-      html: `<a href="${oldSub}">sub</a><a href="${oldPage}-x">look-alike</a>`,
+      html: `<a href="${oldSub}">sub</a>`,
       fields: [{ name: "body", kind: "text", label: "Body" } as never],
     });
     if (!mod.ok) throw new Error("module seed");
     const moduleId = (mod.value as { moduleId: string }).moduleId;
+    // A legacy literal look-alike (no page answers it, so only pre-#724
+    // content can hold it), written underneath the ops.
+    await q(
+      (tx) => tx`UPDATE modules SET html = html || ${`<a href="${oldPage}-x">look-alike</a>`}
+      WHERE id = ${moduleId}::uuid`,
+    );
 
     const r = await move([{ pageId: page, parentPageId: target }]);
     expect(r.ok).toBe(true);
@@ -196,15 +206,28 @@ describe("nested page URLs — pages.move_many", () => {
       (tx) => tx`SELECT items FROM structured_sets WHERE slug = ${`${PFX}-nav`}`,
     )) as unknown as { items: unknown }[];
     const items = JSON.stringify(setRows[0]?.items);
-    expect(items).toContain(newPage);
-    expect(items).toContain(newSub);
+    expect(items).toContain(`"href":"caelo:page/${page}"`);
+    expect(items).toContain(`"href":"caelo:page/${sub}"`);
+    const readSet = await execute(registry, adapter, SYSTEM, "structured_sets.get", {
+      kind: "nav-menu",
+      slug: `${PFX}-nav`,
+    });
+    if (!readSet.ok) throw new Error("get nav");
+    const readItems = JSON.stringify((readSet.value as { set: { items: unknown } }).set.items);
+    expect(readItems).toContain(`"href":"${newPage}"`);
+    expect(readItems).toContain(`"href":"${newSub}"`);
     const html = (
       (await q((tx) => tx`SELECT html FROM modules WHERE id = ${moduleId}::uuid`)) as unknown as {
         html: string;
       }[]
     )[0]?.html;
-    expect(html).toContain(`href="${newSub}"`);
+    expect(html).toContain(`href="caelo:page/${sub}"`);
     expect(html).toContain(`href="${oldPage}-x"`);
+    const readModule = await execute(registry, adapter, SYSTEM, "modules.get", { moduleId });
+    if (!readModule.ok) throw new Error("get module");
+    expect((readModule.value as { module: { html: string } }).module.html).toContain(
+      `href="${newSub}"`,
+    );
 
     // Moving back: the page reclaims its old URL — the redirect sitting
     // on it yields instead of shadowing the page.

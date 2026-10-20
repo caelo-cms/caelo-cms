@@ -54,6 +54,9 @@ const AI: ExecutionContext = {
 const TPL = "idchain-tpl";
 const SLUG_A = "idchain-a";
 const SLUG_B = "idchain-b";
+// The page Alpha links to. It exists before Alpha is rebuilt: an internal
+// link must name an existing page (#724).
+const SLUG_CONTACT = "idchain-contact";
 const RUN_MARK = "http://127.0.0.1/idchain?run";
 const SESSION_TITLE = "idchain-branch-session";
 
@@ -80,8 +83,8 @@ async function wipe(): Promise<void> {
   await sqlc.begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
     await tx`DELETE FROM chat_sessions WHERE title = ${SESSION_TITLE}`;
-    await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN (${SLUG_A}, ${SLUG_B}))`;
-    await tx`DELETE FROM pages WHERE slug IN (${SLUG_A}, ${SLUG_B})`;
+    await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug IN (${SLUG_A}, ${SLUG_B}, ${SLUG_CONTACT}))`;
+    await tx`DELETE FROM pages WHERE slug IN (${SLUG_A}, ${SLUG_B}, ${SLUG_CONTACT})`;
     await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE ${"idchain-%"})`;
     await tx`DELETE FROM modules WHERE slug LIKE ${"idchain-%"}`;
     await tx`DELETE FROM templates WHERE slug = ${TPL}`;
@@ -211,6 +214,12 @@ describe("import-page id chain (issues #422 / #263 / #360)", () => {
     // to obtain the id) — no accepted link is stamped, resolution must go
     // through the slug match.
     const templateId = await templateIdBySlug();
+    const contact = await execute(registry, adapter, SYSTEM, "pages.create", {
+      slug: SLUG_CONTACT,
+      title: "Contact",
+      templateId,
+    });
+    if (!contact.ok) throw new Error(`contact page: ${JSON.stringify(contact.error)}`);
     const built = await execute(registry, adapter, SYSTEM, "pages.build_page", {
       page: { slug: SLUG_A, title: "Alpha", templateId },
       modules: [

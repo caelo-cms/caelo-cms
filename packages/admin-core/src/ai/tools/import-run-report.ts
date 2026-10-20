@@ -138,6 +138,13 @@ interface Report {
     pageId: string | null;
     createdAt: string | null;
   }[];
+  // Epic #724 — links to planned pages and the ones matching no page.
+  internalLinks: {
+    pending: number;
+    resolved: number;
+    unresolved: { value: string; entityKind: string; entityId: string; location: string }[];
+    nextStep: string | null;
+  };
 }
 
 export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
@@ -253,6 +260,20 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
             .map((e) => `${e.url} (${e.reason})`)
             .join("; ")}${v.crawlErrors.length > 8 ? "; …" : ""}`
         : "Crawl errors: none.",
+      // Epic #724 — always stated, like the crawl errors: a link that
+      // still matches no page is a finding, never silent.
+      v.internalLinks.unresolved.length > 0
+        ? `Internal links matching no page (${v.internalLinks.unresolved.length}): ${v.internalLinks.unresolved
+            .slice(0, 12)
+            .map((u) => `"${u.value}" in ${u.entityKind} ${u.entityId} (${u.location})`)
+            .join(
+              "; ",
+            )}${v.internalLinks.unresolved.length > 12 ? "; …" : ""}. ${v.internalLinks.nextStep ?? ""}`
+        : `Internal links: ${v.internalLinks.resolved} written before their page existed now point at it; none matches no page.${
+            v.internalLinks.pending > 0
+              ? ` ${v.internalLinks.pending} still wait for a page of this run: ${v.internalLinks.nextStep ?? ""}`
+              : ""
+          }`,
       // issue #425 — the active scope and the skipped-out-of-scope count
       // are ALWAYS stated (CLAUDE.md §2 loud reporting), even at zero.
       v.crawlScope

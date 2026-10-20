@@ -227,8 +227,24 @@ export function extractMediaRefs(html: string): MediaRef[] {
     seen.add(key);
     out.push({ ref, isSlug, variant });
   }
+  // Epic #724 — stored references `caelo:media/<id>[/<variant>]` name the
+  // asset by id, like the legacy form, so usage tracking and the delete
+  // guards keep seeing embeds after write-time canonicalisation. (The
+  // grammar lives in link-refs.ts, which imports this module; the pattern
+  // is repeated here instead of importing back.)
+  for (const m of html.matchAll(mediaRefPattern)) {
+    const ref = m[1] as string;
+    const variant = m[2] ?? "orig";
+    const key = `i:${ref}/${variant}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ref, isSlug: false, variant });
+  }
   return out;
 }
+
+const mediaRefPattern =
+  /caelo:media\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z][a-z0-9-]{0,63}))?/g;
 
 // ---------------------------------------------------------------------
 // Zod schemas — exposed at the Query-API boundary.
