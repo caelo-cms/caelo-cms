@@ -69,6 +69,8 @@ export interface UpgradePathEnv {
    * CAELO_FAKE_IMAGE_PROVIDER.
    */
   readonly CAELO_E2E_UPDATES_PROVIDER?: string;
+  /** Test-only, same gate: `stopped` ends the fake job's latest run (server/upgrader.ts). */
+  readonly CAELO_E2E_RUN_STATE?: string;
   /** `projects/<id>/locations/<region>/jobs/<job>` — names the install's project. */
   readonly CAELO_UPGRADER_JOB?: string;
 }

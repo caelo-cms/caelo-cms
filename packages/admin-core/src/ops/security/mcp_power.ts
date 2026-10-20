@@ -54,20 +54,17 @@ import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
+import { mcpAgentOpFields } from "../chat/mcp-agent.js";
 import {
   approvalOutcome,
   findMcpHandoffByToolCall,
   readHandoffForAgent,
   recordMcpHandoff,
 } from "../mcp_approval_handoffs.js";
+import { exactlyOneMcpCredential, mcpCredentialShape } from "./mcp_credential.js";
 import { annotateExcludedToolMentions } from "./mcp_power_prose.js";
-import {
-  getMcpBridge,
-  type McpTokenScope,
-  mcpTokenAuthErrorMessage,
-  resolveMcpToken,
-  type SendChatBridgeOpts,
-} from "./mcp_tokens.js";
+import { type McpPrincipal, mcpAgentRefOf } from "./mcp_principal.js";
+import { getMcpBridge, resolveMcpPrincipal, type SendChatBridgeOpts } from "./mcp_tokens.js";
 
 /**
  * Tools that only work inside the chat-runner loop or the browser SSE
@@ -219,48 +216,25 @@ const MCP_CONDITIONAL_APPROVAL_NOTE =
   "the card; never ask them to paste a prompt into the Caelo chat.";
 
 /**
- * Bearer → actor for the Power-MCP surface. Same resolution as
- * mcp.send_chat plus the scope check; failures keep the `auth_error:`
- * prefix so the HTTP shell maps them to 401.
+ * Credential → principal for the Power-MCP surface: an admin-scoped token
+ * or the remote admin connection (#806). Failures keep the `auth_error:` /
+ * `permission_denied:` prefixes the HTTP shells map to 401 / 403.
  */
-async function resolveAdminScopedToken(
+async function resolveAdminPrincipal(
   adapter: DatabaseAdapter,
-  plaintextToken: string,
+  credential: Parameters<typeof resolveMcpPrincipal>[1],
   operation: string,
-): Promise<
-  | {
-      ok: true;
-      actorId: string;
-      tokenId: string;
-      displayName: string;
-      scope: McpTokenScope;
-      aiCostCapMicrocents: number | null;
-      allowCaeloAi: boolean;
-    }
-  | { ok: false; message: string }
-> {
-  const resolved = await resolveMcpToken(adapter, plaintextToken);
-  if (!resolved.ok) {
-    return { ok: false, message: mcpTokenAuthErrorMessage(resolved.error) };
-  }
-  if (resolved.value.scope !== "admin") {
-    return {
-      ok: false,
-      message:
-        `auth_error: token scope '${resolved.value.scope}' — ${operation} needs an admin-scoped token. ` +
-        `Mint one at /settings/mcp (scope: admin); 'chat' tokens only drive caelo_chat.`,
-    };
-  }
-  return {
-    ok: true,
-    actorId: resolved.value.actorId,
-    tokenId: resolved.value.tokenId,
-    displayName: resolved.value.displayName,
-    scope: resolved.value.scope,
-    aiCostCapMicrocents: resolved.value.aiCostCapMicrocents,
-    allowCaeloAi: resolved.value.allowCaeloAi,
-  };
+): Promise<({ ok: true } & McpPrincipal) | { ok: false; message: string }> {
+  const r = await resolveMcpPrincipal(adapter, credential, { surface: "admin", operation });
+  return r.ok ? { ok: true, ...r.principal } : r;
 }
+
+/** The Power-MCP ops' input: the credential plus the op's own fields. */
+const withCredential = <T extends z.ZodRawShape>(shape: T) =>
+  z
+    .object({ ...mcpCredentialShape, ...shape })
+    .strict()
+    .refine(exactlyOneMcpCredential.check, { message: exactlyOneMcpCredential.message });
 
 function bridgeOrError():
   | { ok: true; bridge: SendChatBridgeOpts }
@@ -284,18 +258,14 @@ export const mcpListToolsOp = defineOperation({
   // resolves the real actor itself.
   actorScope: ["system"],
   database: "cms_admin",
-  input: z.object({ plaintextToken: z.string().min(8).max(200) }).strict(),
+  input: withCredential({}),
   output: z.object({ tools: z.array(toolCatalogueEntry) }),
   handler: async (_ctx, input, _tx) => {
     const bridged = bridgeOrError();
     if (!bridged.ok) {
       return err({ kind: "HandlerError", operation: "mcp.list_tools", message: bridged.message });
     }
-    const auth = await resolveAdminScopedToken(
-      bridged.bridge.adapter,
-      input.plaintextToken,
-      "mcp.list_tools",
-    );
+    const auth = await resolveAdminPrincipal(bridged.bridge.adapter, input, "mcp.list_tools");
     if (!auth.ok) {
       return err({ kind: "HandlerError", operation: "mcp.list_tools", message: auth.message });
     }
@@ -310,6 +280,24 @@ export const mcpListToolsOp = defineOperation({
 /** Title of a session the Power-MCP opens without one. */
 const MCP_SESSION_TITLE = "MCP · admin session";
 
+/**
+ * #806 — the remote transport is stateless (any instance may serve the next
+ * request), so a remote connection's current work session lives on its row
+ * instead of in the shim's process memory. Token sessions stay with the
+ * stdio shim, which holds them itself.
+ */
+async function rememberRemoteSession(
+  tx: Parameters<typeof recordMcpHandoff>[0],
+  principal: McpPrincipal,
+  chatSessionId: string,
+): Promise<void> {
+  if (principal.via.kind !== "remote") return;
+  await tx.execute(sql`
+    UPDATE mcp_remote_connections SET current_chat_session_id = ${chatSessionId}::uuid
+    WHERE id = ${principal.via.connectionId}::uuid
+  `);
+}
+
 export const mcpOpenSessionOp = defineOperation({
   name: "mcp.open_session",
   // Why system-only: the bearer token is in the input (same reason as mcp.list_tools) — the HTTP
@@ -318,7 +306,7 @@ export const mcpOpenSessionOp = defineOperation({
   database: "cms_admin",
   input: z
     .object({
-      plaintextToken: z.string().min(8).max(200),
+      ...mcpCredentialShape,
       /** Resume this session (it must belong to the token's owner). */
       chatSessionId: z.string().uuid().optional(),
       /**
@@ -332,6 +320,7 @@ export const mcpOpenSessionOp = defineOperation({
       pageId: z.string().uuid().optional(),
     })
     .strict()
+    .refine(exactlyOneMcpCredential.check, { message: exactlyOneMcpCredential.message })
     .refine((v) => !(v.newSession && v.chatSessionId), {
       message:
         "pass chatSessionId to resume a session OR newSession: true for a fresh one, not both",
@@ -342,13 +331,13 @@ export const mcpOpenSessionOp = defineOperation({
     title: z.string(),
     resumed: z.boolean(),
   }),
-  handler: async (_ctx, input, _tx) => {
+  handler: async (_ctx, input, tx) => {
     const bridged = bridgeOrError();
     if (!bridged.ok) {
       return err({ kind: "HandlerError", operation: "mcp.open_session", message: bridged.message });
     }
     const { adapter, registry } = bridged.bridge;
-    const auth = await resolveAdminScopedToken(adapter, input.plaintextToken, "mcp.open_session");
+    const auth = await resolveAdminPrincipal(adapter, input, "mcp.open_session");
     if (!auth.ok) {
       return err({ kind: "HandlerError", operation: "mcp.open_session", message: auth.message });
     }
@@ -385,6 +374,7 @@ export const mcpOpenSessionOp = defineOperation({
           message: `session_closed: ${input.chatSessionId} was already published, archived or discarded — omit chatSessionId to resume your most recent open session, or pass newSession: true`,
         });
       }
+      await rememberRemoteSession(tx, auth, input.chatSessionId);
       return ok({
         chatSessionId: input.chatSessionId,
         chatBranchId: v.session.chatBranchId,
@@ -420,6 +410,7 @@ export const mcpOpenSessionOp = defineOperation({
         }
       ).sessions.find((s) => s.publishedAt === null);
       if (open) {
+        await rememberRemoteSession(tx, auth, open.id);
         return ok({
           chatSessionId: open.id,
           chatBranchId: open.chatBranchId,
@@ -441,6 +432,7 @@ export const mcpOpenSessionOp = defineOperation({
       });
     }
     const c = created.value as { chatSessionId: string; chatBranchId: string };
+    await rememberRemoteSession(tx, auth, c.chatSessionId);
     return ok({
       chatSessionId: c.chatSessionId,
       chatBranchId: c.chatBranchId,
@@ -460,7 +452,7 @@ export const mcpExecuteToolOp = defineOperation({
   database: "cms_admin",
   input: z
     .object({
-      plaintextToken: z.string().min(8).max(200),
+      ...mcpCredentialShape,
       /** The work session whose preview branch this call writes to. */
       chatSessionId: z.string().uuid(),
       toolName: z.string().min(1).max(120),
@@ -472,7 +464,8 @@ export const mcpExecuteToolOp = defineOperation({
        */
       toolCallId: z.string().min(1).max(128).optional(),
     })
-    .strict(),
+    .strict()
+    .refine(exactlyOneMcpCredential.check, { message: exactlyOneMcpCredential.message }),
   output: z.object({
     ok: z.boolean(),
     content: z.string(),
@@ -496,7 +489,7 @@ export const mcpExecuteToolOp = defineOperation({
       return err({ kind: "HandlerError", operation: "mcp.execute_tool", message: bridged.message });
     }
     const { adapter, registry, resolveProvider } = bridged.bridge;
-    const auth = await resolveAdminScopedToken(adapter, input.plaintextToken, "mcp.execute_tool");
+    const auth = await resolveAdminPrincipal(adapter, input, "mcp.execute_tool");
     if (!auth.ok) {
       return err({ kind: "HandlerError", operation: "mcp.execute_tool", message: auth.message });
     }
@@ -617,8 +610,12 @@ export const mcpExecuteToolOp = defineOperation({
     const touchPresence = () =>
       execute(registry, adapter, humanCtxWithBranch, "chat.touch_external_agent", {
         chatSessionId: input.chatSessionId,
-        mcpTokenId: auth.tokenId,
-        label: `External agent "${auth.displayName}" (MCP)`.slice(0, 200),
+        ...mcpAgentOpFields(mcpAgentRefOf(auth)),
+        label:
+          `External agent "${auth.displayName}" (${auth.via.kind === "remote" ? "remote MCP" : "MCP"})`.slice(
+            0,
+            200,
+          ),
       });
     const presence = await touchPresence();
     if (!presence.ok) {
@@ -905,12 +902,7 @@ export const mcpGetApprovalOutcomeOp = defineOperation({
   // it. Read-only for the agent: it learns the operator's decision, never makes it (§11.A).
   actorScope: ["system"],
   database: "cms_admin",
-  input: z
-    .object({
-      plaintextToken: z.string().min(8).max(200),
-      proposalId: z.string().uuid(),
-    })
-    .strict(),
+  input: withCredential({ proposalId: z.string().uuid() }),
   output: z.object({
     proposalId: z.string(),
     domain: z.string(),
@@ -930,9 +922,9 @@ export const mcpGetApprovalOutcomeOp = defineOperation({
         message: bridged.message,
       });
     }
-    const auth = await resolveAdminScopedToken(
+    const auth = await resolveAdminPrincipal(
       bridged.bridge.adapter,
-      input.plaintextToken,
+      input,
       "mcp.get_approval_outcome",
     );
     if (!auth.ok) {
@@ -1009,13 +1001,10 @@ export const mcpGetContextOp = defineOperation({
   // it.
   actorScope: ["system"],
   database: "cms_admin",
-  input: z
-    .object({
-      plaintextToken: z.string().min(8).max(200),
-      /** True = include full skill bodies (the CLAUDE.md export path). */
-      includeSkillBodies: z.boolean().optional(),
-    })
-    .strict(),
+  input: withCredential({
+    /** True = include full skill bodies (the CLAUDE.md export path). */
+    includeSkillBodies: z.boolean().optional(),
+  }),
   output: z.object({
     /** The composed system context an external agent should load once. */
     systemContext: z.string(),
@@ -1029,7 +1018,7 @@ export const mcpGetContextOp = defineOperation({
       return err({ kind: "HandlerError", operation: "mcp.get_context", message: bridged.message });
     }
     const { adapter, registry } = bridged.bridge;
-    const auth = await resolveAdminScopedToken(adapter, input.plaintextToken, "mcp.get_context");
+    const auth = await resolveAdminPrincipal(adapter, input, "mcp.get_context");
     if (!auth.ok) {
       return err({ kind: "HandlerError", operation: "mcp.get_context", message: auth.message });
     }

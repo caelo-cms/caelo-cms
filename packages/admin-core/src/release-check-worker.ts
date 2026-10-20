@@ -22,11 +22,16 @@
 
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import { SYSTEM_ACTOR_ID } from "./audit.js";
-import { fetchLatestRelease, writeReleaseCheck } from "./platform-updates/release-check.js";
+import {
+  fetchLatestRelease,
+  predictReleaseRoute,
+  type RoutePredictionOpts,
+  writeReleaseCheck,
+} from "./platform-updates/release-check.js";
 
 const POLL_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
-interface ReleaseCheckWorkerOpts {
+interface ReleaseCheckWorkerOpts extends RoutePredictionOpts {
   readonly adapter: DatabaseAdapter;
   /** Override poll interval (ms). Tests pass a small value; production uses default. */
   readonly intervalMs?: number;
@@ -41,7 +46,12 @@ async function pollOnce(opts: ReleaseCheckWorkerOpts): Promise<void> {
   // The fetch first, outside the transaction; a failure is cached as "no
   // release" with the time, so the page says the last check failed. The 1h
   // cadence retries automatically.
-  const outcome = await fetchLatestRelease(opts.url ? { url: opts.url } : {});
+  // The release's route (does it change the cloud setup, #817) is read
+  // from its manifest here too, so the page knows it before the Owner clicks.
+  const outcome = await predictReleaseRoute(
+    await fetchLatestRelease(opts.url ? { url: opts.url } : {}),
+    opts,
+  );
   await opts.adapter.withAdminTransaction(
     { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: `release-check-${polls++}` },
     (tx) => writeReleaseCheck(tx, outcome),

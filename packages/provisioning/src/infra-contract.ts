@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 9;
+export const INFRA_CONTRACT_VERSION = 10;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -56,7 +56,19 @@ export const INFRA_CONTRACT_VERSION = 9;
 //       CAELO_AUDIT_RESULTS_BUCKET on the admin. The new admin fans every
 //       Stage audit out to that job, and the app-roll moves the job's image,
 //       so it must exist before an in-cloud upgrader rolls onto it.
-//   9 — #806: remote MCP. Two CLI-generated secrets (the Google OAuth client
+//   9 — #819: the converge job (`caelo-<env>-converge`, converge-job-setup.ts)
+//       that installs contract-bumping releases from Settings → Updates as
+//       the install's caelo-provisioner, its Cloud SQL IAM database login
+//       (platform_updater), the admin's start-only grant on it and
+//       CAELO_CONVERGE_JOB on the admin. Installed by the last converge an
+//       Owner runs by hand; every later one runs from Caelo. The same bump
+//       replaces the upgrader's project-wide roles/run.developer (which
+//       holds run.jobs.runWithOverrides on the provisioner's jobs) with the
+//       custom role caeloUpgraderRun (#883 review). An install without a
+//       caelo-provisioner reaches 9 without the job: there is nothing it
+//       could run as, so its admin keeps routing cloud-setup releases to
+//       the terminal (upgrade/converge.ts, update-route.ts).
+//  10 — #806: remote MCP. Two CLI-generated secrets (the Google OAuth client
 //       placeholder, the broker's seal key) the gateway's new revision
 //       references — a secret volume and a secret env var Cloud Run refuses
 //       to deploy without — plus the gateway SA's accessor and the admin
@@ -78,7 +90,8 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   6: "the upgrader's permission to list its ops bucket (#799)",
   7: "the gateway's trusted proxy hop count, CAELO_TRUSTED_PROXY_HOPS (#845)",
   8: "the quality-audit job, its service account, results bucket and grants (#875)",
-  9: "remote MCP: the OAuth client and seal-key secrets, their IAM, the gateway's secret file and timeout, IAP programmatic-client sync and the load-balancer rules (#806)",
+  9: "the converge job that installs cloud-setup changes from Settings → Updates, and a narrower Cloud Run role for the upgrader (#819)",
+  10: "remote MCP: the OAuth client and seal-key secrets, their IAM, the gateway's secret file and timeout, IAP programmatic-client sync and the load-balancer rules (#806)",
 };
 
 /**

@@ -11,6 +11,8 @@
  *     the fifth signs the session out, a right one resets the count;
  *   - request rules: only the newest known release, one at a time, cancel
  *     only while pending, a failed job start ends the request;
+ *   - superseded (#817): a Cloud Shell step for a release that runs now, or
+ *     answered by a newer request, is closed — at boot and on a new request;
  *   - list/get/policy.get are open to the AI (it informs, never installs);
  *   - the `platform_updater` database role the upgrader job runs as can do
  *     exactly its job and nothing else (migration 0267).
@@ -18,9 +20,10 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { CAELO_VERSION, type ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
+import { SUPERSEDED_INSTALLED, SUPERSEDED_NEWER } from "../ops/platform-update-requests.js";
 import { STEP_UP_MAX_FAILURES } from "../ops/step-up.js";
 import { registerAdminOps } from "../register.js";
 import { sessionHashOf } from "../security/step-up/gate.js";
@@ -402,6 +405,204 @@ describe("platform_updates.request rules", () => {
       outcome: { started: true, execution: "x" },
     });
     expect(message(other)).toContain("No such update request of yours");
+  });
+});
+
+describe("the converge route (#819)", () => {
+  it("records which job installs the request; the default stays the upgrader", async () => {
+    await stepUp(owner, ownerSession);
+    const first = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+    });
+    const got = await okValue<{ request: { route: string } }>(AI, "platform_updates.get", {
+      requestId: first.requestId,
+    });
+    expect(got.request.route).toBe("app_roll");
+    await admin(
+      (tx) =>
+        tx`UPDATE platform_update_requests SET status = 'cancelled', cancelled_at = now(), finished_at = now() WHERE id = ${first.requestId}::uuid`,
+    );
+
+    await stepUp(owner, ownerSession);
+    const { requestId } = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+      route: "converge",
+    });
+    const converge = await okValue<{
+      request: { route: string };
+      events: { message: string }[];
+    }>(AI, "platform_updates.get", { requestId });
+    expect(converge.request.route).toBe("converge");
+    expect(converge.events[0]?.message).toContain("Caelo's converge job installs it");
+  });
+
+  it("continues only a running converge, with the Owner's password, once per confirmation", async () => {
+    await stepUp(owner, ownerSession);
+    const { requestId } = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+      route: "converge",
+    });
+    // Still pending: nothing to continue.
+    await stepUp(owner, ownerSession);
+    const pending = await run(owner, "platform_updates.continue", {
+      requestId,
+      sessionHash: ownerSession,
+    });
+    expect(message(pending)).toContain("Only an update that Caelo's converge job was installing");
+
+    await admin(
+      (tx) =>
+        tx`UPDATE platform_update_requests SET status = 'running', started_at = now(), execution = 'conv-dead' WHERE id = ${requestId}::uuid`,
+    );
+    // The refusal above left the confirmation unused; it authorizes this
+    // one continue, and the next needs a new one. Never the AI or another user.
+    const continued = await run(owner, "platform_updates.continue", {
+      requestId,
+      sessionHash: ownerSession,
+    });
+    expect(continued.ok).toBe(true);
+    const again = await run(owner, "platform_updates.continue", {
+      requestId,
+      sessionHash: ownerSession,
+    });
+    expect(again.ok).toBe(false);
+    expect(
+      (await run(AI, "platform_updates.continue", { requestId, sessionHash: ownerSession })).ok,
+    ).toBe(false);
+    await stepUp(editor, editorSession);
+    expect(
+      (await run(editor, "platform_updates.continue", { requestId, sessionHash: editorSession }))
+        .ok,
+    ).toBe(false);
+
+    const got = await okValue<{ events: { message: string }[] }>(AI, "platform_updates.get", {
+      requestId,
+    });
+    expect(got.events.some((e) => e.message.startsWith("Continued by the Owner"))).toBe(true);
+  });
+
+  it("an app-roll that died is not continued (the next request ends and retries it)", async () => {
+    await stepUp(owner, ownerSession);
+    const { requestId } = await okValue<{ requestId: string }>(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+    });
+    await admin(
+      (tx) =>
+        tx`UPDATE platform_update_requests SET status = 'running', started_at = now() WHERE id = ${requestId}::uuid`,
+    );
+    await stepUp(owner, ownerSession);
+    const r = await run(owner, "platform_updates.continue", {
+      requestId,
+      sessionHash: ownerSession,
+    });
+    expect(message(r)).toContain("Only an update that Caelo's converge job was installing");
+  });
+});
+
+/** A finished request that asked for a Cloud Shell step, `minutesAgo` back. */
+async function needsShell(target: string, minutesAgo: number): Promise<string> {
+  const rows = await admin(
+    (tx) => tx`
+      INSERT INTO platform_update_requests
+        (target_version, from_version, trigger, requested_by, requested_at, status,
+         status_reason, started_at, finished_at)
+      VALUES (${target}, '0.0.1', 'manual', ${owner.actorId}::uuid,
+              now() - make_interval(mins => ${minutesAgo}), 'needs_cloud_shell',
+              'changes the cloud setup', now(), now())
+      RETURNING id::text AS id`,
+  );
+  return (rows as unknown as { id: string }[])[0]?.id as string;
+}
+
+describe("superseded requests (#817)", () => {
+  it("closes a Cloud Shell step for a release that runs now, keeps one still ahead", async () => {
+    const installed = await needsShell("0.0.2", 60);
+    const ahead = await needsShell(NEWEST, 30);
+    const r = await okValue<{ superseded: string[] }>(
+      SYSTEM,
+      "platform_updates.supersede_stale",
+      {},
+    );
+    expect(r.superseded).toEqual([installed]);
+    const got = await okValue<{
+      request: { status: string; statusReason: string };
+      events: { phase: string; message: string }[];
+    }>(AI, "platform_updates.get", { requestId: installed });
+    expect(got.request.status).toBe("superseded");
+    expect(got.request.statusReason).toBe(SUPERSEDED_INSTALLED(CAELO_VERSION));
+    expect(got.events.at(-1)?.message).toBe(SUPERSEDED_INSTALLED(CAELO_VERSION));
+    const still = await okValue<{ request: { status: string } }>(AI, "platform_updates.get", {
+      requestId: ahead,
+    });
+    expect(still.request.status).toBe("needs_cloud_shell");
+    // Idempotent: nothing left to close.
+    expect(
+      (await okValue<{ superseded: string[] }>(SYSTEM, "platform_updates.supersede_stale", {}))
+        .superseded,
+    ).toEqual([]);
+  });
+
+  it("audits the reason each request was closed for", async () => {
+    const installed = await needsShell("0.0.2", 90);
+    const replaced = await needsShell(NEWEST, 60);
+    const newest = await needsShell(NEWEST, 30);
+    const r = await okValue<{ superseded: string[] }>(
+      SYSTEM,
+      "platform_updates.supersede_stale",
+      {},
+    );
+    expect([...r.superseded].sort()).toEqual([installed, replaced].sort());
+    const summaries = async (id: string) =>
+      (
+        (await admin(
+          (tx) => tx`SELECT result_summary FROM audit_events
+                      WHERE operation = 'platform_updates.supersede_stale'
+                        AND entity_id = ${id}::uuid`,
+        )) as unknown as { result_summary: string }[]
+      ).map((a) => a.result_summary);
+    expect(await summaries(installed)).toEqual([
+      `superseded: ${SUPERSEDED_INSTALLED(CAELO_VERSION)}`,
+    ]);
+    // Replaced by a newer request: the audit must not claim the release runs.
+    expect(await summaries(replaced)).toEqual([`superseded: ${SUPERSEDED_NEWER}`]);
+    const still = await okValue<{ request: { status: string } }>(AI, "platform_updates.get", {
+      requestId: newest,
+    });
+    expect(still.request.status).toBe("needs_cloud_shell");
+  });
+
+  it("a new request closes an older Cloud Shell step", async () => {
+    const older = await needsShell(NEWEST, 30);
+    await stepUp(owner, ownerSession);
+    await okValue(owner, "platform_updates.request", {
+      targetVersion: NEWEST,
+      sessionHash: ownerSession,
+    });
+    const got = await okValue<{ request: { status: string; statusReason: string } }>(
+      AI,
+      "platform_updates.get",
+      { requestId: older },
+    );
+    expect(got.request.status).toBe("superseded");
+    expect(got.request.statusReason).toBe(SUPERSEDED_NEWER);
+    // Audited under the op that closed it, like every other status change.
+    const audits = (await admin(
+      (tx) => tx`SELECT result_summary FROM audit_events
+                  WHERE operation = 'platform_updates.request' AND entity_id = ${older}::uuid`,
+    )) as unknown as { result_summary: string }[];
+    expect(audits.map((a) => a.result_summary)).toEqual([`superseded: ${SUPERSEDED_NEWER}`]);
+  });
+
+  it("is system-only", async () => {
+    for (const ctx of [AI, owner]) {
+      const r = await run(ctx, "platform_updates.supersede_stale", {});
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.kind).toBe("ActorScopeRejected");
+    }
   });
 });
 

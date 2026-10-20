@@ -176,6 +176,29 @@ jobs:
           test "${code}" -ne 0 || { echo "::error::caelo-ops upgrader succeeded outside Google Cloud"; exit 1; }
           echo "${up}" | grep -q '"message":"upgrader: ' \
             || { echo "::error::caelo-ops upgrader did not reach its entry point"; exit 1; }
+          # The converge job's entry (#819), the way the job is deployed
+          # (--command=caelo-converge-job --args=converge-job): it reaches
+          # its entry point, with a scrubbed environment.
+          set +e
+          cj="$(docker run --rm -e PULUMI_BACKEND_URL=file:///tmp/evil --entrypoint caelo-converge-job caelo-ops:smoke converge-job 2>&1)"
+          code=$?
+          set -e
+          echo "${cj}"
+          test "${code}" -ne 0 || { echo "::error::caelo-converge-job succeeded outside Google Cloud"; exit 1; }
+          echo "${cj}" | grep -q '"message":"converge-job: ' \
+            || { echo "::error::caelo-converge-job did not reach its entry point"; exit 1; }
+          # #883 review: any other argument is refused before code runs.
+          for bad in destroy owner-reset "converge-job --extra"; do
+            set +e
+            # shellcheck disable=SC2086 # word-split on purpose: argv under test.
+            out="$(docker run --rm --entrypoint caelo-converge-job caelo-ops:smoke ${bad} 2>&1)"
+            code=$?
+            set -e
+            test "${code}" -eq 64 || { echo "::error::caelo-converge-job ${bad} exited ${code}, expected 64"; exit 1; }
+            echo "${out}" | grep -q "refused" || { echo "::error::caelo-converge-job ${bad} did not refuse"; exit 1; }
+          done
+          docker run --rm --entrypoint caelo-ops caelo-ops:smoke converge-job destroy >/dev/null 2>&1 \
+            && { echo "::error::caelo-ops converge-job destroy was not refused"; exit 1; } || true
 
       - name: Log in to GHCR
         if: github.event_name == 'push' || github.event_name == 'workflow_call' || github.event_name == 'workflow_dispatch'

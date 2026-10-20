@@ -82,8 +82,8 @@ No laptop needed: install into your own Google Cloud project from Cloud Shell.
 
 | | |
 |---|---|
-| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.54&cloudshell_tutorial=gcp.md) |
-| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.54&cloudshell_tutorial=gcp-firebase.md) |
+| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.55&cloudshell_tutorial=gcp.md) |
+| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.55&cloudshell_tutorial=gcp-firebase.md) |
 
 Cloud Shell opens a short tutorial: sign in, run `./run.sh`, answer a few questions, confirm the monthly cost. The install then runs as a job in your project, so closing the tab doesn't stop it, and clicking the button again picks it up. The links are pinned to this release; `run.sh` verifies the provisioner's npm provenance and the release's signed manifest before anything runs ([how](https://github.com/caelo-cms/install#what-happens-when-you-click)).
 
@@ -96,6 +96,8 @@ bunx @caelo-cms/provisioning@latest --provider gcp     # or gcp-firebase
 The wizard creates or reuses the project, prints a monthly cost estimate before anything billable is created, and provisions Cloud Run, Cloud SQL, the static hosting and Secret Manager with Pulumi. Staging is `noindex` and can be password-protected.
 
 After any install, open the setup link it prints, create the Owner account and pick your AI provider. Everything else happens in the chat.
+
+Updates install from Caelo itself: Settings → Updates, Update, confirm with your password. On Google Cloud that includes releases that change settings in your project (once the install has the converge job, which the install or one upgrade from a terminal sets up; installs from before Caelo's provisioner account keep installing those from a terminal, and the page says so); Caelo runs those as a signed job in your project, picks up where it stopped if the job is interrupted, and goes back to the previous release if the new one fails its test. Running `bunx @caelo-cms/provisioning@<version> upgrade` from a terminal does the same upgrade by hand.
 
 ## Drive it from your own agent
 

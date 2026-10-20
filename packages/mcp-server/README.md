@@ -58,6 +58,13 @@ with these env vars set:
 | `CAELO_MCP_TOKEN` | yes | Bearer minted at `/settings/mcp`. |
 | `CAELO_IAP_SERVICE_ACCOUNT` | on GCP installs | The admin's MCP service account. `/settings/mcp` includes it in every client snippet when the admin is behind Google IAP. |
 
+Without `CAELO_ADMIN_URL` or `CAELO_MCP_TOKEN` the server still starts and
+lists its tools (MCP directories inspect servers that way), but every
+tool call fails and names the variable to set. Power-MCP then lists the
+catalogue shipped with this release (`power-catalogue.json`); once
+configured it always lists your admin's live catalogue, including plugin
+tools. `export` exits instead.
+
 ### Installs behind Google IAP (GCP)
 
 On `gcp` and `gcp-firebase` installs the admin sits behind Identity-Aware Proxy, which rejects every request before Caelo sees it unless it carries a Google credential. With `CAELO_IAP_SERVICE_ACCOUNT` set, the server signs a short-lived JWT as that service account (IAM Credentials `signJwt`, using your Application Default Credentials) and sends it in `Authorization` next to `x-caelo-mcp-token`: IAP checks the first, Caelo the second.

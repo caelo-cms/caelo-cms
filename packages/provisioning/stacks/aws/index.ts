@@ -357,6 +357,12 @@ new aws.cloudwatch.LogDelivery(
 // exists the admin records every Lighthouse audit as failed with that gap
 // (quality/lighthouse-runner-select.ts) instead of measuring on its own
 // shared CPU. Nothing is staged on AWS before #749 either.
+//
+// FIXME(issue #696): no in-cloud upgrader or converge job (#819) yet. On
+// GCP Settings → Updates hands app-roll releases to the upgrader job and
+// cloud-setup releases to the converge job; on AWS the admin refuses a
+// cloud-setup release with the CLI command that installs it (admin-core
+// platform-updates/update-route.ts) until this adapter gains both jobs.
 const cluster = new aws.ecs.Cluster(`${namePrefix}-ecs`, {
   settings: [{ name: "containerInsights", value: "enabled" }],
 });

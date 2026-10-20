@@ -2,15 +2,18 @@
 
 /**
  * The admin's side of "Install update" on Google Cloud installs (epic #696):
- * it can START the upgrader job and read how its runs went — nothing else.
+ * it can START the upgrader job — or, for a release that changes the cloud
+ * setup, the converge job (#819) — and read how their runs went. Nothing
+ * else.
  *
  * Same trust boundary as the operator-access job (gcp-job-trigger.ts): the
- * admin's runtime service account holds `roles/run.jobsExecutor` on the
- * upgrader job — `run.jobs.run` without `run.jobs.runWithOverrides` — and
- * `roles/run.viewer` on it (packages/provisioning/src/upgrader-setup.ts).
- * The start call carries no body: the admin may not, and cannot, pass the
- * job arguments, env or another image. What the job installs it decides
- * itself from the request row and the signed release manifest.
+ * admin's runtime service account holds `roles/run.jobsExecutor` on each
+ * job — `run.jobs.run` without `run.jobs.runWithOverrides` — and
+ * `roles/run.viewer` on it (packages/provisioning/src/upgrader-setup.ts,
+ * converge-job-setup.ts). The start call carries no body: the admin may
+ * not, and cannot, pass a job arguments, env or another image. What a job
+ * installs it decides itself from the request row and the signed release
+ * manifest.
  */
 
 import { defaultGoogleDeps, type GoogleDeps, googleCall } from "../operator-access/google-iam.js";
@@ -49,9 +52,20 @@ export interface UpgraderJobEnv {
   readonly CAELO_UPGRADER_JOB?: string;
 }
 
+/** The admin env naming the converge job (#819). */
+export interface ConvergeJobEnv {
+  readonly CAELO_PROVIDER?: string;
+  /** `projects/<id>/locations/<region>/jobs/<job>` (stack-contract.ts adminEnvContract). */
+  readonly CAELO_CONVERGE_JOB?: string;
+}
+
 /** What the Owner does when the job is missing or the admin may not start it. */
 export const UPGRADER_SETUP_HINT =
   "Run the upgrade once from Cloud Shell or the computer you installed from (Settings → Updates shows the command): it sets up the upgrader and lets the admin start it.";
+
+/** The same for the converge job (#819). */
+export const CONVERGE_SETUP_HINT =
+  "Run the upgrade once from Cloud Shell or the computer you installed from (Settings → Updates shows the command): it sets up the converge job, so later updates that change the cloud setup install from here.";
 
 const JOB_NAME = /^projects\/([^/]+)\/locations\/([^/]+)\/jobs\/([^/]+)$/;
 
@@ -68,14 +82,49 @@ export function upgraderTriggerFromEnv(
   env: UpgraderJobEnv,
   deps: GoogleDeps = defaultGoogleDeps(),
 ): UpgraderTrigger | null {
-  if (env.CAELO_PROVIDER !== "gcp" && env.CAELO_PROVIDER !== "gcp-firebase") return null;
-  const job = env.CAELO_UPGRADER_JOB?.trim() ?? "";
+  return cloudRunJobTrigger(
+    env.CAELO_PROVIDER,
+    { variable: "CAELO_UPGRADER_JOB", value: env.CAELO_UPGRADER_JOB },
+    { label: "upgrader job", setupHint: UPGRADER_SETUP_HINT },
+    deps,
+  );
+}
+
+/**
+ * The converge job's trigger (#819), or null when this install has none:
+ * not a Google Cloud install, or `CAELO_CONVERGE_JOB` unset (installed
+ * before the job existed, or its setup failed) — such releases then
+ * install from a terminal.
+ *
+ * @throws UpgraderTriggerError when the variable is set but malformed
+ */
+export function convergeTriggerFromEnv(
+  env: ConvergeJobEnv,
+  deps: GoogleDeps = defaultGoogleDeps(),
+): UpgraderTrigger | null {
+  return cloudRunJobTrigger(
+    env.CAELO_PROVIDER,
+    { variable: "CAELO_CONVERGE_JOB", value: env.CAELO_CONVERGE_JOB },
+    { label: "converge job", setupHint: CONVERGE_SETUP_HINT },
+    deps,
+  );
+}
+
+/** A start-only trigger for the Cloud Run job the env variable names. */
+function cloudRunJobTrigger(
+  provider: string | undefined,
+  name: { readonly variable: string; readonly value: string | undefined },
+  wording: { readonly label: string; readonly setupHint: string },
+  deps: GoogleDeps,
+): UpgraderTrigger | null {
+  if (provider !== "gcp" && provider !== "gcp-firebase") return null;
+  const job = name.value?.trim() ?? "";
   if (!job) return null;
   const parts = JOB_NAME.exec(job);
   if (!parts) {
     throw new UpgraderTriggerError(
-      `CAELO_UPGRADER_JOB is not a Cloud Run job name: ${job}`,
-      UPGRADER_SETUP_HINT,
+      `${name.variable} is not a Cloud Run job name: ${job}`,
+      wording.setupHint,
     );
   }
   const [, project, region] = parts;
@@ -88,8 +137,8 @@ export function upgraderTriggerFromEnv(
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       throw new UpgraderTriggerError(
-        `the upgrader job could not be reached: ${message}`,
-        /HTTP (403|404)/.test(message) ? UPGRADER_SETUP_HINT : "Try again in a moment.",
+        `the ${wording.label} could not be reached: ${message}`,
+        /HTTP (403|404)/.test(message) ? wording.setupHint : "Try again in a moment.",
       );
     }
   };
@@ -100,7 +149,7 @@ export function upgraderTriggerFromEnv(
       const name = op.metadata?.name;
       if (!name) {
         throw new UpgraderTriggerError(
-          "the upgrader job started but Google returned no execution name.",
+          `the ${wording.label} started but Google returned no execution name.`,
           "Reload Settings → Updates in a minute; the timeline shows whether it runs.",
         );
       }

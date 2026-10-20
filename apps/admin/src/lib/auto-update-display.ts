@@ -13,11 +13,11 @@ const hours = (n: number) => (n === 0 ? "no wait" : `${n} hour${n === 1 ? "" : "
 
 /**
  * Line shown whenever the Owner allowed updates that change their Google
- * Cloud project: the choice is stored but inert until Caelo can run those
- * updates itself (#819), so the scheduler still only announces them.
+ * Cloud project to install automatically (#819): Caelo's converge job runs
+ * them, under the same kinds, wait and window as every other update.
  */
-export const AUTO_CONVERGE_PENDING =
-  "Updates that change your Google Cloud project still need you for now. Your choice applies once Caelo can install them itself.";
+export const AUTO_CONVERGE_ON =
+  "Updates that change your Google Cloud project install automatically too, by the same rules.";
 
 /** The policy as a few short sentences. */
 export function autoUpdateSummary(p: StoredUpdatePolicy): string[] {
@@ -36,7 +36,7 @@ export function autoUpdateSummary(p: StoredUpdatePolicy): string[] {
       ? `Installed automatically: ${kinds.join(", ")}. You are told about everything else and install it yourself.`
       : "Install automatically is on, but no kind of update is ticked, so you install everything yourself.",
   ];
-  if (p.autoConverge) lines.push(AUTO_CONVERGE_PENDING);
+  if (p.autoConverge) lines.push(AUTO_CONVERGE_ON);
   lines.push(
     p.windowStart
       ? `Only between ${p.windowStart} and ${p.windowEnd} (${p.windowTimezone}).`

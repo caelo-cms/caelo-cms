@@ -133,6 +133,19 @@ export {
   type PluginUninstallFinalizer,
 } from "./ops/plugins/uninstall.js";
 export * from "./ops/roles.js";
+// Issue #806 — remote MCP: the credential an /api/mcp/remote/* request
+// carries into the mcp.* ops, and its request-time resolution.
+export {
+  type McpRemoteCredential,
+  type McpRemoteSurface,
+  mcpRemoteSurface,
+} from "./ops/security/mcp_credential.js";
+export {
+  type McpPrincipal,
+  type RemoteMcpRefusal,
+  resolveRemoteMcpPrincipal,
+} from "./ops/security/mcp_principal.js";
+export type { McpRemoteConnectionRow } from "./ops/security/mcp_remote_connections.js";
 // P17 PR4 — MCP bridge wiring helper.
 export { configureMcpBridge } from "./ops/security/mcp_tokens.js";
 export { STEP_UP_SIGNED_OUT } from "./ops/step-up.js";
@@ -155,13 +168,24 @@ export {
   RELEASE_CHECK_COOLDOWN_MS,
   type ReleaseFetch,
 } from "./platform-updates/release-check.js";
-export { registryManifestReader } from "./platform-updates/release-facts.js";
+export {
+  type ManifestReader,
+  readReleaseFacts,
+  registryManifestReader,
+} from "./platform-updates/release-facts.js";
 export {
   runAutoUpdateTick,
   startAutoUpdateScheduler,
   stopAutoUpdateScheduler,
   type UpgraderResolver,
 } from "./platform-updates/scheduler.js";
+// #819 — which job installs a release (upgrader or converge job).
+export {
+  chooseUpdateRoute,
+  type LastUpdateAttempt,
+  type UpdateRoute,
+  type UpdateRouteInput,
+} from "./platform-updates/update-route.js";
 export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
 export * from "./public-projection.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).
@@ -169,6 +193,17 @@ export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit
 export * from "./rate-limit.js";
 export * from "./register.js";
 export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";
+export {
+  createIapVerifier,
+  IAP_ASSERTION_HEADER,
+  type IapKeyProvider,
+  type IapVerifier,
+  setIapVerifierForTests,
+} from "./security/iap-assertion.js";
+export {
+  iapTestKeyPair as iapTestKeyPairForTests,
+  signIapTestAssertion as signIapTestAssertionForTests,
+} from "./security/iap-assertion.test-helpers.js";
 // #806 — Settings → MCP → Remote: availability, the Owner's OAuth client, self-check.
 export {
   disableRemoteMcp,
@@ -201,6 +236,9 @@ export {
   agentUpgraderTrigger,
 } from "./security/upgrader/agent-trigger.js";
 export {
+  CONVERGE_SETUP_HINT,
+  type ConvergeJobEnv,
+  convergeTriggerFromEnv,
   UPGRADER_SETUP_HINT,
   type UpgraderExecution,
   type UpgraderTrigger,
