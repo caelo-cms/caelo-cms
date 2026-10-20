@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0320 — issue #914: the install's Google sign-in client.
+-- 0323 — issue #914: the install's Google sign-in client.
 --
 -- One Owner-created Google OAuth client per install serves three uses:
 --
@@ -13,7 +13,7 @@
 --   * the remote-MCP broker (#806), which signs MCP users in with it.
 --
 -- #806 introduced it as the remote-MCP client (`mcp_remote_oauth_client`,
--- 0313/0314). It is renamed for what it now is. Pre-1.0 delete-don't-migrate:
+-- 0320/0321). It is renamed for what it now is. Pre-1.0 delete-don't-migrate:
 -- the old table goes; nobody had configured it when this shipped, so there
 -- is no row to carry over (the Owner pastes the client under Settings →
 -- Google sign-in).
@@ -22,7 +22,7 @@
 -- `{client_id, client_secret}` straight into the Secret Manager secret
 -- `caelo-<env>-operator-oauth-client` (add-version only). This table keeps
 -- the client ID for the operator-access sync job (read with its read-only
--- role, 0321) and the setup pages. At most one row (`id` is always true);
+-- role, 0324) and the setup pages. At most one row (`id` is always true);
 -- no row = Google sign-in not set up (IAP uses the Google-managed client).
 
 DROP TABLE IF EXISTS mcp_remote_oauth_client;

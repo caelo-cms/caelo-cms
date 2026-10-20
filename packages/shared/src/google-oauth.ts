@@ -9,7 +9,7 @@
 
 /**
  * A Google OAuth 2.0 client ID (`<project number>-<random>.apps.googleusercontent.com`).
- * Same pattern as the `operator_oauth_client` CHECK constraint (migration 0320).
+ * Same pattern as the `operator_oauth_client` CHECK constraint (migration 0323).
  */
 export const GOOGLE_OAUTH_CLIENT_ID = /^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/;
 

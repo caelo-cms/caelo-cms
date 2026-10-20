@@ -1,9 +1,9 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0321 — issue #914: the operator-access sync job reads the install's Google
--- sign-in client ID (0320) so it can set the admin IAP resource's
+-- 0324 — issue #914: the operator-access sync job reads the install's Google
+-- sign-in client ID (0323) so it can set the admin IAP resource's
 -- `oauthSettings` (browser login client + programmatic clients) to exactly
--- that client. Replaces 0314's grant, which went with the dropped
+-- that client. Replaces 0321's grant, which went with the dropped
 -- mcp_remote_oauth_client table.
 --
 -- The smallest extension of the job's read-only role (0239): SELECT on the

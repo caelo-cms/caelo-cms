@@ -1,9 +1,9 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0316 — issue #806 review: remote MCP connections follow the mcp_tokens
+-- 0322 — issue #806 review: remote MCP connections follow the mcp_tokens
 -- visibility rule of migration 0315.
 --
--- 0310 gave mcp_remote_connections the pre-0315 mcp_tokens policy: every
+-- 0319 gave mcp_remote_connections the pre-0315 mcp_tokens policy: every
 -- authenticated session read every row and any human could update any row.
 -- /settings/mcp loads the list for everyone with settings.read, so an editor
 -- saw which colleagues connect from outside (and, through the list op's

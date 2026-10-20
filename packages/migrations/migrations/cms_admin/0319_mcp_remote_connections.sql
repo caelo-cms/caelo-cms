@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0310 — issue #806: remote MCP connections.
+-- 0319 — issue #806: remote MCP connections.
 --
 -- A remote MCP client (claude.ai, ChatGPT, Claude Code over HTTP, …) reaches
 -- the admin through Google IAP with the user's own Google identity; there is

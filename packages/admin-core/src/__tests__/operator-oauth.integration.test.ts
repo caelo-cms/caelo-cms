@@ -5,11 +5,11 @@
  * (§6):
  *
  *   - `operator_oauth.{get,set,clear}`: one row at most, the ID shape
- *     enforced by the op and by the table (0320), audited, Owner-only — the
+ *     enforced by the op and by the table (0323), audited, Owner-only — the
  *     writer rule holds at the Postgres layer; the #806 table is gone;
  *   - the operator-access sync job's read: `operator_oauth.client_for_sync`
  *     works as the read-only `operator_access_reader` role, which may read
- *     the client ID and nothing else of the table, and write nothing (0321);
+ *     the client ID and nothing else of the table, and write nothing (0324);
  *   - the Settings → Google sign-in flows (configure.ts) with fake Google, a
  *     fake sync job and a fake IAP: the secret version comes first, a failed
  *     write changes nothing, the secret never reaches the database or the
@@ -84,7 +84,7 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
   await admin(async (tx) => {
-    // The writer policy (0320) checks settings.write at the Postgres layer,
+    // The writer policy (0323) checks settings.write at the Postgres layer,
     // so the Owner is a real user with the owner role; the editor is not one.
     for (const [id, name, role] of [
       [ownerId, "Sign-in owner", "owner"],
@@ -193,7 +193,7 @@ describe("operator_oauth ops", () => {
   });
 });
 
-describe("the sync job's read (operator_access_reader, 0321)", () => {
+describe("the sync job's read (operator_access_reader, 0324)", () => {
   it("reads the client ID as the read-only role, regardless of the session's actor kind", async () => {
     await execute(registry, adapter, OWNER, "operator_oauth.set", { clientId: CLIENT });
     const result = await adapter.withAdminTransaction(SYSTEM, async (tx) => {

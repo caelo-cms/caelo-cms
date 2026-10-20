@@ -2,7 +2,7 @@
 
 /**
  * Issue #914 — the install's Google sign-in client, as far as the database
- * knows it: the client ID only (migration 0320).
+ * knows it: the client ID only (migration 0323).
  *
  * One Owner-created Google OAuth client serves three uses: IAP browser login
  * (so accounts outside the project's Google organisation can sign in), IAP
@@ -22,7 +22,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
 
-/** `GOOGLE_OAUTH_CLIENT_ID` (shared, = the 0320 CHECK) as a trimmed Zod string with an operator-facing message. */
+/** `GOOGLE_OAUTH_CLIENT_ID` (shared, = the 0323 CHECK) as a trimmed Zod string with an operator-facing message. */
 export const googleOAuthClientIdSchema = z
   .string()
   .trim()
@@ -124,7 +124,7 @@ export const clearOperatorOAuthClientOp = defineOperation({
  * `operator_oauth.client_for_sync` — the client ID the operator-access sync
  * job sets as IAP's `oauthSettings` (browser client + programmatic clients).
  * Selects only `client_id`: the job's `operator_access_reader` role may read
- * nothing else of the table (migration 0321).
+ * nothing else of the table (migration 0324).
  */
 export const operatorOAuthClientForSyncOp = defineOperation({
   name: "operator_oauth.client_for_sync",
