@@ -18,6 +18,7 @@ import { execute } from "@caelo-cms/query-api";
 import { editModuleToolInput } from "@caelo-cms/shared";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { designGuardSuffix } from "./_design-guard.js";
+import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
 import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
 import { bindCssToTheme } from "./_theme-binding.js";
@@ -42,7 +43,8 @@ export const editModuleTool: ToolDefinitionWithHandler<
     "Use this for structure, styling, fields list, or `description`/`kind` updates. " +
     "DO NOT use this to change what one page shows — use `set_page_module_content` (per-page content) or `set_content_instance_values` (shared content) for that. " +
     "Prefer `update_modules_many` when targeting > 1 module. " +
-    "DO NOT use for page metadata (`update_pages_many`) or template-level edits (`propose_update_template`).",
+    "DO NOT use for page metadata (`update_pages_many`) or template-level edits (`propose_update_template`)." +
+    INTERNAL_LINK_CONTRACT,
   schema: editModuleToolInput,
   inputSchema: {
     type: "object",

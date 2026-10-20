@@ -93,7 +93,7 @@ export function unrenderableLayoutFieldsError(
     problems.map((p) => `- ${p.reason}`).join("\n") +
     `\n\nRe-call \`${toolName}\` with each field carrying a \`default\` holding the real content, e.g. ` +
     `\`{name:"copyright",kind:"text",label:"Copyright",default:"© 2026 Acme. All rights reserved."}\` and ` +
-    `\`{name:"nav_links",kind:"link-list",label:"Footer navigation",default:[{label:"Home",href:"/"},{label:"About",href:"/about"}]}\`. ` +
+    `\`{name:"nav_links",kind:"link-list",label:"Footer navigation",default:[{label:"Home",href:"/"},{label:"About",href:"/about"}]}\` (each internal \`href\` must be the path of a page that exists). ` +
     `Do NOT call create_content_instance / set_placement_content for ${surface} chrome.`
   );
 }

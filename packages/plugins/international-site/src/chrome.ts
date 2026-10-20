@@ -16,10 +16,13 @@
  *
  * Identity: `layout:<layoutId>:<block>:<index>` for a layout placement,
  * `instance:<contentInstanceId>` for a shared instance. Internal links
- * are mapped to the target page's same-language version at RENDER time,
- * so a renamed or newly translated page is picked up without
- * re-translating the menu; a link whose target has no version in the
- * page's language is reported, never quietly left pointing at another
+ * are not this module's business: they are stored as page references
+ * (`caelo:page/<id>`, epic #724) and core resolves each one at RENDER
+ * time to the target's version in the rendering page's language, through
+ * the link-resolve composition point this plugin answers (`link_resolve`
+ * in ./index.ts). A renamed or newly translated page is picked up
+ * without re-translating the menu; a link whose target has no version in
+ * the page's language is flagged by core, never left pointing at another
  * language.
  */
 
@@ -34,8 +37,6 @@ export interface ChromeField {
 
 /** Field kinds whose string value is human-readable text. */
 const TEXT_KINDS = new Set(["text", "richtext"]);
-/** Field kinds whose string value is an address. */
-const LINK_KINDS = new Set(["url", "link"]);
 
 /** The variant identity of a layout placement. */
 export function layoutTargetKey(layoutId: string, blockName: string, index: number): string {
@@ -139,68 +140,6 @@ export function sourceFingerprint(
   let h = 5381;
   for (let i = 0; i < text.length; i += 1) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
   return `djb2:${(h >>> 0).toString(16)}:${text.length}`;
-}
-
-/** What to do with one internal link on a page of a given language. */
-export type LinkMapping = { href: string } | { problem: string } | null;
-
-/**
- * Rewrite every internal link in `values` through `mapHref`: link-list
- * hrefs (recognised by shape, so a swapped-in module's menu is covered
- * too) and url/link fields. `null` keeps a link as it is.
- */
-export function mapLinks(
-  fields: readonly ChromeField[],
-  values: Readonly<Record<string, unknown>>,
-  mapHref: (href: string) => LinkMapping,
-): { values: Record<string, unknown>; changed: boolean; problems: string[] } {
-  const out = structuredClone(values) as Record<string, unknown>;
-  const problems: string[] = [];
-  let changed = false;
-  const kindOf = new Map(fields.map((f) => [f.name, f.kind]));
-  const apply = (href: string): string => {
-    const r = mapHref(href);
-    if (r === null) return href;
-    if ("problem" in r) {
-      problems.push(r.problem);
-      return href;
-    }
-    if (r.href !== href) changed = true;
-    return r.href;
-  };
-  for (const [name, v] of Object.entries(out)) {
-    if (typeof v === "string" && LINK_KINDS.has(kindOf.get(name) ?? "")) {
-      out[name] = apply(v);
-    } else if (Array.isArray(v)) {
-      out[name] = v.map((item) => {
-        if (
-          item &&
-          typeof item === "object" &&
-          typeof (item as { href?: unknown }).href === "string"
-        ) {
-          const it = item as Record<string, unknown> & { href: string };
-          return { ...it, href: apply(it.href) };
-        }
-        return item;
-      });
-    }
-  }
-  return { values: out, changed, problems };
-}
-
-/** Split an internal href into its path and the `?query#hash` suffix. */
-export function splitHref(href: string): { path: string; suffix: string } | null {
-  if (!href.startsWith("/") || href.startsWith("//")) return null;
-  const cut = href.search(/[?#]/);
-  return cut === -1
-    ? { path: href, suffix: "" }
-    : { path: href.slice(0, cut), suffix: href.slice(cut) };
-}
-
-/** `/de/preise/` and `/de/preise` name the same page. */
-export function normalizePath(path: string): string {
-  const trimmed = path.replace(/\/+$/, "");
-  return trimmed.length === 0 ? "/" : trimmed;
 }
 
 // ---------------------------------------------------------------------------

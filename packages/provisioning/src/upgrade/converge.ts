@@ -57,6 +57,7 @@ import {
   UPGRADER_JOB_ENV_VAR,
 } from "../stack-contract.js";
 import {
+  deleteRetiredSecrets,
   ensureStackInvariants,
   liveEnvHasInlinePassword,
   removeRetiredIamBindings,
@@ -364,12 +365,22 @@ export function startConverge(
       runDeps,
     );
     if (resolved.ok) {
-      s.done(`Remote MCP can be set up under Settings → MCP (${resolved.identity.mcpPublicUrl})`);
+      s.done(
+        `Google sign-in and remote MCP can be set up under Settings → Google sign-in (${resolved.identity.mcpPublicUrl})`,
+      );
+      if (resolved.orgDomainError) {
+        // #914 — the admin then refuses new users until Google sign-in is
+        // set up (it cannot tell who IAP's built-in sign-in admits). Not a
+        // converge failure: the Owner's sign-in setup resolves it.
+        r.warn(
+          `Could not read this project's Google organisation (${resolved.orgDomainError}). Until Google sign-in is set up under Settings → Google sign-in, the admin refuses to add users; or re-run upgrade as an account with the Organization Viewer role.`,
+        );
+      }
       return remoteMcpIdentityEnv(resolved.identity);
     }
     s.warned(`Remote-MCP env not resolved: ${resolved.error}`);
     r.warn(
-      "The upgrade continues; Settings → MCP reports remote MCP as not prepared on this install until this succeeds. Re-run upgrade once the cause is fixed.",
+      "The upgrade continues; Settings → Google sign-in and Settings → MCP report this install as not prepared until this succeeds. Re-run upgrade once the cause is fixed.",
     );
     incomplete = true;
     return null;
@@ -602,13 +613,18 @@ export function startConverge(
       // #613 — with both services on their new revisions, drop the bindings
       // nothing reads through any more (above all the gateway SA's access to
       // admin_role's password). Loud on failure.
-      const retired = await removeRetiredIamBindings(target, runDeps);
+      const retired = [
+        ...(await removeRetiredIamBindings(target, runDeps)),
+        // #914 — secrets nothing references any more (the renamed Google
+        // sign-in client); their IAM bindings go with them.
+        ...(await deleteRetiredSecrets(target, runDeps)),
+      ];
       for (const o of retired) {
         if (o.status === "removed") r.info(`  removed: ${o.id} (${o.why})`);
         if (o.status === "failed") {
           incomplete = true;
           r.error(
-            `  NOT removed: ${o.id} — ${o.why}\n    ${o.error ?? ""}\n    Re-run upgrade with an account that may change IAM, or remove the binding by hand.`,
+            `  NOT removed: ${o.id} — ${o.why}\n    ${o.error ?? ""}\n    Re-run upgrade with an account that may change IAM and secrets, or remove it by hand.`,
           );
         }
       }

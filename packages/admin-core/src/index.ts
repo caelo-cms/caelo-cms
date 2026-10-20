@@ -53,6 +53,8 @@ export {
   clearPendingScreenshots,
   deliverScreenshot,
   failScreenshot,
+  type ScreenshotCaptureMeta,
+  type ScreenshotViewportSource,
 } from "./ai/screenshot-orchestrator.js";
 export * from "./ai/system-prompt.js";
 // v0.2.77 — describeError reused by SvelteKit form actions to surface
@@ -193,6 +195,20 @@ export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit
 export * from "./rate-limit.js";
 export * from "./register.js";
 export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";
+// #914 — Settings → Google sign-in: the install's one Google OAuth client
+// (IAP browser login, IAP programmatic access, remote-MCP broker).
+export {
+  type GoogleSignInConfigureResult,
+  googleSignInClientInputSchema,
+  recheckGoogleSignIn,
+  removeGoogleSignInClient,
+  saveGoogleSignInClient,
+} from "./security/google-sign-in/configure.js";
+export {
+  type GoogleSignInAvailability,
+  googleSignInAvailability,
+  type SelfCheckLine,
+} from "./security/google-sign-in/setup.js";
 export {
   createIapVerifier,
   IAP_ASSERTION_HEADER,
@@ -204,18 +220,19 @@ export {
   iapTestKeyPair as iapTestKeyPairForTests,
   signIapTestAssertion as signIapTestAssertionForTests,
 } from "./security/iap-assertion.test-helpers.js";
-// #806 — Settings → MCP → Remote: availability, the Owner's OAuth client, self-check.
 export {
-  disableRemoteMcp,
-  type RemoteMcpConfigureResult,
-  recheckRemoteMcp,
-  remoteMcpClientInputSchema,
-  saveRemoteMcpClient,
-} from "./security/remote-mcp/configure.js";
+  currentIdentityGate,
+  emailsNeedingSignInClient,
+  GOOGLE_SIGN_IN_SETTINGS_PATH,
+  googleIapGate,
+  type IdentityGate,
+  setIdentityGateEnvForTests,
+} from "./security/identity-gate.js";
+// #806 — Settings → MCP → Remote: availability and the broker's self-check.
 export {
   type RemoteMcpAvailability,
   remoteMcpAvailability,
-  type SelfCheckLine,
+  runRemoteMcpSelfCheck,
 } from "./security/remote-mcp/setup.js";
 // P12+ at-rest secret encryption (project KEK + AES-GCM).
 export {

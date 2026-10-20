@@ -32,6 +32,7 @@ import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { emitDomainEvent } from "../../domain-events.js";
 import { pendingSnapshotSql } from "../../draft.js";
+import { withHumanisedLinks } from "../../links/humanise.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -344,168 +345,55 @@ export const getPageOp = defineOperation({
  * Two queries + Map merge — same shape as `users.list` from P2 — is simpler
  * to reason about than a json-aggregating SQL.
  */
-export const getPageWithModulesOp = defineOperation({
-  name: "pages.get_with_modules",
-  // P6.7.3 — AI reads the page's modules to compose Current-page system
-  // context and to splice via add_module_to_page. Read-only.
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z.object({ pageId: z.string().uuid() }),
-  output: z.object({ page: pageWithModulesSchema }),
-  handler: async (ctx, input, tx) => {
-    // v0.9.0 — branch-aware so create_page → add_module_to_page chain
-    // works inside the same chat without waiting for merge.
-    const branchFilter = branchVisibilityFilter(ctx);
-    const pageRows = (await tx.execute(sql`
+export const getPageWithModulesOp = withHumanisedLinks(
+  defineOperation({
+    name: "pages.get_with_modules",
+    // P6.7.3 — AI reads the page's modules to compose Current-page system
+    // context and to splice via add_module_to_page. Read-only.
+    actorScope: ["human", "ai", "system"],
+    database: "cms_admin",
+    input: z.object({ pageId: z.string().uuid() }),
+    output: z.object({ page: pageWithModulesSchema }),
+    handler: async (ctx, input, tx) => {
+      // v0.9.0 — branch-aware so create_page → add_module_to_page chain
+      // works inside the same chat without waiting for merge.
+      const branchFilter = branchVisibilityFilter(ctx);
+      const pageRows = (await tx.execute(sql`
       SELECT id::text AS id, slug, current_path, parent_page_id::text AS parent_page_id,
              name, title, template_id::text AS template_id,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
-    const pageRow = pageRows[0];
-    if (!pageRow) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.get_with_modules",
-        message: "page not found",
-      });
-    }
-    // Composer needs to see deleted-module references too — otherwise an
-    // editor opens a page whose modules were soft-deleted out from under
-    // them and the layout looks empty for no apparent reason. Each row
-    // carries `isDeleted` so the UI can mark the chip and the user can
-    // explicitly remove or replace it.
-    //
-    // v0.10.13 — branch-aware layout read. Without the overlay, an AI
-    // chain like add_module_to_page → reorder_module on the same chat
-    // branch fails ("module X is not on page Y") because
-    // `pages.set_modules` in branched mode writes to
-    // `page_layout_snapshots` only — the live `page_modules` table
-    // stays stale. The overlay returns the latest snapshot's blocks
-    // (when present) so chained edits compose; fetches module details
-    // separately from `modules` so we still get slug/html/css/js/etc.
-    const layoutState = await loadPageLayoutStateWithBranchOverlay(
-      tx,
-      input.pageId,
-      ctx.chatBranchId,
-    );
-    const grouped = new Map<
-      string,
-      {
-        moduleId: string;
-        slug: string;
-        displayName: string;
-        html: string;
-        css: string;
-        js: string;
-        isDeleted: boolean;
-        contentInstanceId: string | null;
-        syncMode: "synced" | "unsynced";
-      }[]
-    >();
-    const allModuleIds: string[] = [];
-    for (const block of layoutState.blocks) {
-      for (const id of block.moduleIds) allModuleIds.push(id);
-    }
-    if (allModuleIds.length > 0) {
-      // Fetch module details for the moduleIds referenced by the
-      // layout. Branch-aware so modules created on this chat's branch
-      // (chat_branch_id = X) are visible alongside main modules.
-      const branchFilter2 = branchVisibilityFilter(ctx);
-      const modDetailRows = (await tx.execute(sql`
-        SELECT id::text AS module_id, slug, display_name, html, css, js,
-               (deleted_at IS NOT NULL) AS is_deleted
-        FROM modules
-        WHERE id = ANY(${sql.raw(`ARRAY[${allModuleIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
-          ${branchFilter2}
-      `)) as unknown as {
-        module_id: string;
-        slug: string;
-        display_name: string;
-        html: string;
-        css: string;
-        js: string;
-        is_deleted: boolean;
-      }[];
-      const detailById = new Map(modDetailRows.map((r) => [r.module_id, r]));
-      // Run #8 R3 — caller-branch module CODE overlay. Branched
-      // `modules.update` writes a module_snapshots row only (live
-      // `modules` stays untouched until publish), so without this
-      // overlay a rebuild's read-back returned the PUBLISHED html/css
-      // and the AI re-edited modules it had already rewritten. One
-      // batched DISTINCT ON query — same overlay `pages.render_preview`
-      // applies for the /edit iframe, so tool reads match what the
-      // operator sees.
-      if (ctx.chatBranchId && allModuleIds.length > 0) {
-        const overlayRows = (await tx.execute(sql`
-          SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-          FROM module_snapshots ms
-          JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-          WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
-            AND ms.module_id = ANY(${sql.raw(
-              `ARRAY[${allModuleIds.map((id) => `'${id}'::uuid`).join(",")}]`,
-            )})
-          ORDER BY ms.module_id, ss.created_at DESC
-        `)) as unknown as { module_id: string; state: unknown }[];
-        for (const row of overlayRows) {
-          const detail = detailById.get(row.module_id);
-          if (!detail) continue;
-          const s = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as {
-            html?: string;
-            css?: string;
-            js?: string;
-            displayName?: string;
-            slug?: string;
-            deletedAt?: string | null;
-          };
-          if (s.deletedAt) continue; // soft-deleted in the overlay — keep live
-          detail.html = s.html ?? detail.html;
-          detail.css = s.css ?? detail.css;
-          detail.js = s.js ?? detail.js;
-          detail.display_name = s.displayName ?? detail.display_name;
-          detail.slug = s.slug ?? detail.slug;
-        }
+      const pageRow = pageRows[0];
+      if (!pageRow) {
+        return err({
+          kind: "HandlerError",
+          operation: "pages.get_with_modules",
+          message: "page not found",
+        });
       }
-      // v0.12.0 — placement metadata. Index by (block, position) so
-      // the loop below can hand the per-placement sync_mode +
-      // content_instance_id to the UI.
-      type PlacementMeta = { contentInstanceId: string; syncMode: "synced" | "unsynced" };
-      const placementByKey = new Map<string, PlacementMeta>();
-      // First check the layout snapshot for per-placement metadata
-      // (branched callers get this via layoutState.blocks[i].placements).
-      for (const b of layoutState.blocks) {
-        const placements = b.placements ?? [];
-        for (let i = 0; i < placements.length; i += 1) {
-          const p = placements[i];
-          if (!p) continue;
-          placementByKey.set(`${b.blockName}#${i}`, {
-            contentInstanceId: p.contentInstanceId,
-            syncMode: p.syncMode,
-          });
-        }
-      }
-      // Fall back to live page_modules for any placement the layout
-      // snapshot didn't carry (covers pre-v0.12 snapshots + live reads).
-      if (placementByKey.size === 0) {
-        const liveBindings = (await tx.execute(sql`
-          SELECT block_name, position, content_instance_id::text AS content_instance_id, sync_mode
-          FROM page_modules
-          WHERE page_id = ${input.pageId}::uuid
-        `)) as unknown as {
-          block_name: string;
-          position: number;
-          content_instance_id: string;
-          sync_mode: "synced" | "unsynced";
-        }[];
-        for (const r of liveBindings) {
-          placementByKey.set(`${r.block_name}#${r.position}`, {
-            contentInstanceId: r.content_instance_id,
-            syncMode: r.sync_mode,
-          });
-        }
-      }
-      for (const block of layoutState.blocks) {
-        const arr: {
+      // Composer needs to see deleted-module references too — otherwise an
+      // editor opens a page whose modules were soft-deleted out from under
+      // them and the layout looks empty for no apparent reason. Each row
+      // carries `isDeleted` so the UI can mark the chip and the user can
+      // explicitly remove or replace it.
+      //
+      // v0.10.13 — branch-aware layout read. Without the overlay, an AI
+      // chain like add_module_to_page → reorder_module on the same chat
+      // branch fails ("module X is not on page Y") because
+      // `pages.set_modules` in branched mode writes to
+      // `page_layout_snapshots` only — the live `page_modules` table
+      // stays stale. The overlay returns the latest snapshot's blocks
+      // (when present) so chained edits compose; fetches module details
+      // separately from `modules` so we still get slug/html/css/js/etc.
+      const layoutState = await loadPageLayoutStateWithBranchOverlay(
+        tx,
+        input.pageId,
+        ctx.chatBranchId,
+      );
+      const grouped = new Map<
+        string,
+        {
           moduleId: string;
           slug: string;
           displayName: string;
@@ -515,91 +403,206 @@ export const getPageWithModulesOp = defineOperation({
           isDeleted: boolean;
           contentInstanceId: string | null;
           syncMode: "synced" | "unsynced";
-        }[] = [];
-        let position = 0;
-        for (const id of block.moduleIds) {
-          const d = detailById.get(id);
-          if (!d) {
-            position += 1;
-            continue;
-          }
-          const binding = placementByKey.get(`${block.blockName}#${position}`);
-          arr.push({
-            moduleId: id,
-            slug: d.slug,
-            displayName: d.display_name,
-            html: d.html,
-            css: d.css,
-            js: d.js,
-            isDeleted: d.is_deleted,
-            contentInstanceId: binding?.contentInstanceId ?? null,
-            syncMode: binding?.syncMode ?? "unsynced",
-          });
-          position += 1;
-        }
-        if (arr.length > 0) grouped.set(block.blockName, arr);
+        }[]
+      >();
+      const allModuleIds: string[] = [];
+      for (const block of layoutState.blocks) {
+        for (const id of block.moduleIds) allModuleIds.push(id);
       }
-    }
-    // v0.2.65 — Surface ALL template blocks, even those the page hasn't
-    // assigned modules to yet. Pre-v0.2.65 this op only returned blocks
-    // that had at least one module in `page_modules`, so a fresh page on
-    // a template with valid blocks reported `blocks: []` and the AI's
-    // `add_module_to_page` validator failed with "block 'X' does not
-    // exist on this page's template. Available blocks: ".
-    //
-    // The page's blocks are defined by `template_blocks` for its
-    // template_id. Pull those in sorted order, then merge with the
-    // module assignments computed above. Empty blocks return as
-    // `{blockName, modules: []}`.
-    const blockDefRows = (await tx.execute(sql`
+      if (allModuleIds.length > 0) {
+        // Fetch module details for the moduleIds referenced by the
+        // layout. Branch-aware so modules created on this chat's branch
+        // (chat_branch_id = X) are visible alongside main modules.
+        const branchFilter2 = branchVisibilityFilter(ctx);
+        const modDetailRows = (await tx.execute(sql`
+        SELECT id::text AS module_id, slug, display_name, html, css, js,
+               (deleted_at IS NOT NULL) AS is_deleted
+        FROM modules
+        WHERE id = ANY(${sql.raw(`ARRAY[${allModuleIds.map((id) => `'${id}'::uuid`).join(",")}]`)})
+          ${branchFilter2}
+      `)) as unknown as {
+          module_id: string;
+          slug: string;
+          display_name: string;
+          html: string;
+          css: string;
+          js: string;
+          is_deleted: boolean;
+        }[];
+        const detailById = new Map(modDetailRows.map((r) => [r.module_id, r]));
+        // Run #8 R3 — caller-branch module CODE overlay. Branched
+        // `modules.update` writes a module_snapshots row only (live
+        // `modules` stays untouched until publish), so without this
+        // overlay a rebuild's read-back returned the PUBLISHED html/css
+        // and the AI re-edited modules it had already rewritten. One
+        // batched DISTINCT ON query — same overlay `pages.render_preview`
+        // applies for the /edit iframe, so tool reads match what the
+        // operator sees.
+        if (ctx.chatBranchId && allModuleIds.length > 0) {
+          const overlayRows = (await tx.execute(sql`
+          SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
+          FROM module_snapshots ms
+          JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+          WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
+            AND ms.module_id = ANY(${sql.raw(
+              `ARRAY[${allModuleIds.map((id) => `'${id}'::uuid`).join(",")}]`,
+            )})
+          ORDER BY ms.module_id, ss.created_at DESC
+        `)) as unknown as { module_id: string; state: unknown }[];
+          for (const row of overlayRows) {
+            const detail = detailById.get(row.module_id);
+            if (!detail) continue;
+            const s = (typeof row.state === "string" ? JSON.parse(row.state) : row.state) as {
+              html?: string;
+              css?: string;
+              js?: string;
+              displayName?: string;
+              slug?: string;
+              deletedAt?: string | null;
+            };
+            if (s.deletedAt) continue; // soft-deleted in the overlay — keep live
+            detail.html = s.html ?? detail.html;
+            detail.css = s.css ?? detail.css;
+            detail.js = s.js ?? detail.js;
+            detail.display_name = s.displayName ?? detail.display_name;
+            detail.slug = s.slug ?? detail.slug;
+          }
+        }
+        // v0.12.0 — placement metadata. Index by (block, position) so
+        // the loop below can hand the per-placement sync_mode +
+        // content_instance_id to the UI.
+        type PlacementMeta = { contentInstanceId: string; syncMode: "synced" | "unsynced" };
+        const placementByKey = new Map<string, PlacementMeta>();
+        // First check the layout snapshot for per-placement metadata
+        // (branched callers get this via layoutState.blocks[i].placements).
+        for (const b of layoutState.blocks) {
+          const placements = b.placements ?? [];
+          for (let i = 0; i < placements.length; i += 1) {
+            const p = placements[i];
+            if (!p) continue;
+            placementByKey.set(`${b.blockName}#${i}`, {
+              contentInstanceId: p.contentInstanceId,
+              syncMode: p.syncMode,
+            });
+          }
+        }
+        // Fall back to live page_modules for any placement the layout
+        // snapshot didn't carry (covers pre-v0.12 snapshots + live reads).
+        if (placementByKey.size === 0) {
+          const liveBindings = (await tx.execute(sql`
+          SELECT block_name, position, content_instance_id::text AS content_instance_id, sync_mode
+          FROM page_modules
+          WHERE page_id = ${input.pageId}::uuid
+        `)) as unknown as {
+            block_name: string;
+            position: number;
+            content_instance_id: string;
+            sync_mode: "synced" | "unsynced";
+          }[];
+          for (const r of liveBindings) {
+            placementByKey.set(`${r.block_name}#${r.position}`, {
+              contentInstanceId: r.content_instance_id,
+              syncMode: r.sync_mode,
+            });
+          }
+        }
+        for (const block of layoutState.blocks) {
+          const arr: {
+            moduleId: string;
+            slug: string;
+            displayName: string;
+            html: string;
+            css: string;
+            js: string;
+            isDeleted: boolean;
+            contentInstanceId: string | null;
+            syncMode: "synced" | "unsynced";
+          }[] = [];
+          let position = 0;
+          for (const id of block.moduleIds) {
+            const d = detailById.get(id);
+            if (!d) {
+              position += 1;
+              continue;
+            }
+            const binding = placementByKey.get(`${block.blockName}#${position}`);
+            arr.push({
+              moduleId: id,
+              slug: d.slug,
+              displayName: d.display_name,
+              html: d.html,
+              css: d.css,
+              js: d.js,
+              isDeleted: d.is_deleted,
+              contentInstanceId: binding?.contentInstanceId ?? null,
+              syncMode: binding?.syncMode ?? "unsynced",
+            });
+            position += 1;
+          }
+          if (arr.length > 0) grouped.set(block.blockName, arr);
+        }
+      }
+      // v0.2.65 — Surface ALL template blocks, even those the page hasn't
+      // assigned modules to yet. Pre-v0.2.65 this op only returned blocks
+      // that had at least one module in `page_modules`, so a fresh page on
+      // a template with valid blocks reported `blocks: []` and the AI's
+      // `add_module_to_page` validator failed with "block 'X' does not
+      // exist on this page's template. Available blocks: ".
+      //
+      // The page's blocks are defined by `template_blocks` for its
+      // template_id. Pull those in sorted order, then merge with the
+      // module assignments computed above. Empty blocks return as
+      // `{blockName, modules: []}`.
+      const blockDefRows = (await tx.execute(sql`
       SELECT name, position FROM template_blocks
       WHERE template_id = ${pageRow.template_id}::uuid
       ORDER BY position ASC
     `)) as unknown as { name: string; position: number }[];
-    const orderedBlocks = blockDefRows.map((b) => ({
-      blockName: b.name,
-      modules: grouped.get(b.name) ?? [],
-    }));
-    // Stragglers: any `page_modules` rows referencing a block name
-    // that's no longer on the template (e.g., the template was edited
-    // to drop a block but page_modules still has rows). Append them
-    // last so the editor can see + clean them up.
-    for (const [blockName, modules] of grouped) {
-      if (!blockDefRows.some((b) => b.name === blockName)) {
-        orderedBlocks.push({ blockName, modules });
+      const orderedBlocks = blockDefRows.map((b) => ({
+        blockName: b.name,
+        modules: grouped.get(b.name) ?? [],
+      }));
+      // Stragglers: any `page_modules` rows referencing a block name
+      // that's no longer on the template (e.g., the template was edited
+      // to drop a block but page_modules still has rows). Append them
+      // last so the editor can see + clean them up.
+      for (const [blockName, modules] of grouped) {
+        if (!blockDefRows.some((b) => b.name === blockName)) {
+          orderedBlocks.push({ blockName, modules });
+        }
       }
-    }
-    // Run #8 R3 — page meta overlay (slug/title), mirroring the v0.5.5
-    // fix in pages.render_preview: branched pages.update writes
-    // page_snapshots only, so the live row carries pre-rename values.
-    if (ctx.chatBranchId) {
-      const pageState = await loadPageStateWithBranchOverlay(tx, input.pageId, ctx.chatBranchId);
-      if (pageState) {
-        if (pageState.slug) pageRow.slug = pageState.slug;
-        if (pageState.title) pageRow.title = pageState.title;
+      // Run #8 R3 — page meta overlay (slug/title), mirroring the v0.5.5
+      // fix in pages.render_preview: branched pages.update writes
+      // page_snapshots only, so the live row carries pre-rename values.
+      if (ctx.chatBranchId) {
+        const pageState = await loadPageStateWithBranchOverlay(tx, input.pageId, ctx.chatBranchId);
+        if (pageState) {
+          if (pageState.slug) pageRow.slug = pageState.slug;
+          if (pageState.title) pageRow.title = pageState.title;
+        }
       }
-    }
-    // 0184 — is this page the designated homepage (site root)?
-    // 0284 (#802) — or the designated 404 page?
-    const designationRows = (await tx.execute(sql`
+      // 0184 — is this page the designated homepage (site root)?
+      // 0284 (#802) — or the designated 404 page?
+      const designationRows = (await tx.execute(sql`
       SELECT (home_page_id = ${input.pageId}::uuid) AS is_home,
              (not_found_page_id = ${input.pageId}::uuid) AS is_not_found
       FROM site_defaults
       WHERE id = 1
       LIMIT 1
     `)) as unknown as { is_home: boolean | null; is_not_found: boolean | null }[];
-    const isHomePage = designationRows[0]?.is_home === true;
-    const isNotFoundPage = designationRows[0]?.is_not_found === true;
-    return ok({
-      page: {
-        ...rowToPage(pageRow),
-        isHomePage,
-        isNotFoundPage,
-        blocks: orderedBlocks,
-      },
-    });
-  },
-});
+      const isHomePage = designationRows[0]?.is_home === true;
+      const isNotFoundPage = designationRows[0]?.is_not_found === true;
+      return ok({
+        page: {
+          ...rowToPage(pageRow),
+          isHomePage,
+          isNotFoundPage,
+          blocks: orderedBlocks,
+        },
+      });
+    },
+  }),
+);
 
 /**
  * A page's slug is "root-equivalent" (serves at the site root `/`) when

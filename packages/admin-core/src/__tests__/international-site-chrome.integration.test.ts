@@ -7,12 +7,13 @@
  *
  * Covers: a missing variant is flagged in the preview and stops the build
  * pass; translate_chrome builds the German chrome in one call; a German
- * page renders the German footer + shared CTA with menu links mapped to
- * the German pages (canonical form from core's URL builder) while the
- * English page keeps its own; independent mode (own items, own module in
- * a layout slot) is never marked stale by source edits while translated
- * mode is; a link to a page without a German version is flagged;
- * re-attaching re-derives from the source.
+ * page renders the German footer + shared CTA with menu links resolved to
+ * the German pages (core's link-resolve point, #724 D — the chrome
+ * values keep page references) while the English page keeps its own;
+ * independent mode (own items, own module in a layout slot) is never
+ * marked stale by source edits while translated mode is; its own links
+ * are canonicalised by core, and a link to a page without a German
+ * version is flagged by core; re-attaching re-derives from the source.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -174,6 +175,18 @@ beforeAll(async () => {
     templateId,
     blocks: [{ name: "content", displayName: "Content", position: 0 }],
   });
+  // The pages exist before the footer that links to them: an internal
+  // link must name an existing page (#724), stored as a reference.
+  for (const slug of ["pricing", "about", "solo"]) {
+    const p = await sysOp<{ pageId: string }>("pages.create", {
+      slug: `${PFX}-${slug}`,
+      title: slug,
+      templateId,
+    });
+    if (slug === "pricing") ids.enPricing = p.pageId;
+    if (slug === "about") ids.enAbout = p.pageId;
+    if (slug === "solo") ids.enSolo = p.pageId;
+  }
   ids.footerModuleId = (
     await sysOp<{ moduleId: string }>("modules.create", {
       slug: `${PFX}-footer`,
@@ -208,16 +221,6 @@ beforeAll(async () => {
     moduleIds: [ids.footerModuleId],
   });
 
-  for (const slug of ["pricing", "about", "solo"]) {
-    const p = await sysOp<{ pageId: string }>("pages.create", {
-      slug: `${PFX}-${slug}`,
-      title: slug,
-      templateId,
-    });
-    if (slug === "pricing") ids.enPricing = p.pageId;
-    if (slug === "about") ids.enAbout = p.pageId;
-    if (slug === "solo") ids.enSolo = p.pageId;
-  }
   await op("set_locales", {
     locales: [
       { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
@@ -260,40 +263,37 @@ describe("#592 — menus and footer per language", () => {
     );
     // The English page is the source language: untouched, no flags.
     const en = await preview(ids.enPricing);
-    expect(en.html).toContain('<a href="/t592-about">About</a>');
+    // The footer's link is a stored reference (#724), rendered as the
+    // page's canonical path.
+    expect(en.html).toContain('<a href="/t592-about/">About</a>');
     expect(en.missingSlots.filter((m) => m.startsWith("content-variant:"))).toEqual([]);
 
     await expect(
       adapter.withAdminTransaction(SYS_CTX, (tx) =>
-        resolveBuildContentVariants(
-          tx,
-          localBuildPluginServices,
-          [
-            {
-              pageId: ids.dePreise,
-              slug: `${PFX}-preise`,
-              layoutId: ids.layoutId,
-              layoutBlocks: new Map([
+        resolveBuildContentVariants(tx, localBuildPluginServices, [
+          {
+            pageId: ids.dePreise,
+            slug: `${PFX}-preise`,
+            layoutId: ids.layoutId,
+            layoutBlocks: new Map([
+              [
+                "footer",
                 [
-                  "footer",
-                  [
-                    {
-                      moduleId: ids.footerModuleId,
-                      slug: `${PFX}-footer`,
-                      displayName: "Site footer",
-                      html: "",
-                      css: "",
-                      js: "",
-                      fields: [{ name: "tagline", kind: "text", default: "Made with care" }],
-                    },
-                  ],
+                  {
+                    moduleId: ids.footerModuleId,
+                    slug: `${PFX}-footer`,
+                    displayName: "Site footer",
+                    html: "",
+                    css: "",
+                    js: "",
+                    fields: [{ name: "tagline", kind: "text", default: "Made with care" }],
+                  },
                 ],
-              ]),
-              pageBlocks: [],
-            },
-          ],
-          "directory",
-        ),
+              ],
+            ]),
+            pageBlocks: [],
+          },
+        ]),
       ),
     ).rejects.toThrow(/no Deutsch \(de\) version of "Site footer"/);
   }, 60_000);
@@ -314,7 +314,7 @@ describe("#592 — menus and footer per language", () => {
     await sqlSystem(async (tx) => {
       const ci = (await tx.unsafe(
         `INSERT INTO content_instances (module_id, slug, display_name, "values")
-         VALUES ('${cta.moduleId}', '${PFX}-cta-shared', 'CTA', '{"cta_label": "Talk to us", "cta_href": "/t592-about/"}')
+         VALUES ('${cta.moduleId}', '${PFX}-cta-shared', 'CTA', '{"cta_label": "Talk to us", "cta_href": "caelo:page/${ids.enAbout}"}')
          RETURNING id::text AS id`,
       )) as { id: string }[];
       for (const pageId of [ids.enPricing, ids.dePreise]) {
@@ -333,7 +333,7 @@ describe("#592 — menus and footer per language", () => {
     const de = await preview(ids.dePreise);
     expect(de.missingSlots.filter((m) => m.startsWith("content-variant:"))).toEqual([]);
     expect(de.html).toContain('<p class="tag">DE:Made with care</p>');
-    // Menu link mapped to the German "about" page, in core's canonical form.
+    // Menu link resolved to the German "about" page, in core's canonical form.
     expect(de.html).toContain('<a href="/de/t592-ueber/">DE:About</a>');
     expect(de.html).toMatch(/<a class="cta" href="\/de\/t592-ueber\/"[^>]*>DE:Talk to us<\/a>/);
     // English keeps its own chrome.
@@ -357,17 +357,33 @@ describe("#592 — menus and footer per language", () => {
           targetKey: footerKey(),
           localeCode: "de",
           moduleId: ids.altFooterModuleId,
-          values: { nav: [{ label: "Kontakt", href: "/t592-solo" }] },
+          values: {
+            nav: [
+              { label: "Kontakt", href: "/t592-solo" },
+              // A stored reference (#724) is named by its page's path, never its id.
+              { label: "Team", href: `caelo:page/${ids.enSolo}#team` },
+            ],
+          },
         },
       ],
     });
     const de = await preview(ids.dePreise);
     expect(de.html).toContain('<footer class="us"');
     expect(de.html).not.toContain('<p class="tag">');
-    // The link target has no German version: flagged, not silently English.
-    expect(de.missingSlots.join("\n")).toContain(
-      'the link "/t592-solo" goes to a page that has no Deutsch version',
-    );
+    // The variant's own link was stored as a reference to the page...
+    const stored = await sqlSystem(async (tx) => {
+      // Plugin tables are FORCE-RLS scoped to the plugin's id.
+      const plug =
+        (await tx`SELECT id::text AS id FROM plugins WHERE slug = 'international-site'`) as {
+          id: string;
+        }[];
+      await tx.unsafe(`SET LOCAL caelo.plugin_id = '${plug[0]?.id}'`);
+      return tx`SELECT "values"::text AS v FROM plugin_international_site.chrome_variants WHERE locale_code = 'de' AND module_id IS NOT NULL`;
+    });
+    expect((stored as { v: string }[])[0]?.v).toContain(`caelo:page/${ids.enSolo}`);
+    // ...which has no German version: flagged, not silently English.
+    expect(de.missingSlots).toContain(`link-variant-missing:page/${ids.enSolo}:de`);
+    expect(de.html).not.toContain('href="/t592-solo/"');
     // English still shows the source footer.
     expect((await preview(ids.enPricing)).html).toContain('<p class="tag">Made with care</p>');
 
@@ -377,7 +393,7 @@ describe("#592 — menus and footer per language", () => {
         `UPDATE modules SET fields = jsonb_set(fields, '{0,default}', '"Made with even more care"') WHERE id = '${ids.footerModuleId}'`,
       );
       await tx.unsafe(
-        `UPDATE content_instances SET "values" = '{"cta_label": "Call us", "cta_href": "/t592-about/"}' WHERE slug = '${PFX}-cta-shared'`,
+        `UPDATE content_instances SET "values" = '{"cta_label": "Call us", "cta_href": "caelo:page/${ids.enAbout}"}' WHERE slug = '${PFX}-cta-shared'`,
       );
     });
     const status = await op<{
@@ -400,5 +416,43 @@ describe("#592 — menus and footer per language", () => {
     const de = await preview(ids.dePreise);
     expect(de.html).toContain('<p class="tag">DE:Made with even more care</p>');
     expect(de.html).not.toContain('<footer class="us"');
+  }, 60_000);
+
+  it("set_chrome_variants is all-or-nothing: a refused variant stores none of the batch", async () => {
+    const status = await op<{ chrome: { targetKey: string; label: string }[] }>("intl_status", {});
+    const ctaKey = status.chrome.find((c) => c.label.startsWith("Call to action"))?.targetKey;
+    if (!ctaKey) throw new Error("CTA chrome target missing — the translate_chrome test seeds it");
+    const readRows = () =>
+      sqlSystem(async (tx) => {
+        // Plugin tables are FORCE-RLS scoped to the plugin's id.
+        const plug =
+          (await tx`SELECT id::text AS id FROM plugins WHERE slug = 'international-site'`) as {
+            id: string;
+          }[];
+        await tx.unsafe(`SET LOCAL caelo.plugin_id = '${plug[0]?.id}'`);
+        return tx`SELECT target_key, locale_code, mode, "values"::text AS v FROM plugin_international_site.chrome_variants ORDER BY target_key, locale_code`;
+      });
+    const before = await readRows();
+    expect(before.length).toBeGreaterThan(0);
+
+    // The first variant is valid; the second links to a path that names
+    // no page, which core's canonicalisation refuses.
+    await expect(
+      op("set_chrome_variants", {
+        variants: [
+          {
+            targetKey: ctaKey,
+            localeCode: "de",
+            values: { cta_label: "Schreib uns", cta_href: "/t592-ueber" },
+          },
+          {
+            targetKey: footerKey(),
+            localeCode: "de",
+            values: { nav: [{ label: "Nirgends", href: "/t592-nowhere" }] },
+          },
+        ],
+      }),
+    ).rejects.toThrow(/t592-nowhere/);
+    expect(await readRows()).toEqual(before);
   }, 60_000);
 });

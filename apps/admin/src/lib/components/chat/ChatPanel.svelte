@@ -64,6 +64,7 @@
     sdkApprovalRoute,
   } from "./approval-origin.js";
   import { parseProposalContent } from "./proposal-parser.js";
+  import { measureLivePreview, resolveScreenshotViewport } from "./screenshot-viewport.js";
   import {
     collapseStatusNotes,
     contextNoteLabel,
@@ -1002,15 +1003,17 @@
     pageId: string;
     chatBranchId?: string;
     viewport: "desktop" | "tablet" | "mobile";
+    width?: number;
     selector?: string;
     toolCallId?: string;
   }): Promise<void> {
-    const VIEWPORT_DIMS = {
-      desktop: { width: 1280, height: 800 },
-      tablet: { width: 768, height: 1024 },
-      mobile: { width: 375, height: 812 },
-    };
-    const { width, height } = VIEWPORT_DIMS[req.viewport];
+    // Desktop captures at the operator's live preview size so the AI sees
+    // the same line breaks the operator sees (see screenshot-viewport.ts).
+    const { width, height, source } = resolveScreenshotViewport({
+      viewport: req.viewport,
+      ...(req.width !== undefined ? { width: req.width } : {}),
+      livePreview: measureLivePreview(document),
+    });
 
     const iframe = document.createElement("iframe");
     iframe.style.position = "fixed";
@@ -1137,12 +1140,17 @@
 
       // Capture geometry rides along so the tool result can state
       // crop-vs-full-page as a FACT (run B4: the model doubted a
-      // selector crop and nothing could confirm it after the fact).
+      // selector crop and nothing could confirm it after the fact). The
+      // viewport size + its source tell the AI whether it saw the
+      // operator's own view or a preset width.
       const meta = {
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,
         pageWidth: doc.body.scrollWidth,
         pageHeight: doc.body.scrollHeight,
+        viewportWidth: width,
+        viewportHeight: height,
+        viewportSource: source,
       };
       const res = await fetch(`/content/chat/${session.id}/screenshot/${req.requestId}`, {
         method: "POST",
@@ -1944,6 +1952,7 @@
                 pageId: String(ev["pageId"] ?? ""),
                 chatBranchId: typeof ev["chatBranchId"] === "string" ? ev["chatBranchId"] : undefined,
                 viewport: (ev["viewport"] as "desktop" | "tablet" | "mobile" | undefined) ?? "desktop",
+                width: typeof ev["width"] === "number" ? ev["width"] : undefined,
                 // Forward the CSS selector so an element-scoped capture frames
                 // that element — without this it silently fell back to the full
                 // body and cropped a footer to the top viewport.

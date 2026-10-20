@@ -548,6 +548,7 @@
         bind:this={iframe}
         src={previewSrc}
         title="Live preview"
+        data-caelo-live-preview
         sandbox="allow-scripts allow-same-origin"
         class="h-full w-full border-0 bg-white"
         style:pointer-events={overlayDragging ? "none" : "auto"}

@@ -125,10 +125,12 @@ describe("pages.render_preview — layout module field interpolation (issue #106
           name: "nav_links",
           kind: "link-list",
           label: "Footer navigation",
+          // External: an internal link must name an existing page (#724),
+          // and this file seeds none.
           default: [
-            { label: "Home", href: "/" },
-            { label: "About", href: "/about" },
-            { label: "Contact", href: "/contact" },
+            { label: "Home", href: "https://example.com/" },
+            { label: "About", href: "https://example.com/about" },
+            { label: "Contact", href: "https://example.com/contact" },
           ],
         },
         { name: "copyright", kind: "text", label: "Copyright", default: "© 2026 Caelo Test" },
@@ -160,9 +162,9 @@ describe("pages.render_preview — layout module field interpolation (issue #106
 
     // The link-list section expanded to one <a> per item, with both href
     // and label bound from the field default.
-    expect(html).toContain('<a href="/">Home</a>');
-    expect(html).toContain('<a href="/about">About</a>');
-    expect(html).toContain('<a href="/contact">Contact</a>');
+    expect(html).toContain('<a href="https://example.com/">Home</a>');
+    expect(html).toContain('<a href="https://example.com/about">About</a>');
+    expect(html).toContain('<a href="https://example.com/contact">Contact</a>');
     // The scalar default substituted.
     expect(html).toContain("© 2026 Caelo Test");
 

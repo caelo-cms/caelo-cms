@@ -61,7 +61,8 @@ export type SettingsIcon =
   | "users"
   | "users-round"
   | "workflow"
-  | "radio";
+  | "radio"
+  | "link";
 
 /** A page the overview links to. */
 export interface SettingsLink {
@@ -159,6 +160,15 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         permission: "content.read",
         icon: "arrow-right-left",
         keywords: ["301", "302", "moved"],
+      },
+      {
+        href: "/settings/links",
+        label: "Internal links",
+        description:
+          "Links between your pages, converted to follow a page when it moves; what could not be.",
+        permission: "roles.manage",
+        icon: "link",
+        keywords: ["broken links", "references", "migration", "href"],
       },
       {
         href: "/settings/media",
@@ -355,7 +365,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
           {
             href: "/settings/mcp/remote",
             label: "Remote MCP setup",
-            description: "Let ChatGPT, claude.ai and other clients connect with a Google sign-in.",
+            description: "Let ChatGPT, claude.ai and other clients connect through Google sign-in.",
             permission: "settings.read",
           },
           {
@@ -468,6 +478,22 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
             description: "Invitations and role changes the AI prepared.",
             permission: "roles.manage",
           },
+        ],
+      },
+      {
+        href: "/settings/google-sign-in",
+        label: "Google sign-in",
+        description:
+          "Let users outside your Google organisation (Gmail, other companies) sign in to the admin.",
+        permission: "settings.read",
+        icon: "key",
+        keywords: [
+          "iap",
+          "oauth client",
+          "gmail",
+          "external users",
+          "you don't have access",
+          "remote mcp",
         ],
       },
       {

@@ -24,8 +24,10 @@ export * from "./fonts.js";
 export * from "./genesis.js";
 export * from "./genesis-inventory.js";
 export * from "./google-models.js";
+export * from "./google-oauth.js";
 export * from "./image-capabilities.js";
 export * from "./interactions.js";
+export * from "./link-canonicalise.js";
 export * from "./link-refs.js";
 export {
   type LogContext,

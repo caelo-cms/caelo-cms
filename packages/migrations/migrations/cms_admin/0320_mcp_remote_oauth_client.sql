@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0313 — issue #806: which Google OAuth client remote MCP uses.
+-- 0320 — issue #806: which Google OAuth client remote MCP uses.
 --
 -- Remote MCP (ChatGPT, claude.ai, HTTP-capable MCP clients) signs users in
 -- with a Google OAuth client the Owner creates in the Google console and
@@ -12,7 +12,7 @@
 --
 --   * the operator-access sync job, which makes the admin IAP resource's
 --     `programmatic_clients` hold exactly this client (or nothing when no
---     row exists) — reading it with its read-only role (0314);
+--     row exists) — reading it with its read-only role (0321);
 --   * the setup page, which shows the configured client and checks that the
 --     gateway serves the same one (by SHA-256, the gateway never echoes it).
 --
