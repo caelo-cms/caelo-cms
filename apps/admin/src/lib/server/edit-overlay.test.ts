@@ -66,18 +66,9 @@ function bootRuntime(): {
   handler: (ev: { source: unknown; origin: string; data: unknown }) => void;
   parentWindow: object;
   reloads: () => number;
-  body: { classList: Set<string> };
 } {
   const listeners: Record<string, (ev: never) => void> = {};
   let reloads = 0;
-  const classList = new Set<string>();
-  const body = {
-    classList: {
-      add: (c: string) => classList.add(c),
-      remove: (c: string) => classList.delete(c),
-      contains: (c: string) => classList.has(c),
-    },
-  };
   const parentWindow = { postMessage: () => {}, location: { origin: "https://admin.test" } };
   const win: Record<string, unknown> = {
     addEventListener: (type: string, fn: (ev: never) => void) => {
@@ -87,7 +78,6 @@ function bootRuntime(): {
   };
   const doc = {
     readyState: "loading",
-    body,
     head: { appendChild: () => {} },
     getElementById: () => null,
     createElement: () => ({}),
@@ -112,7 +102,6 @@ function bootRuntime(): {
     handler: message as unknown as (ev: { source: unknown; origin: string; data: unknown }) => void,
     parentWindow,
     reloads: () => reloads,
-    body: { classList },
   };
 }
 
@@ -125,12 +114,6 @@ describe("INJECT_SCRIPT message listener", () => {
       data: { kind: "caelo:reload" },
     });
     expect(rt.reloads()).toBe(1);
-    rt.handler({
-      source: rt.parentWindow,
-      origin: "https://admin.test",
-      data: { kind: "caelo:set-edit-mode", on: true },
-    });
-    expect(rt.body.classList.has("caelo-edit-mode")).toBe(true);
   });
 
   it("ignores messages from any other window or origin", () => {
@@ -138,12 +121,6 @@ describe("INJECT_SCRIPT message listener", () => {
     const reload = { kind: "caelo:reload" };
     rt.handler({ source: {}, origin: "https://admin.test", data: reload });
     rt.handler({ source: rt.parentWindow, origin: "https://evil.test", data: reload });
-    rt.handler({
-      source: {},
-      origin: "https://admin.test",
-      data: { kind: "caelo:set-edit-mode", on: true },
-    });
     expect(rt.reloads()).toBe(0);
-    expect(rt.body.classList.has("caelo-edit-mode")).toBe(false);
   });
 });

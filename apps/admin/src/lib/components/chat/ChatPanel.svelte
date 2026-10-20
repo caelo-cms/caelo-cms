@@ -80,6 +80,10 @@
     moduleId: string;
     selector: string;
     label: string;
+    /** Text the operator selected in the preview (right-click / selection toolbar). */
+    selectedText?: string;
+    /** Text of the block the reference sits in. */
+    context?: string;
     /** When true the chip rides every send within this session (P6.7). */
     pinned?: boolean;
   }
@@ -1487,6 +1491,8 @@
   }
 
   async function persistPinned(): Promise<void> {
+    // A pin keeps the module + element reference across messages; the
+    // selected text belongs to the message it was picked for.
     const pinned = chips
       .filter((c) => c.pinned)
       .map((c) => ({ moduleId: c.moduleId, selector: c.selector, label: c.label }));
@@ -1499,6 +1505,25 @@
     } catch {
       // best-effort
     }
+  }
+
+  /**
+   * Ask AI from the preview: the prompt goes out right away with the
+   * reference chip when the chat is idle and the composer is empty. If the
+   * operator has a draft or a turn is running, the prompt joins the draft
+   * instead, so nothing they typed is sent or lost behind their back.
+   */
+  async function askAboutReference(prompt: string): Promise<void> {
+    if (!streaming && !uploadingImages && composer.trim().length === 0) {
+      composer = prompt;
+      await tick();
+      await sendMessage();
+      return;
+    }
+    composer = composer.trim().length > 0 ? `${composer}\n${prompt}` : prompt;
+    await tick();
+    autoSizeComposer();
+    composerEl?.focus();
   }
 
   /**
@@ -1515,11 +1540,18 @@
     // (the runner just queued or executed something).
     void loadPendingProposals();
     const handler = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail as Chip | undefined;
+      const detail = (ev as CustomEvent).detail as (Chip & { prompt?: string }) | undefined;
       if (!detail || typeof detail.moduleId !== "string") return;
+      const { prompt, ...chip } = detail;
       // De-dupe: don't add a chip already present (pinned or not).
-      if (chips.some((c) => c.moduleId === detail.moduleId && c.selector === detail.selector)) return;
-      chips = [...chips, { ...detail }];
+      const present = chips.some(
+        (c) =>
+          c.moduleId === chip.moduleId &&
+          c.selector === chip.selector &&
+          c.selectedText === chip.selectedText,
+      );
+      if (!present) chips = [...chips, chip];
+      if (typeof prompt === "string" && prompt.trim().length > 0) void askAboutReference(prompt.trim());
     };
     window.addEventListener("caelo:chip", handler);
 
@@ -2500,7 +2532,11 @@
                   c.pinned ? "bg-amber-500/15 ring-1 ring-amber-500/40" : "bg-primary/10",
                 )}
               >
-                {c.label}
+                <span title={c.selectedText ?? c.context ?? c.selector}>
+                  {c.label}{#if c.selectedText}<span class="text-muted-foreground">
+                      · “{c.selectedText.length > 40 ? `${c.selectedText.slice(0, 39)}…` : c.selectedText}”</span
+                    >{/if}
+                </span>
                 <button
                   type="button"
                   onclick={() => void togglePin(i)}

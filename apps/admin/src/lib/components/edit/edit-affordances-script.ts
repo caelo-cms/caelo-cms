@@ -1,0 +1,419 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Caelo blue for the live-edit affordances. A literal, not an admin CSS
+ * variable: the UI lives inside the operator's own site, which never
+ * loads the admin's tokens. White text on it is 5.8:1 (WCAG AA).
+ */
+export const EDIT_OVERLAY_COLOR = "#2a64b8";
+
+/**
+ * Stylesheet of the shadow root that hosts the context menu, the
+ * selection toolbar, the Ask AI field and the target outline. It sits in
+ * a shadow root so the site's CSS cannot restyle it and it cannot
+ * restyle the site; nothing here touches the site's own elements (an
+ * earlier version forced `position:relative` on the hovered module and
+ * shifted sticky headers).
+ */
+export const EDIT_UI_CSS =
+  ":host{all:initial;}" +
+  "[hidden]{display:none !important;}" +
+  `.outline{position:fixed;pointer-events:none;outline:2px solid ${EDIT_OVERLAY_COLOR};outline-offset:-2px;border-radius:2px;z-index:2147483646;}` +
+  '.panel{position:fixed;z-index:2147483647;box-sizing:border-box;min-width:200px;max-width:340px;background:#fff;color:#1a1a1a;border:1px solid #d4d4d8;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px;font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;}' +
+  ".panel.bar{display:flex;gap:2px;min-width:0;padding:3px;}" +
+  ".caption{padding:6px 8px 4px;color:#52525b;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}" +
+  "button{all:unset;box-sizing:border-box;display:block;width:100%;padding:6px 8px;border-radius:5px;cursor:pointer;color:inherit;font:inherit;}" +
+  ".bar button{width:auto;white-space:nowrap;}" +
+  `button:hover,button:focus-visible{background:${EDIT_OVERLAY_COLOR};color:#fff;}` +
+  ".ask{display:flex;gap:4px;padding:4px;}" +
+  "input{all:unset;box-sizing:border-box;flex:1;min-width:0;padding:6px 8px;border:1px solid #d4d4d8;border-radius:5px;background:#fff;color:#1a1a1a;font:inherit;}" +
+  `input:focus{border-color:${EDIT_OVERLAY_COLOR};}` +
+  `.ask button{width:auto;background:${EDIT_OVERLAY_COLOR};color:#fff;}`;
+
+/**
+ * Limits mirror `chatSendMessageInput.chips` in `@caelo-cms/shared` so a
+ * reference the iframe builds always passes the stream endpoint's schema.
+ */
+export const REFERENCE_LIMITS = {
+  label: 200,
+  selector: 500,
+  selectedText: 2000,
+  context: 500,
+} as const;
+
+/**
+ * The part of the injected runtime that turns the preview into an
+ * editing surface without an edit mode: left click keeps browsing, a
+ * right-click inside a module opens the Caelo menu (Shift+right-click
+ * keeps the browser's own), and selecting text inside a module shows a
+ * small toolbar. Both offer "Ask AI" (an inline prompt sent straight
+ * into the current chat) and "Add to chat" (reference chip only). The
+ * reference carries the selected text and its surrounding text, so the
+ * AI knows exactly what the operator meant (CLAUDE.md §1A).
+ *
+ * Spliced into `INJECT_SCRIPT`'s closure, so it uses that closure's
+ * `origin()` and `findModuleAncestor()`. Written as ES5 in a string, the
+ * same as the rest of the runtime: every backslash is doubled because
+ * this is a template literal.
+ */
+export const EDIT_AFFORDANCES_SCRIPT = `
+  var UI_CSS = ${JSON.stringify(EDIT_UI_CSS)};
+  var LIMITS = ${JSON.stringify(REFERENCE_LIMITS)};
+  var ui = null;
+  // mode: idle | menu | toolbar | ask. Selection changes only drive the
+  // toolbar; the menu and the Ask field stay until closed explicitly.
+  var state = { mode: "idle", outlined: null };
+
+  function clip(s, n) {
+    s = String(s || "").replace(/\\s+/g, " ").trim();
+    return s.length > n ? s.slice(0, n - 1) + "\\u2026" : s;
+  }
+
+  function ensureUi() {
+    if (ui) return ui;
+    if (!document.body || !document.body.attachShadow) return null;
+    var host = document.createElement("caelo-edit-ui");
+    var root = host.attachShadow({ mode: "open" });
+    var style = document.createElement("style");
+    style.textContent = UI_CSS;
+    var outline = document.createElement("div");
+    outline.className = "outline";
+    outline.hidden = true;
+    var panel = document.createElement("div");
+    panel.className = "panel";
+    panel.hidden = true;
+    root.appendChild(style);
+    root.appendChild(outline);
+    root.appendChild(panel);
+    // Keep the page selection alive while the operator clicks our
+    // buttons, and keep our clicks away from the site's own handlers.
+    panel.addEventListener("mousedown", function (ev) {
+      if (!ev.target || ev.target.tagName !== "INPUT") ev.preventDefault();
+      ev.stopPropagation();
+    });
+    panel.addEventListener("click", function (ev) { ev.stopPropagation(); });
+    panel.addEventListener("contextmenu", function (ev) { ev.stopPropagation(); });
+    document.body.appendChild(host);
+    ui = { host: host, outline: outline, panel: panel };
+    return ui;
+  }
+
+  function isOwnUi(t) {
+    return !!(ui && t && (t === ui.host || (ui.host.contains && ui.host.contains(t))));
+  }
+
+  function cssPart(el) {
+    var s = el.tagName.toLowerCase();
+    if (el.id) return s + "#" + el.id;
+    if (typeof el.className === "string" && el.className.trim()) {
+      s += "." + el.className.trim().split(/\\s+/).slice(0, 2).join(".");
+    }
+    return s;
+  }
+
+  // Path from the module root down to the element, e.g.
+  // "section.hero > div.copy > h1". Capped so a deep tree stays readable.
+  function selectorFor(el, moduleEl) {
+    var parts = [];
+    var cur = el;
+    while (cur && cur.nodeType === 1 && parts.length < 6) {
+      parts.unshift(cssPart(cur));
+      if (cur === moduleEl) break;
+      cur = cur.parentNode;
+    }
+    return clip(parts.join(" > "), LIMITS.selector);
+  }
+
+  function labelFor(moduleEl) {
+    var aria = moduleEl.getAttribute("aria-label");
+    if (aria && aria.trim()) return clip(aria, 80);
+    var h = moduleEl.querySelector ? moduleEl.querySelector("h1,h2,h3,h4,h5,h6") : null;
+    var heading = h ? clip(h.textContent, 60) : "";
+    return heading ? cssPart(moduleEl) + " \\u201c" + heading + "\\u201d" : cssPart(moduleEl);
+  }
+
+  var BLOCK = /^(P|LI|H[1-6]|TD|TH|BLOCKQUOTE|FIGCAPTION|BUTTON|A|LABEL|DT|DD)$/;
+  function blockFor(el, moduleEl) {
+    var cur = el;
+    while (cur && cur.nodeType === 1 && cur !== moduleEl) {
+      if (BLOCK.test(cur.tagName)) return cur;
+      cur = cur.parentNode;
+    }
+    return el;
+  }
+
+  function elementOf(node) {
+    return node && node.nodeType === 1 ? node : node ? node.parentNode : null;
+  }
+
+  function buildRef(el, moduleEl, selectedText) {
+    var block = blockFor(el, moduleEl);
+    var ref = {
+      moduleId: moduleEl.getAttribute("data-caelo-module-id") || "",
+      selector: selectorFor(block, moduleEl),
+      label: clip(labelFor(moduleEl), LIMITS.label),
+    };
+    if (selectedText) ref.selectedText = clip(selectedText, LIMITS.selectedText);
+    var context = clip(block.textContent, LIMITS.context);
+    if (context && context !== ref.selectedText) ref.context = context;
+    return ref;
+  }
+
+  // A non-empty selection that lies inside ONE module, or null.
+  function currentSelection() {
+    var sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+    var text = clip(sel.toString(), LIMITS.selectedText);
+    if (!text) return null;
+    var range = sel.getRangeAt(0);
+    var el = elementOf(range.commonAncestorContainer);
+    if (!el || isOwnUi(el)) return null;
+    var moduleEl = findModuleAncestor(el);
+    if (!moduleEl) return null;
+    return { range: range, el: el, moduleEl: moduleEl, text: text };
+  }
+
+  function showOutline(el) {
+    var u = ensureUi();
+    if (!u) return;
+    state.outlined = el;
+    var r = el.getBoundingClientRect();
+    u.outline.style.left = r.left + "px";
+    u.outline.style.top = r.top + "px";
+    u.outline.style.width = r.width + "px";
+    u.outline.style.height = r.height + "px";
+    u.outline.hidden = false;
+  }
+
+  function close() {
+    state.mode = "idle";
+    state.outlined = null;
+    if (!ui) return;
+    ui.panel.hidden = true;
+    ui.panel.textContent = "";
+    ui.outline.hidden = true;
+  }
+
+  // Place the panel next to an anchor rect: above it when "above" and
+  // there is room, otherwise below, always clamped into the viewport so
+  // it never ends up under the site's own fixed navigation off-screen.
+  function place(anchor, above) {
+    var p = ui.panel;
+    p.hidden = false;
+    var w = p.offsetWidth;
+    var h = p.offsetHeight;
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    var top = above ? anchor.top - h - 8 : anchor.bottom + 4;
+    if (above && top < 8) top = anchor.bottom + 8;
+    if (top + h > vh - 8) top = Math.max(8, anchor.top - h - 4);
+    var left = above ? anchor.left + anchor.width / 2 - w / 2 : anchor.left;
+    left = Math.max(8, Math.min(left, vw - w - 8));
+    p.style.left = left + "px";
+    p.style.top = top + "px";
+  }
+
+  function pointRect(x, y) {
+    return { left: x, right: x, top: y, bottom: y, width: 0, height: 0 };
+  }
+
+  function button(label, testid, onClick) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.setAttribute("data-testid", testid);
+    b.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      onClick();
+    });
+    return b;
+  }
+
+  function caption(text) {
+    var c = document.createElement("div");
+    c.className = "caption";
+    c.textContent = text;
+    return c;
+  }
+
+  function post(ref, prompt) {
+    var msg = {
+      kind: "caelo:element-referenced",
+      moduleId: ref.moduleId,
+      selector: ref.selector,
+      label: ref.label,
+    };
+    if (ref.selectedText) msg.selectedText = ref.selectedText;
+    if (ref.context) msg.context = ref.context;
+    if (prompt) msg.prompt = prompt;
+    parent.postMessage(msg, origin());
+  }
+
+  // What the operator sees: the text they picked or clicked, never the
+  // element path or class names (those are for the AI).
+  function refCaption(ref) {
+    var text = ref.selectedText || ref.context;
+    return text ? "\\u201c" + clip(text, 48) + "\\u201d" : "This section";
+  }
+
+  function openAsk(ref, anchor) {
+    var u = ensureUi();
+    if (!u) return;
+    state.mode = "ask";
+    u.panel.className = "panel";
+    u.panel.textContent = "";
+    u.panel.setAttribute("data-testid", "caelo-ask");
+    u.panel.appendChild(caption(refCaption(ref)));
+    var row = document.createElement("div");
+    row.className = "ask";
+    var input = document.createElement("input");
+    input.type = "text";
+    input.placeholder = "What should the AI do here?";
+    input.setAttribute("aria-label", "Ask AI");
+    input.setAttribute("data-testid", "caelo-ask-input");
+    function submit() {
+      var prompt = input.value.trim();
+      if (!prompt) return;
+      post(ref, prompt);
+      close();
+    }
+    input.addEventListener("keydown", function (ev) {
+      ev.stopPropagation();
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        submit();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        close();
+      }
+    });
+    row.appendChild(input);
+    row.appendChild(button("Send", "caelo-ask-send", submit));
+    u.panel.appendChild(row);
+    place(anchor, false);
+    input.focus();
+  }
+
+  function openMenu(ref, moduleEl, x, y) {
+    var u = ensureUi();
+    if (!u) return;
+    state.mode = "menu";
+    showOutline(moduleEl);
+    u.panel.className = "panel";
+    u.panel.textContent = "";
+    u.panel.setAttribute("role", "menu");
+    u.panel.setAttribute("data-testid", "caelo-context-menu");
+    u.panel.appendChild(caption(refCaption(ref)));
+    u.panel.appendChild(
+      button(ref.selectedText ? "Ask AI about this text\\u2026" : "Ask AI about this\\u2026", "caelo-menu-ask", function () {
+        openAsk(ref, pointRect(x, y));
+      }),
+    );
+    u.panel.appendChild(
+      button("Add to chat as reference", "caelo-menu-reference", function () {
+        post(ref);
+        close();
+      }),
+    );
+    u.panel.appendChild(
+      button("Select whole section", "caelo-menu-select-section", function () {
+        close();
+        var sel = window.getSelection();
+        var range = document.createRange();
+        range.selectNodeContents(moduleEl);
+        sel.removeAllRanges();
+        sel.addRange(range);
+        refreshToolbar();
+      }),
+    );
+    place(pointRect(x, y), false);
+  }
+
+  function openToolbar(s) {
+    var u = ensureUi();
+    if (!u) return;
+    state.mode = "toolbar";
+    showOutline(s.moduleEl);
+    var ref = buildRef(s.el, s.moduleEl, s.text);
+    var anchor = s.range.getBoundingClientRect();
+    u.panel.className = "panel bar";
+    u.panel.textContent = "";
+    u.panel.setAttribute("role", "toolbar");
+    u.panel.setAttribute("data-testid", "caelo-selection-toolbar");
+    u.panel.appendChild(
+      button("Ask AI", "caelo-toolbar-ask", function () {
+        openAsk(ref, anchor);
+      }),
+    );
+    u.panel.appendChild(
+      button("Add to chat", "caelo-toolbar-reference", function () {
+        post(ref);
+        close();
+      }),
+    );
+    place(anchor, true);
+  }
+
+  function refreshToolbar() {
+    if (state.mode === "menu" || state.mode === "ask") return;
+    var s = currentSelection();
+    if (s) openToolbar(s);
+    else if (state.mode === "toolbar") close();
+  }
+
+  document.addEventListener(
+    "contextmenu",
+    function (ev) {
+      if (isOwnUi(ev.target)) return;
+      if (ev.shiftKey) {
+        close();
+        return;
+      }
+      var t = ev.target && ev.target.nodeType === 1 ? ev.target : null;
+      var moduleEl = t ? findModuleAncestor(t) : null;
+      if (!moduleEl) {
+        close();
+        return;
+      }
+      ev.preventDefault();
+      var s = currentSelection();
+      var ref =
+        s && s.moduleEl === moduleEl
+          ? buildRef(s.el, moduleEl, s.text)
+          : buildRef(t, moduleEl, "");
+      openMenu(ref, moduleEl, ev.clientX, ev.clientY);
+    },
+    true,
+  );
+
+  document.addEventListener(
+    "mousedown",
+    function (ev) {
+      if (state.mode === "idle" || isOwnUi(ev.target)) return;
+      close();
+    },
+    true,
+  );
+
+  // Toolbar appears once a drag or keyboard selection settles, not on
+  // every selectionchange tick mid-drag.
+  document.addEventListener("mouseup", function () { setTimeout(refreshToolbar, 0); });
+  document.addEventListener("keyup", function (ev) {
+    if (ev.key === "Shift" || ev.shiftKey) setTimeout(refreshToolbar, 0);
+  });
+  document.addEventListener("selectionchange", function () {
+    if (state.mode === "toolbar" && !currentSelection()) close();
+  });
+
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape" && state.mode !== "idle") close();
+  });
+
+  function onViewportChange() {
+    if (state.mode === "menu") close();
+    else if (state.mode === "toolbar") refreshToolbar();
+    else if (state.mode === "ask" && state.outlined) showOutline(state.outlined);
+  }
+  window.addEventListener("scroll", onViewportChange, true);
+  window.addEventListener("resize", onViewportChange);
+`;

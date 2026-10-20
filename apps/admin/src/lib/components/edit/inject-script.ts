@@ -1,24 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Caelo blue for the edit-mode overlay. A literal, not an admin CSS
- * variable: the stylesheet lands inside the operator's own site, which
- * never loads the admin's tokens. White text on it is 5.8:1 (WCAG AA).
- */
-export const EDIT_OVERLAY_COLOR = "#2a64b8";
-
-/**
- * Stylesheet the runtime installs for edit mode: crosshair cursor, hover
- * outline + "Edit" label on every module root, and the top banner. Kept
- * self-contained because it styles the operator's site, not the admin.
- * The label names IBM Plex Mono first but the site rarely loads it, so
- * the stack falls back to the platform monospace.
- */
-export const EDIT_OVERLAY_CSS =
-  "body.caelo-edit-mode [data-caelo-module-id]{cursor:crosshair;}" +
-  `body.caelo-edit-mode [data-caelo-module-id]:hover{outline:2px solid ${EDIT_OVERLAY_COLOR};outline-offset:2px;position:relative;}` +
-  `body.caelo-edit-mode [data-caelo-module-id]:hover::after{content:'Edit';position:absolute;top:-1.4rem;left:0;background:${EDIT_OVERLAY_COLOR};color:#fff;font:500 11px/1 "IBM Plex Mono", Menlo, Consolas, monospace;padding:2px 6px;border-radius:3px;pointer-events:none;z-index:2147483647;}` +
-  `body.caelo-edit-mode::before{content:'Edit mode — click any element to add it as a chip';position:fixed;top:0;left:0;right:0;background:${EDIT_OVERLAY_COLOR};color:#fff;font:500 12px/1.4 system-ui;padding:6px 12px;text-align:center;z-index:2147483646;pointer-events:none;}`;
+import { EDIT_AFFORDANCES_SCRIPT } from "./edit-affordances-script.js";
 
 /**
  * Runtime injected at the bottom of every `/edit/preview-by-path/...`
@@ -28,17 +10,15 @@ export const EDIT_OVERLAY_CSS =
  *   2. `postMessage({kind: "caelo:navigated", pageId, slug})` on
  *      every load — covers initial mount + click-through navigation so
  *      the parent's activePageId/URL/chat-branch context follows.
- *   3. **Edit mode toggle** — the parent posts
- *      `{kind: "caelo:set-edit-mode", on: true|false}` (driven by the
- *      toolbar Edit button). When ON: cursor=crosshair, hover outline +
- *      "Edit" pill on every `[data-caelo-module-id]`, click captures
- *      → `caelo:element-clicked`. When OFF: the iframe behaves like the
- *      live site — links navigate, forms submit, JS runs.
+ *   3. **Editing affordances** (`EDIT_AFFORDANCES_SCRIPT`) — right-click
+ *      menu + selection toolbar that post `caelo:element-referenced`
+ *      (optionally with an Ask AI prompt). There is no edit mode: left
+ *      clicks always behave like the live site.
  *   4. Listen for `{kind: "caelo:reload"}` and `location.reload()`.
  *
- * Out of edit mode, plain clicks on same-origin absolute links are
- * rewritten to the preview-by-path equivalent so internal navigation
- * stays inside the editor surface.
+ * Plain clicks on same-origin absolute links are rewritten to the
+ * preview-by-path equivalent so internal navigation stays inside the
+ * editor surface.
  *
  * Exported as a string so the SvelteKit endpoint can splice it into
  * the response body inside a `<script>` tag.
@@ -75,24 +55,6 @@ export const INJECT_SCRIPT = `
     document.addEventListener("DOMContentLoaded", announce);
   }
 
-  // --- edit-mode hover affordance ------------------------------------
-  var STYLE_ID = "caelo-edit-style";
-  if (!document.getElementById(STYLE_ID)) {
-    var s = document.createElement("style");
-    s.id = STYLE_ID;
-    s.textContent = ${JSON.stringify(EDIT_OVERLAY_CSS)};
-    document.head.appendChild(s);
-  }
-
-  function isEditMode() {
-    return document.body && document.body.classList.contains("caelo-edit-mode");
-  }
-  function setEditMode(on) {
-    if (!document.body) return;
-    if (on) document.body.classList.add("caelo-edit-mode");
-    else document.body.classList.remove("caelo-edit-mode");
-  }
-
   function findModuleAncestor(el) {
     var cur = el;
     while (cur && cur.nodeType === 1) {
@@ -114,29 +76,7 @@ export const INJECT_SCRIPT = `
     "click",
     function (ev) {
       var t = ev.target;
-      // Edit-mode click → chip, regardless of element kind.
-      if (isEditMode()) {
-        var el = t && t.nodeType === 1 ? findModuleAncestor(t) : null;
-        if (!el) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        var moduleId = el.getAttribute("data-caelo-module-id") || "";
-        var label =
-          (el.getAttribute("aria-label") || "").trim() ||
-          (el.tagName.toLowerCase() + (el.id ? "#" + el.id : ""));
-        var selector =
-          el.tagName.toLowerCase() +
-          (el.id ? "#" + el.id : "") +
-          (el.className && typeof el.className === "string"
-            ? "." + el.className.trim().split(/\\s+/).slice(0, 2).join(".")
-            : "");
-        parent.postMessage(
-          { kind: "caelo:element-clicked", moduleId: moduleId, selector: selector, label: label },
-          origin(),
-        );
-        return;
-      }
-      // Browse mode: rewrite same-origin absolute hrefs into the
+      // Rewrite same-origin absolute hrefs into the
       // preview-by-path surface so the iframe stays inside /edit.
       var a = t && t.nodeType === 1 ? findLinkAncestor(t) : null;
       if (!a) return;
@@ -187,28 +127,18 @@ export const INJECT_SCRIPT = `
     true,
   );
 
-  // --- parent → iframe messages: set-edit-mode + reload ---------------
+  // --- right-click menu, selection toolbar, Ask AI --------------------
+  ${EDIT_AFFORDANCES_SCRIPT}
+
+  // --- parent → iframe messages: reload --------------------------------
   // Only the editor that embeds us may drive the iframe: the previewed
   // site's own scripts (source = this window) and any other frame must not
-  // flip edit mode or force reloads (PR #863, M-08).
+  // force reloads (PR #863, M-08).
   window.addEventListener("message", function (ev) {
     if (ev.source !== window.parent || window.parent === window) return;
     if (ev.origin !== location.origin) return;
     if (!ev.data || typeof ev.data !== "object") return;
-    if (ev.data.kind === "caelo:set-edit-mode") {
-      setEditMode(!!ev.data.on);
-    } else if (ev.data.kind === "caelo:reload") {
-      location.reload();
-    }
-  });
-
-  // Escape exits edit mode as a safety net for users who pressed the
-  // toggle and want out without reaching for the toolbar.
-  document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && isEditMode()) {
-      setEditMode(false);
-      parent.postMessage({ kind: "caelo:edit-mode-changed", on: false }, origin());
-    }
+    if (ev.data.kind === "caelo:reload") location.reload();
   });
 })();
 `;

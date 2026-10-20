@@ -4,13 +4,13 @@
  * Regression for the live-edit-modifier-click CI flake (PR #717): with the
  * cross-chat banner ("Also pending: …") shown above the /edit toolbar, the
  * default pinned-right chat column — placed at a hard-coded `top: 56px` —
- * covered the toolbar's right-hand controls, and the "Edit elements" toggle
- * could not be clicked. Parallel specs leave pending chats behind, so the
+ * covered the toolbar's right-hand controls (then the "Edit elements"
+ * toggle, removed in #916) so they could not be clicked. Parallel specs leave pending chats behind, so the
  * banner appeared at random and the click timed out.
  *
  * Here the banner is made deterministic: a chat of this spec's own Owner
  * gets a pending AI edit, then /edit opens a SECOND chat on the page. The
- * toolbar must stay clear of the column and Edit mode must work.
+ * toolbar must stay clear of the column and its controls must take clicks.
  */
 
 import { spawnSync } from "node:child_process";
@@ -19,9 +19,9 @@ import {
   attachTestProviderHeader,
   clearLoginRateBucket,
   clearTestProvider,
-  enableLiveEditMode,
   ensureIsolatedOwner,
   ISOLATED_OWNER_PASSWORD,
+  referenceViaContextMenu,
   registerTestProvider,
   resetOverlayLayoutFor,
   runBunInline,
@@ -160,11 +160,11 @@ test("the pinned chat column never covers the toolbar while the cross-chat banne
     (toolbarBox?.y ?? 0) + (toolbarBox?.height ?? 0),
   );
 
-  // And Edit mode is reachable: the toggle takes the click, chips work.
-  await enableLiveEditMode(page);
+  // And the toolbar's right-hand controls take clicks: a trial click fails
+  // when another element (the column) would receive it instead.
+  await toolbar.getByRole("button", { name: /diff/i }).click({ trial: true });
+
+  // Referencing an element from the preview still lands a chip.
   const h1 = page.frameLocator("iframe[title='Live preview']").locator("h1[data-caelo-module-id]");
-  await h1.evaluate((el: HTMLElement) => {
-    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-  });
-  await expect(page.locator('[data-testid="chip"]').first()).toBeVisible({ timeout: 5_000 });
+  await referenceViaContextMenu(page, h1);
 });

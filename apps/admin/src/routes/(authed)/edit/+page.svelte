@@ -14,9 +14,9 @@
    * every load — the parent updates activePageId/URL/chat-branch
    * context to match.
    *
-   * Element-click chips only fire while alt+ctrl+meta are held (see
-   * inject-script). Without modifier the iframe behaves like the live
-   * site.
+   * There is no edit mode: left clicks in the iframe behave like the
+   * live site, a right-click or a text selection inside a module offers
+   * Ask AI / Add to chat (see inject-script + edit-affordances-script).
    */
 
   import { enhance } from "$app/forms";
@@ -137,9 +137,6 @@
   const pendingChanges = $derived(data.branchChangeCount ?? 0);
   let pendingSwitchTo = $state<string | null>(null);
   let dialogOpen = $state(false);
-  // P6.7.3 — Edit mode toggle. ON: clicks in the iframe become chips.
-  // OFF: live-site browsing (links navigate, JS runs).
-  let editMode = $state(false);
   // Height of the page chrome above the preview (cross-chat banner +
   // toolbar); the pinned-right overlay is placed below it.
   let bannerHeight = $state(0);
@@ -164,18 +161,6 @@
     const editedSet = new Set(ids);
     return all.filter((m) => editedSet.has(m.moduleId));
   });
-
-  function setEditMode(on: boolean): void {
-    editMode = on;
-    iframe?.contentWindow?.postMessage(
-      { kind: "caelo:set-edit-mode", on },
-      window.location.origin,
-    );
-  }
-
-  function toggleEditMode(): void {
-    setEditMode(!editMode);
-  }
 
   function onPageChange(value: string): void {
     if (pluginPreviewUrl) closePluginPreview();
@@ -226,26 +211,11 @@
       if (ev.source !== iframe?.contentWindow) return;
       if (!isCaeloMessage(ev.data)) return;
       const msg = ev.data as CaeloMessage;
-      if (msg.kind === "caelo:element-clicked") {
-        window.dispatchEvent(
-          new CustomEvent("caelo:chip", {
-            detail: {
-              moduleId: msg.moduleId,
-              selector: msg.selector,
-              label: msg.label,
-            },
-          }),
-        );
-      } else if (msg.kind === "caelo:ready") {
-        // The iframe finished loading — re-apply edit-mode if it was on
-        // before the navigation/reload. The iframe forgets the body
-        // class on each load.
-        if (editMode) {
-          iframe?.contentWindow?.postMessage(
-            { kind: "caelo:set-edit-mode", on: true },
-            window.location.origin,
-          );
-        }
+      if (msg.kind === "caelo:element-referenced") {
+        // Chip (+ Ask AI prompt) for the chat; the Overlay expands itself
+        // first when collapsed so ChatPanel is mounted to receive it.
+        const { kind: _kind, ...detail } = msg;
+        window.dispatchEvent(new CustomEvent("caelo:chip", { detail }));
       } else if (msg.kind === "caelo:navigated") {
         displayPath = msg.path || null;
         // Click-through navigation inside the iframe — sync activePageId
@@ -436,23 +406,15 @@
       <div class="ml-auto"></div>
     {/if}
 
-    <button
-      type="button"
-      onclick={toggleEditMode}
-      disabled={!!pluginPreviewUrl}
-      data-testid="edit-mode-toggle"
-      aria-pressed={editMode}
-      class={cn(
-        "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
-        editMode
-          ? "border-link bg-link/10 text-link hover:bg-link/15"
-          : "border-border bg-background text-foreground hover:bg-accent",
-      )}
-      title="When on, clicks in the page select an element to edit"
-    >
-      <MousePointerClick class="size-3.5" />
-      {editMode ? "Editing — click an element" : "Edit elements"}
-    </button>
+    {#if !pluginPreviewUrl}
+      <span
+        class="hidden items-center gap-1.5 text-xs text-muted-foreground lg:inline-flex"
+        data-testid="edit-hint"
+      >
+        <MousePointerClick class="size-3.5" />
+        Right-click or select text in the page to ask the AI
+      </span>
+    {/if}
     <button
       type="button"
       onclick={() => (diffOpen = !diffOpen)}

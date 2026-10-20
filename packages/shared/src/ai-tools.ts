@@ -425,6 +425,27 @@ export type ChatAttachment = z.infer<typeof chatAttachmentSchema>;
 /** issue #190 — attachments-per-message cap; bounds provider payload size. */
 export const CHAT_MAX_ATTACHMENTS = 4;
 
+/**
+ * An element reference riding a chat message. `selector` is empty for a
+ * module picked from the composer's module dropdown. `selectedText` and
+ * `context` come from a right-click / text selection in the live-edit
+ * preview (#916): what the operator selected and the text of the block
+ * around it, so the AI knows exactly what was meant.
+ */
+export const chatChipSchema = z
+  .object({
+    moduleId: z.string().uuid(),
+    selector: z.string().max(500),
+    label: z.string().min(1).max(200),
+    selectedText: z.string().min(1).max(2000).optional(),
+    context: z.string().min(1).max(500).optional(),
+  })
+  .strict();
+export type ChatChip = z.infer<typeof chatChipSchema>;
+
+/** Cap on chips per message; bounds the persisted user-message size. */
+export const CHAT_MAX_CHIPS = 20;
+
 export const chatSendMessageInput = z
   .object({
     chatSessionId: z.string().uuid(),
@@ -434,17 +455,7 @@ export const chatSendMessageInput = z
     content: z.string().min(1).max(8000).optional(),
     previewSelection: pluginPreviewSelectionSchema.optional(),
     /** Element-reference chips appended to the message. */
-    chips: z
-      .array(
-        z
-          .object({
-            moduleId: z.string().uuid(),
-            selector: z.string().min(1).max(500),
-            label: z.string().min(1).max(200),
-          })
-          .strict(),
-      )
-      .default([]),
+    chips: z.array(chatChipSchema).max(CHAT_MAX_CHIPS).default([]),
     /** issue #190 — operator-attached images (see chatAttachmentSchema). */
     attachments: z.array(chatAttachmentSchema).max(CHAT_MAX_ATTACHMENTS).default([]),
     /**
