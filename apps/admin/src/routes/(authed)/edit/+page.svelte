@@ -31,11 +31,7 @@
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
   import Overlay from "#lib/components/edit/Overlay.svelte";
   import StageDeployButton from "#lib/components/edit/StageDeployButton.svelte";
-  import {
-    type CaeloMessage,
-    type FieldEditMessage,
-    isCaeloMessage,
-  } from "#lib/components/edit/iframe-protocol.js";
+  import { type FieldEditMessage, previewMessage } from "#lib/components/edit/iframe-protocol.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Combobox } from "#lib/components/ui/combobox/index.js";
   import { cn } from "#lib/utils.js";
@@ -209,9 +205,10 @@
     };
     document.addEventListener("click", openLink, true);
     const handler = (ev: MessageEvent) => {
-      if (ev.source !== iframe?.contentWindow) return;
-      if (!isCaeloMessage(ev.data)) return;
-      const msg = ev.data as CaeloMessage;
+      // Same window AND same origin: an external page the preview navigated
+      // to must not drive saves (see previewMessage).
+      const msg = previewMessage(ev, iframe?.contentWindow, window.location.origin);
+      if (!msg) return;
       if (msg.kind === "caelo:element-referenced") {
         // Chip (+ Ask AI composer focus) for the chat; the Overlay expands itself
         // first when collapsed so ChatPanel is mounted to receive it.
