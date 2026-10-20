@@ -70,6 +70,10 @@ async function asSystem<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
 async function wipe(): Promise<void> {
   await asSystem(async (tx) => {
     await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${SESSION_PREFIX}%`}`;
+    await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug = ${`${PFX}-framed`})`;
+    await tx`DELETE FROM pages WHERE slug = ${`${PFX}-framed`}`;
+    await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${`${PFX}-framed-tpl`})`;
+    await tx`DELETE FROM templates WHERE slug = ${`${PFX}-framed-tpl`}`;
     await tx`DELETE FROM layout_blocks WHERE layout_id IN (SELECT id FROM layouts WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM layouts WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM structured_sets WHERE slug LIKE ${`${PFX}%`}`;
@@ -465,6 +469,27 @@ describe("review fixes (#873)", () => {
       html: `<body><a href="/${PFX}-pricing#plans">Pricing</a><caelo-slot name="content">_</caelo-slot></body>`,
     });
     expect(await html()).toContain(`href="caelo:page/${pricingId}#plans"`);
+
+    // ...and the page frame renders the reference as the page's URL — a
+    // stored layout reference must never reach the browser as `caelo:`.
+    const { templateId: framedTpl } = await run<{ templateId: string }>("templates.create", {
+      slug: `${PFX}-framed-tpl`,
+      displayName: `${PFX} framed`,
+      html: '<!doctype html><html><head><title>T</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
+      css: "",
+      layoutId,
+    });
+    const { pageId: framedPage } = await run<{ pageId: string }>("pages.create", {
+      slug: `${PFX}-framed`,
+      title: "Framed",
+      templateId: framedTpl,
+    });
+    const preview = await run<{ html: string; missingSlots: string[] }>("pages.render_preview", {
+      pageId: framedPage,
+    });
+    expect(preview.html).toMatch(new RegExp(`<a href="/${PFX}-pricing/?#plans">Pricing</a>`));
+    expect(preview.html).not.toContain("caelo:page/");
+    expect(preview.missingSlots.filter((m) => m.startsWith("link-"))).toEqual([]);
 
     const message = await refused("layouts.update", {
       layoutId,

@@ -918,8 +918,16 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     jsParts.push(NAV_TOGGLE_JS);
   }
 
-  // 3. Render the layout HTML, substituting all named slots.
-  const replaced = applySlotReplacements(input.layoutHtml, {
+  // 3. Render the layout HTML, substituting all named slots. The
+  //    layout's own markup (the page frame around the blocks) stores
+  //    internal links as references too (#724 rollout C canonicalises
+  //    layouts.create / .update), so they resolve here like module HTML
+  //    — BEFORE the slots are filled, so already-resolved block HTML is
+  //    not scanned twice. A failure lands in `missingSlots` (the
+  //    preview's missing-content surface; the static build refuses it).
+  const layoutLinkMarkers: string[] = [];
+  const layoutHtml = resolveLinkRefsInHtml(input.layoutHtml, input.linkResolver, layoutLinkMarkers);
+  const replaced = applySlotReplacements(layoutHtml, {
     contentByName: layoutContentByName,
   });
   let html = replaced.html;
@@ -971,6 +979,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   ]);
   const missingSet = new Set<string>([...renderedTemplate.missingSlots, ...replaced.missingSlots]);
   for (const name of replacedSet) missingSet.delete(name);
+  for (const marker of layoutLinkMarkers) missingSet.add(marker);
   return {
     html,
     replacedSlots: [...replacedSet],

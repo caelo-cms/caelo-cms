@@ -9,14 +9,16 @@
     "source": "github",
     "subfolder": "packages/mcp-server"
   },
-  "version": "0.10.55",
+  "version": "0.10.56",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@caelo-cms/mcp-server",
-      "version": "0.10.55",
+      "version": "0.10.56",
       "runtimeHint": "bunx",
-      "transport": { "type": "stdio" },
+      "transport": {
+        "type": "stdio"
+      },
       "packageArguments": [
         {
           "type": "positional",

@@ -22,7 +22,11 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HTML_CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL } from "@caelo-cms/shared";
+import {
+  GCP_PUBLIC_BASE_PATHS,
+  HTML_CACHE_CONTROL,
+  IMMUTABLE_CACHE_CONTROL,
+} from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 // Imported for real up front so afterAll can restore the genuine module
 // after the mock.module() below — bun's mock.module is process-global and
@@ -609,7 +613,11 @@ describe("gcsStaticPublisher — redirects on the load balancer (#587)", () => {
     const gcsStaticPublisher = await publisher();
     await expect(
       gcsStaticPublisher.publishStaging({ buildDir, runId: "run-big", target: TARGET }),
-    ).rejects.toThrow(/500 redirect\(s\) need 1001 paths/);
+    ).rejects.toThrow(
+      // Two paths per redirect (with and without the trailing slash) plus the
+      // site's own routing to the gateway.
+      new RegExp(`500 redirect\\(s\\) need ${1000 + GCP_PUBLIC_BASE_PATHS.length} paths`),
+    );
   });
 
   it("Stage fails loudly on a build without _redirects", async () => {

@@ -453,7 +453,7 @@ export const touchExternalAgentOp = defineOperation({
   handler: async (ctx, input, tx) => {
     const activeMs = externalAgentActiveMs();
     // One row per (chat, agent): the unique index of whichever id is set
-    // (0255 for tokens, 0310 for remote connections) is the conflict target.
+    // (0255 for tokens, 0319 for remote connections) is the conflict target.
     const conflictColumn = sql.raw(
       input.mcpTokenId !== undefined ? "mcp_token_id" : "mcp_remote_connection_id",
     );

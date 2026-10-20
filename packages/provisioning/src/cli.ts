@@ -1216,7 +1216,10 @@ async function lifecycleBackup(): Promise<void> {
 }
 async function lifecycleRotateSecret(): Promise<void> {
   const { rotateSecretCommand } = await import("./lifecycle.js");
-  await rotateSecretCommand(process.argv[3]);
+  await rotateSecretCommand(process.argv[3], {
+    finish: process.argv.includes("--finish"),
+    now: process.argv.includes("--now"),
+  });
 }
 async function lifecycleDestroy(): Promise<void> {
   const { destroyCommand } = await import("./lifecycle.js");
