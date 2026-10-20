@@ -4,16 +4,17 @@
  * Nested page URLs — `move_pages`: put pages under other pages (or back
  * at the top level), optionally renaming them in the same step. The
  * operator says "put Alerts under SEO Monitoring"; the AI makes ONE call
- * and the op moves the whole subtree with redirects + link rewrites.
+ * and the op moves the whole subtree with redirects. Links on the site
+ * are page references (epic #724), so they follow without a rewrite.
  *
  * Approval gate (CLAUDE.md §11.A): a call that would move
  * {@link PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs (moved pages AND every page
  * below them) pauses for one Owner click. A subtree move's blast radius
  * is invisible in the call itself ("move Docs under Resources" can move
- * 60 URLs), and undoing it is not one clean call: moving back leaves a
- * second generation of 301s, and the link rewrites across modules and
- * content cannot be selectively un-rewritten. Below the threshold it
- * stays routine, like a single slug change. Same spirit as the
+ * 60 URLs), and undoing it is not one clean call: every moved URL is
+ * public (search engines, bookmarks, other sites), and moving back
+ * leaves a second generation of 301s. Below the threshold it stays
+ * routine, like a single slug change. Same spirit as the
  * `redirects.delete_many` ≥10 cap.
  */
 
@@ -117,7 +118,7 @@ export const movePagesTool: ToolDefinitionWithHandler<MoveInput> = {
     "Use for 'put Alerts under SEO Monitoring', 'move the pricing page into Products', 'make this a top-level page again', 'group these 5 guides under /guides'. " +
     "A page's URL is its parent's URL + '/' + its slug, so moving `/alerts` under `/seo-monitoring` makes it `/seo-monitoring/alerts`; every page below a moved page moves with it. " +
     "Each move: `page` = the page's id or current URL path, `parent` = the new parent's id or path, or null for the top level, optional `newSlug` to rename in the same step. " +
-    "Everything happens in one transaction: 301s from every old URL, and nav menus, link lists, module and content links are rewritten to the new URLs. " +
+    "Everything happens in one transaction, with a 301 from every old URL for links from outside the site. Links on this site (nav menus, link lists, module and content links) follow the pages automatically — there is no link-update step after a move. " +
     "If the target URL is already taken, the call changes nothing and names the clash — retry with `newSlug`. The homepage can neither move under a page nor have child pages; nesting is limited to 6 levels. " +
     `Moving ${PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs in one call (pages + their subtrees) needs one Owner click in chat before it runs. ` +
     "To change only a page's name/title/slug use update_pages_many; to create a page under a parent use build_page with page.parentPageId.",
@@ -188,10 +189,6 @@ export const movePagesTool: ToolDefinitionWithHandler<MoveInput> = {
       moved: { from: string; to: string }[];
       pendingPublish: boolean;
       redirectsCreated: number;
-      rewrittenLinkSets: number;
-      rewrittenModules: number;
-      rewrittenContentInstances: number;
-      blockedLinkSets: string[];
     };
     const list = v.moved
       .slice(0, 20)
@@ -199,15 +196,11 @@ export const movePagesTool: ToolDefinitionWithHandler<MoveInput> = {
       .join("\n");
     const more = v.moved.length > 20 ? `\n- … and ${v.moved.length - 20} more` : "";
     const when = v.pendingPublish
-      ? "These are this chat's pending changes: the live URLs, their 301s and the link rewrites apply when the chat is published."
-      : `Created ${v.redirectsCreated} redirects; rewrote links in ${v.rewrittenLinkSets} menus/link lists, ${v.rewrittenModules} modules, ${v.rewrittenContentInstances} content items.`;
-    const blocked =
-      v.blockedLinkSets.length > 0
-        ? ` Not rewritten (held by another chat, old links still work via 301): ${v.blockedLinkSets.join(", ")}.`
-        : "";
+      ? "These are this chat's pending changes: the live URLs and their 301s apply when the chat is published; this chat's preview already shows the new URLs."
+      : `Created ${v.redirectsCreated} redirects from the old URLs.`;
     return {
       ok: true,
-      content: `Moved ${v.moved.length} URL(s):\n${list}${more}\n${when}${blocked}`,
+      content: `Moved ${v.moved.length} URL(s):\n${list}${more}\n${when} Links on the site follow automatically; nothing else to update.`,
     };
   },
 };

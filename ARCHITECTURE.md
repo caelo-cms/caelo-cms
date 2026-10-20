@@ -219,7 +219,7 @@ erDiagram
   deploy_targets ||--o{ deploy_runs : "has"
 
   %% Sideband
-  structured_sets ||--o{ pages : "rewritten on slug change / move"
+  structured_sets }o--o{ pages : "links as caelo:page/<id> references"
   pages ||--o{ pages : "parent_page_id (nested URLs)"
   redirects }o--o| pages : "from_path"
   audit_events }o--|| actors : "by"
