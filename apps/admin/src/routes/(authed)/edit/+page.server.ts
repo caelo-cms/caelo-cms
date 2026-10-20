@@ -649,6 +649,51 @@ export const actions: Actions = {
     };
   },
   /**
+   * #917 — in-place text edit from the preview iframe: one field (or list
+   * item) of one placement, written on the active chat's branch through
+   * `page_module_content.patch_fields` (snapshot, so chat Undo reverts it).
+   * The page posts here with fetch + `applyAction`, so the layout's toast
+   * effect reports the outcome like any form action.
+   */
+  editFieldText: async ({ request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const chatBranchId = String(form.get("chatBranchId") ?? "");
+    const chatSessionId = String(form.get("chatSessionId") ?? "");
+    const index = form.get("index");
+    const ctx: ExecutionContext = chatBranchId
+      ? { ...locals.ctx, chatBranchId, ...(chatSessionId ? { chatTaskId: chatSessionId } : {}) }
+      : locals.ctx;
+    // The op's Zod schema validates the shape; a malformed post fails there.
+    const r = await execute(registry, adapter, ctx, "page_module_content.patch_fields", {
+      pageId: String(form.get("pageId") ?? ""),
+      blockName: String(form.get("blockName") ?? ""),
+      position: Number(form.get("position")),
+      edits: [
+        {
+          field: String(form.get("field") ?? ""),
+          ...(index !== null && index !== "" ? { index: Number(index) } : {}),
+          text: String(form.get("text") ?? ""),
+        },
+      ],
+    });
+    if (!r.ok && r.error.kind === "BranchNotFound") return fail(404, { error: "Branch not found" });
+    if (!r.ok) {
+      // HandlerError messages are written for the operator; other kinds
+      // (validation, lock) go through describeError.
+      const message =
+        r.error.kind === "HandlerError" && "message" in r.error
+          ? String(r.error.message)
+          : describeError(r.error);
+      return fail(r.error.kind === "HandlerError" ? 409 : 400, {
+        error: `Text not saved: ${message}`,
+      });
+    }
+    return { ok: "Text saved." };
+  },
+  /**
    * v0.7.0 — /edit's split-button Stage path. One click does the full
    * "show me 1:1 what production would see" loop:
    *

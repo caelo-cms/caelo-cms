@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { EDIT_AFFORDANCES_SCRIPT } from "./edit-affordances-script.js";
+import { FIELD_EDIT_SCRIPT } from "./field-edit-script.js";
 
 /**
  * Runtime injected at the bottom of every `/edit/preview-by-path/...`
@@ -13,7 +14,8 @@ import { EDIT_AFFORDANCES_SCRIPT } from "./edit-affordances-script.js";
  *   3. **Editing affordances** (`EDIT_AFFORDANCES_SCRIPT`) — right-click
  *      menu + selection toolbar that post `caelo:element-referenced`
  *      (Ask AI only flags it; no instruction). There is no edit mode: left
- *      clicks always behave like the live site.
+ *      clicks always behave like the live site. `FIELD_EDIT_SCRIPT` adds
+ *      in-place text editing of marked fields (#917).
  *   4. Listen for `{kind: "caelo:reload"}` and `location.reload()`.
  *
  * Plain clicks on same-origin absolute links are rewritten to the
@@ -76,6 +78,11 @@ export const INJECT_SCRIPT = `
     "click",
     function (ev) {
       var t = ev.target;
+      // A link label being edited in place must not navigate (#917).
+      if (t && t.nodeType === 1 && isEditing(t)) {
+        ev.preventDefault();
+        return;
+      }
       // Rewrite same-origin absolute hrefs into the
       // preview-by-path surface so the iframe stays inside /edit.
       var a = t && t.nodeType === 1 ? findLinkAncestor(t) : null;
@@ -129,6 +136,7 @@ export const INJECT_SCRIPT = `
 
   // --- right-click menu, selection toolbar, Ask AI --------------------
   ${EDIT_AFFORDANCES_SCRIPT}
+  ${FIELD_EDIT_SCRIPT}
 
   // --- parent → iframe messages: reload --------------------------------
   // Only the editor that embeds us may drive the iframe: the previewed

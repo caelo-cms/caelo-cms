@@ -24,7 +24,8 @@ export const EDIT_UI_CSS =
   ".caption{padding:6px 8px 4px;color:#52525b;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}" +
   "button{all:unset;box-sizing:border-box;display:block;width:100%;padding:6px 8px;border-radius:5px;cursor:pointer;color:inherit;font:inherit;}" +
   ".bar button{width:auto;white-space:nowrap;}" +
-  `button:hover,button:focus-visible{background:${EDIT_OVERLAY_COLOR};color:#fff;}`;
+  `button:hover,button:focus-visible{background:${EDIT_OVERLAY_COLOR};color:#fff;}` +
+  "button:disabled{opacity:.55;cursor:default;background:none;color:inherit;}";
 
 /**
  * Limits mirror `chatSendMessageInput.chips` in `@caelo-cms/shared` so a
@@ -56,8 +57,9 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   var UI_CSS = ${JSON.stringify(EDIT_UI_CSS)};
   var LIMITS = ${JSON.stringify(REFERENCE_LIMITS)};
   var ui = null;
-  // mode: idle | menu | toolbar. Selection changes only drive the
-  // toolbar; the menu stays until closed explicitly.
+  // mode: idle | menu | toolbar | edit (#917, in-place text edit).
+  // Selection changes only drive the toolbar; the menu and an edit stay
+  // until closed explicitly.
   var state = { mode: "idle" };
 
   function clip(s, n) {
@@ -211,11 +213,16 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     return { left: x, right: x, top: y, bottom: y, width: 0, height: 0 };
   }
 
-  function button(label, testid, onClick) {
+  // A disabled button says why in its tooltip (disabledReason).
+  function button(label, testid, onClick, disabledReason) {
     var b = document.createElement("button");
     b.type = "button";
     b.textContent = label;
     b.setAttribute("data-testid", testid);
+    if (disabledReason) {
+      b.disabled = true;
+      b.title = disabledReason;
+    }
     b.addEventListener("click", function (ev) {
       ev.preventDefault();
       onClick();
@@ -242,6 +249,12 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     };
     if (ref.selectedText) msg.selectedText = ref.selectedText;
     if (ref.context) msg.context = ref.context;
+    if (ref.field) {
+      msg.blockName = ref.blockName;
+      msg.position = ref.position;
+      msg.field = ref.field;
+      if (ref.index !== undefined) msg.index = ref.index;
+    }
     if (ask) msg.ask = true;
     parent.postMessage(msg, origin());
   }
@@ -253,7 +266,9 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     return text ? "\\u201c" + clip(text, 48) + "\\u201d" : "This section";
   }
 
-  function openMenu(ref, moduleEl, x, y) {
+  var SHARED_TEXT = "Used on other pages too \u2014 ask the AI to change it everywhere or only here";
+
+  function openMenu(ref, moduleEl, x, y, f) {
     var u = ensureUi();
     if (!u) return;
     state.mode = "menu";
@@ -263,6 +278,11 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     u.panel.setAttribute("role", "menu");
     u.panel.setAttribute("data-testid", "caelo-context-menu");
     u.panel.appendChild(caption(refCaption(ref)));
+    if (f) {
+      u.panel.appendChild(
+        button("Edit text", "caelo-menu-edit", function () { startEdit(f); }, f.synced ? SHARED_TEXT : ""),
+      );
+    }
     u.panel.appendChild(
       button(ref.selectedText ? "Ask AI about this text\\u2026" : "Ask AI about this\\u2026", "caelo-menu-ask", function () {
         post(ref, true);
@@ -294,12 +314,16 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     if (!u) return;
     state.mode = "toolbar";
     showOutline(s.moduleEl);
-    var ref = buildRef(s.el, s.moduleEl, s.text);
+    var f = fieldOfSelection(s);
+    var ref = withField(buildRef(s.el, s.moduleEl, s.text), f);
     var anchor = s.range.getBoundingClientRect();
     u.panel.className = "panel bar";
     u.panel.textContent = "";
     u.panel.setAttribute("role", "toolbar");
     u.panel.setAttribute("data-testid", "caelo-selection-toolbar");
+    if (f && !f.synced) {
+      u.panel.appendChild(button("Edit", "caelo-toolbar-edit", function () { startEdit(f); }));
+    }
     u.panel.appendChild(
       button("Ask AI", "caelo-toolbar-ask", function () {
         post(ref, true);
@@ -316,7 +340,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   }
 
   function refreshToolbar() {
-    if (state.mode === "menu") return;
+    if (state.mode === "menu" || state.mode === "edit") return;
     var s = currentSelection();
     if (s) openToolbar(s);
     else if (state.mode === "toolbar") close();
@@ -325,7 +349,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   document.addEventListener(
     "contextmenu",
     function (ev) {
-      if (isOwnUi(ev.target)) return;
+      if (isOwnUi(ev.target) || isEditing(ev.target)) return;
       if (ev.shiftKey) {
         close();
         return;
@@ -338,11 +362,13 @@ export const EDIT_AFFORDANCES_SCRIPT = `
       }
       ev.preventDefault();
       var s = currentSelection();
-      var ref =
-        s && s.moduleEl === moduleEl
-          ? buildRef(s.el, moduleEl, s.text)
-          : buildRef(t, moduleEl, "");
-      openMenu(ref, moduleEl, ev.clientX, ev.clientY);
+      var inSelection = s && s.moduleEl === moduleEl;
+      var f = inSelection ? fieldOfSelection(s) : fieldAt(t, moduleEl);
+      var ref = withField(
+        inSelection ? buildRef(s.el, moduleEl, s.text) : buildRef(t, moduleEl, ""),
+        f,
+      );
+      openMenu(ref, moduleEl, ev.clientX, ev.clientY, f);
     },
     true,
   );
@@ -350,7 +376,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   document.addEventListener(
     "mousedown",
     function (ev) {
-      if (state.mode === "idle" || isOwnUi(ev.target)) return;
+      if (state.mode === "idle" || state.mode === "edit" || isOwnUi(ev.target)) return;
       close();
     },
     true,

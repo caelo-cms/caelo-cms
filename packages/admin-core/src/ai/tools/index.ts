@@ -129,6 +129,7 @@ import {
   listRateLimitProfilesTool,
 } from "./operator-dashboard-tools.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
+import { patchPageModuleFieldsTool } from "./patch-page-module-fields.js";
 import {
   listPluginGrantsTool,
   listPluginInstallationsTool,
@@ -264,6 +265,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(grepContentTool);
   // #820 — every field-value write carries the repeated-markup hint.
   registry.register(withFieldMarkupGuard(setPageModuleContentTool, (i) => [i.contentValues]));
+  // #917 — targeted text edits of one placement (escaped plain text, so no
+  // markup guard needed); the same op Live Edit's in-place editing uses.
+  registry.register(patchPageModuleFieldsTool);
   // issue #299 — bulk-first build path (CLAUDE.md §11): one call builds a
   // page (modules + content + placements); the _many variants batch
   // incremental passes on existing pages.

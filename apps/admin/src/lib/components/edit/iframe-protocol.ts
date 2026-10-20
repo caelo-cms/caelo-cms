@@ -13,9 +13,13 @@
  *   - iframe → parent: `caelo:element-referenced` when the operator
  *     picks "Ask AI" or "Add to chat" from the right-click menu or the
  *     selection toolbar. Carries the module id, the element path, the
- *     selected text + its surrounding text, and whether it was Ask AI.
- *     It never carries an instruction for the AI: the preview runs the
- *     site's own scripts, so the instruction is typed in the editor.
+ *     selected text + its surrounding text, the marked field it sits in
+ *     (#917), and whether it was Ask AI. It never carries an instruction
+ *     for the AI: the preview runs the site's own scripts, so the
+ *     instruction is typed in the editor.
+ *   - iframe → parent: `caelo:field-edit` when the operator finished
+ *     editing a marked field's text in place (#917); the parent saves
+ *     it and reloads the iframe.
  *   - parent → iframe: `caelo:reload` to refetch the iframe's source
  *     after a tool result lands a new branch snapshot.
  */
@@ -43,15 +47,36 @@ export interface ElementReferencedMessage {
   selectedText?: string;
   /** Text of the block the reference sits in (paragraph, heading, list item, …). */
   context?: string;
+  /** #917 — the marked placement field the reference sits in, when there is one. */
+  blockName?: string;
+  position?: number;
+  field?: string;
+  /** List item index for a `text-list` / `link-list` field. */
+  index?: number;
   /** Ask AI: the parent focuses the chat composer for the operator's instruction. */
   ask?: true;
+}
+
+/** #917 — the operator edited one marked field's text in place. */
+export interface FieldEditMessage {
+  kind: "caelo:field-edit";
+  pageId: string;
+  blockName: string;
+  position: number;
+  field: string;
+  index?: number;
+  text: string;
 }
 
 export interface ReloadMessage {
   kind: "caelo:reload";
 }
 
-export type IframeToParent = ReadyMessage | NavigatedMessage | ElementReferencedMessage;
+export type IframeToParent =
+  | ReadyMessage
+  | NavigatedMessage
+  | ElementReferencedMessage
+  | FieldEditMessage;
 export type ParentToIframe = ReloadMessage;
 export type CaeloMessage = IframeToParent | ParentToIframe;
 
@@ -62,6 +87,30 @@ export function isCaeloMessage(value: unknown): value is CaeloMessage {
     k === "caelo:ready" ||
     k === "caelo:navigated" ||
     k === "caelo:element-referenced" ||
+    k === "caelo:field-edit" ||
     k === "caelo:reload"
   );
+}
+
+/**
+ * The Caelo message a `message` event carries when it comes from the
+ * live-edit preview, else null. Both the sender window AND its origin must
+ * match: the preview follows external links (they are not intercepted), and
+ * the external page then IS `iframe.contentWindow` — the source check alone
+ * would let it post `caelo:field-edit`, which the editor saves with the
+ * operator's CSRF token. Mirrors the iframe side, which checks source and
+ * origin on `caelo:reload` (inject-script).
+ *
+ * @param preview - the preview iframe's `contentWindow`.
+ * @param editorOrigin - the origin the preview is served from: the editor's
+ *   own (`window.location.origin`).
+ */
+export function previewMessage(
+  ev: Pick<MessageEvent, "source" | "origin" | "data">,
+  preview: Window | null | undefined,
+  editorOrigin: string,
+): CaeloMessage | null {
+  if (!preview || ev.source !== preview) return null;
+  if (ev.origin !== editorOrigin) return null;
+  return isCaeloMessage(ev.data) ? ev.data : null;
 }

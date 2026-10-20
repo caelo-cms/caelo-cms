@@ -19,7 +19,7 @@
    * Ask AI / Add to chat (see inject-script + edit-affordances-script).
    */
 
-  import { enhance } from "$app/forms";
+  import { type ActionResult, applyAction, deserialize, enhance } from "$app/forms";
   import { goto, refreshAll } from "$app/navigation";
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
@@ -31,10 +31,7 @@
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
   import Overlay from "#lib/components/edit/Overlay.svelte";
   import StageDeployButton from "#lib/components/edit/StageDeployButton.svelte";
-  import {
-    type CaeloMessage,
-    isCaeloMessage,
-  } from "#lib/components/edit/iframe-protocol.js";
+  import { type FieldEditMessage, previewMessage } from "#lib/components/edit/iframe-protocol.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Combobox } from "#lib/components/ui/combobox/index.js";
   import { cn } from "#lib/utils.js";
@@ -208,14 +205,17 @@
     };
     document.addEventListener("click", openLink, true);
     const handler = (ev: MessageEvent) => {
-      if (ev.source !== iframe?.contentWindow) return;
-      if (!isCaeloMessage(ev.data)) return;
-      const msg = ev.data as CaeloMessage;
+      // Same window AND same origin: an external page the preview navigated
+      // to must not drive saves (see previewMessage).
+      const msg = previewMessage(ev, iframe?.contentWindow, window.location.origin);
+      if (!msg) return;
       if (msg.kind === "caelo:element-referenced") {
         // Chip (+ Ask AI composer focus) for the chat; the Overlay expands itself
         // first when collapsed so ChatPanel is mounted to receive it.
         const { kind: _kind, ...detail } = msg;
         window.dispatchEvent(new CustomEvent("caelo:chip", { detail }));
+      } else if (msg.kind === "caelo:field-edit") {
+        void saveFieldText(msg);
       } else if (msg.kind === "caelo:navigated") {
         displayPath = msg.path || null;
         // Click-through navigation inside the iframe — sync activePageId
@@ -290,6 +290,49 @@
       reloadTimer = null;
       iframe?.contentWindow?.postMessage({ kind: "caelo:reload" }, window.location.origin);
     }, 200);
+  }
+
+  /**
+   * #917 — save an in-place text edit from the preview through the
+   * `editFieldText` action on this chat's branch, then reload the preview;
+   * it shows the stored text either way (the new one, or the old one when
+   * the save was refused). `applyAction` hands the outcome to the layout's
+   * toast effect like any form action.
+   */
+  async function saveFieldText(msg: FieldEditMessage): Promise<void> {
+    const body = new FormData();
+    body.set("_csrf", data.csrfToken);
+    body.set("chatSessionId", data.activeChat.id);
+    body.set("chatBranchId", data.activeChat.chatBranchId);
+    body.set("pageId", msg.pageId);
+    body.set("blockName", msg.blockName);
+    body.set("position", String(msg.position));
+    body.set("field", msg.field);
+    if (msg.index !== undefined) body.set("index", String(msg.index));
+    body.set("text", msg.text);
+    try {
+      const res = await fetch("?/editFieldText", {
+        method: "POST",
+        body,
+        headers: { "x-sveltekit-action": "true" },
+      });
+      const result: ActionResult = deserialize(await res.text());
+      // An unexpected server error would otherwise replace the editor
+      // with the error page; report it like a refused save instead.
+      const outcome: ActionResult =
+        result.type === "error"
+          ? {
+              type: "failure",
+              status: 500,
+              data: { error: "Text not saved: the server failed." },
+              location: result.location ?? `${location.pathname}${location.search}`,
+            }
+          : result;
+      await applyAction(outcome);
+    } finally {
+      void refreshAll();
+      scheduleReload();
+    }
   }
 
   function onAiToolResult(payload: {
