@@ -32,7 +32,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 ## Testing and quality gates
 
 - [internal/e2e-livedit.md](./internal/e2e-livedit.md) — the real-AI Playwright suite: setup, assertion classes, adding a scenario.
-- [quality-checks.md](./quality-checks.md) — the quality audit's checks on the staged build (check framework, `structure`, `links`).
+- [quality-checks.md](./quality-checks.md) — the quality audit's checks on the staged build (check framework, `structure`, `links`, `references`) and the Stage-time reference-integrity gate (#724).
 - [dev/coverage.md](./dev/coverage.md) — the coverage gate.
 - [dev/knip.md](./dev/knip.md) — the dead-code gate.
 - [dev/madge.md](./dev/madge.md) — the circular-dependency gate.

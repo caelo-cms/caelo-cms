@@ -4,7 +4,7 @@ Every Stage gets a quality audit (epic #727). It runs against the **staged build
 
 ## Shape
 
-- **Registry** (`checks/registry.ts`): Lighthouse plus the *findings checks*. Core registers `structure` (#820) and `links` (#849). Plugins add findings checks through the same `register` call with `{ kind: "plugin", slug }`.
+- **Registry** (`checks/registry.ts`): Lighthouse plus the *findings checks*. Core registers `structure` (#820), `links` (#849) and `references` (#724). Plugins add findings checks through the same `register` call with `{ kind: "plugin", slug }`.
 - **Findings check** (`checks/check.ts`): `{ id, title, scope: "page" | "site", timeoutMs?, run(ctx) }`. A page check gets one page's rendered HTML; a site check gets every page plus `build`, the staged build itself (`baseUrl`, `displayBaseUrl`, and `probe(path)`, which asks the staged origin whether it serves a path).
 - **Findings** (`checks/findings.ts`): `{ ruleId: "<checkId>/<rule>", severity, pageId?, message, fix?: { tool, hint } }`. The message leads with a short label before the first colon and says what to do next (CLAUDE.md §11). The runner validates every finding with Zod and allows at most `MAX_FINDINGS_PER_CALL` per call.
 - **Gate** (`checks/evaluate.ts`, `gate.ts`): every `error` finding blocks Publish live until it is fixed or the Owner accepts it (per rule and page, bulk acceptance included). Warnings and info are reported and never block.
@@ -59,4 +59,30 @@ Every same-site URL a staged page references must be served by that build. Code:
 
 **Bounds.** At most 5,000 URLs read per page, 5,000 distinct paths probed per audit (8 at a time, 10 s each, one retry on a dropped connection), 240 s per run. Past the runner's 500 findings, errors are kept first and the rest is summarised in one `links/limit-reached` finding; the next Stage reports what was cut.
 
-**Relation to the Stage-time scan.** `ops/content/link-integrity.ts` scans stored values before the build and only warns. The `links` check reads what actually ships, including layouts, structured sets, field defaults and plugin output, and its errors block Publish live. Page references (`caelo:page/<id>`, #724) render to plain URLs in the build, so the check needs no change for them.
+**Relation to reference integrity.** Page references (`caelo:page/<id>`, #724) render to plain URLs in the build, so `links` needs no change for them. A rendered link to an unpublished page is skipped here only when the `references` check reports that stored link (`LinkSources.reportedDraftLinks`: same target, same page, same module / plugin / chrome origin): it is reported at the place it is stored. Any other link that ends at a draft page (plugin output, a legacy literal whose redirect chain ends at a draft) stays `links/broken-internal`, because nothing else blocks on it. A `references` issue stored on a draft page is a site-scoped finding: the staged build has no such page. See below for the split.
+
+## Core check: `references` (#724 rollout F)
+
+Internal links are stored as references (`caelo:page/<id>[#anchor]`, `caelo:media/<id>`), resolved at render time per rendering page (rollout D maps a target to the rendering page's language). Reference integrity checks the stored links, where they live. Code: `links/reference-sources.ts` (what is read), `links/reference-integrity.ts` (pure check), `links/reference-fix.ts` (messages and fixing tools), `ops/content/link-integrity.ts` (Stage gate and the `links.check_references` op), `checks/references.ts` (the quality check).
+
+| Rule | Stage | Publish live / promote | Meaning |
+|---|---|---|---|
+| `references/missing-target` | blocks | blocks (error) | The referenced page or media file was deleted. |
+| `references/variant-missing` | blocks | blocks (error) | The target has no version in the rendering page's language (`link-variant-missing:page/<id>:<variant>` in the render). |
+| `references/unpublished-target` | warning | blocks (error) | The target (or its same-language version) is a draft. |
+| `references/literal-link` | warning | warning | A literal path the link migration (rollout E) left as it is; it works, and saving it again stores the reference. |
+| `broken-literal` (Stage / `check_links` only) | warning | — | A literal path that matches nothing. The migration report (`get_link_migration_report`) lists these; `links/broken-internal` owns it at Publish live. |
+| `pending-import-link` (Stage / `check_links` only) | warning | — | While a site import is active, a link to a page the run planned but has not built stays literal on purpose (`import_run_links`). It never blocks; `imports.resolve_links` (`resolve_import_links`) or the run's cleanup converts it, and once the run is over anything still unresolved follows the rules above. |
+| `references/limit-reached` | — | info | More issues than one audit lists. |
+
+Maintainer decisions on #724: a missing target blocks everywhere; an unpublished one warns at Stage and blocks Publish live. A problem that renders only on draft pages ships nowhere yet and is a warning; it blocks once the page is published.
+
+**What is read.** Only what renders, in one query per entity kind: page placements (content values by declared field kind, #846, and the field default a value-less field shows), nested modules, templates and layouts of live pages with their chrome modules (whose content lives in field defaults), structured sets (a nav menu renders where its `nav-menu-<slug>` module does; an unrendered set only warns), and plugin data named through the plugins' `linkLocationsOperation` (the hook rollout E introduced for the link migration). Literal links are classified by the write-time canonicaliser in report mode, so the check and the write path agree on what a link is.
+
+**Where it runs.**
+
+- **Stage**: `chat.merge_to_main` / `chat.merge_draft_to_main` run `stageReferenceGate` inside the merge transaction, after the replay. A blocking issue throws `OperationAbortError`: the replay rolls back, nothing reaches main, and the error lists each place with its fixing tool. Plugins (link locations, link-resolve) answer from their own transactions and cannot see the merge's uncommitted writes, so they are asked for the post-merge state: on main when the merge took no plugin rows, as the merged branch when it did (a merge takes every pending plugin row of the chat or none). Nested modules are checked only where the module's HTML dispatches them (`{{>field}}` / `{{#field}}`), as the renderer does. The static build refuses a missing target anyway; the gate refuses it earlier and says where it is. Warnings come back as `linkWarnings`.
+- **Publish live / promote**: the `references` findings check runs in every Stage's audit over the main line with the Publish policy. Its errors block the gate like any finding until fixed or accepted by the Owner (`accept_quality_findings`). Page-bound content is a finding on its page; shared places (module HTML, layouts, sets, plugin data) are site-wide findings.
+- **AI and MCP**: `check_links` (read op `links.check_references`, actor scope human + ai + system) checks the caller's draft as its preview shows it (branch overlay of pending snapshots), filterable by page path, for the Stage or the Publish policy. Power-MCP exposes it like every built-in tool.
+
+**Split with `links`.** One defect, one finding: `links` reads what ships and owns URLs nothing answers (broken legacy literals included); `references` reads where the link is stored and owns stored references (missing, language-less and unpublished targets).

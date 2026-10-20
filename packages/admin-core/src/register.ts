@@ -128,6 +128,7 @@ import {
   updateLayoutOp,
 } from "./ops/content/layouts.js";
 import { canonicaliseLinkValuesOp } from "./ops/content/link-canonicalise.js";
+import { checkReferencesOp } from "./ops/content/link-integrity.js";
 import {
   createModuleOp,
   deleteModuleOp,
@@ -732,6 +733,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
   registry.register(canonicaliseLinkValuesOp);
+  // Epic #724 (rollout F) — reference integrity read (check_links, Publish-live check).
+  registry.register(checkReferencesOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
   registry.register(listUrlMigrationPendingOp);

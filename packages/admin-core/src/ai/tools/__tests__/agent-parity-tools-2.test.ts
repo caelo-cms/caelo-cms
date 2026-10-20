@@ -321,6 +321,37 @@ describe("email, bug reports, media settings", () => {
     expect((await run(listBugReportsTool, { status: "open" }, h.toolCtx)).ok).toBe(false);
   });
 
+  // Regression (Codex on #907): the op returns forwardingState but the tool's
+  // columns dropped it, so the AI could not tell a local-only report from one
+  // the Caelo team received.
+  it("list_bug_reports shows where each report went", async () => {
+    const report = (id: string, forwardingState: string) => ({
+      id,
+      createdAt: "2026-10-20 10:00:00+00",
+      chatSessionId: null,
+      title: `report ${id}`,
+      whatHappened: "x",
+      expected: "y",
+      suspectedTool: "edit_module",
+      evidence: null,
+      severity: "degraded",
+      blockedTask: false,
+      status: "new",
+      source: "ai",
+      forwardingState,
+    });
+    const h = harness({
+      "ai_bug_reports.list": () => ({
+        reports: [report("a", "local_only"), report("b", "sent")],
+        total: 2,
+      }),
+    });
+    const r = await run(listBugReportsTool, {}, h.toolCtx);
+    expect(r.content).toContain("forwarding");
+    expect(r.content).toContain("local_only");
+    expect(r.content).toContain("sent");
+  });
+
   it("get_media_settings renders the CDN toggle", async () => {
     const h = harness({
       "media.get_settings": () => ({ cdnCopyEnabled: true, cdnUsageThreshold: 5 }),
