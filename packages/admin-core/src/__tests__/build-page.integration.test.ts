@@ -115,7 +115,8 @@ describe("pages.build_page — happy path", () => {
             source: "shared",
             purpose: "I299 CTA shared across test pages",
             slug: SHARED_CI_SLUG,
-            values: { cta_label: "Go", cta_href: "/signup" },
+            // External: an internal link must name an existing page (#724).
+            values: { cta_label: "Go", cta_href: "https://example.com/signup" },
           },
         },
         {

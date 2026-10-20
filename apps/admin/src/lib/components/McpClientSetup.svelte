@@ -8,8 +8,8 @@
    * how it is registered (a terminal command or a JSON config file) and in
    * how the client picks it up (restart, new session). Browser-only
    * assistants (ChatGPT, claude.ai) need a hosted connector and cannot use
-   * a local server at all — that is issue #806, stated here so operators
-   * don't hunt for a setting that doesn't exist.
+   * a local server at all; the hint at the bottom sends them to remote MCP
+   * (Settings → MCP → Remote, #806).
    */
 
   import CopyLine from "#lib/components/updates/CopyLine.svelte";
@@ -147,8 +147,10 @@
     </TabsContent>
   </Tabs>
 
-  <p class="text-sm text-muted-foreground">
-    ChatGPT and claude.ai in the browser can't connect yet: they only reach servers hosted on the
-    internet, and this one runs on your computer. Claude Desktop works today.
+  <p class="text-sm text-muted-foreground" data-testid="mcp-setup-remote-hint">
+    ChatGPT and claude.ai in the browser can't use this server: it runs on your computer, and they
+    only reach servers on the internet. Connect them with
+    <a class="underline" href="/settings/mcp/remote">remote MCP</a> instead — no token, each person
+    signs in with Google.
   </p>
 </div>

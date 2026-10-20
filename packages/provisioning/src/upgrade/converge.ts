@@ -7,8 +7,8 @@
  * CLI-generated runtime secrets, the stack's IAM/CDN/firewall invariants,
  * MCP access through IAP, public_role's Cloud SQL role memberships (#633),
  * the gateway's and public_role's database logins, the operator-access sync
- * job, the quality-audit job (#875), and dropping bindings nothing reads any
- * more.
+ * job, the quality-audit job (#875), the remote-MCP load-balancer rules and
+ * identity env (#806), and dropping bindings nothing reads any more.
  *
  * It needs the rights of whoever provisioned the install: `cms-provision
  * upgrade` runs it as the operator's own identity, and the converge job
@@ -37,6 +37,7 @@ import type { InstallMetadata } from "../install-state.js";
 import { ensureMcpIapAccess, type IapResource } from "../mcp-iap.js";
 import { ensureOperatorAccessSync, resolveOperatorAccessTarget } from "../operator-access.js";
 import { revokePublicRoleMemberships } from "../public-role-isolation.js";
+import { ensureRemoteMcpEdge, resolveRemoteMcpIdentity } from "../remote-mcp.js";
 import {
   ensureGatewayServiceAccount,
   ensureGeneratedSecrets,
@@ -48,9 +49,11 @@ import { selfCommand } from "../self-command.js";
 import {
   AUDIT_JOB_ENV_VAR,
   AUDIT_RESULTS_BUCKET_ENV_VAR,
+  type CloudRunEnvVar,
   CONVERGE_JOB_ENV_VAR,
   MCP_ENV_VAR,
   OPERATOR_ACCESS_JOB_ENV_VAR,
+  remoteMcpIdentityEnv,
   UPGRADER_JOB_ENV_VAR,
 } from "../stack-contract.js";
 import {
@@ -313,6 +316,65 @@ export function startConverge(
     leaveUntouched.push(AUDIT_JOB_ENV_VAR, AUDIT_RESULTS_BUCKET_ENV_VAR);
   }
 
+  async function remoteMcpEdge(): Promise<void> {
+    // #806 — on `gcp` the load balancer routes the remote-MCP discovery
+    // paths to the gateway and Cloud Armor lets agent traffic through on
+    // /api/mcp/* (remote-mcp-edge.ts). Only remote MCP depends on it, so a
+    // failure warns.
+    if (install.provider !== "gcp") return;
+    const s = r.step("Ensuring the load balancer's remote-MCP routes and Cloud Armor rule...");
+    const edge = await ensureRemoteMcpEdge(
+      {
+        provider: install.provider,
+        projectId: install.projectId,
+        env: install.env,
+        domain: install.domain,
+      },
+      { ...runDeps, ...(deps.http ? { http: deps.http } : {}) },
+    );
+    if (edge.ok) {
+      for (const line of edge.done) r.info(`  ${line}`);
+      s.done("Remote-MCP load-balancer rules ready");
+      return;
+    }
+    s.warned(`Remote-MCP load-balancer rules not set up: ${edge.error}`);
+    r.warn(
+      "The upgrade continues; remote MCP (Settings → MCP → Remote) cannot be reached through the site's domain until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    incomplete = true;
+  }
+
+  async function remoteMcpIdentity(): Promise<Record<RollSlug, CloudRunEnvVar[]> | null> {
+    // #806 — CAELO_ADMIN_URL / CAELO_MCP_PUBLIC_URL / CAELO_IAP_AUDIENCE
+    // name identities the env contract cannot (stack-contract.ts
+    // RemoteMcpIdentity). Resolved here, read-only, and set by the rolls
+    // (AppRollHooks.afterMigrations `extraEnv`), so they ride the new
+    // revisions. A failure leaves the vars as the services have them and
+    // warns: only remote MCP depends on them.
+    const s = r.step("Resolving the remote-MCP URLs and IAP audience...");
+    const resolved = await resolveRemoteMcpIdentity(
+      {
+        provider: install.provider,
+        projectId: install.projectId,
+        region: install.region,
+        env: install.env,
+        domain: install.domain,
+        services,
+      },
+      runDeps,
+    );
+    if (resolved.ok) {
+      s.done(`Remote MCP can be set up under Settings → MCP (${resolved.identity.mcpPublicUrl})`);
+      return remoteMcpIdentityEnv(resolved.identity);
+    }
+    s.warned(`Remote-MCP env not resolved: ${resolved.error}`);
+    r.warn(
+      "The upgrade continues; Settings → MCP reports remote MCP as not prepared on this install until this succeeds. Re-run upgrade once the cause is fixed.",
+    );
+    incomplete = true;
+    return null;
+  }
+
   /** The admin's IAP resource: the service on gcp-firebase, the LB backend on gcp. */
   async function adminIapResource(): Promise<IapResource | null> {
     if (install.provider === "gcp-firebase") {
@@ -500,6 +562,7 @@ export function startConverge(
       await mcpAccess();
       await urlMapRedirectsAccess();
       await auditJob();
+      await remoteMcpEdge();
       return true;
     },
 
@@ -509,7 +572,12 @@ export function startConverge(
         await upgraderJob();
         await convergeJob();
         await operatorAccess();
-        return { ok: true, leaveUntouched: [...leaveUntouched] };
+        const extraEnv = await remoteMcpIdentity();
+        return {
+          ok: true,
+          leaveUntouched: [...leaveUntouched],
+          ...(extraEnv ? { extraEnv } : {}),
+        };
       },
       async beforeRoll(slug) {
         if (slug !== "gateway" || !publicRole) return { ok: true };

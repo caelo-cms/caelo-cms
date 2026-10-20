@@ -353,6 +353,12 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         keywords: ["mcp", "token", "claude code", "ide", "agent"],
         related: [
           {
+            href: "/settings/mcp/remote",
+            label: "Remote MCP setup",
+            description: "Let ChatGPT, claude.ai and other clients connect with a Google sign-in.",
+            permission: "settings.read",
+          },
+          {
             href: "/settings/mcp/pending",
             label: "Token proposals",
             description: "Tokens the AI asked to create or revoke.",

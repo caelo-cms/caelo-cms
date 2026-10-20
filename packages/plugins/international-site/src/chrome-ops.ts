@@ -28,6 +28,7 @@ import {
   normalizePath,
   sourceFingerprint,
   splitHref,
+  splitPageRef,
   translatableStrings,
   validateChromeTranslation,
 } from "./chrome.js";
@@ -337,11 +338,20 @@ async function linkIndex(
 
   return {
     map: (href, locale) => {
-      const parts = splitHref(href);
+      const ref = splitPageRef(href);
+      const literal = ref ? null : splitHref(href);
+      const parts = ref ?? literal;
       if (!parts) return null; // external, mailto:, anchors — not a page link
-      const target = byPath.get(normalizePath(parts.path));
+      const target = ref
+        ? byId.get(ref.pageId)
+        : literal
+          ? byPath.get(normalizePath(literal.path))
+          : undefined;
       if (!target) return null; // an asset or a path no page owns
       if (localeOf(target.id) === locale.code) return null;
+      // Epic #724 — a stored link may be a `caelo:page/<id>` reference;
+      // problems name the link as the operator wrote it (the page's path).
+      const shown = ref ? `${target.currentPath}${ref.suffix}` : href;
       const row = rowByPage.get(target.id);
       const sibling = row
         ? variantRows.find((r) => r.group_id === row.group_id && r.locale_code === locale.code)
@@ -349,12 +359,12 @@ async function linkIndex(
       const siblingPage = sibling ? byId.get(sibling.page_id) : undefined;
       if (!siblingPage) {
         return {
-          problem: `the link "${href}" goes to a page that has no ${locale.display_name} version. Next step: create_variant + translate_variant for that page, or change the link with set_chrome_variants.`,
+          problem: `the link "${shown}" goes to a page that has no ${locale.display_name} version. Next step: create_variant + translate_variant for that page, or change the link with set_chrome_variants.`,
         };
       }
       if (siblingPage.status !== "published") {
         return {
-          problem: `the link "${href}" goes to a page whose ${locale.display_name} version (${siblingPage.currentPath}) is not published yet. Next step: publish it, or change the link.`,
+          problem: `the link "${shown}" goes to a page whose ${locale.display_name} version (${siblingPage.currentPath}) is not published yet. Next step: publish it, or change the link.`,
         };
       }
       const path = canonicalPath.get(siblingPage.id);

@@ -8,6 +8,7 @@ import {
   normalizePath,
   sourceFingerprint,
   splitHref,
+  splitPageRef,
   translatableStrings,
   validateChromeTranslation,
 } from "./chrome.js";
@@ -94,6 +95,14 @@ describe("href helpers", () => {
     expect(splitHref("//cdn.example.com/x")).toBeNull();
     expect(normalizePath("/de/preise/")).toBe("/de/preise");
     expect(normalizePath("/")).toBe("/");
+  });
+
+  it("splits a stored page reference (#724) into its page id and suffix", () => {
+    const id = "0b0c0d0e-1111-4222-8333-444455556666";
+    expect(splitPageRef(`caelo:page/${id}`)).toEqual({ pageId: id, suffix: "" });
+    expect(splitPageRef(`caelo:page/${id}?x=1#team`)).toEqual({ pageId: id, suffix: "?x=1#team" });
+    expect(splitPageRef(`caelo:media/${id}`)).toBeNull();
+    expect(splitPageRef("/about")).toBeNull();
   });
 });
 
