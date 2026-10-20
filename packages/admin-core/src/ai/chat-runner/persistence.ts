@@ -10,6 +10,7 @@
 import type { DatabaseAdapter, OperationRegistry, QueryError } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import {
+  type ChatChip,
   type ChatSendMessageInput,
   type ExecutionContext,
   PLUGIN_PREVIEW_REFERENCE_MARKER,
@@ -61,11 +62,24 @@ export function buildUserContent(input: ChatSendMessageInput): string {
         content,
         "",
         "Element references attached to this message:",
-        ...input.chips.map(
-          (c) => `  - ${c.label} (module=${c.moduleId.slice(0, 8)}, selector=${c.selector})`,
-        ),
+        ...input.chips.map(chipLines),
       ].join("\n")
     : content;
+}
+
+/**
+ * One reference as the AI reads it. The module id is the full uuid so the
+ * AI can address the module in a tool call without a lookup (an 8-char
+ * prefix fits no tool argument); quoted strings are JSON so a selection
+ * with line breaks or quotes cannot bleed into the next line (#916).
+ */
+function chipLines(c: ChatChip): string {
+  const element = c.selector ? `, element=${c.selector}` : "";
+  return [
+    `  - ${c.label} (module=${c.moduleId}${element})`,
+    ...(c.selectedText ? [`    selected text: ${JSON.stringify(c.selectedText)}`] : []),
+    ...(c.context ? [`    surrounding text: ${JSON.stringify(c.context)}`] : []),
+  ].join("\n");
 }
 
 /** A decision the resume turn appends as an SDK tool-approval-response. */

@@ -24,6 +24,7 @@ import {
   listCaeloUpdatesTool,
 } from "./caelo-updates.js";
 import { cancelProposalTool } from "./cancel-proposal.js";
+import { checkLinksTool } from "./check-links.js";
 import {
   getPageSeoTool,
   listImportRunsTool,
@@ -454,6 +455,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(optimizePageSeoTool);
   // P8 AI-first review pass — bulk variants + redirect surface.
   registry.register(findRedirectsTool);
+  // Epic #724 (rollout F) — reference integrity: what Stage / Publish live say about internal links.
+  registry.register(checkLinksTool);
   // #553 — quality gate read surface (Lighthouse audits after a Stage).
   registry.register(getQualityAuditTool);
   registry.register(checkStageAuditTool);

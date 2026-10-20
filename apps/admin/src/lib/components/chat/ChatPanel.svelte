@@ -81,6 +81,10 @@
     moduleId: string;
     selector: string;
     label: string;
+    /** Text the operator selected in the preview (right-click / selection toolbar). */
+    selectedText?: string;
+    /** Text of the block the reference sits in. */
+    context?: string;
     /** When true the chip rides every send within this session (P6.7). */
     pinned?: boolean;
   }
@@ -1495,6 +1499,8 @@
   }
 
   async function persistPinned(): Promise<void> {
+    // A pin keeps the module + element reference across messages; the
+    // selected text belongs to the message it was picked for.
     const pinned = chips
       .filter((c) => c.pinned)
       .map((c) => ({ moduleId: c.moduleId, selector: c.selector, label: c.label }));
@@ -1514,6 +1520,15 @@
    * /edit/+page.svelte's postMessage handler) appends a new chip referring
    * to the clicked module. Append-only — multiple clicks accumulate so the
    * user can select N elements then send "make them all green" in one turn.
+   *
+   * Ask AI (`ask: true`) only adds the chip and focuses the composer; the
+   * operator types the instruction here and sends it with their own
+   * Enter / Send. Why not take the instruction from the preview and send
+   * it: the event originates in the preview iframe, which runs the site's
+   * module scripts (modules keep <script>, the preview has no CSP), so any
+   * of them can post the same message. A preview message must never make
+   * the AI act — at most it points at an element. The send stays one
+   * action for the operator, in the editor's own trusted UI.
    */
   onMount(() => {
     // Hydration gate — see the composer's `disabled` binding.
@@ -1523,11 +1538,18 @@
     // (the runner just queued or executed something).
     void loadPendingProposals();
     const handler = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail as Chip | undefined;
+      const detail = (ev as CustomEvent).detail as (Chip & { ask?: boolean }) | undefined;
       if (!detail || typeof detail.moduleId !== "string") return;
+      const { ask, ...chip } = detail;
       // De-dupe: don't add a chip already present (pinned or not).
-      if (chips.some((c) => c.moduleId === detail.moduleId && c.selector === detail.selector)) return;
-      chips = [...chips, { ...detail }];
+      const present = chips.some(
+        (c) =>
+          c.moduleId === chip.moduleId &&
+          c.selector === chip.selector &&
+          c.selectedText === chip.selectedText,
+      );
+      if (!present) chips = [...chips, chip];
+      if (ask === true) composerEl?.focus();
     };
     window.addEventListener("caelo:chip", handler);
 
@@ -2509,7 +2531,11 @@
                   c.pinned ? "bg-amber-500/15 ring-1 ring-amber-500/40" : "bg-primary/10",
                 )}
               >
-                {c.label}
+                <span title={c.selectedText ?? c.context ?? c.selector}>
+                  {c.label}{#if c.selectedText}<span class="text-muted-foreground">
+                      · “{c.selectedText.length > 40 ? `${c.selectedText.slice(0, 39)}…` : c.selectedText}”</span
+                    >{/if}
+                </span>
                 <button
                   type="button"
                   onclick={() => void togglePin(i)}

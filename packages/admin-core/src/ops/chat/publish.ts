@@ -26,7 +26,7 @@ import {
   type PluginRowState,
   withPluginScope,
 } from "@caelo-cms/plugin-host";
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
 import type { ChatPublishInput, ExecutionContext } from "@caelo-cms/shared";
 import { chatPublishInput, err, ok } from "@caelo-cms/shared";
 import { type SQL, sql } from "drizzle-orm";
@@ -52,7 +52,7 @@ import {
   recordAiStageHold,
 } from "../../stage/ai-stage-hold.js";
 import { refreshLivePathsAfterMerge } from "../content/current-path.js";
-import { scanBranchInternalLinks } from "../content/link-integrity.js";
+import { stageReferenceGate } from "../content/link-integrity.js";
 import { applyMediaUsageDelta } from "../content/media-usage.js";
 
 interface SessionRow {
@@ -119,12 +119,13 @@ interface MergeResult {
   readonly headerIds: readonly string[];
   readonly includeAll: boolean;
   /**
-   * Internal hrefs in the merged pages that resolve to no existing page.
-   * Surfaced (never blocking) so the operator + AI see dead links before
-   * production — see `scanBranchInternalLinks`. Empty when clean or when
-   * the branch had nothing to merge.
+   * Epic #724 (rollout F) — reference-integrity warnings of the merged
+   * state (links to draft pages, legacy literal paths); each message names
+   * the page, the place and the fixing tool. Blocking problems refuse the
+   * merge instead (`stageReferenceGate`). Empty when clean or when the
+   * branch had nothing to merge.
    */
-  readonly brokenInternalLinks: string[];
+  readonly linkWarnings: string[];
 }
 
 /**
@@ -224,10 +225,8 @@ export async function mergeBranchSnapshotsToMain(
           headerIds.map((id) => sql`${id}::uuid`),
           sql`, `,
         )})`;
-  const filter =
-    options.sinceLastStagedAt || fixedHeaderIds
-      ? sql` AND ${pendingSnapshotSql()}${windowFilter}`
-      : sql``;
+  const staging = options.sinceLastStagedAt || fixedHeaderIds;
+  const filter = staging ? sql` AND ${pendingSnapshotSql()}${windowFilter}` : sql``;
   const merged = await mergeWindowToMain(
     tx,
     ctx,
@@ -235,7 +234,13 @@ export async function mergeBranchSnapshotsToMain(
       branchId: session.chat_branch_id,
       title: session.title,
       filter,
-      pluginCompletenessFilter: filter,
+      // Every pending plugin row of the chat, not only the window's: plugin
+      // calls read the BRANCH view (they cannot see the merge's uncommitted
+      // writes), which is the post-merge state only when the merge takes
+      // every plugin row the branch holds — the post-merge path refresh
+      // and the reference gate both rely on it. Same rule as the draft
+      // Stage (draft-ops.ts).
+      pluginCompletenessFilter: staging ? sql` AND ${pendingSnapshotSql()}` : filter,
       graduateLayouts: input.entities === undefined,
     },
     input.entities,
@@ -579,7 +584,7 @@ export async function mergeWindowToMain(
   if (total === 0) {
     return {
       ok: true,
-      value: { siteSnapshotId: null, entityCount: 0, includeAll, brokenInternalLinks: [] },
+      value: { siteSnapshotId: null, entityCount: 0, includeAll, linkWarnings: [] },
     };
   }
 
@@ -1019,11 +1024,23 @@ export async function mergeWindowToMain(
     }
   }
 
-  // Internal-link integrity — runs AFTER the replay loop wrote the merged
-  // state to the live tables, so the scan reads post-merge slugs +
-  // content. Warn-only: dead links are surfaced in the op result, never
-  // block the merge (CLAUDE.md §2 loud-honesty).
-  const { brokenInternalLinks } = await scanBranchInternalLinks(tx, window.branchId);
+  // Epic #724 (rollout F) — reference integrity of the merged state: runs
+  // AFTER the replay wrote it to the live tables. A link to a deleted page
+  // (or one without a same-language version) refuses the merge — thrown so
+  // the whole replay rolls back and nothing reaches main; the static build
+  // would refuse it anyway, and this names every place and its fixing tool.
+  // Draft targets and legacy literal paths are Stage warnings.
+  const gate = await stageReferenceGate(tx, window.branchId, {
+    pluginRowsMerged: pluginRowRows.length > 0,
+  });
+  if (!gate.ok) {
+    throw new OperationAbortError({
+      kind: "HandlerError",
+      operation: options.opKind,
+      message: gate.message,
+    });
+  }
+  const linkWarnings = gate.warnings;
 
   return {
     ok: true,
@@ -1031,7 +1048,7 @@ export async function mergeWindowToMain(
       siteSnapshotId: result.siteSnapshotId,
       entityCount: total,
       includeAll,
-      brokenInternalLinks,
+      linkWarnings,
     },
   };
 }
@@ -1095,11 +1112,11 @@ export const publishChatSessionOp = defineOperation({
     siteSnapshotId: z.string().nullable(),
     entityCount: z.number().int().nonnegative(),
     /**
-     * Internal links in the published pages that point at no existing
-     * page. Non-blocking — the publish succeeded; these are dead links
-     * to fix. Empty when clean.
+     * Epic #724 (rollout F) — reference-integrity warnings (draft targets,
+     * legacy literal paths), one AI-actionable message each. Blocking
+     * problems refuse the publish instead. Empty when clean.
      */
-    brokenInternalLinks: z.array(z.string()),
+    linkWarnings: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
     // Pre-merge guard — chat.publish is the boundary that closes the
@@ -1136,7 +1153,7 @@ export const publishChatSessionOp = defineOperation({
     });
     if (!merged.ok) return err(merged.error);
 
-    const { siteSnapshotId, entityCount, includeAll, brokenInternalLinks } = merged.value;
+    const { siteSnapshotId, entityCount, includeAll, linkWarnings } = merged.value;
 
     if (entityCount === 0) {
       await tx.execute(sql`
@@ -1152,7 +1169,7 @@ export const publishChatSessionOp = defineOperation({
         entityId: input.chatSessionId,
         resultSummary: "no-op (empty branch)",
       });
-      return ok({ siteSnapshotId: null, entityCount: 0, brokenInternalLinks: [] });
+      return ok({ siteSnapshotId: null, entityCount: 0, linkWarnings: [] });
     }
 
     if (includeAll) {
@@ -1168,13 +1185,10 @@ export const publishChatSessionOp = defineOperation({
       await releaseChatLocks(tx, input.chatSessionId);
     }
 
-    // Loud-honesty warning line — dead internal links ride into the
-    // audit summary (and the op result below) so they're visible at the
-    // publish boundary, not discovered as production 404s.
+    // The warning count rides into the audit summary; the messages are in
+    // the op result.
     const linkWarning =
-      brokenInternalLinks.length > 0
-        ? ` WARNING broken-internal-links=${brokenInternalLinks.length}: ${brokenInternalLinks.slice(0, 10).join(", ")}`
-        : "";
+      linkWarnings.length > 0 ? ` WARNING link-warnings=${linkWarnings.length}` : "";
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -1186,7 +1200,7 @@ export const publishChatSessionOp = defineOperation({
         (includeAll ? `entities=${entityCount}` : `partial entities=${entityCount}`) + linkWarning,
     });
 
-    return ok({ siteSnapshotId, entityCount, brokenInternalLinks });
+    return ok({ siteSnapshotId, entityCount, linkWarnings });
   },
 });
 
@@ -1249,11 +1263,12 @@ export const mergeChatToMainOp = defineOperation({
      */
     mergedAt: z.string(),
     /**
-     * Internal links in the staged pages that point at no existing page.
-     * Non-blocking — staging proceeds — but surfaced so dead links are
-     * caught before the operator promotes staging to production.
+     * Epic #724 (rollout F) — reference-integrity warnings of the staged
+     * state: links to draft pages (they block Publish live) and legacy
+     * literal paths, one AI-actionable message each. A link to a deleted
+     * page refuses the merge instead.
      */
-    brokenInternalLinks: z.array(z.string()),
+    linkWarnings: z.array(z.string()),
     /** The headers replayed — pass them to chat.finalize_stage. */
     mergedHeaderIds: z.array(z.string()),
   }),
@@ -1282,7 +1297,7 @@ export const mergeChatToMainOp = defineOperation({
     );
     if (!merged.ok) return err(merged.error);
 
-    const { siteSnapshotId, entityCount, includeAll, brokenInternalLinks } = merged.value;
+    const { siteSnapshotId, entityCount, includeAll, linkWarnings } = merged.value;
 
     // Merge-time boundary for the pending-changes filters. Emitted as a
     // deterministic ISO string (not a driver-dependent Date/text row) so
@@ -1336,9 +1351,7 @@ export const mergeChatToMainOp = defineOperation({
     }
 
     const linkWarning =
-      brokenInternalLinks.length > 0
-        ? ` WARNING broken-internal-links=${brokenInternalLinks.length}: ${brokenInternalLinks.slice(0, 10).join(", ")}`
-        : "";
+      linkWarnings.length > 0 ? ` WARNING link-warnings=${linkWarnings.length}` : "";
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -1354,7 +1367,7 @@ export const mergeChatToMainOp = defineOperation({
       siteSnapshotId,
       entityCount,
       mergedAt,
-      brokenInternalLinks,
+      linkWarnings,
       mergedHeaderIds: [...merged.value.headerIds],
     });
   },

@@ -110,7 +110,7 @@ export async function clearTestProvider(baseURL: string, name: string): Promise<
  * the `x-caelo-test-provider: <name>` header. Lives on the context, not
  * the global state, so two specs can run in parallel without colliding.
  */
-import { type BrowserContext, expect, type Page } from "@playwright/test";
+import { type BrowserContext, expect, type Locator, type Page } from "@playwright/test";
 
 export async function attachTestProviderHeader(ctx: BrowserContext, name: string): Promise<void> {
   await ctx.route(/\/content\/chat\/[^/]+\/stream$/, async (route) => {
@@ -184,21 +184,15 @@ export function mintAdminMcpToken(actorId: string, displayName: string): string 
 }
 
 /**
- * Turn the /edit toolbar's Edit mode on and wait until the live-preview
- * iframe has applied it.
+ * Reference an element of the live preview from its right-click menu
+ * ("Add to chat as reference", #916) and wait for the chip.
  *
- * The toolbar flips `aria-pressed` synchronously, but the iframe learns of
- * the change through a `caelo:set-edit-mode` postMessage it handles a task
- * later (inject-script.ts adds `body.caelo-edit-mode`). A click dispatched
- * between the two is a plain browse-mode click and produces no chip — the
- * live-edit-modifier-click flake. The iframe's body class is the signal
- * that clicks now become chips.
+ * Right-clicks near the element's top-left corner: the chat column is
+ * pinned right and would take a click at a full-width element's centre.
  */
-export async function enableLiveEditMode(page: Page): Promise<void> {
-  const toggle = page.getByTestId("edit-mode-toggle");
-  await toggle.click();
-  await expect(toggle).toHaveAttribute("aria-pressed", "true");
-  await expect(
-    page.frameLocator("iframe[title='Live preview']").locator("body.caelo-edit-mode"),
-  ).toHaveCount(1);
+export async function referenceViaContextMenu(page: Page, target: Locator): Promise<void> {
+  const preview = page.frameLocator("iframe[title='Live preview']");
+  await target.click({ button: "right", position: { x: 8, y: 8 } });
+  await preview.getByTestId("caelo-menu-reference").click();
+  await expect(page.getByTestId("chip").first()).toBeVisible({ timeout: 5_000 });
 }

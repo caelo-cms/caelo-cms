@@ -1,33 +1,60 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { EDIT_OVERLAY_COLOR, EDIT_OVERLAY_CSS, INJECT_SCRIPT } from "./inject-script.js";
+import { chatChipSchema } from "@caelo-cms/shared";
+import {
+  EDIT_AFFORDANCES_SCRIPT,
+  EDIT_OVERLAY_COLOR,
+  EDIT_UI_CSS,
+  REFERENCE_LIMITS,
+} from "./edit-affordances-script.js";
+import { INJECT_SCRIPT } from "./inject-script.js";
 
-describe("edit-mode overlay stylesheet", () => {
-  it("paints outline, label and banner in Caelo blue", () => {
+describe("edit affordance UI (#916)", () => {
+  it("paints in Caelo blue and stays self-contained", () => {
     expect(EDIT_OVERLAY_COLOR).toBe("#2a64b8");
-    expect(EDIT_OVERLAY_CSS).toContain("outline:2px solid #2a64b8");
-    // Label + banner backgrounds.
-    expect(EDIT_OVERLAY_CSS.match(/background:#2a64b8/g)).toHaveLength(2);
-    expect(EDIT_OVERLAY_CSS).not.toContain("#3b82f6");
+    expect(EDIT_UI_CSS).toContain("outline:2px solid #2a64b8");
+    // No admin tokens: the stylesheet lives inside the operator's site.
+    expect(EDIT_UI_CSS).not.toContain("var(");
   });
 
-  it("labels the hovered module 'Edit' in a mono stack, without an emoji", () => {
-    expect(EDIT_OVERLAY_CSS).toContain("content:'Edit';");
-    expect(EDIT_OVERLAY_CSS).toContain(
-      'font:500 11px/1 "IBM Plex Mono", Menlo, Consolas, monospace;',
-    );
-    expect(EDIT_OVERLAY_CSS).not.toMatch(/\\u270F|✏|️/);
+  it("never styles the site's own elements", () => {
+    // The old edit mode forced position:relative on the hovered module and
+    // drew a pill + banner over the site's navigation. Everything now sits
+    // in a shadow root; no selector may reach module roots or body.
+    expect(INJECT_SCRIPT).not.toContain("caelo-edit-mode");
+    expect(INJECT_SCRIPT).not.toContain("[data-caelo-module-id]{");
+    expect(EDIT_AFFORDANCES_SCRIPT).toContain('attachShadow({ mode: "open" })');
+    expect(EDIT_UI_CSS).not.toContain("position:relative");
   });
 
-  it("stays self-contained: no admin CSS variables leak into the operator's site", () => {
-    expect(EDIT_OVERLAY_CSS).not.toContain("var(");
+  it("never carries an AI instruction out of the preview", () => {
+    // The preview runs the site's module scripts, which can post the same
+    // messages as this runtime. Ask AI therefore only flags the reference
+    // (`ask`); the instruction is typed and sent in the editor's composer.
+    expect(EDIT_AFFORDANCES_SCRIPT).toContain("msg.ask = true");
+    expect(EDIT_AFFORDANCES_SCRIPT).not.toContain("prompt");
+    expect(EDIT_AFFORDANCES_SCRIPT).not.toContain('createElement("input")');
   });
 
-  it("is spliced into the injected runtime as a valid JS string literal", () => {
-    expect(INJECT_SCRIPT).toContain(`s.textContent = ${JSON.stringify(EDIT_OVERLAY_CSS)};`);
-    // The runtime must still parse after the splice.
+  it("is spliced into the injected runtime, which still parses", () => {
+    expect(INJECT_SCRIPT).toContain(EDIT_AFFORDANCES_SCRIPT);
     expect(() => new Function(INJECT_SCRIPT)).not.toThrow();
+  });
+
+  it("clips references to exactly what the chat endpoint accepts", () => {
+    const at = (n: number) => "a".repeat(n);
+    const chip = (over: Record<string, string>) =>
+      chatChipSchema.safeParse({
+        moduleId: "6f1c2a3b-4d5e-4f60-8a71-92b3c4d5e6f7",
+        selector: "h1",
+        label: "h1",
+        ...over,
+      }).success;
+    for (const key of ["label", "selector", "selectedText", "context"] as const) {
+      expect(chip({ [key]: at(REFERENCE_LIMITS[key]) })).toBe(true);
+      expect(chip({ [key]: at(REFERENCE_LIMITS[key] + 1) })).toBe(false);
+    }
   });
 });
 

@@ -44,17 +44,17 @@ describe("finalLinkWarnings (PR #622 review)", () => {
   it("reports the last merge that changed anything — earlier warnings may be fixed by later merges", () => {
     expect(
       finalLinkWarnings([
-        { entityCount: 2, brokenInternalLinks: ["/pricing"] },
-        { entityCount: 1, brokenInternalLinks: [] },
-        { entityCount: 0, brokenInternalLinks: [] },
+        { entityCount: 2, linkWarnings: ["/pricing"] },
+        { entityCount: 1, linkWarnings: [] },
+        { entityCount: 0, linkWarnings: [] },
       ]),
     ).toEqual([]);
     expect(
       finalLinkWarnings([
-        { entityCount: 1, brokenInternalLinks: [] },
-        { entityCount: 1, brokenInternalLinks: ["/gone"] },
+        { entityCount: 1, linkWarnings: [] },
+        { entityCount: 1, linkWarnings: ["/gone"] },
       ]),
     ).toEqual(["/gone"]);
-    expect(finalLinkWarnings([{ entityCount: 0, brokenInternalLinks: [] }])).toEqual([]);
+    expect(finalLinkWarnings([{ entityCount: 0, linkWarnings: [] }])).toEqual([]);
   });
 });
