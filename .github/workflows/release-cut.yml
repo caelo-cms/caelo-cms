@@ -309,6 +309,34 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Guard — main must not have moved between the cut and the merge
+        # The cut generates files from main as it was (version stamps, the
+        # Power-MCP catalogue, ...). A PR merged onto main while the release
+        # PR was open lands under the release commit without them, and
+        # release.yml's gate then fails AFTER the release PR merged (the
+        # v0.10.54 class). So tag only when the release PR's own parent is
+        # exactly the commit it was squashed onto; otherwise tag nothing
+        # and say to re-cut. scripts/release-cut-race.test.ts pins this.
+        if: steps.ver.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          merged_onto=$(gh api "repos/$REPO/commits/$SHA" --jq '.parents[0].sha')
+          pr_head=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+            --jq '[.[] | select(.head.ref | startswith("release/v"))][0].head.sha // empty')
+          if [ -z "$pr_head" ]; then
+            echo "::error::$SHA is not the merge of a release/v* PR, so its cut base is unknown. Nothing was tagged. Cut releases with release-cut (Actions -> release-cut -> Run workflow)."
+            exit 1
+          fi
+          cut_from=$(gh api "repos/$REPO/commits/$pr_head" --jq '.parents[0].sha')
+          if [ "$cut_from" != "$merged_onto" ]; then
+            echo "::error::main moved after this release was cut (cut from $cut_from, merged onto $merged_onto). Nothing was tagged or published. Re-cut from the current main: gh workflow run release-cut.yml -f version=patch"
+            exit 1
+          fi
+          echo "::notice::release PR was merged onto the commit it was cut from ($cut_from)."
+
       - name: Tag the release commit
         if: steps.ver.outputs.exists == 'false'
         run: |
