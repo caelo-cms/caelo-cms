@@ -9,7 +9,9 @@
  *
  * Shape (maintainer decision on PR #583):
  * - bound to 127.0.0.1 on a random port, alive only for one audit;
- * - read-only: GET and HEAD, nothing else;
+ * - read-only for the build: GET and HEAD, nothing else;
+ * - `/api/*` goes to the install's real gateway when `apiOrigin` is given,
+ *   unchanged in method and body — see {@link StagedOriginOptions};
  * - path-traversal safe: the request path is decoded once and reduced to
  *   plain segments before it becomes a storage key; `.`/`..`, backslashes
  *   and NUL are refused, and a local file must resolve inside the build;
@@ -19,7 +21,13 @@
  */
 
 import { readFile, realpath } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import { request as httpsRequest } from "node:https";
 import { join, sep } from "node:path";
 import { readStagedBuildFiles, readStagedObject } from "../deploy/staged-build-files.js";
 import { cacheControlForContentType, contentTypeFor } from "../deploy/static-file-policy.js";
@@ -146,6 +154,112 @@ export function gcsStagingSource(runId: string): StagedFileSource {
   };
 }
 
+/**
+ * How the loopback origin answers what is not a build file.
+ */
+export interface StagedOriginOptions {
+  /**
+   * The live site's origin (`https://<domain>`), whose `/api/*` the load
+   * balancer routes to the API gateway. Plugin components call
+   * `/api/plugin/<slug>/<op>` same-origin when a page loads (auth `me`,
+   * the comment list, the rating average — all POSTs), so a build served
+   * without the gateway behind it audits a page whose components fail and
+   * log console errors that staging never shows. Forwarding everything
+   * keeps the audit equal to gcp-firebase and self-hosted staging, whose
+   * `/api/*` reaches the same gateway: the request meets the gateway's
+   * rate limit, WAF, honeypot and CAPTCHA like any visitor's. Writes stay
+   * out of reach in practice because they follow a click, and Lighthouse
+   * never clicks.
+   */
+  readonly apiOrigin?: string;
+}
+
+/** Largest request body forwarded to the gateway (its own hard ceiling). */
+const MAX_API_BODY_BYTES = 1024 * 1024;
+
+/** Request headers a page's own `/api/*` call carries that the gateway reads. */
+const FORWARDED_REQUEST_HEADERS = [
+  "accept",
+  "accept-language",
+  "content-type",
+  "cookie",
+  "user-agent",
+] as const;
+
+/** Response headers that describe the hop, not the answer. */
+const DROPPED_RESPONSE_HEADERS = new Set(["connection", "keep-alive", "transfer-encoding"]);
+
+/**
+ * The gateway URL a loopback `/api/*` request goes to, or null when the
+ * path is not a plain `/api/` path on that origin. Pure (exported for tests).
+ */
+export function apiTargetFor(requestPath: string, apiOrigin: string): string | null {
+  if (!requestPath.startsWith("/api/")) return null;
+  const origin = new URL(apiOrigin).origin;
+  const parsed = new URL(requestPath, origin);
+  // `new URL` resolves dot segments: `/api/../x` must not leave `/api/`.
+  if (parsed.origin !== origin || !parsed.pathname.startsWith("/api/")) return null;
+  // Rebuilt on the fixed origin and the literal `/api/` prefix, so the
+  // request can only ever reach the gateway's `/api/` tree.
+  return `${origin}/api/${parsed.pathname.slice("/api/".length)}${parsed.search}`;
+}
+
+async function readBody(req: IncomingMessage): Promise<Buffer | null> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).byteLength;
+    if (size > MAX_API_BODY_BYTES) return null;
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Forward one `/api/*` request. The upstream host comes only from the
+ * configured origin and the request contributes only the path, so no
+ * request can choose where the forward goes.
+ */
+function forwardToGateway(
+  req: IncomingMessage,
+  res: ServerResponse,
+  apiOrigin: URL,
+  path: string,
+  body: Buffer | null,
+): Promise<void> {
+  const headers: Record<string, string> = {};
+  for (const name of FORWARDED_REQUEST_HEADERS) {
+    const value = req.headers[name];
+    if (typeof value === "string") headers[name] = value;
+  }
+  if (body) headers["content-length"] = String(body.byteLength);
+  const send = apiOrigin.protocol === "https:" ? httpsRequest : httpRequest;
+  return new Promise<void>((resolve, reject) => {
+    const upstream = send(
+      {
+        protocol: apiOrigin.protocol,
+        hostname: apiOrigin.hostname,
+        port: apiOrigin.port || undefined,
+        method: req.method ?? "GET",
+        path,
+        headers,
+      },
+      (answer) => {
+        const out: Record<string, string | string[]> = {};
+        for (const [name, value] of Object.entries(answer.headers)) {
+          if (value !== undefined && !DROPPED_RESPONSE_HEADERS.has(name)) out[name] = value;
+        }
+        res.writeHead(answer.statusCode ?? 502, out);
+        answer.pipe(res);
+        answer.on("end", resolve);
+        answer.on("error", reject);
+      },
+    );
+    upstream.on("error", reject);
+    upstream.end(body ?? undefined);
+  });
+}
+
 /** A running loopback origin. */
 export interface StagedOrigin {
   readonly baseUrl: string;
@@ -153,8 +267,23 @@ export interface StagedOrigin {
 }
 
 /** Serve `source` on 127.0.0.1 at a random port until `close()`. */
-export async function serveStagedBuild(source: StagedFileSource): Promise<StagedOrigin> {
+export async function serveStagedBuild(
+  source: StagedFileSource,
+  options: StagedOriginOptions = {},
+): Promise<StagedOrigin> {
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    const apiTarget = options.apiOrigin ? apiTargetFor(req.url ?? "/", options.apiOrigin) : null;
+    if (apiTarget && options.apiOrigin) {
+      const hasBody = req.method !== "GET" && req.method !== "HEAD";
+      const body = hasBody ? await readBody(req) : null;
+      if (hasBody && body === null) {
+        res.writeHead(413, { "Content-Type": "text/plain; charset=utf-8" }).end("body too large");
+        return;
+      }
+      const origin = new URL(options.apiOrigin);
+      await forwardToGateway(req, res, origin, apiTarget.slice(origin.origin.length), body);
+      return;
+    }
     if (req.method !== "GET" && req.method !== "HEAD") {
       res.writeHead(405, { Allow: "GET, HEAD" }).end();
       return;

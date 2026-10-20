@@ -18,7 +18,11 @@
  *   - chat branches: a chat's pending state is converted by appending a
  *     pending snapshot owned by the same chat task;
  *   - revert restores exactly what changed, and refuses (names) a part
- *     edited since unless told to keep it.
+ *     edited since unless told to keep it;
+ *   - the report's revert target is the latest unreverted conversion
+ *     that changed something (not a later dry run or no-op re-run);
+ *   - an edit committed while the migration runs is not overwritten;
+ *   - a media literal becomes `caelo:media/<id>`.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -46,6 +50,7 @@ const SYSTEM: ExecutionContext = {
 };
 const PFX = `lmig${Date.now().toString(36)}`;
 const PLUGIN_SLUG = `${PFX}-store`;
+const SHA = `1e3a${"9".repeat(60)}`;
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
@@ -60,7 +65,17 @@ const ids = {
   branch: "",
   branchInstance: "",
   pluginRow: "",
+  media: "",
+  layout: "",
 };
+
+async function layoutHtml(id: string): Promise<string> {
+  const rows = (await asSystem((tx) => tx`SELECT html FROM layouts WHERE id = ${id}::uuid`)) as {
+    html: string;
+  }[];
+  return rows[0]?.html ?? "";
+}
+let mediaSlug = "";
 
 async function asSystem<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL as string);
@@ -212,6 +227,10 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM modules WHERE slug LIKE ${`${PFX}%`} OR display_name LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${`${PFX}-tpl`})`;
     await tx`DELETE FROM templates WHERE slug = ${`${PFX}-tpl`}`;
+    await tx`DELETE FROM layout_blocks WHERE layout_id IN (SELECT id FROM layouts WHERE slug LIKE ${`${PFX}%`})`;
+    await tx`DELETE FROM layouts WHERE slug LIKE ${`${PFX}%`}`;
+    await tx`DELETE FROM media_variants WHERE asset_id IN (SELECT id FROM media_assets WHERE sha256 = ${SHA})`;
+    await tx`DELETE FROM media_assets WHERE sha256 = ${SHA}`;
   });
 }
 
@@ -246,6 +265,29 @@ beforeAll(async () => {
   });
   ids.about = await makePage(`${PFX}-about`);
   ids.pricing = await makePage(`${PFX}-pricing`);
+  const media = await run<{ assetId: string; slug: string }>("media.upload", {
+    sha256: SHA,
+    originalName: `${PFX}-logo.png`,
+    name: `${PFX} logo`,
+    mime: "image/png",
+    sizeBytes: 4,
+    width: 4,
+    height: 4,
+    alt: "",
+    storageKey: `${SHA}/orig.png`,
+    variants: [
+      {
+        variant: "orig",
+        format: "png",
+        width: 4,
+        height: 4,
+        sizeBytes: 4,
+        storageKey: `${SHA}/orig.png`,
+      },
+    ],
+  });
+  ids.media = media.assetId;
+  mediaSlug = media.slug;
 
   // Layout chrome: links in the HTML and in a link-list field default.
   ids.nav = (
@@ -298,10 +340,18 @@ beforeAll(async () => {
   });
   if (!put.ok) throw new Error(`put: ${put.error.message}`);
   ids.pluginRow = (put.value as { id: string }).id;
+  ids.layout = (
+    await run<{ layoutId: string }>("layouts.create", {
+      slug: `${PFX}-layout`,
+      displayName: `${PFX} frame`,
+      html: '<body><a class="frame" href="https://example.com/">x</a><caelo-slot name="content">_</caelo-slot></body>',
+      blocks: [{ name: "content", displayName: "Content", position: 0 }],
+    })
+  ).layoutId;
 
   // The pre-#724 state: literal paths everywhere.
   await asSystem(async (tx) => {
-    await tx`UPDATE modules SET html = ${`<nav><a href="${ABOUT}">About</a><a href="${GONE}">Old</a>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav>`},
+    await tx`UPDATE modules SET html = ${`<nav><img src="/_caelo/media/${mediaSlug}" alt=""><a href="${ABOUT}">About</a><a href="${GONE}">Old</a>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav>`},
              fields = ${JSON.stringify([{ name: "links", kind: "link-list", label: "Links", default: [{ label: "Pricing", href: `${PRICING}#plans` }] }])}::jsonb
              WHERE id = ${ids.nav}::uuid`;
     await tx`UPDATE content_instances SET "values" = ${JSON.stringify({
@@ -310,6 +360,8 @@ beforeAll(async () => {
       price_note: "/month",
       body_html: `<p>See <a href="${ABOUT}">about</a> and <a href="https://example.com/ext">ext</a></p>`,
     })}::jsonb WHERE id = ${ids.instance}::uuid`;
+    await tx`UPDATE layouts SET html = ${`<body><a class="frame" href="${ABOUT}">About</a><caelo-slot name="content">_</caelo-slot></body>`}
+             WHERE id = ${ids.layout}::uuid`;
     await tx`UPDATE structured_sets SET items = ${JSON.stringify([
       { label: "About", href: ABOUT, children: [{ label: "Pricing", href: PRICING }] },
       { label: "Gone", href: GONE },
@@ -398,6 +450,7 @@ describe("links.migrate_to_references", () => {
 
     const nav = await moduleRow(ids.nav);
     expect(nav.html).toContain(`href="caelo:page/${ids.about}"`);
+    expect(nav.html).toContain(`<img src="caelo:media/${ids.media}" alt="">`);
     expect(nav.html).toContain(`href="${GONE}"`); // never guessed
     expect(nav.fields[0]?.default).toEqual([
       { label: "Pricing", href: `caelo:page/${ids.pricing}#plans` },
@@ -418,6 +471,13 @@ describe("links.migrate_to_references", () => {
       },
       { label: "Gone", href: GONE },
     ]);
+
+    // A layout's own HTML (the page frame) is converted too: the composer
+    // resolves references there (rollout C).
+    expect(await layoutHtml(ids.layout)).toContain(
+      `<a class="frame" href="caelo:page/${ids.about}">About</a>`,
+    );
+    expect(out.run.counts.layout_html).toBeGreaterThanOrEqual(1);
 
     // The plugin hook: core converted the column the plugin named.
     const row = (await pluginRows()).find((r) => r.id === ids.pluginRow);
@@ -516,6 +576,23 @@ describe("links.migrate_to_references", () => {
     );
   });
 
+  it("offers the conversion that changed something for revert, whatever ran after it", async () => {
+    interface Report {
+      run: { runId: string; mode: string };
+      revertableRun: { runId: string } | null;
+    }
+    // Latest is the no-op re-run: it changed nothing, so it is not offered.
+    const afterNoop = await run<Report>("links.get_migration_report", {});
+    expect(afterNoop.run.mode).toBe("apply");
+    expect(afterNoop.run.runId).not.toBe(applyRunId);
+    expect(afterNoop.revertableRun?.runId).toBe(applyRunId);
+    // A later dry run is reported, and does not hide the real conversion.
+    await run<MigrateOut>("links.migrate_to_references", { dryRun: true });
+    const afterDry = await run<Report>("links.get_migration_report", {});
+    expect(afterDry.run.mode).toBe("dry_run");
+    expect(afterDry.revertableRun?.runId).toBe(applyRunId);
+  });
+
   it("revert refuses while a converted part was edited since, then restores the rest on request", async () => {
     await run("structured_sets.set", {
       kind: "nav-menu",
@@ -523,22 +600,32 @@ describe("links.migrate_to_references", () => {
       displayName: `${PFX} menu`,
       items: [{ label: "About only", href: ABOUT }],
     });
-    const msg = await failure("links.revert_migration", { runId: applyRunId });
-    expect(msg).toContain("changed since the migration");
-    expect(msg).toContain("skipConflicts");
+    const refused = await run<{
+      reverted: boolean;
+      conflicts: { entityKind: string; entityId: string }[];
+    }>("links.revert_migration", { runId: applyRunId });
+    expect(refused.reverted).toBe(false);
+    expect(refused.conflicts).toEqual([
+      expect.objectContaining({ entityKind: "structuredSet", entityId: ids.setId }),
+    ]);
     expect((await moduleRow(ids.nav)).html).toContain(`caelo:page/${ids.about}`); // nothing reverted
 
-    const out = await run<{ restored: number; skippedConflicts: number; siteSnapshotId: string }>(
-      "links.revert_migration",
-      { runId: applyRunId, skipConflicts: true },
-    );
+    const out = await run<{
+      reverted: boolean;
+      restored: number;
+      skippedConflicts: number;
+      siteSnapshotId: string;
+    }>("links.revert_migration", { runId: applyRunId, skipConflicts: true });
+    expect(out.reverted).toBe(true);
     expect(out.skippedConflicts).toBe(1);
     expect((await moduleRow(ids.nav)).html).toContain(`href="${ABOUT}"`);
+    expect((await moduleRow(ids.nav)).html).toContain(`src="/_caelo/media/${mediaSlug}"`);
     expect((await moduleRow(ids.nav)).fields[0]?.default).toEqual([
       { label: "Pricing", href: `${PRICING}#plans` },
     ]);
     expect((await instanceValues(ids.instance)).cta_href).toBe(PRICING);
     expect((await setItems(ids.setId))[0]?.label).toBe("About only"); // the edit was kept
+    expect(await layoutHtml(ids.layout)).toContain(`<a class="frame" href="${ABOUT}">About</a>`);
     const row = (await pluginRows()).find((r) => r.id === ids.pluginRow);
     expect(row?.payload.cta_href).toBe(PRICING);
     const branchState = (await asSystem(
@@ -552,6 +639,37 @@ describe("links.migrate_to_references", () => {
     );
     expect(await failure("links.revert_migration", { runId: applyRunId })).toContain(
       "already reverted",
+    );
+    const report = await run<{ revertableRun: unknown }>("links.get_migration_report", {});
+    expect(report.revertableRun).toBeNull();
+  });
+
+  it("an edit committed while the migration runs is converted, never overwritten", async () => {
+    // An editor's transaction holds the module row with an edit when the
+    // migration starts; the migration must wait for it and convert the
+    // EDITED html, not write the converted old html over it.
+    let edited!: () => void;
+    const editApplied = new Promise<void>((r) => {
+      edited = r;
+    });
+    let commit!: () => void;
+    const released = new Promise<void>((r) => {
+      commit = r;
+    });
+    const editing = asSystem(async (tx) => {
+      await tx`UPDATE modules SET html = ${`<nav data-edit="1"><a href="${ABOUT}">About</a></nav>`}
+               WHERE id = ${ids.nav}::uuid`;
+      edited();
+      await released;
+    });
+    await editApplied;
+    const migrating = run<MigrateOut>("links.migrate_to_references", {});
+    await new Promise((r) => setTimeout(r, 300));
+    commit();
+    await editing;
+    await migrating;
+    expect((await moduleRow(ids.nav)).html).toBe(
+      `<nav data-edit="1"><a href="caelo:page/${ids.about}">About</a></nav>`,
     );
   });
 });

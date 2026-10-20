@@ -2,13 +2,16 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  bestRunIndex,
   categoryScores,
   failingAudits,
   type LhrLike,
   LighthouseRunError,
   measurementFromRuns,
+  reduceRun,
 } from "../lighthouse-extract.js";
 import { pageMeasurementSchema } from "../lighthouse-protocol.js";
+import { QUALITY_CATEGORIES } from "../ratchet.js";
 
 type Audit = LhrLike["audits"][string];
 
@@ -301,7 +304,7 @@ describe("staging-exempt audits", () => {
 });
 
 describe("measurementFromRuns", () => {
-  it("uses the Performance median and majority-filters Performance-only findings", () => {
+  it("scores Performance by the best run and takes its Performance-only findings", () => {
     const full = lhr({
       performance: 80,
       accessibility: 92,
@@ -315,29 +318,66 @@ describe("measurementFromRuns", () => {
     const third = lhr({
       performance: 90,
       perfOnly: true,
-      audits: [audit("unused-javascript", 1, "metricSavings")],
+      audits: [audit("unused-javascript", 0.5, "metricSavings")],
     });
     const { measurement, performanceRuns } = measurementFromRuns(full, [second, third]);
     expect(performanceRuns).toEqual([80, 95, 90]);
     expect(measurement.scores).toEqual({
-      performance: 90,
+      performance: 95,
       accessibility: 92,
       "best-practices": 100,
       seo: 100,
     });
-    // unused-javascript failed in 1 of 3 runs → jitter, dropped.
+    // unused-javascript passes in the best run; image-alt is an
+    // Accessibility finding and always comes from the full run.
     expect(measurement.failingAudits.map((f) => f.id)).toEqual(["image-alt"]);
   });
 
-  it("keeps a Performance-only finding that fails in most runs, even if not in the first", () => {
+  it("is stable on the bimodal runs of an unchanged page (#837)", () => {
+    // /migrate on caelo-cms.com, byte-identical between two audits: TBT
+    // 0 / 451 / 258 ms in one, 0 / 600 / 516 ms in the next. The median
+    // moved the score 99 → 89; the best run scores 100 both times.
+    const tbt = audit("total-blocking-time", 0.4, "numeric");
+    const audits = [
+      lhr({ performance: 100, audits: [] }),
+      lhr({ performance: 91, perfOnly: true, audits: [tbt] }),
+      lhr({ performance: 94, perfOnly: true, audits: [tbt] }),
+    ];
+    const next = [
+      lhr({ performance: 89, audits: [tbt] }),
+      lhr({ performance: 100, perfOnly: true, audits: [] }),
+      lhr({ performance: 87, perfOnly: true, audits: [tbt] }),
+    ];
+    const [a0, ...aRest] = audits;
+    const [n0, ...nRest] = next;
+    const first = measurementFromRuns(a0 as LhrLike, aRest);
+    const second = measurementFromRuns(n0 as LhrLike, nRest);
+    expect(first.measurement.scores.performance).toBe(100);
+    expect(second.measurement.scores.performance).toBe(100);
+    expect(first.measurement.failingAudits).toEqual(second.measurement.failingAudits);
+  });
+
+  it("breaks a tie by the fewest Performance-only findings, then the earliest run", () => {
     const failing = audit("unused-javascript", 0.3, "metricSavings");
-    const full = lhr({
+    const full = lhr({ performance: 100, audits: [failing] });
+    const r2 = lhr({
       performance: 100,
+      perfOnly: true,
       audits: [audit("unused-javascript", 1, "metricSavings")],
     });
-    const r2 = lhr({ performance: 100, perfOnly: true, audits: [failing] });
-    const r3 = lhr({ performance: 100, perfOnly: true, audits: [failing] });
+    const r3 = lhr({ performance: 100, perfOnly: true, audits: [] });
     const { measurement } = measurementFromRuns(full, [r2, r3]);
+    expect(measurement.failingAudits).toEqual([]);
+    expect(bestRunIndex([100, 100, 100], [1, 0, 0])).toBe(1);
+    expect(bestRunIndex([98, 100, 100], [0, 0, 0])).toBe(1);
+  });
+
+  it("keeps a Performance-only finding that fails in the best run", () => {
+    const failing = audit("unused-javascript", 0.3, "metricSavings");
+    const full = lhr({ performance: 97, audits: [failing] });
+    const r2 = lhr({ performance: 96, perfOnly: true, audits: [] });
+    const { measurement } = measurementFromRuns(full, [r2]);
+    expect(measurement.scores.performance).toBe(97);
     expect(measurement.failingAudits.map((f) => f.id)).toEqual(["unused-javascript"]);
   });
 
@@ -348,5 +388,71 @@ describe("measurementFromRuns", () => {
     );
     expect(performanceRuns).toEqual([99]);
     expect(measurement.scores.performance).toBe(99);
+  });
+
+  it("refuses a page without runs", () => {
+    expect(() => bestRunIndex([], [])).toThrow(/no Performance runs/);
+  });
+
+  it("refuses score and finding lists of different runs", () => {
+    expect(() => bestRunIndex([100, 99], [0])).toThrow(/2 Performance score\(s\) but 1/);
+  });
+
+  it("lists an audit shared with another category once, even when the best run is Performance-only", () => {
+    // An extra run carries only the Performance category, so an audit that
+    // Performance shares with Best Practices looks Performance-only there.
+    // Its category comes from the full run, and it is listed once.
+    const withShared = (run: LhrLike): LhrLike => {
+      const categories = { ...run.categories };
+      for (const c of ["performance", "best-practices"] as const) {
+        const cat = categories[c];
+        if (cat) categories[c] = { ...cat, auditRefs: [...cat.auditRefs, { id: "shared-audit" }] };
+      }
+      return { ...run, categories };
+    };
+    const shared = audit("shared-audit", 0);
+    const full = withShared(lhr({ performance: 90, bestPractices: 92, audits: [shared] }));
+    const best = withShared(lhr({ performance: 100, perfOnly: true, audits: [shared] }));
+    const { measurement } = measurementFromRuns(full, [best]);
+    expect(measurement.scores.performance).toBe(100);
+    const found = measurement.failingAudits.filter((f) => f.id === "shared-audit");
+    expect(found).toHaveLength(1);
+    expect(found[0]?.categories).toEqual(["performance", "best-practices"]);
+  });
+
+  it("never lists a shared audit that fails only in a Performance-only best run", () => {
+    // The audit passes in the full run and fails only in the extra run,
+    // where it looks Performance-only. Whether it belongs to another
+    // category is the full run's knowledge (`otherCategoryAuditIds`), so it
+    // is the full run's finding (none), never a Performance-only finding.
+    const withShared = (run: LhrLike): LhrLike => {
+      const categories = { ...run.categories };
+      for (const c of ["performance", "best-practices"] as const) {
+        const cat = categories[c];
+        if (cat) categories[c] = { ...cat, auditRefs: [...cat.auditRefs, { id: "shared-audit" }] };
+      }
+      return { ...run, categories };
+    };
+    const full = withShared(
+      lhr({ performance: 90, bestPractices: 92, audits: [audit("shared-audit", 1)] }),
+    );
+    const best = withShared(
+      lhr({ performance: 100, perfOnly: true, audits: [audit("shared-audit", 0)] }),
+    );
+    const { measurement } = measurementFromRuns(full, [best]);
+    expect(measurement.scores.performance).toBe(100);
+    expect(measurement.failingAudits.map((f) => f.id)).not.toContain("shared-audit");
+  });
+
+  it("carries the full run's other-category audits across the reduction", () => {
+    const full = reduceRun(lhr({ performance: 90, audits: [] }), QUALITY_CATEGORIES);
+    const perf = reduceRun(lhr({ performance: 90, perfOnly: true, audits: [] }), ["performance"]);
+    expect(full.otherCategoryAuditIds).toEqual([
+      "color-contrast",
+      "errors-in-console",
+      "image-alt",
+      "meta-description",
+    ]);
+    expect(perf.otherCategoryAuditIds).toEqual([]);
   });
 });

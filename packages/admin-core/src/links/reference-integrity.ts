@@ -33,6 +33,7 @@ import {
   canonicaliseHtmlLinks,
   canonicaliseJsonLinks,
   collectLinkRefsDeep,
+  dispatchedNestedRefs,
   findLinkRefs,
   type LinkCanonicaliseIssue,
   type LinkCanonicaliseRun,
@@ -66,6 +67,13 @@ export interface ReferenceIssue {
   readonly severity: "block" | "warning";
   /** The link as an author reads it: a page path, or what is gone. */
   readonly target: string;
+  /**
+   * The page the link resolves to, when there is one (null for a media
+   * file or a literal that matches nothing). For `unpublished-target` the
+   * draft page — the staged-build `links` check reads it to skip only the
+   * rendered links this issue already reports (one defect, one finding).
+   */
+  readonly targetPageId: string | null;
   /** The rendering page's variant for `variant-missing` (a locale code). */
   readonly variant: string | null;
   /** Position inside the place (`values.cta_href`, `html`, `items[2].href`). */
@@ -98,11 +106,14 @@ interface PlaceAcc {
   readonly pages: Set<string>;
   /** Site-wide: renders on every page, or on pages nobody can name. */
   siteWide: boolean;
+  /** Content shown through a synced placement: fixed on the instance. */
+  synced: boolean;
 }
 
 interface IssueAcc {
   readonly problem: ReferenceProblem;
   readonly target: string;
+  readonly targetPageId: string | null;
   readonly variant: string | null;
   readonly where: string;
   readonly placeKey: string;
@@ -130,7 +141,7 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
   const placeOf = (key: string, place: ReferencePlace): PlaceAcc => {
     let acc = places.get(key);
     if (!acc) {
-      acc = { place, pages: new Set(), siteWide: false };
+      acc = { place, pages: new Set(), siteWide: false, synced: false };
       places.set(key, acc);
     }
     return acc;
@@ -164,27 +175,37 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     addSlot(key, { kind: "field-default", field }, "default");
   };
 
-  type Unit = { moduleId: string; instanceId: string | null; pages: Set<string>; nested: boolean };
+  type Unit = {
+    moduleId: string;
+    instanceId: string | null;
+    pages: Set<string>;
+    nested: boolean;
+    synced: boolean;
+  };
   const nestedQueue: Unit[] = [];
   const renderUnit = (u: Unit) => {
     const m = model.modules.get(u.moduleId);
     if (!m) return;
     moduleHtml(m.id, u.pages);
     const inst = u.instanceId ? model.instances.get(u.instanceId) : undefined;
+    // Only the nested modules the template dispatches render (the
+    // renderer is lazy): a `module` field the HTML no longer references
+    // ships nothing, so its links must not block. The engine itself says
+    // which refs it dispatches.
+    for (const ref of dispatchedNestedRefs(m.html, m.fields, inst?.values ?? {})) {
+      if (!UUID_RE.test(ref.moduleId) || !UUID_RE.test(ref.contentInstanceId)) continue;
+      nestedQueue.push({
+        moduleId: ref.moduleId,
+        instanceId: ref.contentInstanceId,
+        pages: u.pages,
+        nested: true,
+        synced: false,
+      });
+    }
     for (const field of m.fields) {
+      if (NESTED_KINDS.has(field.kind)) continue;
       const has = inst !== undefined && Object.hasOwn(inst.values, field.name);
       const value = has ? inst.values[field.name] : field.default;
-      if (NESTED_KINDS.has(field.kind)) {
-        for (const ref of nestedRefsOf(value)) {
-          nestedQueue.push({
-            moduleId: ref.moduleId,
-            instanceId: ref.contentInstanceId,
-            pages: u.pages,
-            nested: true,
-          });
-        }
-        continue;
-      }
       if (has && inst) {
         const key = `content:${inst.id}:${field.name}`;
         const acc = placeOf(key, {
@@ -196,6 +217,7 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
           nested: u.nested,
         });
         for (const p of u.pages) acc.pages.add(p);
+        if (u.synced) acc.synced = true;
         addSlot(key, { kind: "field-value", field, value }, "value");
       } else {
         moduleDefault(m.id, field, u.pages);
@@ -210,6 +232,7 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
       instanceId: pl.contentInstanceId,
       pages: new Set([pl.pageId]),
       nested: false,
+      synced: pl.syncMode === "synced",
     });
   }
 
@@ -245,7 +268,7 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     for (const block of l.blocks) {
       for (const moduleId of block.moduleIds) {
         // Layout placements have no content instance: defaults render.
-        renderUnit({ moduleId, instanceId: null, pages, nested: false });
+        renderUnit({ moduleId, instanceId: null, pages, nested: false, synced: false });
       }
     }
   }
@@ -315,14 +338,15 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     placeKey: string,
     problem: ReferenceProblem,
     target: string,
+    targetPageId: string | null,
     variant: string | null,
     where: string,
     page: string | null,
   ) => {
-    const key = `${placeKey}\u0000${where}\u0000${problem}\u0000${target}\u0000${variant ?? ""}`;
+    const key = `${placeKey}\u0000${where}\u0000${problem}\u0000${target}\u0000${targetPageId ?? ""}\u0000${variant ?? ""}`;
     let acc = issues.get(key);
     if (!acc) {
-      acc = { problem, target, variant, where, placeKey, pages: new Set() };
+      acc = { problem, target, targetPageId, variant, where, placeKey, pages: new Set() };
       issues.set(key, acc);
     }
     if (page !== null) acc.pages.add(page);
@@ -340,12 +364,14 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
         for (const page of renderPages) {
           const r = index.forPage(page).resolve(ref);
           if (r.status === "missing") {
-            record(placeKey, "missing-target", goneLabel(ref), null, where, page);
+            record(placeKey, "missing-target", goneLabel(ref), null, null, where, page);
           } else if (r.status === "no-variant") {
             const target = ref.kind === "page" ? `"${pathOf(ref.pageId)}"` : goneLabel(ref);
-            record(placeKey, "variant-missing", target, r.variant, where, page);
+            const targetPageId = ref.kind === "page" ? ref.pageId : null;
+            record(placeKey, "variant-missing", target, targetPageId, r.variant, where, page);
           } else if (r.status === "unpublished" && (page === null || isPublished(page))) {
-            record(placeKey, "unpublished-target", `"${pathOf(r.pageId)}"`, null, where, page);
+            const target = `"${pathOf(r.pageId)}"`;
+            record(placeKey, "unpublished-target", target, r.pageId, null, where, page);
           }
         }
       }
@@ -353,20 +379,22 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
         const draft = hit.pageId !== null && !isPublished(hit.pageId);
         for (const page of renderPages) {
           if (draft && (page === null || isPublished(page))) {
-            record(placeKey, "unpublished-target", `"${hit.display}"`, null, hit.where, page);
+            const target = `"${hit.display}"`;
+            record(placeKey, "unpublished-target", target, hit.pageId, null, hit.where, page);
           } else {
-            record(placeKey, "literal-link", `"${hit.display}"`, null, hit.where, page);
+            const target = `"${hit.display}"`;
+            record(placeKey, "literal-link", target, hit.pageId, null, hit.where, page);
           }
         }
       }
       for (const bad of found.broken) {
         for (const page of renderPages) {
-          record(placeKey, "broken-literal", `"${bad.value}"`, null, bad.where, page);
+          record(placeKey, "broken-literal", `"${bad.value}"`, null, null, bad.where, page);
         }
       }
       for (const p of found.pending) {
         for (const page of renderPages) {
-          record(placeKey, "pending-import-link", `"${p.value}"`, null, p.where, page);
+          record(placeKey, "pending-import-link", `"${p.value}"`, null, null, p.where, page);
         }
       }
     }
@@ -378,12 +406,14 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     const pageIds = [...i.pages].sort();
     const shipped = acc.siteWide || pageIds.some(isPublished);
     const severity = severityOf(i.problem, env, shipped);
-    const shared = acc.pages.size > 1;
-    const fix = fixFor(i.problem, acc.place, i.target, i.variant, i.where, shared);
+    // Shared by several pages, or synced on one: the instance is the place to fix.
+    const instanceLevel = acc.pages.size > 1 || acc.synced;
+    const fix = fixFor(i.problem, acc.place, i.target, i.variant, i.where, instanceLevel);
     out.push({
       problem: i.problem,
       severity,
       target: i.target,
+      targetPageId: i.targetPageId,
       variant: i.variant,
       where: i.where,
       place: acc.place,
@@ -436,19 +466,6 @@ function slotId(s: ReferenceSlot): string {
     case "field-default":
       return `default:${s.field.name}`;
   }
-}
-
-function nestedRefsOf(value: unknown): { moduleId: string; contentInstanceId: string }[] {
-  const items = Array.isArray(value) ? value : [value];
-  const out: { moduleId: string; contentInstanceId: string }[] = [];
-  for (const v of items) {
-    if (v === null || typeof v !== "object") continue;
-    const { moduleId, contentInstanceId } = v as Record<string, unknown>;
-    if (typeof moduleId !== "string" || typeof contentInstanceId !== "string") continue;
-    if (!UUID_RE.test(moduleId) || !UUID_RE.test(contentInstanceId)) continue;
-    out.push({ moduleId, contentInstanceId });
-  }
-  return out;
 }
 
 interface SlotFindings {

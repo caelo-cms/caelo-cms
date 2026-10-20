@@ -27,7 +27,7 @@ import { createSiteLinkIndex, err, normaliseLinkPath, ok } from "@caelo-cms/shar
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { loadLinkTargetLookup } from "../../links/canonicalise.js";
-import { loadActiveImportTargets } from "../../links/import-targets.js";
+import { type ActiveImportTargets, loadActiveImportTargets } from "../../links/import-targets.js";
 import {
   type ReferenceCheckEnv,
   type ReferenceIssue,
@@ -68,7 +68,7 @@ export async function checkReferences(
     tx,
     opts.branchId,
     [],
-    await activeImportPagePaths(tx, pluginScope),
+    await activeImportTargets(tx, pluginScope),
   );
   const model = await loadReferenceSources(tx, opts.branchId, {
     pluginScopeBranchId: pluginScope,
@@ -101,10 +101,10 @@ export async function checkReferences(
  * @param branchId the scope's branch; null = the main line, which sees
  *   every active run's planned pages (the quality check reads main).
  */
-async function activeImportPagePaths(
+async function activeImportTargets(
   tx: TransactionRunner,
   branchId: string | null,
-): Promise<Set<string>> {
+): Promise<ActiveImportTargets | null> {
   const branches = branchId
     ? [branchId]
     : (
@@ -115,12 +115,26 @@ async function activeImportPagePaths(
            WHERE r.status NOT IN ('completed', 'failed') AND cs.chat_branch_id IS NOT NULL
         `)) as unknown as { branch_id: string }[]
       ).map((r) => r.branch_id);
-  const paths = new Set<string>();
+  const found: ActiveImportTargets[] = [];
   for (const b of branches) {
-    const targets = await loadActiveImportTargets(tx, b);
-    for (const p of targets?.runsByPath.keys() ?? []) paths.add(p);
+    const t = await loadActiveImportTargets(tx, b);
+    if (t) found.push(t);
   }
-  return paths;
+  if (found.length <= 1) return found[0] ?? null;
+  // Main line: every active run's planned pages at once.
+  const runsByPath = new Map<string, string[]>();
+  const rebuiltByPath = new Map<string, string>();
+  for (const t of found) {
+    for (const [path, runs] of t.runsByPath) {
+      runsByPath.set(path, [...(runsByPath.get(path) ?? []), ...runs]);
+    }
+    for (const [path, pageId] of t.rebuiltByPath) rebuiltByPath.set(path, pageId);
+  }
+  return {
+    runsByPath,
+    rebuiltByPath,
+    sourceHosts: [...new Set(found.flatMap((t) => t.sourceHosts))],
+  };
 }
 
 /** Most blocking issues one Stage refusal lists (check_links has them all). */
@@ -134,19 +148,42 @@ export type StageReferenceGate =
   | { readonly ok: false; readonly message: string };
 
 /**
+ * The scope plugins answer the Stage gate in: the post-merge state.
+ *
+ * Plugin calls run in their own transactions and cannot see the merge's
+ * uncommitted writes. When the merge took no plugin rows, the plugins'
+ * storage is exactly committed main — ask on main; asking as the branch
+ * would show a selected-header Stage's unselected changes. When it took
+ * plugin rows, it took every pending plugin row of the branch (the
+ * merge's completeness check refuses anything less), so the branch view
+ * is the post-merge plugin storage — ask as the branch. Mirrors
+ * `refreshLivePathsAfterMerge`, which composes post-merge paths the same way.
+ */
+export function stagePluginScope(
+  mergedBranchId: string,
+  opts: { readonly pluginRowsMerged: boolean },
+): string | null {
+  return opts.pluginRowsMerged ? mergedBranchId : null;
+}
+
+/**
  * The Stage gate: main line after the merge's replay, Stage policy.
  * Call inside the merge transaction, after the replay.
+ *
+ * @param opts.pluginRowsMerged whether the merge replayed plugin rows
+ *   (see {@link stagePluginScope}).
  */
 export async function stageReferenceGate(
   tx: TransactionRunner,
   mergedBranchId: string,
+  opts: { readonly pluginRowsMerged: boolean },
 ): Promise<StageReferenceGate> {
   let issues: ReferenceIssue[];
   try {
     issues = await checkReferences(tx, {
       branchId: null,
       env: "staging",
-      pluginScopeBranchId: mergedBranchId,
+      pluginScopeBranchId: stagePluginScope(mergedBranchId, opts),
     });
   } catch (e) {
     if (e instanceof ReferenceCheckUnavailable) return { ok: false, message: e.message };
@@ -175,17 +212,23 @@ export async function stageReferenceGate(
 
 const placeSchema = z.looseObject({ kind: z.string() });
 
+const problemSchema = z.enum([
+  "missing-target",
+  "variant-missing",
+  "unpublished-target",
+  "literal-link",
+  "broken-literal",
+  "pending-import-link",
+]);
+
 const issueSchema = z.object({
-  problem: z.enum([
-    "missing-target",
-    "variant-missing",
-    "unpublished-target",
-    "literal-link",
-    "broken-literal",
-    "pending-import-link",
-  ]),
+  problem: problemSchema,
   severity: z.enum(["block", "warning"]),
   target: z.string(),
+  /** The page the link resolves to (null: a media file, a deleted page, no match). */
+  targetPageId: z.string().nullable(),
+  /** That page's path in the checked scope. */
+  targetPath: z.string().nullable(),
   variant: z.string().nullable(),
   where: z.string(),
   place: placeSchema,
@@ -209,6 +252,8 @@ export const checkReferencesInput = z
     pagePath: z.string().min(1).max(2000).optional(),
     /** False = blocking issues only. */
     includeWarnings: z.boolean().default(true),
+    /** Only these problems (all when absent). */
+    problems: z.array(problemSchema).min(1).optional(),
     limit: z.number().int().min(1).max(500).default(100),
   })
   .strict();
@@ -263,6 +308,7 @@ export const checkReferencesOp = defineOperation({
     const matching = issues.filter(
       (i) =>
         (input.includeWarnings || i.severity === "block") &&
+        (input.problems === undefined || input.problems.includes(i.problem)) &&
         (pageFilter === null ||
           i.pageIds.includes(pageFilter) ||
           // Site-wide places (plugin data) render on every page.
@@ -278,6 +324,7 @@ export const checkReferencesOp = defineOperation({
         place: { ...i.place },
         pageIds: [...i.pageIds],
         pagePaths: i.pageIds.map((id) => paths.get(id) ?? id),
+        targetPath: i.targetPageId === null ? null : (paths.get(i.targetPageId) ?? null),
       })),
       truncated: matching.length > input.limit,
     });

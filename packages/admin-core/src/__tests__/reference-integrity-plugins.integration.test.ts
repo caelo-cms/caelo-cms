@@ -8,7 +8,9 @@
  *     a German version is `variant-missing` — blocking, with the fix
  *     (create the translation, or link a page that exists in German);
  *   - link locations (rollout E's hook): a reference stored in a plugin's
- *     own table is checked like core content and names the plugin.
+ *     own table is checked like core content and names the plugin;
+ *   - a selected-header Stage asks plugins for the post-merge state, not
+ *     the chat's whole pending branch.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -22,6 +24,8 @@ import { definePlugin, type PluginAdminQuery } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { sql } from "drizzle-orm";
+import { lockPluginRow } from "../locks.js";
 import { checkReferences } from "../ops/content/link-integrity.js";
 import { registerAdminOps } from "../register.js";
 
@@ -88,6 +92,12 @@ const plugin = definePlugin({
       const a = args as { label: string; data: unknown };
       return q.insert("links", { label: a.label, data: a.data });
     },
+    remove: async (ctx, args) => {
+      const q = (ctx as AdminCtx).adminQuery;
+      if (!q) throw new Error("adminQuery missing");
+      await q.delete("links", (args as { id: string }).id);
+      return { removed: true };
+    },
     link_locations: async (ctx) => {
       const q = (ctx as AdminCtx).adminQuery;
       if (!q) throw new Error("adminQuery missing");
@@ -126,7 +136,7 @@ beforeAll(async () => {
   registry = new OperationRegistry();
   registerAdminOps(registry);
   await cleanupPlugin();
-  const infra: PluginHostInfra = { adapter, registry };
+  const infra: PluginHostInfra = { adapter, registry, lockPluginRow };
   const report = await bootstrap({
     infra,
     pluginsRoot: "/dev/null/unused",
@@ -192,5 +202,67 @@ describe("#724 F — reference integrity through plugin composition points", () 
     expect(p?.severity).toBe("block");
     expect(p?.message).toContain(`plugin "${SLUG}": Footer links (de)`);
     expect(p?.fix.tool).toBe("get_plugin");
+  });
+
+  it("a selected-header Stage checks plugin links as they are after the merge, not the chat's unselected changes", async () => {
+    // Regression (Codex on #893): the Stage gate asked plugins as the
+    // merged branch, so a plugin change the Stage did NOT select (here: a
+    // row deleted on the branch) hid a broken link that main keeps.
+    const target = await linkPage(`${PFX}-sel-t`, "https://example.com/s");
+    const added = await runPluginOperation({
+      invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+      pluginSlug: SLUG,
+      operationName: "add",
+      args: { label: "sel", data: { links: [{ label: "T", href: `caelo:page/${target}` }] } },
+    });
+    if (!added.ok) throw new Error(added.error.message);
+    const rowId = (added.value as { id: string }).id;
+
+    const s = await run<{ chatSessionId: string; chatBranchId: string }>("chat.create_session", {
+      isolation: "experiment",
+      title: `${PFX}-sel`,
+    });
+    const chatCtx: ExecutionContext = { ...SYS, chatBranchId: s.chatBranchId };
+    const deleted = await execute(registry, adapter, chatCtx, "pages.delete", { pageId: target });
+    if (!deleted.ok) throw new Error(JSON.stringify(deleted.error));
+    const removed = await runPluginOperation({
+      invocation: {
+        origin: "chat",
+        actorId: SYSTEM_ACTOR_ID,
+        operatorActorId: SYSTEM_ACTOR_ID,
+        chatBranchId: s.chatBranchId,
+        chatTaskId: s.chatSessionId,
+      },
+      pluginSlug: SLUG,
+      operationName: "remove",
+      args: { id: rowId },
+    });
+    if (!removed.ok) throw new Error(removed.error.message);
+
+    // The page deletion is selected; the plugin row's deletion is not.
+    const headers = await adapter.withAdminTransaction(
+      SYS,
+      async (tx) =>
+        (await tx.execute(sql`
+        SELECT ss.id::text AS id,
+               EXISTS (SELECT 1 FROM plugin_row_snapshots prs
+                        WHERE prs.site_snapshot_id = ss.id) AS plugin
+          FROM site_snapshots ss
+         WHERE ss.chat_branch_id = ${s.chatBranchId}::uuid
+         ORDER BY ss.created_at, ss.id
+      `)) as unknown as { id: string; plugin: boolean }[],
+    );
+    const selected = headers.filter((h) => !h.plugin).map((h) => h.id);
+    expect(selected.length).toBeGreaterThan(0);
+    expect(headers.some((h) => h.plugin)).toBe(true);
+
+    const merged = await execute(registry, adapter, SYS, "chat.merge_to_main", {
+      chatSessionId: s.chatSessionId,
+      headerIds: selected,
+    });
+    expect(merged.ok).toBe(false);
+    if (merged.ok) return;
+    expect(merged.error.message).toContain("Stage refused");
+    expect(merged.error.message).toContain(`plugin "${SLUG}": Footer links (sel)`);
   });
 });

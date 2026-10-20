@@ -43,8 +43,10 @@
  * slot isn't bound.
  * Epic #724: `link-target-missing:page/<id>` / `…:media/<id>` for an
  * internal reference (`caelo:page/<id>`, `caelo:media/<id>`) whose
- * target does not exist, and `link-resolver-unavailable:<kind>/<id>`
- * for one rendered without a resolver (see `link-refs.ts`).
+ * target does not exist, `link-resolver-unavailable:<kind>/<id>` for
+ * one rendered without a resolver, and `link-ref-malformed:<text>` for
+ * text that starts like a reference but breaks the grammar (see
+ * `link-refs.ts`).
  * The chat-runner diag pass + editor missing-content surface read
  * these literal strings; any rename is a silent regression for them.
  *

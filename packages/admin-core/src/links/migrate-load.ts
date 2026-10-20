@@ -21,6 +21,24 @@ import { type SQL, sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
 import type { ContentInstanceState, ModuleState, StructuredSetState } from "../snapshots/state.js";
 
+/**
+ * Row locking for an applying run. The migration reads, converts in
+ * memory and writes back; it runs at boot and from "Convert now" while
+ * editors work, so an edit committed between the read and the write
+ * would be overwritten with the converted OLD state. An applying run
+ * therefore reads main-line rows `FOR UPDATE` (a concurrent writer waits
+ * for the migration and then applies on top of the converted row; one
+ * already in flight commits first and the read sees its result). A dry
+ * run writes nothing and takes no locks, so it never blocks editors.
+ */
+interface LoadOptions {
+  readonly lock: boolean;
+}
+
+function forUpdate(opts: LoadOptions): SQL {
+  return opts.lock ? sql`FOR UPDATE` : sql``;
+}
+
 function parse<T>(raw: unknown): T {
   return (typeof raw === "string" ? JSON.parse(raw) : raw) as T;
 }
@@ -34,12 +52,16 @@ export interface MainModuleRow {
 }
 
 /** Live main-line modules (not deleted, not branch-created). */
-export async function loadMainModules(tx: TransactionRunner): Promise<MainModuleRow[]> {
+export async function loadMainModules(
+  tx: TransactionRunner,
+  opts: LoadOptions,
+): Promise<MainModuleRow[]> {
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, display_name, html, fields
       FROM modules
      WHERE deleted_at IS NULL AND chat_branch_id IS NULL
      ORDER BY id
+     ${forUpdate(opts)}
   `)) as unknown as { id: string; display_name: string; html: string; fields: unknown }[];
   return rows.map((r) => {
     const f = parse<unknown>(r.fields);
@@ -75,12 +97,17 @@ export interface MainInstanceRow {
   readonly values: Record<string, unknown>;
 }
 
-export async function loadMainInstances(tx: TransactionRunner): Promise<MainInstanceRow[]> {
+/** Live main-line content instances; see {@link LoadOptions} for `lock`. */
+export async function loadMainInstances(
+  tx: TransactionRunner,
+  opts: LoadOptions,
+): Promise<MainInstanceRow[]> {
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, module_id::text AS module_id, COALESCE(display_name, slug) AS label, "values"
       FROM content_instances
      WHERE deleted_at IS NULL AND chat_branch_id IS NULL
      ORDER BY id
+     ${forUpdate(opts)}
   `)) as unknown as { id: string; module_id: string; label: string | null; values: unknown }[];
   return rows.map((r) => ({
     id: r.id,
@@ -99,9 +126,33 @@ export interface MainSetRow {
   readonly items: unknown[];
 }
 
-export async function loadMainSets(tx: TransactionRunner): Promise<MainSetRow[]> {
+/** Every structured set; see {@link LoadOptions} for `lock`. */
+/** A layout as the migration reads it (main-only: layouts are not branched). */
+export interface MainLayoutRow {
+  readonly id: string;
+  readonly displayName: string;
+  readonly html: string;
+}
+
+/** Every live layout's own HTML (the page frame around the blocks). */
+export async function loadMainLayouts(
+  tx: TransactionRunner,
+  opts: LoadOptions,
+): Promise<MainLayoutRow[]> {
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id, display_name, html FROM layouts WHERE deleted_at IS NULL ORDER BY id
+     ${forUpdate(opts)}
+  `)) as unknown as { id: string; display_name: string; html: string }[];
+  return rows.map((r) => ({ id: r.id, displayName: r.display_name, html: r.html }));
+}
+
+export async function loadMainSets(
+  tx: TransactionRunner,
+  opts: LoadOptions,
+): Promise<MainSetRow[]> {
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, kind, slug, display_name, items FROM structured_sets ORDER BY id
+     ${forUpdate(opts)}
   `)) as unknown as {
     id: string;
     kind: string;
@@ -137,6 +188,25 @@ export async function loadPendingBranches(tx: TransactionRunner): Promise<string
      ORDER BY 1
   `)) as unknown as { branch_id: string }[];
   return rows.map((r) => r.branch_id);
+}
+
+/**
+ * Serialize an applying run against the chats writing on `branchId`.
+ * A chat's write takes its entity's `chat_entity_locks` row `FOR UPDATE`
+ * before it appends a pending state (`locks.ts`), and the row stays
+ * while the state is pending. Locking every lock row the branch holds
+ * BEFORE reading its states means a chat write in flight commits first
+ * (and is read), and one that starts later waits for the migration and
+ * appends on top of the converted state — never under it.
+ */
+export async function lockBranchEntities(tx: TransactionRunner, branchId: string): Promise<void> {
+  await tx.execute(sql`
+    SELECT 1 FROM chat_entity_locks
+     WHERE chat_branch_id = ${branchId}::uuid
+       AND entity_kind IN ('module', 'contentInstance', 'structuredSet', 'pluginRow')
+     ORDER BY entity_kind, entity_id
+     FOR UPDATE
+  `);
 }
 
 /** The latest pending state of one entity on a branch, with its owning chat task. */

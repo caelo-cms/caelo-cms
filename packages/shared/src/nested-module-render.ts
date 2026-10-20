@@ -341,11 +341,25 @@ function renderPartial(
   values: Readonly<Record<string, unknown>>,
   ctx: RenderContext,
 ): string | undefined {
+  const hit = nestedRefForPartial(key, fieldByName, values);
+  if (!hit) return undefined;
+  return renderInner(hit.ref.moduleId, hit.ref.contentInstanceId, descend(ctx, hit.step));
+}
+
+/**
+ * The nested ref behind partial `key`, with its field trail step
+ * (`name` or `name[i]`); `undefined` when the key names no well-formed
+ * ref. The one place that maps the engine's partial keys to values.
+ */
+function nestedRefForPartial(
+  key: string,
+  fieldByName: ReadonlyMap<string, TemplateField>,
+  values: Readonly<Record<string, unknown>>,
+): { readonly ref: NestedRefValue; readonly field: string; readonly step: string } | undefined {
   const single = fieldByName.get(key);
   if (single?.kind === "module") {
     const ref = values[key];
-    if (!isNestedRef(ref)) return undefined;
-    return renderInner(ref.moduleId, ref.contentInstanceId, descend(ctx, key));
+    return isNestedRef(ref) ? { ref, field: key, step: key } : undefined;
   }
   const sep = key.lastIndexOf("__");
   const index = key.slice(sep + 2);
@@ -357,8 +371,49 @@ function renderPartial(
   if (!Array.isArray(raw)) return undefined;
   const i = Number(index);
   const el = raw[i];
-  if (!isNestedRef(el)) return undefined;
-  return renderInner(el.moduleId, el.contentInstanceId, descend(ctx, `${name}[${i}]`));
+  return isNestedRef(el) ? { ref: el, field: name, step: `${name}[${i}]` } : undefined;
+}
+
+/** A nested ref a module's template dispatches (see {@link dispatchedNestedRefs}). */
+export interface DispatchedNestedRef extends NestedRefValue {
+  /** The `module` / `module-list` field holding it. */
+  readonly field: string;
+}
+
+/**
+ * Epic #724 (rollout F) — the nested refs that render when this module
+ * renders with these values: exactly the refs {@link renderPlacedModule}
+ * recurses into. Rendering is lazy (a declared `module` / `module-list`
+ * field the HTML never dispatches with `{{>name}}` / `{{#name}}` is not
+ * rendered), so a checker that walks every declared field would report
+ * links that never ship. This asks the template engine itself which
+ * partials it dispatches, so it follows the grammar exactly.
+ *
+ * @returns one entry per dispatched ref, in render order, deduplicated.
+ */
+export function dispatchedNestedRefs(
+  html: string,
+  fields: readonly TemplateField[],
+  values: Readonly<Record<string, unknown>>,
+): DispatchedNestedRef[] {
+  const fieldByName = new Map(fields.map((f) => [f.name, f]));
+  const out: DispatchedNestedRef[] = [];
+  const asked = new Set<string>();
+  renderTemplate({
+    html,
+    fields,
+    contentValues: values,
+    partials: (key) => {
+      const hit = nestedRefForPartial(key, fieldByName, values);
+      if (!hit) return undefined;
+      if (!asked.has(key)) {
+        asked.add(key);
+        out.push({ ...hit.ref, field: hit.field });
+      }
+      return "";
+    },
+  });
+  return out;
 }
 
 /** The context for rendering the nested module at `step` under ctx's module. */

@@ -61,10 +61,14 @@ if (!findings.includes("image-alt")) {
   console.error("[lighthouse-smoke] expected the image-alt finding, got", findings);
   process.exit(1);
 }
-// The Performance metrics: every one measured in all three runs, and the
-// LCP element named — a Lighthouse upgrade that renames the audits fails here.
+// The Performance metrics: every one measured in all three runs (the value
+// shown is the best run's, #874, so a run that measured nothing would
+// otherwise go unnoticed), and the LCP element named — a Lighthouse upgrade
+// that renames the audits fails here.
 const metrics = page.measurement.metrics;
-const unmeasured = metrics.metrics.filter((m) => m.numericValue === null);
+const unmeasured = metrics.metrics.filter(
+  (m) => m.numericValue === null || m.runValues.some((v) => v === null),
+);
 if (metrics.runs !== 3 || unmeasured.length > 0 || !metrics.lcpElement) {
   console.error("[lighthouse-smoke] expected every Performance metric over 3 runs", metrics);
   process.exit(1);

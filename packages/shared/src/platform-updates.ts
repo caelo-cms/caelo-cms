@@ -19,6 +19,12 @@ export const PLATFORM_UPDATE_STATUSES = [
   "refused",
   "needs_cloud_shell",
   "cancelled",
+  /**
+   * Asked the Owner to act (`needs_cloud_shell`), but the install has since
+   * moved past it: it runs the target release (or a newer one), or a newer
+   * request exists (#817, migration 0317). Shown in the history only.
+   */
+  "superseded",
 ] as const;
 export type PlatformUpdateStatusValue = (typeof PLATFORM_UPDATE_STATUSES)[number];
 
@@ -32,7 +38,9 @@ export function isFinishedUpdateStatus(status: PlatformUpdateStatusValue): boole
 
 /**
  * The phases of an upgrader run, in order (`platform_update_events.phase`).
- * `rollback` only appears when a roll had to be undone.
+ * `rollback` only appears when a roll had to be undone; `converge` only on
+ * the converge route (#819), where the install's cloud setup is brought to
+ * what the release expects before and around the roll.
  */
 export const PLATFORM_UPDATE_PHASES = [
   "queued",
@@ -40,6 +48,7 @@ export const PLATFORM_UPDATE_PHASES = [
   "verify",
   "assess",
   "backup",
+  "converge",
   "health-baseline",
   "migrations",
   "roll",
@@ -50,6 +59,22 @@ export const PLATFORM_UPDATE_PHASES = [
   "finish",
 ] as const;
 export type PlatformUpdatePhase = (typeof PLATFORM_UPDATE_PHASES)[number];
+
+/**
+ * Which in-cloud job installs a request (#819, `platform_update_requests.route`):
+ *
+ *   - `app_roll` — the upgrader job (its own narrow service account): new
+ *     images + expand-only migrations, nothing in the cloud setup changes;
+ *   - `converge` — the converge job, running as the install's existing
+ *     `caelo-provisioner` account: the same upgrade an Owner runs from a
+ *     terminal (backup, converge, roll, health check, rollback), for a
+ *     release that raises the infrastructure contract.
+ *
+ * The admin picks the route from the release manifest before the click;
+ * either job re-checks everything against the signed manifest.
+ */
+export const PLATFORM_UPDATE_ROUTES = ["app_roll", "converge"] as const;
+export type PlatformUpdateRoute = (typeof PLATFORM_UPDATE_ROUTES)[number];
 
 /** Severity of one timeline line. */
 export const PLATFORM_UPDATE_EVENT_LEVELS = ["info", "success", "warn", "error"] as const;
@@ -128,8 +153,12 @@ function comparePrerelease(x: string, y: string): number {
   return 0;
 }
 
-/** The automatic-update modes. */
-export const UPDATE_POLICY_MODES = ["off", "notify", "auto"] as const;
+/**
+ * The automatic-update modes. There is no "off": security releases are
+ * always announced (maintainer decision on #862; migration 0301 moved
+ * stored `off` rows to `notify`).
+ */
+export const UPDATE_POLICY_MODES = ["notify", "auto"] as const;
 export type UpdatePolicyMode = (typeof UPDATE_POLICY_MODES)[number];
 
 /** Release channels a policy may follow (only `stable` installs automatically). */
@@ -158,6 +187,13 @@ export const updatePolicySchema = z
     autoSecurity: z.boolean(),
     autoPatch: z.boolean(),
     autoMinor: z.boolean(),
+    /**
+     * Releases that change the install's Google Cloud project (an
+     * infrastructure-contract bump) may install on their own. Stored and
+     * shown, but inert until those releases can run from Caelo (#819): the
+     * scheduler treats them as notify-only regardless (auto-update.ts).
+     */
+    autoConverge: z.boolean(),
     channel: z.enum(UPDATE_POLICY_CHANNELS),
     /** `HH:MM` local time in `windowTimezone`, or null with windowEnd null = any time. */
     windowStart: z.string().regex(WALL_CLOCK, "expected HH:MM").nullable(),

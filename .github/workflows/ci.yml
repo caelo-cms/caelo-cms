@@ -156,6 +156,13 @@ jobs:
       - name: Run migrations
         run: bun run db:migrate
 
+      - name: Install Playwright chromium (live screenshotter tests)
+        # PR #869 — the site-importer's live Chromium suites
+        # (browser-egress.test.ts SSRF egress canary, hidden-elements.test.ts)
+        # FAIL under CI without a browser instead of passing vacuously.
+        # Same repo-pinned CLI the screenshotter's launch hint names.
+        run: bun node_modules/playwright/cli.js install chromium --with-deps
+
       - name: Test + coverage gate
         # Issue #14 — runs the full suite split into the unit
         # (`*.test.ts`) and integration (`*.integration.test.ts`) tiers

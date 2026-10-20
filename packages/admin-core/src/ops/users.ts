@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -8,6 +8,14 @@ import { recordAudit, SYSTEM_ACTOR_ID } from "../audit.js";
 import { hashPassword, validatePasswordStrength, verifyPassword } from "../password.js";
 import { withSystemRls } from "./_helpers.js";
 
+/**
+ * Create the first Owner (/setup). Once any bootstrap token was issued
+ * (cms-provision ran), the call must redeem one — and redeems it in THIS
+ * transaction, after every other check passed: a typo'd email, a weak
+ * password or a lost race against another /setup must leave the single-use
+ * token usable (PR #863, L-06). Redeeming it in a separate op first burned
+ * it on any of those and stranded the install without a way to claim it.
+ */
 export const createFirstOwnerOp = defineOperation({
   name: "users.create_first_owner",
   // Why system-only: /setup mints the very first Owner before any session exists (bootstrap-token
@@ -18,6 +26,8 @@ export const createFirstOwnerOp = defineOperation({
     email: z.string().email().max(254),
     password: z.string().min(8).max(256),
     displayName: z.string().min(1).max(128),
+    /** The `?token=` from the install output; required once any token was issued. */
+    bootstrapToken: z.string().min(1).max(256).optional(),
   }),
   output: z.object({ userId: z.string() }),
   handler: async (ctx, input, tx) => {
@@ -62,6 +72,25 @@ export const createFirstOwnerOp = defineOperation({
       });
     }
 
+    const tokenGate = await redeemBootstrapToken(tx, input.bootstrapToken);
+    if (tokenGate !== null) {
+      await recordAudit(tx, {
+        actorId: SYSTEM_ACTOR_ID,
+        requestId: ctx.requestId,
+        operation: "users.create_first_owner",
+        input,
+        succeeded: false,
+        resultSummary: tokenGate.summary,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "users.create_first_owner",
+        message: tokenGate.message,
+      });
+    }
+
+    // From here on the token is redeemed: any failure must THROW (roll the
+    // redemption back), never return an err that would commit it.
     const passwordHash = await hashPassword(input.password);
     const actorRows = (await tx.execute(sql`
       INSERT INTO actors (kind, display_name)
@@ -70,7 +99,7 @@ export const createFirstOwnerOp = defineOperation({
     `)) as unknown as { id: string }[];
     const actorId = actorRows[0]?.id;
     if (!actorId) {
-      return err({
+      throw new OperationAbortError({
         kind: "HandlerError",
         operation: "users.create_first_owner",
         message: "actor insert returned no row",
@@ -84,6 +113,12 @@ export const createFirstOwnerOp = defineOperation({
       INSERT INTO user_roles (user_id, role_id)
       SELECT ${actorId}::uuid, r.id FROM roles r WHERE r.name = 'owner'
     `);
+    if (input.bootstrapToken !== undefined) {
+      await tx.execute(sql`
+        UPDATE owner_bootstrap_tokens SET used_by = ${actorId}::uuid
+        WHERE token = ${input.bootstrapToken}
+      `);
+    }
 
     await recordAudit(tx, {
       actorId: SYSTEM_ACTOR_ID,
@@ -97,6 +132,42 @@ export const createFirstOwnerOp = defineOperation({
     return ok({ userId: actorId });
   },
 });
+
+/**
+ * The /setup token gate, run inside `users.create_first_owner`'s tx after
+ * every other check. Returns null when the caller may proceed (no token was
+ * ever issued — a raw `bun run dev` checkout — or `token` was valid and is
+ * now marked used), otherwise the refusal to audit + return.
+ */
+async function redeemBootstrapToken(
+  tx: TransactionRunner,
+  token: string | undefined,
+): Promise<{ summary: string; message: string } | null> {
+  const issued = (await tx.execute(
+    sql`SELECT EXISTS(SELECT 1 FROM owner_bootstrap_tokens) AS any_issued`,
+  )) as unknown as { any_issued: boolean }[];
+  if (issued[0]?.any_issued !== true) return null;
+  if (token === undefined) {
+    return {
+      summary: "bootstrap-token-missing",
+      message: "Bootstrap token required. Open the /setup?token=<…> link from the install output.",
+    };
+  }
+  const redeemed = (await tx.execute(sql`
+    UPDATE owner_bootstrap_tokens
+    SET used_at = now()
+    WHERE token = ${token} AND used_at IS NULL AND expires_at > now()
+    RETURNING token
+  `)) as unknown as { token: string }[];
+  if (redeemed.length === 0) {
+    return {
+      summary: "bootstrap-token-rejected",
+      message:
+        "Bootstrap token invalid, expired, or already used. Open the latest /setup?token=<…> link from the install output; a token works once and expires 24 hours after it was issued.",
+    };
+  }
+  return null;
+}
 
 export const isSetupCompleteOp = defineOperation({
   name: "users.is_setup_complete",
@@ -278,6 +349,14 @@ export const createUserOp = defineOperation({
   },
 });
 
+/**
+ * Refusal for a role change that would take `owner` from the first Owner —
+ * the account that can always recover the install (PR #863, M-10). Shared
+ * with `users.propose_set_roles` so the AI reads one actionable message.
+ */
+export const FIRST_OWNER_KEEPS_OWNER_ROLE =
+  'cannot remove the owner role from the first Owner — keep "owner" in roleNames (other roles can be added next to it). To hand the site over, give another user the owner role instead.';
+
 export const setUserRolesOp = defineOperation({
   name: "users.set_roles",
   // Why human-only: Owner-only — security domain.
@@ -289,6 +368,27 @@ export const setUserRolesOp = defineOperation({
   }),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    const targetRows = (await withSystemRls(tx, ctx, () =>
+      tx.execute(sql`
+        SELECT is_first_owner FROM users WHERE id = ${input.userId}::uuid LIMIT 1
+      `),
+    )) as unknown as { is_first_owner: boolean }[];
+    if (targetRows[0]?.is_first_owner && !input.roleNames.includes("owner")) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "users.set_roles",
+        input,
+        succeeded: false,
+        entityId: input.userId,
+        resultSummary: "first-owner-protected",
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "users.set_roles",
+        message: FIRST_OWNER_KEEPS_OWNER_ROLE,
+      });
+    }
     await tx.execute(sql`DELETE FROM user_roles WHERE user_id = ${input.userId}::uuid`);
     for (const roleName of input.roleNames) {
       await tx.execute(sql`
@@ -360,8 +460,15 @@ export const deleteUserOp = defineOperation({
       return ok({});
     }
     await tx.execute(sql`UPDATE users SET deleted_at = now() WHERE id = ${input.userId}::uuid`);
-    // Revoke active sessions so a soft-deleted user is signed out immediately.
+    // Revoke active sessions AND MCP bearer tokens so a soft-deleted user is
+    // signed out everywhere at once — a token outlived its user before
+    // (PR #863, M-09). resolveMcpToken also refuses a deleted user's token.
     await tx.execute(sql`DELETE FROM sessions WHERE user_id = ${input.userId}::uuid`);
+    const revoked = (await tx.execute(sql`
+      UPDATE mcp_tokens SET revoked_at = now()
+      WHERE actor_id = ${input.userId}::uuid AND revoked_at IS NULL
+      RETURNING id
+    `)) as unknown as { id: string }[];
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -369,7 +476,7 @@ export const deleteUserOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.userId,
-      resultSummary: "soft-deleted",
+      resultSummary: `soft-deleted; mcp-tokens-revoked=${revoked.length}`,
     });
     return ok({});
   },

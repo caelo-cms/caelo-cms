@@ -31,6 +31,7 @@ import {
   type LinkMigrationChange,
   ScopeBatch,
   writeMainInstance,
+  writeMainLayout,
   writeMainModule,
   writeMainSet,
 } from "./migrate.js";
@@ -231,6 +232,21 @@ async function planMain(
         },
       };
     }
+    case "layout": {
+      const rows = (await tx.execute(sql`
+        SELECT html FROM layouts WHERE id = ${ch.entityId}::uuid AND deleted_at IS NULL
+      `)) as unknown as { html: string }[];
+      const r = rows[0];
+      if (!r) return "deleted since the migration";
+      if (r.html !== ch.after.html) return EDITED;
+      return {
+        change: ch,
+        apply: async () => {
+          await writeMainLayout(tx, ch.entityId, ch.before.html);
+          batch.touchedWithoutEntity = true;
+        },
+      };
+    }
     case "pluginRow": {
       const ref: PluginRowRef = {
         pluginId: ch.pluginId,
@@ -286,6 +302,11 @@ async function planBranch(
           batch.addEntity(s.chatTaskId, { kind: "contentInstance", entityId: ch.entityId, state }),
       };
     }
+    case "layout":
+      // Layouts are main-only; a branch change of one is corrupt run data.
+      throw new Error(
+        `link migration revert: layout ${ch.entityId} recorded on branch ${branchId}`,
+      );
     case "structuredSet": {
       const s = (await loadBranchStates(tx, "structuredSet", branchId, [ch.entityId]))[0];
       if (!s) return GONE;

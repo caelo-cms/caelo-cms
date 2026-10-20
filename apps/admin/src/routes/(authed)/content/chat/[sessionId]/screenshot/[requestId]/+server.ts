@@ -66,10 +66,10 @@ function sanitizeMeta(meta: UploadBody["meta"]): UploadBody["meta"] | undefined 
 }
 
 export const POST: RequestHandler = async ({ params, request, locals }) => {
-  // Same permission as the chat send — the operator must already
-  // have an active chat session for this to be useful, and chat
-  // sessions require content.read.
-  requirePermission(locals, "content.read");
+  // Same permission as the chat send (content.write since PR #863): the
+  // upload answers a running turn's screenshot_page call, and only an
+  // operator who may run turns has one to answer.
+  requirePermission(locals, "content.write");
   if (!locals.user) throw error(401, "Not authenticated");
 
   // Lightweight CSRF check via a header (the body is JSON, not

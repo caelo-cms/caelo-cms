@@ -26,6 +26,7 @@ import { branchVisibilityFilter } from "../../branch.js";
 import { emitDomainEvent } from "../../domain-events.js";
 import { canonicaliseModuleCode } from "../../links/canonicalise-writes.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
+import { recordPendingImportLinks } from "../../links/import-targets.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -501,6 +502,8 @@ export const createModuleOp = defineOperation({
     // would be redundant + confusing).
     const extractedForCaller =
       input.fields && input.fields.length > 0 ? undefined : extractedMutable;
+    // Epic #724 — links to pages the chat's import run will still build.
+    await recordPendingImportLinks(tx, linkCanon.pending, { kind: "module", id: moduleId });
     return ok({ moduleId, extractedFields: extractedForCaller });
   },
 });
@@ -744,6 +747,8 @@ export const updateModuleOp = defineOperation({
         },
       });
     }
+    // Epic #724 — links to pages the chat's import run will still build.
+    await recordPendingImportLinks(tx, linkCanon.pending, { kind: "module", id: input.moduleId });
     return ok({ extractedFields: extractedSurfacedToCaller });
   },
 });

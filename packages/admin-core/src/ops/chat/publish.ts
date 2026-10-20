@@ -225,10 +225,8 @@ export async function mergeBranchSnapshotsToMain(
           headerIds.map((id) => sql`${id}::uuid`),
           sql`, `,
         )})`;
-  const filter =
-    options.sinceLastStagedAt || fixedHeaderIds
-      ? sql` AND ${pendingSnapshotSql()}${windowFilter}`
-      : sql``;
+  const staging = options.sinceLastStagedAt || fixedHeaderIds;
+  const filter = staging ? sql` AND ${pendingSnapshotSql()}${windowFilter}` : sql``;
   const merged = await mergeWindowToMain(
     tx,
     ctx,
@@ -236,7 +234,13 @@ export async function mergeBranchSnapshotsToMain(
       branchId: session.chat_branch_id,
       title: session.title,
       filter,
-      pluginCompletenessFilter: filter,
+      // Every pending plugin row of the chat, not only the window's: plugin
+      // calls read the BRANCH view (they cannot see the merge's uncommitted
+      // writes), which is the post-merge state only when the merge takes
+      // every plugin row the branch holds — the post-merge path refresh
+      // and the reference gate both rely on it. Same rule as the draft
+      // Stage (draft-ops.ts).
+      pluginCompletenessFilter: staging ? sql` AND ${pendingSnapshotSql()}` : filter,
       graduateLayouts: input.entities === undefined,
     },
     input.entities,
@@ -1026,7 +1030,9 @@ export async function mergeWindowToMain(
   // the whole replay rolls back and nothing reaches main; the static build
   // would refuse it anyway, and this names every place and its fixing tool.
   // Draft targets and legacy literal paths are Stage warnings.
-  const gate = await stageReferenceGate(tx, window.branchId);
+  const gate = await stageReferenceGate(tx, window.branchId, {
+    pluginRowsMerged: pluginRowRows.length > 0,
+  });
   if (!gate.ok) {
     throw new OperationAbortError({
       kind: "HandlerError",

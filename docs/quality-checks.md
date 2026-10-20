@@ -12,6 +12,24 @@ Every Stage gets a quality audit (epic #727). It runs against the **staged build
 
 Findings checks are cheap and run on every Stage (SEO-only Stages too) over all published pages. Lighthouse keeps its own Stage classification and page limit.
 
+## Where Lighthouse runs (#875)
+
+Lighthouse simulates the CPU slowdown from observed task durations, so a run that shares a CPU with another run or with the editor's requests measures that interference. The runner is picked per provider (`lighthouse-runner-select.ts`):
+
+| Provider | Runner | Notes |
+|---|---|---|
+| `gcp`, `gcp-firebase` | Cloud Run job `caelo-<env>-audit`, one task per run, all in parallel (`parallel-runner.ts`, `gcp-audit-launcher.ts`) | CLI-owned (`packages/provisioning/src/audit-job-setup.ts`): created by the wizard and by `cms-provision upgrade`; the app-roll moves its image with the admin's. Its identity reads the staged build, creates results in `<project>-caelo-<env>-audit-results` and writes logs, nothing else. |
+| `self-hosted`, dev | the in-process child (`lighthouse-runner.ts`), runs one after another | no extra machines |
+| `aws`, `azure` | none yet: every Lighthouse audit fails with the gap | issues #749 / #750 (nothing is staged there before them either) |
+
+A cloud install never falls back to the in-process child (CLAUDE.md §2).
+
+Troubleshooting (the audit's failure message names which one):
+
+- **`CAELO_AUDIT_JOB / CAELO_AUDIT_RESULTS_BUCKET are not set`** or **`could not start the audit tasks`**: the job is missing. Run `cms-provision upgrade`; its "Ensuring the quality-audit job" step says what failed.
+- **`the audit job runs Caelo X but the admin runs Y`**: the app-roll could not move the job's image. Run `cms-provision upgrade` again.
+- **`audit task(s) ... stopped without a result`**: a task crashed or hit its 5-minute timeout; the job's execution log in Cloud Logging names the cause.
+
 ## Core check: `structure` (#820)
 
 Free markup that should be a module: `structure/repeated-markup`, `structure/duplicate-module` (errors), `structure/similar-markup`, `structure/layout-css-module-specific` (warnings). See `checks/structure.ts`.
@@ -41,7 +59,7 @@ Every same-site URL a staged page references must be served by that build. Code:
 
 **Bounds.** At most 5,000 URLs read per page, 5,000 distinct paths probed per audit (8 at a time, 10 s each, one retry on a dropped connection), 240 s per run. Past the runner's 500 findings, errors are kept first and the rest is summarised in one `links/limit-reached` finding; the next Stage reports what was cut.
 
-**Relation to reference integrity.** Page references (`caelo:page/<id>`, #724) render to plain URLs in the build, so `links` needs no change for them. A rendered link to a page that exists but is unpublished is skipped here (`LinkSources.unpublishedPagePaths`): the `references` check reports it at the place it is stored. See below for the split.
+**Relation to reference integrity.** Page references (`caelo:page/<id>`, #724) render to plain URLs in the build, so `links` needs no change for them. A rendered link to an unpublished page is skipped here only when the `references` check reports that stored link (`LinkSources.reportedDraftLinks`: same target, same page, same module / plugin / chrome origin): it is reported at the place it is stored. Any other link that ends at a draft page (plugin output, a legacy literal whose redirect chain ends at a draft) stays `links/broken-internal`, because nothing else blocks on it. A `references` issue stored on a draft page is a site-scoped finding: the staged build has no such page. See below for the split.
 
 ## Core check: `references` (#724 rollout F)
 
@@ -63,7 +81,7 @@ Maintainer decisions on #724: a missing target blocks everywhere; an unpublished
 
 **Where it runs.**
 
-- **Stage**: `chat.merge_to_main` / `chat.merge_draft_to_main` run `stageReferenceGate` inside the merge transaction, after the replay. A blocking issue throws `OperationAbortError`: the replay rolls back, nothing reaches main, and the error lists each place with its fixing tool. The static build refuses a missing target anyway; the gate refuses it earlier and says where it is. Warnings come back as `linkWarnings`.
+- **Stage**: `chat.merge_to_main` / `chat.merge_draft_to_main` run `stageReferenceGate` inside the merge transaction, after the replay. A blocking issue throws `OperationAbortError`: the replay rolls back, nothing reaches main, and the error lists each place with its fixing tool. Plugins (link locations, link-resolve) answer from their own transactions and cannot see the merge's uncommitted writes, so they are asked for the post-merge state: on main when the merge took no plugin rows, as the merged branch when it did (a merge takes every pending plugin row of the chat or none). Nested modules are checked only where the module's HTML dispatches them (`{{>field}}` / `{{#field}}`), as the renderer does. The static build refuses a missing target anyway; the gate refuses it earlier and says where it is. Warnings come back as `linkWarnings`.
 - **Publish live / promote**: the `references` findings check runs in every Stage's audit over the main line with the Publish policy. Its errors block the gate like any finding until fixed or accepted by the Owner (`accept_quality_findings`). Page-bound content is a finding on its page; shared places (module HTML, layouts, sets, plugin data) are site-wide findings.
 - **AI and MCP**: `check_links` (read op `links.check_references`, actor scope human + ai + system) checks the caller's draft as its preview shows it (branch overlay of pending snapshots), filterable by page path, for the Stage or the Publish policy. Power-MCP exposes it like every built-in tool.
 

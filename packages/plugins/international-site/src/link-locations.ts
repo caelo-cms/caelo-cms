@@ -21,6 +21,13 @@ import { type ChromeCms, loadChromeTargets, loadChromeVariants } from "./chrome-
  * Every chrome variant that carries its own values. A variant with its
  * own module is read with that module's fields (core loads them); a
  * variant of the shared module with the target's fields.
+ *
+ * A variant whose target (layout slot / shared content) no longer exists
+ * does not render (`refreshChromeStaleness` skips it the same way). With
+ * its own module its fields are still known, so it is named and labelled
+ * as orphaned. Without one its field kinds are unknown: converting it
+ * would mean guessing which values are links (a `text` value like
+ * "/month" is not), so it is not named and its values stay as stored.
  */
 export async function chromeLinkLocations(
   q: PluginAdminQuery,
@@ -32,18 +39,27 @@ export async function chromeLinkLocations(
   const locations: PluginLinkLocation[] = [];
   for (const v of variants) {
     const target = targets.get(v.target_key);
-    const label = `${v.locale_code} version of ${target?.label ?? v.target_key}`;
-    locations.push({
+    const location = (label: string) => ({
       table: "chrome_variants",
       rowId: v.id,
       column: "values",
       label: label.slice(0, 300),
-      ...(v.module_id
-        ? { moduleId: v.module_id }
-        : target
-          ? { fields: target.fields.map((f) => ({ name: f.name, kind: f.kind })) }
-          : {}),
     });
+    if (v.module_id) {
+      locations.push({
+        ...location(
+          target
+            ? `${v.locale_code} version of ${target.label}`
+            : `${v.locale_code} version of removed shared content ${v.target_key} (not rendered)`,
+        ),
+        moduleId: v.module_id,
+      });
+    } else if (target) {
+      locations.push({
+        ...location(`${v.locale_code} version of ${target.label}`),
+        fields: target.fields.map((f) => ({ name: f.name, kind: f.kind })),
+      });
+    }
   }
   return { locations };
 }

@@ -124,8 +124,9 @@ beforeAll(async () => {
   // #846 — a page whose content values exercise every field kind. Only the
   // link-bearing kinds (link / url default / link-list / richtext / nested
   // sub-module) may be reported; image + text + text-list paths never.
-  // The dead links are written as `https://legacy.invalid/…` (#724 refuses
-  // an internal link to no page) and turned into the legacy literals
+  // The dead links and the legacy image paths are written as
+  // `https://legacy.invalid/…` (#724 refuses an internal link to no page
+  // and a file path nothing serves) and turned into the legacy literals
   // below, underneath the ops.
   const kinds = await execute(registry, adapter, systemCtx, "pages.build_page", {
     page: { slug: KINDS_SLUG, title: "LINT Kinds", templateId },
@@ -146,7 +147,7 @@ beforeAll(async () => {
           values: {
             card_label: "/shop/nested-text",
             card_href: "https://legacy.invalid/missing-nested-link",
-            card_image: "/media/nested.webp",
+            card_image: "https://legacy.invalid/media/nested.webp",
           },
         },
       },
@@ -176,7 +177,7 @@ beforeAll(async () => {
         content: {
           source: "inline",
           values: {
-            hero_image: "/media/foo.webp",
+            hero_image: "https://legacy.invalid/media/foo.webp",
             alert_text: "/shop/xyz",
             tags: ["/shop/tag-path"],
             primary_link: "https://legacy.invalid/missing-link",
@@ -259,19 +260,24 @@ describe("reference integrity over legacy literal links (#846 field kinds)", () 
     ).not.toContainEqual(expect.objectContaining({ severity: "block" }));
   });
 
-  it("#846: scans content values by declared field kind — image/text paths are never links", async () => {
+  it("#846: scans content values by declared field kind — text paths are never links", async () => {
     const broken = await brokenLiterals();
-    // Not links: image paths, plain text / text-list copy that starts with
-    // `/`, and a stored value with no declared field.
+    // Not links: plain text / text-list copy that starts with `/`, and a
+    // stored value with no declared field.
     for (const notALink of [
-      "/media/foo.webp",
       "/shop/xyz",
       "/shop/tag-path",
-      "/media/nested.webp",
       "/shop/nested-text",
       "/missing-undeclared",
     ]) {
       expect(broken).not.toContain(notALink);
+    }
+    // An image value is a file reference since rollout C (the write path
+    // refuses a file nothing serves, `unknown-file`), so a legacy image
+    // path nothing serves is reported as the broken file link it is —
+    // never as a page link.
+    for (const deadFile of ["/media/foo.webp", "/media/nested.webp"]) {
+      expect(broken).toContain(deadFile);
     }
     // Still links, still reported when they point at no page: link value,
     // url field default (what renders when no value is set), link-list

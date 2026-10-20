@@ -8,7 +8,6 @@ import {
   type FailingAudit,
   type LighthouseAcceptance,
   lighthouseAcceptanceUpdates,
-  medianScore,
   type PageMeasurement,
   type QualityCategory,
 } from "../ratchet.js";
@@ -138,17 +137,5 @@ describe("lighthouseAcceptanceUpdates — accepted values only ratchet up", () =
         measure({}, [responsiveImages]),
       ),
     ).toEqual([]);
-  });
-});
-
-describe("medianScore", () => {
-  it("takes the middle value (mean of the middle pair, rounded)", () => {
-    expect(medianScore([90, 100, 80])).toBe(90);
-    expect(medianScore([99])).toBe(99);
-    expect(medianScore([97, 98])).toBe(98);
-  });
-
-  it("refuses an empty list", () => {
-    expect(() => medianScore([])).toThrow(/no Performance runs/);
   });
 });

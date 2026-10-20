@@ -41,7 +41,6 @@ import {
   lockPluginRow,
   makePluginImageProvider,
   makePluginTextProvider,
-  registryManifestReader,
   startAutoUpdateScheduler,
   startChatImageGcWorker,
   startDomainEventGcWorker,
@@ -69,7 +68,8 @@ import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
 import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
-import { upgraderTrigger } from "#lib/server/upgrader.js";
+import { releaseManifestReader } from "#lib/server/release-check.js";
+import { convergeTrigger, upgraderTrigger } from "#lib/server/upgrader.js";
 import { updatesProvider } from "#lib/upgrade-path.js";
 
 // Dev-mode KEK auto-gen. secret-box reads CAELO_SECRET_KEK lazily
@@ -223,13 +223,15 @@ async function bootstrapPlugins(): Promise<void> {
   for (const f of report.failed) {
     console.error(`[hooks] plugin FAILED to load: ${f.slug} — ${f.reason}`);
   }
-  // #724 rollout E — after the plugin host, so plugins' link hooks take part.
-  await migrateLinksOnce();
   // #635 — the gateway has no cms_admin login: publish what it serves from
   // into cms_public now that the plugins (and their projection triggers)
   // are in place, then keep it current from the outbox.
   const publisher = startPublicProjectionPublisher({ adapter });
   await publisher.publishAll();
+  // #724 rollout E — after the plugin host, so plugins' link hooks take
+  // part, and after the gateway projection, which must not wait on a
+  // site-wide content conversion (nor on the editor rows it locks).
+  await migrateLinksOnce();
   // P12 review-pass #3 — startup warning if any loaded plugin declared
   // the `email` capability but no transport is configured. These sends
   // would fall through to the stderr stub silently otherwise.
@@ -421,7 +423,12 @@ function bootstrapReleaseCheck(): void {
   // unauthenticated GitHub API quota).
   if (process.env.CAELO_RELEASE_CHECK === "off") return;
   const { adapter } = getQueryContext();
-  startReleaseCheckWorker({ adapter });
+  // The worker also reads the release's manifest for its route (#817).
+  startReleaseCheckWorker({
+    adapter,
+    readManifest: releaseManifestReader(),
+    provider: updatesProvider(process.env),
+  });
 }
 
 // #696 Phase 5 — automatic Caelo updates. Every admin instance runs the
@@ -448,10 +455,37 @@ function bootstrapAutoUpdates(): void {
     adapter,
     registry,
     upgrader: () => upgraderTrigger(process.env, readAgent),
-    readManifest: registryManifestReader({ fetch: (url, init) => fetch(url, init) }),
+    // #819 — releases that change the cloud setup, when autoConverge allows.
+    converge: () => convergeTrigger(process.env),
+    readManifest: releaseManifestReader(),
     provider: updatesProvider(process.env),
     holder: `${process.env.K_REVISION ?? hostname()}/${process.pid}`,
   });
+}
+
+// #817 — once per process: an upgrade the Owner ran from Cloud Shell never
+// touches the database, so the new admin closes the request that asked for
+// it (`superseded`). Settings → Updates then stops offering a step for a
+// release that already runs.
+let supersedeBootstrapped = false;
+function bootstrapSupersedeUpdateRequests(): void {
+  if (supersedeBootstrapped) return;
+  supersedeBootstrapped = true;
+  const { adapter, registry } = getQueryContext();
+  execute(registry, adapter, SYSTEM_CTX, "platform_updates.supersede_stale", {})
+    .then((r) => {
+      if (!r.ok) {
+        console.error("[bootstrap.update_requests] supersede failed", r.error);
+        return;
+      }
+      const { superseded } = r.value as { superseded: string[] };
+      if (superseded.length > 0) {
+        console.log(
+          `[bootstrap.update_requests] closed ${superseded.length} superseded request(s)`,
+        );
+      }
+    })
+    .catch((e) => console.error("[bootstrap.update_requests] supersede failed", e));
 }
 
 // v0.2.37 — proposal GC sidecar. Sweeps pending rows older than 30
@@ -542,6 +576,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapRedeploy();
   bootstrapReleaseCheck();
   bootstrapAutoUpdates();
+  bootstrapSupersedeUpdateRequests();
   bootstrapProposalGc();
   bootstrapChatImageGc();
   bootstrapMcpBridge();

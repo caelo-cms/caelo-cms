@@ -71,6 +71,9 @@
           Link warnings (links to unpublished pages block Publish live):
           {form.staged.linkWarnings.join(" · ")}
         {/if}
+        {#if form.staged.unpublishedLinkWarning}
+          {form.staged.unpublishedLinkWarning}
+        {/if}
       </AlertDescription>
     </Alert>
   {/if}

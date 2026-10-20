@@ -79,7 +79,7 @@ describe("CheckRegistry", () => {
         layouts: async () => [],
         redirects: async () => [],
         siteUrls: async () => [],
-        unpublishedPagePaths: async () => [],
+        reportedDraftLinks: async () => [],
       },
       references: { issues: async () => ({ issues: [], truncated: false }) },
     });

@@ -32,6 +32,7 @@ import {
   installRoot,
   installStagingHost,
   listInstalls,
+  readLocalMetadata,
   readMetadata,
   readSecret,
   recordImageDigests,
@@ -53,14 +54,18 @@ import {
   rolesOfSecret,
   rotateRuntimeSecret,
   rotationRefusal,
+  SEAL_KEY_SECRET,
 } from "./runtime-secrets.js";
+import { finishSealKeyRotation, startSealKeyRotation } from "./seal-key-rotation.js";
 import { selfCommand } from "./self-command.js";
 import {
   backendShellEnv,
   localStateNotice,
+  OPS_INSTALL_PREFIX,
   type ResolvedBackend,
   resolveBackend,
 } from "./state-backend.js";
+import { acquireStateLock, realSyncGcloud, releaseOnSignal } from "./state-store.js";
 import {
   type AppRollPlan,
   type ReleaseImage,
@@ -70,6 +75,7 @@ import {
 import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
 import { findServiceUrl, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe, type HealthProbe } from "./upgrade/health.js";
+import { recordRolledDigests } from "./upgrade/record-rolled.js";
 import {
   canonicalReleaseTag,
   fetchLatestReleaseTag,
@@ -488,6 +494,53 @@ async function upgradeInstall(
   const provider = meta.provider;
   const projectId = meta.projectId;
 
+  // #815 — the install's state lock, the one the in-app upgrader job,
+  // `pulumi up` and `state migrate` take: a Cloud Shell upgrade must not
+  // race an Owner-started or automatic job run. The local copy always
+  // names where the state lives (install-state.ts stateStoreFor). A lock
+  // left by a job whose run has ended, by a CLI whose process is gone on
+  // this machine, or by one that stopped renewing its lease is broken
+  // automatically. This run's own lock carries host + pid and a lease its
+  // heartbeat renews, and is given back on Ctrl-C / SIGTERM — a killed CLI
+  // or a closed Cloud Shell never blocks in-app updates for good.
+  const backend = readLocalMetadata(installId)?.stateBackend;
+  let releaseLock: () => void;
+  try {
+    releaseLock = acquireStateLock(
+      backend?.kind === "gcs" ? { kind: "gcs", bucket: backend.bucket } : { kind: "local" },
+      installRoot(installId),
+      "cms-provision upgrade",
+      realSyncGcloud,
+      {
+        onBreak: (message) => log.info(message),
+        onLost: (message) => log.error(red(message)),
+      },
+    );
+  } catch (e) {
+    log.error(red(`Nothing was changed: ${e instanceof Error ? e.message : String(e)}`));
+    return false;
+  }
+  const disposeSignals = releaseOnSignal(releaseLock, (message) => log.warn(yellow(message)));
+  try {
+    return await upgradeLockedInstall(installId, meta, opts, provider, projectId);
+  } finally {
+    disposeSignals();
+    try {
+      releaseLock();
+    } catch (e) {
+      log.warn(yellow(e instanceof Error ? e.message : String(e)));
+    }
+  }
+}
+
+/** {@link upgradeInstall} once it holds the install's state lock. */
+async function upgradeLockedInstall(
+  installId: string,
+  meta: InstallMetadata,
+  opts: UpgradeOpts,
+  provider: "gcp" | "gcp-firebase",
+  projectId: string,
+): Promise<boolean> {
   // #607 — upgrade never moves an install: a `--region` other than the
   // recorded one is refused before anything rolls.
   const region = installRegion(meta, opts.region);
@@ -501,7 +554,9 @@ async function upgradeInstall(
 
   const run: GcloudRunner = gcloud;
   const http = fetch as unknown as HttpFetch;
-  const ok = await upgradeGcpInstall(
+  // #860 — a roll whose records could not be written is a failed upgrade.
+  let recorded = true;
+  const rolled = await upgradeGcpInstall(
     {
       provider,
       projectId,
@@ -524,20 +579,29 @@ async function upgradeInstall(
       migrate: (imageRef) =>
         runMigrationsViaCloudRunJob({ projectId, region, imageOverride: imageRef }, { run }),
       healthProbe: (plan) => gcpHealthProbe(run, http, plan),
-      recordDigests: async (digests) =>
-        recordRolledDigests(
+      recordDigests: async (digests) => {
+        recorded = await recordRolledRelease(
           installId,
           provider,
           digests,
           // #696 — the version the upgrader job judges later updates by.
           canonicalReleaseTag(targetTag)?.replace(/^v/, "") ??
             (await releaseVersionForDigest(run, "admin", digests.admin)),
-        ),
+        );
+      },
       resolveOpsImage: resolveOpsImageRef,
       recordInfraContractVersion: (version) => recordInfraContractVersion(installId, version),
       provisionerIdentity: () => upgradeKeylessProvisioner(installId, projectId),
     },
   );
+  if (rolled && !recorded) {
+    log.error(
+      red(
+        "The new release serves, but the upgrade could not record it (see above). Apply the fixes above; until then this upgrade counts as failed.",
+      ),
+    );
+  }
+  const ok = rolled && recorded;
   // #696 — upgrade never moves Pulumi state; it says how to.
   const stateNotice = localStateNotice(meta);
   if (stateNotice) note(stateNotice, "Pulumi state is on this machine");
@@ -586,74 +650,44 @@ async function gcpHealthProbe(
 }
 
 /**
- * Record the digests just rolled so nothing re-deploys an older release:
- * install.json (what a wizard re-run deploys) and the Pulumi stack config
- * (what a plain `pulumi up` deploys). The roll already succeeded, so each
- * write that fails warns with the exact manual fix instead of failing the
- * upgrade, and one failing never skips the other.
+ * Record the digests just rolled (upgrade/record-rolled.ts), wired to this
+ * install's install.json and Pulumi stack. The converge job (#819,
+ * converge-job-gcp.ts) records through the same function as the terminal.
+ *
+ * @returns whether every record was written; false fails the upgrade.
  */
-async function recordRolledDigests(
+export function recordRolledRelease(
   installId: string,
   provider: "gcp" | "gcp-firebase",
   digests: ImageDigests,
   releaseVersion: string | null,
-): Promise<void> {
-  const reason = (e: unknown) => (e instanceof Error ? e.message.split("\n")[0] : String(e));
-  if (!releaseVersion) {
-    log.warn(
-      yellow(
-        "Could not tell which Caelo release these images are (no version tag points at them), so install.json records none; in-product updates stay unavailable until an upgrade to a released version.",
-      ),
-    );
-  }
-  try {
-    recordImageDigests(installId, digests, releaseVersion);
-  } catch (e) {
-    log.warn(
-      yellow(
-        `Could not record the rolled digests in the install.json of ${installId} (${reason(e)}). Add this before re-running the installer, or it deploys the newest release instead:\n  "imageDigests": ${JSON.stringify(digests)}`,
-      ),
-    );
-  }
-  const meta = readMetadata(installId);
-  const manual = stackConfigRecovery(installId, meta ?? {}, provider, digests);
-  let backend: ResolvedBackend;
-  try {
-    if (!meta) throw new Error(`no install.json for '${installId}'`);
-    backend = resolveBackend(meta, {
-      installRoot: installRoot(installId),
-      readPassphrase: () => readSecret(installId, "pulumi-passphrase"),
-    });
-  } catch (e) {
-    log.warn(
-      yellow(
-        `Stack config not updated (${reason(e)}). Before any manual \`pulumi up\`, run:\n${manual}`,
-      ),
-    );
-    return;
-  }
-  try {
-    const { writeImageDigestsToStack } = await import("./wizards/gcp-pulumi.js");
-    const { removedOverrides } = await writeImageDigestsToStack({
-      backend,
-      provider,
-      digests,
-    });
-    log.info(dim("Pinned the rolled image digests in the Pulumi stack config."));
-    if (removedOverrides.length > 0) {
-      log.warn(
-        yellow(
-          `Removed ${removedOverrides.join(", ")} from the stack config: those image overrides win over the digest pins, so a later \`pulumi up\` would have rolled back to them.`,
-        ),
-      );
-    }
-  } catch (e) {
-    log.warn(
-      yellow(
-        `Could not pin the rolled digests in the Pulumi stack config (${reason(e)}). Before any manual \`pulumi up\`, run:\n${manual}`,
-      ),
-    );
-  }
+): Promise<boolean> {
+  // The local copy always names where the state lives (install-state.ts
+  // stateStoreFor), and reading it cannot fail on bucket access.
+  const local = readLocalMetadata(installId);
+  const bucket = local?.stateBackend?.kind === "gcs" ? local.stateBackend.bucket : null;
+  return recordRolledDigests(digests, releaseVersion, {
+    recordInstall: (d, v) => recordImageDigests(installId, d, v),
+    pinStack: async (d) => {
+      const meta = readMetadata(installId);
+      if (!meta) throw new Error(`no install.json for '${installId}'`);
+      const backend: ResolvedBackend = resolveBackend(meta, {
+        installRoot: installRoot(installId),
+        readPassphrase: () => readSecret(installId, "pulumi-passphrase"),
+      });
+      const { writeImageDigestsToStack } = await import("./wizards/gcp-pulumi.js");
+      return writeImageDigestsToStack({ backend, provider, digests: d });
+    },
+    stackRecovery: (d) => stackConfigRecovery(installId, local ?? {}, provider, d),
+    installJsonLocation: bucket
+      ? `gs://${bucket}/${OPS_INSTALL_PREFIX}/install.json (and ${join(installRoot(installId), "install.json")})`
+      : join(installRoot(installId), "install.json"),
+    log: {
+      info: (m) => log.info(dim(m)),
+      warn: (m) => log.warn(yellow(m)),
+      error: (m) => log.error(red(m)),
+    },
+  });
 }
 
 /**
@@ -717,10 +751,13 @@ async function backupOf(meta: InstallMetadata): Promise<boolean> {
 // rotate-secret <name>
 // =========================================================================
 
-export async function rotateSecretCommand(name: string | undefined): Promise<void> {
+export async function rotateSecretCommand(
+  name: string | undefined,
+  opts: { readonly finish?: boolean; readonly now?: boolean } = {},
+): Promise<void> {
   if (!name) {
-    log.error(red("Usage: caelo-cms rotate-secret <name>"));
-    log.warn(`Names: ${ROTATABLE_SECRETS.join(", ")}`);
+    log.error(red("Usage: caelo-cms rotate-secret <name> [--finish]"));
+    log.warn(`Names: ${[...ROTATABLE_SECRETS, SEAL_KEY_SECRET].join(", ")}`);
     process.exit(2);
   }
   const refusal = rotationRefusal(name);
@@ -728,7 +765,10 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
     log.error(red(refusal));
     process.exit(2);
   }
-  const secret = name as RotatableSecret;
+  if (opts.finish && name !== SEAL_KEY_SECRET) {
+    log.error(red(`--finish applies to ${SEAL_KEY_SECRET} only; ${name} rotates in one step.`));
+    process.exit(2);
+  }
   const { meta } = await requireInstall("rotate-secret");
   if (meta.provider !== "gcp" && meta.provider !== "gcp-firebase") {
     log.warn(`rotate-secret for provider ${meta.provider} not yet implemented.`);
@@ -736,6 +776,32 @@ export async function rotateSecretCommand(name: string | undefined): Promise<voi
   }
   if (!meta.projectId) return;
   const region = installRegion(meta);
+
+  if (name === SEAL_KEY_SECRET) {
+    const gatewayService = await resolveGcpResourceName(
+      gcloud,
+      "run-service",
+      "caelo-production-gateway",
+      meta.projectId,
+      region,
+    );
+    if (!gatewayService) {
+      log.error(
+        red("Could not find the caelo-production-gateway* Cloud Run service — nothing rotated"),
+      );
+      return;
+    }
+    const target = { projectId: meta.projectId, region, env: GCP_STACK_ENV, gatewayService };
+    const report = opts.finish
+      ? await finishSealKeyRotation(target, {}, { now: opts.now === true })
+      : await startSealKeyRotation(target);
+    for (const step of report.steps) log.info(`  ${step}`);
+    if (report.ok)
+      log.success(green(opts.finish ? "seal-key rotation finished" : "seal-key rotation started"));
+    else log.error(red(report.error ?? "seal-key rotation failed"));
+    return;
+  }
+  const secret = name as RotatableSecret;
 
   const s = spinner();
   s.start(`Rotating ${secret}...`);

@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0293 — epic #724, rollout E: existing literal internal links become
+-- 0326 — epic #724, rollout E: existing literal internal links become
 -- page / media references.
 --
 -- The conversion itself is NOT in this file. Turning `/about` into
@@ -17,13 +17,11 @@
 --                         where it was found), and the before/after of
 --                         every row it changed so `links.revert_migration`
 --                         can restore exactly that.
---   import_run_links      links an import's rebuild wrote to pages of the
---                         run that did not exist yet (kept literal at
---                         write time instead of refused), plus the links
---                         compose_from_run could not resolve. Finalising
---                         the run converts the pending ones; what is left
---                         is the run report's "unresolved internal links".
 --   site_snapshots op kinds for the migration and its revert.
+--
+-- An import run's links to pages it had not built yet are rollout C's
+-- (`import_run_links`, 0325, finalised by `imports.resolve_links`), not
+-- this migration's.
 
 BEGIN;
 
@@ -31,12 +29,10 @@ SET LOCAL caelo.actor_kind = 'system';
 
 CREATE TABLE IF NOT EXISTS link_migration_runs (
   id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  -- 'dry_run' writes nothing but this row; 'apply' converts; 'import'
-  -- is an import run's link finalisation (scoped to that run's links).
-  mode             text NOT NULL CHECK (mode IN ('dry_run', 'apply', 'import')),
-  -- 'boot' (the one-time upgrade run), 'manual' (Owner), 'import'.
-  trigger          text NOT NULL CHECK (trigger IN ('boot', 'manual', 'import')),
-  import_run_id    uuid NULL REFERENCES import_runs(id) ON DELETE SET NULL,
+  -- 'dry_run' writes nothing but this row; 'apply' converts.
+  mode             text NOT NULL CHECK (mode IN ('dry_run', 'apply')),
+  -- 'boot' (the one-time upgrade run) or 'manual' (Owner).
+  trigger          text NOT NULL CHECK (trigger IN ('boot', 'manual')),
   actor_id         uuid NOT NULL REFERENCES actors(id),
   -- The migration's main-line snapshot (null for a dry run or a run that
   -- changed nothing on main).
@@ -64,31 +60,6 @@ ALTER TABLE link_migration_runs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE link_migration_runs FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS link_migration_runs_authenticated_scope ON link_migration_runs;
 CREATE POLICY link_migration_runs_authenticated_scope ON link_migration_runs
-  USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL)
-  WITH CHECK (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
-
-CREATE TABLE IF NOT EXISTS import_run_links (
-  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  run_id      uuid NOT NULL REFERENCES import_runs(id) ON DELETE CASCADE,
-  -- The link exactly as written.
-  value       text NOT NULL,
-  -- 'pending': written while its page did not exist yet;
-  -- 'resolved': converted to a reference by the run's finalisation;
-  -- 'unresolved': still matches no page at finalisation / compose.
-  status      text NOT NULL CHECK (status IN ('pending', 'resolved', 'unresolved')),
-  -- 'build' (a write during the rebuild) or 'compose' (compose_from_run).
-  source      text NOT NULL CHECK (source IN ('build', 'compose')),
-  -- Where it was last seen: `values.cta_href`, `html`, a module id, …
-  location    text NOT NULL DEFAULT '',
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  updated_at  timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (run_id, value)
-);
-
-ALTER TABLE import_run_links ENABLE ROW LEVEL SECURITY;
-ALTER TABLE import_run_links FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS import_run_links_authenticated_scope ON import_run_links;
-CREATE POLICY import_run_links_authenticated_scope ON import_run_links
   USING (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL)
   WITH CHECK (NULLIF(current_setting('caelo.actor_kind', true), '') IS NOT NULL);
 

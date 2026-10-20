@@ -56,7 +56,7 @@ export function defaultGoogleDeps(): GoogleDeps {
 export async function googleCall(
   deps: GoogleDeps,
   url: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PATCH",
   body?: unknown,
 ): Promise<unknown> {
   const token = await deps.accessToken();

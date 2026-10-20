@@ -71,7 +71,11 @@ import {
   normalizeStoredCrawlScope,
   refineCrawlScopeAgainstSourceUrl,
 } from "./imports-crawl-scope.js";
-import { finaliseImportLinks } from "./links-import.js";
+import {
+  finaliseImportLinks,
+  ImportLinkFinalisationError,
+  UNRESOLVED_IMPORT_LINK_NEXT_STEP,
+} from "./links-import.js";
 import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
@@ -2330,18 +2334,24 @@ export const getImportRunReportOp = defineOperation({
       }),
     ),
     /**
-     * Epic #724 (rollout E) — the run's internal links: written to a
-     * planned page before it was built (`pending` until the run's links
-     * are resolved), converted to page references (`resolved`), or
-     * matching no page (`unresolved`, from the rebuild or from
-     * compose_from_run). Never guessed.
+     * Epic #724 — the run's internal links: written to a planned page
+     * before it was built (`pending` until resolve_import_links), stored
+     * as page references (`resolved`), or matching no page (`unresolved`,
+     * from the rebuild or from compose_from_run) — each unresolved one is
+     * a finding with where it is. Never guessed.
      */
     internalLinks: z.object({
       pending: z.number(),
       resolved: z.number(),
       unresolved: z.array(
-        z.object({ value: z.string(), source: z.enum(["build", "compose"]), location: z.string() }),
+        z.object({
+          value: z.string(),
+          entityKind: z.enum(["content_instance", "module", "structured_set"]),
+          entityId: z.string(),
+          location: z.string(),
+        }),
       ),
+      nextStep: z.string().nullable(),
     }),
   }),
   handler: async (_ctx, input, tx) => {
@@ -2540,30 +2550,52 @@ export const getImportRunReportOp = defineOperation({
   },
 });
 
-/** Epic #724 (rollout E) — the run's recorded internal links, for the report. */
+/** Epic #724 — the run's recorded internal links, for the report. */
 async function loadImportRunLinks(
   tx: TransactionRunner,
   runId: string,
 ): Promise<{
   pending: number;
   resolved: number;
-  unresolved: { value: string; source: "build" | "compose"; location: string }[];
+  unresolved: {
+    value: string;
+    entityKind: "content_instance" | "module" | "structured_set";
+    entityId: string;
+    location: string;
+  }[];
+  nextStep: string | null;
 }> {
   const rows = (await tx.execute(sql`
-    SELECT value, status, source, location FROM import_run_links
-     WHERE run_id = ${runId}::uuid ORDER BY value
+    SELECT value, status, entity_kind, entity_id::text AS entity_id, location
+      FROM import_run_links
+     WHERE run_id = ${runId}::uuid
+     ORDER BY value, entity_kind, entity_id
   `)) as unknown as {
     value: string;
     status: "pending" | "resolved" | "unresolved";
-    source: "build" | "compose";
+    entity_kind: "content_instance" | "module" | "structured_set";
+    entity_id: string;
     location: string;
   }[];
+  const pending = rows.filter((r) => r.status === "pending").length;
+  const unresolved = rows
+    .filter((r) => r.status === "unresolved")
+    .map((r) => ({
+      value: r.value,
+      entityKind: r.entity_kind,
+      entityId: r.entity_id,
+      location: r.location,
+    }));
   return {
-    pending: rows.filter((r) => r.status === "pending").length,
+    pending,
     resolved: rows.filter((r) => r.status === "resolved").length,
-    unresolved: rows
-      .filter((r) => r.status === "unresolved")
-      .map((r) => ({ value: r.value, source: r.source, location: r.location })),
+    unresolved,
+    nextStep:
+      unresolved.length > 0
+        ? UNRESOLVED_IMPORT_LINK_NEXT_STEP
+        : pending > 0
+          ? "Links wait for pages of this run that are not built yet: build them, then call resolve_import_links."
+          : null,
   };
 }
 
@@ -3145,11 +3177,20 @@ export const cleanupImportRunOp = defineOperation({
     droppedScreenshotKeys: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
-    // Epic #724 rollout E — the run's last chance to turn links to its
-    // planned pages into references (main and the run's chat); what is
-    // left stays in the run report. After this the run is no longer
-    // active, so a link to an unbuilt page is refused again.
-    await finaliseImportLinks(tx, ctx, input.runId, true);
+    // Epic #724 — the run's last chance to turn the links its rebuild
+    // wrote to planned pages into references; what is left stays in the
+    // run report as findings. After this the run is no longer active, so
+    // a link to an unbuilt page is refused again.
+    try {
+      await finaliseImportLinks(tx, ctx, input.runId);
+    } catch (e) {
+      if (!(e instanceof ImportLinkFinalisationError)) throw e;
+      throw new OperationAbortError({
+        kind: "HandlerError",
+        operation: "imports.cleanup_run",
+        message: `the run's internal links could not be finalised: ${e.message}. Nothing was cleaned up; fix that content, then run the cleanup again.`,
+      });
+    }
     await tx.execute(sql`
       UPDATE import_runs SET status = 'completed' WHERE id = ${input.runId}::uuid
     `);
@@ -3916,13 +3957,14 @@ export const composeFromImportRunOp = defineOperation({
       [...composedModuleIds],
       run.source_url,
     );
-    // Rollout E — the run report lists them (get_import_run_report).
+    // The run report lists them as findings; resolve_import_links retries
+    // them once more pages exist.
     for (const u of unresolvedLinks) {
       await tx.execute(sql`
-        INSERT INTO import_run_links (run_id, value, status, source, location)
-        VALUES (${input.runId}::uuid, ${u.value}, 'unresolved', 'compose', ${`module ${u.moduleId}`})
-        ON CONFLICT (run_id, value) DO UPDATE SET
-          status = 'unresolved', source = 'compose', location = EXCLUDED.location, updated_at = now()
+        INSERT INTO import_run_links (run_id, value, status, entity_kind, entity_id, location)
+        VALUES (${input.runId}::uuid, ${u.value}, 'unresolved', 'module', ${u.moduleId}::uuid, 'html')
+        ON CONFLICT (run_id, value, entity_kind, entity_id) DO UPDATE SET
+          status = 'unresolved', updated_at = now()
       `);
     }
 

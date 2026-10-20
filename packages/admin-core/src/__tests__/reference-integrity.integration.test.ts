@@ -366,7 +366,14 @@ describe("reference integrity — Stage gate", () => {
     const check = createReferencesCheck(referenceSourcesFromOps(registry, adapter, SYS));
     if (check.scope !== "site") throw new Error("site check expected");
     const findings = await check.run({
-      pages: [],
+      pages: [
+        {
+          pageId: linker.pageId,
+          path: `/${PFX}-l3`,
+          url: `http://staging.invalid/${PFX}-l3/`,
+          html: "",
+        },
+      ],
       build: {
         baseUrl: "http://staging.invalid",
         probe: async () => ({ found: true, status: 200 }),

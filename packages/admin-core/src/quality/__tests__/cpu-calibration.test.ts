@@ -12,8 +12,8 @@ import { formatMetrics } from "../../ai/tools/quality-metrics-format.js";
 import {
   assertCpuSlowdownApplied,
   calibrateCpuSlowdown,
+  fastestBenchmarkIndex,
   MIN_BENCHMARK_INDEX,
-  medianBenchmarkIndex,
 } from "../cpu-calibration.js";
 import { LighthouseRunError } from "../lighthouse-extract.js";
 import { performanceMetricsFromRuns } from "../lighthouse-metrics.js";
@@ -90,19 +90,19 @@ describe("assertCpuSlowdownApplied", () => {
   });
 });
 
-describe("medianBenchmarkIndex", () => {
-  it("takes the middle sample, so one noisy sample does not decide", () => {
-    expect(medianBenchmarkIndex([900, 300, 1000])).toBe(900);
-    expect(medianBenchmarkIndex([800, 1000])).toBe(900);
+describe("fastestBenchmarkIndex", () => {
+  it("takes the highest sample: interference only ever lowers one", () => {
+    expect(fastestBenchmarkIndex([2104, 1650, 2145])).toBe(2145);
+    expect(fastestBenchmarkIndex([900])).toBe(900);
   });
 
   it("throws on no samples", () => {
-    expect(() => medianBenchmarkIndex([])).toThrow();
+    expect(() => fastestBenchmarkIndex([])).toThrow();
   });
 });
 
 describe("the calibration on the recorded metrics", () => {
-  const metrics = performanceMetricsFromRuns(recordedRuns());
+  const metrics = performanceMetricsFromRuns(recordedRuns(), 0);
 
   it("is accepted by the protocol schema, and audits recorded before it still parse", () => {
     const calibrated = {

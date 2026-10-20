@@ -31,6 +31,8 @@ const STATUS_WORDS: Record<PlatformUpdateRequest["status"], string> = {
   needs_cloud_shell:
     "needs the Owner to run the upgrade by hand once (Cloud Shell on Google Cloud, the upgrade command on a self-hosted server)",
   cancelled: "cancelled",
+  superseded:
+    "no longer needed (the install has moved past it: it runs this release or a newer one, or a newer update was requested)",
 };
 
 /** One request as a line the AI can pass on. */
@@ -82,7 +84,7 @@ export const getCaeloUpdateTool = makeReadTool<{ requestId?: string }>({
 export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
   name: "get_caelo_update_policy",
   description:
-    "Whether Caelo updates install automatically on this site and which kinds (security fixes, patch, minor; never major), the maintenance window, the soak periods, and whether automatic installs are paused (by the Owner, or after a failure). " +
+    "Whether Caelo updates install automatically on this site or the Owner is only notified (new releases, security fixes included, are always announced), and which kinds (security fixes, patch, minor; never major), the maintenance window, the soak periods, and whether automatic installs are paused (by the Owner, or after a failure). " +
     "For what the scheduler last decided about the newest release and which update emails went out, use get_caelo_auto_update_status. Read-only.",
   opName: "platform_update_policy.get",
   input: z.object({}).strict(),
@@ -92,6 +94,7 @@ export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
       autoSecurity: boolean;
       autoPatch: boolean;
       autoMinor: boolean;
+      autoConverge: boolean;
       windowStart: string | null;
       windowEnd: string | null;
       windowTimezone: string;
@@ -109,10 +112,13 @@ export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
     ].filter(Boolean);
     const lines = [
       p.mode === "auto"
-        ? `Automatic installs: on for ${kinds.length ? kinds.join(", ") : "nothing yet (no kind switched on)"}; major releases never; releases that change the cloud setup or the database destructively never (the Owner is emailed instead).`
-        : p.mode === "notify"
-          ? "Automatic installs: off — the Owner is notified and installs by hand."
-          : "Automatic installs and update notices: off.",
+        ? `Automatic installs: on for ${kinds.length ? kinds.join(", ") : "nothing yet (no kind switched on)"}; major releases never; releases that destroy database data never; releases that change the cloud setup only when the Owner also allowed those (otherwise the Owner is emailed instead).`
+        : "Automatic installs: off — the Owner is notified and installs by hand.",
+      ...(p.mode === "auto" && p.autoConverge
+        ? [
+            "The Owner also allowed releases that change the Google Cloud project to install automatically: Caelo's converge job runs them under the same kinds, soak and window. An install without a converge job still announces them for the Owner to run from a terminal.",
+          ]
+        : []),
       p.windowStart
         ? `Maintenance window: ${p.windowStart}–${p.windowEnd} (${p.windowTimezone}).`
         : "Maintenance window: any time.",

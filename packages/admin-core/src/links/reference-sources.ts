@@ -28,6 +28,7 @@
 
 import { collectPluginLinkLocations, MAIN_RENDER, withPluginScope } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
+import { MODULE_FIELD_KINDS, type ModuleFieldKind } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
 import { effectiveLayoutModulesSql } from "../ops/content/layout-overlay.js";
@@ -41,9 +42,11 @@ import {
 /** A declared module field, as far as link scanning needs it. */
 export interface SourceField {
   readonly name: string;
-  readonly kind: string;
+  readonly kind: ModuleFieldKind;
   readonly default?: unknown;
 }
+
+const FIELD_KINDS: ReadonlySet<string> = new Set(MODULE_FIELD_KINDS);
 
 export interface SourceModule {
   readonly id: string;
@@ -65,6 +68,12 @@ export interface SourcePlacement {
   readonly moduleId: string;
   /** Null for a pre-v0.12 placement that renders its module's defaults. */
   readonly contentInstanceId: string | null;
+  /**
+   * `synced`: the placement shows the shared instance row, so a fix goes
+   * to the instance (set_page_module_content refuses a synced placement).
+   * Null when there is no instance.
+   */
+  readonly syncMode: "synced" | "unsynced" | null;
 }
 
 export interface SourceTemplate {
@@ -127,7 +136,7 @@ export function parseSourceFields(raw: unknown): SourceField[] {
   for (const f of parsed) {
     if (f === null || typeof f !== "object") continue;
     const { name, kind } = f as { name?: unknown; kind?: unknown };
-    if (typeof name !== "string" || typeof kind !== "string") continue;
+    if (typeof name !== "string" || typeof kind !== "string" || !FIELD_KINDS.has(kind)) continue;
     out.push(f as SourceField);
   }
   return out;
@@ -199,7 +208,7 @@ export async function loadReferenceSources(
 
   const placementRows = (await tx.execute(sql`
     SELECT pm.page_id::text AS page_id, pm.block_name, pm.module_id::text AS module_id,
-           pm.content_instance_id::text AS content_instance_id
+           pm.content_instance_id::text AS content_instance_id, pm.sync_mode
     FROM page_modules pm
     JOIN pages p ON p.id = pm.page_id AND p.deleted_at IS NULL AND ${visible("p", branchId)}
     ORDER BY pm.page_id, pm.block_name, pm.position
@@ -208,12 +217,14 @@ export async function loadReferenceSources(
     block_name: string;
     module_id: string;
     content_instance_id: string | null;
+    sync_mode: "synced" | "unsynced" | null;
   }[];
   let placements: SourcePlacement[] = placementRows.map((r) => ({
     pageId: r.page_id,
     blockName: r.block_name,
     moduleId: r.module_id,
     contentInstanceId: r.content_instance_id,
+    syncMode: r.content_instance_id === null ? null : r.sync_mode,
   }));
 
   const moduleRows = (await tx.execute(sql`
@@ -439,11 +450,18 @@ async function overlayBranch(
             blockName: b.blockName,
             moduleId: p.moduleId,
             contentInstanceId: p.contentInstanceId,
+            syncMode: p.syncMode,
           });
         }
       } else {
         for (const moduleId of b.moduleIds) {
-          kept.push({ pageId, blockName: b.blockName, moduleId, contentInstanceId: null });
+          kept.push({
+            pageId,
+            blockName: b.blockName,
+            moduleId,
+            contentInstanceId: null,
+            syncMode: null,
+          });
         }
       }
     }
@@ -506,7 +524,7 @@ async function loadPluginValues(
       });
       if (value === undefined || value === null) continue;
       const fields = loc.fields
-        ? loc.fields.map((f) => ({ name: f.name, kind: f.kind }))
+        ? parseSourceFields(loc.fields)
         : loc.moduleId
           ? (modules.get(loc.moduleId)?.fields ?? null)
           : null;

@@ -138,18 +138,19 @@ interface Report {
     pageId: string | null;
     createdAt: string | null;
   }[];
-  // Epic #724 rollout E — links to the run's pages (see imports.resolve_links).
+  // Epic #724 — links to planned pages and the ones matching no page.
   internalLinks: {
     pending: number;
     resolved: number;
-    unresolved: { value: string; source: "build" | "compose"; location: string }[];
+    unresolved: { value: string; entityKind: string; entityId: string; location: string }[];
+    nextStep: string | null;
   };
 }
 
 export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
   name: "get_import_run_report",
   description:
-    "Fetch the migration run's rollup: pages built per confirmed type, redirects created, crawl fetch errors, your recorded notes (applied vs suggested per category), and the run's internal links (resolved to page references / still waiting for their page / unresolved — call resolve_import_links first). Call it when the migration is DONE and close the conversation with it in plain words — what was preserved, what you fixed, what the operator should look at. Do not paste the raw data; narrate it.",
+    "Fetch the migration run's rollup: pages built per confirmed type, redirects created, crawl fetch errors, and your recorded notes (applied vs suggested per category). Call it when the migration is DONE and close the conversation with it in plain words — what was preserved, what you fixed, what the operator should look at. Do not paste the raw data; narrate it.",
   schema: reportInput,
   inputSchema: {
     type: "object",
@@ -259,6 +260,20 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
             .map((e) => `${e.url} (${e.reason})`)
             .join("; ")}${v.crawlErrors.length > 8 ? "; …" : ""}`
         : "Crawl errors: none.",
+      // Epic #724 — always stated, like the crawl errors: a link that
+      // still matches no page is a finding, never silent.
+      v.internalLinks.unresolved.length > 0
+        ? `Internal links matching no page (${v.internalLinks.unresolved.length}): ${v.internalLinks.unresolved
+            .slice(0, 12)
+            .map((u) => `"${u.value}" in ${u.entityKind} ${u.entityId} (${u.location})`)
+            .join(
+              "; ",
+            )}${v.internalLinks.unresolved.length > 12 ? "; …" : ""}. ${v.internalLinks.nextStep ?? ""}`
+        : `Internal links: ${v.internalLinks.resolved} written before their page existed now point at it; none matches no page.${
+            v.internalLinks.pending > 0
+              ? ` ${v.internalLinks.pending} still wait for a page of this run: ${v.internalLinks.nextStep ?? ""}`
+              : ""
+          }`,
       // issue #425 — the active scope and the skipped-out-of-scope count
       // are ALWAYS stated (CLAUDE.md §2 loud reporting), even at zero.
       v.crawlScope
@@ -322,21 +337,6 @@ export const getImportRunReportTool: ToolDefinitionWithHandler<ReportInput> = {
               "\n",
             )}${v.events.length > 40 ? `\n- …and ${v.events.length - 40} more (see the run report queue)` : ""}`
         : "Error/warning ledger: empty — nothing was flagged during this migration.",
-      // Epic #724 rollout E — internal links are page references; links
-      // written before their page existed wait for resolve_import_links.
-      `Internal links: ${v.internalLinks.resolved} resolved to page references, ${v.internalLinks.pending} still waiting for their page${
-        v.internalLinks.pending > 0
-          ? " (call resolve_import_links once every page is built — until then they are plain paths)"
-          : ""
-      }, ${v.internalLinks.unresolved.length} unresolved.`,
-      v.internalLinks.unresolved.length > 0
-        ? `UNRESOLVED INTERNAL LINKS — they match no page of the site and were NOT guessed; report them, then point each at an existing page's path or build the missing page:\n${v.internalLinks.unresolved
-            .slice(0, 40)
-            .map((u) => `- "${u.value}"${u.location ? ` (${u.location})` : ""}`)
-            .join(
-              "\n",
-            )}${v.internalLinks.unresolved.length > 40 ? `\n- …and ${v.internalLinks.unresolved.length - 40} more` : ""}`
-        : "",
       "",
       "Narrate this to the operator in plain words — preserved / fixed / worth-a-look.",
     ].filter((l) => l !== "");

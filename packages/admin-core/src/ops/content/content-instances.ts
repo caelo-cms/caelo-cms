@@ -44,6 +44,7 @@ import { branchVisibilityFilter } from "../../branch.js";
 import { emitDomainEvent } from "../../domain-events.js";
 import { canonicaliseInstanceValues } from "../../links/canonicalise-writes.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
+import { recordPendingImportLinks } from "../../links/import-targets.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -755,6 +756,11 @@ export const createContentInstanceOp = defineOperation({
       });
     }
 
+    // Epic #724 — links to pages the chat's import run will still build.
+    await recordPendingImportLinks(tx, linkCanon.pending, {
+      kind: "content_instance",
+      id: contentInstanceId,
+    });
     return ok({ contentInstanceId });
   },
 });
@@ -1039,6 +1045,11 @@ export const setContentInstanceValuesOp = defineOperation({
       });
     }
 
+    // Epic #724 — links to pages the chat's import run will still build.
+    await recordPendingImportLinks(tx, linkCanon.pending, {
+      kind: "content_instance",
+      id: input.id,
+    });
     return ok({ placementCount, nestedParentCount, version: nextVersion });
   },
 });

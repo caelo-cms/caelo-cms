@@ -8,9 +8,6 @@
  *                              they are — so the AI can fix them in a
  *                              chat (edit the link to an existing page's
  *                              path) without asking the operator.
- *   resolve_import_links       the end of a site import: converts the
- *                              links the rebuild wrote to pages that did
- *                              not exist yet.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -56,6 +53,8 @@ const KIND_TEXT: Record<string, string> = {
   "dangling-page-ref": "the linked page was deleted",
   "dangling-media-ref": "the linked asset was deleted",
   "unsupported-link-form": "its ?query or #anchor cannot be stored in a reference",
+  "unknown-file": "a file path nothing on the site serves",
+  "malformed-link-ref": "a broken internal reference (truncated id or extra characters)",
 };
 
 const SURFACE_TEXT: Record<string, string> = {
@@ -63,6 +62,7 @@ const SURFACE_TEXT: Record<string, string> = {
   module_field_defaults: "module field defaults (layout chrome)",
   content_values: "page / shared content",
   structured_sets: "menus and link lists",
+  layout_html: "a layout's own HTML (the page frame; the Owner edits it under Settings → Layouts)",
 };
 
 export const getLinkMigrationReportTool: ToolDefinitionWithHandler<ReportInput> = {
@@ -74,7 +74,8 @@ export const getLinkMigrationReportTool: ToolDefinitionWithHandler<ReportInput> 
     "content / menu it sits in. Use when the operator asks about broken or old links after an update, or before fixing " +
     "links site-wide. Fix each listed link with the normal edit tools (edit_module, set_content_instance_values, " +
     "set_structured_set) by pointing it at an existing page's path (list_pages) or removing it; the edit stores the " +
-    "reference. Filter with `search` (matches the link, the label and the field). Running or reverting the migration " +
+    "reference. A link in a layout's own HTML (the page frame) is the Owner's to fix under Settings → Layouts: name " +
+    "the layout and the path to use. Filter with `search` (matches the link, the label and the field). Running or reverting the migration " +
     "is the Owner's (Settings → Internal links); you only read.",
   schema: reportInput,
   inputSchema: {
@@ -123,42 +124,5 @@ export const getLinkMigrationReportTool: ToolDefinitionWithHandler<ReportInput> 
         : "",
     ].filter((l) => l !== "");
     return { ok: true, content: lines.join("\n") };
-  },
-};
-
-const resolveInput = z.object({ runId: z.string().uuid() }).strict();
-type ResolveInput = z.infer<typeof resolveInput>;
-
-export const resolveImportLinksTool: ToolDefinitionWithHandler<ResolveInput> = {
-  name: "resolve_import_links",
-  description:
-    "During a site import you link to the migrated site's pages by their real paths even before you have built them: " +
-    "such a link is kept as written and recorded against the import run. Call this ONCE when every page of the run is " +
-    "built (before get_import_run_report): it turns each recorded link whose page now exists into a page reference, and " +
-    "lists the ones that still match no page (fix those links or build the missing page, then call it again). " +
-    "Safe to repeat. The run's cleanup also does it.",
-  schema: resolveInput,
-  inputSchema: {
-    type: "object",
-    additionalProperties: false,
-    required: ["runId"],
-    properties: { runId: { type: "string", format: "uuid" } },
-  },
-  handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.resolve_links", input);
-    if (!r.ok)
-      return { ok: false, content: `resolve_import_links failed: ${describeError(r.error)}` };
-    const v = r.value as { converted: number; resolved: number; unresolved: number };
-    if (v.resolved === 0 && v.unresolved === 0) {
-      return { ok: true, content: "No links were waiting for a page of this run." };
-    }
-    return {
-      ok: true,
-      content:
-        `${v.resolved} recorded link(s) now point at their pages (${v.converted} link occurrence(s) stored as references).` +
-        (v.unresolved > 0
-          ? ` ${v.unresolved} still match no page — get_import_run_report lists them with where they are; point each at an existing page's path or build the page, then call resolve_import_links again.`
-          : ""),
-    };
   },
 };

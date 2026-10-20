@@ -140,5 +140,30 @@ for (const colorMode of COLOR_MODES) {
         await expectNoBlockingViolations(page, route, colorMode);
       });
     }
+
+    // The sweep above only meets the notification bell with a count when a
+    // parallel spec happens to leave something pending. Pin that state: the
+    // bell's visible badge must be part of its accessible name (WCAG 2.5.3,
+    // axe label-content-name-mismatch).
+    test("the notification bell with pending items has no axe violations", async ({ page }) => {
+      await page.route("**/api/notifications", (route) =>
+        route.fulfill({
+          json: {
+            pendingProposals: 3,
+            failedDeploys: 0,
+            staleBranches: 0,
+            upgradeAvailable: false,
+            latestVersion: null,
+            releaseUrl: null,
+            updatesPath: "/settings/updates",
+            total: 3,
+          },
+        }),
+      );
+      await page.goto("/settings");
+      await expectColorMode(page, colorMode);
+      await expect(page.getByRole("button", { name: "Notifications, 3 pending" })).toBeVisible();
+      await expectNoBlockingViolations(page, "/settings (3 pending)", colorMode);
+    });
   });
 }

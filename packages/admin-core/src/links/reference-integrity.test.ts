@@ -79,7 +79,9 @@ function placed(pageId: string, href: string, n = 1): Partial<ReferenceSourceMod
   return {
     modules: new Map([[m.id, m]]),
     instances: new Map([[ci, { id: ci, moduleId: m.id, values: { cta: href } }]]),
-    placements: [{ pageId, blockName: "content", moduleId: m.id, contentInstanceId: ci }],
+    placements: [
+      { pageId, blockName: "content", moduleId: m.id, contentInstanceId: ci, syncMode: "unsynced" },
+    ],
   };
 }
 
@@ -105,6 +107,21 @@ describe("reference integrity policy (#724 decisions)", () => {
     expect(scan(m, "production")[0]?.fix.hint).toContain("set_pages_status_many");
   });
 
+  it("a synced placement on one page is fixed on its content instance", () => {
+    // Regression (Codex on #893): a synced row placed on a single page was
+    // not "shared", so the fix named set_page_module_content — which
+    // refuses synced placements.
+    const synced = placed(ABOUT, `caelo:page/${GONE}`);
+    const pl = synced.placements?.[0];
+    if (!pl) throw new Error("placement expected");
+    const issues = scan(
+      model({ ...synced, placements: [{ ...pl, syncMode: "synced" }] }),
+      "staging",
+    );
+    expect(issues[0]?.fix.tool).toBe("set_content_instance_values");
+    expect(issues[0]?.fix.hint).toContain(pl.contentInstanceId ?? "");
+  });
+
   it("a problem only on a draft page ships nowhere: a warning, never a block", () => {
     const issues = scan(model(placed(DRAFT, `caelo:page/${GONE}`)), "production");
     expect(issues[0]).toMatchObject({
@@ -114,6 +131,49 @@ describe("reference integrity policy (#724 decisions)", () => {
     });
     // A draft page linking another draft page is no issue at all.
     expect(scan(model(placed(DRAFT, `caelo:page/${DRAFT}`)), "production")).toEqual([]);
+  });
+
+  it("nested modules are checked only where the template dispatches them", () => {
+    // Regression (Codex on #893): every declared `module` / `module-list`
+    // field was walked, so a nested module the HTML no longer renders
+    // (`{{>field}}` / `{{#field}}` removed) blocked Stage with links that
+    // never ship. The renderer is lazy; the check follows it.
+    const child = mod(2, '<a href="{{cta}}">x</a>', [{ name: "cta", kind: "url" }]);
+    const childCi = id(302);
+    const ref = { moduleId: child.id, contentInstanceId: childCi };
+    const parentWith = (html: string) => {
+      const parent = mod(1, html, [
+        { name: "hero", kind: "module" },
+        { name: "cards", kind: "module-list" },
+      ]);
+      const ci = id(301);
+      return model({
+        modules: new Map([
+          [parent.id, parent],
+          [child.id, child],
+        ]),
+        instances: new Map([
+          [ci, { id: ci, moduleId: parent.id, values: { hero: ref, cards: [ref] } }],
+          [childCi, { id: childCi, moduleId: child.id, values: { cta: `caelo:page/${GONE}` } }],
+        ]),
+        placements: [
+          {
+            pageId: ABOUT,
+            blockName: "c",
+            moduleId: parent.id,
+            contentInstanceId: ci,
+            syncMode: "unsynced",
+          },
+        ],
+      });
+    };
+    for (const html of ["<div>{{>hero}}</div>", "<ul>{{#cards}}<li></li>{{/cards}}</ul>"]) {
+      const issues = scan(parentWith(html), "staging");
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toMatchObject({ problem: "missing-target", severity: "block" });
+      expect(issues[0]?.place).toMatchObject({ kind: "content", nested: true });
+    }
+    expect(scan(parentWith("<div>no nested slot</div>"), "staging")).toEqual([]);
   });
 
   it("a working literal path is a warning naming its conversion; a broken one is a broken-literal warning", () => {
@@ -138,7 +198,13 @@ describe("reference integrity policy (#724 decisions)", () => {
         modules: new Map([[m.id, m]]),
         instances: new Map([[ci, { id: ci, moduleId: m.id, values: { label: "/nope" } }]]),
         placements: [
-          { pageId: ABOUT, blockName: "content", moduleId: m.id, contentInstanceId: ci },
+          {
+            pageId: ABOUT,
+            blockName: "content",
+            moduleId: m.id,
+            contentInstanceId: ci,
+            syncMode: "unsynced",
+          },
         ],
       }),
       "production",
@@ -178,6 +244,7 @@ describe("reference integrity places", () => {
           blockName: "content",
           moduleId: m.id,
           contentInstanceId: null,
+          syncMode: null,
         })),
       }),
       "staging",
@@ -229,7 +296,15 @@ describe("reference integrity places", () => {
     const rendered = scan(
       model({
         modules: new Map([[nav.id, nav]]),
-        placements: [{ pageId: HOME, blockName: "c", moduleId: nav.id, contentInstanceId: null }],
+        placements: [
+          {
+            pageId: HOME,
+            blockName: "c",
+            moduleId: nav.id,
+            contentInstanceId: null,
+            syncMode: null,
+          },
+        ],
         sets: [set("main")],
       }),
       "staging",
@@ -263,10 +338,23 @@ describe("references quality check findings", () => {
   it("maps blocks to errors, keeps page-bound content on its page and leaves broken literals to the links check", () => {
     const content = scan(model(placed(ABOUT, `caelo:page/${DRAFT}`)), "production");
     const broken = scan(model(placed(HOME, "/nope", 2)), "production");
-    const findings = referenceFindings([...content, ...broken], true);
+    const findings = referenceFindings([...content, ...broken], true, new Set([HOME, ABOUT]));
     expect(findings.map((f) => [f.ruleId, f.severity, f.pageId])).toEqual([
       ["references/unpublished-target", "error", ABOUT],
       ["references/limit-reached", "info", undefined],
     ]);
+  });
+
+  it("an issue stored on a draft page stays site-scoped: the staged build has no such page", () => {
+    // Regression (Codex on #893): naming a page outside the staged build made
+    // the runner reject the whole `references` check, failing the audit
+    // instead of reporting a non-blocking warning.
+    const issues = scan(model(placed(DRAFT, `caelo:page/${GONE}`)), "production");
+    expect(issues[0]?.pageIds).toEqual([DRAFT]);
+    const findings = referenceFindings(issues, false, new Set([HOME, ABOUT, DE_HOME]));
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ ruleId: "references/missing-target", severity: "warning" });
+    expect(findings[0]?.pageId).toBeUndefined();
+    expect(findings[0]?.message).toContain('"/soon"');
   });
 });

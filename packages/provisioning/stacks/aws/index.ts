@@ -349,10 +349,28 @@ new aws.cloudwatch.LogDelivery(
 //
 // Each Caelo service runs as its own Fargate service; sharing a cluster
 // keeps the per-month Fargate-cluster fee at zero (clusters are free).
+//
+// FIXME(issue #749): no quality-audit task definition yet. On GCP every
+// Lighthouse run of a Stage audit runs in its own container (#875,
+// src/audit-job-setup.ts); the AWS equivalent is a Fargate task per run
+// (admin-core quality/parallel-runner.ts `AuditTaskLauncher`). Until it
+// exists the admin records every Lighthouse audit as failed with that gap
+// (quality/lighthouse-runner-select.ts) instead of measuring on its own
+// shared CPU. Nothing is staged on AWS before #749 either.
+//
+// FIXME(issue #696): no in-cloud upgrader or converge job (#819) yet. On
+// GCP Settings → Updates hands app-roll releases to the upgrader job and
+// cloud-setup releases to the converge job; on AWS the admin refuses a
+// cloud-setup release with the CLI command that installs it (admin-core
+// platform-updates/update-route.ts) until this adapter gains both jobs.
 const cluster = new aws.ecs.Cluster(`${namePrefix}-ecs`, {
   settings: [{ name: "containerInsights", value: "enabled" }],
 });
 
+// #806 — no remote MCP on AWS: it rides Google IAP (gcp stacks only). The
+// gateway task definition, once it exists, sets none of its env, so /api/mcp/*
+// answers 503 remote_mcp_not_configured and the admin reports it unavailable.
+//
 // One task role per service (#635): the gateway's may read only the
 // public_role password, never a secret that unlocks a cms_admin login
 // (src/aws-task-roles.ts AWS_SERVICE_SECRETS, asserted by

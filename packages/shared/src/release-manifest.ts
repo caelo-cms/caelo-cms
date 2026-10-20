@@ -71,12 +71,23 @@ export const SIGSTORE_BUNDLE_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v
 /** Why fetching the artifact failed. */
 export type ReleaseArtifactErrorCode = "registry" | "artifact-shape" | "blob-digest";
 
+/** Why {@link fetchReleaseArtifact} failed. */
+export interface ReleaseArtifactError {
+  readonly code: ReleaseArtifactErrorCode;
+  readonly message: string;
+  /**
+   * Set on `registry` errors a retry may cure: the registry could not be
+   * reached, timed out, rate-limited (429) or failed (5xx). Absent when the
+   * registry answered that the manifest, tag or blob does not exist (404 and
+   * other 4xx) — retrying that changes nothing, so callers that would
+   * otherwise "try again later" must treat it as a verdict.
+   */
+  readonly transient?: true;
+}
+
 export type ReleaseArtifactResult =
   | { readonly ok: true; readonly manifestBytes: Uint8Array; readonly bundleBytes: Uint8Array }
-  | {
-      readonly ok: false;
-      readonly error: { readonly code: ReleaseArtifactErrorCode; readonly message: string };
-    };
+  | { readonly ok: false; readonly error: ReleaseArtifactError };
 
 /** Where and how {@link fetchReleaseArtifact} reaches the registry. */
 export interface ReleaseArtifactDeps {
@@ -101,6 +112,22 @@ const fail = (code: ReleaseArtifactErrorCode, message: string): ReleaseArtifactR
   error: { code, message },
 });
 
+/** A `registry` failure a retry may cure (see {@link ReleaseArtifactError.transient}). */
+const failTransient = (message: string): ReleaseArtifactResult => ({
+  ok: false,
+  error: { code: "registry", message, transient: true },
+});
+
+/** Whether an HTTP status says "try again" rather than "it does not exist". */
+function isTransientStatus(status: number): boolean {
+  return status >= 500 || status === 429 || status === 408;
+}
+
+/** A non-OK registry response as a failure, transient or not by its status. */
+function failStatus(status: number, message: string): ReleaseArtifactResult {
+  return isTransientStatus(status) ? failTransient(message) : fail("registry", message);
+}
+
 /**
  * Fetch the release manifest artifact of `version` and both its layers,
  * each checked against its content digest. Verifies NO signature: callers
@@ -120,6 +147,11 @@ export async function fetchReleaseArtifact(
       headers: { Accept: "application/vnd.oci.image.manifest.v1+json" },
     });
     if (!res.ok) {
+      if (isTransientStatus(res.status)) {
+        return failTransient(
+          `the registry at ${base} could not serve the release manifest of v${version} (HTTP ${res.status}); try again later.`,
+        );
+      }
       return fail(
         "registry",
         `no release manifest for v${version} at ${base} (HTTP ${res.status}). Releases before the signed manifest (epic #696) have none; otherwise check the version exists.`,
@@ -131,7 +163,7 @@ export async function fetchReleaseArtifact(
     }
     artifact = parsed.data;
   } catch (e) {
-    return fail("registry", `registry unreachable: ${e instanceof Error ? e.message : String(e)}`);
+    return failTransient(`registry unreachable: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   if (artifact.artifactType !== RELEASE_MANIFEST_ARTIFACT_TYPE) {
@@ -153,7 +185,7 @@ export async function fetchReleaseArtifact(
 
   const blob = async (layerDigest: string): Promise<Uint8Array | ReleaseArtifactResult> => {
     const res = await deps.fetch(`${base}/blobs/${layerDigest}`);
-    if (!res.ok) return fail("registry", `blob ${layerDigest}: HTTP ${res.status}`);
+    if (!res.ok) return failStatus(res.status, `blob ${layerDigest}: HTTP ${res.status}`);
     const bytes = new Uint8Array(await res.arrayBuffer());
     const actual = await sha256Digest(bytes);
     if (actual !== layerDigest) {
@@ -171,7 +203,7 @@ export async function fetchReleaseArtifact(
     if (!(bundleBytes instanceof Uint8Array)) return bundleBytes;
     return { ok: true, manifestBytes, bundleBytes };
   } catch (e) {
-    return fail("registry", `registry unreachable: ${e instanceof Error ? e.message : String(e)}`);
+    return failTransient(`registry unreachable: ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

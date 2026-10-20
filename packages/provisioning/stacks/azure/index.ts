@@ -330,6 +330,21 @@ const logWorkspace = new azure.operationalinsights.Workspace(`${namePrefix}-logs
 });
 
 // === 6. Container Apps environment + apps ===
+//
+// FIXME(issue #750): no quality-audit Container Apps job yet. On GCP every
+// Lighthouse run of a Stage audit runs in its own container (#875,
+// src/audit-job-setup.ts); the Azure equivalent is a Container Apps job
+// with one replica per run (admin-core quality/parallel-runner.ts
+// `AuditTaskLauncher`). Until it exists the admin records every Lighthouse
+// audit as failed with that gap (quality/lighthouse-runner-select.ts)
+// instead of measuring on its own shared CPU. Nothing is staged on Azure
+// before #750 either.
+//
+// FIXME(issue #696): no in-cloud upgrader or converge job (#819) yet. On
+// GCP Settings → Updates hands app-roll releases to the upgrader job and
+// cloud-setup releases to the converge job; on Azure the admin refuses a
+// cloud-setup release with the CLI command that installs it (admin-core
+// platform-updates/update-route.ts) until this adapter gains both jobs.
 const cappEnv = new azure.app.ManagedEnvironment(`${namePrefix}-capp-env`, {
   resourceGroupName: rg.name,
   environmentName: `${namePrefix}-capp-env`,
@@ -421,6 +436,9 @@ const _gatewayApp = containerApp({
   serviceName: "gateway",
   databaseEnv: [{ name: "PUBLIC_DATABASE_URL", value: publicDatabaseUrl }],
   // Which X-Forwarded-For entry is the visitor (api-gateway client-ip.ts).
+  // #806 — no remote-MCP env: remote MCP rides Google IAP (gcp stacks
+  // only); unset, the gateway answers /api/mcp/* with 503
+  // remote_mcp_not_configured and the admin reports it unavailable.
   extraEnv: [{ name: TRUSTED_PROXY_HOPS_ENV, value: String(GATEWAY_TRUSTED_PROXY_HOPS.azure) }],
 });
 const _orchestratorApp = containerApp({

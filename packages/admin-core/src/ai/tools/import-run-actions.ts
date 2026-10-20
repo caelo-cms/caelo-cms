@@ -18,8 +18,64 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { getMediaStorage } from "../../media/storage.js";
+import { UNRESOLVED_IMPORT_LINK_NEXT_STEP } from "../../ops/links-import.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
+
+const resolveImportLinksInput = z
+  .object({
+    runId: z.string().uuid().describe("The import run whose rebuild you are finishing."),
+  })
+  .strict();
+
+/**
+ * Epic #724 — `resolve_import_links` → `imports.resolve_links`: the end of
+ * a rebuild. Routine (snapshotted on the chat's branch, undone with it).
+ */
+export const resolveImportLinksTool: ToolDefinitionWithHandler<
+  z.infer<typeof resolveImportLinksInput>
+> = {
+  name: "resolve_import_links",
+  description:
+    "While you rebuild an import run, link to the migrated site's pages by their real paths even before you have built them: " +
+    "a link to a page of THIS run (a crawled page, a page in the run's URL list, or a page the crawled pages link to) is kept " +
+    "as written and recorded against the run instead of refused. A link to any other unknown path is still refused. " +
+    "Call this ONCE when every page of the run is built (before get_import_run_report): it rewrites the recorded content so " +
+    "each link whose page now exists is stored as that page, and lists the links that still match no page, with where they " +
+    "are — fix each (build the page, or point the link at an existing page's path) and call it again. Safe to repeat; the " +
+    "run's cleanup does it too. Do not use it for links outside an import (those are checked when you write them).",
+  schema: resolveImportLinksInput,
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["runId"],
+    properties: { runId: { type: "string", format: "uuid" } },
+  },
+  handler: async (ctx, input, toolCtx) => {
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.resolve_links", input);
+    if (!r.ok) {
+      return { ok: false, content: `resolve_import_links failed: ${describeError(r.error)}` };
+    }
+    const v = r.value as {
+      resolved: number;
+      unresolved: { value: string; entityKind: string; entityId: string; location: string }[];
+    };
+    if (v.resolved === 0 && v.unresolved.length === 0) {
+      return { ok: true, content: "No links were waiting for a page of this run." };
+    }
+    const lines = [
+      `${v.resolved} link(s) written before their page existed now point at their page.`,
+    ];
+    if (v.unresolved.length > 0) {
+      lines.push(
+        `${v.unresolved.length} still match no page: ${v.unresolved
+          .map((u) => `"${u.value}" in ${u.entityKind} ${u.entityId} (${u.location})`)
+          .join("; ")}. ${UNRESOLVED_IMPORT_LINK_NEXT_STEP}`,
+      );
+    }
+    return { ok: true, content: lines.join(" ") };
+  },
+};
 
 const acceptImportPagesInput = z
   .object({

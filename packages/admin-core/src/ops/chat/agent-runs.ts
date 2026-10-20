@@ -25,6 +25,13 @@ import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import {
+  atMostOneMcpAgent,
+  type McpAgentFields,
+  mcpAgentInputShape,
+  namesMcpAgent,
+  sameMcpAgentSql,
+} from "./mcp-agent.js";
 
 /** How long a turn / subagent row lives without a heartbeat (crash cleanup). */
 export const AGENT_RUN_TTL_MS = 30_000;
@@ -98,7 +105,7 @@ async function lockSession(
 async function approvalDecidedAfterStop(
   tx: { execute: (q: ReturnType<typeof sql>) => Promise<unknown> },
   chatSessionId: string,
-  mcpTokenId: string,
+  agent: McpAgentFields,
 ): Promise<boolean> {
   // The WHOLE batch the resume would claim must postdate the Stop (codex
   // review): one card decided after it must not revive another the
@@ -111,7 +118,7 @@ async function approvalDecidedAfterStop(
            )::int AS before_stop
     FROM chat_turn_approvals
     WHERE chat_session_id = ${chatSessionId}::uuid AND source = 'mcp_chat'
-      AND mcp_token_id = ${mcpTokenId}::uuid AND status IN ('approved', 'rejected')
+      AND ${sameMcpAgentSql(agent)} AND status IN ('approved', 'rejected')
   `)) as unknown as { decided: number; before_stop: number }[];
   const r = rows[0];
   return r !== undefined && r.decided > 0 && r.before_stop === 0;
@@ -189,11 +196,12 @@ export const registerAgentRunOp = defineOperation({
        */
       stopEpochAtArrival: z.number().int().nonnegative().optional(),
       /**
-       * A caelo_chat turn: the MCP token driving it. If the operator stopped
-       * that token's agent in this chat, its turns are refused too — the
-       * Stop must not be bypassed by switching MCP surfaces.
+       * A caelo_chat turn: the external agent driving it — its MCP token or
+       * its remote connection (#806). If the operator stopped that agent in
+       * this chat, its turns are refused too — the Stop must not be bypassed
+       * by switching MCP surfaces.
        */
-      mcpTokenId: z.string().uuid().optional(),
+      ...mcpAgentInputShape,
       /**
        * True only for a message the operator sent (or an Approve/Reject they
        * clicked) in the chat itself. Such a turn lifts the chat's Stop latch;
@@ -211,8 +219,10 @@ export const registerAgentRunOp = defineOperation({
       resumesDecidedApprovals: z.boolean().optional(),
     })
     .strict()
-    .refine((v) => !v.resumesDecidedApprovals || v.mcpTokenId !== undefined, {
-      message: "resumesDecidedApprovals is only for a caelo_chat turn (mcpTokenId)",
+    .refine(atMostOneMcpAgent.check, { message: atMostOneMcpAgent.message })
+    .refine((v) => !v.resumesDecidedApprovals || namesMcpAgent(v), {
+      message:
+        "resumesDecidedApprovals is only for a caelo_chat turn (mcpTokenId / mcpRemoteConnectionId)",
     })
     .refine((v) => (v.kind === "subagent") === (v.parentRunId !== undefined), {
       message: "parentRunId is required for a subagent and only for a subagent",
@@ -267,11 +277,11 @@ export const registerAgentRunOp = defineOperation({
             "Not run: this message reached the server before you pressed Stop, so it was stopped with the rest. Send it again if you still want it.",
         });
       }
-      if (input.mcpTokenId) {
+      if (namesMcpAgent(input)) {
         const blocked = (await tx.execute(sql`
           SELECT 1 AS blocked FROM chat_agent_runs
           WHERE chat_session_id = ${input.chatSessionId}::uuid
-            AND mcp_token_id = ${input.mcpTokenId}::uuid AND state = 'stopped'
+            AND ${sameMcpAgentSql(input)} AND state = 'stopped'
         `)) as unknown as { blocked: number }[];
         if (blocked.length > 0) {
           return ok({
@@ -288,7 +298,7 @@ export const registerAgentRunOp = defineOperation({
         // for everything else (the Live Edit AI is not restarted).
         const answeredAfterStop =
           input.resumesDecidedApprovals === true &&
-          (await approvalDecidedAfterStop(tx, input.chatSessionId, input.mcpTokenId as string));
+          (await approvalDecidedAfterStop(tx, input.chatSessionId, input));
         if (!answeredAfterStop) {
           if (!input.operatorInitiated) {
             return ok({
@@ -427,10 +437,14 @@ export const touchExternalAgentOp = defineOperation({
   input: z
     .object({
       chatSessionId: z.string().uuid(),
-      mcpTokenId: z.string().uuid(),
+      /** The agent: its MCP token or its remote connection (#806) — exactly one. */
+      ...mcpAgentInputShape,
       label: z.string().min(1).max(200),
     })
-    .strict(),
+    .strict()
+    .refine((v) => namesMcpAgent(v) && atMostOneMcpAgent.check(v), {
+      message: "name the external agent by exactly one of mcpTokenId / mcpRemoteConnectionId",
+    }),
   output: z.object({
     /** True when the operator stopped this agent in this chat: refuse the call. */
     stopped: z.boolean(),
@@ -438,13 +452,20 @@ export const touchExternalAgentOp = defineOperation({
   }),
   handler: async (ctx, input, tx) => {
     const activeMs = externalAgentActiveMs();
+    // One row per (chat, agent): the unique index of whichever id is set
+    // (0255 for tokens, 0319 for remote connections) is the conflict target.
+    const conflictColumn = sql.raw(
+      input.mcpTokenId !== undefined ? "mcp_token_id" : "mcp_remote_connection_id",
+    );
     const rows = (await tx.execute(sql`
       INSERT INTO chat_agent_runs
-        (chat_session_id, kind, source, label, state, started_by, mcp_token_id, expires_at)
+        (chat_session_id, kind, source, label, state, started_by, mcp_token_id,
+         mcp_remote_connection_id, expires_at)
       VALUES (${input.chatSessionId}::uuid, 'mcp', 'power_mcp', ${input.label}, 'running',
-              ${ctx.actorId}::uuid, ${input.mcpTokenId}::uuid,
+              ${ctx.actorId}::uuid, ${input.mcpTokenId ?? null}::uuid,
+              ${input.mcpRemoteConnectionId ?? null}::uuid,
               now() + ${activeMs}::int * interval '1 millisecond')
-      ON CONFLICT (chat_session_id, mcp_token_id) DO UPDATE
+      ON CONFLICT (chat_session_id, ${conflictColumn}) DO UPDATE
         SET heartbeat_at = CASE WHEN chat_agent_runs.state = 'stopped'
                                 THEN chat_agent_runs.heartbeat_at ELSE now() END,
             expires_at = CASE WHEN chat_agent_runs.state = 'stopped'

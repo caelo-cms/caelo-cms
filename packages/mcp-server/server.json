@@ -1,0 +1,53 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.caelo-cms/caelo",
+  "title": "Caelo CMS",
+  "description": "Edit a self-hosted Caelo CMS site from your agent. Changes land in a draft; a human publishes.",
+  "websiteUrl": "https://caelo-cms.com/docs/mcp/",
+  "repository": {
+    "url": "https://github.com/caelo-cms/caelo-cms",
+    "source": "github",
+    "subfolder": "packages/mcp-server"
+  },
+  "version": "0.10.57",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@caelo-cms/mcp-server",
+      "version": "0.10.57",
+      "runtimeHint": "bunx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "valueHint": "admin",
+          "isRequired": false,
+          "description": "Pass 'admin' for Power-MCP (the full tool catalogue, needs an admin-scoped token). Omit for caelo_chat."
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "CAELO_ADMIN_URL",
+          "description": "Your Caelo admin's https:// address, e.g. https://admin.example.com",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "CAELO_MCP_TOKEN",
+          "description": "MCP token minted at /settings/mcp on your install",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "CAELO_IAP_SERVICE_ACCOUNT",
+          "description": "Only for Google Cloud (IAP) installs; /settings/mcp shows the value",
+          "isRequired": false,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

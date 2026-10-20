@@ -12,8 +12,8 @@ import { DatabaseAdapter, SYSTEM_ACTOR_ID } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
-import { createDbUpdateQueue } from "./db-queue.js";
-import { jobClaimOp, jobEventOp, jobFinishOp, jobRecordOp } from "./ops.js";
+import { createDbConvergeQueue, createDbUpdateQueue } from "./db-queue.js";
+import { jobClaimOp, jobEventOp, jobFinishOp, jobHandoverOp, jobRecordOp } from "./ops.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -49,12 +49,16 @@ function asUpdater<T>(fn: Parameters<DatabaseAdapter["withAdminTransaction"]>[1]
   }) as Promise<T>;
 }
 
-async function addRequest(version: string, opts: { runningSince?: string } = {}): Promise<string> {
+async function addRequest(
+  version: string,
+  opts: { runningSince?: string; route?: "app_roll" | "converge"; execution?: string } = {},
+): Promise<string> {
   const rows = await admin(
     (tx) => tx`
-      INSERT INTO platform_update_requests (target_version, from_version, trigger, status, started_at)
+      INSERT INTO platform_update_requests (target_version, from_version, trigger, status, started_at, route, execution)
       VALUES (${version}, '0.10.45', 'auto', ${opts.runningSince ? "running" : "pending"},
-              ${opts.runningSince ?? null}::timestamptz)
+              ${opts.runningSince ?? null}::timestamptz, ${opts.route ?? "app_roll"},
+              ${opts.execution ?? null})
       RETURNING id::text AS id`,
   );
   return (rows as unknown as { id: string }[])[0]?.id as string;
@@ -91,7 +95,7 @@ describe("upgrader job ops as platform_updater", () => {
   it("claims, narrates, records and finishes a run", async () => {
     const id = await addRequest("99.0.1");
     const claim = await asUpdater<{ ok: boolean; value: { claimed: { id: string } | null } }>(
-      (tx) => jobClaimOp.handler(SYSTEM, { execution: "exec-7" }, tx),
+      (tx) => jobClaimOp.handler(SYSTEM, { execution: "exec-7", route: "app_roll" }, tx),
     );
     expect(claim.ok && claim.value.claimed?.id).toBe(id);
     expect(await request(id)).toMatchObject({ status: "running", execution: "exec-7" });
@@ -155,7 +159,7 @@ describe("upgrader job ops as platform_updater", () => {
     const claim = await asUpdater<{
       ok: boolean;
       value: { recovered: string[]; claimed: unknown };
-    }>((tx) => jobClaimOp.handler(SYSTEM, { execution: null }, tx));
+    }>((tx) => jobClaimOp.handler(SYSTEM, { execution: null, route: "app_roll" }, tx));
     expect(claim.ok && claim.value.recovered).toEqual([dead]);
     expect(claim.ok && claim.value.claimed).toBeNull();
     expect(await request(dead)).toMatchObject({ status: "failed", refusal_codes: ["stale"] });
@@ -196,5 +200,98 @@ describe("createDbUpdateQueue", () => {
     });
     expect(await request(id)).toMatchObject({ status: "succeeded" });
     expect(await queue.claim(null)).toBeNull();
+  });
+});
+
+describe("the converge route (#819)", () => {
+  it("each job claims only its own route", async () => {
+    // At most one request is in flight (0267), so one route at a time.
+    const roll = await addRequest("99.0.3");
+    const convergeQueue = createDbConvergeQueue(adapter);
+    expect(await convergeQueue.claimConverge("conv-1")).toBeNull();
+    expect(await request(roll)).toMatchObject({ status: "pending" });
+
+    await admin((tx) => tx`DELETE FROM platform_update_requests`);
+    const next = await addRequest("99.0.5", { route: "converge" });
+    expect(await createDbUpdateQueue(adapter).claim("upg-1")).toBeNull();
+    const claimed = await convergeQueue.claimConverge("conv-1");
+    expect(claimed).toMatchObject({
+      request: { id: next, targetVersion: "99.0.5", trigger: "auto" },
+      resume: false,
+      execution: "conv-1",
+    });
+    expect(await request(next)).toMatchObject({ status: "running", execution: "conv-1" });
+  });
+
+  it("returns the converge request that is still running, unchanged, for the next run to continue", async () => {
+    const id = await addRequest("99.0.6", {
+      route: "converge",
+      runningSince: new Date().toISOString(),
+      execution: "conv-dead",
+    });
+    const claimed = await createDbConvergeQueue(adapter).claimConverge("conv-2");
+    expect(claimed).toMatchObject({ request: { id }, resume: true, execution: "conv-dead" });
+    expect(await request(id)).toMatchObject({ status: "running", execution: "conv-dead" });
+  });
+
+  it("hands a running converge request over only while it names the expected run", async () => {
+    const id = await addRequest("99.0.7", {
+      route: "converge",
+      runningSince: new Date(Date.now() - 80 * 60_000).toISOString(),
+      execution: "conv-1",
+    });
+    const handed = await asUpdater<{ ok: boolean; value: { handedOver: boolean } }>((tx) =>
+      jobHandoverOp.handler(SYSTEM, { requestId: id, from: "conv-1", to: "conv-2" }, tx),
+    );
+    expect(handed.ok && handed.value.handedOver).toBe(true);
+    const row = (await admin(
+      (tx) => tx`SELECT execution, started_at FROM platform_update_requests WHERE id = ${id}::uuid`,
+    )) as unknown as { execution: string; started_at: Date }[];
+    expect(row[0]?.execution).toBe("conv-2");
+    // The stale-run window restarts for the run that continues it.
+    expect(Date.now() - new Date(row[0]?.started_at as Date).getTime()).toBeLessThan(60_000);
+
+    // A late second adopter loses: the request names conv-2 now.
+    const queue = createDbConvergeQueue(adapter);
+    expect(await queue.handover(id, "conv-1", "conv-3")).toBe(false);
+    // Stage 1 releases the request before its stage 2 exists; that run adopts it.
+    expect(await queue.handover(id, "conv-2", null)).toBe(true);
+    expect(await request(id)).toMatchObject({ status: "running", execution: null });
+    expect(await queue.handover(id, null, "conv-4")).toBe(true);
+    expect(await queue.handover(id, null, "conv-5")).toBe(false);
+    expect(await request(id)).toMatchObject({ execution: "conv-4" });
+    const audit = await admin(
+      (tx) => tx`SELECT succeeded FROM audit_events
+                  WHERE operation = 'platform_updates.job_handover' AND entity_id = ${id}`,
+    );
+    // Both attempts are audited: the hand-over and the late adopter's miss.
+    expect((audit as unknown as { succeeded: boolean }[]).map((a) => a.succeeded).sort()).toEqual([
+      false,
+      false,
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  it("never hands over an app-roll request or one that ended", async () => {
+    const roll = await addRequest("99.0.8", {
+      runningSince: new Date().toISOString(),
+      execution: "upg-1",
+    });
+    expect(await createDbConvergeQueue(adapter).handover(roll, "upg-1", "conv-9")).toBe(false);
+    expect(await request(roll)).toMatchObject({ execution: "upg-1" });
+  });
+
+  it("the timeline accepts the converge phase", async () => {
+    const id = await addRequest("99.0.9", { route: "converge" });
+    const e = await asUpdater<{ ok: boolean }>((tx) =>
+      jobEventOp.handler(
+        SYSTEM,
+        { requestId: id, phase: "converge", level: "info", message: "Ensuring…" },
+        tx,
+      ),
+    );
+    expect(e.ok).toBe(true);
   });
 });

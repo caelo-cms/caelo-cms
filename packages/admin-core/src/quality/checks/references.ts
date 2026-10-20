@@ -57,17 +57,24 @@ export function createReferencesCheck(sources: ReferenceSources): SiteCheck {
     id: REFERENCES_CHECK_ID,
     title: "Internal link references",
     scope: "site",
-    async run() {
+    async run({ pages }) {
       const r = await sources.issues(MAX_FINDINGS_PER_CALL - 1);
-      return referenceFindings(r.issues, r.truncated);
+      return referenceFindings(r.issues, r.truncated, new Set(pages.map((p) => p.pageId)));
     },
   };
 }
 
-/** Map issues to findings. Exported for tests. */
+/**
+ * Map issues to findings. Exported for tests.
+ *
+ * @param stagedPageIds the pages of the staged build (published only). A
+ *   finding may name only one of them — the runner rejects the whole check
+ *   otherwise — so an issue stored on a draft page stays site-scoped.
+ */
 export function referenceFindings(
   issues: readonly ReferenceCheckIssue[],
   truncated: boolean,
+  stagedPageIds: ReadonlySet<string>,
 ): Finding[] {
   const findings: Finding[] = [];
   for (const i of issues) {
@@ -75,8 +82,11 @@ export function referenceFindings(
     // staged-build check's finding: it is a URL the build does not serve.
     if (i.problem === "broken-literal" || i.problem === "pending-import-link") continue;
     // Page-bound content belongs to its page (acceptance per page); a place
-    // shared by several pages, or site-wide chrome, is one site finding.
-    const pageId = i.place.kind === "content" && i.pageIds.length === 1 ? i.pageIds[0] : undefined;
+    // shared by several pages, or site-wide chrome, is one site finding. A
+    // draft page is not in the staged build, so its issue (a warning — it
+    // does not ship) is a site finding too: the message names the page.
+    const only = i.place.kind === "content" && i.pageIds.length === 1 ? i.pageIds[0] : undefined;
+    const pageId = only !== undefined && stagedPageIds.has(only) ? only : undefined;
     findings.push({
       ruleId: `${REFERENCES_CHECK_ID}/${i.problem}`,
       severity: i.severity === "block" ? "error" : "warning",
