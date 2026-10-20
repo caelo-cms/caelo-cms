@@ -91,7 +91,10 @@ export type BugIntakeReport = z.infer<typeof bugIntakeReport>;
 export const bugClusterStatus = z.enum(["open", "fixed", "regression", "wontfix"]);
 export type BugClusterStatus = z.infer<typeof bugClusterStatus>;
 
-/** What the intake knows about one cluster (= one upstream issue). */
+/**
+ * What the intake knows about one cluster (= one upstream issue). Also the
+ * `POST /v1/reports` response body: the cluster the report joined.
+ */
 export const bugIntakeClusterInfo = z
   .object({
     clusterId: z.string().min(1).max(100),
@@ -102,10 +105,6 @@ export const bugIntakeClusterInfo = z
   })
   .strict();
 export type BugIntakeClusterInfo = z.infer<typeof bugIntakeClusterInfo>;
-
-/** `POST /v1/reports` response. */
-export const bugIntakeReportResponse = bugIntakeClusterInfo;
-export type BugIntakeReportResponse = BugIntakeClusterInfo;
 
 /** `POST /v1/clusters/status` — refresh the status of clusters this install reported into (signed). */
 export const bugIntakeStatusRequest = z
