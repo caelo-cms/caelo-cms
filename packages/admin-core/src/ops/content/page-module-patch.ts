@@ -135,24 +135,27 @@ function fail(
   return err({ kind: "HandlerError" as const, operation: OP, message, nextAction });
 }
 
+/** Input of `page_module_content.patch_fields`; the AI tool validates with it too. */
+export const patchPageModuleFieldsInput = z
+  .object({
+    pageId: z.string().uuid(),
+    blockName: z.string().min(1),
+    position: z.number().int().nonnegative(),
+    edits: z.array(editSchema).min(1).max(20),
+    /**
+     * #918 — for a synced (shared) placement: change the shared content on
+     * every page that shows it, or detach this placement first and change it
+     * only here. Required for a synced placement, ignored otherwise.
+     */
+    scope: z.enum(["everywhere", "here"]).optional(),
+  })
+  .strict();
+
 export const patchPageModuleFieldsOp = defineOperation({
   name: OP,
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z
-    .object({
-      pageId: z.string().uuid(),
-      blockName: z.string().min(1),
-      position: z.number().int().nonnegative(),
-      edits: z.array(editSchema).min(1).max(20),
-      /**
-       * #918 — for a synced (shared) placement: change the shared content on
-       * every page that shows it, or detach this placement first and change
-       * it only here. Required for a synced placement, ignored otherwise.
-       */
-      scope: z.enum(["everywhere", "here"]).optional(),
-    })
-    .strict(),
+  input: patchPageModuleFieldsInput,
   output: z.object({ contentInstanceId: z.string(), version: z.number().int().positive() }),
   handler: async (ctx, input, tx) => {
     const layout = await loadPageLayoutStateWithBranchOverlay(
