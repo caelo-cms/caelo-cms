@@ -63,6 +63,14 @@ on:
         description: "The release being cut (no leading v)."
         type: string
         required: true
+      invoked_by:
+        # A called workflow sees the CALLER's github.event_name, and
+        # release.yml itself runs on workflow_dispatch (release-cut
+        # dispatches it), so the event name cannot tell a release gate from
+        # a maintainer's manual run. This input can: it is only set here.
+        description: "Who runs the check: `release` (release.yml's gate)."
+        type: string
+        default: release
 
 # Nothing by default; each job names what it needs. Only the smoke job, in
 # the protected environment, may mint an OIDC token.
@@ -91,7 +99,9 @@ jobs:
         id: mode
         env:
           MODE: ${{ vars.UPGRADER_SMOKE }}
-          EVENT: ${{ github.event_name }}
+          # `release` when release.yml calls it; empty on a manual dispatch,
+          # which defaults to `dispatch`.
+          INVOKED_BY: ${{ inputs.invoked_by || 'dispatch' }}
           CANDIDATE: ${{ inputs.candidate }}
         run: |
           set -euo pipefail
@@ -104,7 +114,7 @@ jobs:
               echo "run=true" >> "${GITHUB_OUTPUT}"
               ;;
             off)
-              if [ "${EVENT}" = "workflow_dispatch" ]; then
+              if [ "${INVOKED_BY}" != "release" ]; then
                 echo "::error::UPGRADER_SMOKE is 'off'; set it to 'required' (docs/dev/upgrader-smoke.md) to run the smoke test."
                 exit 1
               fi

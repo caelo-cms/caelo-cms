@@ -18,7 +18,12 @@
  *      those `user:` members plus the static members the provisioner
  *      configured (the install's IAP allowlist, and `caelo-mcp` itself on
  *      IAP) — everything else on those two roles is removed and logged;
- *   3. exits non-zero when anything failed, so the execution shows as failed
+ *   3. #806 — makes the admin IAP resource's `programmatic_clients` hold
+ *      EXACTLY the remote-MCP OAuth client the Owner configured (read
+ *      through `mcp_remote_oauth.client_for_sync`), or nothing when none is
+ *      (iap-settings.ts); a client list it cannot read is left unchanged,
+ *      never cleared;
+ *   4. exits non-zero when anything failed, so the execution shows as failed
  *      to the admin (gcp-job-trigger.ts) and in Cloud Run.
  *
  * Its whole input is the database and the env the provisioner set on the
@@ -29,9 +34,15 @@
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import { cloudSqlIamDatabaseUrls } from "@caelo-cms/shared";
 import { SYSTEM_ACTOR_ID } from "../../audit.js";
+import { mcpRemoteOAuthClientForSyncOp } from "../../ops/security/mcp_remote_oauth.js";
 import { operatorAccessMembersOp } from "../../ops/user_access.js";
 import { defaultGoogleDeps, type GoogleDeps, reconcileResourceRole } from "./google-iam.js";
 import { desiredMembers, parseStaticMembers, type Reconciled } from "./iam-policy.js";
+import {
+  desiredProgrammaticClients,
+  type ProgrammaticClientsReconciled,
+  reconcileProgrammaticClients,
+} from "./iap-settings.js";
 
 export const IAP_ACCESSOR_ROLE = "roles/iap.httpsResourceAccessor";
 export const TOKEN_CREATOR_ROLE = "roles/iam.serviceAccountTokenCreator";
@@ -86,6 +97,8 @@ export interface LogEntry {
 export interface SyncDeps {
   readonly google: GoogleDeps;
   readonly readEmails: () => Promise<string[]>;
+  /** #806 — the configured remote-MCP OAuth client ID, null when none is set. */
+  readonly readProgrammaticClientId: () => Promise<string | null>;
   readonly log: (entry: LogEntry) => void;
 }
 
@@ -93,6 +106,7 @@ export interface SyncReport {
   readonly ok: boolean;
   readonly iap?: Reconciled;
   readonly mcp?: Reconciled;
+  readonly programmaticClients?: ProgrammaticClientsReconciled;
 }
 
 /** One reconcile pass over both managed bindings. Never throws. */
@@ -179,9 +193,10 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
   }
   // IAP resource names use the project NUMBER
   // (cloud.google.com/iap/docs/managing-access#resources_and_permissions).
+  const iapResourceUrl = `https://iap.googleapis.com/v1/projects/${projectNumber}/iap_web/${config.iapWebPath}`;
   const iap = await apply(
     "the admin's IAP resource",
-    `https://iap.googleapis.com/v1/projects/${projectNumber}/iap_web/${config.iapWebPath}`,
+    iapResourceUrl,
     IAP_ACCESSOR_ROLE,
     new Set([...members, `serviceAccount:${config.mcpServiceAccount}`]),
     { body: { options: { requestedPolicyVersion: 3 } } },
@@ -193,11 +208,68 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
     new Set([...members, ...mcpSigners]),
     { query: "?options.requestedPolicyVersion=3" },
   );
+  const programmaticClients = await syncProgrammaticClients(deps, iapResourceUrl);
   return {
-    ok: ok && iap !== undefined && mcp !== undefined,
+    ok: ok && iap !== undefined && mcp !== undefined && programmaticClients !== undefined,
     ...(iap ? { iap } : {}),
     ...(mcp ? { mcp } : {}),
+    ...(programmaticClients ? { programmaticClients } : {}),
   };
+}
+
+/**
+ * #806 — `programmatic_clients` on the admin's IAP resource := exactly the
+ * configured remote-MCP client. Undefined (and logged) on any failure; a
+ * client ID that cannot be read leaves the list as it is — clearing it
+ * then would cut every connected MCP client because of a database hiccup.
+ */
+async function syncProgrammaticClients(
+  deps: SyncDeps,
+  iapResourceUrl: string,
+): Promise<ProgrammaticClientsReconciled | undefined> {
+  const what = "programmatic_clients on the admin's IAP resource";
+  let clientId: string | null;
+  try {
+    clientId = await deps.readProgrammaticClientId();
+  } catch (e) {
+    deps.log({
+      severity: "ERROR",
+      message: `could not read the remote-MCP OAuth client; ${what} left unchanged: ${e instanceof Error ? e.message : String(e)}`,
+    });
+    return undefined;
+  }
+  try {
+    const r = await reconcileProgrammaticClients(
+      deps.google,
+      iapResourceUrl,
+      desiredProgrammaticClients(clientId),
+    );
+    if (!r.changed) {
+      deps.log({ severity: "INFO", message: `${what} already up to date` });
+      return r;
+    }
+    for (const id of r.after.filter((c) => !r.before.includes(c))) {
+      deps.log({
+        severity: "INFO",
+        message: `allowed OAuth client ${id} in ${what}`,
+        clientId: id,
+      });
+    }
+    for (const id of r.before.filter((c) => !r.after.includes(c))) {
+      deps.log({
+        severity: "WARNING",
+        message: `REMOVED OAuth client ${id} from ${what} — not the remote-MCP client configured under Settings → MCP`,
+        clientId: id,
+      });
+    }
+    return r;
+  } catch (e) {
+    deps.log({
+      severity: "ERROR",
+      message: `could not update ${what}: ${e instanceof Error ? e.message : String(e)}`,
+    });
+    return undefined;
+  }
 }
 
 async function main(): Promise<void> {
@@ -212,16 +284,20 @@ async function main(): Promise<void> {
   }
   const google = defaultGoogleDeps();
   let adapter: DatabaseAdapter | undefined;
-  const readEmails = async (): Promise<string[]> => {
-    const email = await google.metadata("instance/service-accounts/default/email");
-    const urls = cloudSqlIamDatabaseUrls(config.databaseHost, email, await google.accessToken());
-    adapter = new DatabaseAdapter({
-      adminDatabaseUrl: urls.admin,
-      publicDatabaseUrl: urls.public,
-      expectedRoles: { admin: urls.user, public: [urls.user] },
-    });
-    const registry = new OperationRegistry();
-    registry.register(operatorAccessMembersOp);
+  const registry = new OperationRegistry();
+  registry.register(operatorAccessMembersOp);
+  registry.register(mcpRemoteOAuthClientForSyncOp);
+  /** One read-only connection for both reads, opened on first use. */
+  const read = async (op: string): Promise<unknown> => {
+    if (!adapter) {
+      const email = await google.metadata("instance/service-accounts/default/email");
+      const urls = cloudSqlIamDatabaseUrls(config.databaseHost, email, await google.accessToken());
+      adapter = new DatabaseAdapter({
+        adminDatabaseUrl: urls.admin,
+        publicDatabaseUrl: urls.public,
+        expectedRoles: { admin: urls.user, public: [urls.user] },
+      });
+    }
     const r = await execute(
       registry,
       adapter,
@@ -230,14 +306,18 @@ async function main(): Promise<void> {
         actorKind: "system",
         requestId: `operator-access-sync-${Date.now()}`,
       },
-      "users.operator_access_members",
+      op,
       {},
     );
     if (!r.ok) throw new Error(JSON.stringify(r.error));
-    return (r.value as { emails: string[] }).emails;
+    return r.value;
   };
+  const readEmails = async () =>
+    ((await read("users.operator_access_members")) as { emails: string[] }).emails;
+  const readProgrammaticClientId = async () =>
+    ((await read("mcp_remote_oauth.client_for_sync")) as { clientId: string | null }).clientId;
   try {
-    const report = await runSync(config, { google, readEmails, log });
+    const report = await runSync(config, { google, readEmails, readProgrammaticClientId, log });
     log({
       severity: report.ok ? "INFO" : "ERROR",
       message: report.ok ? "operator access in sync" : "operator access sync finished with errors",

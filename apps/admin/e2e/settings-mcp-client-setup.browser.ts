@@ -5,7 +5,7 @@
  * supported client, not just a Claude Code command. Pins that each tab
  * carries the freshly minted token in the client's own format (terminal
  * command vs JSON config), that the Claude Code step says to run it in a
- * terminal, and that browser-only assistants are stated as unsupported
+ * terminal, and that browser-only assistants are pointed at remote MCP
  * instead of left for the operator to hunt for.
  */
 
@@ -51,5 +51,9 @@ test("a minted token comes with setup for every client", async ({ page }) => {
     await expect(snippet).toContainText(token);
   }
 
-  await expect(setup).toContainText("ChatGPT and claude.ai in the browser can't connect yet");
+  // #806 — browser-only assistants are pointed at remote MCP.
+  await expect(setup.getByTestId("mcp-setup-remote-hint")).toContainText("ChatGPT and claude.ai");
+  await expect(
+    setup.getByTestId("mcp-setup-remote-hint").getByRole("link", { name: "remote MCP" }),
+  ).toHaveAttribute("href", "/settings/mcp/remote");
 });
