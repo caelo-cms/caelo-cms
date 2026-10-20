@@ -133,8 +133,8 @@ beforeAll(async () => {
     contentValues: {
       title: "Welcome",
       tags: ["one", "two"],
-      links: [{ label: "Docs", href: "/docs" }],
-      photo: "/p.png",
+      links: [{ label: "Docs", href: "https://example.com/docs" }],
+      photo: "https://example.com/p.png",
     },
   });
   // A synced placement: bind the second page to a shared instance.
@@ -171,8 +171,8 @@ describe("page_module_content.patch_fields (#917)", () => {
     const html = await previewHtml(pageId);
     expect(html).toContain("<h1>Fish &amp; &lt;chips&gt;</h1>");
     expect(html).toContain("<li>one</li><li>two</li>");
-    expect(html).toContain('<a href="/docs">Docs</a>');
-    expect(html).toContain('src="/p.png"');
+    expect(html).toContain('<a href="https://example.com/docs">Docs</a>');
+    expect(html).toContain('src="https://example.com/p.png"');
   });
 
   it("changes a text-list item and a link-list label by index", async () => {
@@ -188,7 +188,7 @@ describe("page_module_content.patch_fields (#917)", () => {
     });
     const html = await previewHtml(pageId);
     expect(html).toContain("<li>one</li><li>zwei</li>");
-    expect(html).toContain('<a href="/docs">Handbook</a>');
+    expect(html).toContain('<a href="https://example.com/docs">Handbook</a>');
   });
 
   it("refuses non-text kinds, bad indexes, unknown fields and synced placements", async () => {
@@ -221,7 +221,7 @@ describe("page_module_content.patch_fields (#917)", () => {
     });
     const html = await previewHtml(pageId);
     expect(html).toContain("<li>uno</li>");
-    expect(html).toContain('<a href="/docs">Guide</a>');
+    expect(html).toContain('<a href="https://example.com/docs">Guide</a>');
     const r = await run("page_module_content.patch_fields", {
       pageId,
       ...at,
