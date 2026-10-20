@@ -40,9 +40,10 @@ test("step 1 points at the consent screen: External, In production", async ({ pa
     "href",
     "https://console.cloud.google.com/auth/audience?project=caelo-e2e",
   );
-  await expect(page.getByText("User type")).toBeVisible();
-  await expect(page.getByText("External", { exact: true })).toBeVisible();
-  await expect(page.getByText("In production", { exact: false }).first()).toBeVisible();
+  const steps = page.getByTestId("google-sign-in-consent-steps");
+  await expect(steps).toContainText("User type: External");
+  await expect(steps).toContainText("Publishing status: In production");
+  await expect(steps).toContainText("7 days");
 });
 
 test("step 2 shows the console link, the broker redirect URI, and IAP's once a client ID is typed", async ({

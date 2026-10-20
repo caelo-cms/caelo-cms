@@ -234,7 +234,7 @@
         >
           Open the consent screen settings <ExternalLink class="size-4" />
         </a>
-        <ul class="ml-5 list-disc space-y-1">
+        <ul class="ml-5 list-disc space-y-1" data-testid="google-sign-in-consent-steps">
           <li>
             If Google first asks you to set up the app ("Get started"): any app name, your email.
           </li>
