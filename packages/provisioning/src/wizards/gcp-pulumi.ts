@@ -150,10 +150,26 @@ export async function writeImageDigestsToStack(inputs: {
 }): Promise<{ removedOverrides: string[] }> {
   const stack = await selectInstallStack(inputs.backend, inputs.provider);
   await stack.setAllConfig(imageDigestConfig(inputs.provider, inputs.digests));
-  const config = await stack.getAllConfig();
-  const removedOverrides = imageOverrideKeys(inputs.provider).filter((k) => k in config);
+  // Read the settings file, not `getAllConfig()`: `pulumi config` refuses
+  // to list a stack whose required keys (domain, project, …) are unset, and
+  // the settings file in a freshly unpacked `bunx` package holds only what
+  // this call just wrote — so every upgrade from a new CLI version failed.
+  const settings = await stack.workspace.stackSettings(stack.name);
+  const removedOverrides = presentImageOverrides(inputs.provider, settings.config);
   if (removedOverrides.length > 0) await stack.removeAllConfig(removedOverrides);
   return { removedOverrides };
+}
+
+/**
+ * The image-override keys set in a stack settings file's `config`.
+ *
+ * @param config the settings file's `config` map (absent when the file has none)
+ */
+export function presentImageOverrides(
+  provider: "gcp" | "gcp-firebase",
+  config: Record<string, unknown> | undefined,
+): string[] {
+  return imageOverrideKeys(provider).filter((k) => config !== undefined && k in config);
 }
 
 /**
