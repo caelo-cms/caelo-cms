@@ -33,9 +33,6 @@ export const googleOAuthClientIdSchema = z
 
 const clientRow = z.object({ clientId: z.string(), configuredAt: z.string() });
 
-/** The configured client's row as the ops return it. */
-export type OperatorOAuthClient = z.infer<typeof clientRow>;
-
 /** `operator_oauth.get` — the configured client, or null when Google sign-in is not set up. */
 export const getOperatorOAuthClientOp = defineOperation({
   name: "operator_oauth.get",

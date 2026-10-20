@@ -129,7 +129,9 @@ export function googleSignInAvailability(env: GoogleSignInEnv): GoogleSignInAvai
   const store = env.CAELO_OPERATOR_OAUTH_CLIENT_STORE?.trim() ?? "";
   const match = SECRET_RESOURCE.exec(store);
   if (!match) missing.push(OPERATOR_OAUTH_CLIENT_STORE_ENV);
-  const adminUrl = (env.CAELO_ADMIN_URL ?? "").trim().replace(/\/+$/, "");
+  // The provisioner writes a bare origin; a trailing slash is not trimmed
+  // (an unanchored /\/+$/ is polynomial on many slashes) but refused below.
+  const adminUrl = (env.CAELO_ADMIN_URL ?? "").trim();
   if (!HTTPS_ORIGIN.test(adminUrl)) missing.push("CAELO_ADMIN_URL");
   const publicUrl = (env.CAELO_MCP_PUBLIC_URL ?? "").trim();
   if (!HTTPS_ORIGIN.test(publicUrl)) missing.push("CAELO_MCP_PUBLIC_URL");

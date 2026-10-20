@@ -96,7 +96,11 @@ export function sameClients(a: readonly string[], b: readonly string[]): boolean
 export function secretHashMatches(reported: string, secret: string): boolean {
   const digest = createHash("sha256").update(secret, "utf8").digest();
   const value = reported.trim();
-  const strip = (s: string) => s.replace(/=+$/, "");
+  const strip = (s: string) => {
+    let end = s.length;
+    while (end > 0 && s[end - 1] === "=") end -= 1;
+    return s.slice(0, end);
+  };
   return (
     value.toLowerCase() === digest.toString("hex") ||
     strip(value) === strip(digest.toString("base64")) ||

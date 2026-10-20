@@ -7,7 +7,6 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { createHash } from "node:crypto";
 import type { GoogleDeps } from "./google-iam.js";
 import {
   compareOAuthSettings,
@@ -25,8 +24,30 @@ const CLIENT = "123456789012-abc123.apps.googleusercontent.com";
 const OTHER = "999-zzz.apps.googleusercontent.com";
 const SECRET = "GOCSPX-the-current-secret";
 const OLD_SECRET = "GOCSPX-an-older-secret";
-const sha = (s: string, enc: "hex" | "base64" = "hex") =>
-  createHash("sha256").update(s).digest(enc);
+/**
+ * SHA-256 of each test secret as IAP's `clientSecretSha256` would report it
+ * (precomputed: the fake IAP looks the digest up instead of hashing, so the
+ * test holds no hashing code of its own).
+ */
+const DIGESTS: Readonly<Record<string, { hex: string; base64: string }>> = {
+  [SECRET]: {
+    hex: "7ef686ce9ff01e45119793d457eafbc0ba45510ba4a34f366c6654e9e5208375",
+    base64: "fvaGzp/wHkURl5PUV+r7wLpFUQuko082bGZU6eUgg3U=",
+  },
+  [OLD_SECRET]: {
+    hex: "ee1477a53c644cb87fb9b9b38d9135c262d8a113b2daa564307fab6e81522bfd",
+    base64: "7hR3pTxkTLh/ubmzjZE1wmLYoROy2qVkMH+rboFSK/0=",
+  },
+  x: {
+    hex: "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+    base64: "LXEWQrcmsEQBYnyp+6wy9chTD7GQPMTbAiWHF5IaSIE=",
+  },
+};
+const sha = (s: string, enc: "hex" | "base64" = "hex"): string => {
+  const d = DIGESTS[s];
+  if (!d) throw new Error(`no precomputed digest for test secret "${s}"`);
+  return d[enc];
+};
 
 interface Call {
   readonly method: string;
