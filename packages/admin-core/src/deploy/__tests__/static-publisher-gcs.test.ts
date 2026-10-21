@@ -390,6 +390,34 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
     const robots = staticBucket.files.get("robots.txt");
     expect(robots?.body?.toString("utf8")).toContain("Allow: /");
   });
+
+  // #567 — turning the sitemap off: the build has no sitemap.xml, but the
+  // previous live build's copy is still in the bucket until the prune.
+  // robots.txt must follow the build, not that leftover.
+  it("drops the Sitemap line and the old sitemap when the build has none", async () => {
+    staticBucket.files.set("sitemap.xml", {
+      ...makeFile(staticBucket, "sitemap.xml"),
+      body: Buffer.from("<urlset>old</urlset>"),
+    });
+    await writeFile(
+      join(buildDir, "routing-manifest.json"),
+      JSON.stringify({ env: "staging", envNoindexInHtml: false }),
+      "utf8",
+    );
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-nositemap", target: TARGET });
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-nositemap",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://www.example.com",
+    });
+    expect(staticBucket.files.get("robots.txt")?.body?.toString("utf8")).toBe(
+      "User-agent: *\nAllow: /\n",
+    );
+    expect(staticBucket.files.has("sitemap.xml")).toBe(false);
+  });
 });
 
 describe("gcsStaticPublisher — Cache-Control per path class", () => {

@@ -1915,6 +1915,7 @@ async function readBootstrapUrl(installId: string, provider: string): Promise<st
   const meta = readMetadata(installId);
   if (!meta) throw new Error(`No install.json for install '${installId}'.`);
   const value = await readStackOutput({
+    installRoot: installRoot(installId),
     backend: resolveBackend(meta, {
       installRoot: installRoot(installId),
       readPassphrase: () => readSecret(installId, "pulumi-passphrase"),

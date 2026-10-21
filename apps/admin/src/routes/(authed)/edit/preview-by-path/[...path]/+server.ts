@@ -15,6 +15,9 @@
  * `/edit/preview-by-path/de/about` — no JS interception required for
  * plain link navigation.
  *
+ * Served sandboxed (#946, `preview-sandbox.ts`): the page's module scripts
+ * run in an opaque origin, never with the operator's admin session.
+ *
  * Read-only + content.write-gated. CSRF not needed (GET-only). The branch
  * is authorized by the Query API itself (issue #569): one the caller may
  * not see answers 404.
@@ -25,6 +28,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { injectEditOverlay } from "#lib/server/edit-overlay.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { previewDocumentResponse } from "#lib/server/preview-sandbox.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
@@ -35,8 +39,8 @@ interface PageRow {
   parentPageId: string | null;
 }
 
-export const GET: RequestHandler = async ({ params, url, locals }) => {
-  requirePermission(locals, "content.write");
+export const GET: RequestHandler = async ({ params, url, locals, cookies }) => {
+  const user = requirePermission(locals, "content.write");
   const { adapter, registry } = getQueryContext();
 
   // #390 — the inbound path matches `pages.currentPath` verbatim
@@ -109,11 +113,7 @@ export const GET: RequestHandler = async ({ params, url, locals }) => {
     path: page.currentPath,
   });
 
-  return new Response(html, {
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-      "x-frame-options": "SAMEORIGIN",
-    },
-  });
+  // #946 — the module scripts in this page are untrusted: the document is
+  // sandboxed into an opaque origin (CSP), never run as the operator.
+  return previewDocumentResponse(html, { cookies, userId: user.id });
 };

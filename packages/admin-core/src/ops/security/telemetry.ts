@@ -13,7 +13,7 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { ok } from "@caelo-cms/shared";
+import { CAELO_VERSION, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
@@ -47,16 +47,7 @@ export const getTelemetryOp = defineOperation({
       updated_at: string | Date;
     }>;
     const r = rows[0];
-    if (!r) {
-      return ok({
-        installPingEnabled: false,
-        errorReportingEnabled: false,
-        installId: null,
-        eventsSentCount: 0,
-        lastSentAt: null,
-        updatedAt: new Date(0).toISOString(),
-      });
-    }
+    if (!r) throw new Error("telemetry_settings singleton row is missing (migration 0048)");
     const toN = (v: number | string | bigint): number =>
       typeof v === "bigint" ? Number(v) : typeof v === "string" ? Number.parseInt(v, 10) : v;
     return ok({
@@ -150,14 +141,11 @@ export const testSendTelemetryOp = defineOperation({
       SELECT
         (SELECT COUNT(*) FROM pages WHERE deleted_at IS NULL) AS pages,
         (SELECT COUNT(*) FROM modules WHERE deleted_at IS NULL) AS modules,
-        (SELECT COUNT(*) FROM plugins WHERE status = 'active') AS active_plugins,
-        (SELECT COALESCE(SUM(cost_estimate_microcents), 0) FROM ai_calls
-          WHERE created_at > now() - interval '30 days')::bigint AS ai_spend_30d_microcents
+        (SELECT COUNT(*) FROM plugins WHERE status = 'active') AS active_plugins
     `)) as unknown as Array<{
       pages: number | string;
       modules: number | string;
       active_plugins: number | string;
-      ai_spend_30d_microcents: bigint | string | number;
     }>;
     const settings = (await tx.execute(sql`
       SELECT install_id::text AS install_id FROM telemetry_settings WHERE id = 1
@@ -169,14 +157,16 @@ export const testSendTelemetryOp = defineOperation({
       payload: {
         kind: "test",
         installId: settings[0]?.install_id ?? "<not yet minted>",
+        caeloVersion: CAELO_VERSION,
         emittedAt: new Date().toISOString(),
         // Only counts; never page/module content, never user data, never
-        // raw error stacks.
+        // AI usage, never raw error stacks. Every key here must be named on
+        // the /settings/ai/telemetry consent text and in docs/TELEMETRY.md —
+        // the Owner opts in to exactly what those list.
         counts: {
           pages: s ? toN(s.pages) : 0,
           modules: s ? toN(s.modules) : 0,
           activePlugins: s ? toN(s.active_plugins) : 0,
-          aiSpend30dMicrocents: s ? toN(s.ai_spend_30d_microcents) : 0,
         },
       },
     });
