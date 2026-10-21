@@ -396,7 +396,9 @@ function segmentsOutsideScriptAndStyle(html: string): string[] {
     if (open === null) break;
     const openTagEnd = html.indexOf(">", open.index);
     const end =
-      openTagEnd === -1 ? -1 : findCloseTagEnd(lower, open[1].toLowerCase(), openTagEnd + 1);
+      openTagEnd === -1
+        ? -1
+        : findCloseTagEnd(lower, open[0].slice(1).toLowerCase(), openTagEnd + 1);
     if (end === -1) break;
     segments.push(html.slice(cursor, open.index));
     cursor = end;
