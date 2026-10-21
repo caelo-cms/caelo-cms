@@ -17,9 +17,13 @@
 
 import { getMediaStorage } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
-import { FAVICON_VARIANT, MEDIA_VARIANT_TAGS, type MediaVariantTag } from "@caelo-cms/shared";
+import {
+  FAVICON_VARIANT,
+  MEDIA_VARIANT_TAGS,
+  type MediaVariantTag,
+  mediaSecurityHeaders,
+} from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
-import { mediaSecurityHeaders } from "#lib/server/media-headers.js";
 import { requireUserOrPreviewScreenshotToken } from "#lib/server/preview-screenshot-auth.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";

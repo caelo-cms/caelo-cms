@@ -122,7 +122,11 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-function deps(runner: HostRunner & { calls: string[] }, roles: ConvergeOutcome = { ok: true }) {
+function deps(
+  runner: HostRunner & { calls: string[] },
+  roles: ConvergeOutcome = { ok: true },
+  caddy: { ok: true } | { ok: false; error: string } = { ok: true },
+) {
   return {
     caeloDir: dir,
     runner,
@@ -130,6 +134,10 @@ function deps(runner: HostRunner & { calls: string[] }, roles: ConvergeOutcome =
     convergeRoles: async () => {
       runner.calls.push("converge roles");
       return roles;
+    },
+    refreshCaddy: async () => {
+      runner.calls.push("refresh caddy");
+      return caddy;
     },
     log,
     fetchImpl: registry,
@@ -161,6 +169,7 @@ describe("upgradeSelfHosted", () => {
       "health admin",
       "up caelo-gateway",
       "health gateway",
+      "refresh caddy",
     ]);
     // The migrations run the NEW admin image: the Compose file already names it.
     expect(readFileSync(composePath(dir), "utf8")).toBe(render(NEW));
@@ -200,7 +209,32 @@ describe("upgradeSelfHosted", () => {
       "up both",
       "health admin",
       "health gateway",
+      "refresh caddy",
     ]);
+  });
+
+  // #891 — the SVG CSP + nosniff live in the Caddyfile the release's own
+  // generator writes; an upgrade that only rolled the containers left every
+  // existing install serving SVGs without them.
+  it("re-writes the Caddyfile after the roll, before recording the release", async () => {
+    const runner = fakeRunner();
+    expect((await upgradeSelfHosted({ version: "0.11.0" }, deps(runner))).ok).toBe(true);
+    const s = steps(runner.calls);
+    expect(s.indexOf("refresh caddy")).toBeGreaterThan(s.indexOf("health gateway"));
+  });
+
+  it("fails at the caddy stage (release not recorded, so a re-run retries) when Caddy cannot reload", async () => {
+    const runner = fakeRunner();
+    const r = await upgradeSelfHosted(
+      { version: "0.11.0" },
+      deps(runner, { ok: true }, { ok: false, error: "caddy reload failed: bad config" }),
+    );
+    expect(r).toMatchObject({ ok: false, stage: "caddy", previousRunning: false });
+    if (!r.ok) {
+      expect(r.error).toContain("bad config");
+      expect(r.error).toContain("regenerate-caddy");
+    }
+    expect(readRelease(dir)?.version).toBe("0.10.0");
   });
 
   it("reports an unhealthy install that is already on the target", async () => {

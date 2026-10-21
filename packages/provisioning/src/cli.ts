@@ -277,15 +277,23 @@ function emitConfig(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[] = []): voi
     cfg.caeloSecretKek = randomSecret(32);
     saveConfig(cfg);
   }
+  emitComposeFiles(cfg);
+  writeCaddyfile(cfg, extraDomains);
+}
+
+/**
+ * Write the Caddyfile for `cfg` — the seed hosts (admin, primary domain,
+ * staging host) plus `extraDomains`, the domains added via
+ * /settings/domains that regenerate-caddy / upgrade read from the live
+ * domains table. Never touches the Compose file: `upgrade` calls this after
+ * it rolled the containers onto the new Compose file (#891).
+ */
+function writeCaddyfile(cfg: CaeloConfig, extraDomains: CaddyDomainSpec[]): void {
   if (!cfg.stagingDomain) {
     cfg.stagingDomain = defaultStagingHost(cfg.domain);
     saveConfig(cfg);
   }
   if (!cfg.tls) throw new Error("config has no tls — it is back-filled on load; this is a bug");
-  emitComposeFiles(cfg);
-  // Seed the install with the admin host, the primary domain and the
-  // staging host. Extra domains added via /settings/domains are appended by
-  // regenerate-caddy when it queries the live domains table.
   const caddy = generateCaddyfile({
     ownerEmail: cfg.ownerEmail,
     tls: cfg.tls,
@@ -382,6 +390,7 @@ function agentContext(cfg: CaeloConfig): AgentCliContext {
       });
     },
     renderCompose: (images) => renderCompose(cfg, images),
+    refreshCaddy: () => refreshCaddyfile(cfg),
     randomSecret: () => randomSecret(32),
   };
 }
@@ -474,6 +483,24 @@ async function refreshCaddy(
   cfg: CaeloConfig,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   emitConfig(cfg, await fetchExtraDomains());
+  const { reloadCaddy } = await import("./self-hosted-start.js");
+  return reloadCaddy(CAELO_DIR, bunHostRunner);
+}
+
+/**
+ * Re-render only the Caddyfile (config + the domains table) and reload the
+ * running Caddy — what `upgrade` runs after the roll, so an install picks up
+ * the edge headers of the release it moved to (#891) without its Compose
+ * file being re-written behind the upgrade's back.
+ */
+async function refreshCaddyfile(
+  cfg: CaeloConfig,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    writeCaddyfile(cfg, await fetchExtraDomains());
+  } catch (e) {
+    return { ok: false, error: `writing ${CADDYFILE_PATH} failed: ${(e as Error).message}` };
+  }
   const { reloadCaddy } = await import("./self-hosted-start.js");
   return reloadCaddy(CAELO_DIR, bunHostRunner);
 }
@@ -1009,6 +1036,7 @@ async function upgradeSelfHostedCommand(opts: {
       runner: bunHostRunner,
       renderCompose: (images) => renderCompose(cfg, images),
       convergeRoles: agentContext(cfg).convergeRoles,
+      refreshCaddy: () => refreshCaddyfile(cfg),
       log: {
         step: (m) => console.log(`\n==> ${m}`),
         info: (m) => console.log(`    ${m}`),

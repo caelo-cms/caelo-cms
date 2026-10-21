@@ -55,6 +55,10 @@ export const INFRA_CONTRACT_PATHS: readonly string[] = [
   "packages/provisioning/src/audit-job-setup.ts",
   // #819 — the converge job, its database login and the admin's grant on it.
   "packages/provisioning/src/converge-job-setup.ts",
+  // #891 — the edge security headers the stacks attach, and the converge's
+  // SVG backfill + CDN purge on `gcp`.
+  "packages/provisioning/src/static-security-headers.ts",
+  "packages/provisioning/src/static-svg-gcp.ts",
 ];
 
 /**

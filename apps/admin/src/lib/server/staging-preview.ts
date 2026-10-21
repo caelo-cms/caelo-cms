@@ -16,9 +16,9 @@
  */
 
 import { readStagedBuildFiles, readStagedObject, StagedRunError } from "@caelo-cms/admin-core";
+import { mediaSecurityHeaders } from "@caelo-cms/shared";
 import type { Bucket } from "@google-cloud/storage";
 import { error, type RequestHandler } from "@sveltejs/kit";
-import { mediaSecurityHeaders } from "./media-headers.js";
 
 /** The private staging bucket and the live static bucket of a GCP install. */
 export interface StagingPreviewBuckets {

@@ -8,7 +8,8 @@
  *   - {@link planEnvUpdate}: the env-var flags for the `services update` that
  *     rolls the image, so env changes ride the same new revision — including
  *     moving a plain var to a Secret Manager reference.
- *   - {@link ensureStackInvariants}: IAM bindings + CDN settings. Each binding
+ *   - {@link ensureStackInvariants}: IAM bindings + CDN settings (incl. the
+ *     #891 response headers and the SVG backfill, static-svg-gcp.ts). Each binding
  *     is checked against the resource's policy first and only added when
  *     missing, so an operator without IAM-admin rights can still upgrade an
  *     install that is already in shape.
@@ -55,6 +56,8 @@ import {
   stackIamInvariants,
   staticBackendBucketPrefix,
 } from "./stack-contract.js";
+import { GCP_STATIC_RESPONSE_HEADERS } from "./static-security-headers.js";
+import { ensureSvgDownloads } from "./static-svg-gcp.js";
 
 // ===========================================================================
 // Env vars
@@ -517,7 +520,10 @@ async function ensureIam(
   return outcomes;
 }
 
-/** Bring the `gcp` stack's static backend bucket to {@link STATIC_CDN_POLICY}. */
+/**
+ * Bring the `gcp` stack's static backend bucket to {@link STATIC_CDN_POLICY}
+ * and its custom response headers to {@link GCP_STATIC_RESPONSE_HEADERS}.
+ */
 async function ensureCdnPolicy(
   install: InstallTarget,
   run: GcloudRunner,
@@ -525,7 +531,7 @@ async function ensureCdnPolicy(
   const base = {
     id: `Cloud CDN policy of ${staticBackendBucketPrefix(install.env)}*`,
     onFailure: "warn" as const,
-    why: "immutable assets stay cached for a year instead of 1h (#555)",
+    why: "immutable assets stay cached for a year instead of 1h (#555), and every file is served nosniff (#891)",
   };
   const project = `--project=${install.projectId}`;
   const list = await run([
@@ -553,12 +559,18 @@ async function ensureCdnPolicy(
     "--format=json",
   ]);
   if (describe.ok) {
-    const cdn = (JSON.parse(describe.stdout) as { cdnPolicy?: Record<string, unknown> }).cdnPolicy;
+    const live = JSON.parse(describe.stdout) as {
+      cdnPolicy?: Record<string, unknown>;
+      customResponseHeaders?: unknown;
+    };
+    const cdn = live.cdnPolicy;
     const inShape =
       cdn !== undefined &&
       (Object.keys(STATIC_CDN_POLICY) as (keyof typeof STATIC_CDN_POLICY)[]).every(
         (k) => String(cdn[k]) === String(STATIC_CDN_POLICY[k]),
-      );
+      ) &&
+      JSON.stringify(live.customResponseHeaders ?? []) ===
+        JSON.stringify(GCP_STATIC_RESPONSE_HEADERS);
     if (inShape) return { ...base, status: "present" };
   }
   const update = await run([
@@ -571,6 +583,8 @@ async function ensureCdnPolicy(
     `--default-ttl=${STATIC_CDN_POLICY.defaultTtl}`,
     `--max-ttl=${STATIC_CDN_POLICY.maxTtl}`,
     `--client-ttl=${STATIC_CDN_POLICY.clientTtl}`,
+    // Replaces the bucket's list, so this is the complete set.
+    ...GCP_STATIC_RESPONSE_HEADERS.map((h) => `--custom-response-header=${h}`),
     "--quiet",
   ]);
   return update.ok
@@ -622,7 +636,10 @@ export async function ensureStackInvariants(
     ? invariants
     : invariants.filter((i) => i.member !== "iap-service-agent");
   outcomes.push(...(await ensureIam(checkable, install, projectNumber, run, sleep)));
-  if (install.provider === "gcp") outcomes.push(await ensureCdnPolicy(install, run));
+  if (install.provider === "gcp") {
+    outcomes.push(await ensureCdnPolicy(install, run));
+    outcomes.push(await ensureSvgDownloads(install, run));
+  }
   outcomes.push(...(await removeDefaultFirewallRules(install.projectId, { run })));
 
   return {

@@ -43,6 +43,9 @@ import {
   CONTENT_HASHED_PATH_PATTERN,
   HTML_CACHE_CONTROL,
   IMMUTABLE_CACHE_CONTROL,
+  NOSNIFF,
+  SVG_DOCUMENT_CSP,
+  SVG_PATH_PATTERN,
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
@@ -170,7 +173,23 @@ export const FIREBASE_SHORT_CACHE_PATH_PATTERN =
  * extension table picks. It sets no Cache-Control, so overlapping a
  * Cache-Control entry on the path never makes two entries set the same
  * header.
+ *
+ * The {@link SECURITY_HEADER_ENTRIES} close the list (#891): every
+ * response `nosniff`, every SVG the sandboxing CSP. Neither sets
+ * Cache-Control or Content-Type, so they overlap the entries above
+ * without two entries ever setting the same header.
  */
+export const SECURITY_HEADER_ENTRIES = [
+  {
+    regex: "^/",
+    headers: { "X-Content-Type-Options": NOSNIFF },
+  },
+  {
+    regex: SVG_PATH_PATTERN,
+    headers: { "Content-Security-Policy": SVG_DOCUMENT_CSP },
+  },
+] as const;
+
 export const VERSION_CONFIG_HEADERS = [
   {
     regex: CONTENT_HASHED_PATH_PATTERN,
@@ -184,6 +203,7 @@ export const VERSION_CONFIG_HEADERS = [
     regex: "\\.ico$",
     headers: { "Content-Type": "image/x-icon" },
   },
+  ...SECURITY_HEADER_ENTRIES,
 ] as const;
 
 /**
@@ -232,6 +252,24 @@ export function withTargetRobotsHeader(
       ? [...kept, { glob: "**", headers: { [ROBOTS_HEADER]: "noindex" } }]
       : kept;
   return { ...config, headers };
+}
+
+const SECURITY_HEADER_NAMES = new Set(
+  SECURITY_HEADER_ENTRIES.flatMap((e) => Object.keys(e.headers).map((k) => k.toLowerCase())),
+);
+
+/**
+ * Return `config` with the current {@link SECURITY_HEADER_ENTRIES} in
+ * place of whatever security entries it carried. Promote and rollback
+ * re-release a SOURCE version's config; a version staged (or released)
+ * before #891 has no SVG CSP, and this is what keeps such a version from
+ * going live without it.
+ */
+export function withSecurityHeaders(config: FirebaseVersionConfig): FirebaseVersionConfig {
+  const kept = (config.headers ?? []).filter(
+    (e) => !Object.keys(e.headers ?? {}).some((k) => SECURITY_HEADER_NAMES.has(k.toLowerCase())),
+  );
+  return { ...config, headers: [...kept, ...SECURITY_HEADER_ENTRIES] };
 }
 
 /**
@@ -434,7 +472,8 @@ async function versionConfig(
  * for `target`: same files except robots.txt (the target's policy, with
  * the `Sitemap:` line when the version carries a sitemap.xml), same
  * config except the env-level robots header (see
- * withTargetRobotsHeader). Page HTML + sitemap.xml are reused by hash —
+ * withTargetRobotsHeader) and the current security headers (see
+ * withSecurityHeaders — a version from before #891 lacks the SVG CSP). Page HTML + sitemap.xml are reused by hash —
  * the generator renders them env-independently.
  */
 async function releaseAsTarget(args: {
@@ -478,7 +517,9 @@ async function releaseAsTarget(args: {
   const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
     method: "POST",
     body: JSON.stringify({
-      config: withTargetRobotsHeader(args.sourceConfig, args.target.robotsDefault),
+      config: withSecurityHeaders(
+        withTargetRobotsHeader(args.sourceConfig, args.target.robotsDefault),
+      ),
     }),
     token,
   });
