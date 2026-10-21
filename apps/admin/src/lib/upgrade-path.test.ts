@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { cloudShellInstallUrl } from "@caelo-cms/shared";
+import {
+  CLOUD_SHELL_UPGRADE_FIRST_VERSION,
+  cloudShellInstallUrl,
+  cloudShellUpgradeUrl,
+} from "@caelo-cms/shared";
 import { cloudShellUpgrade, resolveUpgradePath, type UpgradePath } from "./upgrade-path.js";
 
 const gcp = {
@@ -74,31 +78,44 @@ describe("resolveUpgradePath", () => {
   });
 });
 
-describe("cloudShellUpgrade", () => {
-  it("opens Cloud Shell on the install's project with pinned commands", () => {
-    const c = cloudShellUpgrade(
-      {
-        ...gcp,
-        CAELO_UPGRADER_JOB:
-          "projects/acme-prod/locations/europe-west1/jobs/caelo-production-upgrader",
-      },
-      "0.11.0",
-    );
-    expect(c?.consoleUrl).toBe(cloudShellInstallUrl("0.11.0", "gcp"));
-    expect(c?.commands.slice(1)).toEqual([
-      "bunx @caelo-cms/provisioning@0.11.0 attach --project acme-prod",
-      "bunx @caelo-cms/provisioning@0.11.0 upgrade --version 0.11.0 --install example.com",
-    ]);
+describe("cloudShellUpgrade (#816)", () => {
+  const withJob = {
+    ...gcp,
+    CAELO_UPGRADER_JOB: "projects/acme-prod/locations/europe-west1/jobs/caelo-production-upgrader",
+  };
+
+  it("one button to the release's upgrade walkthrough and one ./run.sh upgrade line", () => {
+    const c = cloudShellUpgrade(withJob, CLOUD_SHELL_UPGRADE_FIRST_VERSION);
+    expect(c).toEqual({
+      consoleUrl: cloudShellUpgradeUrl(CLOUD_SHELL_UPGRADE_FIRST_VERSION, "gcp"),
+      projectId: "acme-prod",
+      command: "./run.sh upgrade --project acme-prod --install example.com",
+    });
   });
 
-  it("without the job's project: no attach step", () => {
-    const c = cloudShellUpgrade(gcp, "0.11.0");
+  it("never links the install walkthrough and never pastes an unverified installer", () => {
+    const c = cloudShellUpgrade(withJob, CLOUD_SHELL_UPGRADE_FIRST_VERSION);
+    expect(c?.consoleUrl).toContain("cloudshell_tutorial=upgrade-gcp.md");
+    expect(c?.consoleUrl).not.toBe(cloudShellInstallUrl(CLOUD_SHELL_UPGRADE_FIRST_VERSION, "gcp"));
+    expect(c?.command).not.toContain("curl");
+    expect(c?.command).not.toContain("bun.sh");
+    expect(c?.command).not.toContain("skip-verify");
+  });
+
+  it("without the job's project: the walkthrough finds the install by itself", () => {
+    const c = cloudShellUpgrade(gcp, CLOUD_SHELL_UPGRADE_FIRST_VERSION);
     expect(c?.projectId).toBeNull();
-    expect(c?.commands).toHaveLength(2);
+    expect(c?.command).toBe("./run.sh upgrade --install example.com");
   });
 
-  it("a pre-release has no Cloud Shell link, only the commands", () => {
-    expect(cloudShellUpgrade(gcp, "0.11.0-rc.1")?.consoleUrl).toBeNull();
+  it("a release without the walkthrough (pre-release, older branch): no button, the CLI command", () => {
+    for (const version of ["0.11.0-rc.1", "0.10.59"]) {
+      const c = cloudShellUpgrade(withJob, version);
+      expect(c?.consoleUrl).toBeNull();
+      expect(c?.command).toBe(
+        `bunx @caelo-cms/provisioning@${version} upgrade --version ${version} --install example.com`,
+      );
+    }
   });
 
   it("is null where the CLI cannot upgrade", () => {

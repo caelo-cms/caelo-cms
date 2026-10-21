@@ -10,6 +10,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import type { PlannedStep } from "./preview-plan.js";
 import {
   gcsBackendRecord,
   localStateNotice,
@@ -24,7 +25,7 @@ import {
   type StatePulumiOps,
   versionAtLeast,
 } from "./state-migrate.js";
-import { canonicalJson, changeCount } from "./state-pulumi.js";
+import { canonicalJson } from "./state-pulumi.js";
 import type { UpgradeReporter } from "./upgrade/reporter.js";
 
 interface FakeStack {
@@ -32,6 +33,20 @@ interface FakeStack {
   secretsProvider: string;
   pending: number;
   drift: number;
+  /** What the preview plans; `drift` in-place updates when unset. */
+  plan?: PlannedStep[];
+}
+
+/** `n` in-place updates of IAM members, the shape most drift has. */
+function updates(n: number): PlannedStep[] {
+  return Array.from({ length: n }, (_, i) => ({
+    op: "update" as const,
+    type: "gcp:projects/iAMMember:IAMMember",
+    name: `binding-${i}`,
+    urn: `urn:pulumi:production::caelo-gcp-firebase::gcp:projects/iAMMember:IAMMember::binding-${i}`,
+    diffs: ["member"],
+    replaceReasons: [],
+  }));
 }
 
 const ROOT = "/home/op/.caelo-gcp-firebase-acme";
@@ -60,7 +75,7 @@ function fakePulumi(version = "3.260.0") {
     async previewChanges(b) {
       const s = stacks.get(b.url);
       if (!s) throw new Error(`no stack in ${b.url}`);
-      return s.drift;
+      return s.plan ?? updates(s.drift);
     },
     async locked(b) {
       return faults.lockedUrl === b.url;
@@ -138,6 +153,7 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
     locked: false,
     acceptCost: true,
     bucketRecord: (initial.kind === "gcs" ? "gcs" : null) as "gcs" | "local" | null,
+    planFiles: [] as { label: string; steps: number }[],
   };
   const meta = (): MigrateInstall => ({
     installId: "gcp-firebase-acme",
@@ -188,6 +204,10 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
       p.stacks.delete(localUrl);
       m.retired.push(`${ROOT}/state.migrated-x`);
       return `${ROOT}/state.migrated-x`;
+    },
+    writePlan: (label, steps) => {
+      m.planFiles.push({ label, steps: steps.length });
+      return `${ROOT}/plan-${label}.txt`;
     },
   };
   p.stacks.set(localUrl, {
@@ -303,6 +323,8 @@ describe("migrateState — failures leave the source authoritative", () => {
     t.p.faults.driftOnTarget = 2;
     const r = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
     expect(r.ok).toBe(false);
+    expect(t.report.lines.join("\n")).toContain("The copy's preview plans:");
+    expect(t.m.planFiles).toEqual([{ label: "state-migrate-copy", steps: 2 }]);
     expect(t.m.backend).toEqual({ kind: "local" });
     expect(t.p.stacks.has(t.gcsUrl)).toBe(false);
   });
@@ -326,6 +348,36 @@ describe("migrateState — failures leave the source authoritative", () => {
     expect(r.error).toContain("Run upgrade first");
     expect(t.m.backups).toBe(0);
     expect(t.m.ensureRemoteCalls).toEqual([]);
+  });
+
+  it("the refusal lists every planned step, replaces and data loss first, and writes the diff (#737)", async () => {
+    const t = machine();
+    const local = t.p.stacks.get(t.localUrl);
+    if (local) {
+      local.plan = [
+        ...updates(1),
+        {
+          op: "replace",
+          type: "gcp:sql/databaseInstance:DatabaseInstance",
+          name: "caelo-production-pg",
+          urn: "urn:pulumi:production::caelo-gcp-firebase::gcp:sql/databaseInstance:DatabaseInstance::caelo-production-pg",
+          diffs: ["region", "settings"],
+          replaceReasons: ["region"],
+        },
+      ];
+    }
+    const r = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("a preview shows 2 change(s)");
+    expect(r.error).toContain(
+      "gcp:sql/databaseInstance:DatabaseInstance caelo-production-pg (replaced because region changes)  <-- LOSES DATA: Cloud SQL instance",
+    );
+    expect(r.error).toContain("gcp:projects/iAMMember:IAMMember binding-0 (member)");
+    expect(r.error.indexOf("REPLACES")).toBeLessThan(r.error.indexOf("Updates in place"));
+    expect(r.error).toContain(`Full diff: ${ROOT}/plan-state-migrate.txt`);
+    expect(t.m.planFiles).toEqual([{ label: "state-migrate", steps: 2 }]);
+    expect(t.m.backups).toBe(0);
   });
 
   it("refuses a stack with pending operations", async () => {
@@ -449,6 +501,9 @@ describe("migrateState — dry run", () => {
     const out = t.report.lines.join("\n");
     expect(out).toContain("Dry run — nothing changed");
     expect(out).toContain("would create gs://acme-caelo-ops");
+    // #737 — the preview's list even when it would migrate.
+    expect(out).toContain("The preview plans no changes.");
+    expect(t.m.planFiles).toEqual([{ label: "state-migrate-dry-run", steps: 0 }]);
   });
 });
 
@@ -464,11 +519,6 @@ describe("helpers", () => {
     expect(canonicalJson({ b: 1, a: [{ d: 2, c: 3 }] })).toBe(
       canonicalJson({ a: [{ c: 3, d: 2 }], b: 1 }),
     );
-  });
-
-  it("changeCount ignores unchanged resources", () => {
-    expect(changeCount({ same: 120 })).toBe(0);
-    expect(changeCount({ same: 100, update: 2, create: 1 })).toBe(3);
   });
 
   it("upgrade's notice points a local GCP install at state migrate, dry run first", () => {
