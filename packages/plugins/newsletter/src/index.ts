@@ -193,10 +193,17 @@ export default definePlugin<PluginContextTier1>({
       const hash = hashEmail(input.email);
       const existing = await ctx.query.list<
         "subscribers",
-        { id: string; confirmed_at: string | null }
+        { id: string; confirmed_at: string | null; confirm_token: string }
       >("subscribers", { email_hash: hash, limit: 1 });
       if (existing[0]?.confirmed_at) return { alreadyConfirmed: true, id: existing[0].id };
       if (existing[0]) {
+        if (ctx.email && typeof existing[0].confirm_token === "string") {
+          await ctx.email.send({
+            to: input.email,
+            subject: "Confirm your newsletter subscription",
+            html: `<p>Click <a href="/api/plugin/newsletter/confirm?token=${existing[0].confirm_token}">here</a> to confirm.</p>`,
+          });
+        }
         return { id: existing[0].id, awaitingConfirm: true };
       }
       const confirmToken = crypto.randomUUID();
@@ -220,6 +227,13 @@ export default definePlugin<PluginContextTier1>({
 
     confirm: async (ctx, args) => {
       const input = args as { token: string };
+      if (
+        typeof input?.token !== "string" ||
+        input.token.trim().length < 16 ||
+        input.token.length > 128
+      ) {
+        throw new Error("confirm: invalid token");
+      }
       const matches = await ctx.query.list<"subscribers", { id: string }>("subscribers", {
         confirm_token: input.token,
         limit: 1,
@@ -233,6 +247,13 @@ export default definePlugin<PluginContextTier1>({
 
     unsubscribe: async (ctx, args) => {
       const input = args as { token: string };
+      if (
+        typeof input?.token !== "string" ||
+        input.token.trim().length < 16 ||
+        input.token.length > 128
+      ) {
+        throw new Error("unsubscribe: invalid token");
+      }
       const matches = await ctx.query.list<"subscribers", { id: string }>("subscribers", {
         unsub_token: input.token,
         limit: 1,
