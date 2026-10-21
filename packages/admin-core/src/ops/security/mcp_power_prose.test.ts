@@ -19,7 +19,7 @@ import {
   untrustedToolResult,
   untrustedToolResultValue,
 } from "@caelo-cms/shared";
-import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
+import { composeSystemPromptChunks, toolPlaybookBlock } from "../../ai/system-prompt.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
 import {
   POWER_MCP_EXCLUDED_TOOLS,
@@ -94,13 +94,29 @@ describe("Power-MCP prompt↔catalog consistency (#413)", () => {
       (c) => c.label === "tool-playbook",
     );
     expect(playbook).toBeDefined();
-    expect(playbook?.body).toContain("`inspect_built_page`");
     expect(playbook?.body).toContain("`screenshot_page`");
     expect(playbook?.body).toContain("rendered server-side");
     expect(playbook?.body).toContain("`inspect_page_render`");
     // The chat-only tool-search deferral instruction must not leak here:
     // the MCP tool list already carries every schema.
     expect(playbook?.body).not.toContain("tool-search tool");
+  });
+
+  it("names inspect_built_page only on GCP installs, where it can run", () => {
+    // e2e-livedit 2026-10: off GCP the tool failed with "only available on
+    // GCP installs" every time the prompt steered the model to it.
+    for (const surface of ["chat", "power-mcp"] as const) {
+      expect(toolPlaybookBlock(surface, { CAELO_PROVIDER: "gcp" })).toContain(
+        "`inspect_built_page`",
+      );
+      expect(toolPlaybookBlock(surface, { CAELO_PROVIDER: "gcp-firebase" })).toContain(
+        "`inspect_built_page`",
+      );
+      expect(toolPlaybookBlock(surface, { CAELO_PROVIDER: "self-hosted" })).not.toContain(
+        "inspect_built_page",
+      );
+      expect(toolPlaybookBlock(surface, {})).not.toContain("inspect_built_page");
+    }
   });
 
   it("served catalogue descriptions never recommend an excluded tool", () => {
