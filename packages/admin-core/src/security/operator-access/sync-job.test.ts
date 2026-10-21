@@ -31,7 +31,12 @@ const config: SyncJobConfig = {
 };
 
 /** Fake IAP + IAM policy endpoints holding real state. */
-function fakeGoogle(policies: Record<string, unknown>, failSetFor?: string) {
+function fakeGoogle(
+  policies: Record<string, unknown>,
+  failSetFor?: string,
+  /** `user:` members Google answers "does not exist" for, like a real setIamPolicy. */
+  nonexistent: readonly string[] = [],
+) {
   const sets: { url: string; policy: unknown }[] = [];
   const deps: GoogleDeps = {
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
@@ -48,6 +53,11 @@ function fakeGoogle(policies: Record<string, unknown>, failSetFor?: string) {
         return new Response("denied", { status: 403 });
       }
       const policy = (JSON.parse(String(init?.body)) as { policy: unknown }).policy;
+      const missing = nonexistent.find((m) => JSON.stringify(policy).includes(`"${m}"`));
+      if (missing) {
+        const error = { code: 400, message: `User ${missing.slice(5)} does not exist.` };
+        return new Response(JSON.stringify({ error }), { status: 400 });
+      }
       sets.push({ url: base, policy });
       policies[base] = policy;
       return new Response(JSON.stringify(policy), { status: 200 });
@@ -109,6 +119,44 @@ describe("runSync", () => {
     // Every removal is logged loudly.
     const removed = logs.filter((l) => l.severity === "WARNING").map((l) => l.member);
     expect(removed).toEqual(["allUsers", "domain:x.com", "user:gone@x.com", "group:g@x.com"]);
+  });
+
+  it("leaves out a user Google has no account for, still removes allUsers, and reports the run as failed", async () => {
+    const { deps, policies } = fakeGoogle(
+      {
+        [IAP]: {
+          bindings: [{ role: IAP_ACCESSOR_ROLE, members: ["user:owner@x.com", MCP, "allUsers"] }],
+        },
+        [SA]: { bindings: [{ role: TOKEN_CREATOR_ROLE, members: ["user:owner@x.com"] }] },
+      },
+      undefined,
+      ["user:nobody@x.com"],
+    );
+    const { logs, log } = collect();
+    const r = await runSync(config, {
+      google: deps,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
+      readEmails: async () => ["anna@x.com", "Nobody@x.com"],
+      log,
+    });
+    expect(r.ok).toBe(false);
+    expect(membersOf(policies[IAP], IAP_ACCESSOR_ROLE)).toEqual([
+      MCP,
+      "user:anna@x.com",
+      "user:owner@x.com",
+    ]);
+    expect(membersOf(policies[SA], TOKEN_CREATOR_ROLE)).toEqual([
+      "user:anna@x.com",
+      "user:owner@x.com",
+    ]);
+    expect(r.iap?.unknownPrincipals).toEqual(["user:nobody@x.com"]);
+    const errors = logs.filter((l) => l.severity === "ERROR");
+    expect(errors.map((l) => [l.member, l.role])).toEqual([
+      ["user:nobody@x.com", IAP_ACCESSOR_ROLE],
+      ["user:nobody@x.com", TOKEN_CREATOR_ROLE],
+    ]);
+    expect(logs.some((l) => l.severity === "WARNING" && l.member === "allUsers")).toBe(true);
   });
 
   it("keeps the upgrader's token-creator on caelo-mcp, and only there", async () => {

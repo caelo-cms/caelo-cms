@@ -17,7 +17,9 @@
  *      and `roles/iam.serviceAccountTokenCreator` on `caelo-mcp` hold EXACTLY
  *      those `user:` members plus the static members the provisioner
  *      configured (the install's IAP allowlist, and `caelo-mcp` itself on
- *      IAP) — everything else on those two roles is removed and logged;
+ *      IAP) — everything else on those two roles is removed and logged; a
+ *      member Google has no account for is left out and logged as an error
+ *      (google-iam.ts), so it cannot block the rest of the write;
  *   3. #914 — makes the admin IAP resource's `oauthSettings` (browser
  *      sign-in client + its secret + `programmaticClients`) use EXACTLY the
  *      Google sign-in client the Owner configured (ID read through
@@ -41,9 +43,10 @@ import {
   defaultGoogleDeps,
   type GoogleDeps,
   googleCall,
+  type ResourceReconciled,
   reconcileResourceRole,
 } from "./google-iam.js";
-import { desiredMembers, parseStaticMembers, type Reconciled } from "./iam-policy.js";
+import { desiredMembers, parseStaticMembers } from "./iam-policy.js";
 import {
   type DesiredOAuthClient,
   type OAuthSettingsReconciled,
@@ -119,8 +122,8 @@ export interface SyncDeps {
 
 export interface SyncReport {
   readonly ok: boolean;
-  readonly iap?: Reconciled;
-  readonly mcp?: Reconciled;
+  readonly iap?: ResourceReconciled;
+  readonly mcp?: ResourceReconciled;
   readonly oauthSettings?: OAuthSettingsReconciled;
 }
 
@@ -164,9 +167,20 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
     role: string,
     desired: ReadonlySet<string>,
     read: { body?: unknown; query?: string },
-  ): Promise<Reconciled | undefined> => {
+  ): Promise<ResourceReconciled | undefined> => {
     try {
       const r = await reconcileResourceRole(deps.google, resourceUrl, role, desired, read);
+      // Everyone else was still brought in line; the run reports failure so
+      // the admin shows it, naming who cannot be granted.
+      for (const member of r.unknownPrincipals) {
+        ok = false;
+        deps.log({
+          severity: "ERROR",
+          message: `could not grant ${role} to ${member} on ${what}: Google has no account with that address — the Caelo user cannot sign in. In /settings/users delete the user and create them again with the address of their Google account; every other member was updated`,
+          member,
+          role,
+        });
+      }
       for (const member of r.added) {
         deps.log({
           severity: "INFO",
