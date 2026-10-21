@@ -45,6 +45,7 @@ import {
   normalizeStagingHost,
   stagingHostProblem,
 } from "@caelo-cms/shared";
+import type { AdminInternalTarget } from "./admin-internal.js";
 import type { AgentCliContext } from "./agent/command.js";
 import type { AgentConfig } from "./agent/config.js";
 import { generateBootstrapToken } from "./bootstrap-token.js";
@@ -74,6 +75,7 @@ import {
 } from "./compose.js";
 import { tightenPrivateTree, writePrivateFile } from "./private-file.js";
 import { selfCommand } from "./self-command.js";
+import { ensureInternalSecret, writeInternalSecret } from "./self-hosted-internal-secret.js";
 import {
   bunHostRunner,
   readRelease,
@@ -339,6 +341,12 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
     postgresPassword: cfg.postgresPassword,
     rolePasswords: cfg.rolePasswords,
     caeloSecretKek: cfg.caeloSecretKek,
+    // #770 — every render (up, upgrade, agent apply) hands the admin the
+    // secret host-side commands sign their /api/internal/* tokens with.
+    internalSecret: ensureInternalSecret(CAELO_DIR, {
+      randomSecret: () => randomSecret(48),
+      report: (line) => console.log(line),
+    }),
     anthropicApiKey: cfg.anthropicApiKey,
     resendApiKey: cfg.resendApiKey,
     diskSize: "20Gi",
@@ -602,6 +610,13 @@ async function init(): Promise<void> {
     composeProject: composeProjectName(domain),
   };
   saveConfig(cfg);
+  // P15.1 — the shared HMAC secret for /api/internal/* endpoints, read by
+  // the admin (CAELO_INTERNAL_SECRET, from the Compose file emitConfig
+  // writes next — so it must exist first, #770) and by host-side commands
+  // such as `owner-reset`. Long enough to defeat brute-force. GCP installs
+  // keep their own copy in Secret Manager (runtime-secrets.ts), rotated by
+  // `rotate-secret internal-secret`.
+  writeInternalSecret(CAELO_DIR, randomSecret(48));
   if (images.mode === "release") {
     recordRelease(
       CAELO_DIR,
@@ -620,17 +635,6 @@ async function init(): Promise<void> {
   mkdirSync(resolve(CAELO_DIR, BOOTSTRAP_DIR), { recursive: true, mode: 0o700 });
   writePrivateFile(PENDING_TOKEN_PATH, JSON.stringify(tok, null, 2));
 
-  // P15.1 — mint the shared HMAC secret for /api/internal/* endpoints.
-  // Same secret is read by:
-  //   - admin app (process.env.CAELO_INTERNAL_SECRET),
-  //   - cms-provision pulumi-output-sync (when running in CI / by hand),
-  //   - any future internal-only orchestration.
-  // Long enough to defeat brute-force. GCP installs keep their own copy in
-  // Secret Manager (runtime-secrets.ts), rotated by `rotate-secret
-  // internal-secret`.
-  const internalSecret = randomSecret(48);
-  const internalSecretPath = resolve(CAELO_DIR, "internal-secret.json");
-  writePrivateFile(internalSecretPath, JSON.stringify({ secret: internalSecret }, null, 2));
   // #696 Phase 4c — the update agent (Linux + systemd): the fresh volume's
   // bootstrap.sh creates its database login on Postgres's first start.
   const { reportAgentSetup, setUpAgent } = await import("./agent/command.js");
@@ -1242,42 +1246,56 @@ async function lifecycleTruncate(): Promise<void> {
 }
 
 /**
- * #769 `owner-reset [--install <id>] [--email <addr>]` — print a one-time
- * reset link for a locked-out Owner, for installs whose admin cannot email
- * one (see owner-reset.ts for why the operator's cloud identity may).
+ * #769 / #770 `owner-reset [--install <id>] [--email <addr>]` — print a
+ * one-time reset link for a locked-out Owner, for installs whose admin
+ * cannot email one (see owner-reset.ts for why the operator may). Run in the
+ * self-hosted install's directory, or with `--install` for a cloud install.
  */
 async function ownerReset(): Promise<void> {
+  const email = arg("email");
+  const target = selfHostedInstallPresent()
+    ? selfHostedOwnerResetTarget()
+    : await cloudOwnerResetTarget();
+  const { describeOwnerReset, requestOwnerReset } = await import("./owner-reset.js");
+  const r = await requestOwnerReset(target, email ? { email } : {});
+  if (!r.ok) {
+    console.error(`owner-reset: ${r.error}`);
+    process.exit(1);
+  }
+  // Prints the reset link ON PURPOSE: stdout is the one place it goes; it is
+  // never written to a file or a log.
+  for (const line of describeOwnerReset(r.value)) console.log(line);
+}
+
+/** The self-hosted install in this directory, reached through `docker compose exec`. */
+function selfHostedOwnerResetTarget(): AdminInternalTarget {
+  const cfg = loadConfig();
+  if (!cfg) {
+    console.error("no config — run `cms-provision init` first");
+    process.exit(2);
+  }
+  return {
+    provider: "self-hosted",
+    caeloDir: CAELO_DIR,
+    adminUrl: siteUrl(cfg, selfHostedAdminHost(cfg.domain)),
+  };
+}
+
+/** The cloud install `--install` names (or the only one), on a provider that has the channel. */
+async function cloudOwnerResetTarget(): Promise<AdminInternalTarget> {
   const { installFlag, listInstalls, selectInstall } = await import("./install-state.js");
   const selected = selectInstall(listInstalls(), installFlag(process.argv));
   if (!selected.ok) {
     console.error(selected.message);
     process.exit(1);
   }
-  const meta = selected.meta;
-  if (meta.provider !== "gcp-firebase") {
-    console.error(
-      `owner-reset works on gcp-firebase installs so far; this one is ${meta.provider} (issue #770). ` +
-        "Until then, another Owner can set a new password under Settings -> Users, or set up email under Settings -> Email so /forgot can send the link.",
-    );
+  const { ownerResetTarget } = await import("./owner-reset.js");
+  const target = ownerResetTarget(selected.meta);
+  if (!target.ok) {
+    console.error(`owner-reset: ${target.error}`);
     process.exit(1);
   }
-  if (!meta.projectId || !meta.region) {
-    console.error(
-      `install ${meta.installId} has no project or region recorded in install.json; re-run the wizard to record it.`,
-    );
-    process.exit(1);
-  }
-  const email = arg("email");
-  const { describeOwnerReset, requestOwnerReset } = await import("./owner-reset.js");
-  const r = await requestOwnerReset(
-    { projectId: meta.projectId, region: meta.region },
-    email ? { email } : {},
-  );
-  if (!r.ok) {
-    console.error(`owner-reset: ${r.error}`);
-    process.exit(1);
-  }
-  for (const line of describeOwnerReset(r.value)) console.log(line);
+  return target.value;
 }
 
 /**
@@ -1351,6 +1369,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     if (!requested && meta.provider === "gcp-firebase" && meta.projectId && meta.region) {
       const { inspectStagingAdmin } = await import("./staging-admin.js");
       const inspected = await inspectStagingAdmin({
+        provider: "gcp-firebase",
         projectId: meta.projectId,
         region: meta.region,
       });
@@ -1436,7 +1455,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     // the password is printed once (never stored by the CLI).
     const { applyStagingAdmin, describeStagingApply } = await import("./staging-admin.js");
     const applied = await applyStagingAdmin(
-      { projectId: meta.projectId, region: meta.region },
+      { provider: "gcp-firebase", projectId: meta.projectId, region: meta.region },
       {
         host: r.hostname,
         ...(rotatePassword ? { rotateBasicAuth: true } : {}),

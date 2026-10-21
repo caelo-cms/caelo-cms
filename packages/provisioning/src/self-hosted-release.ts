@@ -45,7 +45,8 @@ export interface HostRunner {
   /**
    * Run `argv` to completion. With `stdoutPath`, stdout streams into that
    * file (mode 600) instead of being captured — used for database dumps.
-   * With `stdinPath`, that file is the process's stdin (restores). With
+   * With `stdinPath`, that file is the process's stdin (restores); with
+   * `stdinText`, that text is (secrets that must not appear in argv). With
    * `inherit`, stdout + stderr go to the terminal (long pulls and starts
    * the operator should watch) and come back empty.
    */
@@ -58,6 +59,7 @@ export interface HostRunOptions {
   readonly env?: Readonly<Record<string, string>>;
   readonly stdoutPath?: string;
   readonly stdinPath?: string;
+  readonly stdinText?: string;
   readonly inherit?: boolean;
 }
 
@@ -67,7 +69,12 @@ export const bunHostRunner: HostRunner = {
     try {
       const proc = Bun.spawn([...argv], {
         ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
-        stdin: opts?.stdinPath ? Bun.file(opts.stdinPath) : "ignore",
+        stdin:
+          opts?.stdinText !== undefined
+            ? Buffer.from(opts.stdinText)
+            : opts?.stdinPath
+              ? Bun.file(opts.stdinPath)
+              : "ignore",
         stdout: opts?.stdoutPath ? Bun.file(opts.stdoutPath) : opts?.inherit ? "inherit" : "pipe",
         stderr: opts?.inherit ? "inherit" : "pipe",
       });
