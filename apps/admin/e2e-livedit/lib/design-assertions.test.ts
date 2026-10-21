@@ -223,6 +223,17 @@ describe("findTemplateLeaks", () => {
       "<style>.a{color:red}</style><script>var o={{a:1}}; var t='{{x}}';</script><p>Hello {world}</p>";
     expect(findTemplateLeaks(html)).toEqual([]);
   });
+
+  it("still scans text that a broken tag pair would re-form into a script tag", () => {
+    // One strip pass over `<scr<script></script>ipt>` leaves `<script>`-like
+    // leftovers; the scanner must report the leak behind it, not hide it.
+    const html = "<scr<script></script>ipt>{{hero_title}}</p><STYLE >a{}</style >{{cta}}";
+    expect(findTemplateLeaks(html)).toEqual(["{{hero_title}}", "{{cta}}"]);
+  });
+
+  it("keeps an unterminated script body visible", () => {
+    expect(findTemplateLeaks("<p>ok</p><script>{{leak}}")).toEqual(["{{leak}}"]);
+  });
 });
 
 describe("compareStyleSnapshots", () => {

@@ -375,7 +375,47 @@ export function checkWebFontsDelivered(
   ];
 }
 
-const SCRIPT_OR_STYLE_RE = /<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi;
+const RAW_TEXT_OPEN_RE = /<(script|style)\b/gi;
+const CLOSE_TAG_TAIL_RE = /^\s*>/;
+
+/**
+ * The HTML outside `<script>` / `<style>` element bodies, as a list of
+ * segments. A linear scan instead of a strip-by-`replace`: one replace pass
+ * over `<scr<script></script>ipt>` would re-form a `<script` from the
+ * leftovers (CodeQL js/incomplete-multi-character-sanitization), and an
+ * unterminated element keeps its tail visible so a leak inside it is still
+ * reported rather than silently dropped.
+ */
+function segmentsOutsideScriptAndStyle(html: string): string[] {
+  const lower = html.toLowerCase();
+  const segments: string[] = [];
+  let cursor = 0;
+  RAW_TEXT_OPEN_RE.lastIndex = 0;
+  for (;;) {
+    const open = RAW_TEXT_OPEN_RE.exec(html);
+    if (open === null) break;
+    const openTagEnd = html.indexOf(">", open.index);
+    const end =
+      openTagEnd === -1 ? -1 : findCloseTagEnd(lower, open[1].toLowerCase(), openTagEnd + 1);
+    if (end === -1) break;
+    segments.push(html.slice(cursor, open.index));
+    cursor = end;
+    RAW_TEXT_OPEN_RE.lastIndex = end;
+  }
+  segments.push(html.slice(cursor));
+  return segments;
+}
+
+/** Index just past the `</name\s*>` that closes a raw-text element, or -1. */
+function findCloseTagEnd(lower: string, name: string, from: number): number {
+  const closeOpen = `</${name}`;
+  for (let at = lower.indexOf(closeOpen, from); at !== -1; at = lower.indexOf(closeOpen, at + 1)) {
+    const tailStart = at + closeOpen.length;
+    const tail = CLOSE_TAG_TAIL_RE.exec(lower.slice(tailStart, tailStart + 64));
+    if (tail !== null) return tailStart + tail[0].length;
+  }
+  return -1;
+}
 const MUSTACHE_TAG_RE = /\{\{\s*[#/^!>&]?\s*[A-Za-z_][\w.-]*\s*\}\}/g;
 const MISSING_MARKER_RE = /<!--\s*caelo:missing[^>]*-->/g;
 
@@ -388,10 +428,11 @@ const MISSING_MARKER_RE = /<!--\s*caelo:missing[^>]*-->/g;
  * distinct offending snippets.
  */
 export function findTemplateLeaks(html: string): string[] {
-  const visible = html.replace(SCRIPT_OR_STYLE_RE, "");
   const hits = new Set<string>();
-  for (const m of visible.matchAll(MUSTACHE_TAG_RE)) hits.add(m[0]);
-  for (const m of visible.matchAll(MISSING_MARKER_RE)) hits.add(m[0].slice(0, 120));
+  for (const visible of segmentsOutsideScriptAndStyle(html)) {
+    for (const m of visible.matchAll(MUSTACHE_TAG_RE)) hits.add(m[0]);
+    for (const m of visible.matchAll(MISSING_MARKER_RE)) hits.add(m[0].slice(0, 120));
+  }
   return [...hits];
 }
 
