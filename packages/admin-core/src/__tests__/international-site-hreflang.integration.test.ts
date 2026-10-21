@@ -275,6 +275,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
           urlHost: "de.example.com",
           isDefault: false,
         },
+        { code: "fr", displayName: "Français", urlStrategy: "subdirectory", isDefault: false },
       ],
     });
     await op("refresh_locales", {});
@@ -289,12 +290,30 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     expect(hostLinks.some((h) => h.startsWith("https://de.example.com/"))).toBe(true);
   }, 60_000);
 
+  // Dropping a locale its pages still carry stranded them: every path
+  // composition then failed with "references locale … not registered".
+  it("set_locales refuses to drop a locale that pages still use", async () => {
+    await expect(
+      op("set_locales", {
+        locales: [
+          { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+          { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+        ],
+      }),
+    ).rejects.toThrow('locale "fr" is still used by');
+    const status = await op<{ locales: { code: string }[] }>("intl_status", {});
+    expect(status.locales.map((l) => l.code).sort()).toEqual(["de", "en", "fr"]);
+  });
+
   it("offers language_links as a data list a module renders with its OWN markup", async () => {
     const sourceId = await seedPage("t398-lang-pricing");
+    // The first test's French variant still exists, so "fr" stays
+    // registered (set_locales refuses to drop a locale pages still use).
     await op("set_locales", {
       locales: [
         { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
         { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+        { code: "fr", displayName: "Français", urlStrategy: "subdirectory", isDefault: false },
       ],
     });
     const de = await op<{ pageId: string }>("create_variant", {

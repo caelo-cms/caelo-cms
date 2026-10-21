@@ -359,6 +359,36 @@ async function counterpartInLocale(
   return rows[0]?.page_id ?? null;
 }
 
+/**
+ * Refuse to drop a locale that live pages still carry. Every URL and
+ * render path resolves a variant's locale through the registry and fails
+ * loudly on an unknown code, so dropping one strands its pages: their
+ * paths can no longer be composed (merges, URL migrations, refreshes and
+ * builds all stop on them).
+ */
+async function assertRemovedLocalesUnused(
+  q: PluginAdminQuery,
+  cms: CmsHandle,
+  removedCodes: readonly string[],
+): Promise<void> {
+  if (removedCodes.length === 0) return;
+  const livePageIds = new Set(
+    (await cms.call<{ pages: { id: string }[] }>("pages.list", {})).pages.map((p) => p.id),
+  );
+  for (const code of removedCodes) {
+    const rows = (await q.list("page_variants", {
+      locale_code: code,
+      limit: 1000,
+    })) as unknown as PageVariantRow[];
+    const used = rows.filter((r) => livePageIds.has(r.page_id)).map((r) => r.page_id);
+    if (used.length > 0) {
+      throw new Error(
+        `set_locales: locale "${code}" is still used by ${used.length} page(s) (${used.slice(0, 5).join(", ")}${used.length > 5 ? ", …" : ""}). Delete those pages (delete_pages_many) or unlink them (unlink_page_variants) first, then call set_locales again — or keep "${code}" in the list.`,
+      );
+    }
+  }
+}
+
 /** A throwaway slug for the copy while it has no locale prefix yet (see
  *  create_variant): random, so it never collides with a real page. */
 function provisionalSlug(slug: string, localeCode: string): string {
@@ -1168,6 +1198,11 @@ export default definePlugin<PluginContextTier1>({
       if (prefixError) throw new Error(prefixError);
       const existing = (await q.list("locales", { limit: 500 })) as unknown as LocaleRow[];
       const keep = new Set(locales.map((l) => l.code));
+      await assertRemovedLocalesUnused(
+        q,
+        cmsOf(ctx),
+        existing.map((r) => r.code).filter((code) => !keep.has(code)),
+      );
       for (const row of existing) {
         if (!keep.has(row.code)) await q.delete("locales", row.id);
       }
