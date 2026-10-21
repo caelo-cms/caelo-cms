@@ -6,7 +6,8 @@
  * Consent: the Owner turns forwarding on (`bug_forwarding.set`, human-only).
  * From then on every new `ai_bug_reports` row is `queued`; reports filed
  * before stay `local_only` until the Owner sends them with
- * `bug_forwarding.queue_earlier`. Turning it off un-queues whatever has not
+ * `bug_forwarding.queue_unsent`, which also gives reports that ended in
+ * `failed` a fresh start (#982). Turning it off un-queues whatever has not
  * left yet.
  *
  * Outbox: the forwarding worker (bug-forwarding/worker.ts) claims due rows
@@ -57,8 +58,11 @@ const countsSchema = z.object({
   queued: z.number(),
   sent: z.number(),
   failed: z.number(),
-  /** `local_only` reports still open (new/triaged) that queue_earlier would send. */
-  earlierUnsent: z.number(),
+  /**
+   * Open (new/triaged) reports that are `local_only` or `failed`: what
+   * queue_unsent would send.
+   */
+  unsent: z.number(),
 });
 
 export const getBugForwardingOp = defineOperation({
@@ -95,13 +99,13 @@ export const getBugForwardingOp = defineOperation({
         count(*) FILTER (WHERE forwarding_state = 'queued')::int AS queued,
         count(*) FILTER (WHERE forwarding_state = 'sent')::int AS sent,
         count(*) FILTER (WHERE forwarding_state = 'failed')::int AS failed,
-        count(*) FILTER (WHERE forwarding_state = 'local_only'
-                           AND status IN ('new', 'triaged'))::int AS "earlierUnsent"
+        count(*) FILTER (WHERE forwarding_state IN ('local_only', 'failed')
+                           AND status IN ('new', 'triaged'))::int AS unsent
       FROM ai_bug_reports
     `)) as unknown as Array<z.infer<typeof countsSchema>>;
     return ok({
       ...s,
-      counts: counts[0] ?? { localOnly: 0, queued: 0, sent: 0, failed: 0, earlierUnsent: 0 },
+      counts: counts[0] ?? { localOnly: 0, queued: 0, sent: 0, failed: 0, unsent: 0 },
     });
   },
 });
@@ -154,14 +158,28 @@ export const setBugForwardingOp = defineOperation({
   },
 });
 
-export const queueEarlierBugReportsOp = defineOperation({
-  name: "bug_forwarding.queue_earlier",
-  // Why human-only: reports filed before the opt-in were not covered by it;
-  // sending them is a separate, explicit Owner decision.
+/**
+ * Queue every open report that has not reached the Caelo team: the ones
+ * filed before the opt-in (`local_only`) and the ones whose sending ended in
+ * `failed` (#982). One op for both because the Owner makes one decision on
+ * /settings/bugs ("send what has not arrived"), and both need the same fresh
+ * start — attempt counter and last error cleared, due now — or a report
+ * that already used its retries would get a single attempt.
+ */
+export const queueUnsentBugReportsOp = defineOperation({
+  name: "bug_forwarding.queue_unsent",
+  // Why human-only: reports filed before the opt-in were not covered by it,
+  // and re-sending a failed report is the Owner's call on the page that
+  // shows the failure; neither is the AI's to decide.
   actorScope: ["human", "system"],
   database: "cms_admin",
   input: z.object({}).strict(),
-  output: z.object({ queued: z.number() }),
+  output: z.object({
+    /** Total reports queued by this call. */
+    queued: z.number(),
+    /** Of those, how many had ended in `failed` and are being tried again. */
+    retried: z.number(),
+  }),
   handler: async (ctx, _input, tx) => {
     const s = (await tx.execute(sql`
       SELECT bug_forwarding_enabled AS enabled FROM telemetry_settings WHERE id = 1
@@ -169,26 +187,35 @@ export const queueEarlierBugReportsOp = defineOperation({
     if (!s[0]?.enabled) {
       return err({
         kind: "HandlerError",
-        operation: "bug_forwarding.queue_earlier",
+        operation: "bug_forwarding.queue_unsent",
         message:
           "Bug forwarding is off. Turn on 'Send detected bugs to the Caelo team' on /settings/bugs first.",
       });
     }
+    // A failed row is never claimed, so resetting it cannot race a send in flight.
     const rows = (await tx.execute(sql`
-      UPDATE ai_bug_reports
-         SET forwarding_state = 'queued', next_forward_at = now()
-       WHERE forwarding_state = 'local_only' AND status IN ('new', 'triaged')
-      RETURNING id
-    `)) as unknown as unknown[];
+      WITH picked AS (
+        SELECT id, forwarding_state AS previous FROM ai_bug_reports
+         WHERE forwarding_state IN ('local_only', 'failed') AND status IN ('new', 'triaged')
+         FOR UPDATE
+      )
+      UPDATE ai_bug_reports r
+         SET forwarding_state = 'queued', forward_attempts = 0, forward_error = NULL,
+             next_forward_at = now()
+        FROM picked
+       WHERE r.id = picked.id
+      RETURNING picked.previous AS previous
+    `)) as unknown as Array<{ previous: string }>;
+    const retried = rows.filter((r) => r.previous === "failed").length;
     await recordAudit(tx, {
       actorId: ctx.actorId ?? SYSTEM_ACTOR_ID,
-      operation: "bug_forwarding.queue_earlier",
+      operation: "bug_forwarding.queue_unsent",
       input: {},
       succeeded: true,
-      resultSummary: `queued=${rows.length}`,
+      resultSummary: `queued=${rows.length} retried=${retried}`,
       requestId: ctx.requestId,
     });
-    return ok({ queued: rows.length });
+    return ok({ queued: rows.length, retried });
   },
 });
 

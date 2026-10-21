@@ -17,7 +17,7 @@ import {
   getBugForwardingOp,
   markBugIntakeRegisteredOp,
   previewBugForwardingOp,
-  queueEarlierBugReportsOp,
+  queueUnsentBugReportsOp,
   recordBugClusterStatusOp,
   recordBugForwardResultOp,
   setBugForwardingOp,
@@ -1066,7 +1066,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // Epic #901 — forwarding bug reports to the Caelo team (opt-in).
   registry.register(getBugForwardingOp);
   registry.register(setBugForwardingOp);
-  registry.register(queueEarlierBugReportsOp);
+  registry.register(queueUnsentBugReportsOp);
   registry.register(previewBugForwardingOp);
   registry.register(claimDueBugReportsOp);
   registry.register(recordBugForwardResultOp);

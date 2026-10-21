@@ -47,7 +47,8 @@ export interface BugForwarding {
     queued: number;
     sent: number;
     failed: number;
-    earlierUnsent: number;
+    /** Open reports not yet with the Caelo team (filed before opt-in, or sending failed). */
+    unsent: number;
   };
 }
 
@@ -82,18 +83,23 @@ export const actions: Actions = {
         : "Detected bugs stay on this site.",
     };
   },
-  queueEarlier: async ({ request, locals }) => {
+  queueUnsent: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const { adapter, registry } = getQueryContext();
-    const r = await execute(registry, adapter, locals.ctx, "bug_forwarding.queue_earlier", {});
+    const r = await execute(registry, adapter, locals.ctx, "bug_forwarding.queue_unsent", {});
     if (!r.ok) {
       return fail(400, {
         error: opErrorMessage(r.error, "Turn on sending to the Caelo team first."),
       });
     }
     const { queued } = r.value as { queued: number };
-    return { ok: `${queued} earlier report(s) will be sent to the Caelo team.` };
+    return {
+      ok:
+        queued === 1
+          ? "1 report will be sent to the Caelo team."
+          : `${queued} reports will be sent to the Caelo team.`,
+    };
   },
 };
