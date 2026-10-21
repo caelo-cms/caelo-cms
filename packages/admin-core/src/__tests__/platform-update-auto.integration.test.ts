@@ -18,7 +18,9 @@
  *   - runAutoUpdateTick end to end with a fake upgrader + manifest reader,
  *     and on self-hosted through the update agent (#696 Phase 4c): queued
  *     only while the agent checks in without a problem;
- *   - the AI reads the scheduler's status, never writes.
+ *   - the AI reads the scheduler's status, never writes;
+ *   - "Skip this time" (#868): Owner + password only, the skipped release
+ *     is offered instead of installed, a newer one installs again.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
@@ -228,7 +230,8 @@ async function resetState(): Promise<void> {
     await tx`DELETE FROM platform_update_requests`;
     await tx`DELETE FROM platform_update_agent`;
     await tx`UPDATE platform_update_scheduler SET lease_holder = NULL, last_run_at = NULL,
-      last_version = NULL, last_action = NULL, last_reason = NULL, last_wait_until = NULL`;
+      last_version = NULL, last_action = NULL, last_reason = NULL, last_wait_until = NULL,
+      skipped_version = NULL, skipped_by = NULL, skipped_at = NULL`;
     await tx`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
       auto_patch = false, auto_minor = false, channel = 'stable', window_start = NULL,
       window_end = NULL, window_timezone = 'UTC', soak_hours = 24, security_soak_hours = 2,
@@ -631,6 +634,89 @@ describe("platform_updates.scheduler_tick", () => {
     const [req] = await requests();
     const r = await tick(FACTS, { factsVersion: null });
     expect(r.restartRequestId).toBe(req?.id as string);
+  });
+});
+
+describe("platform_updates.skip_scheduled (#868)", () => {
+  const skip = (ctx: ExecutionContext, version: string, sessionHash: string) =>
+    run(ctx, "platform_updates.skip_scheduled", { version, sessionHash });
+
+  it("needs the Owner and a password confirmation; the AI and an editor cannot", async () => {
+    expect(message(await skip(AI, NEXT_PATCH, ownerSession))).toMatch(/actor|scope|not allowed/i);
+    // No confirmation yet.
+    expect(message(await skip(owner, NEXT_PATCH, ownerSession))).toContain("step_up_required");
+    await stepUp(editor, editorSession).catch(() => {});
+    expect(message(await skip(editor, NEXT_PATCH, editorSession))).toMatch(/permission|Owner/);
+    expect(
+      (await admin((tx) => tx`SELECT skipped_version FROM platform_update_scheduler`))[0],
+    ).toEqual({ skipped_version: null });
+  });
+
+  it("a skipped release is offered, not installed; a newer one installs again; audited", async () => {
+    await setPolicy();
+    await setLatest(NEXT_PATCH, 2);
+    const waiting = await tick();
+    expect(waiting.action).toBe("wait");
+    expect((await notifications()).map((n) => n.dedupe_key)).toEqual([`scheduled:${NEXT_PATCH}`]);
+
+    await stepUp(owner, ownerSession);
+    expect(
+      await okValue(owner, "platform_updates.skip_scheduled", {
+        version: NEXT_PATCH,
+        sessionHash: ownerSession,
+      }),
+    ).toEqual({ skippedVersion: NEXT_PATCH });
+    // The status says so at once, before the next tick.
+    const status = await okValue<{
+      lastAction: string;
+      lastReason: string;
+      skippedVersion: string;
+      lastWaitUntil: string | null;
+    }>(AI, "platform_updates.scheduler_status", {});
+    expect(status).toMatchObject({
+      lastAction: "notify",
+      skippedVersion: NEXT_PATCH,
+      lastWaitUntil: null,
+    });
+    expect(status.lastReason).toContain(`skipped the automatic install of v${NEXT_PATCH}`);
+    const audit = await admin(
+      (tx) => tx`SELECT result_summary FROM audit_events
+                  WHERE operation = 'platform_updates.skip_scheduled' AND succeeded
+                    AND actor_id = ${owner.actorId}::uuid`,
+    );
+    expect(audit as unknown as { result_summary: string }[]).toEqual([
+      { result_summary: `skipped the automatic install of v${NEXT_PATCH}` },
+    ]);
+    // The confirmation was spent.
+    expect(message(await skip(owner, NEXT_PATCH, ownerSession))).toContain("step_up_required");
+
+    // Soak over: still not queued, and no second email.
+    await setLatest(NEXT_PATCH, 48);
+    await expireLease();
+    const offered = await tick();
+    expect(offered.action).toBe("notify");
+    expect(offered.reason).toContain("skipped");
+    expect(await requests()).toHaveLength(0);
+    expect(await notifications()).toHaveLength(1);
+
+    // A newer release installs automatically again.
+    const NEWER = `${MAJ}.${MIN}.${PAT + 2}`;
+    await setLatest(NEWER, 48);
+    await expireLease();
+    expect((await tick()).action).toBe("install");
+    expect((await requests()).map((r) => r.target_version)).toEqual([NEWER]);
+  });
+
+  it("refuses a release that is not newer, or whose install already started", async () => {
+    await stepUp(owner, ownerSession);
+    expect(message(await skip(owner, CAELO_VERSION, ownerSession))).toContain("already runs");
+    await admin(
+      (
+        tx,
+      ) => tx`INSERT INTO platform_update_requests (target_version, from_version, trigger, auto_basis)
+                 VALUES (${NEXT_PATCH}, ${CAELO_VERSION}, 'auto', 'patch')`,
+    );
+    expect(message(await skip(owner, NEXT_PATCH, ownerSession))).toContain("already started");
   });
 });
 

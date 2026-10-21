@@ -163,6 +163,11 @@ export const getCaeloAutoUpdateStatusTool = makeReadTool<Record<string, never>>(
       );
       if (s.lastReason) lines.push(s.lastReason);
     }
+    if (s.skippedVersion !== null && s.skippedVersion !== s.lastVersion) {
+      lines.push(
+        `The Owner skipped the automatic install of v${s.skippedVersion}; it does not install on its own.`,
+      );
+    }
     if (s.notifications.length === 0) {
       lines.push("No update emails yet.");
     } else {
