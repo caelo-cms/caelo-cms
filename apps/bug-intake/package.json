@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/bug-intake",
-  "version": "0.10.59",
+  "version": "0.10.60",
   "private": true,
   "license": "MPL-2.0",
   "description": "Caelo-operated service that receives AI-detected bug reports from opted-in installs, de-duplicates them across installs and files one GitHub issue per defect (epic #901).",

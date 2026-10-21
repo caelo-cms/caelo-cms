@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.60
+
+### Fixes
+- 9fe68d5e a user without a Google account no longer blocks the IAP sync (#597) (#955)
+
 ## v0.10.59
 
 ### Features
