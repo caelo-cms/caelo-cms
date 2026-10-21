@@ -60,6 +60,31 @@ describe("buildPageInputSchema — page target modes", () => {
     expect(issue.message).toContain("title");
   });
 
+  it("create mode takes the new page's meta description (trimmed), so it is Stage-ready from this call", () => {
+    const r = buildPageInputSchema.safeParse({
+      page: { slug: "pricing", title: "Pricing", metaDescription: "  Plans and prices.  " },
+      modules: [mintModule],
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.page.metaDescription).toBe("Plans and prices.");
+  });
+
+  it("rejects a blank meta description and one given with pageId (fill-once is autofill_page_seo's job there)", () => {
+    const blank = buildPageInputSchema.safeParse({
+      page: { slug: "pricing", title: "Pricing", metaDescription: "   " },
+      modules: [],
+    });
+    expect(blank.success).toBe(false);
+    const existing = buildPageInputSchema.safeParse({
+      page: { pageId: UUID, metaDescription: "Plans and prices." },
+      modules: [],
+    });
+    expect(existing.success).toBe(false);
+    if (existing.success) return;
+    expect(existing.error.issues[0]!.message).toContain("autofill_page_seo");
+  });
+
   it("rejects a page target with neither pageId nor slug+title", () => {
     const r = buildPageInputSchema.safeParse({
       page: { slug: "pricing" },
