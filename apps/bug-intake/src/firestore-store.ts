@@ -18,16 +18,24 @@
  * Firestore primitives:
  *   - first-writer-wins links (`pinInstallKey`, `linkFingerprint`, a new
  *     cluster) use `create()`, which the server refuses with ALREADY_EXISTS;
- *   - a cluster's version is its document `updateTime`, and `putCluster`
- *     replaces it only inside a transaction that re-reads that time;
- *   - read-modify-write lists and counters run in transactions.
+ *   - a cluster's version is its document `updateTime`; `putCluster` writes
+ *     with a `lastUpdateTime` precondition, which the server refuses with
+ *     FAILED_PRECONDITION when anyone wrote since (or the document is gone);
+ *   - read-modify-write lists and counters use the same compare-and-set
+ *     (read, then create / precondition-update, re-read on refusal).
+ *
+ * Preconditions rather than transactions on purpose: server transactions
+ * take pessimistic locks, so a contended writer waits for the lock instead
+ * of losing fast, which is not the optimistic contract `IntakeStore`
+ * promises (`conflict` → re-read and retry). A precondition write is one
+ * RPC and never blocks.
  *
  * Credentials: the client authenticates with Application Default
  * Credentials (the Cloud Run service account). There is no key-file path on
  * purpose. With `FIRESTORE_EMULATOR_HOST` set, the SDK talks to the emulator.
  */
 
-import { Firestore, type Timestamp } from "@google-cloud/firestore";
+import { type DocumentReference, Firestore, Timestamp } from "@google-cloud/firestore";
 import {
   type ClusterRecord,
   type ClusterSummary,
@@ -39,15 +47,29 @@ import {
 
 /** gRPC status the server answers `create()` with when the document exists. */
 const ALREADY_EXISTS = 6;
+/** gRPC status for a `lastUpdateTime` precondition that no longer holds. */
+const FAILED_PRECONDITION = 9;
+/** Compare-and-set attempts before a write gives up loudly. */
+const MAX_CAS_ATTEMPTS = 10;
+
+function grpcCode(e: unknown): unknown {
+  return typeof e === "object" && e !== null ? (e as { code?: unknown }).code : undefined;
+}
 
 function isAlreadyExists(e: unknown): boolean {
-  return typeof e === "object" && e !== null && (e as { code?: unknown }).code === ALREADY_EXISTS;
+  return grpcCode(e) === ALREADY_EXISTS;
 }
 
 /** Document update time as an opaque, exactly comparable version string. */
 function versionOf(t: Timestamp | undefined): string {
   if (!t) throw new Error("Firestore returned an existing document without an update time");
   return `${t.seconds}.${String(t.nanoseconds).padStart(9, "0")}`;
+}
+
+/** The update time a version string came from; null for a string this store never issued. */
+function timestampOf(version: string): Timestamp | null {
+  const m = /^(\d+)\.(\d{9})$/.exec(version);
+  return m ? new Timestamp(Number(m[1]), Number(m[2])) : null;
 }
 
 /**
@@ -74,6 +96,31 @@ export class FirestoreStore implements IntakeStore {
 
   #doc(collection: string, id: string) {
     return this.db.collection(collection).doc(id);
+  }
+
+  /**
+   * Optimistic read-modify-write of one small document. `next` returns the
+   * fields to write (`null` = leave it as it is) and the result to answer;
+   * a concurrent writer makes the write fail fast and the loop re-reads.
+   */
+  async #compareAndSet<T extends Record<string, unknown>, R>(
+    ref: DocumentReference,
+    next: (current: T | undefined) => { write: T | null; result: R },
+  ): Promise<R> {
+    for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
+      const snap = await ref.get();
+      const { write, result } = next(snap.exists ? (snap.data() as T) : undefined);
+      if (write === null) return result;
+      try {
+        if (snap.exists) await ref.update(write, { lastUpdateTime: snap.updateTime });
+        else await ref.create(write);
+        return result;
+      } catch (e) {
+        const code = grpcCode(e);
+        if (code !== ALREADY_EXISTS && code !== FAILED_PRECONDITION) throw e;
+      }
+    }
+    throw new Error(`${ref.path}: ${MAX_CAS_ATTEMPTS} write conflicts in a row`);
   }
 
   async getInstallKey(installId: string) {
@@ -149,12 +196,18 @@ export class FirestoreStore implements IntakeStore {
         throw e;
       }
     }
-    return this.db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      if (!snap.exists || versionOf(snap.updateTime) !== version) return "conflict" as const;
-      tx.set(ref, cluster);
+    const lastUpdateTime = timestampOf(version);
+    if (lastUpdateTime === null) return "conflict" as const;
+    try {
+      // Every ClusterRecord key is required, so updating all top-level
+      // fields replaces the whole record.
+      await ref.update({ ...cluster }, { lastUpdateTime });
       return "ok" as const;
-    });
+    } catch (e) {
+      // Written by someone else since `version`, or deleted.
+      if (grpcCode(e) === FAILED_PRECONDITION) return "conflict" as const;
+      throw e;
+    }
   }
 
   async candidates(toolKey: string) {
@@ -163,36 +216,34 @@ export class FirestoreStore implements IntakeStore {
   }
 
   async addCandidate(toolKey: string, summary: ClusterSummary) {
-    const ref = this.#doc("candidates", candidateDocId(toolKey));
-    await this.db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      const cur = snap.exists ? (snap.get("items") as ClusterSummary[]) : [];
-      const items = [summary, ...cur.filter((x) => x.id !== summary.id)].slice(
-        0,
-        MAX_CANDIDATES_PER_TOOL,
-      );
-      tx.set(ref, { items });
-    });
+    await this.#compareAndSet<{ items: ClusterSummary[] }, void>(
+      this.#doc("candidates", candidateDocId(toolKey)),
+      (cur) => ({
+        write: {
+          items: [summary, ...(cur?.items ?? []).filter((x) => x.id !== summary.id)].slice(
+            0,
+            MAX_CANDIDATES_PER_TOOL,
+          ),
+        },
+        result: undefined,
+      }),
+    );
   }
 
   async takeIssueSlot(day: string, limit: number) {
-    const ref = this.#doc("issueSlots", day);
-    return this.db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      const used = snap.exists ? (snap.get("used") as number) : 0;
-      if (used >= limit) return false;
-      tx.set(ref, { used: used + 1 });
-      return true;
+    return this.#compareAndSet<{ used: number }, boolean>(this.#doc("issueSlots", day), (cur) => {
+      const used = cur?.used ?? 0;
+      return used >= limit
+        ? { write: null, result: false }
+        : { write: { used: used + 1 }, result: true };
     });
   }
 
   async returnIssueSlot(day: string) {
-    const ref = this.#doc("issueSlots", day);
-    await this.db.runTransaction(async (tx) => {
-      const snap = await tx.get(ref);
-      const used = snap.exists ? (snap.get("used") as number) : 0;
-      if (used > 0) tx.set(ref, { used: used - 1 });
-    });
+    await this.#compareAndSet<{ used: number }, void>(this.#doc("issueSlots", day), (cur) => ({
+      write: cur && cur.used > 0 ? { used: cur.used - 1 } : null,
+      result: undefined,
+    }));
   }
 
   async markIssuePending(clusterId: string, since: string) {

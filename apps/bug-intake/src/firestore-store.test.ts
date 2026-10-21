@@ -90,12 +90,13 @@ describe("FirestoreStore against the emulator (#980)", () => {
     });
   }
   /**
-   * The emulator serialises contended transactions with lock waits of a few
-   * seconds, and the first call opens the gRPC channel; both are emulator
-   * latency, not store behaviour, so live tests get a generous budget.
+   * Races run on the default per-test budget on purpose: the store's writes
+   * are lock-free preconditions, so a losing writer fails in milliseconds.
+   * A test that needs seconds here means the store started blocking.
    */
-  const live = (name: string, fn: () => Promise<void>) => it.skipIf(!EMULATOR)(name, fn, 30_000);
+  const live = (name: string, fn: () => Promise<void>) => it.skipIf(!EMULATOR)(name, fn, 5_000);
 
+  // Only the first call is slow: it opens the gRPC channel to the emulator.
   beforeAll(async () => {
     if (store) await store.getInstallKey("warm-up");
   }, 60_000);
