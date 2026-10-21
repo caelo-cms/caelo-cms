@@ -82,6 +82,7 @@ import {
   preflightErrorReason,
   preflightMissingReason,
   runIamPreflight,
+  UPGRADER_PREFLIGHT_VOICE,
   upgraderAccessChecks,
 } from "./upgrader-iam-preflight.js";
 import {
@@ -468,11 +469,15 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       return stopWith(
         "needs_cloud_shell",
         ["iam-preflight"],
-        preflightMissingReason(access.missing),
+        preflightMissingReason(access.missing, UPGRADER_PREFLIGHT_VOICE),
       );
     }
     if (access.kind === "error") {
-      return stopWith("failed", ["iam-preflight"], preflightErrorReason(access.errors));
+      return stopWith(
+        "failed",
+        ["iam-preflight"],
+        preflightErrorReason(access.errors, UPGRADER_PREFLIGHT_VOICE),
+      );
     }
     r.info("The upgrader has every permission this update needs.");
 

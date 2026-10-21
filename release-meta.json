@@ -4,5 +4,6 @@
   "advisories": [],
   "acknowledgeContractMigrations": false,
   "acknowledgeInfraNeutral": true,
-  "lastContractVersion": "0.10.58"
+  "lastContractVersion": "0.10.58",
+  "ownerAction": null
 }
