@@ -251,7 +251,7 @@
                 Use the person's Google account address (Gmail or Google Workspace): only Google
                 accounts can sign in to this admin. Google offers no way to check an address
                 before saving, so Caelo checks it with the access sync right after you create the
-                user and shows the answer here.
+                user with a role and shows the answer here (a user without a role gets no access, so Google is not asked).
               </p>
             {/if}
           </div>

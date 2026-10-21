@@ -71,6 +71,12 @@ test("#970: a user without a Google account is named right after creation, with 
   await page.getByLabel("Display name").fill("E2E No Google");
   await page.getByLabel("Email", { exact: true }).fill(email);
   await page.getByLabel("Password (min 10 chars)").fill("harbor-lantern-quill-71");
+  // Only users with a role are granted IAP access (users.operator_access_members),
+  // so only they can be refused by Google: a role-less user is never asked about.
+  await page
+    .locator('form[action="?/create"]')
+    .getByRole("checkbox", { name: "editor", exact: true })
+    .check();
   await page.getByRole("button", { name: "Create user" }).click();
 
   await expect(page.getByTestId("users-created-no-google-account")).toContainText(
