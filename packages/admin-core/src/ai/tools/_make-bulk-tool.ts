@@ -13,9 +13,10 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler, ToolInputSchema } from "./dispatch.js";
+import type { ToolContext, ToolDefinitionWithHandler, ToolInputSchema } from "./dispatch.js";
 
 /** Configuration for {@link makeBulkTool}. */
 export interface MakeBulkToolConfig<Item> {
@@ -29,6 +30,12 @@ export interface MakeBulkToolConfig<Item> {
   readonly itemJsonSchema: ToolInputSchema;
   /** The `*_many` op this tool dispatches (built via `defineBulkOp`). */
   readonly opName: string;
+  /**
+   * Optional text appended to a SUCCESSFUL result (leading space included,
+   * "" for nothing) — e.g. the stage-readiness note after a write that
+   * changes what a Stage would build.
+   */
+  readonly resultSuffix?: (ctx: ExecutionContext, toolCtx: ToolContext) => Promise<string>;
 }
 
 /**
@@ -41,7 +48,7 @@ export interface MakeBulkToolConfig<Item> {
 export function makeBulkTool<Item>(
   config: MakeBulkToolConfig<Item>,
 ): ToolDefinitionWithHandler<{ items: Item[] }> {
-  const { name, description, itemInputSchema, itemJsonSchema, opName } = config;
+  const { name, description, itemInputSchema, itemJsonSchema, opName, resultSuffix } = config;
   return {
     name,
     description,
@@ -64,7 +71,8 @@ export function makeBulkTool<Item>(
           content: `${opName} failed (whole batch rolled back): ${describeError(r.error)}`,
         };
       }
-      return { ok: true, content: `${toolInput.items.length} item(s) updated.` };
+      const suffix = resultSuffix ? await resultSuffix(ctx, toolCtx) : "";
+      return { ok: true, content: `${toolInput.items.length} item(s) updated.${suffix}` };
     },
   };
 }

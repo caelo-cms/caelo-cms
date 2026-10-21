@@ -45,6 +45,7 @@ import {
   loadPageLayoutState,
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
+import { pagesSeoAutofillOp } from "../seo.js";
 import { planBuildPagePlacements, type ResolvedBuildPlacement } from "./build-page-plan.js";
 import { createContentInstanceOp } from "./content-instances.js";
 import { createModuleOp } from "./modules.js";
@@ -105,6 +106,13 @@ export const buildPageOp = defineOperation({
      *  were NOT applied (differing metadata or any structural field). Surfaced
      *  so a change the AI intended never vanishes silently. */
     ignoredAuthoringByIndex: z.record(z.string(), z.array(z.string())),
+    /**
+     * What `page.metaDescription` did: `written` (first fill), `unchanged`
+     * (already filled with the same text), `kept-existing` (an import
+     * rebuild onto a page that already has one — fill-once, never
+     * overwritten), null when none was passed.
+     */
+    metaDescription: z.enum(["written", "unchanged", "kept-existing"]).nullable(),
   }),
   handler: async (ctx, input, tx) => {
     // Once anything has been written, failures must THROW so the tx
@@ -574,6 +582,39 @@ export const buildPageOp = defineOperation({
       entities: [{ kind: "pageLayout", entityId: pageId, state: layoutState }],
     });
 
+    // The page's first meta description, in the same transaction (a
+    // staging build refuses a published page without one — §2 fill-once
+    // through the autofill handler itself, so the two paths cannot drift).
+    let metaDescription: "written" | "unchanged" | "kept-existing" | null = null;
+    if (input.page.metaDescription !== undefined) {
+      const stored = createdPage
+        ? []
+        : ((await tx.execute(sql`
+            SELECT 1 AS found FROM pages_seo
+            WHERE page_id = ${pageId}::uuid AND btrim(coalesce(meta_description, '')) <> ''
+              AND meta_description <> ${input.page.metaDescription}
+          `)) as unknown as { found: number }[]);
+      if (stored.length > 0) {
+        metaDescription = "kept-existing";
+      } else {
+        const filled = await pagesSeoAutofillOp.handler(
+          ctx,
+          { pageId, metaDescription: input.page.metaDescription },
+          tx,
+        );
+        if (!filled.ok) {
+          const inner = filled.error as { message?: string };
+          // Throw, never `return err`: the page and its modules are written.
+          throw new OperationAbortError({
+            kind: "HandlerError",
+            operation: "pages.build_page",
+            message: `page.metaDescription: ${inner.message ?? filled.error.kind}`,
+          });
+        }
+        metaDescription = filled.value.alreadyFilled ? "unchanged" : "written";
+      }
+    }
+
     // Stamp the import→page linkage LAST, once pageId is final. Idempotent:
     // on a rebuild `accepted_page_id` already equals pageId; on a first
     // build (or when the prior link pointed at a since-deleted page) it now
@@ -602,6 +643,7 @@ export const buildPageOp = defineOperation({
       detached,
       extractedFieldsByIndex,
       ignoredAuthoringByIndex,
+      metaDescription,
     });
   },
 });

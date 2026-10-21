@@ -31,6 +31,7 @@ import {
   slugSchema,
   syncModeSchema,
 } from "./content.js";
+import { SEO_DESCRIPTION_HARD_MAX } from "./seo.js";
 
 /** Content values keyed by the module's declared field names. */
 const contentValuesSchema = z.record(z.string(), z.unknown());
@@ -211,6 +212,15 @@ export const buildPageTargetSchema = z
      * Compatible with either target shape (create OR existing pageId).
      */
     importPageId: z.string().uuid().optional(),
+    /**
+     * The new page's meta description, written in the same transaction
+     * with the fill-once semantics of `pages_seo.autofill` (CLAUDE.md §2).
+     * A staging build refuses a published page without one, so the page
+     * is Stage-ready from the call that creates it. Create mode (or an
+     * importPageId rebuild) only — an existing page gets its first
+     * description from `autofill_page_seo`.
+     */
+    metaDescription: z.string().trim().min(1).max(SEO_DESCRIPTION_HARD_MAX).optional(),
   })
   .strict()
   .superRefine((page, ctx) => {
@@ -218,6 +228,13 @@ export const buildPageTargetSchema = z
       ["slug", "title", "name", "templateId", "status", "parentPageId"] as const
     ).filter((k) => page[k] !== undefined);
     if (page.pageId !== undefined) {
+      if (page.metaDescription !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "page.metaDescription is written only for a page this call CREATES — drop it with pageId; an existing page without a description gets one via autofill_page_seo.",
+        });
+      }
       if (createKeys.length > 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
