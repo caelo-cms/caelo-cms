@@ -241,6 +241,30 @@ export function previewNavigationTarget(
 }
 
 /**
+ * Whether two preview URLs show the same page of the same branch. The
+ * editor's own `previewSrc` follows the page the preview reports after a
+ * `caelo:navigate`; that URL has no fragment, scroll position or extra query
+ * of the link the operator followed, and must not reload the page at the top
+ * (PR #957 review). The path (trailing slash aside) and `branch`/`exclude`
+ * decide; everything else is presentation.
+ */
+export function samePreviewDocument(a: string | null, b: string, editorOrigin: string): boolean {
+  if (a === null) return false;
+  try {
+    const ua = new URL(a, editorOrigin);
+    const ub = new URL(b, editorOrigin);
+    const path = (u: URL) => u.pathname.replace(/\/+$/, "");
+    return (
+      path(ua) === path(ub) &&
+      ua.searchParams.get("branch") === ub.searchParams.get("branch") &&
+      ua.searchParams.get("exclude") === ub.searchParams.get("exclude")
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The URL of a sandboxed preview document with the editor's channel (and
  * the chat branch, when there is one) attached.
  *

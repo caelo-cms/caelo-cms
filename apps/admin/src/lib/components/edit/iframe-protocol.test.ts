@@ -9,6 +9,7 @@ import {
   previewMessage,
   previewNavigationTarget,
   previewUrl,
+  samePreviewDocument,
 } from "./iframe-protocol.js";
 
 const EDITOR = "https://admin.example.com";
@@ -179,6 +180,35 @@ describe("previewUrl / postToPreview / channel", () => {
       { msg: { kind: "caelo:reload" }, target: "*" },
       { msg: { kind: "caelo:page-paths", pages: [] }, target: "*" },
     ]);
+  });
+
+  it("treats a followed #anchor / scroll URL as the page the editor would load (PR #957)", () => {
+    const src = previewUrl("/pricing", { channel: CHANNEL, branch: "b1" });
+    const followed = `/edit/preview-by-path/pricing/?branch=b1&channel=${CHANNEL}&scroll=400#plans`;
+    expect(samePreviewDocument(followed, src, EDITOR)).toBe(true);
+    // Another page, branch or exclusion set is a different document.
+    expect(
+      samePreviewDocument(
+        followed,
+        previewUrl("/about", { channel: CHANNEL, branch: "b1" }),
+        EDITOR,
+      ),
+    ).toBe(false);
+    expect(
+      samePreviewDocument(
+        followed,
+        previewUrl("/pricing", { channel: CHANNEL, branch: "b2" }),
+        EDITOR,
+      ),
+    ).toBe(false);
+    expect(
+      samePreviewDocument(
+        followed,
+        previewUrl("/pricing", { channel: CHANNEL, branch: "b1", exclude: ["m"] }),
+        EDITOR,
+      ),
+    ).toBe(false);
+    expect(samePreviewDocument(null, src, EDITOR)).toBe(false);
   });
 
   it("mints channels the preview runtime accepts", () => {

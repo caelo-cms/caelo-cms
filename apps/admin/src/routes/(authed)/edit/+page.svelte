@@ -41,6 +41,7 @@
     previewMessage,
     previewNavigationTarget,
     previewUrl,
+    samePreviewDocument,
   } from "#lib/components/edit/iframe-protocol.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Combobox } from "#lib/components/ui/combobox/index.js";
@@ -142,11 +143,14 @@
   let iframe = $state<HTMLIFrameElement | null>(null);
   // The iframe's src is set here, not bound in the markup: the editor also
   // navigates the iframe itself (`caelo:navigate`, #946), and once the
-  // preview reports the page it landed on, `previewSrc` follows to the SAME
-  // URL — that must not load the page a second time.
+  // preview reports the page it landed on, `previewSrc` follows to the same
+  // page — that must not load it a second time (losing the link's #anchor).
   $effect(() => {
     const src = previewSrc;
-    if (iframe && src && iframe.getAttribute("src") !== src) iframe.src = src;
+    if (!iframe || !src) return;
+    if (!samePreviewDocument(iframe.getAttribute("src"), src, window.location.origin)) {
+      iframe.src = src;
+    }
   });
   // v0.8.0 — derive directly from server-loaded chat.branch_change_count.
   // The pre-v0.8 path kept a local mutable counter that incremented on

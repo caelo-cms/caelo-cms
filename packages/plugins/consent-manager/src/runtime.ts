@@ -88,18 +88,23 @@ function warn(msg) {
 }
 
 // The editor previews a page in an opaque-origin sandbox (#946), where
-// touching document.cookie throws: no cookie there is no consent yet, and a
-// decision taken there is simply not remembered.
+// touching document.cookie throws. There the decision lives in memory for
+// the document's lifetime: it applies at once (so the operator can preview
+// the accepted state) and is gone on the next load.
+var cookiesBlocked = false;
+var memoryState = null;
 function cookieJar() {
   try {
     return doc.cookie;
   } catch (e) {
+    cookiesBlocked = true;
     return "";
   }
 }
 
 function readCookie() {
   var jar = cookieJar();
+  if (cookiesBlocked) return memoryState;
   var parts = jar ? jar.split("; ") : [];
   for (var i = 0; i < parts.length; i++) {
     var p = parts[i];
@@ -128,7 +133,9 @@ function writeCookie(state) {
       ";samesite=lax" +
       (location.protocol === "https:" ? ";secure" : "");
   } catch (e) {
-    warn("this page cannot store cookies (sandboxed preview); the decision is not remembered");
+    cookiesBlocked = true;
+    memoryState = state;
+    warn("this page cannot store cookies (sandboxed preview); the decision lasts until reload");
   }
 }
 

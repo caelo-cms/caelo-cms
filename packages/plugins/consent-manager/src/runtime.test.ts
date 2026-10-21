@@ -58,7 +58,9 @@ describe("consent runtime in an opaque-origin sandbox (#946)", () => {
       addEventListener: () => undefined,
     };
     const beacons: string[] = [];
-    const win: { caeloConsent?: { grantAll: () => void } } = {};
+    const win: {
+      caeloConsent?: { grantAll: () => void; isGranted: (key: string) => boolean };
+    } = {};
     new Function("document", "window", "navigator", "console", "location", js)(
       doc,
       win,
@@ -67,8 +69,12 @@ describe("consent runtime in an opaque-origin sandbox (#946)", () => {
       { protocol: "https:", reload: () => undefined },
     );
     expect(classes.has("caelo-consent-ask")).toBe(true);
+    expect(win.caeloConsent?.isGranted("marketing")).toBe(false);
     win.caeloConsent?.grantAll();
     expect(beacons).toEqual(["/api/plugin/consent-manager/record_consent"]);
     expect(classes.has("caelo-consent-ask")).toBe(false);
+    // The decision holds for the document's lifetime, so the operator sees
+    // the accepted state (PR #957 review).
+    expect(win.caeloConsent?.isGranted("marketing")).toBe(true);
   });
 });
