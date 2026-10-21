@@ -7,6 +7,7 @@ import {
   grantProvisionerRoles,
   isGcloudAuthError,
   PROVISIONER_ROLE_LIST,
+  projectDisplayName,
 } from "./gcloud.js";
 
 const ok: GcloudResult = { ok: true, stdout: "", stderr: "", exitCode: 0 };
@@ -101,6 +102,30 @@ describe("grantProvisionerRoles", () => {
 
     expect(calls.filter((r) => r === role)).toHaveLength(3);
     expect(result.failed).toEqual([{ role, error: SA_NOT_YET_VISIBLE }]);
+  });
+});
+
+// Mirrors the Resource Manager displayName rule: 4–30 chars of letters,
+// digits, spaces, hyphens, quotes and `!`.
+const GCP_DISPLAY_NAME = /^[A-Za-z0-9 '"!-]{4,30}$/;
+
+describe("projectDisplayName", () => {
+  it("names the project after the domain so installs are distinguishable", () => {
+    expect(projectDisplayName("searchviu.com")).toBe("Caelo searchviu-com");
+    expect(projectDisplayName("docs.caelo-cms.com")).toBe("Caelo docs-caelo-cms-com");
+  });
+
+  it("stays within the GCP displayName rules for long or odd domains", () => {
+    for (const domain of [
+      "a-very-long-subdomain.of-an-even-longer-domain.example.co.uk",
+      "Example.COM",
+      "xn--mnchen-3ya.de",
+      "ab.c",
+    ]) {
+      const name = projectDisplayName(domain);
+      expect(name).toMatch(GCP_DISPLAY_NAME);
+      expect(name).not.toMatch(/-$/);
+    }
   });
 });
 

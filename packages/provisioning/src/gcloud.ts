@@ -181,6 +181,23 @@ export async function projectExists(projectId: string): Promise<boolean> {
   return r.ok && r.stdout.trim() === projectId;
 }
 
+/**
+ * Human-readable GCP project name for an install, e.g. `Caelo searchviu-com`.
+ * Carries the domain so an operator with several installs can tell them apart
+ * in the Cloud Console project picker (every install used to be "Caelo CMS").
+ * GCP display names allow only letters, digits, spaces, hyphens, quotes and
+ * `!`, at 4–30 chars — so dots become hyphens and long domains are cut.
+ */
+export function projectDisplayName(domain: string): string {
+  const prefix = "Caelo ";
+  const slug = domain
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .slice(0, 30 - prefix.length)
+    .replace(/^-+|-+$/g, "");
+  return `${prefix}${slug}`;
+}
+
 export async function createProject(projectId: string, displayName: string): Promise<GcloudResult> {
   return gcloud(["projects", "create", projectId, "--name", displayName]);
 }
