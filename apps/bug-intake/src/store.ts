@@ -5,15 +5,13 @@
  * public issue each), the fingerprint/issue indexes into them, and the raw
  * reports.
  *
- * Production keeps it as JSON files in a PRIVATE GitHub repository (no
- * database to run; history for free; maintainers can read it). Every write
- * is optimistic: `put` with the version read, `conflict` → re-read and
- * retry. The interface is the seam to move to a database when the volume
- * outgrows the GitHub API budget (~5,000 calls an hour; a report costs ~5).
+ * Production keeps it in Firestore (firestore-store.ts), so the GitHub App
+ * needs no repository write access at all: its only power is filing issues.
+ * Every write is optimistic: `put` with the version read, `conflict` →
+ * re-read and retry; first-writer-wins links answer `taken` / `conflict`.
  */
 
 import type { BugClusterStatus, BugIntakeReport } from "@caelo-cms/shared";
-import type { GitHubClient } from "./github.js";
 
 /** One defect, as many installs reported it. */
 export interface ClusterRecord {
@@ -71,6 +69,7 @@ export interface IntakeStore {
   /** Pin a key for an install id; `conflict` if a different key is already pinned. */
   pinInstallKey(installId: string, publicKey: string): Promise<"pinned" | "same" | "conflict">;
   getReport(reportId: string): Promise<StoredReport | null>;
+  /** First write wins: a retried report id writes nothing new. */
   putReport(report: StoredReport): Promise<void>;
   clusterIdForFingerprint(fingerprint: string): Promise<string | null>;
   /** `taken` = another cluster claimed this fingerprint first; use that one. */
@@ -83,6 +82,23 @@ export interface IntakeStore {
   /** Recent AI-filed clusters for one suspected tool: the matcher's candidates. */
   candidates(toolKey: string): Promise<ClusterSummary[]>;
   addCandidate(toolKey: string, summary: ClusterSummary): Promise<void>;
+  /**
+   * Take one of `limit` new-issue slots for a UTC day (`YYYY-MM-DD`); false
+   * when the day's slots are used up. Atomic: concurrent takers never exceed
+   * the limit together.
+   */
+  takeIssueSlot(day: string, limit: number): Promise<boolean>;
+  /** Give back a slot whose issue was not created after all (GitHub refused). */
+  returnIssueSlot(day: string): Promise<void>;
+  /**
+   * Queue a cluster that is due an issue but could not get one yet (daily cap,
+   * kill switch, GitHub failure). Re-marking keeps the original `since`, so
+   * the queue stays first-come, first-filed.
+   */
+  markIssuePending(clusterId: string, since: string): Promise<void>;
+  clearIssuePending(clusterId: string): Promise<void>;
+  /** Oldest queued cluster ids first. */
+  pendingIssueClusters(limit: number): Promise<string[]>;
 }
 
 /** Candidate lists keep the newest entries only; older defects rarely recur in new wording. */
@@ -105,6 +121,8 @@ export class MemoryStore implements IntakeStore {
   issues = new Map<number, string>();
   clusters = new Map<string, Versioned<ClusterRecord>>();
   tools = new Map<string, ClusterSummary[]>();
+  issueSlots = new Map<string, number>();
+  pending = new Map<string, string>();
   #v = 0;
 
   async getInstallKey(id: string) {
@@ -122,7 +140,7 @@ export class MemoryStore implements IntakeStore {
     return this.reports.get(id) ?? null;
   }
   async putReport(r: StoredReport) {
-    this.reports.set(r.reportId, structuredClone(r));
+    if (!this.reports.has(r.reportId)) this.reports.set(r.reportId, structuredClone(r));
   }
   async clusterIdForFingerprint(fp: string) {
     return this.fingerprints.get(fp) ?? null;
@@ -152,128 +170,28 @@ export class MemoryStore implements IntakeStore {
     return this.tools.get(key) ?? [];
   }
   async addCandidate(key: string, s: ClusterSummary) {
-    this.tools.set(key, [s, ...(this.tools.get(key) ?? [])].slice(0, MAX_CANDIDATES_PER_TOOL));
+    const rest = (this.tools.get(key) ?? []).filter((x) => x.id !== s.id);
+    this.tools.set(key, [s, ...rest].slice(0, MAX_CANDIDATES_PER_TOOL));
   }
-}
-
-/**
- * Production store: JSON files in the private data repository.
- *
- *   installs/<installId>.json        { publicKey }
- *   reports/<id[0..2]>/<id>.json     StoredReport
- *   fingerprints/<fp>.json           { clusterId }
- *   issues/<number>.json             { clusterId }
- *   clusters/<clusterId>.json        ClusterRecord
- *   candidates/<toolKey>.json        ClusterSummary[]
- */
-export class GitHubRepoStore implements IntakeStore {
-  constructor(
-    readonly gh: GitHubClient,
-    readonly repo: string,
-  ) {}
-
-  async getInstallKey(id: string) {
-    return (
-      (await this.gh.getJson<{ publicKey: string }>(this.repo, `installs/${id}.json`))?.value
-        .publicKey ?? null
-    );
+  async takeIssueSlot(day: string, limit: number) {
+    const used = this.issueSlots.get(day) ?? 0;
+    if (used >= limit) return false;
+    this.issueSlots.set(day, used + 1);
+    return true;
   }
-
-  async pinInstallKey(id: string, publicKey: string) {
-    const cur = await this.getInstallKey(id);
-    if (cur !== null) return cur === publicKey ? ("same" as const) : ("conflict" as const);
-    const r = await this.gh.putJson(
-      this.repo,
-      `installs/${id}.json`,
-      { publicKey },
-      null,
-      `pin install ${id}`,
-    );
-    if (r === "ok") return "pinned" as const;
-    // Lost a race with a concurrent registration of the same id.
-    return (await this.getInstallKey(id)) === publicKey ? ("same" as const) : ("conflict" as const);
+  async returnIssueSlot(day: string) {
+    this.issueSlots.set(day, Math.max(0, (this.issueSlots.get(day) ?? 0) - 1));
   }
-
-  #reportPath(id: string) {
-    return `reports/${id.slice(0, 2)}/${id}.json`;
+  async markIssuePending(id: string, since: string) {
+    if (!this.pending.has(id)) this.pending.set(id, since);
   }
-
-  async getReport(id: string) {
-    return (await this.gh.getJson<StoredReport>(this.repo, this.#reportPath(id)))?.value ?? null;
+  async clearIssuePending(id: string) {
+    this.pending.delete(id);
   }
-
-  async putReport(r: StoredReport) {
-    // Report ids are unique per install; a retry of the same report writes nothing new.
-    await this.gh.putJson(this.repo, this.#reportPath(r.reportId), r, null, `report ${r.reportId}`);
-  }
-
-  async clusterIdForFingerprint(fp: string) {
-    return (
-      (await this.gh.getJson<{ clusterId: string }>(this.repo, `fingerprints/${fp}.json`))?.value
-        .clusterId ?? null
-    );
-  }
-
-  async linkFingerprint(fp: string, clusterId: string) {
-    const r = await this.gh.putJson(
-      this.repo,
-      `fingerprints/${fp}.json`,
-      { clusterId },
-      null,
-      `fingerprint ${fp.slice(0, 12)} → ${clusterId}`,
-    );
-    return r === "ok" ? ("linked" as const) : ("taken" as const);
-  }
-
-  async clusterIdForIssue(n: number) {
-    return (
-      (await this.gh.getJson<{ clusterId: string }>(this.repo, `issues/${n}.json`))?.value
-        .clusterId ?? null
-    );
-  }
-
-  async linkIssue(n: number, clusterId: string) {
-    const cur = await this.gh.getJson<{ clusterId: string }>(this.repo, `issues/${n}.json`);
-    await this.gh.putJson(
-      this.repo,
-      `issues/${n}.json`,
-      { clusterId },
-      cur?.sha ?? null,
-      `issue #${n}`,
-    );
-  }
-
-  async getCluster(id: string) {
-    const r = await this.gh.getJson<ClusterRecord>(this.repo, `clusters/${id}.json`);
-    return r ? { value: r.value, version: r.sha } : null;
-  }
-
-  async putCluster(c: ClusterRecord, version: string | null) {
-    return this.gh.putJson(this.repo, `clusters/${c.id}.json`, c, version, `cluster ${c.id}`);
-  }
-
-  async candidates(key: string) {
-    return (
-      (await this.gh.getJson<ClusterSummary[]>(this.repo, `candidates/${key}.json`))?.value ?? []
-    );
-  }
-
-  async addCandidate(key: string, s: ClusterSummary) {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const cur = await this.gh.getJson<ClusterSummary[]>(this.repo, `candidates/${key}.json`);
-      const next = [s, ...(cur?.value ?? []).filter((x) => x.id !== s.id)].slice(
-        0,
-        MAX_CANDIDATES_PER_TOOL,
-      );
-      const r = await this.gh.putJson(
-        this.repo,
-        `candidates/${key}.json`,
-        next,
-        cur?.sha ?? null,
-        `candidates ${key}`,
-      );
-      if (r === "ok") return;
-    }
-    throw new Error(`candidates/${key}.json: five write conflicts in a row`);
+  async pendingIssueClusters(limit: number) {
+    return [...this.pending.entries()]
+      .sort((a, b) => a[1].localeCompare(b[1]) || a[0].localeCompare(b[0]))
+      .slice(0, limit)
+      .map(([id]) => id);
   }
 }
