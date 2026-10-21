@@ -11,7 +11,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { BUG_REPORTS_JSON, parseBugReports } from "./build-stats.js";
-import { type BugSignature, findKnownBug, type KnownBug, KNOWN_BUGS } from "./known-bugs.js";
+import { type BugSignature, findKnownBug, KNOWN_BUGS, type KnownBug } from "./known-bugs.js";
 
 /** Outcome of gating one run's reports. */
 export interface GateResult {
@@ -59,7 +59,9 @@ if (import.meta.main) {
   const raw = existsSync(BUG_REPORTS_JSON) ? readFileSync(BUG_REPORTS_JSON, "utf8") : "";
   const result = gateBugReports(raw);
   for (const line of result.lines) {
-    console.log(result.ok || !line.startsWith("NEW") ? line : `::error title=e2e-livedit new bug::${line}`);
+    console.log(
+      result.ok || !line.startsWith("NEW") ? line : `::error title=e2e-livedit new bug::${line}`,
+    );
   }
   process.exit(result.ok ? 0 : 1);
 }

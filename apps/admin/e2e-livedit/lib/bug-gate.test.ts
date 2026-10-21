@@ -3,16 +3,27 @@ import { describe, expect, it } from "bun:test";
 import { gateBugReports } from "./bug-gate.js";
 import { findKnownBug, type KnownBug } from "./known-bugs.js";
 
-const LEDGER: KnownBug[] = [{ issue: 123, tool: "stage_changes", match: /no page serves the site root/ }];
+const LEDGER: KnownBug[] = [
+  { issue: 123, tool: "stage_changes", match: /no page serves the site root/ },
+];
 
 function row(suspectedTool: string | null, whatHappened: string): Record<string, unknown> {
-  return { title: `Tool ${suspectedTool} returned an error`, whatHappened, suspectedTool, source: "auto" };
+  return {
+    title: `Tool ${suspectedTool} returned an error`,
+    whatHappened,
+    suspectedTool,
+    source: "auto",
+  };
 }
 
 describe("findKnownBug", () => {
   it("matches on tool and message", () => {
     const hit = findKnownBug(
-      { suspectedTool: "stage_changes", title: "t", whatHappened: "x: no page serves the site root '/'" },
+      {
+        suspectedTool: "stage_changes",
+        title: "t",
+        whatHappened: "x: no page serves the site root '/'",
+      },
       LEDGER,
     );
     expect(hit?.issue).toBe(123);

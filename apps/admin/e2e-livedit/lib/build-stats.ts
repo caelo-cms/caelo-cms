@@ -35,8 +35,8 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import type { ScenarioSummary } from "./metrics-core.js";
 import { findKnownBug } from "./known-bugs.js";
+import type { ScenarioSummary } from "./metrics-core.js";
 import { buildThresholdWarnings, k, parseChatLog } from "./metrics-core.js";
 
 const ADMIN_LOG = "apps/admin/test-results/livedit/admin.log";
