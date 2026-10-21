@@ -22,7 +22,7 @@
  * whose app-roll references infrastructure an install does not have yet fails
  * at roll time, after migrations ran.
  */
-export const INFRA_CONTRACT_VERSION = 12;
+export const INFRA_CONTRACT_VERSION = 13;
 
 // History (why each bump happened — an install below a number needs the
 // converge that introduced it):
@@ -85,7 +85,15 @@ export const INFRA_CONTRACT_VERSION = 12;
 //       new env var; the admin gets CAELO_ADMIN_URL and the project's
 //       organisation domain. A new secret, new IAM and a job redeploy —
 //       nothing the in-cloud upgrader may do.
-//  12 — #891: the public site's security headers at the edge. On `gcp` the
+//  12 — #914 follow-up (#597 PR): Google applies a custom OAuth client
+//       for Cloud Run IAP, and programmatic clients, only at project level
+//       or above — the admin's own IAP resource refused them with HTTP 400.
+//       The operator-access job now sets them in the project's IAP settings,
+//       so its SA gets the new custom role `caeloOperatorAccessIapProject`
+//       (`iap.projects.getSettings` / `updateSettings`) on the project. New
+//       IAM the in-cloud upgrader cannot grant; without it the new job image
+//       fails every Google sign-in sync with 403.
+//  13 — #891: the public site's security headers at the edge. On `gcp` the
 //       static backend bucket gets the `X-Content-Type-Options: nosniff`
 //       custom response header, the live SVG objects get
 //       `Content-Disposition: attachment` and Cloud CDN is purged once
@@ -111,7 +119,8 @@ export const INFRA_CONTRACT_STEPS: Readonly<Record<number, string>> = {
   9: "the converge job that installs cloud-setup changes from Settings → Updates, and a narrower Cloud Run role for the upgrader (#819)",
   10: "remote MCP: the OAuth client and seal-key secrets, their IAM, the gateway's secret file and timeout, IAP programmatic-client sync and the load-balancer rules (#806)",
   11: "Google sign-in: the renamed sign-in client secret, its IAM and mounts, the operator-access job's read access to it, and the admin's URL and organisation domain (#914)",
-  12: "the public site's security headers at the edge: nosniff on every file, uploaded SVGs no longer run as documents on the site's origin, and a one-time CDN purge (#891)",
+  12: "Google sign-in at project level: the operator-access job's permission to set the sign-in client in the project's IAP settings (#914)",
+  13: "the public site's security headers at the edge: nosniff on every file, uploaded SVGs no longer run as documents on the site's origin, and a one-time CDN purge (#891)",
 };
 
 /**
