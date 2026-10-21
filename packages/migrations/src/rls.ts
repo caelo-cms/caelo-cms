@@ -29,4 +29,64 @@
  * an open policy so the migration runner can operate normally.
  */
 
-export {};
+export interface RlsDriftRow {
+  readonly schema_name: string;
+  readonly table_name: string;
+  readonly rls_enabled: boolean;
+  readonly rls_forced: boolean;
+  readonly has_policy: boolean;
+}
+
+const META_TABLES = new Set(["__drizzle_migrations"]);
+
+export const RLS_DRIFT_SQL = `
+  SELECT n.nspname::text AS schema_name,
+         c.relname::text AS table_name,
+         c.relrowsecurity AS rls_enabled,
+         c.relforcerowsecurity AS rls_forced,
+         EXISTS (
+           SELECT 1 FROM pg_policies p
+           WHERE p.schemaname = n.nspname AND p.tablename = c.relname
+         ) AS has_policy
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE (n.nspname = 'public' OR n.nspname LIKE 'plugin_%')
+     AND c.relkind = 'r'
+     AND (
+       NOT c.relrowsecurity
+       OR NOT c.relforcerowsecurity
+       OR NOT EXISTS (
+         SELECT 1 FROM pg_policies p
+         WHERE p.schemaname = n.nspname AND p.tablename = c.relname
+       )
+     )
+   ORDER BY n.nspname, c.relname
+`;
+
+export function evaluateRlsDrift(rows: readonly RlsDriftRow[]): string[] {
+  const problems: string[] = [];
+  for (const r of rows) {
+    if (r.schema_name === "public" && META_TABLES.has(r.table_name)) continue;
+    const fq = r.schema_name === "public" ? r.table_name : `${r.schema_name}.${r.table_name}`;
+    const missing: string[] = [];
+    if (!r.rls_enabled) missing.push("ENABLE ROW LEVEL SECURITY");
+    if (!r.rls_forced) missing.push("FORCE ROW LEVEL SECURITY");
+    if (!r.has_policy) missing.push("CREATE POLICY");
+    if (missing.length > 0) {
+      problems.push(`${fq} (missing ${missing.join(", ")})`);
+    }
+  }
+  return problems;
+}
+
+export async function assertNoRlsPolicyDrift(sql: {
+  unsafe: (query: string) => Promise<unknown>;
+}): Promise<void> {
+  const rows = (await sql.unsafe(RLS_DRIFT_SQL)) as RlsDriftRow[];
+  const problems = evaluateRlsDrift(rows);
+  if (problems.length > 0) {
+    throw new Error(
+      `RLS drift: tables with incomplete RLS enforcement: ${problems.join("; ")}. Enable + force RLS and add CREATE POLICY to the migration.`,
+    );
+  }
+}
