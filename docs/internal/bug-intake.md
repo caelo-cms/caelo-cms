@@ -13,7 +13,7 @@ install ──signed POST──▶ bug intake (1 instance) ──GitHub App─�
         ◀── cluster status (open / fixed in vX / regression / wontfix) ──
 ```
 
-Endpoints: `GET /healthz`, `POST /v1/installs` (register a key, unsigned), `POST /v1/reports` and `POST /v1/clusters/status` (signed). The contract lives in `packages/shared/src/bug-intake.ts`.
+Endpoints: `GET /health` and `GET /healthz` (liveness), `POST /v1/installs` (register a key, unsigned), `POST /v1/reports` and `POST /v1/clusters/status` (signed). The contract lives in `packages/shared/src/bug-intake.ts`.
 
 - **Signed requests.** On opt-in an install generates an Ed25519 key pair and registers the public key. Every report and status request is signed over method, path, timestamp and body hash; the intake refuses an unknown install, a bad signature, or a timestamp more than 5 minutes off.
 - **Trust on first use.** The intake pins the first key it sees for an install id and refuses a different key for that id later (409). Registration itself is unauthenticated: anyone can register an install id and, at threshold 1, get an issue filed. Nothing proves that a registering client is a real Caelo install. Spam is therefore **bounded, not prevented**: by the daily issue cap, the kill switch, the per-address and global registration limits, and the per-install request limit.
@@ -145,7 +145,23 @@ gcloud run deploy bug-intake --project "$PROJECT" --region <region> \
   --set-secrets "GITHUB_APP_PRIVATE_KEY=bug-intake-github-app-key:latest,ANTHROPIC_API_KEY=bug-intake-model-key:latest"
 ```
 
-Then map your domain to the service and check `curl https://<your intake domain>/healthz` → `ok`. The service refuses to start if any variable is missing or invalid and names each one.
+Then map your domain to the service. The service refuses to start if any variable is missing or invalid and names each one.
+
+### Check
+
+`curl https://<your intake domain>/health` → `ok`. Use `/health` for every check from outside: Cloud Run's front end reserves paths ending in `z` and answers `/healthz` with its own 404, on `*.run.app` and on mapped domains, so the request never reaches the container. `/healthz` stays for container probes.
+
+A deeper smoke check sends a status request as an install that was never registered:
+
+```sh
+curl -sS -X POST "https://<your intake domain>/v1/clusters/status" \
+  -H "x-caelo-install-id: $(uuidgen)" \
+  -H "x-caelo-timestamp: $(( $(date +%s) * 1000 ))" \
+  -H "x-caelo-signature: AA==" \
+  -d '{}'
+```
+
+Expect `401` with `{"error":"Unknown install; register its key first.","retryable":true}`: the service started with a complete configuration and read the install key from Firestore. A `503` means the Firestore read failed; check the database id and the service account's `roles/datastore.user` binding and its condition. A `401` about the timestamp means the local clock is more than 5 minutes off.
 
 **One instance is load-bearing** (`--max-instances 1`). Writes to one cluster are serialised by an in-process lock, and the rate limits (registrations per address, registrations overall, requests per install) are counted in memory. A second instance would halve every limit's effect and let two processes race on the same cluster; the store's version check would turn most races into retries, but a duplicate issue or a doubled comment is still possible. One instance with concurrency 20 is far more than the traffic needs. A restart resets the in-memory windows, which is acceptable for abuse damping; the daily issue counter is in Firestore and survives restarts.
 
