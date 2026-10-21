@@ -242,7 +242,7 @@ export async function resolveVerifiedRelease(
       error:
         "cosign is required to verify the Caelo release image signatures and was not found on PATH.\n" +
         "Install it (https://docs.sigstore.dev/cosign/system_config/installation/ — e.g. `brew install cosign`,\n" +
-        "or the release binary for Linux), then re-run. --skip-verify skips the check (NOT for production).",
+        "or the signed release binary for Linux), then re-run.",
     };
   }
   for (const service of RELEASE_SERVICES) {

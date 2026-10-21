@@ -65,6 +65,7 @@ import {
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import type { AppRollHooks, AppRollPlan, RollPlan, RollSlug } from "./app-roll.js";
+import { lookupFailure } from "./gcp-lookup.js";
 import type { UpgradeReporter } from "./reporter.js";
 
 /**
@@ -116,6 +117,13 @@ export interface ConvergeSession {
    * infrastructure contract version be recorded.
    */
   complete(): boolean;
+  /**
+   * Whether the part before the app-roll changed access the health check
+   * relies on (an IAM binding, MCP access, the gateway's ingress). Google
+   * applies such changes only after a while, so the health baseline then
+   * waits for a refusal to clear (health.ts, #734).
+   */
+  accessJustChanged(): boolean;
 }
 
 /** Start a converge for the install `plan` rolls. */
@@ -137,6 +145,7 @@ export function startConverge(
     services,
   };
   let incomplete = false;
+  let accessChanged = false;
   // Env vars the rolls must leave as the services have them, because the
   // thing they point at could not be set up.
   const leaveUntouched: string[] = [];
@@ -179,10 +188,12 @@ export function startConverge(
 
   async function stackInvariants(): Promise<boolean> {
     // IAM bindings + CDN policy added to the stacks after this install was
-    // provisioned (stack-contract.ts), and GCP's SSH/RDP-from-anywhere
-    // firewall rules removed (default-firewall.ts). Additive + idempotent.
+    // provisioned (stack-contract.ts), a gcp-firebase gateway's ingress
+    // (#732), and GCP's SSH/RDP-from-anywhere firewall rules removed
+    // (default-firewall.ts). Before the app-roll: its health baseline
+    // reaches the gateway through that ingress. Idempotent.
     const s = r.step(
-      "Ensuring the IAM bindings + CDN settings the stack declares, removing the default network's pre-populated firewall rules...",
+      "Ensuring the IAM bindings, CDN settings and gateway ingress the stack declares, removing the default network's pre-populated firewall rules...",
     );
     const report = await ensureStackInvariants(target, runDeps);
     const applied = report.outcomes.filter((o) => o.status === "applied");
@@ -193,6 +204,7 @@ export function startConverge(
         `Stack invariants ok (${report.outcomes.length - failed.length}/${report.outcomes.length}, ${applied.length} applied)`,
       );
     }
+    if (applied.length > 0) accessChanged = true;
     for (const o of applied) r.info(`  applied: ${o.id} (${o.why})`);
     for (const o of failed) {
       const line = `  ${o.onFailure === "abort" ? "FAILED" : "not applied"}: ${o.id} — ${o.why}\n    ${o.error ?? ""}`;
@@ -213,7 +225,7 @@ export function startConverge(
     // audit is what verifies it and fails the upgrade while it remains.
     const s = r.step("Removing public_role from the Cloud SQL superuser group...");
     const outcome = await revokePublicRoleMemberships(
-      { projectId: install.projectId, env: install.env },
+      { projectId: install.projectId, env: install.env, credentials: install.credentials },
       runDeps,
     );
     if (outcome.status === "failed") {
@@ -250,6 +262,8 @@ export function startConverge(
         : { ok: false as const, error: "admin IAP backend service not found" };
     if (mcp.ok) {
       s.done(`MCP access ready (${mcp.serviceAccount}; ${mcp.operators.length} operator(s))`);
+      if (mcp.granted.length > 0) accessChanged = true;
+      for (const g of mcp.granted) r.info(`  granted: ${g}`);
       return;
     }
     s.warned(`MCP access not configured: ${mcp.error}`);
@@ -408,12 +422,15 @@ export function startConverge(
     // #613 — public_role moves onto its own password right before the
     // gateway's roll. The gateway has no other database login (#635).
     const s = r.step("Preparing the gateway's database login (public_role)...");
-    const sqlInstance = await findSqlInstance(install, { run });
-    if (!sqlInstance) {
-      s.failed("Could not find the Cloud SQL instance. Aborting upgrade.");
+    const lookup = await findSqlInstance(install, { run });
+    if (lookup.status !== "found") {
+      s.failed(
+        `${lookupFailure(lookup, "Cloud SQL instance", install.credentials)}. Aborting upgrade.`,
+      );
       r.warn("Migrations ran; no traffic was shifted. Re-run upgrade once the instance is found.");
       return false;
     }
+    const sqlInstance = lookup.name;
     const roleTarget = { projectId: install.projectId, env: install.env, sqlInstance };
     const roleDeps = { ...runDeps, ...(deps.http ? { http: deps.http } : {}) };
     s.done("public_role ready to switch");
@@ -645,5 +662,6 @@ export function startConverge(
     },
 
     complete: () => !incomplete,
+    accessJustChanged: () => accessChanged,
   };
 }

@@ -4,6 +4,13 @@
   import { onMount } from "svelte";
   import { page } from "$app/state";
   import ChatPanel from "#lib/components/chat/ChatPanel.svelte";
+  import {
+    newPreviewChannel,
+    postToPreview,
+    previewMessage,
+    previewNavigationTarget,
+    previewUrl,
+  } from "#lib/components/edit/iframe-protocol.js";
 
   let { data, form } = $props();
 
@@ -63,9 +70,15 @@
     localStorage.setItem(previewKey, previewOpen ? "1" : "0");
   }
 
+  // #946 — sandboxed (opaque origin) like /edit's preview; the channel is
+  // how the preview recognises this page's reload requests.
+  const previewChannel = newPreviewChannel();
   const previewSrc = $derived(
     data.previewDefault
-      ? `/edit/preview-by-path${data.previewDefault.path === "/" ? "" : data.previewDefault.path}?branch=${data.session.chatBranchId}`
+      ? previewUrl(data.previewDefault.path, {
+          channel: previewChannel,
+          branch: data.session.chatBranchId,
+        })
       : null,
   );
 
@@ -73,9 +86,22 @@
   // sees mutations land in real time. Same protocol as /edit's
   // onAiToolResult — iframe-inject-script listens for caelo:reload.
   function onAiToolResult(payload: { ok: boolean }): void {
-    if (!payload.ok || !iframe?.contentWindow) return;
-    iframe.contentWindow.postMessage({ kind: "caelo:reload" }, window.location.origin);
+    if (!payload.ok) return;
+    postToPreview(iframe?.contentWindow, { kind: "caelo:reload" });
   }
+
+  // The sandboxed preview cannot navigate itself (#946): link clicks and
+  // the answer to caelo:reload arrive as caelo:navigate requests.
+  onMount(() => {
+    const handler = (ev: MessageEvent): void => {
+      const msg = previewMessage(ev, iframe?.contentWindow, previewChannel);
+      if (msg?.kind !== "caelo:navigate" || !iframe) return;
+      const target = previewNavigationTarget(msg.href, previewChannel, window.location.origin);
+      if (target) iframe.src = target;
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  });
 </script>
 
 <div class="flex h-screen">
@@ -86,6 +112,7 @@
         src={previewSrc}
         title="Live preview"
         data-caelo-live-preview
+        sandbox="allow-scripts"
         class="h-full w-full border-0"
       ></iframe>
       <button

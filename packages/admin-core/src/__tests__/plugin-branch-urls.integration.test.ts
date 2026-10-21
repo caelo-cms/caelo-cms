@@ -64,7 +64,12 @@ const plugin = definePlugin({
   version: "0.1.0",
   tier: 1,
   schema: {},
-  adminSchema: { tags: { page_id: "uuid", prefix: "string" } },
+  // `site_prefix` is a site-wide URL setting (like a locale strategy):
+  // changing it moves every untagged page, so it needs a URL migration.
+  adminSchema: {
+    tags: { page_id: "uuid", prefix: "string" },
+    site_prefix: { prefix: "string" },
+  },
   requestedCapabilities: ["cms_admin_schema", "cms_admin"],
   urlAnnotationsOperation: "annotations",
   urlContributions: [
@@ -78,13 +83,24 @@ const plugin = definePlugin({
   operations: {
     annotations: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
-      const tags = await handles(ctx).q.list("tags", { limit: 1000 });
+      const { q } = handles(ctx);
+      const tags = await q.list("tags", { limit: 1000 });
       const byPage = new Map(tags.map((t) => [String(t.page_id), String(t.prefix)]));
+      const site = (await q.list("site_prefix", { limit: 1 }))[0]?.prefix;
+      const prefixOf = (id: string) => byPage.get(id) ?? (site ? String(site) : undefined);
       return {
         annotations: Object.fromEntries(
-          pageIds.map((id) => [id, byPage.has(id) ? { prefix: byPage.get(id) } : {}]),
+          pageIds.map((id) => {
+            const prefix = prefixOf(id);
+            return [id, prefix ? { prefix } : {}];
+          }),
         ),
       };
+    },
+    set_site_prefix: async (ctx, args) => {
+      const { q } = handles(ctx);
+      await q.insert("site_prefix", { prefix: (args as { prefix: string }).prefix });
+      return {};
     },
     tag_page: async (ctx, args) => {
       const { q, cms } = handles(ctx);
@@ -119,6 +135,7 @@ async function wipe(): Promise<void> {
       `DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = '${SLUG}')`,
     );
     await tx.unsafe(`DELETE FROM plugins WHERE slug = '${SLUG}'`);
+    await tx`DELETE FROM url_migration_pending_actions WHERE payload::text LIKE ${`%${PFX}%`}`;
     await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM templates WHERE slug LIKE ${`${PFX}%`}`;
@@ -246,7 +263,11 @@ describe("plugin URL annotations on a chat branch", () => {
       invocation,
     });
     if (!mainTagged.ok) throw new Error(mainTagged.error.message);
-    expect(mainTagged.value).toEqual({ path: `/fr/${PFX}main`, moved: false });
+    expect(mainTagged.value).toEqual({
+      path: `/fr/${PFX}main`,
+      moved: false,
+      awaitingUrlMigration: false,
+    });
     expect(await livePath(mainId)).toBe(`/${PFX}main`);
 
     // Merging makes the tags live, recomposes main paths, and 301s.
@@ -264,5 +285,128 @@ describe("plugin URL annotations on a chat branch", () => {
         }[],
     );
     expect(redirects.map((r) => r.to_path)).toEqual([`/fr/${PFX}main`]);
+  });
+
+  // #586 — a URL-setting change moves live pages only through the
+  // approved URL migration (which writes the 301s), never as a side
+  // effect of an unrelated merge or a per-page refresh.
+  it("live paths wait for the approved URL migration after a setting change", async () => {
+    const t = await execute(registry, adapter, humanCtx, "templates.create", {
+      slug: `${PFX}t586`,
+      displayName: "T",
+      html: '<caelo-slot name="content"></caelo-slot>',
+      css: "",
+    });
+    if (!t.ok) throw new Error("seed template");
+    const templateId = (t.value as { templateId: string }).templateId;
+    const live = await execute(registry, adapter, humanCtx, "pages.create", {
+      slug: `${PFX}live`,
+      title: "Live",
+      templateId,
+    });
+    if (!live.ok) throw new Error("seed page");
+    const liveId = (live.value as { pageId: string }).pageId;
+    const sibling = await execute(registry, adapter, humanCtx, "pages.create", {
+      slug: `${PFX}sibling`,
+      title: "Sibling",
+      templateId,
+    });
+    if (!sibling.ok) throw new Error("seed sibling");
+    // Only a published page has a public URL the gate protects.
+    const pub = await execute(registry, adapter, humanCtx, "pages.set_status", {
+      pageId: liveId,
+      status: "published",
+    });
+    if (!pub.ok) throw new Error(JSON.stringify(pub.error));
+    // The previous test's pages are tagged; these two are untagged, so the
+    // setting change moves both of them.
+    const ownerApproved: PluginInvocation = { origin: "approved", actorId: HUMAN };
+    const set = await runPluginOperation({
+      pluginSlug: SLUG,
+      operationName: "set_site_prefix",
+      args: { prefix: "en" },
+      invocation: ownerApproved,
+    });
+    if (!set.ok) throw new Error(set.error.message);
+    expect(await livePath(liveId)).toBe(`/${PFX}live`);
+
+    // An unrelated chat with plugin rows merges: the live page stays.
+    const s = await execute(registry, adapter, humanCtx, "chat.create_session", {
+      isolation: "experiment",
+      title: `${PFX}chat586`,
+    });
+    if (!s.ok) throw new Error("chat");
+    const { chatSessionId, chatBranchId } = s.value as {
+      chatSessionId: string;
+      chatBranchId: string;
+    };
+    const aiCtx: ExecutionContext = {
+      actorId: AI,
+      actorKind: "ai",
+      requestId: "pbu586",
+      chatBranchId,
+      chatTaskId: chatSessionId,
+    };
+    const created = await execute(registry, adapter, aiCtx, "pages.create", {
+      slug: `${PFX}other`,
+      title: "Other",
+      templateId,
+    });
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    const otherId = (created.value as { pageId: string }).pageId;
+    const tagged = await runPluginOperation({
+      pluginSlug: SLUG,
+      operationName: "tag_page",
+      args: { pageId: otherId, prefix: "de" },
+      invocation: {
+        origin: "chat",
+        actorId: AI,
+        operatorActorId: HUMAN,
+        chatBranchId,
+        chatTaskId: chatSessionId,
+      },
+    });
+    if (!tagged.ok) throw new Error(tagged.error.message);
+    const merged = await execute(registry, adapter, humanCtx, "chat.merge_to_main", {
+      chatSessionId,
+    });
+    if (!merged.ok) throw new Error(JSON.stringify(merged.error));
+    expect(await livePath(otherId)).toBe(`/de/${PFX}other`);
+    expect(await livePath(liveId)).toBe(`/${PFX}live`);
+
+    // A per-page refresh holds the move back and says why.
+    const refreshed = await execute(registry, adapter, humanCtx, "pages.refresh_current_path", {
+      pageId: liveId,
+    });
+    if (!refreshed.ok) throw new Error(JSON.stringify(refreshed.error));
+    expect(refreshed.value).toEqual({
+      path: `/${PFX}live`,
+      moved: false,
+      awaitingUrlMigration: true,
+    });
+    expect(await livePath(liveId)).toBe(`/${PFX}live`);
+
+    // The approved migration moves it, with its 301.
+    const proposed = await execute(
+      registry,
+      adapter,
+      humanCtx,
+      "url_migrations.propose_migrate",
+      {},
+    );
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error));
+    const { proposalId } = proposed.value as { proposalId: string };
+    const applied = await execute(registry, adapter, humanCtx, "url_migrations.execute_proposal", {
+      proposalId,
+    });
+    if (!applied.ok) throw new Error(JSON.stringify(applied.error));
+    expect(await livePath(liveId)).toBe(`/en/${PFX}live`);
+    const redirects = await withSystemSql(
+      async (tx) =>
+        (await tx`SELECT to_path FROM redirects WHERE from_path = ${`/${PFX}live`}`) as {
+          to_path: string;
+        }[],
+    );
+    expect(redirects.map((r) => r.to_path)).toEqual([`/en/${PFX}live`]);
   });
 });

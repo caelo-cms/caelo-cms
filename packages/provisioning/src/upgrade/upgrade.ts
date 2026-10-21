@@ -40,6 +40,7 @@ import {
 } from "./app-roll.js";
 import { backupFailureHelp, restoreCommand, type SqlBackup, takeSqlBackup } from "./backup.js";
 import { startConverge } from "./converge.js";
+import type { GcloudCredentials } from "./gcp-lookup.js";
 import type { HealthProbe } from "./health.js";
 import type { UpgradeReporter } from "./reporter.js";
 
@@ -63,6 +64,8 @@ export interface GcpUpgradeTarget {
    * release manifest (the converge job knows it; the terminal does not).
    */
   readonly migrationsContract?: boolean | null;
+  /** Whose gcloud credentials run the sequence: the Owner's, or the converge job's (#630). */
+  readonly credentials: GcloudCredentials;
 }
 
 /**
@@ -91,8 +94,14 @@ export interface GcpUpgradeDeps {
   readonly migrate: (
     imageRef: string,
   ) => Promise<{ readonly ok: boolean; readonly error?: string }>;
+  /**
+   * The health probe for `plan`'s install. `accessJustChanged`: the
+   * converge before it changed access the probe relies on, so its baseline
+   * waits for that to take effect (health.ts, #734).
+   */
   readonly healthProbe: (
     plan: AppRollPlan,
+    context: { readonly accessJustChanged: boolean },
   ) => Promise<
     | { readonly ok: true; readonly probe: HealthProbe }
     | { readonly ok: false; readonly error: string }
@@ -164,6 +173,7 @@ export async function upgradeGcpInstallOutcome(
       env: target.env,
       domain: target.domain,
       stagingHost: target.stagingHost,
+      credentials: target.credentials,
     },
     images.images,
     run,
@@ -198,7 +208,7 @@ export async function upgradeGcpInstallOutcome(
     const sBak = r.step("Taking a pre-upgrade Cloud SQL backup...");
     const taken = await takeSqlBackup(
       run,
-      { projectId, env: target.env },
+      { projectId, env: target.env, credentials: target.credentials },
       `pre-upgrade to ${target.targetTag}`,
       deps.now,
     );
@@ -229,7 +239,9 @@ export async function upgradeGcpInstallOutcome(
   // 5. App-roll, with the converge steps that sit between its own.
   let health: HealthProbe | null = null;
   if (!target.skipHealthCheck) {
-    const probe = await deps.healthProbe(plan);
+    const probe = await deps.healthProbe(plan, {
+      accessJustChanged: converge.accessJustChanged(),
+    });
     if (!probe.ok) {
       r.error(probe.error);
       r.warn("No migrations ran and no traffic moved.");

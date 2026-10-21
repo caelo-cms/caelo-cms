@@ -96,6 +96,7 @@ export function eventReporter(sink: EventSink, log: JobLog, requestId: string): 
         done: (m) => emit("success", m),
         failed: (m) => emit("error", m),
         warned: (m) => emit("warn", m),
+        progress: (m) => emit("info", m),
       };
     },
     info: (m) => emit("info", m),

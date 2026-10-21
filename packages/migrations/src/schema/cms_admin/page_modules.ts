@@ -22,8 +22,8 @@ import { pages } from "./pages.js";
  * Cascading delete from `pages` keeps the table consistent when a
  * page is hard-deleted. The FK to `content_instances` is
  * `ON DELETE RESTRICT` — soft-deleting a content_instance that has
- * placements is blocked at the op layer (see CLAUDE.md §11.A — the
- * propose/execute gate lands in v0.12.0.1).
+ * placements is blocked at the op layer (`content_instances.delete`
+ * refuses and points at `fork_placement_content`).
  */
 export const pageModules = pgTable(
   "page_modules",

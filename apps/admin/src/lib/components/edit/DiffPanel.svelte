@@ -18,6 +18,11 @@
    * The component renders as a fixed full-viewport overlay so it can
    * sit above the live preview iframe while the user reviews. Close
    * via the corner X or by toggling the same button that opened it.
+   *
+   * Both frames are `sandbox="allow-scripts"` without `allow-same-origin`
+   * (#946): the previewed modules' scripts run, but in an opaque origin,
+   * never with the operator's admin session. The panel sends the frames no
+   * channel, so their edit runtime stays silent.
    */
 
   import { X } from "lucide-svelte";
@@ -103,7 +108,7 @@
           src={leftSrc}
           title="Main branch preview"
           class="h-full w-full border-0"
-          sandbox="allow-scripts allow-same-origin allow-forms"
+          sandbox="allow-scripts"
         ></iframe>
       </div>
       <div class="flex flex-col bg-background">
@@ -114,7 +119,7 @@
           src={rightSrc()}
           title="Chat branch preview"
           class="h-full w-full border-0"
-          sandbox="allow-scripts allow-same-origin allow-forms"
+          sandbox="allow-scripts"
         ></iframe>
       </div>
     </div>
