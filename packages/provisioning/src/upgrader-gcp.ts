@@ -28,7 +28,7 @@ import { acquireBucketStateLock, GcsStateStore, realSyncGcloud } from "./state-s
 import type { AppRollPlan } from "./upgrade/app-roll.js";
 import { findServiceUrl } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe } from "./upgrade/health.js";
-import { restIamTester } from "./upgrader-iam-preflight.js";
+import { type IamTester, restIamTester } from "./upgrader-iam-preflight.js";
 import type { UpdateQueue, UpgraderJobDeps } from "./upgrader-job.js";
 import type { JobLog } from "./upgrader-reporter.js";
 import { UPGRADER_TASK_TIMEOUT_MINUTES } from "./upgrader-setup.js";
@@ -86,6 +86,21 @@ export async function healthProbeFor(run: GcloudRunner, http: HttpFetch, plan: A
   };
 }
 
+/**
+ * The IAM self-check's tester as this job's own account: gcloud's token from
+ * the metadata server, so it sees exactly the job's grants (#818, #884).
+ */
+export function gcloudIamTester(run: GcloudRunner, http: HttpFetch): IamTester {
+  return restIamTester({
+    http,
+    token: async () => {
+      const t = await run(["auth", "print-access-token"]);
+      if (!t.ok) throw new Error(`gcloud auth print-access-token: ${t.stderr.trim()}`);
+      return t.stdout.trim();
+    },
+  });
+}
+
 /** Every dependency of {@link runUpgraderJob} except the database and the log. */
 export function gcpUpgraderDeps(
   placement: UpgraderPlacement,
@@ -109,14 +124,7 @@ export function gcpUpgraderDeps(
     execution: placement.execution,
     // #818 — the IAM self-check asks as the job's own account (gcloud's
     // token from the metadata server), so it sees exactly the job's grants.
-    iam: restIamTester({
-      http,
-      token: async () => {
-        const t = await run(["auth", "print-access-token"]);
-        if (!t.ok) throw new Error(`gcloud auth print-access-token: ${t.stderr.trim()}`);
-        return t.stdout.trim();
-      },
-    }),
+    iam: gcloudIamTester(run, http),
     // The default deps: the fixed registry and signer, never overridden.
     fetchManifest: (version) => fetchVerifiedReleaseManifest(version),
     // #815 — the lock names this execution, so a later run can break it

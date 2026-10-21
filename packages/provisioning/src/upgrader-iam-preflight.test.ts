@@ -19,6 +19,7 @@ import {
   restIamTester,
   runIamPreflight,
   testIamCall,
+  UPGRADER_PREFLIGHT_VOICE,
   upgraderAccessChecks,
 } from "./upgrader-iam-preflight.js";
 import {
@@ -127,7 +128,9 @@ describe("upgraderAccessChecks", () => {
         ["iam.serviceAccounts.actAs"],
       ],
     ]);
-    expect(preflightMissingReason(r.missing)).toContain("quality-audit job");
+    expect(preflightMissingReason(r.missing, UPGRADER_PREFLIGHT_VOICE)).toContain(
+      "quality-audit job",
+    );
   });
 
   it("never needs a permission only a forbidden role would give (no compute, no IAM admin)", () => {
@@ -185,7 +188,7 @@ describe("runIamPreflight", () => {
       "run.jobs.run",
       "storage.objects.list",
     ]);
-    const reason = preflightMissingReason(r.missing);
+    const reason = preflightMissingReason(r.missing, UPGRADER_PREFLIGHT_VOICE);
     expect(reason).toContain("run the database migrations");
     expect(reason).toContain("missing storage.objects.list on gs://acme-caelo-ops");
     expect(reason).toContain("Run the upgrade once with Cloud Shell");
@@ -209,7 +212,7 @@ describe("runIamPreflight", () => {
     if (r.kind !== "missing") return;
     expect(r.missing.flatMap((m) => m.missing)).not.toContain("storage.objects.get");
     expect(r.missing.flatMap((m) => m.unchecked ?? [])).toEqual(["storage.objects.get"]);
-    expect(preflightMissingReason(r.missing)).toContain(
+    expect(preflightMissingReason(r.missing, UPGRADER_PREFLIGHT_VOICE)).toContain(
       "storage.objects.get on gs://acme-caelo-ops/install/ could not be checked",
     );
   });

@@ -139,7 +139,8 @@ const ACTION_WORDS: Record<NonNullable<SchedulerStatus["lastAction"]>, string> =
   notify: "the Owner installs it by hand",
   wait: "waiting",
   install: "queued an automatic install",
-  manual: "needs a manual install (destructive database changes)",
+  manual:
+    "the Owner installs it from Settings → Updates (it makes destructive database changes, or it changes the cloud setup and the policy does not install those automatically)",
   needs_cloud_shell: "needs the Owner to run it in Cloud Shell (it changes the cloud setup)",
   blocked: "cannot install automatically",
 };
