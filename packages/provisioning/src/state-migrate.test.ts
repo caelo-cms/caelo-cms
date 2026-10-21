@@ -115,6 +115,7 @@ function recorder(): UpgradeReporter & { lines: string[] } {
         done: (m) => lines.push(`done ${m}`),
         failed: (m) => lines.push(`failed ${m}`),
         warned: (m) => lines.push(`warned ${m}`),
+        progress: (m) => lines.push(`progress ${m}`),
       };
     },
     info: (m) => lines.push(`info ${m}`),

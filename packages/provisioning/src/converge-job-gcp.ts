@@ -327,7 +327,7 @@ export function gcpConvergeDeps(
             { projectId, region: meta.region as string, imageOverride: imageRef },
             { run },
           ),
-        healthProbe: (plan) => healthProbeFor(run, http, plan),
+        healthProbe: (plan, context) => healthProbeFor(run, http, plan, context),
         recordDigests: async (digests) => {
           recorded = await recordRolledRelease(
             installId,
