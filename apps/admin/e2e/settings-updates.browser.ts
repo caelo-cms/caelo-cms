@@ -54,6 +54,8 @@ import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 const LATEST = "99.0.0";
 const COMMAND = `bunx @caelo-cms/provisioning@${LATEST} upgrade --version ${LATEST} --install localhost`;
+/** #816 — the one line the Cloud Shell upgrade walkthrough runs. */
+const SHELL_COMMAND = "./run.sh upgrade --install localhost";
 const ts = Date.now();
 const REVIEWER_EMAIL = `e2e-updates-reviewer-${ts}@example.com`;
 const REVIEWER_PASSWORD = "reviewer dev password";
@@ -612,11 +614,20 @@ test("break_glass: without the converge job, a run that needs Cloud Shell shows 
   await expect(page.getByTestId("update-state-detail")).toContainText("infrastructure contract");
   // Never an Install button next to the Cloud Shell step for the same release.
   await expectOnlyAction(page, "open-cloud-shell");
-  await expect(page.getByTestId("open-cloud-shell")).toHaveAttribute(
+  // #816 — one button to the release's UPGRADE walkthrough (never the
+  // install wizard) and one verified ./run.sh line, no pasted installer.
+  const shell = page.getByTestId("open-cloud-shell");
+  await expect(shell).toHaveAttribute(
     "href",
-    /^https:\/\/(shell|console)\.cloud\.google\.com\//,
+    new RegExp(
+      `^https://shell\\.cloud\\.google\\.com/cloudshell/editor\\?.*cloudshell_git_branch=release-v${LATEST}&cloudshell_tutorial=upgrade-gcp\\.md$`,
+    ),
   );
-  await expect(card(page).getByTestId("cloud-shell-command").last()).toHaveText(COMMAND);
+  await expect(card(page).getByTestId("cloud-shell-command")).toHaveCount(1);
+  await expect(card(page).getByTestId("cloud-shell-command")).toHaveText(SHELL_COMMAND);
+  await expect(card(page)).not.toContainText("bun.sh");
+  await expect(card(page)).not.toContainText("paste these");
+  await expect(card(page)).not.toContainText("skip-verify");
   // The refused run never reads "Finished".
   await page.getByTestId("last-attempt").locator("summary").click();
   await expect(page.getByTestId("last-attempt").locator('[data-phase="finish"]')).toContainText(
@@ -638,6 +649,11 @@ test("break_glass: without the converge job, a release that changes the cloud se
     `v${LATEST} also changes settings in your Google Cloud project`,
   );
   await expectOnlyAction(page, "open-cloud-shell");
+  // #816 — the card never links the install walkthrough.
+  await expect(page.getByTestId("open-cloud-shell")).toHaveAttribute(
+    "href",
+    /cloudshell_tutorial=upgrade-gcp\.md$/,
+  );
   // No job was started: nothing in the history.
   await expect(page.getByTestId("section-history")).toHaveCount(0);
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
