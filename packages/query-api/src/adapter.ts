@@ -388,8 +388,12 @@ export class DatabaseAdapter {
     if (effects.length === 0) return [];
     const failures = await runPostCommitEffects(effects);
     for (const failure of failures) {
+      // The operation name stays out of the console line: it is in the
+      // audit row, found by `requestId`, and the effect label already says
+      // what failed. Logging values derived from the op object would also
+      // carry the credential ops' (password, OAuth client) data flow into
+      // the log sink, which CodeQL flags as clear-text logging.
       console.error("[query-api] post-commit effect failed", {
-        operation,
         effect: failure.effect.label,
         entityId: failure.effect.entityId ?? null,
         requestId: ctx.requestId,
@@ -411,8 +415,8 @@ export class DatabaseAdapter {
         });
       } catch (thrown) {
         console.error("[query-api] could not audit the failed post-commit effect", {
-          operation,
           effect: failure.effect.label,
+          requestId: ctx.requestId,
           error: thrown instanceof Error ? thrown.message : String(thrown),
         });
       }
