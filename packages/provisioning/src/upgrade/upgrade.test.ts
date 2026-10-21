@@ -21,7 +21,7 @@ import {
 } from "./app-roll.js";
 import { restoreCommand, takeSqlBackup } from "./backup.js";
 import { needsConverge, startConverge } from "./converge.js";
-import type { HealthOutcome, HealthProbe } from "./health.js";
+import { createIapHealthProbe, type HealthOutcome, type HealthProbe } from "./health.js";
 import type { UpgradeReporter } from "./reporter.js";
 import {
   type GcpUpgradeDeps,
@@ -48,9 +48,13 @@ const secretRef = (name: string, secret: string) => ({
   valueFrom: { secretKeyRef: { name: `caelo-production-${secret}`, key: "latest" } },
 });
 
-/** A described service, as `gcloud run services describe --format=json` returns it. */
-const serviceJson = (image: string, env: unknown[]) =>
+/**
+ * A described service, as `gcloud run services describe --format=json`
+ * returns it. `ingress`: the service-level setting (#732).
+ */
+const serviceJson = (image: string, env: unknown[], ingress = "all") =>
   JSON.stringify({
+    metadata: { annotations: { "run.googleapis.com/ingress": ingress } },
     spec: {
       template: {
         metadata: {
@@ -150,6 +154,7 @@ function recordingReporter() {
         done: (m) => lines.push(`done: ${m}`),
         failed: (m) => lines.push(`failed: ${m}`),
         warned: (m) => lines.push(`warned: ${m}`),
+        progress: (m) => lines.push(`progress: ${m}`),
       };
     },
     info: (m) => lines.push(`info: ${m}`),
@@ -188,6 +193,7 @@ const TARGET: GcpUpgradeTarget = {
   infraContractVersion: 1,
   skipVerify: false,
   skipHealthCheck: false,
+  credentials: "operator",
 };
 
 /** The same install on the `gcp` provider (load balancer + URL map). */
@@ -788,6 +794,88 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(calls.some((c) => APP_ROLL_WRITE.test(c))).toBe(false);
   });
 
+  it("#732 — opens a load-balancer-only gcp-firebase gateway in converge, before the baseline and migrations", async () => {
+    const events: string[] = [];
+    const internalGateway = serviceJson(
+      "registry/gateway@sha256:old",
+      JSON.parse(GATEWAY_JSON).spec.template.spec.containers[0].env,
+      "internal-and-cloud-load-balancing",
+    );
+    const { deps, lines } = upgradeDeps(events, {
+      overrides: [[new RegExp(`describe ${GATEWAY} .*--format=json`), ok(internalGateway)]],
+    });
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const ingress = indexOf(
+      events,
+      new RegExp(`^gcloud run services update ${GATEWAY} .*--ingress=all`),
+    );
+    expect(ingress).toBeLessThan(indexOf(events, /^health baseline/));
+    expect(ingress).toBeLessThan(indexOf(events, /^migrate /));
+    // Its own update: the image roll does not carry it (no new revision).
+    expect(events.filter((e) => e.includes("--ingress=all"))).toHaveLength(1);
+    expect(lines).toContain(
+      `info:   applied: ingress internal-and-cloud-load-balancing → all on ${GATEWAY} (the gcp-firebase stack's gateway ingress (#650); the health check, the staging domain and remote MCP reach its run.app URL)`,
+    );
+  });
+
+  it("#732 — leaves a gateway that is already open alone, and never touches the gcp gateway's ingress", async () => {
+    for (const target of [TARGET, GCP_TARGET]) {
+      const events: string[] = [];
+      const { deps } = upgradeDeps(events);
+      await upgradeGcpInstall(target, deps);
+      expect(events.some((e) => e.includes("--ingress"))).toBe(false);
+    }
+  });
+
+  it("#734 — tells the health probe when converge just changed access, so its baseline waits", async () => {
+    const seen: boolean[] = [];
+    const events: string[] = [];
+    const { deps } = upgradeDeps(events);
+    await upgradeGcpInstall(TARGET, {
+      ...deps,
+      healthProbe: async (_plan, context) => {
+        seen.push(context.accessJustChanged);
+        return { ok: true, probe: fakeHealth(events) };
+      },
+    });
+    // The fake install's empty IAM policies make converge add every binding.
+    expect(seen).toEqual([true]);
+  });
+
+  it("#733 — a gateway answering Google's HTML 404 stops the upgrade before migrations and any roll", async () => {
+    const events: string[] = [];
+    const { deps, calls, lines } = upgradeDeps(events);
+    const htmlGateway: HttpFetch = async (url) => {
+      const [status, text] = url.includes(":signJwt")
+        ? [200, JSON.stringify({ signedJwt: "signed.jwt" })]
+        : url.includes("admin")
+          ? [200, JSON.stringify({ ok: true, version: "0.10.20" })]
+          : [404, "<html><title>Error 404 (Not Found)!!1</title></html>"];
+      return { ok: status < 400, status, text: async () => text };
+    };
+    expect(
+      await upgradeGcpInstall(TARGET, {
+        ...deps,
+        healthProbe: async () => ({
+          ok: true,
+          probe: createIapHealthProbe(
+            {
+              provider: "gcp-firebase",
+              projectId: "acme",
+              domain: "acme.com",
+              adminServiceUrl: `https://${ADMIN}-xyz.a.run.app`,
+              gatewayServiceUrl: `https://${GATEWAY}-xyz.a.run.app`,
+            },
+            { run: deps.run, http: htmlGateway, sleep: noSleep, accessJustChanged: false },
+          ),
+        }),
+      }),
+    ).toBe(false);
+    expect(events.some((e) => e.startsWith("migrate"))).toBe(false);
+    expect(calls.some((c) => APP_ROLL_WRITE.test(c))).toBe(false);
+    expect(lines.some((l) => l.includes("answered HTTP 404 without JSON"))).toBe(true);
+  });
+
   it("--skip-health-check rolls without a probe", async () => {
     const events: string[] = [];
     const { deps } = upgradeDeps(events);
@@ -814,6 +902,7 @@ const INSTALL: AppRollInstall = {
   env: "production",
   domain: "acme.com",
   stagingHost: "staging.acme.com",
+  credentials: "operator",
 };
 
 async function plannedRoll(run: GcloudRunner): Promise<AppRollPlan> {
@@ -942,7 +1031,7 @@ describe("takeSqlBackup", () => {
     const { run, calls } = fakeInstall(events);
     const r = await takeSqlBackup(
       run,
-      { projectId: "acme", env: "production" },
+      { projectId: "acme", env: "production", credentials: "operator" },
       "backup",
       () => new Date("2026-10-13T10:00:00Z"),
     );
@@ -959,7 +1048,11 @@ describe("takeSqlBackup", () => {
 
   it("fails loudly when the backup's id can't be found", async () => {
     const { run } = fakeInstall([], [[/^sql backups list/, ok("")]]);
-    const r = await takeSqlBackup(run, { projectId: "acme", env: "production" }, "backup");
+    const r = await takeSqlBackup(
+      run,
+      { projectId: "acme", env: "production", credentials: "operator" },
+      "backup",
+    );
     expect(r.ok).toBe(false);
     if (!r.ok)
       expect(r.error).toContain("gcloud sql backups list --instance=caelo-production-pg-abc");
@@ -967,11 +1060,47 @@ describe("takeSqlBackup", () => {
 
   it("fails when the install has no Cloud SQL instance", async () => {
     const { run } = fakeInstall([], [[/^sql instances list/, ok("")]]);
-    const r = await takeSqlBackup(run, { projectId: "acme", env: "production" }, "backup");
+    const r = await takeSqlBackup(
+      run,
+      { projectId: "acme", env: "production", credentials: "operator" },
+      "backup",
+    );
     expect(r).toEqual({
       ok: false,
-      error:
-        "no caelo-production-pg* Cloud SQL instance in project acme (or listing it was denied)",
+      error: "Could not find the caelo-production-pg* Cloud SQL instance in project acme",
     });
+  });
+
+  it("reports expired credentials instead of a missing instance (#630)", async () => {
+    const { run } = fakeInstall(
+      [],
+      [
+        [
+          /^sql instances list/,
+          fail(
+            "ERROR: (gcloud.sql.instances.list) Reauthentication failed. cannot prompt during non-interactive execution.",
+          ),
+        ],
+      ],
+    );
+    const operator = await takeSqlBackup(
+      run,
+      { projectId: "acme", env: "production", credentials: "operator" },
+      "backup",
+    );
+    expect(operator.ok).toBe(false);
+    if (operator.ok) return;
+    expect(operator.error).toContain("gcloud credentials expired");
+    expect(operator.error).toContain("gcloud auth login");
+    expect(operator.error).not.toContain("Could not find");
+    const job = await takeSqlBackup(
+      run,
+      { projectId: "acme", env: "production", credentials: "job" },
+      "backup",
+    );
+    expect(job.ok).toBe(false);
+    if (job.ok) return;
+    expect(job.error).toContain("rejected this job's credentials");
+    expect(job.error).not.toContain("gcloud auth login");
   });
 });

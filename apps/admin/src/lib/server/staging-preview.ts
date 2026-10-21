@@ -19,6 +19,13 @@ import { readStagedBuildFiles, readStagedObject, StagedRunError } from "@caelo-c
 import type { Bucket } from "@google-cloud/storage";
 import { error, type RequestHandler } from "@sveltejs/kit";
 import { mediaSecurityHeaders } from "./media-headers.js";
+import { STAGED_DOCUMENT_CSP } from "./preview-sandbox.js";
+
+/** Whether a staged object is a document a browser would run script in. */
+function isHtml(contentType: string): boolean {
+  const mime = (contentType.split(";")[0] ?? "").trim().toLowerCase();
+  return mime === "text/html" || mime === "application/xhtml+xml";
+}
 
 /** The private staging bucket and the live static bucket of a GCP install. */
 export interface StagingPreviewBuckets {
@@ -142,6 +149,11 @@ export function createStagingPreviewHandler(
         // The staged build's `_assets/` holds the site's uploaded media,
         // served here from the ADMIN origin — same guard as /_caelo/media.
         ...mediaSecurityHeaders(contentType),
+        // #946 — a staged page is the site's module HTML, served from the
+        // ADMIN origin: its scripts must never run next to the operator's
+        // session. The page keeps its origin (assets load through the
+        // identity proxy) and runs no script.
+        ...(isHtml(contentType) ? { "content-security-policy": STAGED_DOCUMENT_CSP } : {}),
         // Don't let the operator's browser cache the staging preview —
         // they may re-Stage and want fresh bytes immediately.
         "Cache-Control": "private, no-cache, max-age=0, must-revalidate",

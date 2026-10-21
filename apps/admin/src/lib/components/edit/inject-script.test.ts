@@ -42,6 +42,18 @@ describe("edit affordance UI (#916)", () => {
     expect(() => new Function(INJECT_SCRIPT)).not.toThrow();
   });
 
+  it("has exactly one way out to the editor (#946)", () => {
+    // The spliced scripts share one function scope: a second declaration
+    // with the same name would silently replace the channel-carrying sender.
+    expect(INJECT_SCRIPT.match(/function postToEditor\(/g)).toHaveLength(1);
+    expect(INJECT_SCRIPT.match(/parent\.postMessage\(/g)).toHaveLength(1);
+    // Nothing reads the editor's window: the preview is cross-origin to it.
+    expect(INJECT_SCRIPT).not.toContain("parent.location");
+    expect(INJECT_SCRIPT).not.toContain("parent.document");
+    expect(INJECT_SCRIPT).not.toContain("location.reload(");
+    expect(INJECT_SCRIPT).not.toContain("location.assign(");
+  });
+
   it("clips references to exactly what the chat endpoint accepts", () => {
     const at = (n: number) => "a".repeat(n);
     const chip = (over: Record<string, string>) =>
@@ -58,15 +70,23 @@ describe("edit affordance UI (#916)", () => {
   });
 });
 
+const CHANNEL = "6f1c2a3b-4d5e-4f60-8a71-92b3c4d5e6f7";
+
 /**
  * Runs the injected runtime against a minimal fake DOM and returns the
- * browse-mode click handler plus what it did (navigations).
+ * browse-mode click handler plus what it did: the navigate requests it
+ * posted to the editor, and any navigation it tried itself.
  */
-function bootRuntime(): {
-  click: (href: string) => { defaultPrevented: boolean; assigned: string[] };
+function bootRuntime(search = `?branch=b1&channel=${CHANNEL}`): {
+  click: (href: string) => {
+    defaultPrevented: boolean;
+    assigned: string[];
+    navigate: string[];
+  };
 } {
   const listeners = new Map<string, (ev: unknown) => void>();
   const assigned: string[] = [];
+  const posted: { kind?: string; href?: string; channel?: string }[] = [];
   const document = {
     readyState: "loading",
     addEventListener: (kind: string, fn: (ev: unknown) => void) => listeners.set(kind, fn),
@@ -76,14 +96,19 @@ function bootRuntime(): {
     body: { classList: { contains: () => false, add: () => undefined, remove: () => undefined } },
   };
   const location = {
-    href: "https://admin.example/edit/preview-by-path/about",
+    href: `https://admin.example/edit/preview-by-path/about${search}`,
     origin: "https://admin.example",
-    search: "",
+    search,
     assign: (u: string) => assigned.push(u),
     reload: () => undefined,
   };
   const win: Record<string, unknown> = { addEventListener: () => undefined };
-  const parent = { postMessage: () => undefined, location };
+  const parent = {
+    postMessage: (msg: { kind?: string; href?: string; channel?: string }, target: string) => {
+      expect(target).toBe("https://admin.example");
+      posted.push(msg);
+    },
+  };
   new Function("window", "document", "location", "parent", INJECT_SCRIPT)(
     win,
     document,
@@ -102,7 +127,13 @@ function bootRuntime(): {
           defaultPrevented = true;
         },
       });
-      return { defaultPrevented, assigned: [...assigned] };
+      const navigate = posted
+        .filter((m) => m.kind === "caelo:navigate")
+        .map((m) => {
+          expect(m.channel).toBe(CHANNEL);
+          return m.href ?? "";
+        });
+      return { defaultPrevented, assigned: [...assigned], navigate };
     },
   };
 }
@@ -112,11 +143,23 @@ describe("browse-mode link clicks (#724)", () => {
     const r = bootRuntime().click("caelo:page/33333333-3333-4333-8333-333333333333");
     expect(r.defaultPrevented).toBe(true);
     expect(r.assigned).toEqual([]);
+    expect(r.navigate).toEqual([]);
   });
 
-  it("still routes a resolved internal path through preview-by-path", () => {
+  it("asks the editor to load a resolved internal path through preview-by-path (#946)", () => {
     const r = bootRuntime().click("/pricing/");
     expect(r.defaultPrevented).toBe(true);
-    expect(r.assigned).toEqual(["/edit/preview-by-path/pricing/"]);
+    // The sandboxed preview never navigates itself: its own navigation
+    // would carry no session. The branch rides along; the editor adds its
+    // channel.
+    expect(r.assigned).toEqual([]);
+    expect(r.navigate).toEqual(["/edit/preview-by-path/pricing/?branch=b1"]);
+  });
+
+  it("goes nowhere without an editor channel", () => {
+    const r = bootRuntime("?branch=b1").click("/pricing/");
+    expect(r.defaultPrevented).toBe(true);
+    expect(r.assigned).toEqual([]);
+    expect(r.navigate).toEqual([]);
   });
 });

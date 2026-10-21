@@ -48,7 +48,7 @@ import { publicSiteUrl, STAGING_HOST_ENV } from "./stack-contract.js";
 import { attachInstall } from "./state-attach.js";
 import { hasLocalPulumiState, opsBucketName } from "./state-backend.js";
 import { acquireBucketStateLock, GcsStateStore, realSyncGcloud } from "./state-store.js";
-import { resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
+import { lookupFailure, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 import { releaseImageRef, verifyCosignAll } from "./upgrade/release-images.js";
 import { upgradeGcpInstallOutcome } from "./upgrade/upgrade.js";
 import { gcloudIamTester, healthProbeFor, type UpgraderPlacement } from "./upgrader-gcp.js";
@@ -273,14 +273,16 @@ export function gcpConvergeDeps(
       projectId,
       region,
     );
-    const described = admin
-      ? await run(["run", "services", "describe", admin, ...location, "--format=json"])
-      : null;
-    const siteCheck = !admin
-      ? "the admin service could not be found"
-      : described?.ok
-        ? deployedSiteMismatch(described.stdout, meta, region)
-        : `the admin's description could not be read (${described?.stderr.trim() ?? ""})`;
+    const described =
+      admin.status === "found"
+        ? await run(["run", "services", "describe", admin.name, ...location, "--format=json"])
+        : null;
+    const siteCheck =
+      admin.status !== "found"
+        ? lookupFailure(admin, `${gcpNamePrefix(GCP_STACK_ENV)}-admin* Cloud Run service`, "job")
+        : described?.ok
+          ? deployedSiteMismatch(described.stdout, meta, region)
+          : `the admin's description could not be read (${described?.stderr.trim() ?? ""})`;
     if (siteCheck) {
       reporter.error(
         `Nothing was changed: the install's records name ${meta.domain} in ${meta.region}, which this update could not confirm against what the admin serves today (${siteCheck}). Run the update once from Cloud Shell or the computer you installed from.`,
@@ -304,6 +306,7 @@ export function gcpConvergeDeps(
         skipVerify: false,
         skipHealthCheck: false,
         migrationsContract: m.migrations.contract,
+        credentials: "job",
       },
       {
         run,
@@ -327,7 +330,7 @@ export function gcpConvergeDeps(
             { projectId, region: meta.region as string, imageOverride: imageRef },
             { run },
           ),
-        healthProbe: (plan) => healthProbeFor(run, http, plan),
+        healthProbe: (plan, context) => healthProbeFor(run, http, plan, context),
         recordDigests: async (digests) => {
           recorded = await recordRolledRelease(
             installId,

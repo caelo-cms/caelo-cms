@@ -316,7 +316,7 @@
           <CloudShellUpgrade
             version={action.version}
             consoleUrl={data.cloudShell.consoleUrl}
-            commands={data.cloudShell.commands}
+            command={data.cloudShell.command}
             prominent
           />
         {:else if action.kind === "continue" && latestRequest}
@@ -590,7 +590,7 @@
               <CloudShellUpgrade
                 version={status.latestVersion}
                 consoleUrl={data.cloudShell.consoleUrl}
-                commands={data.cloudShell.commands}
+                command={data.cloudShell.command}
               />
             </div>
           {/if}

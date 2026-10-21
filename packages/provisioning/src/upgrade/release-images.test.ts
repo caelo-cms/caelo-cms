@@ -4,6 +4,7 @@ import { describe, expect, it } from "bun:test";
 import {
   canonicalDigest,
   canonicalReleaseTag,
+  cosignInstallHint,
   cosignVerifyArgv,
   parseBearerChallenge,
   RELEASE_SIGNER_IDENTITY_REGEXP,
@@ -115,5 +116,21 @@ describe("canonical values from the network", () => {
     expect(canonicalReleaseTag("0.11.0-rc.1")).toBe("0.11.0-rc.1");
     expect(canonicalReleaseTag("v1.0.0/../x")).toBeNull();
     expect(canonicalReleaseTag("latest")).toBeNull();
+  });
+});
+
+describe("cosignInstallHint (#816)", () => {
+  it("never offers --skip-verify to the Owner", () => {
+    for (const platform of ["darwin", "linux", "win32"] as const) {
+      expect(cosignInstallHint(platform)).not.toContain("skip-verify");
+    }
+  });
+
+  it("is not brew-only: Cloud Shell and Linux get a verified path", () => {
+    const linux = cosignInstallHint("linux");
+    expect(linux).not.toContain("brew");
+    expect(linux).toContain("./run.sh upgrade");
+    expect(linux).toContain("docs.sigstore.dev");
+    expect(cosignInstallHint("darwin")).toContain("brew install cosign");
   });
 });
