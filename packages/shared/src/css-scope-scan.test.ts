@@ -88,7 +88,18 @@ describe("moduleRootTokens", () => {
     const started = performance.now();
     expect(moduleRootTokens(`<!--${"--><!--".repeat(50_000)}`)).toBeNull();
     expect(moduleRootTokens(`${"<!---->".repeat(50_000)}<p class="x">`)?.classes).toEqual(["x"]);
+    expect(moduleRootTokens("<A\t".repeat(50_000))).toBeNull();
     expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("reads bare and attribute-carrying start tags, and rejects a malformed one", () => {
+    expect(moduleRootTokens("<section>")).toEqual({ classes: [], id: null });
+    expect(moduleRootTokens('<div\n  class="a b"\n  id="main">')).toEqual({
+      classes: ["a", "b"],
+      id: "main",
+    });
+    expect(moduleRootTokens('<div/class="a">')).toBeNull();
+    expect(moduleRootTokens('<div class="a"')).toBeNull();
   });
 });
 

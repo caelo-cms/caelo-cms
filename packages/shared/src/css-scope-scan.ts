@@ -129,15 +129,28 @@ function skipLeadingHtmlComments(html: string): number {
   }
 }
 
+/**
+ * The attribute text of the start tag at `at` (`""` for `<div>`), or null
+ * when no element starts there. Parsed by hand: the regex form
+ * `<name(\s[^>]*)?>` is quadratic on `<A\t<A\t…` input without a `>`
+ * (CodeQL js/polynomial-redos).
+ */
+function openTagAttributes(html: string, at: number): string | null {
+  if (html.charAt(at) !== "<" || !/[a-zA-Z]/.test(html.charAt(at + 1))) return null;
+  let nameEnd = at + 2;
+  while (nameEnd < html.length && /[\w-]/.test(html.charAt(nameEnd))) nameEnd++;
+  const close = html.indexOf(">", nameEnd);
+  if (close === -1) return null;
+  const attrs = html.slice(nameEnd, close);
+  return attrs === "" || /^\s/.test(attrs) ? attrs : null;
+}
+
 /** Class and id tokens of the module's first element, or null when the html has no element. */
 export function moduleRootTokens(html: string): { classes: string[]; id: string | null } | null {
   const start = skipLeadingHtmlComments(html);
   if (start === -1) return null;
-  const openTag = /<([a-zA-Z][\w-]*)(\s[^>]*)?>/y;
-  openTag.lastIndex = start;
-  const m = openTag.exec(html);
-  if (!m) return null;
-  const attrs = m[2] ?? "";
+  const attrs = openTagAttributes(html, start);
+  if (attrs === null) return null;
   const classAttr = /\sclass\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(attrs);
   const classes = (classAttr?.[1] ?? classAttr?.[2] ?? "")
     .split(/\s+/)
