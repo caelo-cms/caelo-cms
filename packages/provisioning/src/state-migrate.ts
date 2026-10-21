@@ -24,13 +24,19 @@
  *   6. flip — install.json records the new backend (locally and in the
  *      bucket); the old local state dir is renamed, never deleted.
  *
- * `--dry-run` runs the read-only preflight and reports what it would do.
+ * Every preview's planned changes are listed per resource (#737): grouped
+ * creates / updates / REPLACES / DELETES, data-bearing resources named, the
+ * full diff written to a file in the install dir.
+ *
+ * `--dry-run` runs the read-only preflight and reports what it would do,
+ * including the preview's list.
  * The engine takes its side effects as {@link MigrateDeps} so the whole
  * sequence is tested against fakes (state-migrate.test.ts); state-command.ts
  * wires the real Pulumi CLI, gcloud and file system.
  */
 
 import type { OpsBackendResult } from "./ops-backend.js";
+import { formatPlan, type PlannedStep } from "./preview-plan.js";
 import { selfCommand } from "./self-command.js";
 import {
   describeBackend,
@@ -56,8 +62,8 @@ export interface StatePulumiOps {
   stackExists(backend: ResolvedBackend): Promise<boolean>;
   /** Pending operations recorded in the stack's state (an interrupted run). */
   pendingOperations(backend: ResolvedBackend): Promise<number>;
-  /** Steps a preview would take other than "same". */
-  previewChanges(backend: ResolvedBackend): Promise<number>;
+  /** The changes a preview plans, per resource (none = converged). */
+  previewChanges(backend: ResolvedBackend): Promise<readonly PlannedStep[]>;
   /** sha256 of the stack outputs, secrets included. Never the values. */
   outputsDigest(backend: ResolvedBackend): Promise<string>;
   /** Whether a Pulumi operation holds the stack's lock in `backend` right now. */
@@ -106,6 +112,11 @@ export interface MigrateDeps {
   lock(): Promise<() => Promise<void>>;
   /** Rename the local state dir out of the way; returns where it went. */
   retireLocalState(): string | null;
+  /**
+   * Write a preview's full plan to a file in the install dir (preview-plan.ts
+   * writePlanFile); returns its path.
+   */
+  writePlan(label: string, steps: readonly PlannedStep[]): string;
 }
 
 export interface MigrateOptions {
@@ -140,6 +151,21 @@ export function versionAtLeast(a: string, b: string): boolean {
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * The plan's grouped list plus where its full diff was written, for a
+ * refusal or a dry run. A plan file that cannot be written is said, not
+ * fatal: the list is on screen anyway.
+ */
+function planReport(deps: MigrateDeps, label: string, steps: readonly PlannedStep[]): string {
+  let where: string;
+  try {
+    where = `Full diff: ${deps.writePlan(label, steps)}`;
+  } catch (e) {
+    where = `(The full diff could not be written: ${errorText(e)})`;
+  }
+  return [...formatPlan(steps).map((l) => `  ${l}`), where].join("\n");
+}
 
 /**
  * Run the migration. Never throws for an expected failure: the result says
@@ -198,6 +224,7 @@ export async function migrateState(
   let sourceDigest: string;
   /** The source's checkpoint, to notice another run writing it meanwhile. */
   let sourceState: string;
+  let sourcePlan: readonly PlannedStep[];
   try {
     const version = await pulumi.cliVersion();
     if (!version) {
@@ -232,12 +259,12 @@ export async function migrateState(
         error: `The stack records ${pending} pending operation(s) from an interrupted Pulumi run. Run upgrade first, then re-run the installer (${selfCommand()}, pick this install) so the stack is refreshed, and migrate after that. Nothing was changed.`,
       };
     }
-    const drift = await pulumi.previewChanges(from);
-    if (drift > 0) {
-      pre.failed(`A preview shows ${drift} change(s)`);
+    sourcePlan = await pulumi.previewChanges(from);
+    if (sourcePlan.length > 0) {
+      pre.failed(`A preview shows ${sourcePlan.length} change(s)`);
       return {
         ok: false,
-        error: `The stack is not converged (a preview shows ${drift} change(s)), so a copy can't be proven identical. Run upgrade first, then re-run the installer (${selfCommand()}, pick this install) until it reports no changes, and migrate after that. Nothing was changed.`,
+        error: `The stack is not converged (a preview shows ${sourcePlan.length} change(s)), so a copy can't be proven identical. Nothing was changed. The planned changes:\n${planReport(deps, "state-migrate", sourcePlan)}\nRun upgrade first, then re-run the installer (${selfCommand()}, pick this install): it shows this list again and asks before it replaces or deletes anything. Migrate once it reports no changes.`,
       };
     }
     sourceDigest = await pulumi.outputsDigest(from);
@@ -274,7 +301,12 @@ export async function migrateState(
         : []),
     );
     report.info(
-      ["Dry run — nothing changed. The migration would:", ...plan.map((p) => `  ${p}`)].join("\n"),
+      [
+        "Dry run — nothing changed. The migration would:",
+        ...plan.map((p) => `  ${p}`),
+        "The source stack's preview:",
+        planReport(deps, "state-migrate-dry-run", sourcePlan),
+      ].join("\n"),
     );
     return { ok: true, changed: false };
   }
@@ -385,8 +417,14 @@ export async function migrateState(
     }
     try {
       const changes = await pulumi.previewChanges(to);
-      if (changes > 0)
-        return abandon(`Verification failed: a preview of the copy shows ${changes} change(s)`);
+      if (changes.length > 0) {
+        report.info(
+          `The copy's preview plans:\n${planReport(deps, "state-migrate-copy", changes)}`,
+        );
+        return abandon(
+          `Verification failed: a preview of the copy shows ${changes.length} change(s) (listed above)`,
+        );
+      }
       if ((await pulumi.outputsDigest(to)) !== sourceDigest) {
         return abandon("Verification failed: the copy's outputs differ from the source's");
       }

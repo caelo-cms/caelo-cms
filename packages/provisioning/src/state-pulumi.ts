@@ -19,6 +19,7 @@ import { join } from "node:path";
 import * as automation from "@pulumi/pulumi/automation";
 import { redactCredentials } from "./checkpoint-secrets.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
+import { collectPreviewSteps } from "./preview-plan.js";
 import type { ResolvedBackend } from "./state-backend.js";
 import type { StatePulumiOps } from "./state-migrate.js";
 import {
@@ -49,13 +50,6 @@ export function canonicalJson(value: unknown): string {
     return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
   }
   return JSON.stringify(value);
-}
-
-/** Steps of a preview's change summary other than "same". */
-export function changeCount(summary: Readonly<Record<string, number | undefined>>): number {
-  return Object.entries(summary)
-    .filter(([op]) => op !== "same")
-    .reduce((n, [, c]) => n + (c ?? 0), 0);
 }
 
 interface Deployment {
@@ -202,8 +196,11 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
         await applyStackConfig(stack, inputs.stackConfig, resources);
       }
       await assertStackProject(stack, inputs.provider, inputs.stackConfig.projectId);
-      const r = await stack.preview({ refresh: true });
-      return changeCount(r.changeSummary);
+      // #737 — the steps themselves, not just the summary's count: a
+      // refusal lists what would change, replaces and deletes first.
+      const collector = collectPreviewSteps();
+      await stack.preview({ refresh: true, onEvent: collector.onEvent });
+      return collector.steps();
     },
 
     async outputsDigest(b) {
