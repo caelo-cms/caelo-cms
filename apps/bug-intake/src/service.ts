@@ -15,6 +15,17 @@
  * the first report), its body is refreshed when a new install or version
  * appears, and a comment is added at install milestones.
  *
+ * Public issues are bounded (#980), because registration is unauthenticated
+ * and at threshold 1 anyone can file:
+ *   - at most `maxNewIssuesPerDay` new issues per UTC calendar day (the
+ *     window resets at 00:00 UTC). A defect due an issue over the cap is
+ *     stored as usual and queued; queued defects are filed oldest first by
+ *     later requests once the next day's slots exist. Updates to existing
+ *     issues (body refresh, milestones, regression reopen) are not capped.
+ *   - `issuesPaused` is the kill switch: reports are still accepted, counted
+ *     and queued, but GitHub is never written (no create, edit or comment).
+ *     Skipped edits catch up on the next event that would make them.
+ *
  * Issue state is read lazily (at most every few minutes per cluster) when a
  * report or status request touches the cluster, so the intake needs no
  * webhook: closed as completed → fixed (in the first release published after
@@ -67,6 +78,10 @@ export interface IntakeServiceDeps {
   tracker: IssueTracker;
   matcher: ClusterMatcher;
   issueThresholdInstalls: number;
+  /** New public issues per UTC day; the rest wait in the store's pending queue. */
+  maxNewIssuesPerDay: number;
+  /** Kill switch: true = no GitHub write of any kind (reads still happen). */
+  issuesPaused: boolean;
   now?: () => Date;
 }
 
@@ -74,6 +89,16 @@ export interface IntakeServiceDeps {
 const ISSUE_SYNC_INTERVAL_MS = 5 * 60_000;
 /** Cap on stored install hashes per cluster; beyond it the count shows as "N+". */
 const MAX_INSTALL_HASHES = 10_000;
+/**
+ * Queued issues filed per request at most: after the daily reset the backlog
+ * drains over the first few requests instead of stalling one of them.
+ */
+const PENDING_ISSUES_PER_REQUEST = 3;
+
+/** The daily issue window: the UTC calendar day of `d`, `YYYY-MM-DD`. */
+function utcDay(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
 
 async function sha256Hex(text: string): Promise<string> {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
@@ -85,6 +110,9 @@ const SEVERITY_RANK = { cosmetic: 0, degraded: 1, blocking: 2 } as const;
 export class IntakeService {
   readonly #d: Required<IntakeServiceDeps>;
   readonly #locks = new Map<string, Promise<unknown>>();
+  /** UTC day whose issue slots are known to be used up; saves a store round-trip per request. */
+  #capReachedDay: string | null = null;
+  #draining = false;
 
   constructor(deps: IntakeServiceDeps) {
     this.#d = { now: () => new Date(), ...deps };
@@ -110,7 +138,9 @@ export class IntakeService {
         throw new IntakeRefusal(409, "This report id was already sent by another install.");
       }
       // A retry of a report already counted (the answer got lost on the way back).
-      return this.#info(await this.#resolve(prior.clusterId));
+      const info = this.#info(await this.#resolve(prior.clusterId));
+      await this.#fileQueuedIssues();
+      return info;
     }
     const report = { ...sent, ...redactBugReportFields(sent) };
     const clusterId = await this.#findOrCreateCluster(report);
@@ -124,6 +154,7 @@ export class IntakeService {
       clusterId: info.clusterId,
       report,
     });
+    await this.#fileQueuedIssues();
     return info;
   }
 
@@ -138,6 +169,7 @@ export class IntakeService {
       );
       out.push({ ...this.#info(synced), clusterId: id });
     }
+    await this.#fileQueuedIssues();
     return out;
   }
 
@@ -230,7 +262,9 @@ export class IntakeService {
     });
 
     let current = cluster;
+    const writable = !this.#d.issuesPaused;
     if (
+      writable &&
       current.status === "fixed" &&
       current.fixedInVersion !== null &&
       current.issueNumber !== null
@@ -254,21 +288,9 @@ export class IntakeService {
 
     if (current.issueNumber === null) {
       if (current.installHashes.length >= this.#d.issueThresholdInstalls) {
-        const issue = await this.#d.tracker.createIssue({
-          title: issueTitle(current),
-          body: issueBody(current),
-          labels: issueLabels(current),
-        });
-        await this.#d.store.linkIssue(issue.number, current.id);
-        current = (
-          await this.#update(clusterId, (c) => {
-            c.issueNumber = issue.number;
-            c.issueUrl = issue.url;
-            c.lastIssueSyncAt = this.#d.now().toISOString();
-          })
-        ).cluster;
+        current = await this.#fileIssue(current);
       }
-    } else if (isNewInstall || isNewVersion) {
+    } else if (writable && (isNewInstall || isNewVersion)) {
       await this.#d.tracker.updateIssue(current.issueNumber, { body: issueBody(current) });
       const due = INSTALL_MILESTONES.filter(
         (m) => current.installHashes.length >= m && !current.milestonesCommented.includes(m),
@@ -287,6 +309,78 @@ export class IntakeService {
       }
     }
     return this.#info(current);
+  }
+
+  /**
+   * Give a cluster that is due one its public issue, if the kill switch and
+   * today's cap allow; otherwise leave it queued. Call under the cluster's lock.
+   * The cluster is queued before GitHub is called, so a failed create is
+   * retried by a later request rather than lost.
+   */
+  async #fileIssue(cluster: ClusterRecord): Promise<ClusterRecord> {
+    const { store, tracker } = this.#d;
+    await store.markIssuePending(cluster.id, this.#d.now().toISOString());
+    if (this.#d.issuesPaused) return cluster;
+    const day = utcDay(this.#d.now());
+    if (this.#capReachedDay === day) return cluster;
+    if (!(await store.takeIssueSlot(day, this.#d.maxNewIssuesPerDay))) {
+      this.#capReachedDay = day;
+      return cluster;
+    }
+    let issue: { number: number; url: string };
+    try {
+      issue = await tracker.createIssue({
+        title: issueTitle(cluster),
+        body: issueBody(cluster),
+        labels: issueLabels(cluster),
+      });
+    } catch (e) {
+      await store.returnIssueSlot(day);
+      this.#capReachedDay = null;
+      throw e;
+    }
+    await store.linkIssue(issue.number, cluster.id);
+    const { cluster: filed } = await this.#update(cluster.id, (c) => {
+      c.issueNumber = issue.number;
+      c.issueUrl = issue.url;
+      c.lastIssueSyncAt = this.#d.now().toISOString();
+    });
+    await store.clearIssuePending(cluster.id);
+    return filed;
+  }
+
+  /**
+   * File queued issues, oldest first, while the kill switch and today's cap
+   * allow. Piggybacks on install requests because the service scales to zero
+   * and has no scheduler; at least one install refreshes status every six
+   * hours, so a queued defect waits at most that long past the daily reset.
+   * A failure here is logged, not thrown: it is the intake's own backlog and
+   * must not fail an unrelated install's request.
+   */
+  async #fileQueuedIssues(): Promise<void> {
+    if (this.#d.issuesPaused || this.#draining) return;
+    if (this.#capReachedDay === utcDay(this.#d.now())) return;
+    this.#draining = true;
+    try {
+      for (const id of await this.#d.store.pendingIssueClusters(PENDING_ISSUES_PER_REQUEST)) {
+        await this.#withLock(id, async () => {
+          const cur = await this.#d.store.getCluster(id);
+          if (!cur || cur.value.issueNumber !== null) {
+            await this.#d.store.clearIssuePending(id);
+            return;
+          }
+          await this.#fileIssue(cur.value);
+        });
+        if (this.#capReachedDay === utcDay(this.#d.now())) break;
+      }
+    } catch (e) {
+      console.error(
+        "[bug-intake] filing queued issues failed; retried on a later request:",
+        e instanceof Error ? e.message : e,
+      );
+    } finally {
+      this.#draining = false;
+    }
   }
 
   /** Read-modify-write one cluster with the store's version check. */
