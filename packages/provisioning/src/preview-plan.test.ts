@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { closeSync, fstatSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EngineEvent, OpType } from "@pulumi/pulumi/automation";
@@ -187,8 +187,15 @@ describe("writePlanFile", () => {
   it("writes every step with its URN and changed properties, mode 600", () => {
     const path = writePlanFile(dir, "installer", recordedPlan(), new Date("2026-10-21T10:00:00Z"));
     expect(path).toBe(join(dir, "plan-installer-2026-10-21T10-00-00-000Z.txt"));
-    expect(statSync(path).mode & 0o777).toBe(0o600);
-    const text = readFileSync(path, "utf8");
+    // One descriptor for the mode and the content (no check-then-read race).
+    const fd = openSync(path, "r");
+    let text: string;
+    try {
+      expect(fstatSync(fd).mode & 0o777).toBe(0o600);
+      text = readFileSync(fd, "utf8");
+    } finally {
+      closeSync(fd);
+    }
     expect(text).toContain("7 change(s)");
     expect(text).toContain(
       `- replace ${URN}gcp:sql/databaseInstance:DatabaseInstance::caelo-production-pg\n    replaced because: region\n    changes: region, settings`,
