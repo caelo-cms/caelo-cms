@@ -41,6 +41,17 @@ import {
   runPluginOperation,
 } from "./dispatch.js";
 
+/**
+ * Which plugins' URL contributions take part in a composition. `without`
+ * composes as if that plugin were already gone: the gated uninstall
+ * (#393) diffs the post-uninstall URLs inside its transaction, while the
+ * plugin leaves the running host only after that transaction commits
+ * (#585). Omitted = every active contribution, the normal case.
+ */
+export interface UrlCompositionView {
+  readonly without?: string;
+}
+
 export interface RegisteredUrlContribution {
   readonly pluginSlug: string;
   readonly contribution: UrlContributionDef;
@@ -108,11 +119,12 @@ class UrlContributionsRegistry {
     this.#annotationOps.delete(pluginSlug);
   }
 
-  /** Active (non-disabled) contribution for a slot. */
-  bySlot(slot: UrlSlot): RegisteredUrlContribution | null {
+  /** Active (non-disabled) contribution for a slot, within `view`. */
+  bySlot(slot: UrlSlot, view?: UrlCompositionView): RegisteredUrlContribution | null {
     const entry = this.#bySlot.get(slot);
     if (!entry) return null;
     if (isPluginDisabled(entry.pluginSlug)) return null;
+    if (view?.without === entry.pluginSlug) return null;
     return entry;
   }
 
@@ -162,8 +174,8 @@ export interface ResolvedPageUrl {
  * public URL builder asks for it at render time ({@link resolvePageUrl}
  * uses the same function, so both always agree).
  */
-export function resolvePageHost(page: UrlComposePage): string | null {
-  const host = urlContributionsRegistry.bySlot("host");
+export function resolvePageHost(page: UrlComposePage, view?: UrlCompositionView): string | null {
+  const host = urlContributionsRegistry.bySlot("host", view);
   if (host && host.contribution.slot === "host") {
     const encoded = host.contribution.encode(page);
     if (encoded !== null && !HOST_RE.test(encoded)) {
@@ -186,11 +198,11 @@ export function hasHostContribution(): boolean {
  * Compose a page's public URL from the active contributions. Pure —
  * annotations must already be attached to `page`.
  */
-export function resolvePageUrl(page: UrlComposePage): ResolvedPageUrl {
-  const full = urlContributionsRegistry.bySlot("full-path");
+export function resolvePageUrl(page: UrlComposePage, view?: UrlCompositionView): ResolvedPageUrl {
+  const full = urlContributionsRegistry.bySlot("full-path", view);
   // The host slot never sees the tree (SDK contract): render-time host
   // resolution only has the materialized path, so both must agree.
-  const hostValue = resolvePageHost({ ...page, ancestorSlugs: [] });
+  const hostValue = resolvePageHost({ ...page, ancestorSlugs: [] }, view);
 
   if (full && full.contribution.slot === "full-path") {
     const path = full.contribution.encode(page);
@@ -212,7 +224,7 @@ export function resolvePageUrl(page: UrlComposePage): ResolvedPageUrl {
     return { path, host: hostValue };
   }
 
-  const prefixEntry = urlContributionsRegistry.bySlot("path-prefix");
+  const prefixEntry = urlContributionsRegistry.bySlot("path-prefix", view);
   const prefixSegments: string[] = [];
   if (prefixEntry && prefixEntry.contribution.slot === "path-prefix") {
     for (const seg of prefixEntry.contribution.encode(page)) {
@@ -232,7 +244,7 @@ export function resolvePageUrl(page: UrlComposePage): ResolvedPageUrl {
   for (const seg of page.ancestorSlugs) assertSegment(seg, "core/parent-page");
 
   let slugPart = page.slug;
-  const slugFmt = urlContributionsRegistry.bySlot("slug-format");
+  const slugFmt = urlContributionsRegistry.bySlot("slug-format", view);
   if (slugFmt && slugFmt.contribution.slot === "slug-format") {
     slugPart = slugFmt.contribution.encode(page);
   }
@@ -330,11 +342,13 @@ export function decodePagePath(path: string): DecodedPagePath {
 export async function collectUrlAnnotations(
   pageIds: ReadonlyArray<string>,
   scope: RenderScope,
+  view?: UrlCompositionView,
 ): Promise<Map<string, Record<string, unknown>>> {
   const out = new Map<string, Record<string, unknown>>();
   if (pageIds.length === 0) return out;
   for (const [pluginSlug, operationName] of urlContributionsRegistry.annotationOps()) {
     if (isPluginDisabled(pluginSlug)) continue;
+    if (view?.without === pluginSlug) continue;
     const r = await runPluginOperation({
       invocation: renderInvocation(scope),
       pluginSlug,

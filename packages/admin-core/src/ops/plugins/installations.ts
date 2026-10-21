@@ -14,6 +14,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { syncExternalCompanionSkills } from "./companion-skills.js";
+import { afterPluginCommit } from "./host-sync.js";
 
 export const stagePluginInstallationOp = defineOperation({
   name: "plugins.stage_installation",
@@ -533,6 +534,11 @@ export const revokePluginCapabilityOp = defineOperation({
       succeeded: true,
       resultSummary: `revoked ${input.capability}; active version disabled=${disabled}`,
     });
+    // #585 — the running host follows the row only once it is committed:
+    // tools leave the catalogue and workers stop then, not at the next
+    // restart, and a rolled-back revoke leaves the plugin running. Every
+    // caller (the Owner page, the approved revoke proposal) inherits this.
+    if (disabled) afterPluginCommit(tx, row.slug, row.plugin_id, "disable");
     return ok({ slug: row.slug, disabled });
   },
 });
