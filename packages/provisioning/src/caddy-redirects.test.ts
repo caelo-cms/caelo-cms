@@ -63,6 +63,7 @@ describe("Compose — Caddy picks up new redirects (#587)", () => {
     postgresPassword: "pgpw",
     rolePasswords: { admin: "a", public: "p" },
     caeloSecretKek: "0".repeat(64),
+    internalSecret: "i".repeat(48),
     diskSize: "20Gi",
     ports: { http: 80, https: 443 },
     project: "caelo-example-com",

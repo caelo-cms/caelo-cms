@@ -74,6 +74,7 @@ import {
 } from "./compose.js";
 import { tightenPrivateTree, writePrivateFile } from "./private-file.js";
 import { selfCommand } from "./self-command.js";
+import { ensureInternalSecret, writeInternalSecret } from "./self-hosted-internal-secret.js";
 import {
   bunHostRunner,
   readRelease,
@@ -339,6 +340,12 @@ function renderCompose(cfg: CaeloConfig, images: ComposeImages): string {
     postgresPassword: cfg.postgresPassword,
     rolePasswords: cfg.rolePasswords,
     caeloSecretKek: cfg.caeloSecretKek,
+    // #770 — every render (up, upgrade, agent apply) hands the admin the
+    // secret host-side commands sign their /api/internal/* tokens with.
+    internalSecret: ensureInternalSecret(CAELO_DIR, {
+      randomSecret: () => randomSecret(48),
+      report: (line) => console.log(line),
+    }),
     anthropicApiKey: cfg.anthropicApiKey,
     resendApiKey: cfg.resendApiKey,
     diskSize: "20Gi",
@@ -602,6 +609,13 @@ async function init(): Promise<void> {
     composeProject: composeProjectName(domain),
   };
   saveConfig(cfg);
+  // P15.1 — the shared HMAC secret for /api/internal/* endpoints, read by
+  // the admin (CAELO_INTERNAL_SECRET, from the Compose file emitConfig
+  // writes next — so it must exist first, #770) and by host-side commands
+  // such as `owner-reset`. Long enough to defeat brute-force. GCP installs
+  // keep their own copy in Secret Manager (runtime-secrets.ts), rotated by
+  // `rotate-secret internal-secret`.
+  writeInternalSecret(CAELO_DIR, randomSecret(48));
   if (images.mode === "release") {
     recordRelease(
       CAELO_DIR,
@@ -620,17 +634,6 @@ async function init(): Promise<void> {
   mkdirSync(resolve(CAELO_DIR, BOOTSTRAP_DIR), { recursive: true, mode: 0o700 });
   writePrivateFile(PENDING_TOKEN_PATH, JSON.stringify(tok, null, 2));
 
-  // P15.1 — mint the shared HMAC secret for /api/internal/* endpoints.
-  // Same secret is read by:
-  //   - admin app (process.env.CAELO_INTERNAL_SECRET),
-  //   - cms-provision pulumi-output-sync (when running in CI / by hand),
-  //   - any future internal-only orchestration.
-  // Long enough to defeat brute-force. GCP installs keep their own copy in
-  // Secret Manager (runtime-secrets.ts), rotated by `rotate-secret
-  // internal-secret`.
-  const internalSecret = randomSecret(48);
-  const internalSecretPath = resolve(CAELO_DIR, "internal-secret.json");
-  writePrivateFile(internalSecretPath, JSON.stringify({ secret: internalSecret }, null, 2));
   // #696 Phase 4c — the update agent (Linux + systemd): the fresh volume's
   // bootstrap.sh creates its database login on Postgres's first start.
   const { reportAgentSetup, setUpAgent } = await import("./agent/command.js");
