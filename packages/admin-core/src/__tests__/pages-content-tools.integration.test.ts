@@ -48,6 +48,7 @@ async function wipe(): Promise<void> {
       await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}-%`})`;
       await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE ${`${PFX}-%`})`;
       await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}-%`}`;
+      await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${PFX}-%`}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE ${`${PFX}-%`})`;
       await tx`DELETE FROM templates WHERE slug LIKE ${`${PFX}-%`}`;
       await tx`DELETE FROM modules WHERE slug LIKE ${`${PFX}-%`}`;
@@ -191,8 +192,9 @@ describe("content instances", () => {
     const refused = await deleteContentInstanceTool.handler(SYSTEM, { id: instId }, toolCtx());
     expect(refused.ok).toBe(false);
     expect(refused.content).not.toContain("propose_delete_content_instance");
-    expect(refused.content).toContain("get_content_instance");
     expect(refused.content).toContain("fork_placement_content");
+    // The refusal carries fork_placement_content's exact arguments.
+    expect(refused.content).toContain(`pageId ${pageId}, blockName content, position 0`);
 
     const fork = await forkPlacementContentTool.handler(
       SYSTEM,
@@ -203,4 +205,84 @@ describe("content instances", () => {
     const del = await deleteContentInstanceTool.handler(SYSTEM, { id: instId }, toolCtx());
     expect(del.ok).toBe(true);
   });
+
+  // PR #947 review — in a chat the fork rebinds only the branch layout, so
+  // a live-only placement count kept refusing the retry; and the delete
+  // itself soft-deleted the LIVE row from inside the chat.
+  it("detach-then-delete works inside a chat and stays off the live site until merge", async () => {
+    const instId = await seedInstance("SharedInChat");
+    const bind = await setPlacementContentTool.handler(
+      SYSTEM,
+      { pageId, blockName: "content", position: 0, contentInstanceId: instId, syncMode: "synced" },
+      toolCtx(),
+    );
+    expect(bind.ok).toBe(true);
+    const s = await execute(registry, adapter, SYSTEM, "chat.create_session", {
+      isolation: "experiment",
+      title: `${PFX}-chat`,
+    });
+    if (!s.ok) throw new Error(JSON.stringify(s.error));
+    const { chatSessionId, chatBranchId } = s.value as {
+      chatSessionId: string;
+      chatBranchId: string;
+    };
+    const ai: ExecutionContext = {
+      actorId: "00000000-0000-0000-0000-000000000a1a",
+      actorKind: "ai",
+      requestId: "pages-content-int-chat",
+      chatBranchId,
+      chatTaskId: chatSessionId,
+    };
+
+    const refused = await deleteContentInstanceTool.handler(ai, { id: instId }, toolCtx());
+    expect(refused.ok).toBe(false);
+    const fork = await forkPlacementContentTool.handler(
+      ai,
+      { pageId, blockName: "content", position: 0 },
+      toolCtx(),
+    );
+    expect(fork.ok).toBe(true);
+    const del = await deleteContentInstanceTool.handler(ai, { id: instId }, toolCtx());
+    expect(del.ok).toBe(true);
+    expect(await liveDeletedAt(instId)).toBeNull();
+
+    const merged = await execute(registry, adapter, SYSTEM, "chat.merge_to_main", {
+      chatSessionId,
+    });
+    if (!merged.ok) throw new Error(JSON.stringify(merged.error));
+    expect(await liveDeletedAt(instId)).not.toBeNull();
+    const bound = await liveBinding(pageId);
+    expect(bound).not.toBe(instId);
+  });
 });
+
+async function liveDeletedAt(id: string): Promise<Date | null> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    return await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const rows = (await tx`SELECT deleted_at FROM content_instances WHERE id = ${id}::uuid`) as {
+        deleted_at: Date | null;
+      }[];
+      return rows[0]?.deleted_at ?? null;
+    });
+  } finally {
+    await sql.end();
+  }
+}
+
+async function liveBinding(page: string): Promise<string | undefined> {
+  const sql = new SQL(ADMIN_URL!);
+  try {
+    return await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const rows = (await tx`
+        SELECT content_instance_id::text AS ci FROM page_modules
+        WHERE page_id = ${page}::uuid AND block_name = 'content' AND position = 0
+      `) as { ci: string }[];
+      return rows[0]?.ci;
+    });
+  } finally {
+    await sql.end();
+  }
+}
