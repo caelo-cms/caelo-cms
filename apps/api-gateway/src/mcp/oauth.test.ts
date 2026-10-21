@@ -26,6 +26,7 @@ import {
   PUBLIC,
   pkce,
   postToken,
+  refreshToken,
   registerClient,
   SEAL_KEY_B64,
 } from "./__tests__/harness.js";
@@ -1245,5 +1246,53 @@ describe("seal-key rotation", () => {
     const res = await h.send("/api/mcp/oauth/protected-resource/chat");
     expect(res.status).toBe(503);
     expect(await res.text()).toContain("CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS");
+  });
+});
+
+describe("the client app's key across refreshes (#968)", () => {
+  it("keeps the key fixed at sign-in, even when the client's registration no longer opens", async () => {
+    const h = harness();
+    // A DCR client_id sealed under a key that was rotated out: it no longer
+    // opens, so recomputing would turn "dcr:Claude Code" into a hash.
+    const res = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken({ client_id: "v2.rotated-out", client_key: "dcr:Claude Code" }),
+      client_id: "v2.rotated-out",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(openAccess(String(body.access_token), h.nowSeconds()).client).toBe("dcr:Claude Code");
+    // …and the re-sealed refresh token still carries it.
+    const again = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: String(body.refresh_token),
+      client_id: "v2.rotated-out",
+    });
+    const next = (await again.json()) as Record<string, unknown>;
+    expect(openAccess(String(next.access_token), h.nowSeconds()).client).toBe("dcr:Claude Code");
+  });
+
+  it("pins the key of a pre-#968 refresh token on its first refresh", async () => {
+    const h = harness();
+    const clientId = await registerClient(h, [CLAUDE_REDIRECT], "Claude Code");
+    const res = await postToken(h, {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken({ client_id: clientId }),
+      client_id: clientId,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(openAccess(String(body.access_token), h.nowSeconds()).client).toBe("dcr:Claude Code");
+  });
+
+  it("refuses a client_name that is not well-formed Unicode at registration", async () => {
+    const h = harness();
+    const res = await h.send("/api/mcp/oauth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [CLAUDE_REDIRECT], client_name: "bad \ud800 name" }),
+    });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("invalid_client_metadata");
   });
 });

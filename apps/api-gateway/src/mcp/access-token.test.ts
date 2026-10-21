@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { MAX_CLIENT_KEY_LENGTH, mcpClientKey } from "./access-token.js";
+import { isWellFormedText, MAX_CLIENT_KEY_LENGTH, mcpClientKey } from "./access-token.js";
 
 describe("mcpClientKey (#968)", () => {
   it("keys a CIMD client by its document URL", () => {
@@ -20,6 +20,12 @@ describe("mcpClientKey (#968)", () => {
     expect(a).toMatch(/^dcr:sha256:[0-9a-f]{32}$/);
     expect(mcpClientKey("v2.registration-one", "  ")).toBe(a);
     expect(mcpClientKey("v2.registration-two", null)).not.toBe(a);
+  });
+
+  it("hashes a name with a lone surrogate, which could not be URI-encoded", () => {
+    expect(mcpClientKey("v2.r", "bad \ud800")).toMatch(/^dcr:sha256:/);
+    expect(isWellFormedText("ok 😀")).toBe(true);
+    expect(isWellFormedText("bad \udc00")).toBe(false);
   });
 
   it("hashes a key that would not fit", () => {

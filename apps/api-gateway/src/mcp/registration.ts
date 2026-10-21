@@ -27,7 +27,7 @@
 
 import { z } from "zod";
 import { readBodyWithCap } from "../middleware/body-cap.js";
-import { mcpClientKey } from "./access-token.js";
+import { isWellFormedText, mcpClientKey } from "./access-token.js";
 import type { McpContext } from "./context.js";
 import { json, oauthError } from "./http.js";
 import { isAllowedRedirectUri } from "./redirect-allowlist.js";
@@ -298,6 +298,14 @@ export async function handleRegister(req: Request, ctx: McpContext): Promise<Res
   }
   if (reg.response_types?.some((r) => r !== "code")) {
     return oauthError("invalid_client_metadata", 'response_types may only contain "code"');
+  }
+  // The name ends up in the client's key, which the proxy URI-encodes into
+  // a header; a lone UTF-16 surrogate would make that throw (#968).
+  if (reg.client_name !== undefined && !isWellFormedText(reg.client_name)) {
+    return oauthError(
+      "invalid_client_metadata",
+      "client_name must be well-formed Unicode text (no unpaired surrogates)",
+    );
   }
   const refused = reg.redirect_uris.filter((u) => !isAllowedRedirectUri(u));
   if (refused.length > 0) {

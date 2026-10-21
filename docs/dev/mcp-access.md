@@ -63,7 +63,11 @@ Only an Owner (`settings.write`) and system change connections and blocks. This 
 
 ### Rows from before per-app connections
 
-Migration 0335 keeps existing rows with `client_key IS NULL`. The first app whose MCP `initialize` reports the same client name as the row's `client_label` takes the row over. The row's revocation, cap and work session carry over to "its last client". Any other app gets a row of its own. That is the case the per-app model fixes: a revoked "Claude Code" row no longer locks out ChatGPT.
+Migration 0335 keeps existing rows with `client_key IS NULL`. The first app whose MCP `initialize` reports the same client name as the row's `client_label` takes the row over. The row's revocation, cap and work session carry over to "its last client". Any other app gets a row of its own. That is the case the per-app model fixes: a revoked "Claude Code" row no longer locks out ChatGPT. Until the row is claimed, it still constrains the user's other apps on that surface:
+- A new app's row starts with the old row's cap and AI delegation.
+- If the old row is revoked, a request that does not identify its app (no MCP `initialize`, for example a client resuming after the upgrade) is refused with a "reconnect this app" message. That request might come from the revoked app itself. Reconnecting makes the app identify itself, and adoption then decides.
+
+The gateway fixes an app's key at sign-in and carries it in the sealed refresh token. A refresh never recomputes it, so rotating the seal key cannot turn a revoked DCR app into a new, active connection.
 
 ## Settings → MCP
 

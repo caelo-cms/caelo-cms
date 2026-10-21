@@ -146,6 +146,11 @@ function revokedMessage(clientKey: string, by: string | null, at: string | Date)
   return `Remote access for ${describeMcpClient(clientKey)} on this account was revoked ${who} on ${fmtDate(at)}. Your other connected apps are not affected. An Owner restores it under ${SETTINGS_PLACE}.`;
 }
 
+function legacyRevokedMessage(by: string | null, at: string | Date): string {
+  const who = by ? `by ${by}` : "by an Owner";
+  return `Remote access for this account was revoked ${who} on ${fmtDate(at)}, before Caelo told connected apps apart. Reconnect this app (remove and add the connector again) so it identifies itself; if the revocation was meant for another app, this one then works. An Owner restores access under ${SETTINGS_PLACE}.`;
+}
+
 function blockedMessage(by: string | null, at: string | Date): string {
   const who = by ? `by ${by}` : "by an Owner";
   return `Remote MCP access for this account is blocked for every app, ${who} on ${fmtDate(at)}. An Owner lifts the block under ${SETTINGS_PLACE}.`;
@@ -207,6 +212,28 @@ async function adoptLegacyRow(
     RETURNING id::text AS id
   `)) as unknown as { id: string }[];
   return adopted.length === 1;
+}
+
+interface LegacyRow {
+  ai_cost_cap_microcents: bigint | string | number | null;
+  allow_caelo_ai: boolean;
+  revoked_at: string | Date | null;
+  revoked_by_email: string | null;
+}
+
+/** The unclaimed pre-#968 row of (user, surface), if any. */
+async function selectLegacyRow(
+  tx: TransactionRunner,
+  actorId: string,
+  surface: McpRemoteSurface,
+): Promise<LegacyRow | undefined> {
+  const rows = (await tx.execute(sql`
+    SELECT c.ai_cost_cap_microcents, c.allow_caelo_ai, c.revoked_at, u.email AS revoked_by_email
+    FROM mcp_remote_connections c
+    LEFT JOIN users u ON u.id = c.revoked_by
+    WHERE c.actor_id = ${actorId}::uuid AND c.surface = ${surface} AND c.client_key IS NULL
+  `)) as unknown as LegacyRow[];
+  return rows[0];
 }
 
 /**
@@ -309,9 +336,27 @@ export async function resolveRemoteMcpPrincipal(
         row = await selectConnection(tx, user.id, surface, clientKey);
       }
       if (!row) {
+        // An unclaimed pre-#968 row still speaks for this user's apps until
+        // its own app claims it. A request that does not name its client
+        // (no MCP initialize — e.g. a client resuming after the upgrade) may
+        // be that very app, so it must not slip past the old revocation by
+        // getting a fresh row; once it initializes, adoption decides. Any
+        // new row starts with the old row's cap and AI delegation, so a
+        // per-user limit the Owner set is not lost either.
+        const legacy = await selectLegacyRow(tx, user.id, surface);
+        if (legacy?.revoked_at && label === undefined) {
+          return err({
+            status: 403,
+            code: "remote_access_revoked",
+            message: legacyRevokedMessage(legacy.revoked_by_email, legacy.revoked_at),
+          });
+        }
         await tx.execute(sql`
-          INSERT INTO mcp_remote_connections (actor_id, surface, client_key)
-          VALUES (${user.id}::uuid, ${surface}, ${clientKey})
+          INSERT INTO mcp_remote_connections
+            (actor_id, surface, client_key, ai_cost_cap_microcents, allow_caelo_ai)
+          VALUES (${user.id}::uuid, ${surface}, ${clientKey},
+                  ${legacy ? toCap(legacy.ai_cost_cap_microcents) : null},
+                  ${legacy?.allow_caelo_ai === true})
           ON CONFLICT (actor_id, surface, client_key) DO NOTHING
         `);
         row = await selectConnection(tx, user.id, surface, clientKey);

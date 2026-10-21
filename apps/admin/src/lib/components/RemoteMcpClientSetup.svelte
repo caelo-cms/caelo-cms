@@ -30,7 +30,7 @@
 
   let surface = $state<"chat" | "admin">(mayUse.chat ? "chat" : "admin");
   let client = $state("claude-ai");
-  const server = $derived(remoteMcpServer(surface, urls[surface]));
+  const server = $derived(remoteMcpServer(surface, urls[surface], siteHost));
   const connectorName = $derived(mcpConnectorName(siteHost, surface));
 </script>
 

@@ -53,7 +53,8 @@ test("gives every client the MCP URL in its own form", async ({ page }) => {
 
   await setup.getByRole("tab", { name: "Claude Code" }).click();
   await expect(page.getByTestId("remote-mcp-setup-claude-code")).toHaveText(
-    `claude mcp add --transport http caelo ${GATEWAY}/api/mcp/chat`,
+    // #968 — named after the site, so two Caelo sites stay apart in one client.
+    new RegExp(`^claude mcp add --transport http caelo-[a-z0-9-]+ ${GATEWAY}/api/mcp/chat$`),
   );
 
   await expect(page.getByTestId("remote-mcp-connector-name")).toContainText("(Chat)");
@@ -61,10 +62,12 @@ test("gives every client the MCP URL in its own form", async ({ page }) => {
   await expect(page.getByTestId("remote-mcp-url")).toHaveText(`${GATEWAY}/api/mcp/admin`);
   // #968 — a name that keeps the admin connector apart from the chat one.
   await expect(page.getByTestId("remote-mcp-connector-name")).toContainText("(Admin)");
-  await expect(page.getByTestId("remote-mcp-setup-claude-code")).toContainText("caelo-admin");
+  await expect(page.getByTestId("remote-mcp-setup-claude-code")).toHaveText(
+    / caelo-[a-z0-9-]+-admin /,
+  );
 
   const tabs: Array<[string, string, string]> = [
-    ["Codex CLI", "remote-mcp-setup-codex", "codex mcp login caelo-admin"],
+    ["Codex CLI", "remote-mcp-setup-codex", "codex mcp login caelo-"],
     ["Cursor", "remote-mcp-setup-cursor", '"url"'],
     ["VS Code", "remote-mcp-setup-vscode", '"type": "http"'],
     ["Gemini CLI", "remote-mcp-setup-gemini", '"httpUrl"'],

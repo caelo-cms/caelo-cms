@@ -24,7 +24,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { readBodyWithCap } from "../middleware/body-cap.js";
-import { sealAccessToken } from "./access-token.js";
+import { MAX_CLIENT_KEY_LENGTH, sealAccessToken } from "./access-token.js";
 import { CodeSealSchema } from "./authorize.js";
 import { type McpContext, resourceUrls } from "./context.js";
 import { exchangeGoogleCode, type GoogleTokenResult, refreshGoogleToken } from "./google.js";
@@ -55,6 +55,14 @@ export const RefreshSealSchema = z.strictObject({
   resource: z.string().nullable(),
   /** When the sign-in happened; kept across Google refresh-token rotation. */
   iat: z.number().int(),
+  /**
+   * The client app's key (access-token.ts `mcpClientKey`), fixed at sign-in
+   * (#968). Recomputing it on refresh would change a DCR app's identity once
+   * the key that sealed its `client_id` is rotated out — a revoked app would
+   * come back as a new, active connection. Absent only in refresh tokens
+   * from before #968: computed once on their next refresh, then pinned.
+   */
+  client_key: z.string().min(1).max(MAX_CLIENT_KEY_LENGTH).optional(),
 });
 
 const Common = {
@@ -82,14 +90,13 @@ function tokenResponse(
   ctx: McpContext,
   result: Extract<GoogleTokenResult, { ok: true }>,
   refreshToken: string,
-  grant: { readonly resource: string | null; readonly clientId: string },
+  grant: { readonly resource: string | null; readonly clientKey: string },
 ): Response {
   const t = result.tokens;
-  const client = clientKeyOf(ctx, grant.clientId);
   return json({
     access_token: sealAccessToken(
       ctx,
-      { idToken: t.idToken, resource: grant.resource, client },
+      { idToken: t.idToken, resource: grant.resource, client: grant.clientKey },
       t.idTokenExpiresIn,
     ),
     token_type: "Bearer",
@@ -238,16 +245,16 @@ export async function handleToken(req: Request, ctx: McpContext): Promise<Respon
         "authorization code",
       );
     }
+    // The code was just issued to this client, so its registration opens.
+    const clientKey = clientKeyOf(ctx, r.client_id);
     const refresh = seal(ctx.config.sealKey, "refresh", {
       google_refresh_token: result.tokens.refreshToken,
       client_id: r.client_id,
       resource: target.resource,
       iat: now,
+      client_key: clientKey,
     });
-    return tokenResponse(ctx, result, refresh, {
-      resource: target.resource,
-      clientId: r.client_id,
-    });
+    return tokenResponse(ctx, result, refresh, { resource: target.resource, clientKey });
   }
 
   const sealed = open(ctx.config.openKeys, "refresh", r.refresh_token, RefreshSealSchema, now);
@@ -273,11 +280,13 @@ export async function handleToken(req: Request, ctx: McpContext): Promise<Respon
   // previous-key value moves onto the current key, and the resource a
   // client named only now is bound from here on. `iat` stays the
   // sign-in's, so the 30-day cap cannot be reset by refreshing.
+  const clientKey = sealed.value.client_key ?? clientKeyOf(ctx, r.client_id);
   const refresh = seal(ctx.config.sealKey, "refresh", {
     google_refresh_token: result.tokens.refreshToken ?? sealed.value.google_refresh_token,
     client_id: r.client_id,
     resource: target.resource,
     iat: sealed.value.iat,
+    client_key: clientKey,
   });
-  return tokenResponse(ctx, result, refresh, { resource: target.resource, clientId: r.client_id });
+  return tokenResponse(ctx, result, refresh, { resource: target.resource, clientKey });
 }

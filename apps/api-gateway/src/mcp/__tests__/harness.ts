@@ -65,6 +65,21 @@ export function accessToken(
   });
 }
 
+/** A sealed refresh token as /token mints it (`client_key` omitted = pre-#968). */
+export function refreshToken(payload: {
+  client_id: string;
+  client_key?: string;
+  resource?: string | null;
+  iat?: number;
+}): string {
+  return seal(SEAL_KEY, "refresh", {
+    google_refresh_token: "1//google-refresh",
+    resource: null,
+    iat: Math.floor(START_MS / 1000),
+    ...payload,
+  });
+}
+
 /** A pre-#968 access token: no client in the seal. */
 export function legacyAccessToken(idToken: string, nowMs = Date.now()): string {
   return seal(SEAL_KEY, "access", {

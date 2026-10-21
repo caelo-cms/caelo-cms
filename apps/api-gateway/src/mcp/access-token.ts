@@ -34,6 +34,14 @@ import { open, seal } from "./seal.js";
 /** Longest client key; a longer CIMD URL or DCR name is hashed instead. */
 export const MAX_CLIENT_KEY_LENGTH = 200;
 
+/**
+ * False when `s` holds a lone UTF-16 surrogate, which `encodeURIComponent`
+ * refuses. (`String.prototype.isWellFormed` is ES2024, past this package's lib.)
+ */
+export function isWellFormedText(s: string): boolean {
+  return !/\p{Cs}/u.test(s);
+}
+
 /** Payload of a sealed access token. */
 export const AccessSealSchema = z.strictObject({
   id_token: z.string(),
@@ -70,7 +78,9 @@ export function mcpClientKey(clientId: string, clientName: string | null): strin
     return clientId.length <= MAX_CLIENT_KEY_LENGTH ? clientId : hashed(clientId);
   }
   const name = clientName?.trim().replace(/\s+/g, " ");
-  if (!name) return `dcr:${hashed(clientId)}`;
+  // A name with a lone UTF-16 surrogate cannot be URI-encoded for the
+  // proxy's header; /register refuses those, older registrations get hashed.
+  if (!name || !isWellFormedText(name)) return `dcr:${hashed(clientId)}`;
   const key = `dcr:${name}`;
   return key.length <= MAX_CLIENT_KEY_LENGTH ? key : `dcr:${hashed(name)}`;
 }

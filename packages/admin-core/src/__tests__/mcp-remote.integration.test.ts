@@ -365,6 +365,26 @@ describe("one connection per client app (#968)", () => {
     );
   });
 
+  it("keeps an unclaimed revoked pre-#968 row in force for an app that has not identified itself", async () => {
+    await withSql(
+      (tx) => tx`
+        INSERT INTO mcp_remote_connections
+          (actor_id, surface, client_label, revoked_at, revoked_by, ai_cost_cap_microcents)
+        VALUES (${USERS.owner.id}::uuid, 'admin', 'claude-code', now(), ${USERS.owner.id}::uuid, 77)`,
+    );
+    const app = "dcr:Resuming App";
+    // A request without MCP initialize (no client name) might be the revoked app itself.
+    const unnamed = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "admin", app));
+    expect(!unnamed.ok && unnamed.error.code).toBe("remote_access_revoked");
+    if (!unnamed.ok) expect(unnamed.error.message).toContain("Reconnect this app");
+    expect(await connectionRow(USERS.owner.id, "admin", app)).toBeUndefined();
+    // Once it initializes as a different app, it gets its own row, with the old cap.
+    const named = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "admin", app), {
+      clientLabel: "resuming-app",
+    });
+    expect(named.ok && named.value.aiCostCapMicrocents).toBe(77);
+  });
+
   it("hands a pre-#968 row to the app that last used it, and only to that app", async () => {
     // The viu.one case: one per-user row labelled by Claude Code, revoked.
     const legacyId = await withSql(async (tx) => {
@@ -408,10 +428,17 @@ describe("mcp_remote_connections ops", () => {
     if (!r.ok) return;
     const rows = (
       r.value as {
-        connections: { email: string | null; surface: string; clientLabel: string | null }[];
+        connections: {
+          email: string | null;
+          surface: string;
+          clientKey: string | null;
+          clientLabel: string | null;
+        }[];
       }
     ).connections;
-    const owner = rows.find((c) => c.email === USERS.owner.email && c.surface === "admin");
+    const owner = rows.find(
+      (c) => c.email === USERS.owner.email && c.surface === "admin" && c.clientKey === CLAUDE_CODE,
+    );
     expect(owner?.clientLabel).toBe("claude-ai");
     expect(rows.some((c) => c.email === USERS.editor.email && c.surface === "chat")).toBe(true);
     const ai = await execute(
