@@ -373,7 +373,10 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     html = injectBefore(html, HEAD_CLOSE_RE, styleTag);
   }
   if (allJs.length > 0) {
-    const scriptTag = `<script defer data-source="modules">\n${allJs.join("\n")}\n</script>`;
+    const joinedJs = allJs.join("\n");
+    const scriptTag = scriptNeedsEncoding(joinedJs)
+      ? `<script defer data-source="modules" src="data:text/javascript;base64,${utf8ToBase64(joinedJs)}"></script>`
+      : `<script defer data-source="modules">\n${joinedJs}\n</script>`;
     html = injectBefore(html, BODY_CLOSE_RE, scriptTag);
   }
 
@@ -955,11 +958,11 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     );
   }
   if (jsParts.length > 0) {
-    html = injectBefore(
-      html,
-      BODY_CLOSE_RE,
-      `<script defer data-source="modules">\n${jsParts.join("\n")}\n</script>`,
-    );
+    const joinedJs = jsParts.join("\n");
+    const scriptTag = scriptNeedsEncoding(joinedJs)
+      ? `<script defer data-source="modules" src="data:text/javascript;base64,${utf8ToBase64(joinedJs)}"></script>`
+      : `<script defer data-source="modules">\n${joinedJs}\n</script>`;
+    html = injectBefore(html, BODY_CLOSE_RE, scriptTag);
   }
 
   // De-duplicate slot accounting across both passes — the template's
