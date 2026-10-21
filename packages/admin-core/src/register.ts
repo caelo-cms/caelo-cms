@@ -204,6 +204,7 @@ import {
   listDeployRunsOp,
   listDeployTargetsOp,
   promoteDeployOp,
+  refreshStagingPreviewOp,
   rollbackDeployOp,
   triggerDeployOp,
   updateDeployProgressOp,
@@ -979,6 +980,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);
   registry.register(updateDeployProgressOp);
+  // #969 — the orchestrator's keep-alive for the served staging preview.
+  registry.register(refreshStagingPreviewOp);
   // v0.2.19 — propose/execute pair for promote + rollback. AI proposes
   // (human + ai + system); Owner approves at /settings/deployments/pending
   // which calls execute_proposal (human + system) → runs the underlying op.
