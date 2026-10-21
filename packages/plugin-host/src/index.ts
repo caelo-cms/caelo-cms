@@ -162,7 +162,7 @@ export {
   pluginToolsRegistry,
   type RegisteredPluginTool,
 } from "./tools-registry.js";
-export type { AICompletion, AIMessage, AIProvider } from "./types.js";
+export type { AICompletion, AIMessage, AIObjectCompletion, AIProvider } from "./types.js";
 export {
   collectUrlAnnotations,
   type DecodedPagePath,

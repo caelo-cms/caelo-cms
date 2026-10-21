@@ -26,6 +26,8 @@ import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { jsonbParam } from "../sql-helpers.js";
+import { compositionRootPageId } from "./content/compose-paths.js";
+import { loadPageTree } from "./content/page-tree.js";
 
 const siteDefaultsRow = z.object({
   defaultLayoutId: z.string(),
@@ -37,6 +39,13 @@ const siteDefaultsRow = z.object({
    *  plugins that need to know which page is already the root before
    *  they can declare others the root of their own URL space. */
   homePageId: z.string().nullable(),
+  /** The page core serves at "/" right now, by the same rule path
+   *  composition applies: `homePageId` when designated, else the
+   *  top-level magic-slug page. Null when neither exists. Readers that
+   *  ask "is this the home?" use THIS, never `homePageId` alone — a
+   *  site whose home is the magic-slug page has no designation, yet
+   *  serves that page at "/". Branch-aware: a chat sees its own view. */
+  rootPageId: z.string().nullable(),
   /** 0284 (#802) — the page the static build ships as `/404.html`
    *  (served for unknown URLs with status 404). Null = none designated:
    *  visitors get the hosting provider's generic error page. */
@@ -73,7 +82,7 @@ export const getSiteDefaultsOp = defineOperation({
   database: "cms_admin",
   input: z.object({}).strict(),
   output: z.object({ defaults: siteDefaultsRow.nullable() }),
-  handler: async (_ctx, _input, tx) => {
+  handler: async (ctx, _input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT
         sd.default_layout_id::text   AS default_layout_id,
@@ -107,6 +116,9 @@ export const getSiteDefaultsOp = defineOperation({
     }[];
     const r = rows[0];
     if (!r) return ok({ defaults: null });
+    const rootPageId =
+      r.home_page_id ??
+      compositionRootPageId(await loadPageTree(tx, ctx.chatBranchId ?? null), null);
     return ok({
       defaults: {
         defaultLayoutId: r.default_layout_id,
@@ -114,6 +126,7 @@ export const getSiteDefaultsOp = defineOperation({
         defaultTemplateId: r.default_template_id,
         defaultTemplateSlug: r.default_template_slug,
         homePageId: r.home_page_id,
+        rootPageId,
         notFoundPageId: r.not_found_page_id,
         siteName: r.site_name,
         sitePurpose: r.site_purpose,
