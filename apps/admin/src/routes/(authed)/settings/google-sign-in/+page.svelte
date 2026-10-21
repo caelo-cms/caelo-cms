@@ -269,10 +269,12 @@
         <ul class="ml-5 list-disc space-y-1">
           <li><strong>Application type</strong>: Web application</li>
           <li><strong>Name</strong>: Caelo sign-in</li>
-          <li>
-            Leave <strong>Use this client for an AI-powered agent</strong> unchecked: that marks
-            clients for Google's own MCP servers; Caelo signs people in with an ordinary web
-            client.
+          <li data-testid="google-sign-in-agentic-hint">
+            Leave <strong>Use this client for an AI-powered agent</strong> unchecked. That option
+            only lets a client call Google Workspace's MCP servers (Gmail, Drive, Calendar and
+            the like). Caelo uses this client only to sign people in with their name and email
+            address. From 12 November 2026 Google no longer lets you change this choice once a
+            client exists.
           </li>
           <li><strong>Authorized redirect URIs</strong> → Add URI, and paste exactly:</li>
         </ul>
