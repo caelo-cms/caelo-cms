@@ -49,7 +49,7 @@ The category enum is the only human-readable field. Categories are pre-defined i
 
 ### Bug reports (opt-in, separate consent)
 
-When the AI finds a bug in Caelo itself it files a report (`bug_report` tool, `ai_bug_reports` table, shown at `/settings/bugs`). The Owner can choose to send these reports to the Caelo team, on `/settings/bugs` or from the one-time question in the notification bell. This is its own consent: it is not implied by the two toggles above, and it can be withdrawn at any time (reports not yet sent go back to "this site only").
+When the AI finds a bug in Caelo itself it files a report (`bug_report` tool, `ai_bug_reports` table, shown at `/settings/bugs`). The Owner can choose to send these reports to the Caelo team, on `/settings/bugs` or from the one-time question in the notification bell. This is its own consent: it is not implied by the two toggles above, and it can be withdrawn at any time (reports not yet sent go back to "this site only"). Reports filed before the opt-in, and reports whose sending failed after all retries (for example while the intake was unreachable), are only sent when the Owner clicks "Send N unsent reports" on `/settings/bugs`.
 
 When enabled, each report is sent to the Caelo bug intake at `https://bugs.caelo-cms.com` (override: `CAELO_BUG_INTAKE_URL`), signed with a per-install key. The payload (`packages/shared/src/bug-intake.ts`, `bugIntakeReport`) is:
 

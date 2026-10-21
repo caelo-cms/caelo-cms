@@ -96,7 +96,7 @@ export function describeBugForwarding(state: BugForwardingState): string {
     case "failed":
       return (
         "Sending it to the Caelo team failed; it is stored on this site (Settings → Detected bugs). " +
-        "Do not tell the operator the Caelo team was told."
+        'Do not tell the operator the Caelo team was told. The Owner can send it again with one click on Settings → Detected bugs ("Send unsent reports"); you cannot re-send it yourself.'
       );
   }
 }
