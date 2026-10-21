@@ -36,6 +36,7 @@ import {
   mcpCredentialShape,
 } from "./mcp_credential.js";
 import { type McpPrincipal, mcpAgentRefOf, resolveRemoteMcpPrincipal } from "./mcp_principal.js";
+import { hashMcpTokenSecret, mintMcpTokenSecret } from "./mcp_token_secret.js";
 
 /**
  * Issue #376 — token scope. `chat` drives the caelo_chat surface only;
@@ -174,13 +175,7 @@ export const createMcpTokenOp = defineOperation({
     plaintextToken: z.string(),
   }),
   handler: async (ctx, input, tx) => {
-    // 32 bytes random → hex with `mcp_` prefix for greppability in logs.
-    const bytes = crypto.getRandomValues(new Uint8Array(32));
-    const plaintextToken = `mcp_${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(plaintextToken));
-    const tokenHash = [...new Uint8Array(digest)]
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
+    const { plaintext: plaintextToken, hash: tokenHash } = await mintMcpTokenSecret();
 
     const scope = input.scope ?? "chat";
     // The setting only exists on the Power-MCP surface; a chat token always
@@ -313,10 +308,7 @@ export async function resolveMcpToken(
     McpTokenFailure
   >
 > {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(plaintextToken));
-  const tokenHash = [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  const tokenHash = await hashMcpTokenSecret(plaintextToken);
   return adapter.withAdminTransaction(
     {
       actorId: SYSTEM_ACTOR_ID,

@@ -953,7 +953,9 @@ describe("cms-provision staging-domain enable → staging_access.provision (#678
     const accessApplied = await ok<{ nextStep?: string }>("owner_settings.execute_proposal", {
       proposalId: access.proposalId,
     });
-    expect(accessApplied.nextStep).toContain("get_staging_access");
+    // #971 — where the operator finds the new credential, never via the AI.
+    expect(accessApplied.nextStep).toContain("/settings/staging");
+    expect(accessApplied.nextStep).not.toContain("includeCredentials");
     expect(accessApplied.nextStep).toContain("stage_changes");
     const [stored] = (await withSql(
       (tx) => tx`SELECT preview->>'appliedNextStep' AS next FROM owner_settings_pending_actions
@@ -972,9 +974,9 @@ describe("cms-provision staging-domain enable → staging_access.provision (#678
     expect(v.stageNeeded).toBeNull();
   });
 
-  it("Power-MCP: an Owner's admin token reads the password on explicit request; an Editor's does not", async () => {
+  it("Power-MCP: no admin token reads the password, not even an Owner's (#971)", async () => {
     configureMcpBridge({ adapter, registry, resolveProvider: async () => null });
-    const reveal = async (actorId: string) => {
+    const reveal = async (actorId: string, args: Record<string, unknown>) => {
       const human: ExecutionContext = { actorId, actorKind: "human", requestId: "mcp-reveal" };
       const minted = await execute(registry, adapter, human, "mcp_tokens.create", {
         displayName: `staging-reveal-${actorId.slice(-2)}`,
@@ -990,7 +992,7 @@ describe("cms-provision staging-domain enable → staging_access.provision (#678
         plaintextToken: token,
         chatSessionId: session.chatSessionId,
         toolName: "get_staging_access",
-        args: { includeCredentials: true },
+        args,
       });
     };
     await ensureRoleUser(ADMIN_URL!, OWNER_ID, "owner");
@@ -998,11 +1000,16 @@ describe("cms-provision staging-domain enable → staging_access.provision (#678
     const password = (
       await ok<Provisioned>("staging_access.provision", { revealBasicAuth: true, source: SOURCE })
     ).basicAuth.password!;
-    const owner = await reveal(OWNER_ID);
+    // The model behind an MCP token may be a third party's: the credential
+    // stays in the admin (Settings → Staging access), the result says so.
+    const owner = await reveal(OWNER_ID, {});
     expect(owner.ok).toBe(true);
-    expect(owner.content).toContain(password);
-    const editor = await reveal(EDITOR_ID);
-    expect(editor.content).not.toContain(password);
-    expect(editor.content).toContain("settings.write");
+    expect(owner.content).not.toContain(password);
+    expect(owner.content).toContain("/settings/staging");
+    for (const actorId of [OWNER_ID, EDITOR_ID]) {
+      const asked = await reveal(actorId, { includeCredentials: true });
+      expect(asked.ok).toBe(false);
+      expect(asked.content).not.toContain(password);
+    }
   });
 });

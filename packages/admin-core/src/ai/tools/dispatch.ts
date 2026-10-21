@@ -20,6 +20,7 @@ import type {
 } from "@caelo-cms/shared";
 import type { z } from "zod";
 
+import type { CredentialKind } from "../../ops/credential_handoffs.js";
 import type { Permission } from "../../permissions.js";
 import type { AIProvider } from "../provider.js";
 import { generateInputSchema } from "./generate-input-schema.js";
@@ -284,6 +285,14 @@ export interface GatedToolSpec {
    * apply transaction.
    */
   readonly afterApply?: "load-activated-plugin" | "sync-operator-access";
+  /**
+   * #971 — the apply creates a credential (a user's password, a bearer
+   * token). Its executor returns a credential handoff instead of the
+   * secret; the approver collects it in the admin. Declared so the
+   * description tells the AI it never sees it, and so the catalogue test
+   * can hold every executor that returns a handoff to this declaration.
+   */
+  readonly producesCredential?: CredentialKind;
 }
 
 export interface ToolDefinitionWithHandler<I> {

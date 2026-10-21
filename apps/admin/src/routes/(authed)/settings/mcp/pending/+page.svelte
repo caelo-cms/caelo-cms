@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import CredentialHandoffs from "#lib/components/CredentialHandoffs.svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -18,30 +19,18 @@
     <h1 class="text-2xl font-semibold tracking-tight">Pending MCP token actions</h1>
     <p class="text-sm text-muted-foreground">
       AI-proposed MCP token create / revoke actions wait here. Approving a <code>create</code>
-      proposal returns the plaintext bearer once — copy it before navigating away; it cannot be
-      shown again. Reject any proposal you didn't expect.
+      proposal leaves the new bearer under "One-time credentials" — shown once when you click it;
+      the AI never sees it. Reject any proposal you didn't expect.
     </p>
   </div>
 
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
-  {:else if form?.plaintextToken}
-    <Alert>
-      <AlertDescription>
-        <div class="space-y-1">
-          <div>{form.message}</div>
-          <div>
-            New MCP bearer (copy now — not shown again):
-            <code class="select-all rounded bg-muted px-2 py-1 font-mono text-sm">
-              {form.plaintextToken}
-            </code>
-          </div>
-        </div>
-      </AlertDescription>
-    </Alert>
   {:else if form?.message}
     <Alert><AlertDescription>{form.message}</AlertDescription></Alert>
   {/if}
+  <!-- #971 — re-read after every action so a just-approved create shows. -->
+  <CredentialHandoffs csrfToken={data.csrfToken} kind="mcp_token" refreshKey={form} />
 
   {#if data.proposals.length === 0}
     <Card>

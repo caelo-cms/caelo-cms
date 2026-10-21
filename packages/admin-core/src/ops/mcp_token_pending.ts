@@ -4,11 +4,12 @@
  * v0.2.27 — mcp_tokens.{propose_create, propose_revoke,
  * execute_proposal, reject_proposal, list_pending}.
  *
- * Same shape as ai_providers_pending (v0.2.26). Token plaintext is
- * generated server-side at execute time (createMcpTokenOp's existing
- * crypto path) and returned ONCE in the form-action response banner.
- * No token material lands in the proposal payload, audit log, or
- * pending-list output.
+ * Same shape as ai_providers_pending (v0.2.26). The token row is minted at
+ * execute time, but its plaintext is dropped unseen: the executor's output
+ * reaches the AI as the gated tool's result, so it carries only a credential
+ * handoff (#971). The approving human issues the usable token from the admin
+ * via `credentials.issue`. No token material lands in the proposal payload,
+ * audit log, pending-list output, or execute result.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -25,6 +26,11 @@ import {
   parsePayload,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
+import {
+  type CredentialHandoffRef,
+  credentialHandoffRef,
+  recordCredentialHandoff,
+} from "./credential_handoffs.js";
 import {
   createMcpTokenOp,
   mcpTokenNotVisibleMessage,
@@ -142,8 +148,12 @@ const executeMcpTokenProposalOpDefinition = defineOperation({
   input: z.object({ proposalId: z.string().uuid() }).strict(),
   output: z.object({
     tokenId: z.string().nullable(),
-    /** Plaintext bearer for `create` proposals; null for `revoke`. */
-    plaintextToken: z.string().nullable(),
+    /**
+     * Set on a `create` apply: where the approving human collects the new
+     * token (#971). Never the token — this output reaches the AI as the
+     * gated tool's result.
+     */
+    credentialHandoff: credentialHandoffRef.nullable(),
   }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
@@ -173,17 +183,20 @@ const executeMcpTokenProposalOpDefinition = defineOperation({
       });
     }
     let resultTokenId: string | null = row.token_id;
-    let plaintextToken: string | null = null;
+    let credentialHandoff: CredentialHandoffRef | null = null;
     if (row.kind === "create") {
-      const r = await createMcpTokenOp.handler(
-        ctx,
-        parsePayload<Parameters<typeof createMcpTokenOp.handler>[1]>(row.payload),
-        tx,
-      );
+      const payload = parsePayload<Parameters<typeof createMcpTokenOp.handler>[1]>(row.payload);
+      const r = await createMcpTokenOp.handler(ctx, payload, tx);
       if (!r.ok) return passthroughError(r.error, "create");
-      const v = r.value as { id: string; plaintextToken: string };
-      resultTokenId = v.id;
-      plaintextToken = v.plaintextToken;
+      // #971 — the minted plaintext is dropped here, unseen; the approver
+      // issues a fresh secret for this token row from the admin.
+      resultTokenId = (r.value as { id: string }).id;
+      credentialHandoff = await recordCredentialHandoff(tx, ctx, {
+        kind: "mcp_token",
+        subjectId: resultTokenId,
+        label: `MCP token "${payload.displayName}"`,
+        proposalId: input.proposalId,
+      });
     } else if (row.kind === "revoke") {
       const r = await revokeMcpTokenOp.handler(
         ctx,
@@ -207,10 +220,9 @@ const executeMcpTokenProposalOpDefinition = defineOperation({
       input,
       succeeded: true,
       entityId: input.proposalId,
-      // Never log the plaintext token.
       resultSummary: `${row.kind} applied (tokenId=${resultTokenId ?? "(none)"})`,
     });
-    return ok({ tokenId: resultTokenId, plaintextToken });
+    return ok({ tokenId: resultTokenId, credentialHandoff });
   },
 });
 

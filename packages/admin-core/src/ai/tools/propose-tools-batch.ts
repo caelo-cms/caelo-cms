@@ -193,11 +193,12 @@ export const proposeUrlMigrationTool = makeProposeTool({
 export const proposeUserCreateTool = makeProposeTool({
   toolName: "propose_create_user",
   afterApply: "sync-operator-access",
+  producesCredential: "user_temporary_password",
   opName: "users.propose_create",
   pendingQueuePath: "/settings/users/pending",
   when:
     "Propose inviting a new user to the CMS. Provide email + displayName + roleNames. " +
-    "DO NOT include a password — the Owner approves and a one-time temporary password is generated server-side. " +
+    "DO NOT include a password. " +
     "On Google Cloud installs the approval also lets this email through Google IAP (browser and MCP), so use the person's Google account address (Gmail or Workspace); the result's `operatorAccess` says whether that worked — relay any `warning` to the operator. " +
     "An address outside the project's Google organisation is refused until the Owner has set up Google sign-in (Settings → Google sign-in, a console step only a human can do): relay that error's next step to the operator instead of retrying or proposing another address.",
   schema: z
@@ -498,8 +499,8 @@ export const proposeMcpTokenCreateTool = makeProposeTool({
     "scope 'chat' (default) drives the caelo_chat surface; scope 'admin' additionally unlocks the Power-MCP " +
     "tool surface for external agents. " +
     "allowCaeloAi (admin only, default false) lets that agent spend the install's own AI (image generation, Caelo-side translation runs); " +
-    "leave it off unless the operator asks — the agent then does the AI work on its own subscription. " +
-    "Token plaintext is generated server-side at approve time and shown ONCE in the Owner UI banner.",
+    "leave it off unless the operator asks — the agent then does the AI work on its own subscription.",
+  producesCredential: "mcp_token",
   schema: z
     .object({
       displayName: z.string().min(1).max(100),

@@ -173,10 +173,19 @@ describe("propose/execute pair — users (server-generated password shape)", () 
 
     const r = await execute(registry, adapter, HUMAN, "users.execute_proposal", { proposalId });
     expect(r.ok).toBe(true);
-    const v = (r as { ok: true; value: { userId: string; temporaryPassword: string | null } })
-      .value;
+    const v = (
+      r as {
+        ok: true;
+        value: { userId: string; credentialHandoff: { kind: string } | null } & Record<
+          string,
+          unknown
+        >;
+      }
+    ).value;
     expect(v.userId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(v.temporaryPassword).toBeTruthy();
+    // #971 — the password is collected by the approver, never returned.
+    expect(v.credentialHandoff?.kind).toBe("user_temporary_password");
+    expect(v.temporaryPassword).toBeUndefined();
 
     const userRows = await inspect(
       (tx) =>
