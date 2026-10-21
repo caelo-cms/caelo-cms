@@ -154,9 +154,10 @@ export interface StaticPublisher {
    * serves, and retire every other one. This is the only place a preview's
    * lifetime changes: a preview is created with a finite TTL, so a Stage
    * that fails before it is selected leaves nothing that outlives the TTL;
-   * selection lifts the served preview's expiry (an idle staging must not
-   * expire into 404s); a retired preview gets a finite TTL back before it
-   * is deleted, so one whose delete fails still expires. `servedRunId: null`
+   * selection renews the served preview to the longest TTL the provider
+   * allows (an idle staging must not expire into 404s), so it stays up as
+   * long as someone stages or publishes within that TTL; a retired preview
+   * whose delete fails still expires with its TTL. `servedRunId: null`
    * retires them all.
    *
    * Throws when the served preview cannot be kept alive (including when it

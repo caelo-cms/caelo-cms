@@ -73,10 +73,10 @@ const EDITOR_ID = "00000000-0000-0000-0000-0000000678a2";
 class FakeFirebase {
   versions = new Map<string, { config: unknown; files: Record<string, string> }>();
   channels = new Map<string, string>(); // channelId → url
-  /** channelId → its finite ttl; null once the channel never expires. */
-  expiry = new Map<string, string | null>();
-  /** When set, lifting a channel's expiry answers 503 (transient API failure). */
-  failExpiryClear = false;
+  /** channelId → its ttl. Every preview channel expires. */
+  expiry = new Map<string, string>();
+  /** When set, renewing a channel's TTL answers 503 (transient API failure). */
+  failTtlRenewal = false;
   live: string[] = [];
   blobs = new Map<string, Buffer>();
   private seq = 0;
@@ -121,14 +121,14 @@ class FakeFirebase {
       const id = params.get("channelId") ?? "";
       const channelUrl = `https://${SITE}--${id}-x1y2.web.app`;
       this.channels.set(id, channelUrl);
-      this.expiry.set(id, parsed.ttl ?? null);
+      if (typeof parsed.ttl !== "string") throw new Error("preview channel created without ttl");
+      this.expiry.set(id, parsed.ttl);
       return json({ name: `sites/${SITE}/channels/${id}`, url: channelUrl });
     }
     if (method === "GET" && route === `sites/${SITE}/channels`) {
       return json({
         channels: [...this.channels.keys(), "live"].map((id) => {
           const ttl = this.expiry.get(id);
-          // Firebase lists expireTime only for channels it deletes on its own.
           return {
             name: `sites/${SITE}/channels/${id}`,
             ...(ttl ? { expireTime: `in ${ttl}` } : {}),
@@ -142,12 +142,13 @@ class FakeFirebase {
       return new Response("", { status: 200 });
     }
     if (method === "PATCH" && channel && params.get("updateMask") === "expireTime") {
-      if (parsed.expireTime !== null) throw new Error("expireTime is only ever cleared");
-      if (this.failExpiryClear) return new Response("{}", { status: 503 });
-      this.expiry.set(channel[1] ?? "", null);
-      return json({});
+      // What the real API answers: a preview channel cannot be made permanent.
+      return new Response(JSON.stringify({ error: { code: 400, status: "INVALID_ARGUMENT" } }), {
+        status: 400,
+      });
     }
     if (method === "PATCH" && channel && params.get("updateMask") === "ttl") {
+      if (this.failTtlRenewal) return new Response("{}", { status: 503 });
       this.expiry.set(channel[1] ?? "", parsed.ttl);
       return json({});
     }
@@ -332,10 +333,10 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     const [row] = await stagingRow();
     expect(row?.origin_url).toBe(run!.publish_summary.previewUrl);
     expect(row?.origin_run_id).toBe(second.runId);
-    // Only the current Stage's channel is left, and it does not expire:
+    // Only the current Stage's channel is left, on the 30-day maximum TTL:
     // staging must not turn into a 404 after an idle week.
     expect([...fake.channels.keys()]).toEqual([`runid-${second.runId}`]);
-    expect(fake.expiry.get(`runid-${second.runId}`)).toBeNull();
+    expect(fake.expiry.get(`runid-${second.runId}`)).toBe("2592000s");
     expect(first.runId).not.toBe(second.runId);
   });
 
@@ -375,12 +376,12 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     expect([...fake.channels.keys()]).toEqual([`runid-${staged.runId}`]);
   });
 
-  it("#908 Publish live keeps alive a served preview staged before served previews stopped expiring", async () => {
+  it("#908 Publish live renews the served preview's TTL to the 30-day maximum", async () => {
     const staged = await ok<{ runId: string }>("deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
     });
-    // What the previous version left behind: served, but on its 7-day TTL.
+    // Served, its TTL running down since that Stage.
     fake.expiry.set(`runid-${staged.runId}`, "604800s");
     await markAudited(staged.runId);
     await ok("deploy.promote", {
@@ -389,7 +390,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       repoRoot: testRoot,
     });
     expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
-    expect(fake.expiry.get(`runid-${staged.runId}`)).toBeNull();
+    expect(fake.expiry.get(`runid-${staged.runId}`)).toBe("2592000s");
   });
 
   it("#908 a Stage whose preview cannot be kept alive fails, leaves that preview on its TTL and staging on the previous build", async () => {
@@ -398,7 +399,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       repoRoot: testRoot,
     });
     const channelsBefore = new Set(fake.channels.keys());
-    fake.failExpiryClear = true;
+    fake.failTtlRenewal = true;
     try {
       const r = await execute(registry, adapter, SYSTEM, "deploy.trigger", {
         targetName: "staging",
@@ -407,14 +408,14 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       expect(r.ok).toBe(false);
       expect(JSON.stringify(r.ok ? null : r.error)).toContain("Stage again");
     } finally {
-      fake.failExpiryClear = false;
+      fake.failTtlRenewal = false;
     }
     const failed = [...fake.channels.keys()].filter((id) => !channelsBefore.has(id));
     expect(failed).toHaveLength(1);
     // The failed Stage's preview expires on its own; the served one is untouched.
     expect(fake.expiry.get(failed[0]!)).toBe("604800s");
     expect(fake.channels.has(`runid-${served.runId}`)).toBe(true);
-    expect(fake.expiry.get(`runid-${served.runId}`)).toBeNull();
+    expect(fake.expiry.get(`runid-${served.runId}`)).toBe("2592000s");
     expect((await stagingRow())[0]?.origin_run_id).toBe(served.runId);
     const [run] = (await withSql(
       (tx) => tx`SELECT status FROM deploy_runs

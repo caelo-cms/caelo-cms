@@ -66,8 +66,8 @@ class FakeFirebase {
   live: string[] = []; // versionNames released on the live channel (newest first)
   blobs = new Map<string, Buffer>(); // sha256 → gzipped body
   deletedChannels: string[] = [];
-  /** channelId → its finite ttl; null once the channel never expires. */
-  channelExpiry = new Map<string, string | null>();
+  /** channelId → its ttl. Every preview channel expires. */
+  channelExpiry = new Map<string, string>();
   /** Channels whose DELETE answers 503, as a transient API failure would. */
   failDelete = new Set<string>();
   private seq = 0;
@@ -180,9 +180,21 @@ class FakeFirebase {
     if (method === "PATCH" && channel) {
       if (!this.channels.has(channel[1]!)) throw new Error("patch on unknown channel");
       const mask = params.get("updateMask");
-      if (mask === "expireTime" && parsed.expireTime === null) {
-        this.channelExpiry.set(channel[1]!, null);
-      } else if (mask === "ttl" && typeof parsed.ttl === "string") {
+      if (mask === "expireTime") {
+        // What the real API answers: a preview channel cannot be made permanent.
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 400,
+              message:
+                "Invalid mask/channel: mask included `expire_time`, while channel has no expire time assigned.",
+              status: "INVALID_ARGUMENT",
+            },
+          }),
+          { status: 400 },
+        );
+      }
+      if (mask === "ttl" && typeof parsed.ttl === "string") {
         this.channelExpiry.set(channel[1]!, parsed.ttl);
       } else {
         throw new Error(`unexpected channel patch ${mask} ${JSON.stringify(parsed)}`);
@@ -192,7 +204,8 @@ class FakeFirebase {
     if (method === "POST" && route === `sites/${SITE}/channels`) {
       const channelId = params.get("channelId") ?? "";
       this.channels.set(channelId, []);
-      this.channelExpiry.set(channelId, parsed.ttl ?? null);
+      if (typeof parsed.ttl !== "string") throw new Error("preview channel created without ttl");
+      this.channelExpiry.set(channelId, parsed.ttl);
       return json({
         name: `sites/${SITE}/channels/${channelId}`,
         url: `https://${SITE}--${channelId}.web.app`,
@@ -442,36 +455,34 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
     expect([...fake.channels.keys()]).toEqual(["someone-elses-channel"]);
   });
 
-  it("#908 publishStaging keeps the finite TTL: a Stage that fails before selection leaves nothing that never expires", async () => {
+  it("#908 publishStaging keeps the finite TTL: a Stage that fails before selection leaves only a 7-day preview", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-dies", target: STAGING });
     expect(fake.channels.get("runid-run-dies")?.length).toBe(1);
     expect(fake.channelExpiry.get("runid-run-dies")).toBe("604800s");
   });
 
-  it("#908 selection lifts the served channel's TTL, so an idle staging never expires into 404s", async () => {
+  it("#908 selection renews the served channel to the 30-day maximum, so an idle staging does not expire into 404s", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-idle", target: STAGING });
     await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-idle" });
-    expect(fake.channelExpiry.get("runid-run-idle")).toBeNull();
+    expect(fake.channelExpiry.get("runid-run-idle")).toBe("2592000s");
   });
 
-  it("#908 selection also lifts the TTL of a served channel staged before served channels stopped expiring", async () => {
+  it("#908 every selection renews the served channel's TTL (Publish live re-selects the served run)", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    // Staged and recorded by the previous version: served, but still on
-    // its 7-day TTL. Publish live re-selects it and must keep it alive.
-    fake.seedVersion("runid-run-legacy", { headers: [] }, { "/index.html": "abc" });
-    fake.channelExpiry.set("runid-run-legacy", "604800s");
-    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-legacy" });
-    expect(fake.channels.has("runid-run-legacy")).toBe(true);
-    expect(fake.channelExpiry.get("runid-run-legacy")).toBeNull();
+    // Served, its TTL running down since the last Stage.
+    fake.seedVersion("runid-run-served", { headers: [] }, { "/index.html": "abc" });
+    fake.channelExpiry.set("runid-run-served", "604800s");
+    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-served" });
+    expect(fake.channels.has("runid-run-served")).toBe(true);
+    expect(fake.channelExpiry.get("runid-run-served")).toBe("2592000s");
   });
 
-  it("#908 a channel that stops being served gets its TTL back, so a failed delete still expires", async () => {
+  it("#908 a superseded channel whose delete fails is reported, keeps expiring, and is retired by the next selection", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
     await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-a" });
-    expect(fake.channelExpiry.get("runid-run-a")).toBeNull();
 
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-b", target: STAGING });
     fake.failDelete.add("runid-run-a");
@@ -479,8 +490,8 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
     expect(r.retired).toEqual([]);
     expect(r.notRetired.map((n) => n.preview)).toEqual(["runid-run-a"]);
     expect(fake.channels.has("runid-run-a")).toBe(true);
-    expect(fake.channelExpiry.get("runid-run-a")).toBe("604800s");
-    expect(fake.channelExpiry.get("runid-run-b")).toBeNull();
+    expect(fake.channelExpiry.get("runid-run-a")).toBe("2592000s");
+    expect(fake.channelExpiry.get("runid-run-b")).toBe("2592000s");
 
     // The next selection retires it.
     fake.failDelete.clear();

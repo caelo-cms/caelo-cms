@@ -1247,7 +1247,7 @@ async function servedStagingRun(tx: TransactionRunner): Promise<string | null> {
  * (null: none) through the publisher, which keeps it alive and retires the
  * rest. Throws when the served preview cannot be kept alive: the caller
  * then neither records nor releases anything. A preview that could not be
- * retired still expires with its restored TTL and is retried by the next
+ * retired still expires with its TTL and is retried by the next
  * selection, so that is logged loudly instead of failing the operation.
  */
 async function selectServedStagingPreview(

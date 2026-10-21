@@ -61,6 +61,13 @@ const PARALLEL_UPLOADS = 50;
 const PREVIEW_CHANNEL_TTL_DAYS = 7;
 /** Firebase `ttl` duration of a preview channel staging does not serve. */
 const PREVIEW_CHANNEL_TTL = `${PREVIEW_CHANNEL_TTL_DAYS * 24 * 60 * 60}s`;
+/**
+ * Firebase's maximum preview-channel TTL. A preview channel cannot be made
+ * permanent (the API rejects clearing `expireTime`), so the served one gets
+ * the longest TTL, renewed by every Stage and Publish live.
+ */
+const SERVED_CHANNEL_TTL_DAYS = 30;
+const SERVED_CHANNEL_TTL = `${SERVED_CHANNEL_TTL_DAYS * 24 * 60 * 60}s`;
 
 export function siteName(): string {
   const site = process.env.CAELO_FIREBASE_SITE;
@@ -674,19 +681,13 @@ async function createVersionFromBuild(args: {
   };
 }
 
-/** A `runid-*` preview channel Stage created; `neverExpires` once it was selected as served. */
-interface RunPreviewChannel {
-  readonly id: string;
-  readonly neverExpires: boolean;
-}
-
-/** Every `runid-*` preview channel Stage created on the site (any order). */
-async function listRunPreviewChannels(site: string, token: string): Promise<RunPreviewChannel[]> {
+/** Every `runid-*` preview channel id Stage created on the site (any order). */
+async function listRunPreviewChannels(site: string, token: string): Promise<string[]> {
   type ListChannelsResponse = {
-    channels?: { name: string; expireTime?: string | null }[];
+    channels?: { name: string }[];
     nextPageToken?: string;
   };
-  const found: RunPreviewChannel[] = [];
+  const found: string[] = [];
   let pageToken: string | undefined;
   do {
     const page = await firebaseFetch<ListChannelsResponse>(
@@ -695,9 +696,7 @@ async function listRunPreviewChannels(site: string, token: string): Promise<RunP
     );
     for (const c of page.channels ?? []) {
       const id = c.name.split("/").pop() ?? "";
-      // Firebase reports expireTime for every channel it will delete
-      // automatically; none means the channel never expires.
-      if (id.startsWith(RUN_CHANNEL_PREFIX)) found.push({ id, neverExpires: !c.expireTime });
+      if (id.startsWith(RUN_CHANNEL_PREFIX)) found.push(id);
     }
     pageToken = page.nextPageToken;
   } while (pageToken);
@@ -712,37 +711,12 @@ function messageOf(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/**
- * Retire a preview that staging no longer serves. A served preview never
- * expires, so it first gets the finite TTL back: if the delete then fails
- * (transient API error), the preview still disappears on its own instead
- * of staying publicly reachable forever. Already gone counts as retired.
- */
-async function retirePreviewChannel(
-  site: string,
-  channel: RunPreviewChannel,
-  token: string,
-): Promise<void> {
-  let ttlError: unknown = null;
-  if (channel.neverExpires) {
-    try {
-      await firebaseFetch(`sites/${site}/channels/${channel.id}?updateMask=ttl`, {
-        method: "PATCH",
-        body: JSON.stringify({ ttl: PREVIEW_CHANNEL_TTL }),
-        token,
-      });
-    } catch (e) {
-      if (!isNotFound(e)) ttlError = e;
-    }
-  }
+/** Retire a preview that staging no longer serves. Already gone counts as retired. */
+async function retirePreviewChannel(site: string, channelId: string, token: string): Promise<void> {
   try {
-    await firebaseFetch(`sites/${site}/channels/${channel.id}`, { method: "DELETE", token });
+    await firebaseFetch(`sites/${site}/channels/${channelId}`, { method: "DELETE", token });
   } catch (e) {
-    if (isNotFound(e)) return;
-    if (ttlError === null) throw e;
-    throw new Error(
-      `${messageOf(e)}; restoring its TTL failed too (${messageOf(ttlError)}), so it does not expire until a later Stage or Publish live retires it`,
-    );
+    if (!isNotFound(e)) throw e;
   }
 }
 
@@ -760,10 +734,11 @@ export const firebaseHostingPublisher: StaticPublisher = {
     //    staging.<domain> to it behind the access gate, and it is never
     //    shown to operators or the AI. Firebase cannot lock a channel
     //    (preview channels are public by URL), so older channels are
-    //    deleted as soon as a newer Stage succeeds. The TTL stays until
-    //    the Stage selects the channel as the one staging serves
-    //    (selectStagingPreview), so a Stage that fails after this point
-    //    leaves nothing public beyond the TTL.
+    //    deleted as soon as a newer Stage succeeds. The 7-day TTL stays
+    //    until the Stage selects the channel as the one staging serves
+    //    (selectStagingPreview renews it to the 30-day maximum), so a
+    //    Stage that fails after this point leaves nothing public beyond
+    //    the TTL.
     const channelId = channelIdFor(runId);
     const channel = await firebaseFetch<CreateChannelResponse>(
       `sites/${site}/channels?channelId=${channelId}`,
@@ -824,34 +799,29 @@ export const firebaseHostingPublisher: StaticPublisher = {
     // The served preview first: staging.<domain> proxies to it until the
     // next Stage — after Publish live too, where it shows the published
     // state — so an idle week must not expire it into a 404 on every page.
-    // A null expireTime is Firebase's "never delete automatically". This
-    // also lifts the TTL of a preview selected before served previews were
-    // kept alive (an upgrade between its Stage and the next Publish live).
+    // Every selection renews it to the maximum TTL.
     if (servedId !== null) {
-      const served = channels.find((c) => c.id === servedId);
-      if (!served) {
+      if (!channels.includes(servedId)) {
         throw new Error(
           `staging serves build ${servedRunId}, but its preview channel ${servedId} no longer exists on Firebase Hosting (it expired or was deleted), so staging cannot serve it. Stage again, then retry.`,
         );
       }
-      if (!served.neverExpires) {
-        await firebaseFetch(`sites/${site}/channels/${servedId}?updateMask=expireTime`, {
-          method: "PATCH",
-          body: JSON.stringify({ expireTime: null }),
-          token,
-        });
-      }
+      await firebaseFetch(`sites/${site}/channels/${servedId}?updateMask=ttl`, {
+        method: "PATCH",
+        body: JSON.stringify({ ttl: SERVED_CHANNEL_TTL }),
+        token,
+      });
     }
 
     const retired: string[] = [];
     const notRetired: { preview: string; error: string }[] = [];
-    for (const channel of channels) {
-      if (channel.id === servedId) continue;
+    for (const channelId of channels) {
+      if (channelId === servedId) continue;
       try {
-        await retirePreviewChannel(site, channel, token);
-        retired.push(channel.id);
+        await retirePreviewChannel(site, channelId, token);
+        retired.push(channelId);
       } catch (e) {
-        notRetired.push({ preview: channel.id, error: messageOf(e) });
+        notRetired.push({ preview: channelId, error: messageOf(e) });
       }
     }
     return { retired, notRetired };
