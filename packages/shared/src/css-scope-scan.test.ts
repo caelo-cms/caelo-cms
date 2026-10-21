@@ -77,5 +77,30 @@ describe("moduleRootTokens", () => {
       moduleRootTokens('<!-- hero --> <section class="hero {{variant}}" id="{{anchor}}">'),
     ).toEqual({ classes: ["hero"], id: null });
     expect(moduleRootTokens("just text")).toBeNull();
+    expect(moduleRootTokens('<!-- a --><!----> \n<div class="card">')).toEqual({
+      classes: ["card"],
+      id: null,
+    });
+    expect(moduleRootTokens('<!-- never closed <div class="card">')).toBeNull();
+  });
+
+  it("stays linear on comment-heavy input (CodeQL js/redos)", () => {
+    const started = performance.now();
+    expect(moduleRootTokens(`<!--${"--><!--".repeat(50_000)}`)).toBeNull();
+    expect(moduleRootTokens(`${"<!---->".repeat(50_000)}<p class="x">`)?.classes).toEqual(["x"]);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+});
+
+describe("scanModuleCssScope comment stripping", () => {
+  it("drops closed comments and treats an unterminated one as running to the end", () => {
+    expect(scanModuleCssScope({ css: "/* h1 { x: 1 } */ p { color: red }" }).global).toEqual(["p"]);
+    expect(scanModuleCssScope({ css: "p { color: red } /* h1 { x: 1 }" }).global).toEqual(["p"]);
+  });
+
+  it("stays linear on many unterminated comment openers (CodeQL js/polynomial-redos)", () => {
+    const started = performance.now();
+    scanModuleCssScope({ css: `/*${"a/*".repeat(100_000)}` });
+    expect(performance.now() - started).toBeLessThan(1000);
   });
 });

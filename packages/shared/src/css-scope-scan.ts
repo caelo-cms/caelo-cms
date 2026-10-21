@@ -112,9 +112,30 @@ function withoutArguments(selector: string): string {
   return out;
 }
 
+/**
+ * Index of the first character after leading whitespace and `<!-- -->`
+ * comments, or -1 when a comment is never closed. A scan, not a regex:
+ * `(?:<!--[\s\S]*?-->\s*)*` backtracks exponentially on `<!----><!--…`
+ * input (CodeQL js/redos), and module html is operator/AI supplied.
+ */
+function skipLeadingHtmlComments(html: string): number {
+  let i = 0;
+  for (;;) {
+    while (i < html.length && /\s/.test(html.charAt(i))) i++;
+    if (!html.startsWith("<!--", i)) return i;
+    const end = html.indexOf("-->", i + 4);
+    if (end === -1) return -1;
+    i = end + 3;
+  }
+}
+
 /** Class and id tokens of the module's first element, or null when the html has no element. */
 export function moduleRootTokens(html: string): { classes: string[]; id: string | null } | null {
-  const m = /^\s*(?:<!--[\s\S]*?-->\s*)*<([a-zA-Z][\w-]*)(\s[^>]*)?>/.exec(html);
+  const start = skipLeadingHtmlComments(html);
+  if (start === -1) return null;
+  const openTag = /<([a-zA-Z][\w-]*)(\s[^>]*)?>/y;
+  openTag.lastIndex = start;
+  const m = openTag.exec(html);
   if (!m) return null;
   const attrs = m[2] ?? "";
   const classAttr = /\sclass\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(attrs);
@@ -124,6 +145,24 @@ export function moduleRootTokens(html: string): { classes: string[]; id: string 
   const idAttr = /\sid\s*=\s*(?:"([^"]*)"|'([^']*)')/.exec(attrs);
   const id = idAttr?.[1] ?? idAttr?.[2] ?? null;
   return { classes, id: id !== null && !id.includes("{{") ? id : null };
+}
+
+/**
+ * The CSS without its comments. An unterminated `/*` runs to the end of
+ * the input, as in the CSS syntax spec. A scan rather than a lazy regex,
+ * which is quadratic on `/*a/*a/*…` input (CodeQL js/polynomial-redos).
+ */
+function stripCssComments(css: string): string {
+  let out = "";
+  let from = 0;
+  for (;;) {
+    const open = css.indexOf("/*", from);
+    if (open === -1) return out + css.slice(from);
+    out += css.slice(from, open);
+    const close = css.indexOf("*/", open + 2);
+    if (close === -1) return out;
+    from = close + 2;
+  }
 }
 
 /** What the scope check found in one module's CSS. */
@@ -145,7 +184,7 @@ export interface CssScopeFindings {
  * names count as scoped (`.hero__title`, `.hero-cta` under root `.hero`).
  */
 export function scanModuleCssScope(input: { css: string; html?: string }): CssScopeFindings {
-  const css = input.css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = stripCssComments(input.css);
   const preludes: string[] = [];
   collectPreludes(css, 0, css.length, preludes);
   const selectors = preludes.flatMap(splitSelectorList);
