@@ -347,11 +347,11 @@ describe("formatBugSection", () => {
 
   it("renders the table columns, the source, and the blocked flag", () => {
     const md = formatBugSection(parseBugReports(BUGS)).join("\n");
-    expect(md).toContain("| Sev | Source | Title | Tool | Blocked |");
+    expect(md).toContain("| Sev | Source | Title | Tool | Blocked | Issue |");
     expect(md).toContain("| blocking | auto |");
     expect(md).toContain("`create_module`");
     // A null suspected_tool renders as an em dash, not an empty cell.
-    expect(md).toContain("| — | yes |");
+    expect(md).toContain("| — | yes | **new** |");
   });
 
   it("carries diagnosis in a collapsed details block", () => {
@@ -418,8 +418,8 @@ describe("formatBugSection", () => {
     // escapes the backslash and the pipe splits the row. Entities can't.
     const rows = parseBugReports(JSON.stringify([bugRow({ title: "x \\| y" })]));
     const row = formatBugSection(rows).find((l) => l.startsWith("| degraded |"));
-    // Exactly the 5 table columns ⇒ 6 delimiters. No injected extra cell.
-    expect(row?.split("|")).toHaveLength(7);
+    // Exactly the 6 table columns ⇒ 7 delimiters. No injected extra cell.
+    expect(row?.split("|")).toHaveLength(8);
   });
 
   // Regression: the AI security review on PR #440 — evidence containing a
