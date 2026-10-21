@@ -119,6 +119,24 @@ claude mcp add caelo-admin \
 
 Then ask it for an outcome, for example *"Add a pricing page in our design system and stage it for review."* Details: [MCP and Power-MCP docs](https://caelo-cms.com/docs/mcp/).
 
+Or install the Claude Code plugin, which adds the same server plus skills for connecting, safe editing and handing a site over to Caelo, and asks for the admin URL and token itself ([details](integrations/claude-code/README.md)):
+
+```bash
+claude plugin marketplace add caelo-cms/caelo-cms
+claude plugin install caelo@caelo-cms
+```
+
+**Cursor:** [![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=caelo-admin&config=eyJjb21tYW5kIjoiYnVueCIsImFyZ3MiOlsiLS1wYWNrYWdlIiwiQGNhZWxvLWNtcy9tY3Atc2VydmVyQGxhdGVzdCIsImNhZWxvLWFkbWluLW1jcCJdLCJlbnYiOnsiQ0FFTE9fQURNSU5fVVJMIjoiaHR0cHM6Ly9hZG1pbi5leGFtcGxlLmNvbSIsIkNBRUxPX01DUF9UT0tFTiI6Im1jcF95b3VyX3Rva2VuIn19), then replace the two placeholder values in Cursor's MCP settings with your admin URL and token. Cursor doesn't inherit your terminal's PATH, so if the server doesn't start, put the full path of `bunx` (`which bunx`) as the command.
+
+**Codex CLI** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.caelo-admin]
+command = "bunx"
+args = ["--package", "@caelo-cms/mcp-server@latest", "caelo-admin-mcp"]
+env = { CAELO_ADMIN_URL = "https://admin.example.com", CAELO_MCP_TOKEN = "mcp_<token>" }
+```
+
 ## Documentation
 
 User docs (install, editing, plugins, MCP, security) live at **[caelo-cms.com/docs](https://caelo-cms.com/docs/)**, built in Caelo itself.
