@@ -36,7 +36,11 @@
     type FieldEdit,
     type FieldEditMessage,
     type ImageReplaceMessage,
+    newPreviewChannel,
+    postToPreview,
     previewMessage,
+    previewNavigationTarget,
+    previewUrl,
   } from "#lib/components/edit/iframe-protocol.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Combobox } from "#lib/components/ui/combobox/index.js";
@@ -124,12 +128,26 @@
   // bookmarks; the live surface should hit the primary currentPath
   // branch so a plugin-prefixed page (e.g. `/de/preise`) resolves the
   // same way here as it does everywhere else.
+  // #946 — the preview is an opaque-origin sandbox; this editor's random
+  // channel is how the two sides recognise each other (iframe-protocol.ts).
+  const previewChannel = newPreviewChannel();
   const previewSrc = $derived(
     activePage
-      ? `/edit/preview-by-path${activePage.currentPath === "/" ? "" : activePage.currentPath}?branch=${data.activeChat.chatBranchId}`
+      ? previewUrl(activePage.currentPath, {
+          channel: previewChannel,
+          branch: data.activeChat.chatBranchId,
+        })
       : "",
   );
   let iframe = $state<HTMLIFrameElement | null>(null);
+  // The iframe's src is set here, not bound in the markup: the editor also
+  // navigates the iframe itself (`caelo:navigate`, #946), and once the
+  // preview reports the page it landed on, `previewSrc` follows to the SAME
+  // URL — that must not load the page a second time.
+  $effect(() => {
+    const src = previewSrc;
+    if (iframe && src && iframe.getAttribute("src") !== src) iframe.src = src;
+  });
   // v0.8.0 — derive directly from server-loaded chat.branch_change_count.
   // The pre-v0.8 path kept a local mutable counter that incremented on
   // every AI tool result (overcounting — tool calls != entity writes,
@@ -211,9 +229,10 @@
     };
     document.addEventListener("click", openLink, true);
     const handler = (ev: MessageEvent) => {
-      // Same window AND same origin: an external page the preview navigated
-      // to must not drive saves (see previewMessage).
-      const msg = previewMessage(ev, iframe?.contentWindow, window.location.origin);
+      // The preview window, opaque origin AND this editor's channel: an
+      // external page the preview navigated to must not drive saves (see
+      // previewMessage).
+      const msg = previewMessage(ev, iframe?.contentWindow, previewChannel);
       if (!msg) return;
       if (msg.kind === "caelo:element-referenced") {
         // Chip (+ Ask AI composer focus) for the chat; the Overlay expands itself
@@ -227,13 +246,16 @@
         imagePickerOpen = true;
       } else if (msg.kind === "caelo:ready") {
         // Link-target suggestions for the preview's link editor (#918).
-        iframe?.contentWindow?.postMessage(
-          {
-            kind: "caelo:page-paths",
-            pages: data.pages.map((p) => ({ path: p.currentPath, title: p.title })),
-          },
-          window.location.origin,
-        );
+        postToPreview(iframe?.contentWindow, {
+          kind: "caelo:page-paths",
+          pages: data.pages.map((p) => ({ path: p.currentPath, title: p.title })),
+        });
+      } else if (msg.kind === "caelo:navigate") {
+        // #946 — the sandboxed preview cannot navigate itself (its own
+        // navigations carry no session); the editor does, after checking
+        // the target is a preview page. Always a fresh load (a reload too).
+        const target = previewNavigationTarget(msg.href, previewChannel, window.location.origin);
+        if (target && iframe) iframe.src = target;
       } else if (msg.kind === "caelo:navigated") {
         displayPath = msg.path || null;
         // Click-through navigation inside the iframe — sync activePageId
@@ -306,7 +328,7 @@
     if (reloadTimer !== null) clearTimeout(reloadTimer);
     reloadTimer = setTimeout(() => {
       reloadTimer = null;
-      iframe?.contentWindow?.postMessage({ kind: "caelo:reload" }, window.location.origin);
+      postToPreview(iframe?.contentWindow, { kind: "caelo:reload" });
     }, 200);
   }
 
@@ -582,10 +604,9 @@
     {:else if previewSrc}
       <iframe
         bind:this={iframe}
-        src={previewSrc}
         title="Live preview"
         data-caelo-live-preview
-        sandbox="allow-scripts allow-same-origin"
+        sandbox="allow-scripts"
         class="h-full w-full border-0 bg-white"
         style:pointer-events={overlayDragging ? "none" : "auto"}
       ></iframe>

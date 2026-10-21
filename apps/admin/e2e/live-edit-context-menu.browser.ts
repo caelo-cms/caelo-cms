@@ -129,12 +129,14 @@ test("select → Ask AI sends a precise reference; right-click → chip", async 
 
   // A module script posting an Ask AI reference — even with an instruction
   // attached, as the old protocol carried one — only adds a chip. Nothing
-  // is sent and nothing lands in the composer.
+  // is sent and nothing lands in the composer. (It shares the preview
+  // document, so it can read the editor's channel from the URL, #946.)
   const composer = page.getByTestId("chat-composer");
   await preview.locator("body").evaluate((_b, moduleId) => {
     window.parent.postMessage(
       {
         kind: "caelo:element-referenced",
+        channel: new URLSearchParams(window.location.search).get("channel"),
         moduleId,
         selector: "section.hero > p",
         label: "forged",

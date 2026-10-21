@@ -87,8 +87,20 @@ function warn(msg) {
   if (typeof console !== "undefined" && console.warn) console.warn("[caelo-consent] " + msg);
 }
 
+// The editor previews a page in an opaque-origin sandbox (#946), where
+// touching document.cookie throws: no cookie there is no consent yet, and a
+// decision taken there is simply not remembered.
+function cookieJar() {
+  try {
+    return doc.cookie;
+  } catch (e) {
+    return "";
+  }
+}
+
 function readCookie() {
-  var parts = doc.cookie ? doc.cookie.split("; ") : [];
+  var jar = cookieJar();
+  var parts = jar ? jar.split("; ") : [];
   for (var i = 0; i < parts.length; i++) {
     var p = parts[i];
     if (p.indexOf(COOKIE + "=") !== 0) continue;
@@ -106,14 +118,18 @@ function readCookie() {
 
 function writeCookie(state) {
   var oneYear = 365 * 24 * 60 * 60;
-  doc.cookie =
-    COOKIE +
-    "=" +
-    encodeURIComponent(JSON.stringify(state)) +
-    ";path=/;max-age=" +
-    oneYear +
-    ";samesite=lax" +
-    (location.protocol === "https:" ? ";secure" : "");
+  try {
+    doc.cookie =
+      COOKIE +
+      "=" +
+      encodeURIComponent(JSON.stringify(state)) +
+      ";path=/;max-age=" +
+      oneYear +
+      ";samesite=lax" +
+      (location.protocol === "https:" ? ";secure" : "");
+  } catch (e) {
+    warn("this page cannot store cookies (sandboxed preview); the decision is not remembered");
+  }
 }
 
 function requiredKeys() {
