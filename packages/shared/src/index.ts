@@ -13,6 +13,7 @@ export * from "./cloud-shell-install.js";
 export * from "./content.js";
 export * from "./context.js";
 export * from "./css-gradient-scan.js";
+export * from "./css-scope-scan.js";
 export * from "./css-var-scan.js";
 export * from "./database-url.js";
 export * from "./design-draft-shell.js";

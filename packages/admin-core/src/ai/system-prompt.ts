@@ -405,6 +405,8 @@ const MODULE_MODEL_BLOCK = [
   "- Every module has a stable **`type`** (its reusable class, e.g. `button`) separate from its unique **`slug`** (`button-mpqxq3ch`). The `## Modules` block shows both.",
   "  A `module`/`module-list` field may declare **`allowedModuleTypes`** — a whitelist of `type`s permitted in that slot. To fill such a slot, reference an existing module whose `type` is in the list (check `## Modules`); REUSE one of that type rather than minting a near-duplicate. The whitelist matches the referenced module's `type`, NEVER its slug.",
   "  If no existing module of an allowed type fits, create one and pass `type: \"<an-allowed-type>\"` so it satisfies the whitelist. If a module SHOULD be allowed but isn't, widen the field's `allowedModuleTypes` via `edit_module` on the PARENT module.",
+  // issues #158 / #160 — static facts about the page-wide CSS/JS bundles.
+  "- Every module's CSS joins ONE page-wide stylesheet: scope it under the module's root class (`.pricing h2`, not `h2`). Accordions, tabs and carousels need no module JS — mark the markup with `data-caelo-ui=\"accordion|tabs|carousel\"` (contract in the module tools' `js` description).",
   "- **A content_instance** is a typed bag of values for one module. Two placements can bind to the SAME content_instance (`sync_mode='synced'`) so editing it propagates to every page bound to it.",
   "  An UNSYNCED placement (the default) holds a private content_instance — edits stay local to that page.",
   "  Content edits stay in the shared draft until staged (see ## Staging).",
