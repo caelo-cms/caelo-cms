@@ -9,6 +9,14 @@
 # operator's business and stays out of the repo (no project ids, domains,
 # deploy credentials or deploy steps here).
 #
+# Jobs:
+#   - test     every event: the intake's unit tests + the contract test.
+#   - build    pull_request only: build the image, no push, no signing,
+#              read-only token (the release-images.yml PR build-only run).
+#   - publish  push to main / workflow_dispatch, after `test`: build, push,
+#              sign, attest, verify. The only job with packages:write and
+#              id-token:write.
+#
 # Tags: `ghcr.io/caelo-cms/bug-intake:<full commit sha>` (immutable, what
 # an operator pins) and `:main` (moves with every publish).
 #
@@ -38,24 +46,52 @@ on:
   push:
     branches: [main]
     paths:
+      # Derived from apps/bug-intake/Dockerfile, not guessed. The builder
+      # stage `COPY . .`s the tree and runs `bun install --frozen-lockfile
+      # --production --filter @caelo-cms/bug-intake`, so the installed
+      # closure depends on bun.lock, the root package.json and bunfig.toml
+      # (`linker = "hoisted"`), and the build context on .dockerignore. The
+      # runtime stage then copies exactly: package.json, node_modules,
+      # packages/shared/{package.json,src} and apps/bug-intake/{package.json,src}
+      # (and the Dockerfile itself, under apps/bug-intake/).
+      # @caelo-cms/shared is the intake's only workspace runtime dependency
+      # and has no workspace dependencies of its own. @caelo-cms/admin-core
+      # is a devDependency (contract test only): it is not in the image,
+      # and ci.yml runs its tests on every PR.
+      # packages/shared/src/** includes bug-intake.ts: the install <->
+      # intake contract and redactBugText.
       - "apps/bug-intake/**"
-      # The install <-> intake contract, including redactBugText (the
-      # redaction the intake re-applies to every report it receives).
-      - "packages/shared/src/bug-intake.ts"
+      - "packages/shared/package.json"
+      - "packages/shared/src/**"
+      - "package.json"
+      - "bun.lock"
+      - "bunfig.toml"
+      - ".dockerignore"
+      - ".github/workflows/bug-intake-image.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      # Same list as the push trigger; see the derivation there.
+      - "apps/bug-intake/**"
+      - "packages/shared/package.json"
+      - "packages/shared/src/**"
+      - "package.json"
+      - "bun.lock"
+      - "bunfig.toml"
+      - ".dockerignore"
       - ".github/workflows/bug-intake-image.yml"
   workflow_dispatch:
 
+# Read-only by default; only the publish job is granted more.
 permissions:
   contents: read
-  packages: write
-  # Keyless cosign signing via GitHub OIDC.
-  id-token: write
 
-# Never cancel a publish half-way (a pushed but unsigned image would be
-# left behind); queued runs collapse so the newest commit wins `:main`.
+# A new push to a PR supersedes its in-flight run. Publishes are never
+# cancelled half-way (a pushed but unsigned image would be left behind);
+# queued publishes collapse so the newest commit wins `:main`.
 concurrency:
-  group: bug-intake-image
-  cancel-in-progress: false
+  group: bug-intake-image-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   REGISTRY: ghcr.io
@@ -66,20 +102,11 @@ env:
   OIDC_ISSUER: https://token.actions.githubusercontent.com
 
 jobs:
-  publish:
-    name: test + build + push + sign (bug-intake)
+  test:
+    name: test (bug-intake unit + contract)
     runs-on: ubuntu-latest
 
     steps:
-      - name: Refuse to publish from a ref other than main
-        # workflow_dispatch can be started on any branch. Publishing from
-        # one would push an image whose signature fails the consumer's
-        # verify (identity is pinned to refs/heads/main), so stop loudly.
-        if: github.ref != 'refs/heads/main'
-        run: |
-          echo "::error::bug-intake images are published from refs/heads/main only (got ${GITHUB_REF})."
-          exit 1
-
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -102,6 +129,59 @@ jobs:
 
       - name: Contract test (admin-core BugIntakeClient <-> intake handler)
         run: bun test apps/bug-intake/src/contract.test.ts
+
+  build:
+    name: build only (bug-intake)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+
+      - name: Build (no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          file: apps/bug-intake/Dockerfile
+          platforms: linux/amd64
+          push: false
+          # Reads the publish job's cache, writes its own scope, so PR
+          # builds never evict main's layers (ci.yml's admin-smoke pattern).
+          cache-from: |
+            type=gha,scope=bug-intake
+            type=gha,scope=bug-intake-pr
+          cache-to: type=gha,scope=bug-intake-pr,mode=max
+
+  publish:
+    name: build + push + sign (bug-intake)
+    # Positive list of publishing events (as in release-images.yml): an
+    # event type GitHub adds later defaults to not publishing.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Failing tests block the push.
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # Keyless cosign signing via GitHub OIDC.
+      id-token: write
+
+    steps:
+      - name: Refuse to publish from a ref other than main
+        # workflow_dispatch can be started on any branch. Publishing from
+        # one would push an image whose signature fails the consumer's
+        # verify (identity is pinned to refs/heads/main), so stop loudly.
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::bug-intake images are published from refs/heads/main only (got ${GITHUB_REF})."
+          exit 1
+
+      - name: Checkout
+        uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
