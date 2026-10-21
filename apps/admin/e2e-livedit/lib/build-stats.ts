@@ -605,8 +605,11 @@ export function buildReport(inputs: {
       .map(([k, v]) => `${v}× \`${k}\``)
       .join(", ") || "_no chat-runner loops recorded_";
 
+  // A skipped scenario (e.g. image-gen without its provider secret) neither
+  // passed nor failed — counting it as failed made a green run read "4 failed".
   const passed = results.filter((r) => r.ok).length;
-  const failed = results.length - passed;
+  const skipped = results.filter((r) => r.status === "skipped").length;
+  const failed = results.length - passed - skipped;
 
   const lines: string[] = [];
   // Real AI cost leads when captured — it's the headline optimization metric.
@@ -641,7 +644,7 @@ export function buildReport(inputs: {
     lines.push("| Scenario | Status | Duration | Attempt |");
     lines.push("| --- | --- | --- | --- |");
     for (const r of results) {
-      const status = r.ok ? "✓ pass" : `✘ ${r.status}`;
+      const status = r.ok ? "✓ pass" : r.status === "skipped" ? "– skipped" : `✘ ${r.status}`;
       const attempt = r.retries === 0 ? "1st" : `retry #${r.retries}`;
       // Truncate the scenario title at 80 chars so the table doesn't
       // wrap awkwardly on narrow GitHub viewports.
@@ -650,7 +653,7 @@ export function buildReport(inputs: {
     }
     lines.push("");
     lines.push(
-      `**Total:** ${passed} passed, ${failed} failed in ${fmtMs(totalDurationMs)} wall-clock.`,
+      `**Total:** ${passed} passed, ${failed} failed, ${skipped} skipped in ${fmtMs(totalDurationMs)} wall-clock.`,
     );
   }
   lines.push("");

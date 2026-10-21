@@ -173,6 +173,25 @@ describe("buildReport integration", () => {
     expect(md).toContain("1.0k** tokens in");
   });
 
+  it("counts skipped scenarios as skipped, not failed", () => {
+    const report = JSON.stringify({
+      stats: { duration: 1000 },
+      suites: [
+        {
+          specs: [
+            { title: "ran", tests: [{ results: [{ status: "passed", duration: 500 }] }] },
+            { title: "gated", tests: [{ results: [{ status: "skipped", duration: 0 }] }] },
+            { title: "broke", tests: [{ results: [{ status: "failed", duration: 9 }] }] },
+          ],
+        },
+      ],
+    });
+    const md = buildReport({ log: "", reportRaw: report, aiCostRaw: "" });
+    expect(md).toContain("**Total:** 1 passed, 1 failed, 1 skipped");
+    expect(md).toContain("| gated | – skipped |");
+    expect(md).toContain("| broke | ✘ failed |");
+  });
+
   it("leads with the cost section and drops loop-log tokens when cost is present", () => {
     const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: FULL });
     expect(md.indexOf("Real AI cost")).toBeLessThan(md.indexOf("Chat-runner API stats"));
