@@ -20,6 +20,7 @@
  */
 
 import { z } from "zod";
+import { positionInputSchema } from "./ai-tools.js";
 import {
   contentInstanceCreateSchema,
   MODULE_CSS_MAX,
@@ -108,10 +109,24 @@ export const buildPageModuleSchema = z
      */
     blockName: slugSchema.optional(),
     /**
+     * Where in its block the entry lands — the same grammar as
+     * add_module's `position` ("top", "bottom", or a 0-based index).
+     * Omitted = "bottom": entries append in array order, so a new page
+     * needs none. Entries are inserted in array order, each into the
+     * block as it stands after the entries before it; an index past the
+     * end appends. Meaningless (and rejected) on a detached entry.
+     *
+     * Accepted because the AI carries `position` over from add_module,
+     * and on an existing page "put this at the top" is a real intent a
+     * pure append cannot express (e2e-livedit detected bugs).
+     */
+    position: positionInputSchema.optional(),
+    /**
      * Local handle other entries in the SAME call can reference: a
-     * module/module-list field value of `{"$ref": "<ref>"}` resolves to
-     * this entry's `{moduleId, contentInstanceId}`. Entries resolve in
-     * array order, so referenced entries must come FIRST.
+     * module/module-list field value of `{"$ref": "<ref>"}` (or a
+     * `moduleId: {"$ref"}`) resolves to this entry's `{moduleId,
+     * contentInstanceId}`. Array position does not matter: the op mints
+     * referenced entries before the entries that embed them.
      */
     ref: z
       .string()
@@ -150,6 +165,14 @@ export const buildPageModuleSchema = z
   })
   .strict()
   .superRefine((entry, ctx) => {
+    if (entry.blockName === undefined && entry.position !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "`position` places an entry inside its block, but this entry has no `blockName` (a DETACHED, " +
+          "nested-only module is not placed). Drop `position`, or pass `blockName` to place it.",
+      });
+    }
     if (entry.blockName === undefined && entry.ref === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -267,8 +290,8 @@ export const buildPageInputSchema = z
   })
   .strict()
   .superRefine((input, ctx) => {
-    // `ref` handles must be unique — a duplicate would silently shadow
-    // the earlier entry when a later {"$ref"} resolves.
+    // `ref` handles must be unique — a duplicate would make a {"$ref"}
+    // ambiguous.
     const seen = new Set<string>();
     for (const [i, entry] of input.modules.entries()) {
       if (entry.ref === undefined) continue;
