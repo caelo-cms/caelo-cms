@@ -333,12 +333,12 @@ describe("bug forwarding", () => {
       (tx) => tx`UPDATE ai_bug_reports SET forwarding_state = 'failed', next_forward_at = NULL,
         status = 'fixed' WHERE id = ${closed.id}::uuid`,
     );
-    const before = await op<{ counts: { failed: number; unsent: number } }>(
+    const before = await op<{ counts: { failed: number; unsent: number; closedUnsent: number } }>(
       HUMAN,
       "bug_forwarding.get",
       {},
     );
-    expect(before.counts).toMatchObject({ failed: 2, unsent: 1 });
+    expect(before.counts).toMatchObject({ failed: 2, unsent: 1, closedUnsent: 1 });
 
     const r = await op<{ queued: number; retried: number }>(
       HUMAN,

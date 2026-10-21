@@ -159,8 +159,12 @@
       {#if forwarding.enabled}
         <span class="text-sm">
           <strong>On.</strong>
-          {forwarding.counts.sent} sent · {forwarding.counts.queued} waiting{forwarding.counts.failed > 0
-            ? ` · ${forwarding.counts.failed} not sent`
+          <!-- "not sent" is the same number as the button below; reports
+               marked fixed or invalid are never sent and are named apart. -->
+          {forwarding.counts.sent} sent · {forwarding.counts.queued} waiting{forwarding.counts.unsent > 0
+            ? ` · ${forwarding.counts.unsent} not sent`
+            : ""}{forwarding.counts.closedUnsent > 0
+            ? `. ${forwarding.counts.closedUnsent} marked fixed or invalid ${forwarding.counts.closedUnsent === 1 ? "stays" : "stay"} on this site.`
             : ""}
         </span>
         <!-- Covers reports filed before the opt-in and reports whose sending

@@ -49,6 +49,8 @@ export interface BugForwarding {
     failed: number;
     /** Open reports not yet with the Caelo team (filed before opt-in, or sending failed). */
     unsent: number;
+    /** Not sent, but marked fixed/invalid, so the send button leaves them out. */
+    closedUnsent: number;
   };
 }
 

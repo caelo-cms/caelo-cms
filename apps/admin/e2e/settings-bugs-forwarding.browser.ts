@@ -45,11 +45,14 @@ const FIXTURE = `
         forward_attempts = 8, forward_error = 'fetch failed: connection refused'
         WHERE title = \${process.env.E2E_TITLE}\`;
     }
+    if (process.env.E2E_OP === "close") {
+      await tx\`UPDATE ai_bug_reports SET status = 'fixed' WHERE title = \${process.env.E2E_TITLE}\`;
+    }
   });
   await sql.end();
 `;
 
-const fixture = (op: "reset" | "file" | "fail", title = "") =>
+const fixture = (op: "reset" | "file" | "fail" | "close", title = "") =>
   runBunInline(FIXTURE, { E2E_OP: op, E2E_TITLE: title });
 
 async function login(page: Page): Promise<void> {
@@ -108,11 +111,20 @@ test.describe("Detected bugs → Caelo team", () => {
     await expect(card).toContainText("On.");
     fixture("file", "E2E BF failed");
     fixture("fail", "E2E BF failed");
+    fixture("file", "E2E BF closed, not sent");
+    fixture("fail", "E2E BF closed, not sent");
+    fixture("close", "E2E BF closed, not sent");
     await page.goto("/settings/bugs");
     await expect(row(page, "E2E BF failed")).toContainText("Not sent");
-    await expect(card).toContainText(/\d+ not sent/);
 
-    await card.getByRole("button", { name: /^Send \d+ unsent reports?$/ }).click();
+    // The "not sent" count and the button agree; the closed report is named
+    // apart instead of silently missing from the button.
+    const button = card.getByRole("button", { name: /^Send \d+ unsent reports?$/ });
+    const n = (await button.textContent())?.match(/\d+/)?.[0];
+    await expect(card).toContainText(`${n} not sent`);
+    await expect(card).toContainText(/\d+ marked fixed or invalid stays? on this site/);
+
+    await button.click();
     await expect(row(page, "E2E BF failed")).toContainText("Queued");
   });
 

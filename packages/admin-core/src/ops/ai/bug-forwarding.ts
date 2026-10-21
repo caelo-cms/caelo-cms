@@ -63,6 +63,11 @@ const countsSchema = z.object({
    * queue_unsent would send.
    */
   unsent: z.number(),
+  /**
+   * `local_only` or `failed` reports already marked fixed/invalid: never
+   * sent, so the page can say why they are not in the `unsent` button count.
+   */
+  closedUnsent: z.number(),
 });
 
 export const getBugForwardingOp = defineOperation({
@@ -100,12 +105,21 @@ export const getBugForwardingOp = defineOperation({
         count(*) FILTER (WHERE forwarding_state = 'sent')::int AS sent,
         count(*) FILTER (WHERE forwarding_state = 'failed')::int AS failed,
         count(*) FILTER (WHERE forwarding_state IN ('local_only', 'failed')
-                           AND status IN ('new', 'triaged'))::int AS unsent
+                           AND status IN ('new', 'triaged'))::int AS unsent,
+        count(*) FILTER (WHERE forwarding_state IN ('local_only', 'failed')
+                           AND status NOT IN ('new', 'triaged'))::int AS "closedUnsent"
       FROM ai_bug_reports
     `)) as unknown as Array<z.infer<typeof countsSchema>>;
     return ok({
       ...s,
-      counts: counts[0] ?? { localOnly: 0, queued: 0, sent: 0, failed: 0, unsent: 0 },
+      counts: counts[0] ?? {
+        localOnly: 0,
+        queued: 0,
+        sent: 0,
+        failed: 0,
+        unsent: 0,
+        closedUnsent: 0,
+      },
     });
   },
 });
