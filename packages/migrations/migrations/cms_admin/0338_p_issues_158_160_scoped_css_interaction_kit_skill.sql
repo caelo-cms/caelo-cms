@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0334 — issues #158 / #160 (design-quality epic #149): the
+-- 0338 — issues #158 / #160 (design-quality epic #149): the
 -- design-quality skill learns the two page-wide-bundle rules.
 --
 -- Every module's CSS joins one stylesheet per page, so unscoped
