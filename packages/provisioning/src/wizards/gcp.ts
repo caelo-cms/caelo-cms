@@ -59,6 +59,7 @@ import {
   linkBilling,
   listBillingAccounts,
   PROVISIONER_ROLE_LIST,
+  projectDisplayName,
   projectExists,
   REQUIRED_API_LIST,
   serviceAccountExists,
@@ -183,7 +184,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   if (meta) writeMetadata(installId, { ...meta, projectId, region });
 
   // === 3. Project create ===
-  await stepProjectCreate(installId, projectId);
+  await stepProjectCreate(installId, projectId, opts.domain);
 
   // === 4. Billing link ===
   await stepBillingLink(installId, projectId, opts.nonInteractive);
@@ -699,7 +700,11 @@ async function stepRegion(
   return choice as string;
 }
 
-async function stepProjectCreate(installId: string, projectId: string): Promise<void> {
+async function stepProjectCreate(
+  installId: string,
+  projectId: string,
+  domain: string,
+): Promise<void> {
   const stepName = `project-create-${projectId}`;
   if (isStepDone(installId, stepName)) {
     log.success(`Project ${bold(projectId)} ${dim("(already created)")}`);
@@ -712,7 +717,7 @@ async function stepProjectCreate(installId: string, projectId: string): Promise<
   }
   const s = spinner();
   s.start(`Creating GCP project ${projectId}...`);
-  const r = await createProject(projectId, "Caelo CMS");
+  const r = await createProject(projectId, projectDisplayName(domain));
   if (!r.ok) {
     s.stop(red(`Failed: ${r.stderr.trim()}`));
     log.error(

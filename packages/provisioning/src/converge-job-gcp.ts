@@ -51,7 +51,7 @@ import { acquireBucketStateLock, GcsStateStore, realSyncGcloud } from "./state-s
 import { lookupFailure, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 import { releaseImageRef, verifyCosignAll } from "./upgrade/release-images.js";
 import { upgradeGcpInstallOutcome } from "./upgrade/upgrade.js";
-import { healthProbeFor, type UpgraderPlacement } from "./upgrader-gcp.js";
+import { gcloudIamTester, healthProbeFor, type UpgraderPlacement } from "./upgrader-gcp.js";
 import type { JobLog } from "./upgrader-reporter.js";
 
 const DIGEST = /@(sha256:[0-9a-f]{64})/;
@@ -364,6 +364,8 @@ export function gcpConvergeDeps(
   return {
     queue,
     projectId,
+    region,
+    iam: gcloudIamTester(run, http),
     execution: placement.execution,
     ownVersion: CAELO_VERSION,
     // The default deps: the fixed registry and signer, never overridden.

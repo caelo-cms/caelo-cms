@@ -28,8 +28,11 @@ export function formatCaeloVersion(s: PlatformUpdateStatus): string {
     if (s.releaseUrl) lines.push(`Release notes: ${s.releaseUrl}`);
     if (s.infraChange === true) {
       lines.push(
-        "This release changes this install's Google Cloud setup, which Caelo cannot do from the admin yet: the Owner installs it once from Google Cloud Shell, and Settings → Updates walks them through it.",
+        "This release also changes this install's Google Cloud setup. Where the install has Caelo's converge job, the Owner installs it from Settings → Updates like any other update (it takes a little longer); otherwise once from Google Cloud Shell, and the page walks them through it.",
       );
+    }
+    if (s.ownerAction !== null) {
+      lines.push(`Before the Owner updates (from the release): ${s.ownerAction}`);
     }
   } else {
     lines.push(`Newest release: ${s.latestVersion} — this install is up to date.`);

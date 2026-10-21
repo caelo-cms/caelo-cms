@@ -25,6 +25,7 @@ import type { InstallMetadata } from "./install-state.js";
 import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
 import { StateLockHeldError } from "./state-store.js";
 import type { UpgradeCheckpoint } from "./upgrade/upgrade.js";
+import { type IamTester, resourceName } from "./upgrader-iam-preflight.js";
 import type { UpdateEnd, UpdateFacts } from "./upgrader-job.js";
 
 const D = (c: string) => `sha256:${c.repeat(64)}`;
@@ -144,6 +145,8 @@ function harness(
     lock?: () => () => void;
     outcome?: ConvergeUpgradeOutcome;
     imageSigned?: boolean;
+    /** What IAM answers the self-check; every permission asked for by default. */
+    iam?: IamTester;
   } = {},
 ): Harness {
   const calls: string[] = [];
@@ -154,6 +157,10 @@ function harness(
   const deps: ConvergeJobDeps = {
     queue: q.queue,
     projectId: "acme",
+    region: "europe-west1",
+    iam: opts.iam ?? {
+      granted: async (_resource, permissions) => ({ ok: true, granted: permissions }),
+    },
     execution: "caelo-production-converge-run1",
     ownVersion: opts.ownVersion ?? "0.11.0",
     fetchManifest: async (v) => {
@@ -249,6 +256,49 @@ describe("runConvergeJob — what stops the job before any change", () => {
   const nothingChanged = (h: Harness) => {
     expect(h.calls.some((c) => /^(lock|point|start|upgrade|checkpoint)/.test(c))).toBe(false);
   };
+
+  it("#884: a missing grant stops either stage before the lock, every missing one named", async () => {
+    // The provisioner lost cloudscheduler.admin and actAs on itself.
+    const iam: IamTester = {
+      granted: async (resource, permissions) => ({
+        ok: true,
+        granted: permissions.filter(
+          (p) =>
+            !p.startsWith("cloudscheduler.") &&
+            !(resource.kind === "service-account" && p === "iam.serviceAccounts.actAs"),
+        ),
+      }),
+    };
+    for (const stage of ["0.10.53", "0.11.0"]) {
+      const h = harness({ ownVersion: stage, iam });
+      const r = await runConvergeJob(h.deps);
+      expect(r.status).toBe("needs_cloud_shell");
+      nothingChanged(h);
+      expect(h.q.ends[0]?.codes).toEqual(["iam-preflight"]);
+      const reason = h.q.ends[0]?.reason ?? "";
+      expect(reason).toStartWith("Nothing was changed: the converge job checked its access");
+      expect(reason).toContain("cloudscheduler.jobs.create");
+      expect(reason).toContain(
+        "projects/acme/serviceAccounts/caelo-provisioner@acme.iam.gserviceaccount.com",
+      );
+      expect(reason).toContain("repairs the converge job's access");
+    }
+  });
+
+  it("#884: IAM that cannot be asked fails the run before the lock", async () => {
+    const h = harness({
+      iam: {
+        granted: async (resource) =>
+          resource.kind === "bucket" ? { ok: false, error: "HTTP 503" } : { ok: true, granted: [] },
+      },
+    });
+    const r = await runConvergeJob(h.deps);
+    expect(r.status).toBe("failed");
+    nothingChanged(h);
+    expect(h.q.ends[0]?.reason).toContain(
+      `${resourceName({ kind: "bucket", bucket: "acme-caelo-ops" })}: HTTP 503`,
+    );
+  });
 
   it("a tampered or unsigned manifest", async () => {
     for (const stage of ["0.10.53", "0.11.0"]) {
