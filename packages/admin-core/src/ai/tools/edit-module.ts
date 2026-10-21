@@ -20,7 +20,11 @@ import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
-import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
+import {
+  MODULE_CSS_DESCRIPTION,
+  MODULE_HTML_DESCRIPTION,
+  MODULE_JS_CONTRACT,
+} from "./_module-js-contract.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -70,8 +74,8 @@ export const editModuleTool: ToolDefinitionWithHandler<
         maxLength: 64,
         pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
       },
-      html: { type: "string" },
-      css: { type: "string" },
+      html: { type: "string", description: MODULE_HTML_DESCRIPTION },
+      css: { type: "string", description: MODULE_CSS_DESCRIPTION },
       js: { type: "string", description: MODULE_JS_CONTRACT },
       // issue #106 — shared field schema (single source of truth across all
       // module-authoring tools). See `_module-fields-schema.ts`.
