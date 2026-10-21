@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.10.62
+
+### Features
+- d5381070 skip a scheduled install, ownerAction in the release manifest, converge IAM self-check (#868, #884, #759) (#960)
+- 4674c3d5 owner-reset on self-hosted and gcp (#770) (#959)
+- 3c587f5f deploy-time minify, CSS scope check and interaction kit (#158, #160) (#958)
+
+### Fixes
+- 6a3065de serve uploaded SVGs with a restrictive CSP from the edge on every provider (#891) (#950)
+- 7f66e9f1 name the GCP project after the install's domain (#963)
+- e7f02366 stop/resume/remove plugins in the running host only after commit (#585) (#951)
+- c1f1a276 honest upgrade errors, planned-change list and a verified break-glass upgrade (#630, #804, #737, #816) (#961)
+- 3216359a run page previews in an opaque-origin sandbox (#946) (#957)
+- 9b72e538 delete-refusal dead end (#63), sitemap toggle (#567), URL-migration gate (#586) (#947)
+- a96f01e7 payload matches the consent text, saves show the real error (#949)
+- fa1fbdc4 upgrade survives pre-#650 gateways, fresh IAM grants and parallel installs (#948)
+
+### Tests
+- 6a10f046 rendered design assertions + two-page consistency scenario + design judge (#161) (#956)
+
 ## v0.10.61
 
 ### Fixes
