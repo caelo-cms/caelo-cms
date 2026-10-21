@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #914 — the admin IAP resource's `oauthSettings`: which OAuth client
- * IAP signs people in with in the browser (`clientId` / `clientSecret`) and
- * whose Google tokens it accepts in `Authorization: Bearer`
- * (`programmaticClients`). One client, the install's Google sign-in client,
- * serves all of it plus the remote-MCP broker (#806).
+ * Issue #914 — IAP's `oauthSettings`: which OAuth client IAP signs people
+ * in with in the browser (`clientId` / `clientSecret`) and whose Google
+ * tokens it accepts in `Authorization: Bearer` (`programmaticClients`). One
+ * client, the install's Google sign-in client, serves all of it plus the
+ * remote-MCP broker (#806).
  *
  * Without a configured client IAP uses its Google-managed OAuth client,
  * which admits only accounts of the project's own Google organisation —
@@ -13,34 +13,70 @@
  * saw "You don't have access" (#914). With one, any Google account the IAM
  * binding names gets in.
  *
+ * WHERE the client is set: the PROJECT's IAP settings (`projects/<number>`),
+ * not the admin's IAP resource. Google documents a custom OAuth client for
+ * IAP on Cloud Run only at project or organisation level
+ * (docs.cloud.google.com/run/docs/securing/identity-aware-proxy-cloud-run,
+ * "Apply the OAuth client to IAP": "You can apply the OAuth client at the
+ * project or organization level", `gcloud iap settings set … --project`),
+ * and programmatic clients only at organisation, folder or project level
+ * (docs.cloud.google.com/iap/docs/sharing-oauth-clients). (The HTTP 400
+ * first seen on viu-one-web on 2026-10-21 came from the update mask, not the
+ * level; see the mask note below.) Settings inherit down the IAP
+ * hierarchy (project → iap_web → service type → service;
+ * docs.cloud.google.com/iap/docs/customizing), so the project value reaches
+ * the admin's resource on both providers (Cloud Run IAP on gcp-firebase,
+ * the load balancer's backend service on gcp) — unless the resource sets
+ * `oauthSettings` itself, which would override it. The job therefore keeps
+ * the project at the client and the admin's resource free of one of its own
+ * (sync-job.ts).
+ *
  * The operator-access sync job keeps all three fields at EXACTLY the
  * configured client, or clears all three when none is configured; a value
  * set by hand is replaced and logged, the same "exactly this" rule the job
  * applies to the IAP accessor role.
  *
- * API (cloud.google.com/iap/docs/reference/rest/v1/IapSettings, checked
- * 2026-10-20): `OAuthSettings` sits at `accessSettings.oauthSettings` with
+ * API (docs.cloud.google.com/iap/docs/reference/rest/v1/IapSettings, checked
+ * 2026-10-21): `OAuthSettings` sits at `accessSettings.oauthSettings` with
  * `clientId`, `clientSecret` (input only), `clientSecretSha256` (output
  * only), `loginHint` and `programmaticClients`. `GET|PATCH
  * https://iap.googleapis.com/v1/<resource>:iapSettings`, resource
+ * `projects/<number>` (what `gcloud iap settings get --project` calls),
  * `projects/<number>/iap_web/cloud_run-<region>/services/<svc>` (Cloud Run
  * native IAP) or `projects/<number>/iap_web/compute/services/<backend>`
- * (load-balancer IAP).
+ * (load-balancer IAP). IAM: `iap.projects.getSettings` /
+ * `iap.projects.updateSettings` on the project level,
+ * `iap.webServices.getSettings` / `updateSettings` on a service (both in
+ * `roles/iap.settingsAdmin`).
  *
- * The PATCH's update mask is the whole `oauthSettings` message
- * ({@link OAUTH_SETTINGS_MASK}): a message path replaces the sub-message
- * (the API documents the same form for `reauthSettings`), so setting and
- * clearing are one shape and no other IAP setting is touched. Google's
- * custom-OAuth guide spells the leaf paths `oauthClientId` /
- * `oauthClientSecret`, names the resource does not have; the message path
- * sidesteps that ambiguity. `loginHint` is not ours and is carried over.
+ * The PATCH's update mask names the three fields the job owns, leaf by
+ * leaf ({@link OAUTH_SETTINGS_MASK}). IAP refuses a mask on the whole
+ * `oauthSettings` message with HTTP 400 INVALID_ARGUMENT, even with an empty
+ * body, at project and at service level; the same body under the leaf
+ * masks is accepted (probed live on viu-one-web, 2026-10-21). A leaf in the
+ * mask that is absent from the body is cleared, so setting and clearing are
+ * one shape. `loginHint` is not ours: it stays out of the mask and is left
+ * as it is.
  */
 
 import { createHash } from "node:crypto";
 import { type GoogleDeps, googleCall } from "./google-iam.js";
 
-/** Field mask of {@link reconcileOAuthSettings}' PATCH: the whole `oauthSettings` message. */
-export const OAUTH_SETTINGS_MASK = "iapSettings.accessSettings.oauthSettings";
+/** Field mask of {@link reconcileOAuthSettings}' PATCH: the three `oauthSettings` leaves the job owns. */
+export const OAUTH_SETTINGS_MASK = [
+  "iapSettings.accessSettings.oauthSettings.clientId",
+  "iapSettings.accessSettings.oauthSettings.clientSecret",
+  "iapSettings.accessSettings.oauthSettings.programmaticClients",
+].join(",");
+
+/**
+ * The project-level IAP settings resource (`projects/<number>`, without the
+ * `:iapSettings` suffix) — where the job sets the Google sign-in client.
+ * IAP resource names use the project NUMBER.
+ */
+export function iapProjectResourceUrl(projectNumber: string): string {
+  return `https://iap.googleapis.com/v1/projects/${projectNumber}`;
+}
 
 /** `oauthSettings` as IAP returns it (output fields included). */
 export interface LiveOAuthSettings {
@@ -131,27 +167,25 @@ export function compareOAuthSettings(
     : { inSync: false, secretReason: "differs" };
 }
 
-/** The `oauthSettings` body that makes IAP use `desired` (or nothing), keeping `loginHint`. */
-export function oauthSettingsBody(
-  live: LiveOAuthSettings,
-  desired: DesiredOAuthClient,
-): Record<string, unknown> {
-  return {
-    ...(live.loginHint ? { loginHint: live.loginHint } : {}),
-    ...(desired
-      ? {
-          clientId: desired.clientId,
-          clientSecret: desired.clientSecret,
-          programmaticClients: [desired.clientId],
-        }
-      : {}),
-  };
+/**
+ * The `oauthSettings` body that makes IAP use `desired`, or `{}` to clear
+ * the three masked fields. `loginHint` is outside the mask and never sent.
+ */
+export function oauthSettingsBody(desired: DesiredOAuthClient): Record<string, unknown> {
+  return desired
+    ? {
+        clientId: desired.clientId,
+        clientSecret: desired.clientSecret,
+        programmaticClients: [desired.clientId],
+      }
+    : {};
 }
 
 /**
- * Make `oauthSettings` on the IAP resource at `resourceUrl` (an
- * `https://iap.googleapis.com/v1/projects/<n>/iap_web/...` URL without a
- * suffix) use exactly `desired` — browser client, its secret and the
+ * Make `oauthSettings` on the IAP settings resource at `resourceUrl` (an
+ * `https://iap.googleapis.com/v1/projects/<n>[/iap_web/...]` URL without
+ * the `:iapSettings` suffix; {@link iapProjectResourceUrl} for the
+ * project) use exactly `desired` — browser client, its secret and the
  * programmatic client list — or none of them. Throws `GoogleCallError` on a
  * failed call. The secret never appears in the return value.
  */
@@ -176,7 +210,7 @@ export async function reconcileOAuthSettings(
     deps,
     `${resourceUrl}:iapSettings?updateMask=${encodeURIComponent(OAUTH_SETTINGS_MASK)}`,
     "PATCH",
-    { name, accessSettings: { oauthSettings: oauthSettingsBody(live, desired) } },
+    { name, accessSettings: { oauthSettings: oauthSettingsBody(desired) } },
   );
   return {
     before,

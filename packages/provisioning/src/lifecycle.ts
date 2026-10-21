@@ -16,7 +16,7 @@
  *   - emits human-readable progress + a final summary
  */
 
-import { join, resolve as resolvePath } from "node:path";
+import { join } from "node:path";
 import { provisioningUpgradeCommand } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
@@ -39,6 +39,7 @@ import {
   recordInfraContractVersion,
   scrubInstallProgress,
   selectInstall,
+  stackWorkDir,
   writeMetadata,
 } from "./install-state.js";
 import { runMigrationsViaCloudRunJob } from "./migration-runner.js";
@@ -578,7 +579,7 @@ async function upgradeLockedInstall(
       verifyImages: verifyCosignAll,
       migrate: (imageRef) =>
         runMigrationsViaCloudRunJob({ projectId, region, imageOverride: imageRef }, { run }),
-      healthProbe: (plan) => gcpHealthProbe(run, http, plan),
+      healthProbe: (plan, context) => gcpHealthProbe(run, http, plan, context),
       recordDigests: async (digests) => {
         recorded = await recordRolledRelease(
           installId,
@@ -621,6 +622,7 @@ async function gcpHealthProbe(
   run: GcloudRunner,
   http: HttpFetch,
   plan: AppRollPlan,
+  context: { readonly accessJustChanged: boolean },
 ): Promise<{ ok: true; probe: HealthProbe } | { ok: false; error: string }> {
   const { install } = plan;
   const urls: Partial<Record<RollSlug, string>> = {};
@@ -644,7 +646,7 @@ async function gcpHealthProbe(
         adminServiceUrl: urls.admin as string,
         gatewayServiceUrl: urls.gateway as string,
       },
-      { run, http, sleep: realSleep },
+      { run, http, sleep: realSleep, accessJustChanged: context.accessJustChanged },
     ),
   };
 }
@@ -676,7 +678,12 @@ export function recordRolledRelease(
         readPassphrase: () => readSecret(installId, "pulumi-passphrase"),
       });
       const { writeImageDigestsToStack } = await import("./wizards/gcp-pulumi.js");
-      return writeImageDigestsToStack({ backend, provider, digests: d });
+      return writeImageDigestsToStack({
+        installRoot: installRoot(installId),
+        backend,
+        provider,
+        digests: d,
+      });
     },
     stackRecovery: (d) => stackConfigRecovery(installId, local ?? {}, provider, d),
     installJsonLocation: bucket
@@ -702,7 +709,7 @@ function stackConfigRecovery(
   digests: ImageDigests,
 ): string {
   const env = backendShellEnv(meta, installRoot(installId));
-  const cwd = `--cwd ${resolvePath(import.meta.dir, "../stacks", provider)} --stack ${GCP_STACK_ENV}`;
+  const cwd = `--cwd ${stackWorkDir(installRoot(installId), provider)} --stack ${GCP_STACK_ENV}`;
   const lines = Object.entries(digests).map(
     ([svc, d]) => `  ${env} pulumi config set ${cwd} caelo-${provider}:image-digest-${svc} ${d}`,
   );

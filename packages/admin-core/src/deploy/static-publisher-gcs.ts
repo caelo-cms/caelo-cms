@@ -253,16 +253,18 @@ export function createGcsStaticPublisher(
         });
         copied += 1;
       });
-      // Apply per-target robots.txt + routing-manifest overrides. After
-      // the copy loop the sitemap is live whether it changed (copied just
-      // now) or was hash-skipped as unchanged. Staging's X-Robots-Tag
-      // lives only on the staging-preview proxy response, never in object
-      // metadata, so there is no header to strip here.
-      const [sitemapLive] = await h.staticBucket.file("sitemap.xml").exists();
+      // Apply per-target robots.txt + routing-manifest overrides. Whether
+      // the build has a sitemap comes from its own file list, not the
+      // bucket: #567 — a build with the sitemap turned off leaves the
+      // previous build's sitemap.xml in the bucket until the prune below,
+      // and a `Sitemap:` line pointing at it would 404 afterwards.
+      // Staging's X-Robots-Tag lives only on the staging-preview proxy
+      // response, never in object metadata, so there is no header to
+      // strip here.
       const robotsBody = buildRobotsTxtWithSitemap(
         toTarget.robotsDefault,
         siteBaseUrl,
-        sitemapLive,
+        buildFiles.has("sitemap.xml"),
       );
       await uploadBytes(
         h.staticBucket,

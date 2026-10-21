@@ -9,6 +9,7 @@ import {
   evaluateGatewayDeepHealth,
   type HealthTarget,
   healthOrigins,
+  IAM_PROPAGATION_WINDOW_MS,
 } from "./health.js";
 
 const migrations = (adminPending = 0, publicPending = 0) => ({
@@ -153,6 +154,7 @@ describe("createIapHealthProbe", () => {
       run: gcloudOk,
       http: net.http,
       sleep: async () => {},
+      accessJustChanged: false,
       now: () => 1000,
     });
     expect(await probe.deep({ version: "0.11.0" })).toEqual({
@@ -198,6 +200,7 @@ describe("createIapHealthProbe", () => {
       run: gcloudOk,
       http: net.http,
       sleep: async () => {},
+      accessJustChanged: false,
       attempts: 5,
     });
     expect((await probe.deep({ version: null })).ok).toBe(true);
@@ -211,6 +214,7 @@ describe("createIapHealthProbe", () => {
       run: gcloudOk,
       http: stuck.http,
       sleep: async () => {},
+      accessJustChanged: false,
       attempts: 2,
     });
     const r = await failing.deep({ version: null });
@@ -227,6 +231,7 @@ describe("createIapHealthProbe", () => {
       run: gcloudOk,
       http: net.http,
       sleep: async () => {},
+      accessJustChanged: false,
     });
     const r = await probe.baseline();
     expect(r.ok).toBe(false);
@@ -234,7 +239,7 @@ describe("createIapHealthProbe", () => {
       expect(r.error).toContain("IAP may not admit caelo-mcp@acme.iam.gserviceaccount.com");
   });
 
-  it("baseline succeeds when the old admin answers its shallow check and the gateway answers at all", async () => {
+  it("#733 — baseline succeeds when the old admin answers its shallow check and an old gateway its own JSON 404", async () => {
     const net = network({
       admin: () => [200, JSON.stringify({ ok: true, version: "0.10.43" })],
       gateway: () => [404, '{"ok":false}'],
@@ -243,6 +248,7 @@ describe("createIapHealthProbe", () => {
       run: gcloudOk,
       http: net.http,
       sleep: async () => {},
+      accessJustChanged: false,
     });
     expect(await probe.baseline()).toEqual({
       ok: true,
@@ -250,16 +256,133 @@ describe("createIapHealthProbe", () => {
     });
   });
 
-  it("baseline fails with the cause when the operator can't sign as the MCP account", async () => {
-    const http: HttpFetch = async () => ({
-      ok: false,
-      status: 403,
-      text: async () => "Permission iam.serviceAccounts.signJwt denied",
+  it("#733 — baseline fails when the gateway answers Google's HTML 404, naming the ingress", async () => {
+    const net = network({
+      admin: () => [200, JSON.stringify({ ok: true, version: "0.10.20" })],
+      gateway: () => [404, "<!DOCTYPE html><html><title>Error 404 (Not Found)!!1</title>"],
     });
-    const probe = createIapHealthProbe(FIREBASE, { run: gcloudOk, http, sleep: async () => {} });
+    const probe = createIapHealthProbe(FIREBASE, {
+      run: gcloudOk,
+      http: net.http,
+      sleep: async () => {},
+      accessJustChanged: false,
+    });
     const r = await probe.baseline();
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toContain("roles/iam.serviceAccountTokenCreator");
+    if (!r.ok) {
+      expect(r.error).toContain("answered HTTP 404 without JSON");
+      expect(r.error).toContain('ingress "all"');
+    }
+    const lb = createIapHealthProbe(
+      { ...FIREBASE, provider: "gcp" },
+      { run: gcloudOk, http: net.http, sleep: async () => {}, accessJustChanged: false },
+    );
+    const viaLb = await lb.baseline();
+    if (!viaLb.ok) expect(viaLb.error).toContain("route /api/* to the gateway backend");
+    expect(viaLb.ok).toBe(false);
+  });
+
+  describe("#734 — a refused signJwt right after converge granted it", () => {
+    /** signJwt answers 403 `denials` times, then signs. */
+    function propagating(denials: number) {
+      let signs = 0;
+      const http: HttpFetch = async (url) => {
+        if (url.includes(":signJwt")) {
+          signs++;
+          return signs <= denials
+            ? {
+                ok: false,
+                status: 403,
+                text: async () => "Permission 'iam.serviceAccounts.signJwt' denied",
+              }
+            : { ok: true, status: 200, text: async () => JSON.stringify({ signedJwt: "s.j" }) };
+        }
+        return url.includes("admin")
+          ? { ok: true, status: 200, text: async () => JSON.stringify({ version: "0.10.20" }) }
+          : { ok: false, status: 404, text: async () => '{"ok":false}' };
+      };
+      return { http, signs: () => signs };
+    }
+
+    it("waits for the grant to apply, saying why, then passes", async () => {
+      const net = propagating(4);
+      const slept: number[] = [];
+      const waits: string[] = [];
+      const probe = createIapHealthProbe(FIREBASE, {
+        run: gcloudOk,
+        http: net.http,
+        sleep: async (ms) => {
+          slept.push(ms);
+        },
+        accessJustChanged: true,
+      });
+      expect(await probe.baseline((reason) => waits.push(reason))).toEqual({
+        ok: true,
+        detail: "admin 0.10.20 and gateway reachable",
+      });
+      expect(net.signs()).toBe(5);
+      expect(slept).toEqual([5_000, 10_000, 20_000, 30_000]);
+      expect(waits).toHaveLength(4);
+      expect(waits[0]).toContain("Waiting for the access the converge step just granted");
+    });
+
+    it("gives up after the propagation window: the grant exists, re-run in a few minutes", async () => {
+      const net = propagating(Number.POSITIVE_INFINITY);
+      let slept = 0;
+      const probe = createIapHealthProbe(FIREBASE, {
+        run: gcloudOk,
+        http: net.http,
+        sleep: async (ms) => {
+          slept += ms;
+        },
+        accessJustChanged: true,
+      });
+      const r = await probe.baseline();
+      expect(slept).toBe(IAM_PROPAGATION_WINDOW_MS);
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error).toContain("The grant exists; nothing was changed: re-run upgrade");
+        expect(r.error).toContain("after 7 minutes");
+      }
+    });
+
+    it("fails at once when nothing was just granted: the grant is missing", async () => {
+      const net = propagating(Number.POSITIVE_INFINITY);
+      let slept = 0;
+      const probe = createIapHealthProbe(FIREBASE, {
+        run: gcloudOk,
+        http: net.http,
+        sleep: async (ms) => {
+          slept += ms;
+        },
+        accessJustChanged: false,
+      });
+      const r = await probe.baseline();
+      expect(slept).toBe(0);
+      expect(net.signs()).toBe(1);
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error).toContain("it lacks roles/iam.serviceAccountTokenCreator");
+        expect(r.error).toContain("run upgrade as an allowlisted account");
+      }
+    });
+
+    it("never waits out a failure that is not a refusal", async () => {
+      const http: HttpFetch = async () => {
+        throw new Error("ENOTFOUND");
+      };
+      let slept = 0;
+      const probe = createIapHealthProbe(FIREBASE, {
+        run: gcloudOk,
+        http,
+        sleep: async (ms) => {
+          slept += ms;
+        },
+        accessJustChanged: true,
+      });
+      expect((await probe.baseline()).ok).toBe(false);
+      expect(slept).toBe(0);
+    });
   });
 
   it("a transport failure while signing is a failed check, not a throw", async () => {
@@ -270,6 +393,7 @@ describe("createIapHealthProbe", () => {
       run: gcloudOk,
       http,
       sleep: async () => {},
+      accessJustChanged: false,
       attempts: 2,
     });
     const r = await probe.deep({ version: null });

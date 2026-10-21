@@ -59,9 +59,16 @@ export async function upgraderDatabaseHost(
 
 /**
  * The IAP-backed deep health probe for `plan`'s install (the upgrader job;
- * the converge job, #819, too).
+ * the converge job, #819, too). `accessJustChanged`: a converge right
+ * before changed access the probe relies on (health.ts); the upgrader job
+ * changes none.
  */
-export async function healthProbeFor(run: GcloudRunner, http: HttpFetch, plan: AppRollPlan) {
+export async function healthProbeFor(
+  run: GcloudRunner,
+  http: HttpFetch,
+  plan: AppRollPlan,
+  context: { readonly accessJustChanged: boolean },
+) {
   const { install } = plan;
   const urls: Partial<Record<"admin" | "gateway", string>> = {};
   for (const s of plan.services) {
@@ -81,7 +88,7 @@ export async function healthProbeFor(run: GcloudRunner, http: HttpFetch, plan: A
         adminServiceUrl: urls.admin as string,
         gatewayServiceUrl: urls.gateway as string,
       },
-      { run, http, sleep: realSleep },
+      { run, http, sleep: realSleep, accessJustChanged: context.accessJustChanged },
     ),
   };
 }
@@ -155,7 +162,7 @@ export function gcpUpgraderDeps(
         { projectId: placement.projectId, region: placement.region, imageOverride: imageRef },
         { run },
       ),
-    healthProbe: (plan) => healthProbeFor(run, http, plan),
+    healthProbe: (plan) => healthProbeFor(run, http, plan, { accessJustChanged: false }),
     now: () => new Date(),
     log,
   };

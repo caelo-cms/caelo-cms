@@ -11,12 +11,13 @@
  * config and up; failures surface inline with provider errors.
  */
 
-import { resolve as resolvePath } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { join, relative, resolve as resolvePath } from "node:path";
 import * as pulumi from "@pulumi/pulumi/automation";
 import { AUDIT_PARALLELISM_DEFAULT } from "../audit-job-setup.js";
 import { checkpointableOutputs } from "../checkpoint-secrets.js";
 import { GCP_STACK_ENV } from "../gcp-names.js";
-import type { ImageDigests } from "../install-state.js";
+import { type ImageDigests, stackWorkDir } from "../install-state.js";
 import {
   AMBIENT_GOOGLE_CREDENTIAL_ENV,
   withoutAmbientGoogleCredentials,
@@ -102,16 +103,97 @@ export interface PulumiUpResult {
 }
 
 /**
- * Resolve the GCP stack workdir relative to the installed package.
- * Works whether the CLI runs from source (apps/admin/scripts/...)
- * or from the published npm tarball (node_modules/@caelo-cms/...).
+ * The stack program shipped in the package (`stacks/<provider>/`: its
+ * Pulumi.yaml and index.ts), whether the CLI runs from source or from the
+ * published tarball. Read-only at runtime: Pulumi runs in the install's own
+ * work dir (install-state.ts `stackWorkDir`, {@link prepareStackWorkDir}),
+ * never here.
  */
-export function gcpStackWorkDir(provider: "gcp" | "gcp-firebase" = "gcp"): string {
-  // The Pulumi.yaml + stacks/<provider>/index.ts ship in the npm
-  // tarball under `stacks/<provider>/`. From this file's location at
-  // runtime (dist/wizards/gcp-pulumi.js), the stack dir is two
-  // levels up + into the provider-specific stack folder.
+export function packageStackDir(provider: "gcp" | "gcp-firebase"): string {
+  // From this file at runtime (src/ or dist/wizards/), two levels up.
   return resolvePath(import.meta.dir, `../../stacks/${provider}`);
+}
+
+/**
+ * The package's project file with `main` pointing from `workDir` at the
+ * package's stack program, so Pulumi runs that program (its relative
+ * imports, tsconfig and node_modules resolve from the package) while the
+ * stack settings file stays in `workDir`. Pulumi joins `main` to the
+ * project dir, so it must be relative — and computed between real paths:
+ * Pulumi resolves the project dir through symlinks (macOS `/var` →
+ * `/private/var`, a symlinked home or package cache), so a path relative to
+ * the symlinked spelling points nowhere.
+ *
+ * @param programDir the package's stack dir, symlinks resolved
+ * @param workDir the install's work dir, symlinks resolved
+ */
+export function workDirProjectFile(
+  projectYaml: string,
+  programDir: string,
+  workDir: string,
+): string {
+  const mains = [...projectYaml.matchAll(/^main:\s*(\S+)\s*$/gm)];
+  if (mains.length !== 1) {
+    throw new Error(
+      `${join(programDir, "Pulumi.yaml")} must name its program in exactly one top-level "main:" line (found ${mains.length}); the CLI points the install's stack work dir at it.`,
+    );
+  }
+  const program = resolvePath(programDir, (mains[0] as RegExpMatchArray)[1] as string);
+  return projectYaml.replace(/^main:\s*\S+\s*$/m, `main: ${relative(workDir, program)}`);
+}
+
+/**
+ * Create or refresh the install's stack work dir (install-state.ts
+ * `stackWorkDir`) and
+ * return it. The project file is rewritten on every run: each `bunx`
+ * version unpacks the package somewhere else. The settings file is left as
+ * it is (it is the install's own). Atomic (temp file + rename), so two runs
+ * for the same install never leave a half-written project file.
+ */
+export function prepareStackWorkDir(
+  installRoot: string,
+  provider: "gcp" | "gcp-firebase",
+  programDir: string = packageStackDir(provider),
+): string {
+  const workDir = stackWorkDir(installRoot, provider);
+  mkdirSync(workDir, { recursive: true, mode: 0o700 });
+  const project = workDirProjectFile(
+    readFileSync(join(programDir, "Pulumi.yaml"), "utf8"),
+    realpathSync(programDir),
+    realpathSync(workDir),
+  );
+  const target = join(workDir, "Pulumi.yaml");
+  const tmp = `${target}.${process.pid}.tmp`;
+  writeFileSync(tmp, project, { mode: 0o600 });
+  renameSync(tmp, target);
+  return workDir;
+}
+
+/**
+ * Refuse to run Pulumi when the stack config names another project than
+ * the install's (#736, CLAUDE.md §2): a preview or `up` would plan the
+ * install's state against another install's project — replacing its
+ * Firebase site, buckets and IAM members. Defense in depth: each install
+ * has its own work dir, so nothing should ever put another project there.
+ */
+export async function assertStackProject(
+  stack: pulumi.Stack,
+  provider: "gcp" | "gcp-firebase",
+  projectId: string,
+): Promise<void> {
+  const key = `caelo-${provider}:project`;
+  const configured = await stack.getConfig(key).then(
+    (v) => v.value,
+    (e: unknown) => {
+      if (/not found/i.test(String(e))) return undefined;
+      throw e;
+    },
+  );
+  if (configured !== projectId) {
+    throw new Error(
+      `the stack config ${join(stack.workspace.workDir, `Pulumi.${GCP_STACK_ENV}.yaml`)} names project ${configured ?? "(none)"}, but this install is ${projectId}. Nothing was run. Delete that file and re-run: the CLI writes the install's config again.`,
+    );
+  }
 }
 
 /**
@@ -144,16 +226,17 @@ export function imageDigestConfig(
  * @returns the override keys it removed.
  */
 export async function writeImageDigestsToStack(inputs: {
+  installRoot: string;
   backend: ResolvedBackend;
   provider: "gcp" | "gcp-firebase";
   digests: ImageDigests;
 }): Promise<{ removedOverrides: string[] }> {
-  const stack = await selectInstallStack(inputs.backend, inputs.provider);
+  const stack = await selectInstallStack(inputs.installRoot, inputs.backend, inputs.provider);
   await stack.setAllConfig(imageDigestConfig(inputs.provider, inputs.digests));
   // Read the settings file, not `getAllConfig()`: `pulumi config` refuses
   // to list a stack whose required keys (domain, project, …) are unset, and
-  // the settings file in a freshly unpacked `bunx` package holds only what
-  // this call just wrote — so every upgrade from a new CLI version failed.
+  // a settings file the installer never wrote (an install from before the
+  // per-install work dir, #736) holds only what this call just wrote.
   const settings = await stack.workspace.stackSettings(stack.name);
   const removedOverrides = presentImageOverrides(inputs.provider, settings.config);
   if (removedOverrides.length > 0) await stack.removeAllConfig(removedOverrides);
@@ -180,24 +263,24 @@ export function presentImageOverrides(
  * @returns the output's value, or undefined when the stack has no such output
  */
 export async function readStackOutput(inputs: {
+  installRoot: string;
   backend: ResolvedBackend;
   provider: "gcp" | "gcp-firebase";
   name: string;
 }): Promise<unknown> {
-  const stack = await selectInstallStack(inputs.backend, inputs.provider);
+  const stack = await selectInstallStack(inputs.installRoot, inputs.backend, inputs.provider);
   const outputs = await stack.outputs();
   return outputs[inputs.name]?.value;
 }
 
 /**
- * The stack's settings file in the package's stack dir with secrets
- * settings that can't contradict the install's state, or null when it is
- * already fine (#696).
+ * The install's stack settings file with secrets settings that can't
+ * contradict its state, or null when it is already fine (#696).
  *
- * That file (`Pulumi.production.yaml`) lives in the package, not with the
- * state: every `bunx` version unpacks its own, and installs of the same
- * provider on one machine share it, so it can name another install's
- * passphrase salt or KMS key. A file naming anything but the install's own
+ * That file (`Pulumi.production.yaml`, in the install's work dir) is not
+ * the state: `state migrate` moves the state to another backend and secrets
+ * provider, and the file can still name the old passphrase salt or KMS key.
+ * A file naming anything but the install's own
  * KMS key loses its secrets-provider fields and the `secure:` values
  * encrypted under them (no stack config the CLI sets is secret);
  * `PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER` (resolveBackend) then makes
@@ -230,17 +313,16 @@ export function alignedStackSettings(
 }
 
 /**
- * Bring the package's stack settings file in line with the install's backend
+ * Bring the install's stack settings file in line with its backend
  * ({@link alignedStackSettings}) before Pulumi reads it.
+ *
+ * @param workDir the install's prepared work dir ({@link prepareStackWorkDir})
  */
 export async function alignStackSettingsFile(
+  workDir: string,
   backend: ResolvedBackend,
-  provider: "gcp" | "gcp-firebase",
 ): Promise<void> {
-  const ws = await pulumi.LocalWorkspace.create({
-    workDir: gcpStackWorkDir(provider),
-    envVars: stateOnlyEnv(backend),
-  });
+  const ws = await pulumi.LocalWorkspace.create({ workDir, envVars: stateOnlyEnv(backend) });
   let settings: pulumi.StackSettings;
   try {
     settings = await ws.stackSettings(GCP_STACK_ENV);
@@ -266,14 +348,16 @@ export function stateOnlyEnv(backend: Pick<ResolvedBackend, "envVars">): Record<
   };
 }
 
-/** The install's existing stack, on its backend. */
+/** The install's existing stack, on its backend, in its own work dir. */
 export async function selectInstallStack(
+  installRoot: string,
   backend: ResolvedBackend,
   provider: "gcp" | "gcp-firebase",
 ): Promise<pulumi.Stack> {
-  await alignStackSettingsFile(backend, provider);
+  const workDir = prepareStackWorkDir(installRoot, provider);
+  await alignStackSettingsFile(workDir, backend);
   return pulumi.LocalWorkspace.selectStack(
-    { stackName: GCP_STACK_ENV, workDir: gcpStackWorkDir(provider) },
+    { stackName: GCP_STACK_ENV, workDir },
     { envVars: stateOnlyEnv(backend) },
   );
 }
@@ -318,8 +402,8 @@ export interface StateResource {
 /**
  * The region an existing stack was deployed in, read from its state (the
  * stacks' explicit `gcp.Provider` carries it), or null for a stack with
- * nothing deployed. State, not stack config: the config file lives in the
- * package's stack dir, which a newer `bunx` version doesn't share.
+ * nothing deployed. State, not stack config: the state is authoritative,
+ * and the settings file of an install from before #736 starts empty.
  */
 export function deployedStackRegion(resources: ReadonlyArray<StateResource>): string | null {
   const regions = new Set(
@@ -368,10 +452,10 @@ export type StackConfigInputs = Pick<
 
 /**
  * Set every config value the stack reads, then its `secretReplication`
- * ({@link resolveSecretReplication}). The config file lives in the package's
- * stack dir, so every run sets all of it — the wizard before `up`, and
- * `state migrate` before the previews that prove a migration changed
- * nothing (#696).
+ * ({@link resolveSecretReplication}). The wizard sets all of it before every
+ * `up`, so install.json stays the source of truth; `state migrate` sets it
+ * before the previews that prove a migration changed nothing (#696) when
+ * the install's settings file does not hold it yet.
  *
  * @returns the secret replication now configured
  */
@@ -462,9 +546,9 @@ export async function pulumiUpGcp(
 
   const provider = inputs.provider ?? "gcp";
   const stackName = GCP_STACK_ENV;
-  const workDir = gcpStackWorkDir(provider);
+  const workDir = prepareStackWorkDir(inputs.installRoot, provider);
 
-  await alignStackSettingsFile(inputs.backend, provider);
+  await alignStackSettingsFile(workDir, inputs.backend);
   const workspaceOpts = {
     envVars: env,
     // Used when the stack is created: a new install's secrets are
@@ -506,6 +590,7 @@ export async function pulumiUpGcp(
   }
 
   // Refresh state first to detect drift from any out-of-band changes.
+  await assertStackProject(stack, provider, inputs.projectId);
   await stack.refresh({ onOutput: (msg) => onEvent("log", msg) });
 
   // Run `up`. The onEvent callback receives the same JSON-RPC events

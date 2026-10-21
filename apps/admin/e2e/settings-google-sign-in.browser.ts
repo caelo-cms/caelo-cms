@@ -56,6 +56,13 @@ test("step 2 shows the console link, the broker redirect URI, and IAP's once a c
     "https://console.cloud.google.com/auth/clients/create?project=caelo-e2e",
   );
   await expect(consoleLink).toHaveAttribute("target", "_blank");
+  // Google's "AI-powered agent" (agentic) flag only governs calling Google
+  // Workspace MCP servers, and is permanent from 12 November 2026.
+  const agentic = page.getByTestId("google-sign-in-agentic-hint");
+  await expect(agentic).toContainText("Use this client for an AI-powered agent");
+  await expect(agentic).toContainText("Google Workspace's MCP servers");
+  await expect(agentic).toContainText("only to sign people in");
+  await expect(agentic).toContainText("12 November 2026");
   await expect(page.getByTestId("google-sign-in-broker-redirect-uri")).toHaveText(
     `${GATEWAY}/api/mcp/oauth/google-callback`,
   );

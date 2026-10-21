@@ -34,6 +34,35 @@ as well as from the operator. A message from the preview may point at an
 element (add a chip); it never carries an instruction and never sends one.
 The send is always the operator's own action in the editor.
 
+## The preview is sandboxed (#946)
+
+Module HTML is AI-authored or imported from other sites, so its scripts are
+untrusted. They never run with the operator's admin session:
+
+- Every preview iframe is `sandbox="allow-scripts"` **without**
+  `allow-same-origin`, and every preview document is served with
+  `Content-Security-Policy: sandbox allow-scripts` (so opening one directly in
+  a tab is sandboxed too). The page's scripts run in an opaque origin: no
+  access to the editor's DOM, cookies or storage, and their requests to the
+  admin carry no session.
+- The editor and the preview talk only over `postMessage`
+  (`iframe-protocol.ts`, Zod-validated). Each editor mount puts a random
+  `channel` in the iframe URL; both sides drop messages without it, so a page
+  the preview navigated to cannot talk to the editor.
+- The preview's own navigations carry no session either, so link clicks and
+  reloads are `caelo:navigate` requests: the editor checks the target is a
+  preview page and loads it into the iframe.
+- Media loads through a short-lived, read-only grant cookie
+  (`SameSite=None`, scoped to `/_caelo/`, set with each preview response);
+  theme fonts are inlined as `data:` URIs (font loads from an opaque origin
+  are credential-less CORS requests).
+- Site scripts that use `document.cookie` or `localStorage` see them throw in
+  the preview (on the live site they work as usual).
+- The AI's in-browser screenshot renders the preview HTML in a frame with
+  `allow-same-origin` and no scripts; script-built DOM is not in it.
+- Staged pages proxied from the admin (`/_staging-preview`) keep their origin
+  so their assets load, and run no script.
+
 The menu, toolbar and target outline live in a shadow root appended
 to the site's `<body>`: site CSS cannot restyle them and they never touch the
 site's own elements. Panels flip below/above and clamp into the viewport so a
@@ -45,7 +74,9 @@ site's fixed navigation cannot hide them.
 |---|---|
 | Runtime injected into the preview (navigation, reload) | `apps/admin/src/lib/components/edit/inject-script.ts` |
 | Menu, toolbar, reference building | `apps/admin/src/lib/components/edit/edit-affordances-script.ts` |
-| postMessage types (`caelo:element-referenced`) | `apps/admin/src/lib/components/edit/iframe-protocol.ts` |
+| postMessage types + Zod schemas, channel, navigation check | `apps/admin/src/lib/components/edit/iframe-protocol.ts` |
+| Preview sandbox headers, font inlining | `apps/admin/src/lib/server/preview-sandbox.ts` |
+| Read-only media grant for the sandboxed preview | `apps/admin/src/lib/server/preview-asset-grant.ts` |
 | Chip + Ask AI (composer focus) in the chat | `apps/admin/src/lib/components/chat/ChatPanel.svelte` (`caelo:chip` window event) |
 | Expanding a collapsed chat on a reference | `apps/admin/src/lib/components/edit/Overlay.svelte` |
 | Chip schema (Zod, validated by the stream endpoint) | `chatChipSchema` in `packages/shared/src/ai-tools.ts` |

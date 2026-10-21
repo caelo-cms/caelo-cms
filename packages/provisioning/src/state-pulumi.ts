@@ -3,7 +3,8 @@
 /**
  * The real {@link StatePulumiOps} for `state migrate` (#696): the Pulumi CLI
  * (state operations) and the Automation API (previews), always in the
- * install's stack dir and with exactly the backend's environment. The
+ * install's own stack work dir (#736) and with exactly the backend's
+ * environment. The
  * operator never runs `pulumi` by hand (CLAUDE.md §11.C).
  *
  * Secrets: outputs are read with `--show-secrets` only to hash them; the
@@ -23,7 +24,8 @@ import type { StatePulumiOps } from "./state-migrate.js";
 import {
   alignStackSettingsFile,
   applyStackConfig,
-  gcpStackWorkDir,
+  assertStackProject,
+  prepareStackWorkDir,
   pulumiGcpEnv,
   type StackConfigInputs,
   type StateResource,
@@ -76,7 +78,7 @@ export interface RealPulumiOpsInputs {
 
 /** {@link StatePulumiOps} backed by the `pulumi` CLI + Automation API. */
 export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps {
-  const workDir = gcpStackWorkDir(inputs.provider);
+  const workDir = prepareStackWorkDir(inputs.installRoot, inputs.provider);
 
   const cli = async (
     args: string[],
@@ -99,7 +101,7 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
     return { stdout, stderr };
   };
 
-  // The read-only steps (preflight, verification) align the package's
+  // The read-only steps (preflight, verification) align the install's
   // stack settings file and may set config to run a preview; the file is
   // put back exactly as it was afterwards, so a refused migration or a dry
   // run leaves it untouched.
@@ -127,7 +129,7 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
   };
 
   const exportDeployment = async (b: ResolvedBackend): Promise<Deployment> => {
-    await alignStackSettingsFile(b, inputs.provider);
+    await alignStackSettingsFile(workDir, b);
     const { stdout } = await cli(["stack", "export", "--stack", GCP_STACK_ENV], stateOnlyEnv(b));
     return ((JSON.parse(stdout) as { deployment?: Deployment }).deployment ?? {}) as Deployment;
   };
@@ -179,7 +181,7 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
     },
 
     async previewChanges(b) {
-      await alignStackSettingsFile(b, inputs.provider);
+      await alignStackSettingsFile(workDir, b);
       const stack = await automation.LocalWorkspace.selectStack(
         { stackName: GCP_STACK_ENV, workDir },
         {
@@ -191,21 +193,21 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
       );
       // The stack's own config wins: an operator may have tuned a knob
       // (`pulumi config set`), and resetting it would show as drift. Only a
-      // stack dir without the install's config (a fresh `bunx` version)
-      // gets what the wizard sets — as does one holding another install's
-      // config (installs of one provider share the package's stack dir).
+      // settings file without the install's config (an install from before
+      // its own work dir, #736) gets what the wizard sets.
       const config: automation.ConfigMap = await stack.getAllConfig().catch(() => ({}));
-      if (config[`caelo-${inputs.provider}:project`]?.value !== inputs.stackConfig.projectId) {
+      if (config[`caelo-${inputs.provider}:project`] === undefined) {
         const resources = ((await stack.exportStack()).deployment?.resources ??
           []) as StateResource[];
         await applyStackConfig(stack, inputs.stackConfig, resources);
       }
+      await assertStackProject(stack, inputs.provider, inputs.stackConfig.projectId);
       const r = await stack.preview({ refresh: true });
       return changeCount(r.changeSummary);
     },
 
     async outputsDigest(b) {
-      await alignStackSettingsFile(b, inputs.provider);
+      await alignStackSettingsFile(workDir, b);
       const { stdout } = await cli(
         ["stack", "output", "--stack", GCP_STACK_ENV, "--json", "--show-secrets"],
         stateOnlyEnv(b),
@@ -216,7 +218,7 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
     },
 
     async stackMigrate(from, to) {
-      await alignStackSettingsFile(from, inputs.provider);
+      await alignStackSettingsFile(workDir, from);
       await cli(
         [
           "stack",
