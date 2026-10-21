@@ -38,7 +38,7 @@ const handlerError = (message: string) =>
   err({ kind: "HandlerError" as const, operation: OP, message });
 
 export const platformUpdatesSkipScheduledOp = defineOperation({
-  name: OP,
+  name: "platform_updates.skip_scheduled",
   // Why human-only: decides what installs unattended on this site, which
   // only the Owner does, confirmed with their password (#696 decision 4).
   // The AI explains the schedule (get_caelo_auto_update_status); it does
