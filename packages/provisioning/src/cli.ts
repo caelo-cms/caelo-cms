@@ -993,13 +993,20 @@ async function upgradeSelfHostedCommand(opts: {
     process.exit(2);
   }
   const { upgradeSelfHosted } = await import("./self-hosted-upgrade.js");
-  const { acquireUpgradeLock } = await import("./agent/lock.js");
+  const { acquireUpgradeLock, UpgradeLockHeldError } = await import("./agent/lock.js");
   // The update agent rolls through the same lock: never two rolls at once.
   let unlock: () => void;
   try {
     unlock = acquireUpgradeLock(CAELO_DIR, "`cms-provision upgrade`");
   } catch (e) {
-    console.error(`Nothing was changed: ${(e as Error).message} Wait for it to finish.`);
+    // #804 — "wait" only when another upgrade holds the lock; an access
+    // failure's message already names the lock file and the fix.
+    const message = e instanceof Error ? e.message : String(e);
+    console.error(
+      e instanceof UpgradeLockHeldError
+        ? `Nothing was changed: ${message} Wait for it to finish.`
+        : `Nothing was changed: ${message}`,
+    );
     process.exit(1);
   }
   let result: Awaited<ReturnType<typeof upgradeSelfHosted>>;
