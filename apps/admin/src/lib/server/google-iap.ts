@@ -124,6 +124,7 @@ export const E2E_NO_GOOGLE_ACCOUNT_PREFIX = "no-google-";
 function e2eOperatorAccessTrigger(): OperatorAccessTrigger {
   let runs = 0;
   let last: string | null = null;
+  const running = new Set<string>();
   const logsUrl = (execution: string) => `https://console.cloud.google.com/e2e/${execution}`;
   const system = {
     actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -134,7 +135,9 @@ function e2eOperatorAccessTrigger(): OperatorAccessTrigger {
     label: "Google IAP (E2E stand-in)",
     async start() {
       runs += 1;
+      // Like Cloud Run's latestCreatedExecution: the newest run, finished or not.
       last = `e2e-operator-access-sync-${Date.now().toString(36)}-${runs}`;
+      running.add(last);
       return last;
     },
     async wait(execution) {
@@ -158,6 +161,7 @@ function e2eOperatorAccessTrigger(): OperatorAccessTrigger {
         },
       );
       if (!recorded.ok) throw new Error(JSON.stringify(recorded.error));
+      running.delete(execution);
       return {
         execution,
         state: "succeeded",
@@ -166,7 +170,12 @@ function e2eOperatorAccessTrigger(): OperatorAccessTrigger {
       };
     },
     async latest() {
-      return last ? { execution: last, state: "succeeded", logsUrl: logsUrl(last) } : null;
+      if (!last) return null;
+      return {
+        execution: last,
+        state: running.has(last) ? "running" : "succeeded",
+        logsUrl: logsUrl(last),
+      };
     },
   };
 }

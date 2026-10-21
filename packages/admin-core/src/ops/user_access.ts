@@ -185,20 +185,21 @@ export const recordOperatorAccessRunOp = defineOperation({
 
 /**
  * `users.operator_access_run` (#970): the report the sync job recorded for
- * `execution` (its latest attempt), or null when it recorded none.
+ * `execution` (its latest attempt), or — without `execution` — the newest
+ * report of any run; null when there is none.
  */
 export const operatorAccessRunOp = defineOperation({
   name: "users.operator_access_run",
   // CLAUDE.md §11: read surface open to the AI ("why can't X sign in?").
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
-  input: z.object({ execution: z.string().min(1).max(200) }).strict(),
+  input: z.object({ execution: z.string().min(1).max(200).optional() }).strict(),
   output: z.object({ run: recordedSyncRunSchema.nullable() }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT execution, outcome, refused_members, error_count, sign_in_client_problem, finished_at
       FROM operator_access_sync_runs
-      WHERE execution = ${input.execution}
+      ${input.execution === undefined ? sql`` : sql`WHERE execution = ${input.execution}`}
       ORDER BY finished_at DESC
       LIMIT 1
     `)) as unknown as {
@@ -229,14 +230,23 @@ export const operatorAccessRunOp = defineOperation({
   },
 });
 
-/** The job's report for `execution`; throws (with the op error) when it cannot be read. */
+/**
+ * The job's report for `execution` (or the newest report when undefined);
+ * throws (with the op error) when it cannot be read.
+ */
 async function readRunReport(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   ctx: ExecutionContext,
-  execution: string,
+  execution: string | undefined,
 ): Promise<RecordedSyncRun | null> {
-  const r = await execute(registry, adapter, ctx, "users.operator_access_run", { execution });
+  const r = await execute(
+    registry,
+    adapter,
+    ctx,
+    "users.operator_access_run",
+    execution === undefined ? {} : { execution },
+  );
   if (!r.ok) throw new Error(`users.operator_access_run failed: ${JSON.stringify(r.error)}`);
   return (r.value as { run: RecordedSyncRun | null }).run;
 }
@@ -389,6 +399,13 @@ export async function latestOperatorAccessRun(
       run: Awaited<ReturnType<OperatorAccessTrigger["latest"]>>;
       /** #970: what that run reported (null while it runs, or when it recorded nothing). */
       report: RecordedSyncRun | null;
+      /**
+       * #970: the newest report any finished run recorded. Who Google
+       * refused is known from it while the latest run is still running
+       * (the hourly schedule, another tab's change), so the users page
+       * never loses the list in between.
+       */
+      lastReport: RecordedSyncRun | null;
     }
   | { status: "error"; error: string; nextStep: string }
   | null
@@ -397,11 +414,13 @@ export async function latestOperatorAccessRun(
   if (!trigger) return null;
   try {
     const run = await trigger.latest();
-    const report =
+    const [report, lastReport] = await Promise.all([
       run && run.state !== "running"
-        ? await readRunReport(registry, adapter, ctx, run.execution)
-        : null;
-    return { status: "ok", target: trigger.label, run, report };
+        ? readRunReport(registry, adapter, ctx, run.execution)
+        : Promise.resolve(null),
+      readRunReport(registry, adapter, ctx, undefined),
+    ]);
+    return { status: "ok", target: trigger.label, run, report, lastReport };
   } catch (e) {
     return {
       status: "error",

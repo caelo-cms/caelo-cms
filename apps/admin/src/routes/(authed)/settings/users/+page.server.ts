@@ -57,10 +57,11 @@ export const load: PageServerLoad = async ({ locals }) => {
     ? (rolesResult.value as { roles: { name: string }[] }).roles.map((r) => r.name)
     : [];
 
-  // #970 — the users the latest run's report says Google has no account
-  // for, as they are now (a deleted or re-addressed user drops out).
+  // #970 — the users the newest run report says Google has no account for,
+  // as they are now (a deleted or re-addressed user drops out). The newest
+  // REPORT, not the latest run's: that one may still be running.
   const refused = new Set(
-    operatorAccess?.status === "ok" ? (operatorAccess.report?.refusedMembers ?? []) : [],
+    operatorAccess?.status === "ok" ? (operatorAccess.lastReport?.refusedMembers ?? []) : [],
   );
   const noGoogleAccount = users
     .filter((u) => refused.has(u.email.toLowerCase()))

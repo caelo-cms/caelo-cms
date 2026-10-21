@@ -299,6 +299,28 @@ describe("syncOperatorAccess — the admin starts the job and records the outcom
     });
   });
 
+  it("#970: while a newer run is still running, the newest recorded report still names the refused users", async () => {
+    const refused = ["opaccess-nogoogle@example.com"];
+    setOperatorAccessTriggerForTests({ trigger: fakeTrigger({ refused }).trigger });
+    await syncOperatorAccess(registry, adapter, OWNER);
+    // The hourly schedule (or another tab) starts a run that has not reported yet.
+    setOperatorAccessTriggerForTests({
+      trigger: {
+        label: "Google IAP (fake job)",
+        start: async () => `${EXEC_PREFIX}running`,
+        wait: async (execution) => ({ execution, state: "running", logsUrl: "l" }),
+        latest: async () => ({
+          execution: `${EXEC_PREFIX}running`,
+          state: "running",
+          logsUrl: "l",
+        }),
+      },
+    });
+    const latest = await latestOperatorAccessRun(registry, adapter, OWNER);
+    expect(latest?.status === "ok" && latest.report).toBeNull();
+    expect(latest?.status === "ok" && latest.lastReport?.refusedMembers).toEqual(refused);
+  });
+
   it("#970: a finished run that recorded no report fails loudly", async () => {
     setOperatorAccessTriggerForTests({ trigger: fakeTrigger({ noReport: true }).trigger });
     const r = await syncOperatorAccess(registry, adapter, OWNER);
