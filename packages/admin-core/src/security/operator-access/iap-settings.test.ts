@@ -60,12 +60,13 @@ interface Call {
 
 /**
  * A fake IAP settings endpoint with real state per settings resource
- * (project and the admin's Cloud Run service): a PATCH replaces the whole
- * `oauthSettings` message (as the message-path mask does), the secret is
- * input only and comes back as `clientSecretSha256`. Like the live API
- * (viu-one-web, 2026-10-21), a Cloud Run service resource refuses a client,
- * secret or programmatic clients with HTTP 400 INVALID_ARGUMENT — Google
- * applies those at project level. IAM policies are empty.
+ * (project and the admin's Cloud Run service). It honours the update mask
+ * the way the live API does (probed on viu-one-web, 2026-10-21): a mask on
+ * the whole `oauthSettings` message is refused with HTTP 400
+ * INVALID_ARGUMENT whatever the body; each masked leaf is set from the body,
+ * or cleared when the body leaves it out; unmasked fields (`loginHint`)
+ * stay. The secret is input only and comes back as `clientSecretSha256`.
+ * IAM policies are empty.
  */
 function fakeIap(
   initial: LiveOAuthSettings | undefined,
@@ -103,15 +104,8 @@ function fakeIap(
           );
         }
         if (opts.failPatch) return new Response("denied", { status: 403 });
-        const sent = (
-          body as {
-            accessSettings: { oauthSettings: LiveOAuthSettings & { clientSecret?: string } };
-          }
-        ).accessSettings.oauthSettings;
-        if (
-          resource === SERVICE &&
-          (sent.clientId || sent.clientSecret || (sent.programmaticClients ?? []).length > 0)
-        ) {
+        const mask = (new URL(url).searchParams.get("updateMask") ?? "").split(",");
+        if (mask.includes("iapSettings.accessSettings.oauthSettings")) {
           return new Response(
             JSON.stringify({
               error: {
@@ -123,14 +117,29 @@ function fakeIap(
             { status: 400 },
           );
         }
-        const { clientSecret, ...rest } = sent;
-        const encoding = opts.hashEncoding ?? "hex";
-        state.set(resource, {
-          ...rest,
-          ...(clientSecret && encoding !== "none"
-            ? { clientSecretSha256: sha(clientSecret, encoding) }
-            : {}),
-        });
+        const sent = (
+          body as {
+            accessSettings: { oauthSettings: LiveOAuthSettings & { clientSecret?: string } };
+          }
+        ).accessSettings.oauthSettings;
+        const leaf = (f: string) => mask.includes(`iapSettings.accessSettings.oauthSettings.${f}`);
+        const next: Record<string, unknown> = { ...(settings ?? {}) };
+        if (leaf("clientId")) {
+          if (sent.clientId) next.clientId = sent.clientId;
+          else delete next.clientId;
+        }
+        if (leaf("clientSecret")) {
+          const encoding = opts.hashEncoding ?? "hex";
+          if (sent.clientSecret && encoding !== "none") {
+            next.clientSecretSha256 = sha(sent.clientSecret, encoding);
+          } else delete next.clientSecretSha256;
+        }
+        if (leaf("programmaticClients")) {
+          if ((sent.programmaticClients ?? []).length > 0) {
+            next.programmaticClients = sent.programmaticClients;
+          } else delete next.programmaticClients;
+        }
+        state.set(resource, next as LiveOAuthSettings);
         return new Response(JSON.stringify(body), { status: 200 });
       }
       if (url.includes(":getIamPolicy")) return new Response("{}", { status: 200 });
@@ -194,7 +203,7 @@ describe("iapProjectResourceUrl", () => {
 });
 
 describe("reconcileOAuthSettings", () => {
-  it("sets client, secret and programmatic clients in one PATCH masked to oauthSettings", async () => {
+  it("sets client, secret and programmatic clients in one PATCH masked leaf by leaf", async () => {
     const { deps, calls, current } = fakeIap(undefined);
     const r = await reconcileOAuthSettings(deps, PROJECT, {
       clientId: CLIENT,
@@ -208,7 +217,13 @@ describe("reconcileOAuthSettings", () => {
     expect(current()).toEqual(configured());
     const patches = calls.filter((c) => c.method === "PATCH");
     expect(patches).toHaveLength(1);
-    expect(OAUTH_SETTINGS_MASK).toBe("iapSettings.accessSettings.oauthSettings");
+    // Live 400 on viu-one-web (2026-10-21): IAP refuses a mask on the whole
+    // oauthSettings message, so the job names the three leaves it owns.
+    expect(OAUTH_SETTINGS_MASK.split(",")).toEqual([
+      "iapSettings.accessSettings.oauthSettings.clientId",
+      "iapSettings.accessSettings.oauthSettings.clientSecret",
+      "iapSettings.accessSettings.oauthSettings.programmaticClients",
+    ]);
     expect(patches[0]?.url).toBe(
       `${PROJECT}:iapSettings?updateMask=${encodeURIComponent(OAUTH_SETTINGS_MASK)}`,
     );
@@ -262,14 +277,14 @@ describe("reconcileOAuthSettings", () => {
     expect(current()).toEqual(configured());
   });
 
-  it("clears all three when no client is configured, keeping loginHint", async () => {
+  it("clears all three when no client is configured, leaving loginHint out of the mask", async () => {
     const { deps, calls, current } = fakeIap({ ...configured(), loginHint: "example.com" });
     const r = await reconcileOAuthSettings(deps, PROJECT, null);
     expect(r.after).toEqual({ clientId: null, programmaticClients: [] });
     expect(current()).toEqual({ loginHint: "example.com" });
     expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({
       name: "projects/123",
-      accessSettings: { oauthSettings: { loginHint: "example.com" } },
+      accessSettings: { oauthSettings: {} },
     });
   });
 
@@ -291,7 +306,7 @@ describe("runSync — oauthSettings step", () => {
   };
   const file = async () => ({ client_id: CLIENT, client_secret: SECRET });
 
-  it("sets the client on the PROJECT's IAP settings, never on the Cloud Run service (live 400)", async () => {
+  it("sets the client on the PROJECT's IAP settings, as Google documents for Cloud Run IAP", async () => {
     const { deps, calls, current, currentService } = fakeIap(undefined);
     const logs: LogEntry[] = [];
     const r = await runSync(config, {

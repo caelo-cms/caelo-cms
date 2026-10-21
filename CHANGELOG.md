@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.61
+
+### Fixes
+- b1378886 mask the IAP oauthSettings PATCH leaf by leaf (#914) (#964)
+
 ## v0.10.60
 
 ### Fixes

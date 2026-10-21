@@ -467,16 +467,36 @@ describe("content maintenance tools", () => {
 
   it("refresh_page_path reports a move and an unchanged path", async () => {
     const moved = harness({
-      "pages.refresh_current_path": () => ({ path: "/de/about", moved: true }),
+      "pages.refresh_current_path": () => ({
+        path: "/de/about",
+        moved: true,
+        awaitingUrlMigration: false,
+      }),
     });
     const r = await run(refreshPagePathTool, { pageId: U1 }, moved.toolCtx);
     expect(moved.calls[0]?.input).toEqual({ pageId: U1 });
     expect(r.content).toContain("/de/about (the old URL 301s to it)");
     const same = harness({
-      "pages.refresh_current_path": () => ({ path: "/about", moved: false }),
+      "pages.refresh_current_path": () => ({
+        path: "/about",
+        moved: false,
+        awaitingUrlMigration: false,
+      }),
     });
     expect((await run(refreshPagePathTool, { pageId: U1 }, same.toolCtx)).content).toContain(
       "unchanged",
+    );
+    // #586 — a move held back for the pending URL migration names the
+    // gated next step instead of inviting per-page refreshes.
+    const held = harness({
+      "pages.refresh_current_path": () => ({
+        path: "/about",
+        moved: false,
+        awaitingUrlMigration: true,
+      }),
+    });
+    expect((await run(refreshPagePathTool, { pageId: U1 }, held.toolCtx)).content).toContain(
+      "propose_url_migration",
     );
   });
 

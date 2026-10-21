@@ -141,9 +141,10 @@ describe("planPublicRoleSwitch", () => {
 describe("findSqlInstance", () => {
   it("finds the Pulumi-suffixed instance by the stack's prefix", async () => {
     const { run, lines } = fakeGcloud({});
-    expect(await findSqlInstance({ projectId: "acme", env: "production" }, { run })).toBe(
-      "caelo-production-pg-1a2b3c",
-    );
+    expect(await findSqlInstance({ projectId: "acme", env: "production" }, { run })).toEqual({
+      status: "found",
+      name: "caelo-production-pg-1a2b3c",
+    });
     expect(lines).toContain(
       "sql instances list --project=acme --filter=name~^caelo-production-pg --format=value(name)",
     );

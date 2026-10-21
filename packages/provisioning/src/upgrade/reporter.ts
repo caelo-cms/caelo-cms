@@ -16,6 +16,8 @@ export interface ReportStep {
   failed(message: string): void;
   /** Ended without success, but the upgrade continues. */
   warned(message: string): void;
+  /** Still running: say what it is waiting for now. */
+  progress(message: string): void;
 }
 
 export interface UpgradeReporter {
@@ -36,6 +38,7 @@ export function clackReporter(): UpgradeReporter {
         done: (m) => s.stop(green(m)),
         failed: (m) => s.stop(red(m)),
         warned: (m) => s.stop(yellow(m)),
+        progress: (m) => s.message(m),
       };
     },
     info: (m) => log.info(m),

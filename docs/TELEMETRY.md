@@ -2,7 +2,7 @@
 
 **Status: OFF by default. No outbound calls without explicit opt-in.**
 
-Caelo phones home for nothing on a fresh install. Operators who want to opt in to telemetry can do so per-category at `/settings/telemetry`. The settings live in `cms_admin.telemetry_settings` (single row, `install_ping_enabled` / `error_reporting_enabled` start as `false`).
+Caelo phones home for nothing on a fresh install. Operators who want to opt in to telemetry can do so per-category at `/settings/ai/telemetry`. The settings live in `cms_admin.telemetry_settings` (single row, `install_ping_enabled` / `error_reporting_enabled` start as `false`).
 
 This doc is part of the OSS-launch checklist; reviewers explicitly check the "off by default" claim against the code (the migration 0048 seed asserts both columns default false; the Owner UI is the only path to enable).
 
@@ -14,13 +14,14 @@ When enabled, Caelo sends one POST per install per week to `https://telemetry.ca
 
 ```json
 {
-  "caelo_version": "0.5.0",
-  "provider": "aws",
-  "anonymized_install_id": "<uuid minted at first opt-in; never sent before>"
+  "installId": "<uuid minted at first opt-in; never sent before>",
+  "caeloVersion": "0.10.59",
+  "emittedAt": "2026-10-21T08:00:00.000Z",
+  "counts": { "pages": 122, "modules": 58, "activePlugins": 1 }
 }
 ```
 
-Used for "how widely is Caelo deployed?" stats. **No PII, no AI usage data, no error reports, no DB rows.** The `anonymized_install_id` is a fresh UUID minted at opt-in time; revoking opt-in resets it (next opt-in mints a new one).
+`telemetry.test_send` (the "Test send" button) builds exactly this object, so the Owner can compare it against this section before opting in. Used for "how widely is Caelo deployed?" stats. **No PII, no AI usage data, no error reports, no DB rows.** The `installId` is a fresh UUID minted at opt-in time; revoking opt-in resets it (next opt-in mints a new one).
 
 ### Error reporting (opt-in)
 
@@ -86,7 +87,7 @@ These are off-limits even with both telemetry toggles enabled. Code paths that t
 
 ## Owner UI
 
-`/settings/telemetry` shows:
+`/settings/ai/telemetry` shows:
 - Two toggles (install ping / error reporting), both `false` on fresh install.
 - Live counter: `events_sent_count` + `last_sent_at` from `telemetry_settings`.
 - A **"Test send"** button that prints the exact payload that WOULD be sent locally without making an outbound HTTP call. Operators can verify the redaction + hash before enabling.

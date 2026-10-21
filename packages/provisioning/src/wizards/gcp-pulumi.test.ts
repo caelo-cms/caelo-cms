@@ -193,7 +193,7 @@ describe("pulumiGcpEnv with the install's ops bucket (#696)", () => {
   });
 });
 
-describe("alignedStackSettings (#696 — the package's stale Pulumi.production.yaml)", () => {
+describe("alignedStackSettings (#696 — a settings file the state moved away from)", () => {
   const KMS =
     "gcpkms://projects/acme/locations/europe-west1/keyRings/caelo/cryptoKeys/pulumi-state";
   const gcs = { kind: "gcs" as const, secretsProvider: KMS };
