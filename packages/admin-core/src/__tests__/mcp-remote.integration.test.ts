@@ -58,8 +58,15 @@ const ownerCtx: ExecutionContext = {
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 
-function cred(email: string, surface: "chat" | "admin"): McpRemoteCredential {
-  return { iapCredential: signIapTestAssertion(KEY, { aud: AUDIENCE, email }), surface };
+const CLAUDE_CODE = "dcr:Claude Code";
+const CHATGPT = "https://chatgpt.com/oauth/client.json";
+
+function cred(
+  email: string,
+  surface: "chat" | "admin",
+  client: string = CLAUDE_CODE,
+): McpRemoteCredential {
+  return { iapCredential: signIapTestAssertion(KEY, { aud: AUDIENCE, email }), surface, client };
 }
 
 async function withSql<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
@@ -78,17 +85,20 @@ async function wipe(): Promise<void> {
   await withSql(async (tx) => {
     for (const u of Object.values(USERS)) {
       await tx`DELETE FROM mcp_remote_connections WHERE actor_id = ${u.id}::uuid`;
+      await tx`DELETE FROM mcp_remote_access_blocks WHERE actor_id = ${u.id}::uuid`;
       await tx`DELETE FROM mcp_tokens WHERE actor_id = ${u.id}::uuid`;
     }
   });
 }
 
-async function connectionRow(actorId: string, surface: string) {
+async function connectionRow(actorId: string, surface: string, client: string = CLAUDE_CODE) {
   return withSql(
     async (tx) =>
       (
         (await tx`SELECT id::text AS id, revoked_at, current_chat_session_id::text AS current
-                  FROM mcp_remote_connections WHERE actor_id = ${actorId}::uuid AND surface = ${surface}`) as {
+                  FROM mcp_remote_connections
+                  WHERE actor_id = ${actorId}::uuid AND surface = ${surface}
+                    AND client_key = ${client}`) as {
           id: string;
           revoked_at: Date | null;
           current: string | null;
@@ -147,7 +157,7 @@ describe("remote principal resolution", () => {
     expect(first.value.scope).toBe("admin");
     expect(first.value.allowCaeloAi).toBe(false);
     expect(first.value.via.kind).toBe("remote");
-    expect(first.value.displayName).toBe(`claude-ai · ${USERS.owner.email}`);
+    expect(first.value.displayName).toBe(`Claude Code · ${USERS.owner.email}`);
     const again = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "admin"));
     expect(again.ok && again.value.via.kind === "remote" && again.value.via.connectionId).toBe(
       first.value.via.kind === "remote" ? first.value.via.connectionId : "",
@@ -161,6 +171,10 @@ describe("remote principal resolution", () => {
       expect(editorAdmin.error.status).toBe(403);
       expect(editorAdmin.error.code).toBe("permission_denied");
       expect(editorAdmin.error.message).toContain("/api/mcp/chat");
+      // #968 — names what is missing, the user's role and the roles that allow it.
+      expect(editorAdmin.error.message).toContain("needs the settings.write permission");
+      expect(editorAdmin.error.message).toContain("Your role (editor)");
+      expect(editorAdmin.error.message).toContain("roles that do: owner");
     }
     // Refused requests create no row.
     expect(await connectionRow(USERS.editor.id, "admin")).toBeUndefined();
@@ -189,6 +203,7 @@ describe("remote principal resolution", () => {
     const missing = await resolveRemoteMcpPrincipal(adapter, {
       iapCredential: "",
       surface: "chat",
+      client: CLAUDE_CODE,
     });
     expect(!missing.ok && [missing.error.status, missing.error.code]).toEqual([
       401,
@@ -200,6 +215,7 @@ describe("remote principal resolution", () => {
         email: USERS.owner.email,
       }),
       surface: "admin",
+      client: CLAUDE_CODE,
     });
     expect(!forged.ok && [forged.error.status, forged.error.code]).toEqual([
       401,
@@ -239,6 +255,149 @@ describe("remote principal resolution", () => {
     expect((await resolveRemoteMcpPrincipal(adapter, cred(USERS.editor.email, "chat"))).ok).toBe(
       true,
     );
+  });
+});
+
+describe("one connection per client app (#968)", () => {
+  const editorCtx: ExecutionContext = {
+    actorId: USERS.editor.id,
+    actorKind: "human",
+    requestId: "t968-editor",
+  };
+
+  it("revokes one app and leaves the same user's other app working", async () => {
+    const claude = await resolveRemoteMcpPrincipal(adapter, cred(USERS.editor.email, "chat"));
+    const chatgpt = await resolveRemoteMcpPrincipal(
+      adapter,
+      cred(USERS.editor.email, "chat", CHATGPT),
+    );
+    expect(claude.ok && chatgpt.ok).toBe(true);
+    const claudeRow = await connectionRow(USERS.editor.id, "chat");
+    const chatgptRow = await connectionRow(USERS.editor.id, "chat", CHATGPT);
+    expect(claudeRow?.id).toBeDefined();
+    expect(chatgptRow?.id).not.toBe(claudeRow?.id);
+
+    const revoked = await execute(registry, adapter, ownerCtx, "mcp_remote_connections.revoke", {
+      id: claudeRow!.id,
+    });
+    expect(revoked.ok).toBe(true);
+    const refused = await resolveRemoteMcpPrincipal(adapter, cred(USERS.editor.email, "chat"));
+    expect(!refused.ok && refused.error.code).toBe("remote_access_revoked");
+    if (!refused.ok) {
+      // Who, and where to restore it — and that the other apps still work.
+      expect(refused.error.message).toContain(`by ${USERS.owner.email}`);
+      expect(refused.error.message).toContain("Settings → MCP");
+      expect(refused.error.message).toContain("other connected apps are not affected");
+    }
+    expect(
+      (await resolveRemoteMcpPrincipal(adapter, cred(USERS.editor.email, "chat", CHATGPT))).ok,
+    ).toBe(true);
+
+    const list = await execute(registry, adapter, ownerCtx, "mcp_remote_connections.list", {});
+    const rows = list.ok
+      ? (
+          list.value as {
+            connections: { id: string; clientName: string; revokedBy: string | null }[];
+          }
+        ).connections
+      : [];
+    expect(rows.find((r) => r.id === claudeRow!.id)).toMatchObject({
+      clientName: "Claude Code",
+      revokedBy: USERS.owner.email,
+    });
+    expect(rows.find((r) => r.id === chatgptRow!.id)?.clientName).toBe("ChatGPT");
+
+    await execute(registry, adapter, ownerCtx, "mcp_remote_connections.restore", {
+      id: claudeRow!.id,
+    });
+  });
+
+  it("blocks every app of a user, new apps included, until the Owner unblocks", async () => {
+    const editorBlock = await execute(
+      registry,
+      adapter,
+      editorCtx,
+      "mcp_remote_connections.block_user",
+      { actorId: USERS.owner.id },
+    );
+    expect(message(editorBlock)).toContain("only an Owner");
+
+    const blocked = await execute(
+      registry,
+      adapter,
+      ownerCtx,
+      "mcp_remote_connections.block_user",
+      {
+        actorId: USERS.editor.id,
+      },
+    );
+    expect(blocked.ok).toBe(true);
+    for (const client of [CLAUDE_CODE, CHATGPT, "dcr:Never Seen Before"]) {
+      const r = await resolveRemoteMcpPrincipal(adapter, cred(USERS.editor.email, "chat", client));
+      expect(!r.ok && [r.error.status, r.error.code]).toEqual([403, "remote_access_blocked"]);
+      if (!r.ok) expect(r.error.message).toContain(`by ${USERS.owner.email}`);
+    }
+    // A blocked request creates no row for the new app.
+    expect(await connectionRow(USERS.editor.id, "chat", "dcr:Never Seen Before")).toBeUndefined();
+    // The editor sees their own block, read-only.
+    const own = await execute(registry, adapter, editorCtx, "mcp_remote_connections.list", {});
+    expect(own.ok && (own.value as { blocks: { actorId: string }[] }).blocks).toEqual([
+      expect.objectContaining({ actorId: USERS.editor.id }),
+    ]);
+    expect(
+      message(
+        await execute(registry, adapter, editorCtx, "mcp_remote_connections.unblock_user", {
+          actorId: USERS.editor.id,
+        }),
+      ),
+    ).toContain("only an Owner");
+
+    const unblocked = await execute(
+      registry,
+      adapter,
+      ownerCtx,
+      "mcp_remote_connections.unblock_user",
+      { actorId: USERS.editor.id },
+    );
+    expect(unblocked.ok).toBe(true);
+    expect((await resolveRemoteMcpPrincipal(adapter, cred(USERS.editor.email, "chat"))).ok).toBe(
+      true,
+    );
+  });
+
+  it("hands a pre-#968 row to the app that last used it, and only to that app", async () => {
+    // The viu.one case: one per-user row labelled by Claude Code, revoked.
+    const legacyId = await withSql(async (tx) => {
+      const rows = (await tx`
+        INSERT INTO mcp_remote_connections (actor_id, surface, client_label, revoked_at, ai_cost_cap_microcents)
+        VALUES (${USERS.owner.id}::uuid, 'chat', 'claude-code', now(), 42)
+        RETURNING id::text AS id`) as { id: string }[];
+      return rows[0]!.id;
+    });
+    // ChatGPT is a different app: it gets its own, working row.
+    const chatgpt = await resolveRemoteMcpPrincipal(
+      adapter,
+      cred(USERS.owner.email, "chat", CHATGPT),
+      { clientLabel: "openai-mcp" },
+    );
+    expect(chatgpt.ok).toBe(true);
+    expect(
+      chatgpt.ok && chatgpt.value.via.kind === "remote" && chatgpt.value.via.connectionId,
+    ).not.toBe(legacyId);
+    // Claude Code's initialize names the row's client: it takes the row over, revocation and all.
+    const claude = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "chat"), {
+      clientLabel: "claude-code",
+    });
+    expect(!claude.ok && claude.error.code).toBe("remote_access_revoked");
+    expect((await connectionRow(USERS.owner.id, "chat"))?.id).toBe(legacyId);
+    await execute(registry, adapter, ownerCtx, "mcp_remote_connections.restore", { id: legacyId });
+    const restored = await resolveRemoteMcpPrincipal(adapter, cred(USERS.owner.email, "chat"));
+    expect(restored.ok && restored.value.aiCostCapMicrocents).toBe(42);
+    // Uncapped again for the op tests below.
+    await execute(registry, adapter, ownerCtx, "mcp_remote_connections.set_cap", {
+      id: legacyId,
+      aiCostCapMicrocents: null,
+    });
   });
 });
 

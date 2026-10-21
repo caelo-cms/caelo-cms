@@ -5,7 +5,8 @@
  * `refresh_token` grants for public MCP clients.
  *
  * The access token handed out is the user's Google ID token sealed with
- * the surface it was authorized for (access-token.ts) — the proxy checks
+ * the surface it was authorized for and the client it was issued to
+ * (access-token.ts) — the proxy checks
  * the surface and forwards the inner ID token to the IAP-protected admin,
  * and IAP accepts it only because its audience is the Google client the
  * Owner allowlisted (google.ts cites the IAP contract). The refresh token is Google's, sealed and bound to the
@@ -28,6 +29,7 @@ import { CodeSealSchema } from "./authorize.js";
 import { type McpContext, resourceUrls } from "./context.js";
 import { exchangeGoogleCode, type GoogleTokenResult, refreshGoogleToken } from "./google.js";
 import { json, oauthError } from "./http.js";
+import { clientKeyOf } from "./registration.js";
 import { open, seal } from "./seal.js";
 
 const TOKEN_MAX_BYTES = 16 * 1024;
@@ -80,11 +82,16 @@ function tokenResponse(
   ctx: McpContext,
   result: Extract<GoogleTokenResult, { ok: true }>,
   refreshToken: string,
-  resource: string | null,
+  grant: { readonly resource: string | null; readonly clientId: string },
 ): Response {
   const t = result.tokens;
+  const client = clientKeyOf(ctx, grant.clientId);
   return json({
-    access_token: sealAccessToken(ctx, t.idToken, resource, t.idTokenExpiresIn),
+    access_token: sealAccessToken(
+      ctx,
+      { idToken: t.idToken, resource: grant.resource, client },
+      t.idTokenExpiresIn,
+    ),
     token_type: "Bearer",
     expires_in: t.idTokenExpiresIn,
     refresh_token: refreshToken,
@@ -237,7 +244,10 @@ export async function handleToken(req: Request, ctx: McpContext): Promise<Respon
       resource: target.resource,
       iat: now,
     });
-    return tokenResponse(ctx, result, refresh, target.resource);
+    return tokenResponse(ctx, result, refresh, {
+      resource: target.resource,
+      clientId: r.client_id,
+    });
   }
 
   const sealed = open(ctx.config.openKeys, "refresh", r.refresh_token, RefreshSealSchema, now);
@@ -269,5 +279,5 @@ export async function handleToken(req: Request, ctx: McpContext): Promise<Respon
     resource: target.resource,
     iat: sealed.value.iat,
   });
-  return tokenResponse(ctx, result, refresh, target.resource);
+  return tokenResponse(ctx, result, refresh, { resource: target.resource, clientId: r.client_id });
 }

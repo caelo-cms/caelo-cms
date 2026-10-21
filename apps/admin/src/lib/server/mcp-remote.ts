@@ -7,7 +7,8 @@
  * (via the gateway's OAuth broker; no bearer token, no local shim).
  *
  * Identity is IAP's signed assertion — verified, mapped to a Caelo user and
- * that user's `mcp_remote_connections` row (mcp_principal.ts) BEFORE any
+ * that user's `mcp_remote_connections` row for the client app the gateway
+ * names (`x-caelo-mcp-client`, #968; mcp_principal.ts) BEFORE any
  * MCP processing, so auth failures are plain HTTP 401/403/503 with a
  * structured body. The MCP servers are the very ones the stdio shims run
  * (`@caelo-cms/mcp-server/surfaces`), backed here by the `mcp.*` ops
@@ -31,9 +32,11 @@
 
 import {
   IAP_ASSERTION_HEADER,
+  MCP_CLIENT_HEADER,
   type McpPrincipal,
   type McpRemoteCredential,
   type McpRemoteSurface,
+  mcpClientKey,
   type RemoteMcpRefusal,
   resolveRemoteMcpPrincipal,
 } from "@caelo-cms/admin-core";
@@ -81,6 +84,24 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
 /** The structured HTTP answer for a refused remote request. */
 export function remoteRefusalResponse(refusal: RemoteMcpRefusal): Response {
   return jsonResponse(refusal.status, { error: refusal.code, message: refusal.message });
+}
+
+/**
+ * The client app the gateway named (#968), or null when the request did not
+ * come through the gateway (or the value is not a client key); the
+ * resolver refuses the empty key with `missing_client_identity`.
+ */
+function clientKeyOf(request: Request): string | null {
+  const raw = request.headers.get(MCP_CLIENT_HEADER);
+  if (raw === null) return null;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  const parsed = mcpClientKey.safeParse(decoded);
+  return parsed.success ? parsed.data : null;
 }
 
 /** The MCP client's self-reported name, when the body is an initialize request. */
@@ -222,9 +243,14 @@ export async function handleRemoteMcpRequest(
     }
   }
 
+  // The app is named by the gateway from its sealed access token. Without
+  // it there is no connection row to pick, and the resolver refuses
+  // (after authenticating, so an unauthenticated caller learns nothing
+  // more); a default row would merge every unnamed caller into one.
   const credential: McpRemoteCredential = {
     iapCredential: request.headers.get(IAP_ASSERTION_HEADER) ?? "",
     surface,
+    client: clientKeyOf(request) ?? "",
   };
   const { adapter } = getQueryContext();
   const clientLabel = clientLabelOf(parsedBody);

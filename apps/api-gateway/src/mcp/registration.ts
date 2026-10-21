@@ -27,6 +27,7 @@
 
 import { z } from "zod";
 import { readBodyWithCap } from "../middleware/body-cap.js";
+import { mcpClientKey } from "./access-token.js";
 import type { McpContext } from "./context.js";
 import { json, oauthError } from "./http.js";
 import { isAllowedRedirectUri } from "./redirect-allowlist.js";
@@ -206,6 +207,18 @@ async function resolveCimd(ctx: McpContext, url: URL): Promise<ClientResolution>
       clientName: doc.data.client_name ?? null,
     },
   };
+}
+
+/**
+ * The client key ({@link mcpClientKey}) of a `client_id` the token endpoint
+ * already accepted. No network: a CIMD id is its own key, and a DCR id's
+ * name is inside its seal. A DCR id whose seal no longer opens (its key was
+ * rotated out) still has an identity: the hash of the id.
+ */
+export function clientKeyOf(ctx: McpContext, clientId: string): string {
+  if (clientId.startsWith("https://")) return mcpClientKey(clientId, null);
+  const opened = open(ctx.config.openKeys, "client", clientId, ClientSealSchema, ctx.nowSeconds());
+  return mcpClientKey(clientId, opened.ok ? (opened.value.client_name ?? null) : null);
 }
 
 /** Resolve a `client_id` from an authorization request. */

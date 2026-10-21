@@ -772,6 +772,8 @@ describe("token: authorization_code", () => {
     expect(openAccess(String(body.access_token), h.nowSeconds())).toEqual({
       id_token: fakeIdToken({ aud: GOOGLE_CLIENT_ID, exp: h.nowSeconds() + 3600 }),
       resource: `${PUBLIC}/api/mcp/admin`,
+      // The DCR client's name, so a re-registration stays the same app (#968).
+      client: "dcr:Test",
       exp: h.nowSeconds() + 3600,
     });
     expect(String(body.access_token)).not.toContain(".eyJ");
@@ -1019,6 +1021,7 @@ describe("token: refresh_token", () => {
       id_token: fakeIdToken({ aud: GOOGLE_CLIENT_ID, exp: h.nowSeconds() + 3500, refreshed: true }),
       // The client never named a resource: consented (and valid) for both surfaces.
       resource: null,
+      client: "dcr:Test",
       exp: h.nowSeconds() + 3500,
     });
     expect(String(body.refresh_token)).toStartWith("v2.");

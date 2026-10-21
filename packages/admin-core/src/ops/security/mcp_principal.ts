@@ -19,14 +19,25 @@
  * `auth_error:` / `permission_denied:` prefixes the HTTP shells map to
  * 401 / 403.
  *
- * Remote rows are auto-created on a user's first request on a surface when
- * the user may use it (chat: `content.write`; admin: `settings.write`, what
- * minting an admin-scope token takes). A revoked row is sticky: a later
- * request never resurrects it — only the Owner's Restore does.
+ * Remote rows are one per (user, surface, client app) since #968, keyed by
+ * the app the gateway names (mcp_credential.ts `client`). A row is
+ * auto-created on the app's first request when the user may use the
+ * surface (chat: `content.write`; admin: `settings.write`, what minting an
+ * admin-scope token takes). A revoked row is sticky: a later request never
+ * resurrects it — only the Owner's Restore does. An Owner's block
+ * (`mcp_remote_access_blocks`) refuses every app of the user, new ones
+ * included. docs/dev/mcp-access.md is the concept.
  */
 
 import type { DatabaseAdapter, TransactionRunner } from "@caelo-cms/query-api";
-import { err, ok, type Result } from "@caelo-cms/shared";
+import {
+  describeMcpClient,
+  err,
+  MCP_SURFACE_COPY,
+  MCP_SURFACE_PERMISSION,
+  ok,
+  type Result,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { recordAudit, SYSTEM_ACTOR_ID } from "../../audit.js";
 import type { Permission } from "../../permissions.js";
@@ -67,37 +78,78 @@ export function mcpAgentRefOf(principal: McpPrincipal): McpAgentRef {
  * route answers with; `code` is the structured error the client reads.
  */
 export interface RemoteMcpRefusal {
-  readonly status: 401 | 403 | 503;
+  readonly status: 400 | 401 | 403 | 503;
   readonly code:
     | "remote_mcp_not_configured"
     | "missing_iap_assertion"
     | "invalid_iap_assertion"
+    | "missing_client_identity"
     | "not_a_caelo_user"
     | "permission_denied"
+    | "remote_access_blocked"
     | "remote_access_revoked";
   readonly message: string;
 }
 
 /** What each remote surface requires of the user (see the module header). */
-export const REMOTE_SURFACE_PERMISSION: Readonly<Record<McpRemoteSurface, Permission>> = {
-  chat: "content.write",
-  admin: "settings.write",
-};
+export const REMOTE_SURFACE_PERMISSION: Readonly<Record<McpRemoteSurface, Permission>> =
+  MCP_SURFACE_PERMISSION;
+
+/** Where an Owner manages remote connections, as the refusals name it. */
+const SETTINGS_PLACE = "Settings → MCP → Remote connections";
 
 const NOT_A_CAELO_USER =
   "This Google account has no access to this Caelo site. Ask the site Owner to add you under Settings → Users.";
 
-const PERMISSION_MESSAGE: Readonly<Record<McpRemoteSurface, string>> = {
-  chat:
-    "Remote caelo_chat needs the content.write permission, which your Caelo role does not grant. " +
-    "Ask the site Owner for an editing role under Settings → Users.",
-  admin:
-    "The remote Power-MCP surface (/api/mcp/admin) needs the settings.write permission — the same an admin-scoped MCP token needs. " +
-    "Connect to the chat surface (/api/mcp/chat) instead, or ask the site Owner for the permission under Settings → Users.",
+/**
+ * A request that reached the remote endpoint without the gateway naming
+ * its client app: it did not come through `/api/mcp/<surface>`. The route
+ * passes the client as `""` then, and the resolver answers this after IAP.
+ */
+const MISSING_CLIENT_IDENTITY: RemoteMcpRefusal = {
+  status: 400,
+  code: "missing_client_identity",
+  message:
+    "This request did not come through the site's MCP address, so Caelo cannot tell which app sent it. Connect your AI tool to the /api/mcp/chat or /api/mcp/admin URL shown under Settings → MCP.",
 };
 
-const REVOKED_MESSAGE =
-  "Remote access for this account was revoked under Settings → MCP. Ask the site Owner to restore it there.";
+/**
+ * The permission refusal, naming what is missing, the user's roles and the
+ * roles that would allow it — the user can then ask for exactly that.
+ */
+function permissionMessage(
+  surface: McpRemoteSurface,
+  userRoles: readonly string[],
+  allowingRoles: readonly string[],
+): string {
+  const permission = REMOTE_SURFACE_PERMISSION[surface];
+  const yours =
+    userRoles.length > 0
+      ? `Your role (${userRoles.join(", ")}) does not grant it`
+      : "Your role does not grant it";
+  const allowing =
+    allowingRoles.length > 0
+      ? `; roles that do: ${allowingRoles.join(", ")}`
+      : "; no role on this site grants it yet";
+  const alternative =
+    surface === "admin"
+      ? " Connect the chat address (/api/mcp/chat) instead, or ask the site Owner to change your role under Settings → Users."
+      : " Ask the site Owner to change your role under Settings → Users.";
+  return `"${MCP_SURFACE_COPY[surface].title}" (/api/mcp/${surface}) needs the ${permission} permission. ${yours}${allowing}.${alternative}`;
+}
+
+const fmtDate = (v: string | Date): string =>
+  (v instanceof Date ? v : new Date(v)).toISOString().slice(0, 10);
+
+function revokedMessage(clientKey: string, by: string | null, at: string | Date): string {
+  const who = by ? `by ${by}` : "by an Owner";
+  return `Remote access for ${describeMcpClient(clientKey)} on this account was revoked ${who} on ${fmtDate(at)}. Your other connected apps are not affected. An Owner restores it under ${SETTINGS_PLACE}.`;
+}
+
+function blockedMessage(by: string | null, at: string | Date): string {
+  const who = by ? `by ${by}` : "by an Owner";
+  return `Remote MCP access for this account is blocked for every app, ${who} on ${fmtDate(at)}. An Owner lifts the block under ${SETTINGS_PLACE}.`;
+}
 
 interface ConnectionRow {
   id: string;
@@ -106,6 +158,7 @@ interface ConnectionRow {
   current_chat_session_id: string | null;
   client_label: string | null;
   revoked_at: string | Date | null;
+  revoked_by_email: string | null;
 }
 
 function toCap(v: bigint | string | number | null): number | null {
@@ -119,24 +172,52 @@ async function selectConnection(
   tx: TransactionRunner,
   actorId: string,
   surface: McpRemoteSurface,
+  clientKey: string,
 ): Promise<ConnectionRow | undefined> {
   const rows = (await tx.execute(sql`
-    SELECT id::text AS id, ai_cost_cap_microcents, allow_caelo_ai,
-           current_chat_session_id::text AS current_chat_session_id, client_label, revoked_at
-    FROM mcp_remote_connections
-    WHERE actor_id = ${actorId}::uuid AND surface = ${surface}
-    FOR UPDATE
+    SELECT c.id::text AS id, c.ai_cost_cap_microcents, c.allow_caelo_ai,
+           c.current_chat_session_id::text AS current_chat_session_id, c.client_label,
+           c.revoked_at, u.email AS revoked_by_email
+    FROM mcp_remote_connections c
+    LEFT JOIN users u ON u.id = c.revoked_by
+    WHERE c.actor_id = ${actorId}::uuid AND c.surface = ${surface} AND c.client_key = ${clientKey}
+    FOR UPDATE OF c
   `)) as unknown as ConnectionRow[];
   return rows[0];
 }
 
 /**
+ * The pre-#968 row of (user, surface) becomes this app's row when the app's
+ * MCP `initialize` names the client that row last saw — "the row of its
+ * last client" (migration 0335). Its revocation, cap and work session carry
+ * over; an app with another name never inherits them.
+ */
+async function adoptLegacyRow(
+  tx: TransactionRunner,
+  actorId: string,
+  surface: McpRemoteSurface,
+  clientKey: string,
+  clientLabel: string | undefined,
+): Promise<boolean> {
+  if (clientLabel === undefined) return false;
+  const adopted = (await tx.execute(sql`
+    UPDATE mcp_remote_connections SET client_key = ${clientKey}
+    WHERE actor_id = ${actorId}::uuid AND surface = ${surface}
+      AND client_key IS NULL AND client_label = ${clientLabel}
+    RETURNING id::text AS id
+  `)) as unknown as { id: string }[];
+  return adopted.length === 1;
+}
+
+/**
  * Verify a remote request's IAP assertion and resolve (auto-creating when
- * allowed) the user's connection on `surface`. Not an op, like
- * {@link resolveMcpToken}: the credential would otherwise reach audit input.
+ * allowed) the user's connection for the request's surface and client app.
+ * Not an op, like {@link resolveMcpToken}: the credential would otherwise
+ * reach audit input.
  *
  * @param clientLabel - the MCP client's self-reported name (initialize
- *   `clientInfo`), stored for the Settings list when given.
+ *   `clientInfo`), stored for the Settings list when given, and the key
+ *   that hands a pre-#968 row to its app.
  */
 export async function resolveRemoteMcpPrincipal(
   adapter: DatabaseAdapter,
@@ -156,48 +237,84 @@ export async function resolveRemoteMcpPrincipal(
     return err({ status: 401, code: "invalid_iap_assertion", message: e.message });
   }
   const { email } = verified.identity;
-  const surface = credential.surface;
+  const { surface, client: clientKey } = credential;
+  if (clientKey === "") return err(MISSING_CLIENT_IDENTITY);
+  const label = opts.clientLabel?.trim().slice(0, 200) || undefined;
 
   return adapter.withAdminTransaction(
     { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: "mcp-resolve-remote" },
     async (tx): Promise<Result<McpPrincipal, RemoteMcpRefusal>> => {
+      const permission = REMOTE_SURFACE_PERMISSION[surface];
       // Case-insensitive: Google normalises the address it asserts, the
       // Owner typed the Caelo user's. A deleted or role-less user is no
       // user of this site.
       const users = (await tx.execute(sql`
         SELECT u.id::text AS id, u.email,
-               EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id) AS has_role,
+               ARRAY(
+                 SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = u.id ORDER BY r.name
+               ) AS roles,
                EXISTS (
                  SELECT 1 FROM user_roles ur
                  JOIN role_permissions rp ON rp.role_id = ur.role_id
                  JOIN permissions p ON p.id = rp.permission_id
-                 WHERE ur.user_id = u.id AND p.name = ${REMOTE_SURFACE_PERMISSION[surface]}
-               ) AS allowed
+                 WHERE ur.user_id = u.id AND p.name = ${permission}
+               ) AS allowed,
+               b.blocked_at, bu.email AS blocked_by_email
         FROM users u
+        LEFT JOIN mcp_remote_access_blocks b ON b.actor_id = u.id
+        LEFT JOIN users bu ON bu.id = b.blocked_by
         WHERE lower(u.email) = lower(${email}) AND u.deleted_at IS NULL
-      `)) as unknown as { id: string; email: string; has_role: boolean; allowed: boolean }[];
+      `)) as unknown as {
+        id: string;
+        email: string;
+        roles: string[];
+        allowed: boolean;
+        blocked_at: string | Date | null;
+        blocked_by_email: string | null;
+      }[];
       // Two live users differing only in case cannot be told apart by the
       // assertion; refuse rather than guess.
       const user = users.length === 1 ? users[0] : undefined;
-      if (!user?.has_role) {
+      if (!user || user.roles.length === 0) {
         return err({ status: 403, code: "not_a_caelo_user", message: NOT_A_CAELO_USER });
       }
       if (!user.allowed) {
+        const allowing = (await tx.execute(sql`
+          SELECT r.name FROM roles r
+          JOIN role_permissions rp ON rp.role_id = r.id
+          JOIN permissions p ON p.id = rp.permission_id
+          WHERE p.name = ${permission} ORDER BY r.name
+        `)) as unknown as { name: string }[];
         return err({
           status: 403,
           code: "permission_denied",
-          message: PERMISSION_MESSAGE[surface],
+          message: permissionMessage(
+            surface,
+            user.roles,
+            allowing.map((r) => r.name),
+          ),
+        });
+      }
+      if (user.blocked_at !== null) {
+        return err({
+          status: 403,
+          code: "remote_access_blocked",
+          message: blockedMessage(user.blocked_by_email, user.blocked_at),
         });
       }
 
-      let row = await selectConnection(tx, user.id, surface);
+      let row = await selectConnection(tx, user.id, surface, clientKey);
+      if (!row && (await adoptLegacyRow(tx, user.id, surface, clientKey, label))) {
+        row = await selectConnection(tx, user.id, surface, clientKey);
+      }
       if (!row) {
         await tx.execute(sql`
-          INSERT INTO mcp_remote_connections (actor_id, surface)
-          VALUES (${user.id}::uuid, ${surface})
-          ON CONFLICT (actor_id, surface) DO NOTHING
+          INSERT INTO mcp_remote_connections (actor_id, surface, client_key)
+          VALUES (${user.id}::uuid, ${surface}, ${clientKey})
+          ON CONFLICT (actor_id, surface, client_key) DO NOTHING
         `);
-        row = await selectConnection(tx, user.id, surface);
+        row = await selectConnection(tx, user.id, surface, clientKey);
         if (!row) {
           throw new Error("mcp_remote_connections insert returned no row");
         }
@@ -205,28 +322,30 @@ export async function resolveRemoteMcpPrincipal(
           actorId: user.id,
           requestId: "mcp-resolve-remote",
           operation: "mcp_remote_connections.create",
-          input: { surface },
+          input: { surface, client: clientKey },
           succeeded: true,
           entityId: row.id,
-          resultSummary: `first remote MCP request on ${surface}`,
+          resultSummary: `first remote MCP request on ${surface} from ${describeMcpClient(clientKey)}`,
         });
       }
       if (row.revoked_at !== null) {
-        return err({ status: 403, code: "remote_access_revoked", message: REVOKED_MESSAGE });
+        return err({
+          status: 403,
+          code: "remote_access_revoked",
+          message: revokedMessage(clientKey, row.revoked_by_email, row.revoked_at),
+        });
       }
-      const label = opts.clientLabel?.trim().slice(0, 200) || null;
       await tx.execute(sql`
         UPDATE mcp_remote_connections
-        SET last_used_at = now(), client_label = COALESCE(${label}, client_label)
+        SET last_used_at = now(), client_label = COALESCE(${label ?? null}, client_label)
         WHERE id = ${row.id}::uuid
       `);
-      const clientLabel = label ?? row.client_label;
       return ok({
         actorId: user.id,
         scope: surface,
         aiCostCapMicrocents: toCap(row.ai_cost_cap_microcents),
         allowCaeloAi: row.allow_caelo_ai === true,
-        displayName: clientLabel ? `${clientLabel} · ${user.email}` : user.email,
+        displayName: `${describeMcpClient(clientKey)} · ${user.email}`,
         via: {
           kind: "remote",
           connectionId: row.id,
