@@ -116,6 +116,13 @@ export interface ConvergeSession {
    * infrastructure contract version be recorded.
    */
   complete(): boolean;
+  /**
+   * Whether the part before the app-roll changed access the health check
+   * relies on (an IAM binding, MCP access, the gateway's ingress). Google
+   * applies such changes only after a while, so the health baseline then
+   * waits for a refusal to clear (health.ts, #734).
+   */
+  accessJustChanged(): boolean;
 }
 
 /** Start a converge for the install `plan` rolls. */
@@ -137,6 +144,7 @@ export function startConverge(
     services,
   };
   let incomplete = false;
+  let accessChanged = false;
   // Env vars the rolls must leave as the services have them, because the
   // thing they point at could not be set up.
   const leaveUntouched: string[] = [];
@@ -179,10 +187,12 @@ export function startConverge(
 
   async function stackInvariants(): Promise<boolean> {
     // IAM bindings + CDN policy added to the stacks after this install was
-    // provisioned (stack-contract.ts), and GCP's SSH/RDP-from-anywhere
-    // firewall rules removed (default-firewall.ts). Additive + idempotent.
+    // provisioned (stack-contract.ts), a gcp-firebase gateway's ingress
+    // (#732), and GCP's SSH/RDP-from-anywhere firewall rules removed
+    // (default-firewall.ts). Before the app-roll: its health baseline
+    // reaches the gateway through that ingress. Idempotent.
     const s = r.step(
-      "Ensuring the IAM bindings + CDN settings the stack declares, removing the default network's pre-populated firewall rules...",
+      "Ensuring the IAM bindings, CDN settings and gateway ingress the stack declares, removing the default network's pre-populated firewall rules...",
     );
     const report = await ensureStackInvariants(target, runDeps);
     const applied = report.outcomes.filter((o) => o.status === "applied");
@@ -193,6 +203,7 @@ export function startConverge(
         `Stack invariants ok (${report.outcomes.length - failed.length}/${report.outcomes.length}, ${applied.length} applied)`,
       );
     }
+    if (applied.length > 0) accessChanged = true;
     for (const o of applied) r.info(`  applied: ${o.id} (${o.why})`);
     for (const o of failed) {
       const line = `  ${o.onFailure === "abort" ? "FAILED" : "not applied"}: ${o.id} — ${o.why}\n    ${o.error ?? ""}`;
@@ -250,6 +261,8 @@ export function startConverge(
         : { ok: false as const, error: "admin IAP backend service not found" };
     if (mcp.ok) {
       s.done(`MCP access ready (${mcp.serviceAccount}; ${mcp.operators.length} operator(s))`);
+      if (mcp.granted.length > 0) accessChanged = true;
+      for (const g of mcp.granted) r.info(`  granted: ${g}`);
       return;
     }
     s.warned(`MCP access not configured: ${mcp.error}`);
@@ -645,5 +658,6 @@ export function startConverge(
     },
 
     complete: () => !incomplete,
+    accessJustChanged: () => accessChanged,
   };
 }

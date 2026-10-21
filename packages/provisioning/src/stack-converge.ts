@@ -15,6 +15,9 @@
  *   - {@link ensureStackInvariants} also deletes the firewall rules GCP
  *     pre-populates on the `default` network (SSH, RDP, ICMP, internal)
  *     (default-firewall.ts), the one thing it removes.
+ *   - {@link ensureStackInvariants} opens a gcp-firebase gateway created
+ *     load-balancer-only to all traffic (#650, #732), before migrations:
+ *     the upgrade's own health check reaches it on its run.app URL.
  *   - {@link planMediaVolume}: the admin's media bucket volume (gen2 + Cloud
  *     Storage volume + mount), added in the same `services update` when
  *     missing.
@@ -578,10 +581,62 @@ async function ensureCdnPolicy(
     : { ...base, status: "failed", error: update.stderr.trim() };
 }
 
+/** The ingress of a described service (`all`, `internal-and-cloud-load-balancing`, …; null: unset). */
+export function liveIngress(serviceJson: string): string | null {
+  const svc = JSON.parse(serviceJson) as {
+    metadata?: { annotations?: Record<string, string> };
+  };
+  return svc.metadata?.annotations?.["run.googleapis.com/ingress"] ?? null;
+}
+
+/**
+ * Open a gcp-firebase gateway to all traffic, as the stack declares it
+ * (`INGRESS_TRAFFIC_ALL` since #650). There is no load balancer on
+ * gcp-firebase: the staging domain mapping, remote-MCP clients and the
+ * upgrade's own health probe reach the gateway's run.app URL. A gateway
+ * created before #650 kept `internal-and-cloud-load-balancing` (only
+ * `pulumi up` would change it), answered those requests with Google's HTML
+ * 404, and every upgrade rolled back after its migrations (#732).
+ *
+ * Ingress is a service-level setting: the update creates no revision, so
+ * the serving one and the app-roll's rollback target stay as they are. On
+ * `gcp` the stack declares load-balancer-only and `staging-domain enable`
+ * (admin-domain.ts) opens it deliberately, so this never runs there.
+ */
+async function ensureGatewayIngress(
+  install: InstallTarget,
+  run: GcloudRunner,
+): Promise<InvariantOutcome> {
+  const service = install.services.gateway;
+  const base = {
+    id: `ingress all on ${service}`,
+    onFailure: "abort" as const,
+    why: "the gcp-firebase stack's gateway ingress (#650); the health check, the staging domain and remote MCP reach its run.app URL",
+  };
+  const where = [`--region=${install.region}`, `--project=${install.projectId}`];
+  const describe = await run(["run", "services", "describe", service, ...where, "--format=json"]);
+  if (!describe.ok) return { ...base, status: "failed", error: describe.stderr.trim() };
+  const live = liveIngress(describe.stdout);
+  if (live === "all") return { ...base, status: "present" };
+  const update = await run([
+    "run",
+    "services",
+    "update",
+    service,
+    ...where,
+    "--ingress=all",
+    "--quiet",
+  ]);
+  return update.ok
+    ? { ...base, id: `ingress ${live ?? "(unset)"} → all on ${service}`, status: "applied" }
+    : { ...base, status: "failed", error: update.stderr.trim() };
+}
+
 /**
  * Idempotently ensure every IAM binding and CDN setting the install's stack
- * declares (stack-contract.ts), and that the firewall rules GCP pre-populates
- * on the default network are gone (ABSENT_DEFAULT_FIREWALL_RULES). Bindings
+ * declares (stack-contract.ts), a gcp-firebase gateway's ingress, and that
+ * the firewall rules GCP pre-populates on the default network are gone
+ * (ABSENT_DEFAULT_FIREWALL_RULES). Bindings
  * are only added, never removed; those firewall rules are the only deletion. Never
  * throws for a gcloud failure; the report says what failed and whether the
  * upgrade must stop.
@@ -623,6 +678,7 @@ export async function ensureStackInvariants(
     : invariants.filter((i) => i.member !== "iap-service-agent");
   outcomes.push(...(await ensureIam(checkable, install, projectNumber, run, sleep)));
   if (install.provider === "gcp") outcomes.push(await ensureCdnPolicy(install, run));
+  if (install.provider === "gcp-firebase") outcomes.push(await ensureGatewayIngress(install, run));
   outcomes.push(...(await removeDefaultFirewallRules(install.projectId, { run })));
 
   return {

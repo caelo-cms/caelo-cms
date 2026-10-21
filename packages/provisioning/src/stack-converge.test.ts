@@ -64,6 +64,9 @@ const firebase: InstallTarget = {
 };
 const gcp: InstallTarget = { ...firebase, provider: "gcp" };
 
+const ingressJson = (ingress: string) =>
+  JSON.stringify({ metadata: { annotations: { "run.googleapis.com/ingress": ingress } } });
+
 const serviceJson = (env: unknown[]) =>
   JSON.stringify({ spec: { template: { spec: { containers: [{ env }] } } } });
 
@@ -494,6 +497,7 @@ describe("ensureStackInvariants", () => {
       policy([{ role: "roles/run.invoker", members: [IAP_AGENT] }]),
     ],
     "compute firewall-rules list": [ok("[]")],
+    "run services describe caelo-production-gateway-bbb": [ok(ingressJson("all"))],
   });
 
   it("is a read-only no-op on an install that is already in shape", async () => {
@@ -502,10 +506,59 @@ describe("ensureStackInvariants", () => {
     expect(report.mustAbort).toBe(false);
     expect(report.outcomes.every((o) => o.status === "present")).toBe(true);
     expect(report.outcomes).toHaveLength(
-      stackIamInvariants("gcp-firebase").length + ABSENT_DEFAULT_FIREWALL_RULES.length,
+      stackIamInvariants("gcp-firebase").length + ABSENT_DEFAULT_FIREWALL_RULES.length + 1,
     );
     expect(calls.some((c) => c.startsWith("compute firewall-rules delete"))).toBe(false);
     expect(calls.some((c) => c.includes("add-iam-policy-binding"))).toBe(false);
+    expect(calls.some((c) => c.startsWith("run services update"))).toBe(false);
+  });
+
+  describe("gcp-firebase gateway ingress (#732)", () => {
+    it("opens a load-balancer-only gateway to all traffic, and a re-run is a no-op", async () => {
+      const answers = fullFirebase();
+      answers["run services describe caelo-production-gateway-bbb"] = [
+        ok(ingressJson("internal-and-cloud-load-balancing")),
+      ];
+      const { run, calls } = fakeGcloud(answers);
+      const report = await ensureStackInvariants(firebase, { run, sleep: async () => {} });
+      expect(report.mustAbort).toBe(false);
+      expect(calls).toContain(
+        "run services update caelo-production-gateway-bbb --region=europe-west1 --project=acme --ingress=all --quiet",
+      );
+      expect(report.outcomes.filter((o) => o.status === "applied").map((o) => o.id)).toEqual([
+        "ingress internal-and-cloud-load-balancing → all on caelo-production-gateway-bbb",
+      ]);
+
+      const again = fakeGcloud(fullFirebase());
+      const rerun = await ensureStackInvariants(firebase, {
+        run: again.run,
+        sleep: async () => {},
+      });
+      expect(rerun.outcomes.every((o) => o.status === "present")).toBe(true);
+      expect(again.calls.some((c) => c.includes("--ingress"))).toBe(false);
+    });
+
+    it("aborts the upgrade when the ingress can't be changed", async () => {
+      const { run } = fakeGcloud({
+        ...fullFirebase(),
+        "run services describe caelo-production-gateway-bbb": [
+          ok(ingressJson("internal-and-cloud-load-balancing")),
+        ],
+        "run services update": [fail("PERMISSION_DENIED: run.services.update")],
+      });
+      const report = await ensureStackInvariants(firebase, { run, sleep: async () => {} });
+      expect(report.mustAbort).toBe(true);
+      expect(report.outcomes.find((o) => o.status === "failed")?.error).toBe(
+        "PERMISSION_DENIED: run.services.update",
+      );
+    });
+
+    it("never reads or changes the gcp gateway's ingress (its stack declares load-balancer-only)", async () => {
+      const { run, calls } = fakeGcloud({ "projects describe": [ok("42")] });
+      await ensureStackInvariants(gcp, { run, sleep: async () => {} });
+      expect(calls.some((c) => c.startsWith("run services describe"))).toBe(false);
+      expect(calls.some((c) => c.includes("--ingress"))).toBe(false);
+    });
   });
 
   it("upgrade deletes GCP's pre-populated default-network firewall rules without aborting", async () => {

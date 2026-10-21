@@ -11,10 +11,12 @@
  * `["human", "ai", "system"]` for all 5 CRUD ops — content edits are
  * routine, not gated.
  *
- * The only escalation is `content_instances.delete` with N>0 placements:
- * direct delete returns a structured error pointing the AI at the
- * propose/execute flow (lands in v0.12.0.1 per CLAUDE.md §11.A). Direct
- * delete with zero placements is allowed.
+ * The only refusal is `content_instances.delete` with N>0 placements:
+ * deleting would strand the pages bound to the row, so the op returns a
+ * structured error pointing the AI at `fork_placement_content` for each
+ * referencing placement (#63). Forking keeps every page's content, so
+ * detach-then-delete is routine and needs no Owner gate. Direct delete
+ * with zero placements is allowed.
  *
  * Branch isolation: writes during a chat are tagged with
  * `ctx.chatBranchId` and emit a `content_instance_snapshots` row only —
@@ -1127,11 +1129,10 @@ export const deleteContentInstanceOp = defineOperation({
 
     const placementCount = await countPlacements(tx, input.id);
     if (placementCount > 0) {
-      // Per CLAUDE.md §11.A — a hard-to-revert action (cascade across
-      // many pages) needs a propose/execute gate. The gated variant
-      // lands in v0.12.0.1; for now, surface the blast radius + the
-      // recovery path. The AI's tool description carries the same
-      // contract.
+      // Refuse instead of cascading: the AI detaches each placement via
+      // fork_placement_content (content survives as a private copy),
+      // then deletes the orphan. #63 — the message must only name tools
+      // that exist; it once pointed at a never-built propose tool.
       //
       // v0.12.2 — name the top-3 affected pages inline so the AI can
       // discover the placements without a follow-up
@@ -1152,7 +1153,7 @@ export const deleteContentInstanceOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "content_instances.delete",
-        message: `cannot delete: ${placementCount} placement(s) reference this content_instance${samples ? ` (on ${samples}${moreSuffix})` : ""}. Detach each placement first via fork_placement_content, OR (v0.12.0.1+) submit a propose_delete_content_instance proposal so the Owner can approve the cascade.`,
+        message: `cannot delete: ${placementCount} placement(s) reference this content_instance${samples ? ` (on ${samples}${moreSuffix})` : ""}. Detach each placement first: call get_content_instance to list its placements (pageId, blockName, position), then fork_placement_content for each one (the page keeps its content as a private copy), then retry the delete.`,
         nextAction: {
           tool: "fork_placement_content",
           args: {},

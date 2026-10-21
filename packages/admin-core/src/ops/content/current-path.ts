@@ -24,7 +24,13 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { composePaths, renderScopeOf } from "./compose-paths.js";
-import { ancestorIdsOf, descendantIdsOf, loadPageTree, type PageTreeNode } from "./page-tree.js";
+import {
+  ancestorIdsOf,
+  descendantIdsOf,
+  loadPageTree,
+  type PageTree,
+  type PageTreeNode,
+} from "./page-tree.js";
 import { applyPathMoveEffects } from "./path-moves.js";
 
 export {
@@ -132,6 +138,44 @@ async function loadStoredPaths(
 }
 
 /**
+ * #586 — main-line pages whose stored path differs from a fresh
+ * composition under committed main state, i.e. the moves an approved
+ * URL migration (`url_migrations.propose_migrate`) would apply. A
+ * URL-setting change (a locale strategy, `prefixDefaultLocale`) leaves
+ * pages here until the Owner approves the migration that writes their
+ * 301s; side-path recomputes must not move them first.
+ */
+async function pendingMigrationPageIds(
+  tx: TransactionRunner,
+  tree: PageTree,
+): Promise<Set<string>> {
+  const ids = [...tree.byId.keys()];
+  const fresh = await composePaths(tx, tree, ids, { chatBranchId: null });
+  const stored = await loadStoredPaths(tx, ids);
+  return new Set(ids.filter((id) => stored.get(id) !== fresh.get(id)));
+}
+
+/** True when a fresh main composition moves a published page of `pageIds`. */
+async function movesPublishedPage(
+  tx: TransactionRunner,
+  tree: PageTree,
+  pageIds: ReadonlyArray<string>,
+): Promise<boolean> {
+  const published = (await tx.execute(sql`
+    SELECT id::text AS id FROM pages
+    WHERE status = 'published' AND id IN (${sql.join(
+      pageIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )})
+  `)) as unknown as { id: string }[];
+  if (published.length === 0) return false;
+  const ids = published.map((r) => r.id);
+  const fresh = await composePaths(tx, tree, ids, { chatBranchId: null });
+  const stored = await loadStoredPaths(tx, ids);
+  return ids.some((id) => stored.get(id) !== fresh.get(id));
+}
+
+/**
  * Resolve WITHOUT persisting — the diff engine's and the branch
  * preview's "what would the paths be" half. Same tree + composition as
  * the recompute; under a chat scope the chat's pending moves apply.
@@ -170,6 +214,9 @@ export const refreshCurrentPathOp = defineOperation({
   output: z.object({
     path: z.string(),
     moved: z.boolean(),
+    /** #586 — true when the page did not move because the move belongs
+     *  to a URL migration still waiting for the Owner's approval. */
+    awaitingUrlMigration: z.boolean(),
   }),
   handler: async (ctx, input, tx) => {
     const before = (await tx.execute(sql`
@@ -191,7 +238,31 @@ export const refreshCurrentPathOp = defineOperation({
       // before publish. Report the branch's view; the merge applies it.
       const preview = await resolveCurrentPathsDryRun(tx, [input.pageId], scope);
       const path = preview.get(input.pageId) ?? oldPath;
-      return ok({ path, moved: false });
+      return ok({ path, moved: false, awaitingUrlMigration: false });
+    }
+    // #586 — while a URL-setting change waits for its migration, pages
+    // outside this subtree drift too: the move is the setting's, not this
+    // page's data, and only the approved migration may apply it (with
+    // its 301s). The migration diff includes this page, so nothing is
+    // lost by waiting. A page whose drift is confined to its own subtree
+    // is the page-local case this op exists for (a variant link). Only a
+    // published page has a public URL to protect; a draft (a fresh
+    // variant) moves freely, without composing the whole site.
+    const tree = await loadPageTree(tx, null);
+    const subtree = [input.pageId, ...descendantIdsOf(tree, [input.pageId])];
+    const movesPublished = await movesPublishedPage(tx, tree, subtree);
+    const pending = movesPublished ? await pendingMigrationPageIds(tx, tree) : new Set<string>();
+    if ([...pending].some((id) => !subtree.includes(id))) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "pages.refresh_current_path",
+        input,
+        succeeded: true,
+        entityId: input.pageId,
+        resultSummary: `unchanged: URL migration pending (${pending.size} pages)`,
+      });
+      return ok({ path: oldPath, moved: false, awaitingUrlMigration: true });
     }
     const recomputed = await recomputeCurrentPathsWithMoves(tx, [input.pageId], scope);
     const newPath = recomputed.paths.get(input.pageId);
@@ -215,7 +286,7 @@ export const refreshCurrentPathOp = defineOperation({
       entityId: input.pageId,
       resultSummary: moved ? `${oldPath} → ${newPath}` : "unchanged",
     });
-    return ok({ path: newPath, moved });
+    return ok({ path: newPath, moved, awaitingUrlMigration: false });
   },
 });
 
@@ -227,8 +298,10 @@ export const refreshCurrentPathOp = defineOperation({
  * - replayed page rows (a chat renamed or reparented pages): those pages
  *   and their subtrees are recomposed from the in-tx, post-replay tree —
  *   the same composition a direct `pages.update` runs;
- * - plugin rows (a locale variant link): every live page is recomposed.
- *   Plugin calls run in their own transactions and cannot see the
+ * - plugin rows (a locale variant link): every page whose composition
+ *   those rows change is recomposed — not pages that only drift from a
+ *   pending URL-setting change (#586, see below). Plugin calls run in
+ *   their own transactions and cannot see the
  *   merge's uncommitted writes, so the annotations are read in the
  *   BRANCH view — committed main plus the branch overlay — which is
  *   exactly the post-merge state when the merge takes every plugin row
@@ -253,21 +326,33 @@ export async function refreshLivePathsAfterMerge(
   },
 ): Promise<string[]> {
   const tree = await loadPageTree(tx, null);
-  let targets: string[];
-  let annotationScope: RenderScope;
+  const roots = opts.replayedPageIds.filter((id) => tree.byId.has(id));
+  const replayed = [...roots, ...descendantIdsOf(tree, roots)];
+  let composed: Map<string, string>;
   if (opts.pluginRowsMerged) {
     // Without the plugin host loaded no URL plugin would answer, and every
     // prefixed path (/de/…) would recompose bare. Fail rather than strip.
     hostSystemActorId();
-    targets = [...tree.byId.keys()];
-    annotationScope = { chatBranchId };
+    // #586 — only pages the merge itself moves: the replayed subtrees,
+    // the newly live pages, and pages whose composition the merged plugin
+    // rows change (branch view ≠ committed main). A page that composes
+    // the same either way but differs from its stored path is drifting
+    // from a URL-setting change; its move waits for the approved URL
+    // migration, which also writes the 301s.
+    const all = [...tree.byId.keys()];
+    const withMerge = await composePaths(tx, tree, all, { chatBranchId });
+    const withoutMerge = await composePaths(tx, tree, all, { chatBranchId: null });
+    const caused = new Set([
+      ...replayed,
+      ...opts.newlyLivePageIds,
+      ...all.filter((id) => withMerge.get(id) !== withoutMerge.get(id)),
+    ]);
+    composed = new Map([...withMerge].filter(([id]) => caused.has(id)));
   } else {
-    const roots = opts.replayedPageIds.filter((id) => tree.byId.has(id));
-    targets = [...roots, ...descendantIdsOf(tree, roots)];
-    annotationScope = { chatBranchId: null };
+    composed = await composePaths(tx, tree, replayed, { chatBranchId: null });
   }
+  const targets = [...composed.keys()];
   if (targets.length === 0) return [];
-  const composed = await composePaths(tx, tree, targets, annotationScope);
   const stored = await loadStoredPaths(tx, targets);
   const moves: PathMove[] = [];
   for (const [id, to] of composed) {

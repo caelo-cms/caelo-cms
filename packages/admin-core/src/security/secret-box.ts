@@ -118,6 +118,43 @@ export async function decryptSecret(args: EncryptedSecret): Promise<string> {
   return new TextDecoder().decode(plain);
 }
 
+const subkeys = new Map<string, Promise<CryptoKey>>();
+
+/**
+ * An HMAC-SHA256 signing key derived from the KEK for one purpose
+ * (`label`), so a server-signed value verifies on every admin instance of
+ * the install without a second provisioned secret. The derivation is
+ * HMAC(KEK, label): the KEK itself never signs anything, and keys for
+ * different labels are independent, so a signature minted for one purpose
+ * can never verify for another.
+ *
+ * @param label - a fixed, versioned purpose string, e.g. `caelo/preview-asset-grant/v1`.
+ */
+export function deriveKekSubkey(label: string): Promise<CryptoKey> {
+  let key = subkeys.get(label);
+  if (!key) {
+    key = (async () => {
+      const kek = await crypto.subtle.importKey(
+        "raw",
+        loadKekBytes() as BufferSource,
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"],
+      );
+      const raw = await crypto.subtle.sign("HMAC", kek, new TextEncoder().encode(label));
+      return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, [
+        "sign",
+        "verify",
+      ]);
+    })();
+    // A KEK that is missing now may be provisioned later (tests); do not
+    // cache the failure.
+    key.catch(() => subkeys.delete(label));
+    subkeys.set(label, key);
+  }
+  return key;
+}
+
 /** Test-only: inject a deterministic KEK without touching env or the dev file. */
 export function _setKekForTests(bytes: Uint8Array | null): void {
   if (bytes !== null && bytes.length !== KEK_BYTES) {
@@ -126,6 +163,7 @@ export function _setKekForTests(bytes: Uint8Array | null): void {
   testKekOverride = bytes;
   cachedKey = null;
   cachedFingerprint = null;
+  subkeys.clear();
 }
 
 /**
