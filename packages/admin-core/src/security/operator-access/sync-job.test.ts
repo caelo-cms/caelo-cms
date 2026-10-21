@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { recordedGoogleOAuthFetch } from "../google-sign-in/recorded-google-oauth.js";
 import type { GoogleDeps } from "./google-iam.js";
+import { classifySyncRun, refusedEmail } from "./run-report.js";
 import {
   configFromEnv,
   IAP_ACCESSOR_ROLE,
   type LogEntry,
+  recordRunReport,
   runSync,
   type SyncJobConfig,
   TOKEN_CREATOR_ROLE,
@@ -19,6 +22,15 @@ const MCP = "serviceAccount:caelo-mcp@p.iam.gserviceaccount.com";
 const JOB_GRANT = {
   role: "projects/p/roles/caeloOperatorAccess",
   members: ["serviceAccount:job@p.iam.gserviceaccount.com"],
+};
+
+/** #967 — Google's OAuth endpoints (recorded answers): every client complete. */
+const OAUTH_OK = {
+  fetch: recordedGoogleOAuthFetch({
+    exists: () => true,
+    registered: () => true,
+    secretValid: () => true,
+  }),
 };
 
 const config: SyncJobConfig = {
@@ -99,6 +111,7 @@ describe("runSync", () => {
     const { logs, log } = collect();
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readOAuthClientId: async () => null,
       readOAuthClientFile: async () => ({}),
       readEmails: async () => ["anna@x.com"],
@@ -135,12 +148,17 @@ describe("runSync", () => {
     const { logs, log } = collect();
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readOAuthClientId: async () => null,
       readOAuthClientFile: async () => ({}),
       readEmails: async () => ["anna@x.com", "Nobody@x.com"],
       log,
     });
-    expect(r.ok).toBe(false);
+    // #970 — refused members only: done with warnings, not failed (exit 0).
+    expect(r.ok).toBe(true);
+    expect(r.outcome).toBe("succeeded_with_warnings");
+    expect(r.refusedMembers).toEqual(["nobody@x.com"]);
+    expect(r.errorCount).toBe(0);
     expect(membersOf(policies[IAP], IAP_ACCESSOR_ROLE)).toEqual([
       MCP,
       "user:anna@x.com",
@@ -170,6 +188,7 @@ describe("runSync", () => {
       { ...config, mcpSigners: UPGRADER },
       {
         google: deps,
+        oauthProbe: OAUTH_OK,
         readOAuthClientId: async () => null,
         readOAuthClientFile: async () => ({}),
         readEmails: async () => [],
@@ -189,6 +208,7 @@ describe("runSync", () => {
     const { log } = collect();
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readOAuthClientId: async () => null,
       readOAuthClientFile: async () => ({}),
       readEmails: async () => [],
@@ -205,6 +225,7 @@ describe("runSync", () => {
       { ...config, staticMembers: "user:owner@x.com,allUsers,domain:x.com" },
       {
         google: deps,
+        oauthProbe: OAUTH_OK,
         readOAuthClientId: async () => null,
         readOAuthClientFile: async () => ({}),
         readEmails: async () => ["not an email", "*@x.com"],
@@ -224,6 +245,7 @@ describe("runSync", () => {
     const { logs, log } = collect();
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readOAuthClientId: async () => null,
       readOAuthClientFile: async () => ({}),
       readEmails: async () => ["anna@x.com"],
@@ -244,6 +266,7 @@ describe("runSync", () => {
     const { log } = collect();
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readOAuthClientId: async () => null,
       readOAuthClientFile: async () => ({}),
       readEmails: async () => {
@@ -251,8 +274,82 @@ describe("runSync", () => {
       },
       log,
     });
-    expect(r).toEqual({ ok: false });
+    expect(r).toMatchObject({ ok: false, outcome: "failed", refusedMembers: [], errorCount: 1 });
     expect(sets).toEqual([]);
+  });
+});
+
+describe("#970 run classification", () => {
+  it("refused members only = done with warnings; any other error = failed", () => {
+    expect(classifySyncRun({ refusedMembers: [], errorCount: 0 })).toBe("succeeded");
+    expect(classifySyncRun({ refusedMembers: ["a@x.com"], errorCount: 0 })).toBe(
+      "succeeded_with_warnings",
+    );
+    expect(classifySyncRun({ refusedMembers: ["a@x.com"], errorCount: 1 })).toBe("failed");
+    expect(classifySyncRun({ refusedMembers: [], errorCount: 2 })).toBe("failed");
+  });
+
+  it("only user: members are refused users", () => {
+    expect(refusedEmail("user:Anna@X.com")).toBe("anna@x.com");
+    expect(refusedEmail("group:g@x.com")).toBeNull();
+  });
+
+  it("a refused member and a failed write: failed, still naming the refused member", async () => {
+    const { deps } = fakeGoogle({}, IAP, ["user:nobody@x.com"]);
+    const r = await runSync(config, {
+      google: deps,
+      oauthProbe: OAUTH_OK,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
+      readEmails: async () => ["nobody@x.com"],
+      log: () => {},
+    });
+    expect(r.outcome).toBe("failed");
+    expect(r.refusedMembers).toEqual(["nobody@x.com"]);
+  });
+});
+
+describe("recordRunReport", () => {
+  const report = {
+    ok: true,
+    outcome: "succeeded_with_warnings" as const,
+    refusedMembers: ["nobody@x.com"],
+    errorCount: 0,
+    signInClientProblem: null,
+  };
+
+  it("records the report under the Cloud Run execution", async () => {
+    const calls: [string, unknown][] = [];
+    const r = await recordRunReport(
+      async (op, input) => {
+        calls.push([op, input]);
+        return {};
+      },
+      "caelo-production-operator-access-sync-abc12",
+      report,
+    );
+    expect(r).toEqual({ ok: true });
+    expect(calls).toEqual([
+      [
+        "users.record_operator_access_run",
+        {
+          execution: "caelo-production-operator-access-sync-abc12",
+          outcome: "succeeded_with_warnings",
+          refusedMembers: ["nobody@x.com"],
+          errorCount: 0,
+          signInClientProblem: null,
+        },
+      ],
+    ]);
+  });
+
+  it("fails loudly without an execution id or when the write fails", async () => {
+    const never = async () => {
+      throw new Error("permission denied for table operator_access_sync_runs");
+    };
+    expect((await recordRunReport(never, undefined, report)).ok).toBe(false);
+    const r = await recordRunReport(never, "exec", report);
+    expect(r.ok === false && r.error).toContain("permission denied");
   });
 });
 

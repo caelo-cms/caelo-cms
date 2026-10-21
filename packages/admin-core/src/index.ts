@@ -162,6 +162,7 @@ export {
   describeOperatorAccessSync,
   latestOperatorAccessRun,
   type OperatorAccessSync,
+  setOperatorAccessTriggerForTests,
   syncOperatorAccess,
 } from "./ops/user_access.js";
 export * from "./ops/users.js";
@@ -205,12 +206,27 @@ export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check
 // (IAP browser login, IAP programmatic access, remote-MCP broker).
 export {
   type GoogleSignInConfigureResult,
+  type GoogleSignInPreflightResult,
   googleSignInClientInputSchema,
+  preflightGoogleSignInClient,
+  RE_LOGIN_NOT_CONFIRMED,
   recheckGoogleSignIn,
   removeGoogleSignInClient,
   saveGoogleSignInClient,
 } from "./security/google-sign-in/configure.js";
+// #967 — the preflight against Google's public OAuth endpoints, and its
+// recorded answers (the Playwright stand-in replays them).
 export {
+  oauthClientConsoleUrl,
+  type PreflightDeps,
+  type PreflightLine,
+} from "./security/google-sign-in/preflight.js";
+export {
+  type RecordedGoogleClients,
+  recordedGoogleOAuthFetch,
+} from "./security/google-sign-in/recorded-google-oauth.js";
+export {
+  checkClientRedirectUris,
   type GoogleSignInAvailability,
   googleSignInAvailability,
   type SelfCheckLine,
@@ -234,6 +250,14 @@ export {
   type IdentityGate,
   setIdentityGateEnvForTests,
 } from "./security/identity-gate.js";
+export type { OperatorAccessTrigger } from "./security/operator-access/gcp-job-trigger.js";
+// #970 — the sync job's per-run report (refused members = done with warnings).
+export {
+  classifySyncRun,
+  type RecordedSyncRun,
+  refusedMembersMessage,
+  type SyncRunReport,
+} from "./security/operator-access/run-report.js";
 // #806 — Settings → MCP → Remote: availability and the broker's self-check.
 export {
   type RemoteMcpAvailability,

@@ -69,6 +69,7 @@ import {
 } from "@caelo-cms/shared";
 import type { Handle, ServerInit } from "@sveltejs/kit/hooks";
 import { legacySecurityRedirect } from "#lib/legacy-security-redirect.js";
+import { bootstrapE2eOperatorAccess } from "#lib/server/google-iap.js";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
 import { getQueryContext, mediaStorageSetup } from "#lib/server/query.js";
 import { releaseManifestReader } from "#lib/server/release-check.js";
@@ -591,6 +592,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   // swallowed their rejections. Replace with .catch() so background
   // task failures (plugin manifest invalid, bootstrap token DB write)
   // land in Cloud Run stderr instead of disappearing into the void.
+  bootstrapE2eOperatorAccess();
   bootstrapRedeploy();
   bootstrapReleaseCheck();
   bootstrapAutoUpdates();
