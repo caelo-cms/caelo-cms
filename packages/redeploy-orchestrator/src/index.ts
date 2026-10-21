@@ -33,6 +33,13 @@
  *
  * Also runs the admin's own GC sweep every hour (its login rate-limit
  * buckets); the gateway sweeps its own state in cms_public.
+ *
+ * #969 — and the staging-preview keep-alive: shortly after start and then
+ * every six hours it runs `deploy.refresh_staging_preview`, which extends
+ * the served staging preview's lifetime on providers where it is finite
+ * (Firebase Hosting: 30 days at most). Stage and Publish live extend it
+ * too; this covers an idle stretch while the admin runs. A failure is
+ * logged loudly and retried on the next tick.
  */
 
 import { createHash } from "node:crypto";
@@ -136,6 +143,10 @@ export interface OrchestratorConfig {
   readonly pollIntervalMs?: number;
   /** Defaults to one hour. */
   readonly gcIntervalMs?: number;
+  /** #969 — staging-preview keep-alive interval. Defaults to six hours. */
+  readonly stagingPreviewRefreshMs?: number;
+  /** #969 — delay of the first keep-alive after start. Defaults to 30 seconds. */
+  readonly stagingPreviewFirstRefreshMs?: number;
   /**
    * issue #198 — sink for import screenshots (the admin app wires its
    * media storage in). Absent = captures are diffed but not persisted
@@ -466,6 +477,8 @@ export async function commitVisitorWatermark(
 export function startRedeployOrchestrator(cfg: OrchestratorConfig): OrchestratorHandle {
   const pollMs = cfg.pollIntervalMs ?? 1500;
   const gcMs = cfg.gcIntervalMs ?? 60 * 60 * 1000;
+  const previewRefreshMs = cfg.stagingPreviewRefreshMs ?? 6 * 60 * 60 * 1000;
+  const firstPreviewRefreshMs = cfg.stagingPreviewFirstRefreshMs ?? 30_000;
   // P13 audit re-pass — load the persisted offset on boot so a restart
   // doesn't drop events that landed during downtime. Initialised to
   // `now()` only when the column is missing entirely (fresh DB without
@@ -890,6 +903,29 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
     }
   }
 
+  /**
+   * #969 — extend the served staging preview's lifetime. Six-hourly against
+   * a 30-day lifetime leaves ample room for failed ticks; each failure is
+   * logged with the op's message (it names the next step, e.g. Stage again).
+   */
+  async function refreshStagingPreview(): Promise<void> {
+    if (stopped) return;
+    try {
+      const r = await execute(
+        cfg.registry,
+        cfg.adapter,
+        SYSTEM_CTX,
+        "deploy.refresh_staging_preview",
+        {},
+      );
+      if (!r.ok) {
+        console.error("[redeploy-orchestrator] staging preview keep-alive failed", r.error);
+      }
+    } catch (e) {
+      console.error("[redeploy-orchestrator] staging preview keep-alive failed", e);
+    }
+  }
+
   // One tick at a time. A tick slower than `pollMs` (a slow database, a
   // short test interval) must not overlap the next: both would read the
   // same visitor events before either commits the watermark, report a
@@ -918,6 +954,14 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
   const importerHandle = setInterval(() => {
     void importerTick();
   }, 10_000);
+  // #969 — soon after start too: on a scale-to-zero admin an instance may
+  // not live six hours, but every start refreshes the served preview.
+  const firstPreviewRefresh = setTimeout(() => {
+    void refreshStagingPreview();
+  }, firstPreviewRefreshMs);
+  const previewRefreshHandle = setInterval(() => {
+    void refreshStagingPreview();
+  }, previewRefreshMs);
 
   return {
     stop(): void {
@@ -925,6 +969,8 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
       clearInterval(pollHandle);
       clearInterval(gcHandle);
       clearInterval(importerHandle);
+      clearTimeout(firstPreviewRefresh);
+      clearInterval(previewRefreshHandle);
       if (pendingTimer) {
         clearTimeout(pendingTimer);
         pendingTimer = null;
