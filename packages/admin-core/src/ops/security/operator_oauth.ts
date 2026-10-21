@@ -11,7 +11,7 @@
  * The secret lives in Secret Manager, written by the admin's setup flow
  * (security/google-sign-in/configure.ts) and read by the gateway's broker
  * and the operator-access sync job. The ID is stored here for the sync job,
- * which sets the admin IAP resource's `oauthSettings` to exactly this client
+ * which sets the project's IAP `oauthSettings` to exactly this client
  * ({@link operatorOAuthClientForSyncOp}), for the setup pages, and for the
  * identity-gate check on user creation (security/identity-gate.ts).
  */

@@ -4,6 +4,7 @@ import { execute } from "@caelo-cms/query-api";
 import { redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { SESSION_COOKIE } from "#lib/server/guards.js";
+import { clearPreviewAssetGrant } from "#lib/server/preview-asset-grant.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
@@ -21,5 +22,7 @@ export const POST: RequestHandler = async ({ request, cookies, locals }) => {
     await execute(registry, adapter, locals.ctx, "auth.logout", { token });
   }
   if (token) cookies.delete(SESSION_COOKIE, { path: "/" });
+  // #946 — the preview's read-only media grant ends with the session.
+  clearPreviewAssetGrant(cookies);
   throw redirect(303, "/login");
 };

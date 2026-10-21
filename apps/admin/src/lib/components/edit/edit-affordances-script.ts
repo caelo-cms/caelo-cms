@@ -56,7 +56,7 @@ export const REFERENCE_LIMITS = {
  * AI knows exactly what the operator meant (CLAUDE.md §1A).
  *
  * Spliced into `INJECT_SCRIPT`'s closure, so it uses that closure's
- * `origin()` and `findModuleAncestor()`. Written as ES5 in a string, the
+ * `postToEditor()` and `findModuleAncestor()`. Written as ES5 in a string, the
  * same as the rest of the runtime: every backslash is doubled because
  * this is a template literal.
  */
@@ -271,7 +271,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
       if (ref.index !== undefined) msg.index = ref.index;
     }
     if (ask) msg.ask = true;
-    parent.postMessage(msg, origin());
+    postToEditor(msg);
   }
 
   // What the operator sees: the text they picked or clicked, never the

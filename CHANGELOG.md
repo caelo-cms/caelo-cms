@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.61
+
+### Fixes
+- b1378886 mask the IAP oauthSettings PATCH leaf by leaf (#914) (#964)
+
+## v0.10.60
+
+### Fixes
+- 9fe68d5e a user without a Google account no longer blocks the IAP sync (#597) (#955)
+
 ## v0.10.59
 
 ### Features

@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #914 — the operator-access sync job keeps the admin IAP resource's
+ * #914 — the operator-access sync job keeps the PROJECT's IAP
  * `oauthSettings` (browser client + secret + programmatic clients) at
- * exactly the install's Google sign-in client, or clears all three.
+ * exactly the install's Google sign-in client, or clears all three, and
+ * keeps the admin's IAP resource free of a client of its own.
  */
 
 import { describe, expect, it } from "bun:test";
 import type { GoogleDeps } from "./google-iam.js";
 import {
   compareOAuthSettings,
+  iapProjectResourceUrl,
   type LiveOAuthSettings,
   OAUTH_SETTINGS_MASK,
   reconcileOAuthSettings,
@@ -18,7 +20,8 @@ import {
 } from "./iap-settings.js";
 import { type LogEntry, runSync, type SyncJobConfig } from "./sync-job.js";
 
-const RESOURCE =
+const PROJECT = "https://iap.googleapis.com/v1/projects/123";
+const SERVICE =
   "https://iap.googleapis.com/v1/projects/123/iap_web/cloud_run-europe-west1/services/adm";
 const CLIENT = "123456789012-abc123.apps.googleusercontent.com";
 const OTHER = "999-zzz.apps.googleusercontent.com";
@@ -56,15 +59,28 @@ interface Call {
 }
 
 /**
- * A fake IAP settings endpoint with real state: a PATCH replaces the whole
- * `oauthSettings` message (as the message-path mask does), the secret is
- * input only and comes back as `clientSecretSha256`. IAM policies are empty.
+ * A fake IAP settings endpoint with real state per settings resource
+ * (project and the admin's Cloud Run service). It honours the update mask
+ * the way the live API does (probed on viu-one-web, 2026-10-21): a mask on
+ * the whole `oauthSettings` message is refused with HTTP 400
+ * INVALID_ARGUMENT whatever the body; each masked leaf is set from the body,
+ * or cleared when the body leaves it out; unmasked fields (`loginHint`)
+ * stay. The secret is input only and comes back as `clientSecretSha256`.
+ * IAM policies are empty.
  */
 function fakeIap(
   initial: LiveOAuthSettings | undefined,
-  opts: { failPatch?: boolean; hashEncoding?: "hex" | "base64" | "none" } = {},
+  opts: {
+    failPatch?: boolean;
+    hashEncoding?: "hex" | "base64" | "none";
+    /** `oauthSettings` already on the admin's service resource. */
+    service?: LiveOAuthSettings;
+  } = {},
 ) {
-  let settings: LiveOAuthSettings | undefined = initial;
+  const state = new Map<string, LiveOAuthSettings | undefined>([
+    [PROJECT, initial],
+    [SERVICE, opts.service],
+  ]);
   const calls: Call[] = [];
   const deps: GoogleDeps = {
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
@@ -73,30 +89,57 @@ function fakeIap(
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ method, url, body });
       if (url.includes(":iapSettings")) {
+        const resource = url.slice(0, url.indexOf(":iapSettings"));
+        if (!state.has(resource)) return new Response("not found", { status: 404 });
+        const settings = state.get(resource);
+        const name = resource.replace("https://iap.googleapis.com/v1/", "");
         if (method === "GET") {
           return new Response(
             JSON.stringify(
               settings === undefined
-                ? { name: "x" }
-                : { name: "x", accessSettings: { oauthSettings: settings } },
+                ? { name }
+                : { name, accessSettings: { oauthSettings: settings } },
             ),
             { status: 200 },
           );
         }
         if (opts.failPatch) return new Response("denied", { status: 403 });
+        const mask = (new URL(url).searchParams.get("updateMask") ?? "").split(",");
+        if (mask.includes("iapSettings.accessSettings.oauthSettings")) {
+          return new Response(
+            JSON.stringify({
+              error: {
+                code: 400,
+                message: "Request contains an invalid argument.",
+                status: "INVALID_ARGUMENT",
+              },
+            }),
+            { status: 400 },
+          );
+        }
         const sent = (
           body as {
             accessSettings: { oauthSettings: LiveOAuthSettings & { clientSecret?: string } };
           }
         ).accessSettings.oauthSettings;
-        const { clientSecret, ...rest } = sent;
-        const encoding = opts.hashEncoding ?? "hex";
-        settings = {
-          ...rest,
-          ...(clientSecret && encoding !== "none"
-            ? { clientSecretSha256: sha(clientSecret, encoding) }
-            : {}),
-        };
+        const leaf = (f: string) => mask.includes(`iapSettings.accessSettings.oauthSettings.${f}`);
+        const next: Record<string, unknown> = { ...(settings ?? {}) };
+        if (leaf("clientId")) {
+          if (sent.clientId) next.clientId = sent.clientId;
+          else delete next.clientId;
+        }
+        if (leaf("clientSecret")) {
+          const encoding = opts.hashEncoding ?? "hex";
+          if (sent.clientSecret && encoding !== "none") {
+            next.clientSecretSha256 = sha(sent.clientSecret, encoding);
+          } else delete next.clientSecretSha256;
+        }
+        if (leaf("programmaticClients")) {
+          if ((sent.programmaticClients ?? []).length > 0) {
+            next.programmaticClients = sent.programmaticClients;
+          } else delete next.programmaticClients;
+        }
+        state.set(resource, next as LiveOAuthSettings);
         return new Response(JSON.stringify(body), { status: 200 });
       }
       if (url.includes(":getIamPolicy")) return new Response("{}", { status: 200 });
@@ -105,7 +148,12 @@ function fakeIap(
     accessToken: async () => "tok",
     metadata: async (path) => (path === "project/numeric-project-id" ? "123" : ""),
   };
-  return { deps, calls, current: () => settings };
+  return {
+    deps,
+    calls,
+    current: () => state.get(PROJECT),
+    currentService: () => state.get(SERVICE),
+  };
 }
 
 const configured = (secret = SECRET): LiveOAuthSettings => ({
@@ -148,10 +196,16 @@ describe("oauthSettings comparison", () => {
   });
 });
 
+describe("iapProjectResourceUrl", () => {
+  it("names the project-level IAP settings resource by project number", () => {
+    expect(iapProjectResourceUrl("123")).toBe(PROJECT);
+  });
+});
+
 describe("reconcileOAuthSettings", () => {
-  it("sets client, secret and programmatic clients in one PATCH masked to oauthSettings", async () => {
+  it("sets client, secret and programmatic clients in one PATCH masked leaf by leaf", async () => {
     const { deps, calls, current } = fakeIap(undefined);
-    const r = await reconcileOAuthSettings(deps, RESOURCE, {
+    const r = await reconcileOAuthSettings(deps, PROJECT, {
       clientId: CLIENT,
       clientSecret: SECRET,
     });
@@ -163,12 +217,18 @@ describe("reconcileOAuthSettings", () => {
     expect(current()).toEqual(configured());
     const patches = calls.filter((c) => c.method === "PATCH");
     expect(patches).toHaveLength(1);
-    expect(OAUTH_SETTINGS_MASK).toBe("iapSettings.accessSettings.oauthSettings");
+    // Live 400 on viu-one-web (2026-10-21): IAP refuses a mask on the whole
+    // oauthSettings message, so the job names the three leaves it owns.
+    expect(OAUTH_SETTINGS_MASK.split(",")).toEqual([
+      "iapSettings.accessSettings.oauthSettings.clientId",
+      "iapSettings.accessSettings.oauthSettings.clientSecret",
+      "iapSettings.accessSettings.oauthSettings.programmaticClients",
+    ]);
     expect(patches[0]?.url).toBe(
-      `${RESOURCE}:iapSettings?updateMask=${encodeURIComponent(OAUTH_SETTINGS_MASK)}`,
+      `${PROJECT}:iapSettings?updateMask=${encodeURIComponent(OAUTH_SETTINGS_MASK)}`,
     );
     expect(patches[0]?.body).toEqual({
-      name: "projects/123/iap_web/cloud_run-europe-west1/services/adm",
+      name: "projects/123",
       accessSettings: {
         oauthSettings: { clientId: CLIENT, clientSecret: SECRET, programmaticClients: [CLIENT] },
       },
@@ -178,8 +238,8 @@ describe("reconcileOAuthSettings", () => {
   it("is a no-op on a second run (idempotent)", async () => {
     const { deps, calls } = fakeIap(undefined);
     const desired = { clientId: CLIENT, clientSecret: SECRET };
-    await reconcileOAuthSettings(deps, RESOURCE, desired);
-    const again = await reconcileOAuthSettings(deps, RESOURCE, desired);
+    await reconcileOAuthSettings(deps, PROJECT, desired);
+    const again = await reconcileOAuthSettings(deps, PROJECT, desired);
     expect(again.changed).toBe(false);
     expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
   });
@@ -187,14 +247,14 @@ describe("reconcileOAuthSettings", () => {
   it("matches a base64-encoded hash as well", async () => {
     const { deps, calls } = fakeIap(undefined, { hashEncoding: "base64" });
     const desired = { clientId: CLIENT, clientSecret: SECRET };
-    await reconcileOAuthSettings(deps, RESOURCE, desired);
-    expect((await reconcileOAuthSettings(deps, RESOURCE, desired)).changed).toBe(false);
+    await reconcileOAuthSettings(deps, PROJECT, desired);
+    expect((await reconcileOAuthSettings(deps, PROJECT, desired)).changed).toBe(false);
     expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(1);
   });
 
   it("re-applies a rotated secret for the same client", async () => {
     const { deps, current } = fakeIap(configured(OLD_SECRET));
-    const r = await reconcileOAuthSettings(deps, RESOURCE, {
+    const r = await reconcileOAuthSettings(deps, PROJECT, {
       clientId: CLIENT,
       clientSecret: SECRET,
     });
@@ -209,7 +269,7 @@ describe("reconcileOAuthSettings", () => {
       clientSecretSha256: sha("x"),
       programmaticClients: [OTHER, CLIENT],
     });
-    const r = await reconcileOAuthSettings(deps, RESOURCE, {
+    const r = await reconcileOAuthSettings(deps, PROJECT, {
       clientId: CLIENT,
       clientSecret: SECRET,
     });
@@ -217,20 +277,20 @@ describe("reconcileOAuthSettings", () => {
     expect(current()).toEqual(configured());
   });
 
-  it("clears all three when no client is configured, keeping loginHint", async () => {
+  it("clears all three when no client is configured, leaving loginHint out of the mask", async () => {
     const { deps, calls, current } = fakeIap({ ...configured(), loginHint: "example.com" });
-    const r = await reconcileOAuthSettings(deps, RESOURCE, null);
+    const r = await reconcileOAuthSettings(deps, PROJECT, null);
     expect(r.after).toEqual({ clientId: null, programmaticClients: [] });
     expect(current()).toEqual({ loginHint: "example.com" });
     expect(calls.find((c) => c.method === "PATCH")?.body).toEqual({
-      name: "projects/123/iap_web/cloud_run-europe-west1/services/adm",
-      accessSettings: { oauthSettings: { loginHint: "example.com" } },
+      name: "projects/123",
+      accessSettings: { oauthSettings: {} },
     });
   });
 
   it("sends no PATCH when nothing is configured anywhere", async () => {
     const { deps, calls } = fakeIap(undefined);
-    expect((await reconcileOAuthSettings(deps, RESOURCE, null)).changed).toBe(false);
+    expect((await reconcileOAuthSettings(deps, PROJECT, null)).changed).toBe(false);
     expect(calls.some((c) => c.method === "PATCH")).toBe(false);
   });
 });
@@ -245,6 +305,55 @@ describe("runSync — oauthSettings step", () => {
     oauthClientSecret: "projects/p/secrets/caelo-production-operator-oauth-client",
   };
   const file = async () => ({ client_id: CLIENT, client_secret: SECRET });
+
+  it("sets the client on the PROJECT's IAP settings, as Google documents for Cloud Run IAP", async () => {
+    const { deps, calls, current, currentService } = fakeIap(undefined);
+    const logs: LogEntry[] = [];
+    const r = await runSync(config, {
+      google: deps,
+      readEmails: async () => [],
+      readOAuthClientId: async () => CLIENT,
+      readOAuthClientFile: file,
+      log: (e) => logs.push(e),
+    });
+    expect(logs.filter((l) => l.severity === "ERROR")).toEqual([]);
+    expect(r.ok).toBe(true);
+    expect(current()).toEqual(configured());
+    expect(currentService()).toBeUndefined();
+    const patches = calls.filter((c) => c.method === "PATCH");
+    expect(patches.map((c) => c.url)).toEqual([
+      `${PROJECT}:iapSettings?updateMask=${encodeURIComponent(OAUTH_SETTINGS_MASK)}`,
+    ]);
+    // The service resource is only read, to find a client of its own.
+    expect(calls.filter((c) => c.url.startsWith(`${SERVICE}:iapSettings`))).toEqual([
+      { method: "GET", url: `${SERVICE}:iapSettings`, body: undefined },
+    ]);
+  });
+
+  it("clears a client set on the admin's resource itself, which would override the project's", async () => {
+    const { deps, current, currentService } = fakeIap(undefined, {
+      service: { ...configured(), loginHint: "example.com" },
+    });
+    const logs: LogEntry[] = [];
+    const r = await runSync(config, {
+      google: deps,
+      readEmails: async () => [],
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: file,
+      log: (e) => logs.push(e),
+    });
+    expect(r.ok).toBe(true);
+    expect(current()).toBeUndefined();
+    expect(currentService()).toEqual({ loginHint: "example.com" });
+    expect(r.resourceOAuthOverride?.before.clientId).toBe(CLIENT);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        severity: "WARNING",
+        clientId: CLIENT,
+        message: expect.stringContaining("would override it"),
+      }),
+    );
+  });
 
   it("replaces an old client with the configured one and logs the removal", async () => {
     const { deps, current } = fakeIap({ clientId: OTHER, programmaticClients: [OTHER] });
@@ -328,5 +437,7 @@ describe("runSync — oauthSettings step", () => {
     });
     expect(r.ok).toBe(false);
     expect(r.oauthSettings).toBeUndefined();
+    // The resource's own settings are left alone while the project is wrong.
+    expect(r.resourceOAuthOverride).toBeUndefined();
   });
 });
