@@ -20,12 +20,14 @@
  *      IAP) — everything else on those two roles is removed and logged; a
  *      member Google has no account for is left out and logged as an error
  *      (google-iam.ts), so it cannot block the rest of the write;
- *   3. #914 — makes the admin IAP resource's `oauthSettings` (browser
- *      sign-in client + its secret + `programmaticClients`) use EXACTLY the
- *      Google sign-in client the Owner configured (ID read through
+ *   3. #914 — makes the PROJECT's IAP `oauthSettings` (browser sign-in
+ *      client + its secret + `programmaticClients`) use EXACTLY the Google
+ *      sign-in client the Owner configured (ID read through
  *      `operator_oauth.client_for_sync`, secret from Secret Manager), or
- *      none of them when none is (iap-settings.ts); a client it cannot read
- *      leaves the settings unchanged, never cleared;
+ *      none of them when none is, and keeps the admin's IAP resource free
+ *      of a client of its own that would override the project's
+ *      (iap-settings.ts says why the project level); a client it cannot
+ *      read leaves the settings unchanged, never cleared;
  *   4. exits non-zero when anything failed, so the execution shows as failed
  *      to the admin (gcp-job-trigger.ts) and in Cloud Run.
  *
@@ -49,6 +51,7 @@ import {
 import { desiredMembers, parseStaticMembers } from "./iam-policy.js";
 import {
   type DesiredOAuthClient,
+  iapProjectResourceUrl,
   type OAuthSettingsReconciled,
   reconcileOAuthSettings,
 } from "./iap-settings.js";
@@ -124,7 +127,10 @@ export interface SyncReport {
   readonly ok: boolean;
   readonly iap?: ResourceReconciled;
   readonly mcp?: ResourceReconciled;
+  /** #914 — the project-level `oauthSettings` (the Google sign-in client). */
   readonly oauthSettings?: OAuthSettingsReconciled;
+  /** #914 — the admin IAP resource's own `oauthSettings`, kept empty so the project's apply. */
+  readonly resourceOAuthOverride?: OAuthSettingsReconciled;
 }
 
 /** One reconcile pass over both managed bindings. Never throws. */
@@ -237,12 +243,23 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
     new Set([...members, ...mcpSigners]),
     { query: "?options.requestedPolicyVersion=3" },
   );
-  const oauthSettings = await syncOAuthSettings(deps, iapResourceUrl);
+  const oauthSettings = await syncOAuthSettings(deps, iapProjectResourceUrl(projectNumber));
+  // Only once the project holds the right client: clearing the resource's
+  // own client first could leave IAP on the wrong one in between.
+  const resourceOAuthOverride = oauthSettings
+    ? await clearResourceOAuthOverride(deps, iapResourceUrl)
+    : undefined;
   return {
-    ok: ok && iap !== undefined && mcp !== undefined && oauthSettings !== undefined,
+    ok:
+      ok &&
+      iap !== undefined &&
+      mcp !== undefined &&
+      oauthSettings !== undefined &&
+      resourceOAuthOverride !== undefined,
     ...(iap ? { iap } : {}),
     ...(mcp ? { mcp } : {}),
     ...(oauthSettings ? { oauthSettings } : {}),
+    ...(resourceOAuthOverride ? { resourceOAuthOverride } : {}),
   };
 }
 
@@ -256,18 +273,18 @@ export interface OAuthClientFile {
 }
 
 /**
- * #914 — `oauthSettings` on the admin's IAP resource := exactly the
- * configured Google sign-in client (browser client + secret + programmatic
- * clients), or none of them. Undefined (and logged) on any failure; a
+ * #914 — the project's IAP `oauthSettings` := exactly the configured Google
+ * sign-in client (browser client + secret + programmatic clients), or none
+ * of them. Undefined (and logged) on any failure; a
  * client that cannot be read — the database row, or the secret behind it —
  * leaves the settings as they are: clearing them then would lock every
  * account outside the organisation out because of a hiccup.
  */
 async function syncOAuthSettings(
   deps: SyncDeps,
-  iapResourceUrl: string,
+  projectSettingsUrl: string,
 ): Promise<OAuthSettingsReconciled | undefined> {
-  const what = "the OAuth settings of the admin's IAP resource";
+  const what = "the project's IAP OAuth settings";
   const unchanged = (message: string): undefined => {
     deps.log({ severity: "ERROR", message: `${message}; ${what} left unchanged` });
     return undefined;
@@ -296,7 +313,7 @@ async function syncOAuthSettings(
   }
   let r: OAuthSettingsReconciled;
   try {
-    r = await reconcileOAuthSettings(deps.google, iapResourceUrl, desired);
+    r = await reconcileOAuthSettings(deps.google, projectSettingsUrl, desired);
   } catch (e) {
     deps.log({ severity: "ERROR", message: `could not update ${what}: ${reason(e)}` });
     return undefined;
@@ -332,7 +349,47 @@ async function syncOAuthSettings(
     if (r.after.programmaticClients.includes(id)) continue;
     deps.log({
       severity: "WARNING",
-      message: `REMOVED OAuth client ${id} from the programmatic clients of the admin's IAP resource — not the Google sign-in client configured in Caelo`,
+      message: `REMOVED OAuth client ${id} from the project's IAP programmatic clients — not the Google sign-in client configured in Caelo`,
+      clientId: id,
+    });
+  }
+  return r;
+}
+
+/**
+ * #914 — the admin IAP resource must not carry `oauthSettings` of its own:
+ * a client there would override the project's (the IAP settings hierarchy
+ * lets the lower level win), so a client set by hand — or by a release that
+ * still wrote the resource — would keep IAP on it, and removing Google
+ * sign-in would not take effect. Clears client, secret and programmatic
+ * clients there (keeping `loginHint`); a no-op GET when none are set.
+ */
+async function clearResourceOAuthOverride(
+  deps: SyncDeps,
+  iapResourceUrl: string,
+): Promise<OAuthSettingsReconciled | undefined> {
+  const what = "the OAuth settings of the admin's IAP resource";
+  let r: OAuthSettingsReconciled;
+  try {
+    r = await reconcileOAuthSettings(deps.google, iapResourceUrl, null);
+  } catch (e) {
+    deps.log({
+      severity: "ERROR",
+      message: `could not clear ${what}: ${e instanceof Error ? e.message : String(e)}`,
+    });
+    return undefined;
+  }
+  if (!r.changed) return r;
+  const ids = [
+    ...new Set([
+      ...(r.before.clientId ? [r.before.clientId] : []),
+      ...r.before.programmaticClients,
+    ]),
+  ];
+  for (const id of ids) {
+    deps.log({
+      severity: "WARNING",
+      message: `REMOVED OAuth client ${id} from ${what} — the Google sign-in client is set for the whole project, and a client on the resource itself would override it`,
       clientId: id,
     });
   }
