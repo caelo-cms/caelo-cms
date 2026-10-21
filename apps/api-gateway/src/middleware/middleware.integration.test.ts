@@ -231,25 +231,20 @@ describe("captcha (PoW)", () => {
     expect(r2.ok).toBe(false);
   });
 
-  it("rejects a wrong nonce", async () => {
-    // Use a strict 6-char target prefix so the chance of a random
-    // nonce accidentally satisfying it is ~1/16M. The trivial "0"
-    // prefix from the surrounding suite would otherwise let a fixed
-    // wrong nonce pass roughly 6% of CI runs.
-    const strictConfig = { provider: "pow" as const, powTargetPrefix: "abcdef" };
-    const challenge = await issuePowChallenge(adapter, {
-      config: strictConfig,
-      visitorIdHash,
-    });
-    const r = await verifyPowProof(
+  it("rejects a wrong nonce without burning the challenge", async () => {
+    const proof = await solved(visitorIdHash);
+    const bad = await verifyPowProof(
       adapter,
       {
-        challenge: challenge.challenge,
-        nonce: "definitely-wrong-zz",
+        challenge: proof.challenge,
+        nonce: `${proof.nonce}-definitely-wrong-zz`,
       },
       visitorIdHash,
     );
-    expect(r.ok).toBe(false);
+    expect(bad.ok).toBe(false);
+    // The valid proof for the same challenge must still succeed afterwards.
+    const good = await verifyPowProof(adapter, proof, visitorIdHash);
+    expect(good).toEqual({ ok: true });
   });
 
   it("rejects an unknown challenge", async () => {
