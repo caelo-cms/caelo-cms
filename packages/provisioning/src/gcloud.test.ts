@@ -6,8 +6,8 @@ import {
   type GcloudResult,
   grantProvisionerRoles,
   isGcloudAuthError,
-  projectDisplayName,
   PROVISIONER_ROLE_LIST,
+  projectDisplayName,
 } from "./gcloud.js";
 
 const ok: GcloudResult = { ok: true, stdout: "", stderr: "", exitCode: 0 };
