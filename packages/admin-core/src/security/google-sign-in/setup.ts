@@ -27,7 +27,7 @@
  *      Secret Manager secret ({@link addSecretVersion}; the run SA may add
  *      versions, never read them) and records the ID (`operator_oauth.set`).
  *   3. The operator-access sync job (its own SA may read that secret) sets
- *      IAP's `oauthSettings` to the client (operator-access/iap-settings.ts).
+ *      the project's IAP `oauthSettings` to the client (operator-access/iap-settings.ts).
  *   4. The self-check asks the admin's URL as a signed-out browser would and
  *      expects IAP to send it to Google with OUR client ID
  *      ({@link checkAdminSignInRedirect}).

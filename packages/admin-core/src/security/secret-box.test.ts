@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import {
   _setKekForTests,
   decryptSecret,
+  deriveKekSubkey,
   encryptSecret,
   generateKekHex,
   kekFingerprint,
@@ -56,5 +57,35 @@ describe("secret-box", () => {
     expect(hex).toMatch(/^[0-9a-f]{64}$/);
     // Different on each call.
     expect(hex).not.toBe(generateKekHex());
+  });
+});
+
+describe("deriveKekSubkey (#946)", () => {
+  afterEach(() => _setKekForTests(null));
+  const msg = new TextEncoder().encode("payload");
+  const sign = async (label: string) =>
+    new Uint8Array(await crypto.subtle.sign("HMAC", await deriveKekSubkey(label), msg));
+
+  it("is stable per KEK + label and independent across labels and KEKs", async () => {
+    _setKekForTests(KEK_A);
+    const a1 = await sign("caelo/test/v1");
+    expect(await sign("caelo/test/v1")).toEqual(a1);
+    expect(await sign("caelo/other/v1")).not.toEqual(a1);
+    // A signature verifies only under the key it was made with.
+    const key = await deriveKekSubkey("caelo/test/v1");
+    expect(await crypto.subtle.verify("HMAC", key, a1, msg)).toBe(true);
+    _setKekForTests(KEK_B);
+    expect(await sign("caelo/test/v1")).not.toEqual(a1);
+  });
+
+  it("fails loudly without a KEK", async () => {
+    _setKekForTests(null);
+    const saved = process.env.CAELO_SECRET_KEK;
+    delete process.env.CAELO_SECRET_KEK;
+    try {
+      await expect(deriveKekSubkey("caelo/test/v1")).rejects.toThrow(/CAELO_SECRET_KEK is not set/);
+    } finally {
+      if (saved !== undefined) process.env.CAELO_SECRET_KEK = saved;
+    }
   });
 });

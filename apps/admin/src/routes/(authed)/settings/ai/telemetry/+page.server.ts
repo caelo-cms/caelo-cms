@@ -4,6 +4,7 @@ import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -11,7 +12,8 @@ export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.read");
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "telemetry.get", {});
-  type Settings = {
+  if (!r.ok) throw new Error(opErrorMessage(r.error, "could not read the telemetry settings"));
+  const settings = r.value as {
     installPingEnabled: boolean;
     errorReportingEnabled: boolean;
     installId: string | null;
@@ -19,16 +21,6 @@ export const load: PageServerLoad = async ({ locals }) => {
     lastSentAt: string | null;
     updatedAt: string;
   };
-  const settings: Settings = r.ok
-    ? (r.value as Settings)
-    : {
-        installPingEnabled: false,
-        errorReportingEnabled: false,
-        installId: null,
-        eventsSentCount: 0,
-        lastSentAt: null,
-        updatedAt: new Date(0).toISOString(),
-      };
   return { settings };
 };
 
@@ -44,7 +36,11 @@ export const actions: Actions = {
       installPingEnabled,
       errorReportingEnabled,
     });
-    if (!r.ok) return fail(400, { error: "could not save telemetry settings" });
+    if (!r.ok) {
+      return fail(400, {
+        error: `Could not save the telemetry settings: ${opErrorMessage(r.error, "the server refused the change")}`,
+      });
+    }
     const v = r.value as { installId: string | null };
     return { ok: true, installId: v.installId };
   },
