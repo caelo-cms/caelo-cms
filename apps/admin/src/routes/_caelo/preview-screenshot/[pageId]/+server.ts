@@ -28,6 +28,7 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
+import { previewDocumentResponse } from "#lib/server/preview-sandbox.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
@@ -53,15 +54,14 @@ export const GET: RequestHandler = async ({ params, request }) => {
   });
   if (!result.ok) throw error(404, "Page not found");
 
-  return new Response((result.value as { html: string }).html, {
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-      // Never indexed, never framed, never a referrer source — this exists
-      // solely for the capture browser and short-lived token holders.
-      "x-robots-tag": "noindex",
-      "x-frame-options": "SAMEORIGIN",
-      "referrer-policy": "no-referrer",
-    },
-  });
+  // #946 — sandboxed like every preview document: the capture browser
+  // adds the token to every request for this origin, so the page's own
+  // scripts must not run IN this origin (an opaque one cannot read what
+  // those requests return). Media keeps loading through the token header;
+  // fonts are inlined because the opaque origin's font loads are CORS.
+  const response = await previewDocumentResponse((result.value as { html: string }).html, null);
+  // Never indexed — this exists solely for the capture browser and
+  // short-lived token holders.
+  response.headers.set("x-robots-tag", "noindex");
+  return response;
 };

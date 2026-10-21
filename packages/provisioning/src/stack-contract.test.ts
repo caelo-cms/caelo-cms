@@ -340,6 +340,7 @@ describe("self-hosted compose", () => {
       postgresPassword: "p",
       rolePasswords: { admin: "a", public: "b" },
       caeloSecretKek: "k",
+      internalSecret: "i".repeat(48),
       diskSize: "10G",
       ports: { http: 80, https: 443 },
       project: "caelo-example-com",

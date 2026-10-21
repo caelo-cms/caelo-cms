@@ -134,7 +134,7 @@ export const FIELD_EDIT_SCRIPT = `
       edits: edits,
     };
     if (scope) msg.scope = scope;
-    parent.postMessage(msg, origin());
+    postToEditor(msg);
   }
 
   // Shared content (on more than one page) asks where the change applies;

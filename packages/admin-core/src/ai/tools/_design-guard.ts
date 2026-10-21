@@ -21,7 +21,7 @@
  * description). Nothing to capture first; the guard works on a fresh
  * install and on a migrated one.
  *
- * Three static findings (the VISUAL sibling-compare half lives in the
+ * Five static findings (the VISUAL sibling-compare half lives in the
  * #155 self-review loop — after every restyle the AI screenshots and
  * critiques the render, which inherently compares against the page's
  * surroundings):
@@ -33,7 +33,11 @@
  *      (_markup-guard.ts; replaced a display-name word match that never
  *      looked at the markup and so missed every real copy);
  *   3. roles-in-play: the recorded role of each var this css actually
- *      references, so role misuse is visible in-context.
+ *      references, so role misuse is visible in-context;
+ *   4. css-scope (#158): selectors that are not tied to the module's root
+ *      class bleed into every other module in the page-wide stylesheet;
+ *   5. unknown-interaction (#160): a `data-caelo-ui` value outside the
+ *      vetted kit ships no behaviour at all.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -41,7 +45,11 @@ import {
   applyThemeLiteralBinding,
   type ExecutionContext,
   extractCssVarReferences,
+  findInteractionIds,
+  formatCssScopeFindings,
+  INTERACTIONS,
   listTokenRoles,
+  scanModuleCssScope,
   type ThemeDocument,
 } from "@caelo-cms/shared";
 import { moduleMarkupFindings } from "./_markup-guard.js";
@@ -53,6 +61,12 @@ export interface DesignGuardInput {
   readonly html?: string;
   /** The module(s) this write created or edited — never matched against themselves. */
   readonly excludeModuleIds?: readonly string[];
+  /**
+   * The module a css-only write restyled. Its stored html supplies the
+   * root class the css-scope finding checks selectors against; without
+   * it (and without `html`) only fully global selectors are reported.
+   */
+  readonly scopeModuleId?: string;
 }
 
 /** How many roles-in-play entries to replay before truncating. */
@@ -98,6 +112,31 @@ export async function designGuardSuffix(
     }
   }
 
+  // 4. css-scope: the module's css joins ONE page-wide stylesheet.
+  if (input.css !== undefined && input.css.trim().length > 0) {
+    const rootHtml = input.html ?? (await storedModuleHtml(ctx, toolCtx, input.scopeModuleId));
+    const scope = formatCssScopeFindings(
+      scanModuleCssScope(
+        rootHtml !== undefined ? { css: input.css, html: rootHtml } : { css: input.css },
+      ),
+    );
+    if (scope !== null) findings.push(scope);
+  }
+
+  // 5. unknown-interaction: a typo'd or invented kit id ships nothing.
+  if (input.html !== undefined) {
+    const { unknown } = findInteractionIds(input.html);
+    if (unknown.length > 0) {
+      findings.push(
+        `data-caelo-ui value(s) ${unknown.map((u) => `"${u}"`).join(", ")} are not in the vetted interaction kit (${Object.keys(
+          INTERACTIONS,
+        )
+          .map((k) => `"${k}"`)
+          .join(", ")}), so no behaviour ships for them — use a kit id or write the module JS`,
+      );
+    }
+  }
+
   // 2. pattern-reuse: the module rows are the site's real pattern
   // inventory, and their html is what a copy shares with them.
   if (input.html !== undefined) {
@@ -108,4 +147,19 @@ export async function designGuardSuffix(
 
   if (findings.length === 0) return "";
   return ` 🎯 design-guard: ${findings.join(". ")}.`;
+}
+
+/** The stored html of `moduleId` (branch-aware), or undefined when unknown. */
+async function storedModuleHtml(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  moduleId: string | undefined,
+): Promise<string | undefined> {
+  if (moduleId === undefined) return undefined;
+  const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.get", { moduleId });
+  // The write this guard reports on just succeeded on the same module, so
+  // a failed read here is not the AI's to act on; without the root the
+  // scope check reports only the fully global selectors.
+  if (!got.ok) return undefined;
+  return (got.value as { module: { html: string } }).module.html;
 }

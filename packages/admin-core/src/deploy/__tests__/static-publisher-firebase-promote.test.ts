@@ -621,3 +621,58 @@ describe("outlivesRetiredPreviewTtl (#969)", () => {
     expect(() => outlivesRetiredPreviewTtl("in 604800s", NOW)).toThrow("unparseable");
   });
 });
+
+describe("firebaseHostingPublisher — security headers (#891)", () => {
+  it("Publish live of a version staged before #891 goes live with the SVG CSP + nosniff", async () => {
+    // A pre-#891 staging version: cache entries + staging robots, no
+    // security entries.
+    fake.seedVersion(
+      "runid-pre-891",
+      {
+        headers: [
+          { regex: "^/_assets/", headers: { "Cache-Control": "public, max-age=3600" } },
+          { glob: "**", headers: { "X-Robots-Tag": "noindex" } },
+        ],
+      },
+      { "/index.html": "abc" },
+    );
+    const { firebaseHostingPublisher, SECURITY_HEADER_ENTRIES } = await import(
+      "../static-publisher-firebase.js"
+    );
+    await firebaseHostingPublisher.promoteToProduction({
+      sourceRunId: "pre-891",
+      sourceBuildDir: buildDir,
+      fromTarget: STAGING,
+      toTarget: PRODUCTION,
+      siteBaseUrl: SITE_BASE_URL,
+    });
+    expect(fake.liveVersion().config.headers).toEqual([
+      { regex: "^/_assets/", headers: { "Cache-Control": "public, max-age=3600" } },
+      ...SECURITY_HEADER_ENTRIES,
+    ]);
+  });
+});
+
+describe("withSecurityHeaders", () => {
+  it("replaces stale security entries (case-insensitive) and keeps everything else", async () => {
+    const { withSecurityHeaders, SECURITY_HEADER_ENTRIES } = await import(
+      "../static-publisher-firebase.js"
+    );
+    const cache = { glob: "/**/*.html", headers: { "Cache-Control": "public, max-age=60" } };
+    const config = {
+      rewrites: [{ glob: "/api/**" }],
+      headers: [
+        cache,
+        { glob: "**/*.svg", headers: { "content-security-policy": "default-src *" } },
+        { glob: "**", headers: { "x-content-type-options": "nosniff" } },
+      ],
+    };
+    expect(withSecurityHeaders(config)).toEqual({
+      rewrites: [{ glob: "/api/**" }],
+      headers: [cache, ...SECURITY_HEADER_ENTRIES],
+    });
+    // Idempotent: a config that already has them is left as it is.
+    const once = withSecurityHeaders(config);
+    expect(withSecurityHeaders(once)).toEqual(once);
+  });
+});

@@ -389,6 +389,7 @@ import {
   platformUpdatesSchedulerStatusOp,
   platformUpdatesSchedulerTickOp,
 } from "./ops/platform-update-scheduler.js";
+import { platformUpdatesSkipScheduledOp } from "./ops/platform-update-skip.js";
 import { platformUpdateStatusOp, platformUpdatesCheckNowOp } from "./ops/platform-updates.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
@@ -1229,6 +1230,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(platformUpdatesNotificationClaimOp);
   registry.register(platformUpdatesNotificationFinishOp);
   registry.register(platformUpdatesSchedulerStatusOp);
+  // #868 — "Skip this time" for a scheduled automatic install (Owner, step-up).
+  registry.register(platformUpdatesSkipScheduledOp);
   // #757 — the step-up for the actions above: the Owner's password, re-entered.
   registry.register(stepUpConfirmPasswordOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the

@@ -31,6 +31,9 @@ const GHSA_ID = /^GHSA(-[23456789cfghjmpqrvwx]{4}){3}$/;
 
 const digest = z.string().regex(IMAGE_DIGEST, "expected sha256:<64 hex>");
 
+/** The longest `ownerAction` a release may declare: one sentence. */
+export const OWNER_ACTION_MAX_CHARS = 300;
+
 /** Zod schema of `release-manifest.json` (manifestVersion 1). */
 export const ReleaseManifestSchema = z.object({
   manifestVersion: z.literal(1),
@@ -55,6 +58,15 @@ export const ReleaseManifestSchema = z.object({
   /** Set only via the release-cut input, backed by published GitHub Security Advisories. */
   security: z.boolean(),
   advisories: z.array(z.string().regex(GHSA_ID, "expected a GHSA id")),
+  /**
+   * #868 — what the Owner has to do for this release's breaking change, in
+   * one sentence (Settings → Updates shows it under "Before you update").
+   * Set from the release-cut input; the release checks refuse a release
+   * with a breaking commit without it. Absent on releases from before the
+   * field and on releases without a breaking change: optional, so
+   * manifestVersion stays 1 and older readers ignore it.
+   */
+  ownerAction: z.string().min(1).max(OWNER_ACTION_MAX_CHARS).optional(),
 });
 export type ReleaseManifest = z.infer<typeof ReleaseManifestSchema>;
 

@@ -241,6 +241,13 @@ export type PrimaryAction =
   /** Ask GitHub for the newest release now. */
   | { readonly kind: "check_now" };
 
+/**
+ * A second, quieter action next to the primary one. Only the scheduled
+ * state has one: "Skip this time" (#868), password-confirmed, so the
+ * scheduler does not install that release on its own.
+ */
+export type SecondaryAction = { readonly kind: "skip"; readonly version: string };
+
 /** What the status card shows. */
 export interface UpdatePageState {
   readonly kind: UpdatePageStateKind;
@@ -253,6 +260,8 @@ export interface UpdatePageState {
   /** An optional second line (why, or what else to expect); null when there is none. */
   readonly detail: string | null;
   readonly action: PrimaryAction;
+  /** Shown next to the primary action; absent in every state that has none. */
+  readonly secondary?: SecondaryAction;
 }
 
 /** Everything {@link updatePageState} looks at. */
@@ -294,6 +303,8 @@ export interface UpdatePageInput {
     readonly lastAction: string | null;
     readonly lastVersion: string | null;
     readonly lastWaitUntil: string | null;
+    /** The release whose automatic install the Owner skipped (#868); null when none. */
+    readonly skippedVersion: string | null;
   };
   /**
    * The automatic-update policy as stored NOW. The scheduler's decision
@@ -333,11 +344,14 @@ export interface UpdatePageInput {
  * When the scheduler's "wait" decision for `latest` installs it, or null
  * when that decision no longer holds: the policy must still install
  * automatically, not be paused at `now`, and not have changed after the
- * decision was made.
+ * decision was made, and the Owner must not have skipped the release.
  */
 function scheduledInstall(input: UpdatePageInput, latest: string): string | null {
   const { scheduler: s, policy } = input;
   if (s.lastAction !== "wait" || s.lastVersion !== latest || s.lastWaitUntil === null) return null;
+  // The Owner skipped it (#868): the skip op rewrites the decision too, but
+  // the skip is what the scheduler acts on.
+  if (s.skippedVersion === latest) return null;
   if (policy.mode !== "auto" || isPausedAt(policy, input.now)) return null;
   if (s.lastRunAt === null || Date.parse(policy.updatedAt) > Date.parse(s.lastRunAt)) return null;
   return s.lastWaitUntil;
@@ -526,9 +540,16 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
         badge: { label: "Update available", tone: "warning" },
         sentence: `v${latest} is available.`,
         detail:
-          status.infraChange === true
-            ? "This update also changes settings in your Google Cloud project, so it takes a little longer."
-            : null,
+          [
+            input.scheduler.skippedVersion === latest
+              ? "You skipped its automatic install: it waits for you here, and the next newer release installs automatically again."
+              : null,
+            status.infraChange === true
+              ? "This update also changes settings in your Google Cloud project, so it takes a little longer."
+              : null,
+          ]
+            .filter((line): line is string => line !== null)
+            .join(" ") || null,
         action: installAction(input, latest, `Install v${latest}…`),
       };
     }
@@ -538,6 +559,8 @@ export function updatePageState(input: UpdatePageInput): UpdatePageState {
       sentence: `v${latest} installs automatically on ${utcDayTime(scheduledAt)}.`,
       detail: null,
       action: installAction(input, latest, "Install now…"),
+      // Skipping changes what installs unattended: the Owner's permission.
+      ...(input.canInstall ? { secondary: { kind: "skip" as const, version: latest } } : {}),
     };
   }
 

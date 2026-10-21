@@ -15,8 +15,9 @@
  *     fetches the target's release manifest from the FIXED registry and
  *     verifies its signature (release-manifest.ts), and decides
  *     (upgrader-assess.ts, `route: "converge"`): no downgrade, nothing
- *     below minFromVersion, no automatic converge. Then it verifies the
- *     target's ops image, points this job at it BY DIGEST and starts a new
+ *     below minFromVersion, no automatic converge unless the policy allows
+ *     it; then it checks its own IAM access (converge-job-preflight.ts).
+ *     Then it verifies the target's ops image, points this job at it BY DIGEST and starts a new
  *     execution, handing the request over to it. It changes nothing else:
  *     the converge logic always comes from the release it installs.
  *
@@ -45,6 +46,8 @@
  */
 
 import type { ConvergeCheckpoint } from "./converge-checkpoint.js";
+import { CONVERGE_PREFLIGHT_VOICE, convergeAccessChecks } from "./converge-job-preflight.js";
+import { GCP_STACK_ENV } from "./gcp-names.js";
 import { decideInstallJob, type ExecutionState } from "./install-job.js";
 import type { InstallMetadata } from "./install-state.js";
 import {
@@ -55,6 +58,12 @@ import {
 import { StateLockHeldError } from "./state-store.js";
 import type { UpgradeCheckpoint } from "./upgrade/upgrade.js";
 import { assessUpgradeRequest } from "./upgrader-assess.js";
+import {
+  type IamTester,
+  preflightErrorReason,
+  preflightMissingReason,
+  runIamPreflight,
+} from "./upgrader-iam-preflight.js";
 import {
   type ClaimedUpdate,
   recordUpdateEnd,
@@ -111,6 +120,10 @@ export interface ConvergeJobDeps {
   readonly queue: ConvergeQueue;
   /** From the metadata server — never from env or argv. */
   readonly projectId: string;
+  /** The region this job runs in (metadata server). */
+  readonly region: string;
+  /** Asks IAM as this job's own identity (the IAM self-check, #884). */
+  readonly iam: IamTester;
   /** This Cloud Run execution; null outside Cloud Run. */
   readonly execution: string | null;
   /** The Caelo release this code belongs to (CAELO_VERSION of the image). */
@@ -296,6 +309,29 @@ export async function runConvergeJob(deps: ConvergeJobDeps): Promise<UpgraderRun
     }
     for (const w of decision.warnings) r.warn(w);
     const m = decision.manifest;
+
+    // #884 — decided to run: ask IAM for what the rest needs before the
+    // lock, the hand-over or the backup (converge-job-preflight.ts). Both
+    // stages ask; stage 2's list is the target release's own.
+    const access = await runIamPreflight(
+      convergeAccessChecks({ projectId: deps.projectId, region: deps.region, env: GCP_STACK_ENV }),
+      deps.iam,
+    );
+    if (access.kind === "missing") {
+      return stopWith(
+        "needs_cloud_shell",
+        ["iam-preflight"],
+        preflightMissingReason(access.missing, CONVERGE_PREFLIGHT_VOICE),
+      );
+    }
+    if (access.kind === "error") {
+      return stopWith(
+        "failed",
+        ["iam-preflight"],
+        preflightErrorReason(access.errors, CONVERGE_PREFLIGHT_VOICE),
+      );
+    }
+    r.info("The converge job has every permission this update needs.");
 
     if (compareSemver(deps.ownVersion, m.version) !== 0) {
       return await handOver(m);

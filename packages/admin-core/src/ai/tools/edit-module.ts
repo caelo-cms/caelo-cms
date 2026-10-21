@@ -36,8 +36,9 @@ export const editModuleTool: ToolDefinitionWithHandler<
     "**Lists are lists, not numbered scalars.** A menu with 10 items is ONE `link-list` field with 10 elements — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `text-list`. Cards with rich per-item structure use `module-list` pointing at a sub-module. " +
     "**Update description + kind when the module's purpose drifts.** The `## Modules` block exposes them to your future self; stale descriptions hurt your own decision-making. " +
     "**Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `## Modules` block. Treat it as a fallback, not the default path. " +
-    "**Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158). " +
+    "**Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158); the tool result flags unscoped selectors. " +
     "**Module JS shares ONE page-level script** - no implicit `root`/`el` binding exists; wrap in an IIFE and query via document.querySelectorAll scoped to your module's root class (see the `js` input description). " +
+    '**Accordion, tabs, carousel need NO module JS** - mark the markup with `data-caelo-ui="accordion|tabs|carousel"` and Caelo ships vetted, accessible behaviour (markup contract in the `js` input description). ' +
     "Edits are CHAT-BRANCHED until publish. " +
     "**For a TARGETED change to existing html/css/js, PREFER `edit_content`** (surgical string-replace: far cheaper than re-emitting the whole body here, and the diff is reviewable). Use `edit_module` for a WHOLESALE rewrite, a brand-new module body, or `fields`/`displayName`/`kind`/`type`/`description` changes. " +
     "Use this for structure, styling, fields list, or `description`/`kind` updates. " +
@@ -107,7 +108,7 @@ export const editModuleTool: ToolDefinitionWithHandler<
         css: effectiveCss,
         ...(input.html !== undefined
           ? { html: input.html, excludeModuleIds: [input.moduleId] }
-          : {}),
+          : { scopeModuleId: input.moduleId }),
       });
       // v0.12.2 — surface the extractor's inferred fields when present
       // so the AI's next turn sees the auto-minted names verbatim.
