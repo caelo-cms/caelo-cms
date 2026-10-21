@@ -20,9 +20,9 @@
  * "Apply the OAuth client to IAP": "You can apply the OAuth client at the
  * project or organization level", `gcloud iap settings set … --project`),
  * and programmatic clients only at organisation, folder or project level
- * (docs.cloud.google.com/iap/docs/sharing-oauth-clients). The admin's
- * Cloud Run IAP resource answered a PATCH of these fields with HTTP 400
- * INVALID_ARGUMENT (viu-one-web, 2026-10-21). Settings inherit down the IAP
+ * (docs.cloud.google.com/iap/docs/sharing-oauth-clients). (The HTTP 400
+ * first seen on viu-one-web on 2026-10-21 came from the update mask, not the
+ * level; see the mask note below.) Settings inherit down the IAP
  * hierarchy (project → iap_web → service type → service;
  * docs.cloud.google.com/iap/docs/customizing), so the project value reaches
  * the admin's resource on both providers (Cloud Run IAP on gcp-firebase,
@@ -49,20 +49,25 @@
  * `iap.webServices.getSettings` / `updateSettings` on a service (both in
  * `roles/iap.settingsAdmin`).
  *
- * The PATCH's update mask is the whole `oauthSettings` message
- * ({@link OAUTH_SETTINGS_MASK}): a message path replaces the sub-message
- * (the API documents the same form for `reauthSettings`), so setting and
- * clearing are one shape and no other IAP setting is touched. Google's
- * custom-OAuth guide spells the leaf paths `oauthClientId` /
- * `oauthClientSecret`, names the resource does not have; the message path
- * sidesteps that ambiguity. `loginHint` is not ours and is carried over.
+ * The PATCH's update mask names the three fields the job owns, leaf by
+ * leaf ({@link OAUTH_SETTINGS_MASK}). IAP refuses a mask on the whole
+ * `oauthSettings` message with HTTP 400 INVALID_ARGUMENT, even with an empty
+ * body, at project and at service level; the same body under the leaf
+ * masks is accepted (probed live on viu-one-web, 2026-10-21). A leaf in the
+ * mask that is absent from the body is cleared, so setting and clearing are
+ * one shape. `loginHint` is not ours: it stays out of the mask and is left
+ * as it is.
  */
 
 import { createHash } from "node:crypto";
 import { type GoogleDeps, googleCall } from "./google-iam.js";
 
-/** Field mask of {@link reconcileOAuthSettings}' PATCH: the whole `oauthSettings` message. */
-export const OAUTH_SETTINGS_MASK = "iapSettings.accessSettings.oauthSettings";
+/** Field mask of {@link reconcileOAuthSettings}' PATCH: the three `oauthSettings` leaves the job owns. */
+export const OAUTH_SETTINGS_MASK = [
+  "iapSettings.accessSettings.oauthSettings.clientId",
+  "iapSettings.accessSettings.oauthSettings.clientSecret",
+  "iapSettings.accessSettings.oauthSettings.programmaticClients",
+].join(",");
 
 /**
  * The project-level IAP settings resource (`projects/<number>`, without the
@@ -162,21 +167,18 @@ export function compareOAuthSettings(
     : { inSync: false, secretReason: "differs" };
 }
 
-/** The `oauthSettings` body that makes IAP use `desired` (or nothing), keeping `loginHint`. */
-export function oauthSettingsBody(
-  live: LiveOAuthSettings,
-  desired: DesiredOAuthClient,
-): Record<string, unknown> {
-  return {
-    ...(live.loginHint ? { loginHint: live.loginHint } : {}),
-    ...(desired
-      ? {
-          clientId: desired.clientId,
-          clientSecret: desired.clientSecret,
-          programmaticClients: [desired.clientId],
-        }
-      : {}),
-  };
+/**
+ * The `oauthSettings` body that makes IAP use `desired`, or `{}` to clear
+ * the three masked fields. `loginHint` is outside the mask and never sent.
+ */
+export function oauthSettingsBody(desired: DesiredOAuthClient): Record<string, unknown> {
+  return desired
+    ? {
+        clientId: desired.clientId,
+        clientSecret: desired.clientSecret,
+        programmaticClients: [desired.clientId],
+      }
+    : {};
 }
 
 /**
@@ -208,7 +210,7 @@ export async function reconcileOAuthSettings(
     deps,
     `${resourceUrl}:iapSettings?updateMask=${encodeURIComponent(OAUTH_SETTINGS_MASK)}`,
     "PATCH",
-    { name, accessSettings: { oauthSettings: oauthSettingsBody(live, desired) } },
+    { name, accessSettings: { oauthSettings: oauthSettingsBody(desired) } },
   );
   return {
     before,

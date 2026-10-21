@@ -98,8 +98,7 @@ export const OPERATOR_ACCESS_ROLE: CustomRoleSpec = {
  * #914 — the project-level IAP settings, where the job sets the Google
  * sign-in client (`oauthSettings`). Google applies a custom OAuth client for
  * Cloud Run IAP, and programmatic clients, only at project level or above
- * (admin-core security/operator-access/iap-settings.ts); the admin's own
- * Cloud Run IAP resource refuses them with HTTP 400. A separate role
+ * (admin-core security/operator-access/iap-settings.ts). A separate role
  * because it is bound on the PROJECT: `caeloOperatorAccess` there would
  * reach every IAP resource's IAM policy. `iap.projects.*Settings` cover the
  * project-level settings only, no lower level and no IAM policy
