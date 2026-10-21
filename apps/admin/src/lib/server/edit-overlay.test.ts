@@ -61,20 +61,30 @@ describe("injectEditOverlay", () => {
   });
 });
 
+const CHANNEL = "6f1c2a3b-4d5e-4f60-8a71-92b3c4d5e6f7";
+
 /** Run INJECT_SCRIPT against a minimal window and capture its message handler. */
-function bootRuntime(): {
+function bootRuntime(search = `?branch=b1&channel=${CHANNEL}`): {
   handler: (ev: { source: unknown; origin: string; data: unknown }) => void;
   parentWindow: object;
-  reloads: () => number;
+  posted: () => { msg: Record<string, unknown>; target: string }[];
 } {
   const listeners: Record<string, (ev: never) => void> = {};
-  let reloads = 0;
-  const parentWindow = { postMessage: () => {}, location: { origin: "https://admin.test" } };
+  const posted: { msg: Record<string, unknown>; target: string }[] = [];
+  // #946 — the parent is cross-origin to the sandboxed preview: reading its
+  // location throws, exactly as in a browser.
+  const parentWindow = {
+    postMessage: (msg: Record<string, unknown>, target: string) => posted.push({ msg, target }),
+    get location(): never {
+      throw new Error("SecurityError: cross-origin");
+    },
+  };
   const win: Record<string, unknown> = {
     addEventListener: (type: string, fn: (ev: never) => void) => {
       listeners[type] = fn;
     },
     parent: parentWindow,
+    scrollY: 0,
   };
   const doc = {
     readyState: "loading",
@@ -85,8 +95,10 @@ function bootRuntime(): {
   };
   const location = {
     origin: "https://admin.test",
+    href: `https://admin.test/edit/preview-by-path/about${search}`,
+    search,
     reload: () => {
-      reloads++;
+      throw new Error("the preview must not reload itself (#946)");
     },
   };
   new Function("window", "document", "location", "parent", "setTimeout", INJECT_SCRIPT)(
@@ -101,26 +113,50 @@ function bootRuntime(): {
   return {
     handler: message as unknown as (ev: { source: unknown; origin: string; data: unknown }) => void,
     parentWindow,
-    reloads: () => reloads,
+    posted: () => posted,
   };
 }
 
 describe("INJECT_SCRIPT message listener", () => {
-  it("obeys the embedding editor", () => {
+  it("answers the embedding editor's reload with a navigate request to the same page", () => {
     const rt = bootRuntime();
     rt.handler({
       source: rt.parentWindow,
       origin: "https://admin.test",
+      // The editor never sends its channel (#946, iframe-protocol.ts).
       data: { kind: "caelo:reload" },
     });
-    expect(rt.reloads()).toBe(1);
+    // #946 — the editor runs the navigation (its own carries the session);
+    // the request goes to the admin origin only and carries the channel.
+    expect(rt.posted()).toEqual([
+      {
+        msg: {
+          kind: "caelo:navigate",
+          href: "/edit/preview-by-path/about?branch=b1",
+          channel: CHANNEL,
+        },
+        target: "https://admin.test",
+      },
+    ]);
   });
 
   it("ignores messages from any other window or origin", () => {
     const rt = bootRuntime();
     const reload = { kind: "caelo:reload" };
+    // The previewed site's own scripts post from this very window.
     rt.handler({ source: {}, origin: "https://admin.test", data: reload });
     rt.handler({ source: rt.parentWindow, origin: "https://evil.test", data: reload });
-    expect(rt.reloads()).toBe(0);
+    rt.handler({ source: rt.parentWindow, origin: "null", data: reload });
+    expect(rt.posted()).toEqual([]);
+  });
+
+  it("stays silent without a channel (a frame no editor listens to)", () => {
+    const rt = bootRuntime("?branch=b1");
+    rt.handler({
+      source: rt.parentWindow,
+      origin: "https://admin.test",
+      data: { kind: "caelo:reload" },
+    });
+    expect(rt.posted()).toEqual([]);
   });
 });
