@@ -45,6 +45,7 @@ import {
   normalizeStagingHost,
   stagingHostProblem,
 } from "@caelo-cms/shared";
+import type { AdminInternalTarget } from "./admin-internal.js";
 import type { AgentCliContext } from "./agent/command.js";
 import type { AgentConfig } from "./agent/config.js";
 import { generateBootstrapToken } from "./bootstrap-token.js";
@@ -1234,42 +1235,56 @@ async function lifecycleTruncate(): Promise<void> {
 }
 
 /**
- * #769 `owner-reset [--install <id>] [--email <addr>]` — print a one-time
- * reset link for a locked-out Owner, for installs whose admin cannot email
- * one (see owner-reset.ts for why the operator's cloud identity may).
+ * #769 / #770 `owner-reset [--install <id>] [--email <addr>]` — print a
+ * one-time reset link for a locked-out Owner, for installs whose admin
+ * cannot email one (see owner-reset.ts for why the operator may). Run in the
+ * self-hosted install's directory, or with `--install` for a cloud install.
  */
 async function ownerReset(): Promise<void> {
+  const email = arg("email");
+  const target = selfHostedInstallPresent()
+    ? selfHostedOwnerResetTarget()
+    : await cloudOwnerResetTarget();
+  const { describeOwnerReset, requestOwnerReset } = await import("./owner-reset.js");
+  const r = await requestOwnerReset(target, email ? { email } : {});
+  if (!r.ok) {
+    console.error(`owner-reset: ${r.error}`);
+    process.exit(1);
+  }
+  // Prints the reset link ON PURPOSE: stdout is the one place it goes; it is
+  // never written to a file or a log.
+  for (const line of describeOwnerReset(r.value)) console.log(line);
+}
+
+/** The self-hosted install in this directory, reached through `docker compose exec`. */
+function selfHostedOwnerResetTarget(): AdminInternalTarget {
+  const cfg = loadConfig();
+  if (!cfg) {
+    console.error("no config — run `cms-provision init` first");
+    process.exit(2);
+  }
+  return {
+    provider: "self-hosted",
+    caeloDir: CAELO_DIR,
+    adminUrl: siteUrl(cfg, selfHostedAdminHost(cfg.domain)),
+  };
+}
+
+/** The cloud install `--install` names (or the only one), on a provider that has the channel. */
+async function cloudOwnerResetTarget(): Promise<AdminInternalTarget> {
   const { installFlag, listInstalls, selectInstall } = await import("./install-state.js");
   const selected = selectInstall(listInstalls(), installFlag(process.argv));
   if (!selected.ok) {
     console.error(selected.message);
     process.exit(1);
   }
-  const meta = selected.meta;
-  if (meta.provider !== "gcp-firebase") {
-    console.error(
-      `owner-reset works on gcp-firebase installs so far; this one is ${meta.provider} (issue #770). ` +
-        "Until then, another Owner can set a new password under Settings -> Users, or set up email under Settings -> Email so /forgot can send the link.",
-    );
+  const { ownerResetTarget } = await import("./owner-reset.js");
+  const target = ownerResetTarget(selected.meta);
+  if (!target.ok) {
+    console.error(`owner-reset: ${target.error}`);
     process.exit(1);
   }
-  if (!meta.projectId || !meta.region) {
-    console.error(
-      `install ${meta.installId} has no project or region recorded in install.json; re-run the wizard to record it.`,
-    );
-    process.exit(1);
-  }
-  const email = arg("email");
-  const { describeOwnerReset, requestOwnerReset } = await import("./owner-reset.js");
-  const r = await requestOwnerReset(
-    { projectId: meta.projectId, region: meta.region },
-    email ? { email } : {},
-  );
-  if (!r.ok) {
-    console.error(`owner-reset: ${r.error}`);
-    process.exit(1);
-  }
-  for (const line of describeOwnerReset(r.value)) console.log(line);
+  return target.value;
 }
 
 /**
@@ -1343,6 +1358,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     if (!requested && meta.provider === "gcp-firebase" && meta.projectId && meta.region) {
       const { inspectStagingAdmin } = await import("./staging-admin.js");
       const inspected = await inspectStagingAdmin({
+        provider: "gcp-firebase",
         projectId: meta.projectId,
         region: meta.region,
       });
@@ -1428,7 +1444,7 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     // the password is printed once (never stored by the CLI).
     const { applyStagingAdmin, describeStagingApply } = await import("./staging-admin.js");
     const applied = await applyStagingAdmin(
-      { projectId: meta.projectId, region: meta.region },
+      { provider: "gcp-firebase", projectId: meta.projectId, region: meta.region },
       {
         host: r.hostname,
         ...(rotatePassword ? { rotateBasicAuth: true } : {}),
