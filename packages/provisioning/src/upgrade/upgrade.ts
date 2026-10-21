@@ -40,6 +40,7 @@ import {
 } from "./app-roll.js";
 import { backupFailureHelp, restoreCommand, type SqlBackup, takeSqlBackup } from "./backup.js";
 import { startConverge } from "./converge.js";
+import type { GcloudCredentials } from "./gcp-lookup.js";
 import type { HealthProbe } from "./health.js";
 import type { UpgradeReporter } from "./reporter.js";
 
@@ -63,6 +64,8 @@ export interface GcpUpgradeTarget {
    * release manifest (the converge job knows it; the terminal does not).
    */
   readonly migrationsContract?: boolean | null;
+  /** Whose gcloud credentials run the sequence: the Owner's, or the converge job's (#630). */
+  readonly credentials: GcloudCredentials;
 }
 
 /**
@@ -170,6 +173,7 @@ export async function upgradeGcpInstallOutcome(
       env: target.env,
       domain: target.domain,
       stagingHost: target.stagingHost,
+      credentials: target.credentials,
     },
     images.images,
     run,
@@ -204,7 +208,7 @@ export async function upgradeGcpInstallOutcome(
     const sBak = r.step("Taking a pre-upgrade Cloud SQL backup...");
     const taken = await takeSqlBackup(
       run,
-      { projectId, env: target.env },
+      { projectId, env: target.env, credentials: target.credentials },
       `pre-upgrade to ${target.targetTag}`,
       deps.now,
     );

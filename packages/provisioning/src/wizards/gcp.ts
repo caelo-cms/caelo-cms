@@ -117,7 +117,7 @@ import {
   resolveBackend,
 } from "../state-backend.js";
 import { acquireStateLock, GcsStateStore } from "../state-store.js";
-import { resolveGcpResourceName } from "../upgrade/gcp-lookup.js";
+import { lookupFailure, resolveGcpResourceName } from "../upgrade/gcp-lookup.js";
 import {
   releaseVersionForDigest,
   resolveOpsImageRef,
@@ -917,7 +917,11 @@ async function stepGrantBaseRoles(
 async function stepPublicRoleIsolation(projectId: string): Promise<void> {
   const s = spinner();
   s.start("Removing public_role from the Cloud SQL superuser group...");
-  const r = await revokePublicRoleMemberships({ projectId, env: GCP_STACK_ENV });
+  const r = await revokePublicRoleMemberships({
+    projectId,
+    env: GCP_STACK_ENV,
+    credentials: "operator",
+  });
   if (r.status === "failed") {
     s.stop(red(`Failed: ${r.error ?? ""}`));
     log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
@@ -1161,7 +1165,7 @@ async function stepRemoteMcp(
       projectId,
       region,
     );
-  const [admin, gateway] = [await name("admin"), await name("gateway")];
+  const [adminLookup, gatewayLookup] = [await name("admin"), await name("gateway")];
   const failed = (error: string) => {
     s.stop(yellow(`Remote MCP not prepared: ${error}`));
     log.warn(
@@ -1169,7 +1173,17 @@ async function stepRemoteMcp(
     );
     return false;
   };
-  if (!admin || !gateway) return failed("the admin or gateway Cloud Run service was not found");
+  if (adminLookup.status !== "found") {
+    return failed(
+      lookupFailure(adminLookup, `caelo-${GCP_STACK_ENV}-admin* Cloud Run service`, "operator"),
+    );
+  }
+  if (gatewayLookup.status !== "found") {
+    return failed(
+      lookupFailure(gatewayLookup, `caelo-${GCP_STACK_ENV}-gateway* Cloud Run service`, "operator"),
+    );
+  }
+  const [admin, gateway] = [adminLookup.name, gatewayLookup.name];
   const edge = await ensureRemoteMcpEdge({ provider, projectId, env: GCP_STACK_ENV, domain });
   if (!edge.ok) return failed(edge.error);
   const env = await ensureRemoteMcpIdentityEnv({

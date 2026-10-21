@@ -193,6 +193,7 @@ const TARGET: GcpUpgradeTarget = {
   infraContractVersion: 1,
   skipVerify: false,
   skipHealthCheck: false,
+  credentials: "operator",
 };
 
 /** The same install on the `gcp` provider (load balancer + URL map). */
@@ -901,6 +902,7 @@ const INSTALL: AppRollInstall = {
   env: "production",
   domain: "acme.com",
   stagingHost: "staging.acme.com",
+  credentials: "operator",
 };
 
 async function plannedRoll(run: GcloudRunner): Promise<AppRollPlan> {
@@ -1029,7 +1031,7 @@ describe("takeSqlBackup", () => {
     const { run, calls } = fakeInstall(events);
     const r = await takeSqlBackup(
       run,
-      { projectId: "acme", env: "production" },
+      { projectId: "acme", env: "production", credentials: "operator" },
       "backup",
       () => new Date("2026-10-13T10:00:00Z"),
     );
@@ -1046,7 +1048,11 @@ describe("takeSqlBackup", () => {
 
   it("fails loudly when the backup's id can't be found", async () => {
     const { run } = fakeInstall([], [[/^sql backups list/, ok("")]]);
-    const r = await takeSqlBackup(run, { projectId: "acme", env: "production" }, "backup");
+    const r = await takeSqlBackup(
+      run,
+      { projectId: "acme", env: "production", credentials: "operator" },
+      "backup",
+    );
     expect(r.ok).toBe(false);
     if (!r.ok)
       expect(r.error).toContain("gcloud sql backups list --instance=caelo-production-pg-abc");
@@ -1054,11 +1060,47 @@ describe("takeSqlBackup", () => {
 
   it("fails when the install has no Cloud SQL instance", async () => {
     const { run } = fakeInstall([], [[/^sql instances list/, ok("")]]);
-    const r = await takeSqlBackup(run, { projectId: "acme", env: "production" }, "backup");
+    const r = await takeSqlBackup(
+      run,
+      { projectId: "acme", env: "production", credentials: "operator" },
+      "backup",
+    );
     expect(r).toEqual({
       ok: false,
-      error:
-        "no caelo-production-pg* Cloud SQL instance in project acme (or listing it was denied)",
+      error: "Could not find the caelo-production-pg* Cloud SQL instance in project acme",
     });
+  });
+
+  it("reports expired credentials instead of a missing instance (#630)", async () => {
+    const { run } = fakeInstall(
+      [],
+      [
+        [
+          /^sql instances list/,
+          fail(
+            "ERROR: (gcloud.sql.instances.list) Reauthentication failed. cannot prompt during non-interactive execution.",
+          ),
+        ],
+      ],
+    );
+    const operator = await takeSqlBackup(
+      run,
+      { projectId: "acme", env: "production", credentials: "operator" },
+      "backup",
+    );
+    expect(operator.ok).toBe(false);
+    if (operator.ok) return;
+    expect(operator.error).toContain("gcloud credentials expired");
+    expect(operator.error).toContain("gcloud auth login");
+    expect(operator.error).not.toContain("Could not find");
+    const job = await takeSqlBackup(
+      run,
+      { projectId: "acme", env: "production", credentials: "job" },
+      "backup",
+    );
+    expect(job.ok).toBe(false);
+    if (job.ok) return;
+    expect(job.error).toContain("rejected this job's credentials");
+    expect(job.error).not.toContain("gcloud auth login");
   });
 });

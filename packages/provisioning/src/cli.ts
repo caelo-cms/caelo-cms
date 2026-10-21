@@ -1201,8 +1201,12 @@ async function lifecycleUpgrade(): Promise<void> {
   // #607 — optional; must match the install's recorded region (upgrade
   // never moves an install between regions).
   const region = arg("region");
+  // #816 — attach the install from its project first (break-glass upgrade
+  // from a fresh Cloud Shell; nothing in $HOME has to survive).
+  const project = arg("project");
   const { upgradeCommand } = await import("./lifecycle.js");
   await upgradeCommand({
+    ...(project ? { project } : {}),
     ...(region ? { region } : {}),
     ...(version ? { version } : {}),
     ...(channel ? { channel } : {}),
