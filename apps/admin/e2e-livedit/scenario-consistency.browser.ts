@@ -14,6 +14,11 @@
  * (#165) and the consistency gate (#166). A failure here means one of those
  * stopped carrying.
  *
+ * The pricing page also carries an FAQ, asked for in operator words only:
+ * it must compose with the vetted `accordion` interaction (#160 —
+ * `data-caelo-ui="accordion"` over native `<details>`), not hand-rolled
+ * JS, and actually open on click once published.
+ *
  * Both pages also run through the rendered-design floor and the
  * non-blocking AI-judge rubric (`design-report.jsonl`).
  *
@@ -51,7 +56,8 @@ const TWO_PAGE_PROMPT =
   "Build a small website for Lumen Ledger, a bookkeeping app for freelancers: a homepage and a " +
   "Pricing page. Pick a fitting color scheme with real brand colors (not black-and-white). " +
   "The homepage needs a hero with a 'Start free trial' button and two more sections with headings; " +
-  "the Pricing page needs a heading per section, three plans, and a 'Start free trial' button too.";
+  "the Pricing page needs a heading per section, three plans, a 'Start free trial' button too, " +
+  "and a short FAQ at the bottom where visitors click a question to reveal its answer.";
 
 interface BuiltPage {
   readonly title: string;
@@ -180,6 +186,36 @@ test.describe("e2e-livedit consistency — two pages, one design", () => {
       violations: consistency,
     });
     expect(consistency, "the two pages do not read as one site (issue #161)").toEqual([]);
+
+    // #160 — "add an FAQ" composes with the vetted accordion kit
+    // (INTERACTION_MARKUP_CONTRACT in packages/shared/src/interactions.ts),
+    // not with bespoke module JS, and it works for a visitor.
+    const pricingUrl = productionUrlOf(pricing.currentPath);
+    const pricingHtml = await (await page.request.get(pricingUrl)).text();
+    expect(
+      pricingHtml,
+      `pricing FAQ is not built on the vetted accordion (no data-caelo-ui="accordion" in ${pricingUrl}) — hand-rolled interaction JS regression (#160)`,
+    ).toMatch(/\sdata-caelo-ui\s*=\s*["']accordion["']/);
+    await page.goto(pricingUrl);
+    const items = page.locator('[data-caelo-ui="accordion"] details');
+    expect(
+      await items.count(),
+      "accordion must hold <details> items (one per question)",
+    ).toBeGreaterThanOrEqual(2);
+    const first = items.first();
+    const summary = first.locator("summary");
+    // An item authored open (`<details open>`) is closed first, so the
+    // click below proves the toggle, not the initial state.
+    if ((await first.getAttribute("open")) !== null) {
+      await summary.click();
+      await expect(first, "clicking an open FAQ question closes it").not.toHaveAttribute("open");
+    }
+    await summary.click();
+    await expect(first, "clicking an FAQ question opens it").toHaveAttribute("open", /.*/);
+    await expect(
+      first.locator(":scope > :not(summary)").first(),
+      "the opened FAQ answer is visible",
+    ).toBeVisible();
 
     assertNoOrphanLocks(sessionId);
     assertNoChatRunnerDiagWarnings();
