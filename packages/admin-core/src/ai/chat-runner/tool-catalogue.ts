@@ -16,6 +16,7 @@ import type { ToolDefinition } from "../provider.js";
 import { CORE_TOOL_NAMES } from "../tools/core-tools.js";
 import type { GatedToolSpec } from "../tools/dispatch.js";
 import type { ToolRegistry } from "../tools/index.js";
+import { installUnavailableToolNames } from "../tools/install-availability.js";
 import { resolveAllowlistEntries } from "./allowlist-mapping.js";
 
 /**
@@ -116,6 +117,9 @@ export function resolveExcludedToolNames(
   if (process.env.CAELO_DISABLE_SUBAGENTS === "1") {
     extra.push("spawn_subagent", "spawn_subagents");
   }
+  // Tools that cannot run on this install kind (inspect_built_page off GCP)
+  // are never offered — paired with the playbook leaving them unnamed.
+  extra.push(...installUnavailableToolNames(process.env));
   // Normal (non-child) turns never expose the subagent-only result tool.
   if (!hasResultCapture) extra.push(SUBAGENT_RESULT_TOOL_NAME);
   if (extra.length === 0) return excluded;

@@ -344,6 +344,7 @@ import {
   TOKEN_SHAPE_HINTS,
   TYPOGRAPHY_COMPOSITION_HINTS,
 } from "./theme-guidance.js";
+import { type InstallEnv, isGcpInstall } from "./tools/install-availability.js";
 
 export type { SystemPromptChunk } from "./provider.js";
 
@@ -457,11 +458,13 @@ export type PromptSurface = "chat" | "power-mcp";
 // precomputed module-level constants — the split adds a static
 // per-surface prompt, never per-turn dynamism (CLAUDE.md §11: the system
 // prompt stays 100% static).
-function buildToolPlaybookBlock(surface: PromptSurface): string {
+function buildToolPlaybookBlock(surface: PromptSurface, builtPageInspection: boolean): string {
+  // `inspect_built_page` is named only where it can run (GCP installs) — off
+  // GCP the catalogue leaves it out too (tools/install-availability.ts).
   const inspectAndParallel =
     surface === "chat"
-      ? "**Inspect rendered output** → `inspect_page_render`, `screenshot_page`, `inspect_built_page`. **Parallel work** → `spawn_subagents`."
-      : "**Inspect rendered output** → `inspect_page_render` (composed HTML/CSS of this session's preview, pending edits included), `screenshot_page` (real-Chromium screenshot of this session's branch preview, rendered server-side — the image comes back as an MCP image content block), `inspect_built_page` (the built HTML a Stage actually uploaded). **Parallel work** → your own agent runtime; Caelo's subagent tools are not on this surface.";
+      ? `**Inspect rendered output** → \`inspect_page_render\`, \`screenshot_page\`${builtPageInspection ? ", `inspect_built_page`" : ""}. **Parallel work** → \`spawn_subagents\`.`
+      : `**Inspect rendered output** → \`inspect_page_render\` (composed HTML/CSS of this session's preview, pending edits included), \`screenshot_page\` (real-Chromium screenshot of this session's branch preview, rendered server-side — the image comes back as an MCP image content block)${builtPageInspection ? ", `inspect_built_page` (the built HTML a Stage actually uploaded)" : ""}. **Parallel work** → your own agent runtime; Caelo's subagent tools are not on this surface.`;
   // #687 — on Power-MCP the card shows in the operator's admin, not in the
   // caller's conversation; the caller must still make the call itself.
   const approvalLine =
@@ -496,10 +499,26 @@ function buildToolPlaybookBlock(surface: PromptSurface): string {
   ].join("\n");
 }
 
-const TOOL_PLAYBOOK_BLOCKS: Record<PromptSurface, string> = {
-  chat: buildToolPlaybookBlock("chat"),
-  "power-mcp": buildToolPlaybookBlock("power-mcp"),
+/**
+ * The playbook per surface for this install kind. Precomputed for both kinds
+ * so the per-call lookup is a constant: the install kind is fixed per process,
+ * so the prompt stays byte-stable within a run (cache-safe).
+ */
+const TOOL_PLAYBOOK_BLOCKS: Record<"gcp" | "other", Record<PromptSurface, string>> = {
+  gcp: {
+    chat: buildToolPlaybookBlock("chat", true),
+    "power-mcp": buildToolPlaybookBlock("power-mcp", true),
+  },
+  other: {
+    chat: buildToolPlaybookBlock("chat", false),
+    "power-mcp": buildToolPlaybookBlock("power-mcp", false),
+  },
 };
+
+/** The tool playbook block the given surface gets on the install `env` describes. */
+export function toolPlaybookBlock(surface: PromptSurface, env: InstallEnv): string {
+  return TOOL_PLAYBOOK_BLOCKS[isGcpInstall(env) ? "gcp" : "other"][surface];
+}
 // v0.5.5 — staging model. Every chat write is "pending" until it is staged
 // and published. Cacheable — applies to every chat session.
 //
@@ -616,7 +635,7 @@ export function composeSystemPromptChunks(
 ): SystemPromptChunk[] {
   const chunks: SystemPromptChunk[] = [
     { body: BASE_SYSTEM, cacheable: true, label: "base" },
-    { body: TOOL_PLAYBOOK_BLOCKS[surface], cacheable: true, label: "tool-playbook" },
+    { body: toolPlaybookBlock(surface, process.env), cacheable: true, label: "tool-playbook" },
     { body: MODULE_MODEL_BLOCK, cacheable: true, label: "module-model" },
     { body: STAGING_BLOCK, cacheable: true, label: "staging" },
   ];
