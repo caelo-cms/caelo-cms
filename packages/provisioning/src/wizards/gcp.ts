@@ -95,6 +95,7 @@ import {
   resolveOperatorAccessTarget,
 } from "../operator-access.js";
 import { ensureOpsBackend } from "../ops-backend.js";
+import { formatPlan, type PlannedStep, planGate, writePlanFile } from "../preview-plan.js";
 import {
   convergeKeylessProvisioner,
   PROVISIONER_ACCOUNT_ID,
@@ -127,7 +128,12 @@ import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { promptProjectId } from "./gcp-prompts.js";
-import { GCP_STACK_KNOB_DEFAULTS, pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
+import {
+  GCP_STACK_KNOB_DEFAULTS,
+  PulumiUpDeclinedError,
+  pulumiUpGcp,
+  readStackOutput,
+} from "./gcp-pulumi.js";
 
 export interface GcpWizardOpts {
   installId: string;
@@ -396,6 +402,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     // v0.3.1 — route pulumi up at the right stack folder + use the
     // matching config namespace.
     provider,
+    nonInteractive: opts.nonInteractive,
   });
   recordImageDigests(installId, imageDigests);
 
@@ -1450,6 +1457,50 @@ interface PulumiUpOpts {
   imageDigests: ImageDigests;
   /** v0.3.1 — provider variant; routes pulumi up at the right stack. */
   provider?: "gcp" | "gcp-firebase";
+  /** No terminal to ask (the install job, `--non-interactive`): see planGate. */
+  nonInteractive: boolean;
+}
+
+/**
+ * The installer's review of a deployed stack's plan before `pulumi up`
+ * (#737): the grouped list, the full diff in the install dir, and a y/N
+ * for any replace or delete. A data-bearing one is asked about by name and
+ * defaults to No; without a terminal it is refused (planGate).
+ *
+ * @returns whether `pulumi up` may apply the plan
+ */
+async function reviewPulumiPlan(
+  installId: string,
+  steps: readonly PlannedStep[],
+  nonInteractive: boolean,
+): Promise<boolean> {
+  const gate = planGate(steps, { interactive: !nonInteractive && process.stdin.isTTY === true });
+  if (steps.length === 0) {
+    log.info(dim("Preview: no changes planned."));
+    return true;
+  }
+  const file = writePlanFile(installRoot(installId), "installer", steps);
+  note([...formatPlan(steps), "", `Full diff: ${file}`].join("\n"), "pulumi up will change");
+  if (gate.kind === "proceed") return true;
+  if (gate.kind === "refuse") {
+    log.error(
+      red(
+        `Nothing was applied: this plan replaces or deletes resources that hold the site's data, and an unattended run cannot confirm that. Read ${file}; if the change is intended, re-run the installer in a terminal and confirm it there.`,
+      ),
+    );
+    return false;
+  }
+  const answer = await confirm({
+    message: gate.losesData
+      ? red("This plan DESTROYS the data named above. Apply it anyway?")
+      : "This plan replaces or deletes the resources listed above. Apply it?",
+    initialValue: false,
+  });
+  if (isCancel(answer) || answer !== true) {
+    log.warn(`Nothing was applied. The plan is in ${file}.`);
+    return false;
+  }
+  return true;
 }
 
 async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void> {
@@ -1502,7 +1553,8 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
   log.info(`Pulumi up — wall-clock 8–15 min (Cloud SQL is the long pole). Streaming progress...`);
 
   let resourceCount = 0;
-  let result: Awaited<ReturnType<typeof pulumiUpGcp>>;
+  let result: Awaited<ReturnType<typeof pulumiUpGcp>> | undefined;
+  let declined = "";
   try {
     result = await pulumiUpGcp(
       {
@@ -1528,9 +1580,17 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
         // logs: silent — too noisy for a live progress UI; pulumi
         // diagnostics will print on failure via the SDK's onOutput.
       },
+      (steps) => reviewPulumiPlan(installId, steps, opts.nonInteractive),
     );
+  } catch (e) {
+    if (!(e instanceof PulumiUpDeclinedError)) throw e;
+    declined = e.message;
   } finally {
     releaseLock();
+  }
+  if (result === undefined) {
+    cancel(declined);
+    process.exit(1);
   }
   process.stdout.write("\n");
   log.success(

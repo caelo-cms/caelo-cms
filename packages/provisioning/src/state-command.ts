@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { confirm, isCancel, log, note } from "@clack/prompts";
 import { bold, red } from "kleur/colors";
-import { activeAccount } from "./gcloud.js";
+import { checkGcloudAuth } from "./gcloud.js";
 import {
   adoptStateBackend,
   currentMetadata,
@@ -30,6 +30,7 @@ import {
 } from "./install-state.js";
 import { installIapAllowlist } from "./operator-access.js";
 import { ensureOpsBackend } from "./ops-backend.js";
+import { writePlanFile } from "./preview-plan.js";
 import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
 import { selfCommand } from "./self-command.js";
 import { attachInstall } from "./state-attach.js";
@@ -153,11 +154,12 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
     );
     process.exit(1);
   }
-  const operator = await activeAccount();
-  if (!operator) {
-    log.error(red("No active gcloud account. Run `gcloud auth login`, then re-run."));
+  const auth = await checkGcloudAuth();
+  if (!auth.ok) {
+    log.error(red(`Nothing was changed: ${auth.error}`));
     process.exit(1);
   }
+  const operator = auth.account;
   const provisioner = provisionerServiceAccountEmail(projectId);
   note(
     [
@@ -257,6 +259,7 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
         renameSync(dir, moved);
         return moved;
       },
+      writePlan: (label, steps) => writePlanFile(root, label, steps),
     },
   );
   if (!result.ok) {
