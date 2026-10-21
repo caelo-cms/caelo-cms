@@ -70,6 +70,7 @@ import {
 import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
 import {
   findServingImage,
+  lookupFailure,
   resolveGcpResourceName,
   servingImageDigests,
 } from "./upgrade/gcp-lookup.js";
@@ -491,6 +492,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
         env: deps.env,
         domain: meta.domain,
         stagingHost: meta.stagingDomain ?? `staging.${meta.domain}`,
+        credentials: "job",
       },
       images,
       deps.run,
@@ -510,7 +512,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     const sBak = r.step("Backing up the database before anything changes...");
     const backup = await takeSqlBackup(
       deps.run,
-      { projectId: deps.projectId, env: deps.env },
+      { projectId: deps.projectId, env: deps.env, credentials: "job" },
       `pre-upgrade to ${m.version}`,
       deps.now,
     );
@@ -665,9 +667,10 @@ async function servingDigests(
       deps.projectId,
       deps.region,
     );
-    const image = service
-      ? await findServingImage(deps.run, deps.projectId, deps.region, service)
-      : null;
+    if (service.status !== "found") {
+      return { ok: false, error: lookupFailure(service, `${prefix}* Cloud Run service`, "job") };
+    }
+    const image = await findServingImage(deps.run, deps.projectId, deps.region, service.name);
     if (!image) return { ok: false, error: `could not read which image the ${slug} serves` };
     digests[slug] = servingImageDigests(image);
   }

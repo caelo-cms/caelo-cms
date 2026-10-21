@@ -65,6 +65,7 @@ import {
 import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import type { AppRollHooks, AppRollPlan, RollPlan, RollSlug } from "./app-roll.js";
+import { lookupFailure } from "./gcp-lookup.js";
 import type { UpgradeReporter } from "./reporter.js";
 
 /**
@@ -224,7 +225,7 @@ export function startConverge(
     // audit is what verifies it and fails the upgrade while it remains.
     const s = r.step("Removing public_role from the Cloud SQL superuser group...");
     const outcome = await revokePublicRoleMemberships(
-      { projectId: install.projectId, env: install.env },
+      { projectId: install.projectId, env: install.env, credentials: install.credentials },
       runDeps,
     );
     if (outcome.status === "failed") {
@@ -421,12 +422,15 @@ export function startConverge(
     // #613 — public_role moves onto its own password right before the
     // gateway's roll. The gateway has no other database login (#635).
     const s = r.step("Preparing the gateway's database login (public_role)...");
-    const sqlInstance = await findSqlInstance(install, { run });
-    if (!sqlInstance) {
-      s.failed("Could not find the Cloud SQL instance. Aborting upgrade.");
+    const lookup = await findSqlInstance(install, { run });
+    if (lookup.status !== "found") {
+      s.failed(
+        `${lookupFailure(lookup, "Cloud SQL instance", install.credentials)}. Aborting upgrade.`,
+      );
       r.warn("Migrations ran; no traffic was shifted. Re-run upgrade once the instance is found.");
       return false;
     }
+    const sqlInstance = lookup.name;
     const roleTarget = { projectId: install.projectId, env: install.env, sqlInstance };
     const roleDeps = { ...runDeps, ...(deps.http ? { http: deps.http } : {}) };
     s.done("public_role ready to switch");

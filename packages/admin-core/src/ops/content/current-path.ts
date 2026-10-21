@@ -16,7 +16,11 @@
  * "/<slug>" (home → "/") — the same shape the 0211 backfill wrote.
  */
 
-import { hostSystemActorId, type RenderScope } from "@caelo-cms/plugin-host";
+import {
+  hostSystemActorId,
+  type RenderScope,
+  type UrlCompositionView,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { defineOperation } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
@@ -184,10 +188,11 @@ export async function resolveCurrentPathsDryRun(
   tx: TransactionRunner,
   pageIds: ReadonlyArray<string>,
   scope: RenderScope,
+  view?: UrlCompositionView,
 ): Promise<Map<string, string>> {
   if (pageIds.length === 0) return new Map();
   const tree = await loadPageTree(tx, scope.chatBranchId);
-  return composePaths(tx, tree, pageIds, scope);
+  return composePaths(tx, tree, pageIds, scope, view);
 }
 
 /**

@@ -158,12 +158,15 @@ graph TD
   Handler --> Audit["recordAudit(tx, op, actor, ok, inputHash)<br/>same transaction"]
   Audit --> Snapshot["emitSnapshot(tx, entity, opKind)<br/>page · module · template · pageLayout snapshots<br/>same transaction"]
   Snapshot --> Commit["COMMIT"]
-  Commit --> Result["Result&lt;T, E&gt;<br/>returned to caller"]
+  Commit --> Effects["post-commit effects<br/>afterCommit(tx, …) — in-process follow-ups<br/>(plugin host stop/resume, schema drops)"]
+  Effects --> Result["Result&lt;T, E&gt;<br/>returned to caller"]
 
   Handler -.->|throws| Rollback["ROLLBACK<br/>audit + snapshot rolled back atomically"]
 ```
 
 **Branch-aware writes.** Every chat writes to a branch, not to main. By default that is the site's one shared draft (`site_draft`, `packages/admin-core/src/draft.ts`): all chats bind to it and see each other's unstaged changes. An experiment or a site migration moves its chat onto an isolated branch first (`start_isolated_branch`). Snapshots emitted from a chat are tagged with the branch's `chat_branch_id` and stay pending until a Stage merges the selected chats' snapshots into main and rebuilds staging (`packages/admin-core/src/stage/stage-chats.ts`). Publish live — promoting staging to production — is a separate human click. Two chats editing the same entity do not block each other: the later write takes over the earlier chat's lock and its unstaged change (`locks.ts`, `lock-takeover.ts`), and both chats are told.
+
+**Post-commit effects.** A write whose twin lives in the running process (stopping a plugin whose grant was revoked, resuming a re-enabled one, removing an uninstalled one) registers that twin with `afterCommit(tx, effect)` (`packages/query-api/src/post-commit.ts`). The adapter runs it only after the COMMIT and drops it on rollback, so process state never runs ahead of the database (#585). A failing effect is loud: an error log, a failed `<op>.post_commit` audit row, and an error result that says the change itself is saved.
 
 **Static-generator parity.** Both the admin's `/edit` preview AND `apps/static-generator` (deploy) call `composePageWithLayout` from `packages/shared/preview-compose.ts`. Same input → byte-identical output. There is no separate "production renderer". Plugin input reaches both through the same resolvers: the preview calls the plugin host in-process, the generator subprocess calls it through the admin (`BuildPluginServices`, #605). One deliberate divergence after composition: the static build minifies the composer's own inline `<style data-source=…>` / `<script data-source="modules">` bodies as its last pass (`apps/static-generator/src/minify-pass.ts`, #158), so the preview stays readable and the deployed page ships minified. Markup and every other byte are unchanged by that pass.
 
