@@ -4,7 +4,15 @@
  * #980 — `FirestoreStore` against the Firestore emulator: every
  * `IntakeStore` method, including the races the service relies on
  * (first key wins, first fingerprint link wins, a stale cluster version is
- * refused, the daily issue cap holds under concurrent takers).
+ * refused, a lost compare-and-set re-reads instead of overwriting, so the
+ * daily issue cap cannot be exceeded).
+ *
+ * Races are forced, not hoped for: `racedStore` lets another writer commit
+ * between the store's read and its write, which is exactly the losing side
+ * of a race, deterministically and in milliseconds. Firing simultaneous
+ * commits instead would mostly measure the emulator: it makes a commit that
+ * collides with another on the same document wait ~2 s for a lock (even a
+ * plain create or precondition update), which production Firestore does not.
  *
  * Needs the emulator: set `FIRESTORE_EMULATOR_HOST` (e.g. start it with
  * `gcloud emulators firestore start --host-port=127.0.0.1:8915`). Without
@@ -16,7 +24,7 @@
 
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { BugIntakeReport } from "@caelo-cms/shared";
-import { Firestore } from "@google-cloud/firestore";
+import { type DocumentReference, Firestore } from "@google-cloud/firestore";
 import { FirestoreStore } from "./firestore-store.js";
 import { IntakeService, type IssueTracker } from "./service.js";
 import { type ClusterRecord, MAX_CANDIDATES_PER_TOOL, type StoredReport } from "./store.js";
@@ -40,6 +48,61 @@ const store = EMULATOR
     )
   : null;
 const s = () => store as FirestoreStore;
+
+/** Forward every other property to the real object, bound to it, so the SDK never sees a proxy. */
+function forward<T extends object>(target: T, prop: string | symbol): unknown {
+  const v = Reflect.get(target, prop, target);
+  return typeof v === "function" ? v.bind(target) : v;
+}
+
+/**
+ * A store on the same database in which, for the next `times` reads of
+ * `collection/id`, `interfere()` commits another writer's change after the
+ * read and before the store writes. `raced()` reports how often it fired,
+ * so a test proves the race actually happened.
+ */
+function racedStore(
+  collection: string,
+  id: string,
+  interfere: () => Promise<void>,
+  times = 1,
+): { store: FirestoreStore; raced: () => number } {
+  let fired = 0;
+  const wrapRef = (ref: DocumentReference) =>
+    new Proxy(ref, {
+      get(target, prop) {
+        if (prop !== "get") return forward(target, prop);
+        return async () => {
+          const snap = await target.get();
+          if (fired < times) {
+            fired++;
+            await interfere();
+          }
+          return snap;
+        };
+      },
+    });
+  const db = new Proxy(s().db, {
+    get(target, prop) {
+      if (prop !== "collection") return forward(target, prop);
+      return (name: string) => {
+        const col = target.collection(name);
+        if (name !== collection) return col;
+        return new Proxy(col, {
+          get(c, p) {
+            if (p !== "doc") return forward(c, p);
+            return (docId: string) => (docId === id ? wrapRef(c.doc(docId)) : c.doc(docId));
+          },
+        });
+      };
+    },
+  });
+  return { store: new FirestoreStore(db), raced: () => fired };
+}
+
+async function slotsUsed(day: string): Promise<number | undefined> {
+  return (await s().db.collection("issueSlots").doc(day).get()).get("used") as number | undefined;
+}
 
 const cluster = (id: string, over: Partial<ClusterRecord> = {}): ClusterRecord => ({
   id,
@@ -90,9 +153,9 @@ describe("FirestoreStore against the emulator (#980)", () => {
     });
   }
   /**
-   * Races run on the default per-test budget on purpose: the store's writes
-   * are lock-free preconditions, so a losing writer fails in milliseconds.
-   * A test that needs seconds here means the store started blocking.
+   * Every test runs on a 5 s budget with wide headroom (each is tens of
+   * milliseconds): the store never blocks, and the races are forced rather
+   * than timed, so a slow test here means the store started waiting.
    */
   const live = (name: string, fn: () => Promise<void>) => it.skipIf(!EMULATOR)(name, fn, 5_000);
 
@@ -101,18 +164,13 @@ describe("FirestoreStore against the emulator (#980)", () => {
     if (store) await store.getInstallKey("warm-up");
   }, 60_000);
 
-  live("pins the first key per install, concurrently too", async () => {
+  live("pins the first key per install and refuses any other", async () => {
     expect(await s().getInstallKey("inst-1")).toBeNull();
-    const results = await Promise.all([
-      s().pinInstallKey("inst-1", "key-a"),
-      s().pinInstallKey("inst-1", "key-b"),
-    ]);
-    expect(results.sort()).toEqual(["conflict", "pinned"]);
-    const winner = (await s().getInstallKey("inst-1")) as string;
-    expect(await s().pinInstallKey("inst-1", winner)).toBe("same");
-    expect(await s().pinInstallKey("inst-1", winner === "key-a" ? "key-b" : "key-a")).toBe(
-      "conflict",
-    );
+    expect(await s().pinInstallKey("inst-1", "key-a")).toBe("pinned");
+    // The second registration of the id lost the race, whatever its key.
+    expect(await s().pinInstallKey("inst-1", "key-b")).toBe("conflict");
+    expect(await s().pinInstallKey("inst-1", "key-a")).toBe("same");
+    expect(await s().getInstallKey("inst-1")).toBe("key-a");
   });
 
   live("stores reports first-write-wins, evidence included", async () => {
@@ -130,15 +188,12 @@ describe("FirestoreStore against the emulator (#980)", () => {
     expect(await s().getReport(report.reportId)).toEqual(stored);
   });
 
-  live("links a fingerprint once; a concurrent second link is taken", async () => {
+  live("links a fingerprint once; the second link is taken and changes nothing", async () => {
     const fp = "c".repeat(64);
     expect(await s().clusterIdForFingerprint(fp)).toBeNull();
-    const results = await Promise.all([
-      s().linkFingerprint(fp, "c_x"),
-      s().linkFingerprint(fp, "c_y"),
-    ]);
-    expect(results.sort()).toEqual(["linked", "taken"]);
-    expect(["c_x", "c_y"]).toContain((await s().clusterIdForFingerprint(fp)) as string);
+    expect(await s().linkFingerprint(fp, "c_x")).toBe("linked");
+    expect(await s().linkFingerprint(fp, "c_y")).toBe("taken");
+    expect(await s().clusterIdForFingerprint(fp)).toBe("c_x");
   });
 
   live("maps issues to clusters, last link wins", async () => {
@@ -164,29 +219,34 @@ describe("FirestoreStore against the emulator (#980)", () => {
     expect(after.version).not.toBe(read.version);
   });
 
-  live("lets exactly one of two racing writers of the same version win", async () => {
+  live("refuses a cluster write whose version another writer replaced in between", async () => {
     await s().putCluster(cluster("c_race"), null);
     const read = (await s().getCluster("c_race"))!;
-    const results = await Promise.all([
-      s().putCluster({ ...read.value, occurrences: 1 }, read.version),
-      s().putCluster({ ...read.value, occurrences: 2 }, read.version),
-    ]);
-    expect(results.sort()).toEqual(["conflict", "ok"]);
+    const { store: raced, raced: fired } = racedStore("clusters", "c_race", async () => {
+      expect(await s().putCluster({ ...read.value, occurrences: 1 }, read.version)).toBe("ok");
+    });
+    const stale = (await raced.getCluster("c_race"))!;
+    expect(fired()).toBe(1);
+    expect(await raced.putCluster({ ...stale.value, occurrences: 2 }, stale.version)).toBe(
+      "conflict",
+    );
+    expect((await s().getCluster("c_race"))?.value.occurrences).toBe(1);
   });
 
   live("keeps the newest candidates per tool, deduplicated and capped", async () => {
     expect(await s().candidates("build_page")).toEqual([]);
-    await Promise.all(
-      Array.from({ length: 5 }, (_, i) =>
-        s().addCandidate("build_page", { id: `c_${i}`, title: `t${i}`, whatHappened: "w" }),
-      ),
+    await s().addCandidate("build_page", { id: "c_first", title: "t", whatHappened: "w" });
+    // Another writer adds a candidate between this writer's read and write:
+    // the stale write is refused and re-read, so neither entry is lost.
+    const { store: raced, raced: fired } = racedStore("candidates", "t_build_page", () =>
+      s().addCandidate("build_page", { id: "c_other", title: "t", whatHappened: "w" }),
     );
-    expect((await s().candidates("build_page")).map((c) => c.id).sort()).toEqual([
-      "c_0",
-      "c_1",
-      "c_2",
-      "c_3",
-      "c_4",
+    await raced.addCandidate("build_page", { id: "c_mine", title: "t", whatHappened: "w" });
+    expect(fired()).toBe(1);
+    expect((await s().candidates("build_page")).map((c) => c.id)).toEqual([
+      "c_mine",
+      "c_other",
+      "c_first",
     ]);
     for (let i = 0; i < MAX_CANDIDATES_PER_TOOL + 2; i++) {
       await s().addCandidate("edit_module", { id: `c_${i}`, title: `t${i}`, whatHappened: "w" });
@@ -201,20 +261,76 @@ describe("FirestoreStore against the emulator (#980)", () => {
     expect((await s().candidates("."))[0]?.id).toBe("c_dot");
   });
 
-  live("hands out exactly `limit` issue slots per day under concurrency", async () => {
-    const taken = await Promise.all(
-      Array.from({ length: 6 }, () => s().takeIssueSlot("2026-10-21", 3)),
-    );
-    expect(taken.filter(Boolean).length).toBe(3);
-    expect(await s().takeIssueSlot("2026-10-22", 3)).toBe(true);
+  live("hands out at most `limit` issue slots per day and gives them back", async () => {
+    expect(await s().takeIssueSlot("2026-10-21", 2)).toBe(true);
+    expect(await s().takeIssueSlot("2026-10-21", 2)).toBe(true);
+    expect(await s().takeIssueSlot("2026-10-21", 2)).toBe(false);
+    expect(await s().takeIssueSlot("2026-10-22", 2)).toBe(true);
     await s().returnIssueSlot("2026-10-21");
-    expect(await s().takeIssueSlot("2026-10-21", 3)).toBe(true);
-    expect(await s().takeIssueSlot("2026-10-21", 3)).toBe(false);
+    expect(await slotsUsed("2026-10-21")).toBe(1);
+    expect(await s().takeIssueSlot("2026-10-21", 2)).toBe(true);
+    expect(await s().takeIssueSlot("2026-10-21", 2)).toBe(false);
     // Returning on a day with nothing taken never goes below zero.
     await s().returnIssueSlot("2026-10-30");
-    await s().returnIssueSlot("2026-10-30");
+    expect(await slotsUsed("2026-10-30")).toBeUndefined();
     expect(await s().takeIssueSlot("2026-10-30", 1)).toBe(true);
     expect(await s().takeIssueSlot("2026-10-30", 1)).toBe(false);
+  });
+
+  live("never exceeds the cap when another taker wins the last slot in between", async () => {
+    const day = "2026-11-10";
+    await s().takeIssueSlot(day, 3);
+    await s().takeIssueSlot(day, 3);
+    // This taker reads used=2, then the other one takes the last slot.
+    const { store: raced, raced: fired } = racedStore("issueSlots", day, async () => {
+      expect(await s().takeIssueSlot(day, 3)).toBe(true);
+    });
+    expect(await raced.takeIssueSlot(day, 3)).toBe(false);
+    expect(fired()).toBe(1);
+    expect(await slotsUsed(day)).toBe(3);
+  });
+
+  live("counts both takers when the day's counter is created in between", async () => {
+    const day = "2026-11-11";
+    // This taker reads "no counter yet"; the other one creates it first.
+    const { store: raced, raced: fired } = racedStore("issueSlots", day, async () => {
+      expect(await s().takeIssueSlot(day, 3)).toBe(true);
+    });
+    expect(await raced.takeIssueSlot(day, 3)).toBe(true);
+    expect(fired()).toBe(1);
+    expect(await slotsUsed(day)).toBe(2);
+  });
+
+  live("loses no return when another writer changes the counter in between", async () => {
+    const day = "2026-11-12";
+    await s().takeIssueSlot(day, 5);
+    await s().takeIssueSlot(day, 5);
+    const { store: raced, raced: fired } = racedStore("issueSlots", day, () =>
+      s().returnIssueSlot(day),
+    );
+    await raced.returnIssueSlot(day);
+    expect(fired()).toBe(1);
+    expect(await slotsUsed(day)).toBe(0);
+  });
+
+  live("gives up loudly when every attempt loses its race", async () => {
+    const day = "2026-11-13";
+    let n = 0;
+    const { store: raced } = racedStore(
+      "issueSlots",
+      day,
+      async () => {
+        // Another writer changes the counter after every one of this writer's reads.
+        await s().takeIssueSlot(day, 1_000);
+        n++;
+      },
+      Number.POSITIVE_INFINITY,
+    );
+    await expect(raced.takeIssueSlot(day, 1_000)).rejects.toThrow(
+      "issueSlots/2026-11-13: 10 write conflicts in a row",
+    );
+    expect(n).toBe(10);
+    expect(await slotsUsed(day)).toBe(10);
   });
 
   live("queues pending issues oldest first and keeps the original place", async () => {
