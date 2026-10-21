@@ -570,10 +570,18 @@ export const mcpExecuteToolOp = defineOperation({
       auth.aiCostCapMicrocents !== null &&
       toolUsesInstallAi(createDefaultToolRegistry(), input.toolName)
     ) {
+      const credentialCreatedAt =
+        auth.via.kind === "token"
+          ? sql`(SELECT created_at FROM mcp_tokens WHERE id = ${auth.via.tokenId}::uuid)`
+          : sql`(SELECT created_at FROM mcp_remote_connections WHERE id = ${auth.via.connectionId}::uuid)`;
       const spendRows = (await tx.execute(sql`
         SELECT COALESCE(SUM(cost_estimate_microcents), 0)::bigint AS spent
         FROM ai_calls
         WHERE chat_session_id = ${input.chatSessionId}::uuid
+           OR (
+             actor_id = ${auth.actorId}::uuid
+             AND created_at >= ${credentialCreatedAt}
+           )
       `)) as unknown as Array<{ spent: bigint | string | number }>;
       const raw = spendRows[0]?.spent ?? 0;
       // Compare as bigint — a Number round-trip could lose precision past

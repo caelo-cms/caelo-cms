@@ -261,7 +261,8 @@ export type McpTokenFailure =
   | "expired"
   | "revoked"
   | "user_deleted"
-  | "user_has_no_role";
+  | "user_has_no_role"
+  | "user_lacks_write_permission";
 
 /**
  * The `auth_error:` message every MCP surface returns for a refused bearer
@@ -275,6 +276,8 @@ export function mcpTokenAuthErrorMessage(failure: McpTokenFailure): string {
       return "auth_error: token user_deleted — the Caelo user this token belongs to was deleted or no longer exists. An Owner must mint a new token for an active user at /settings/mcp.";
     case "user_has_no_role":
       return "auth_error: token user_has_no_role — the Caelo user this token belongs to holds no role. An Owner must assign a role at /settings/users, or mint a token for another user at /settings/mcp.";
+    case "user_lacks_write_permission":
+      return "auth_error: token user_lacks_write_permission — the Caelo user this token belongs to lacks content.write permission (read-only role). An Owner must assign an Editor or Owner role at /settings/users, or mint a token for another user at /settings/mcp.";
     default:
       return `auth_error: token ${failure}`;
   }
@@ -328,7 +331,13 @@ export async function resolveMcpToken(
         SELECT t.id::text AS id, t.actor_id::text AS actor_id, t.scope, t.display_name,
                t.ai_cost_cap_microcents, t.allow_caelo_ai, t.expires_at, t.revoked_at,
                (u.id IS NOT NULL AND u.deleted_at IS NULL) AS user_active,
-               EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = t.actor_id) AS user_has_role
+               EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = t.actor_id) AS user_has_role,
+               EXISTS (
+                 SELECT 1 FROM user_roles ur
+                 JOIN role_permissions rp ON rp.role_id = ur.role_id
+                 JOIN permissions p ON p.id = rp.permission_id
+                 WHERE ur.user_id = t.actor_id AND p.name = 'content.write'
+               ) AS user_can_write
         FROM mcp_tokens t
         LEFT JOIN users u ON u.id = t.actor_id
         WHERE t.token_hash = ${tokenHash}
@@ -343,6 +352,7 @@ export async function resolveMcpToken(
         revoked_at: string | Date | null;
         user_active: boolean;
         user_has_role: boolean;
+        user_can_write: boolean;
       }>;
       const r = rows[0];
       if (!r) return err("not_found" as const);
@@ -351,6 +361,7 @@ export async function resolveMcpToken(
       if (expires.getTime() < Date.now()) return err("expired" as const);
       if (!r.user_active) return err("user_deleted" as const);
       if (!r.user_has_role) return err("user_has_no_role" as const);
+      if (!r.user_can_write) return err("user_lacks_write_permission" as const);
       await tx.execute(sql`
         UPDATE mcp_tokens SET last_used_at = now() WHERE id = ${r.id}::uuid
       `);
