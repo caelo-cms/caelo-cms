@@ -17,11 +17,12 @@
     "generate": "bun run src/cli.ts"
   },
   "dependencies": {
+    "@caelo-cms/font-service": "workspace:*",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
     "drizzle-orm": "0.45.4",
-    "@caelo-cms/font-service": "workspace:*"
+    "esbuild": "0.28.2"
   },
   "devDependencies": {
     "@caelo-cms/admin-core": "workspace:*",
