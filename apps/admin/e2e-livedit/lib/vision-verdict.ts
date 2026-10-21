@@ -95,18 +95,11 @@ const AnthropicMessagesResponseSchema = z.object({
 });
 
 /**
- * Parse a raw Anthropic `/v1/messages` response into a typed verdict.
- *
- * Anthropic returns:
- *   { content: [{ type: "text", text: "<JSON string here>" }, ...], ... }
- *
- * The rubric prompt instructs the model to return ONLY a single JSON
- * object `{"ok": <bool>, "reason": "<string>"}` — but the model
- * occasionally wraps it in ```json ... ``` fences or prefixes a
- * sentence. We extract the first JSON object in the text, then
- * validate the shape strictly via Zod.
+ * Pull the concatenated text blocks out of a raw Anthropic `/v1/messages`
+ * response (`{ content: [{ type: "text", text }, ...] }`). Non-text blocks
+ * are ignored; no text at all is a schema error.
  */
-export function parseVisionVerdict(responseJson: unknown): VisionVerdict {
+function extractResponseText(responseJson: unknown): string {
   const responseParse = AnthropicMessagesResponseSchema.safeParse(responseJson);
   if (!responseParse.success) {
     throw new VisionVerdictSchemaError(responseParse.error.issues, responseJson);
@@ -123,18 +116,17 @@ export function parseVisionVerdict(responseJson: unknown): VisionVerdict {
     };
     throw new VisionVerdictSchemaError([issue], responseJson);
   }
-  return parseVerdictJsonText(text);
+  return text;
 }
 
 /**
- * Extract + validate the verdict JSON object out of the model's text
- * response. Handles ```json fences and a leading sentence by slicing
- * from the first `{` to the LAST `}`. This is intentionally not a
- * balanced-brace parser — the rubric prompt asks for a flat
- * `{ ok, reason }` object so the literal first-`{` / last-`}` window
- * is sufficient and rejects any wrapper text via `JSON.parse`.
+ * Extract + validate the JSON object out of the model's text response.
+ * Handles ```json fences and a leading sentence by slicing from the first
+ * `{` to the LAST `}`. This is intentionally not a balanced-brace parser —
+ * both rubric prompts ask for one flat object, so the literal first-`{` /
+ * last-`}` window is sufficient and rejects wrapper text via `JSON.parse`.
  */
-export function parseVerdictJsonText(text: string): VisionVerdict {
+function parseJsonObjectText<T>(text: string, schema: z.ZodType<T>): T {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start < 0 || end < 0 || end < start) {
@@ -147,11 +139,27 @@ export function parseVerdictJsonText(text: string): VisionVerdict {
   } catch {
     throw new VisionVerdictParseError(text);
   }
-  const verdict = VisionVerdictSchema.safeParse(parsed);
-  if (!verdict.success) {
-    throw new VisionVerdictSchemaError(verdict.error.issues, parsed);
+  const result = schema.safeParse(parsed);
+  if (!result.success) {
+    throw new VisionVerdictSchemaError(result.error.issues, parsed);
   }
-  return verdict.data;
+  return result.data;
+}
+
+/**
+ * Parse a raw Anthropic `/v1/messages` response into a typed verdict.
+ * The rubric prompt instructs the model to return ONLY a single JSON
+ * object `{"ok": <bool>, "reason": "<string>"}` — but the model
+ * occasionally wraps it in ```json ... ``` fences or prefixes a
+ * sentence; see {@link parseVerdictJsonText}.
+ */
+export function parseVisionVerdict(responseJson: unknown): VisionVerdict {
+  return parseVerdictJsonText(extractResponseText(responseJson));
+}
+
+/** Extract + validate the `{ ok, reason }` verdict from the model's text. */
+export function parseVerdictJsonText(text: string): VisionVerdict {
+  return parseJsonObjectText(text, VisionVerdictSchema);
 }
 
 /**
@@ -192,21 +200,24 @@ const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Issue ONE vision verdict request. Retries once on 5xx with 2s
- * backoff. Throws `VisionVerdictRequestError` on the second non-2xx.
- * 4xx errors do not retry — re-requesting with the same body
- * cannot recover.
+ * POST one screenshot + rubric to `/v1/messages` and return the raw JSON
+ * response. Retries once on 5xx with 2s backoff; throws
+ * `VisionVerdictRequestError` on the second non-2xx. 4xx errors do not
+ * retry — re-requesting with the same body cannot recover.
  */
-export async function fetchVisionVerdict(opts: ExecuteOpts): Promise<VisionVerdict> {
+async function postVisionRequest(
+  opts: ExecuteOpts,
+  rubric: string,
+  maxTokens: number,
+): Promise<unknown> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const sleep = opts.sleep ?? defaultSleep;
   const model = opts.model ?? DEFAULT_VISION_MODEL;
-  const rubric = opts.rubric ?? VISION_RUBRIC;
   const mediaType = opts.mediaType ?? "image/png";
 
   const body = JSON.stringify({
     model,
-    max_tokens: 256,
+    max_tokens: maxTokens,
     temperature: 0,
     messages: [
       {
@@ -239,10 +250,7 @@ export async function fetchVisionVerdict(opts: ExecuteOpts): Promise<VisionVerdi
       },
       body,
     });
-    if (res.ok) {
-      const json = (await res.json()) as unknown;
-      return parseVisionVerdict(json);
-    }
+    if (res.ok) return (await res.json()) as unknown;
     lastStatus = res.status;
     lastBody = await res.text().catch(() => "");
     // 4xx is a client problem — retrying with the same body is
@@ -250,4 +258,54 @@ export async function fetchVisionVerdict(opts: ExecuteOpts): Promise<VisionVerdi
     if (lastStatus < 500) break;
   }
   throw new VisionVerdictRequestError(lastStatus, lastBody.slice(0, 500));
+}
+
+/** Issue ONE structural vision verdict request (see {@link VISION_RUBRIC}). */
+export async function fetchVisionVerdict(opts: ExecuteOpts): Promise<VisionVerdict> {
+  return parseVisionVerdict(await postVisionRequest(opts, opts.rubric ?? VISION_RUBRIC, 256));
+}
+
+/**
+ * issue #161 — design-quality scores. Unlike the structural verdict this
+ * is a TASTE judgement, so the suite records it (non-blocking) and only
+ * promotes it to a gate once the 10× determinism recipe has measured its
+ * variance. Integer 1–5 per axis; `.strict()` surfaces schema drift.
+ */
+const DesignRubricScoresSchema = z
+  .object({
+    hierarchy: z.number().int().min(1).max(5),
+    contrast: z.number().int().min(1).max(5),
+    rhythm: z.number().int().min(1).max(5),
+    polish: z.number().int().min(1).max(5),
+    notes: z.string(),
+  })
+  .strict();
+
+/** Parsed design-judge scores. */
+export type DesignRubricScores = z.infer<typeof DesignRubricScoresSchema>;
+
+/**
+ * Fixed design rubric. Anchored descriptions per score keep a cheap judge
+ * model's numbers comparable run over run — the trend is what matters.
+ */
+export const DESIGN_RUBRIC = `You are a senior web designer grading a screenshot of a freshly-deployed web page.
+
+Score each axis as an integer 1-5:
+- hierarchy: is it obvious what matters most? 1 = everything the same size/weight; 3 = clear h1 but flat below; 5 = clear, consistent heading levels guiding the eye.
+- contrast: text legibility and figure/ground separation. 1 = hard-to-read text or washed-out; 3 = legible but low separation between sections; 5 = crisp, accessible contrast throughout.
+- rhythm: spacing and section cadence. 1 = cramped or random gaps; 3 = even but monotonous; 5 = deliberate, consistent spacing with clear section breaks.
+- polish: does it look hand-built by a professional? 1 = unstyled/broken; 3 = generic template; 5 = coherent, distinctive, finished.
+
+Reply with EXACTLY one JSON object of the shape:
+  {"hierarchy": <1-5>, "contrast": <1-5>, "rhythm": <1-5>, "polish": <1-5>, "notes": "<=40 words on the weakest axis>"}
+No prose outside the JSON object.`;
+
+/** Parse a raw `/v1/messages` response into design scores. */
+export function parseDesignRubricScores(responseJson: unknown): DesignRubricScores {
+  return parseJsonObjectText(extractResponseText(responseJson), DesignRubricScoresSchema);
+}
+
+/** Issue ONE design-rubric request (see {@link DESIGN_RUBRIC}). */
+export async function fetchDesignRubricScores(opts: ExecuteOpts): Promise<DesignRubricScores> {
+  return parseDesignRubricScores(await postVisionRequest(opts, opts.rubric ?? DESIGN_RUBRIC, 300));
 }
