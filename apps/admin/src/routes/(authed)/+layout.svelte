@@ -4,6 +4,7 @@
   import { toast } from "svelte-sonner";
   import AppShell from "#lib/components/AppShell.svelte";
   import CommandPalette from "#lib/components/CommandPalette.svelte";
+  import ConfirmDialogHost from "#lib/components/ConfirmDialogHost.svelte";
 
   let { data, children } = $props();
 
@@ -75,6 +76,8 @@
      shortcuts. Mounted once for every authenticated route; auto-skips
      when focus is in an editable element. -->
 <CommandPalette />
+<!-- One confirm dialog for every destructive form (`use:confirmSubmit`). -->
+<ConfirmDialogHost />
 
 {#if page.url.pathname.startsWith("/edit")}
   <!-- P6.7.2 — /edit is the chrome-less surface: no AppShell, no sidebar,

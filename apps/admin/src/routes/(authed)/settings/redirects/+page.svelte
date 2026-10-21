@@ -8,6 +8,7 @@
    * through the shared redirect plan (#587, @caelo-cms/shared).
    */
 
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Trash2 } from "lucide-svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -74,7 +75,7 @@
                 <TableCell class="font-mono text-xs">{r.toPath}</TableCell>
                 <TableCell>{r.statusCode}</TableCell>
                 <TableCell>
-                  <form method="post" action="?/delete">
+                  <form method="post" action="?/delete" use:confirmSubmit={{ title: `Delete the redirect from ${r.fromPath}?`, description: `Links to ${r.fromPath} no longer forward to ${r.toPath}.`, confirmLabel: "Delete redirect" }}>
                     <input type="hidden" name="_csrf" value={data.csrfToken} />
                     <input type="hidden" name="redirectId" value={r.id} />
                     <Button type="submit" size="sm" variant="ghost" aria-label="Delete">

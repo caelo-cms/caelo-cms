@@ -11,7 +11,7 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket, mintAdminMcpToken, runBunInline } from "./helpers.js";
+import { acceptConfirm, clearLoginRateBucket, mintAdminMcpToken, runBunInline } from "./helpers.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -108,6 +108,7 @@ test("a Reviewer sees and revokes only their own MCP tokens", async ({ page }) =
   await expect(page.getByRole("button", { name: "Create token" })).toHaveCount(0);
 
   await own.getByRole("button", { name: "Revoke" }).click();
+  await acceptConfirm(page);
   await expect(page.getByText("Token revoked.")).toBeVisible();
   await expect(own.getByText("revoked", { exact: true })).toBeVisible();
 });

@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { expect, test } from "@playwright/test";
 import { runBun } from "./_seed.js";
-import { clearLoginRateBucket } from "./helpers.js";
+import { acceptConfirm, clearLoginRateBucket } from "./helpers.js";
 
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAACXBIWXMAAAPoAAAD6AG1e1JrAAAAGUlEQVQokWOIqjhBEmIY1VAxGkpRwzVpAACJzZoQPNqOjQAAAABJRU5ErkJggg==";
@@ -114,6 +114,7 @@ test("private raster preview and attachment download require live author and plu
   );
   await page.goto("/settings/plugins/installations");
   await review.getByRole("button", { name: "Revoke private_files", exact: true }).click();
+  await acceptConfirm(page);
   await expect(page.getByRole("status")).toContainText("Access revoked.");
   expect((await page.request.get(filePath)).status()).toBe(404);
   expect((await page.goto(previewPath))?.status()).toBe(404);
