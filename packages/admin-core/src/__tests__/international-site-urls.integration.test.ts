@@ -534,6 +534,81 @@ describe("create_variant — the slug the caller cannot invent", () => {
     )) as { current_path: string }[];
     expect(rows[0]?.current_path).toBe("/de/t395-lr-sektion/t395-lr-teams");
   });
+
+  // The live e2e failure (15 reports): a site whose home is the page
+  // with the magic slug `home` and NO site_defaults designation. Core
+  // serves it at "/", the operator says "Startseite", and the AI omits
+  // the slug exactly as the tool description prescribes for the home —
+  // but the plugin asked the designation alone and refused with "this
+  // page is not the site home". Home is core's verdict (rootPageId).
+  it("treats the magic-slug home (no designation) as the home: no slug, locale root /de", async () => {
+    await cleanup();
+    const anyId = await seedPage("t395-mh-any");
+    const tpl = (await sqlSystem((tx) =>
+      tx.unsafe(`SELECT template_id::text AS id FROM pages WHERE id = '${anyId}'`),
+    )) as { id: string }[];
+    const created = await execute(registry, adapter, SYS_CTX, "pages.create", {
+      slug: "home",
+      title: "Home",
+      templateId: tpl[0]?.id,
+    });
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    const homeId = (created.value as { pageId: string }).pageId;
+    let variantId: string | null = null;
+    try {
+      const defaults = await execute(registry, adapter, SYS_CTX, "site_defaults.get", {});
+      if (!defaults.ok) throw new Error(JSON.stringify(defaults.error));
+      expect(
+        (defaults.value as { defaults: { homePageId: string | null; rootPageId: string | null } })
+          .defaults,
+      ).toMatchObject({ homePageId: null, rootPageId: homeId });
+
+      await bootPlugin();
+      await sqlAsPlugin(async (tx) => {
+        await tx.unsafe(
+          `INSERT INTO "plugin_international_site"."locales" (code, display_name, url_strategy, is_default) VALUES ('en', 'English', 'none', true)`,
+        );
+        await tx.unsafe(
+          `INSERT INTO "plugin_international_site"."locales" (code, display_name, url_strategy, is_default) VALUES ('de', 'Deutsch', 'subdirectory', false)`,
+        );
+      });
+      const op = (operationName: string, args: Record<string, unknown>) =>
+        runPluginOperation({
+          invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
+          pluginSlug: "international-site",
+          operationName,
+          args,
+        });
+
+      // intl_status tells the AI up front which page takes no slug.
+      const status = await op("intl_status", {});
+      if (!status.ok) throw new Error(JSON.stringify(status.error));
+      const unassigned = (
+        status.value as { unassignedPages: { pageId: string; isSiteHome?: boolean }[] }
+      ).unassignedPages;
+      expect(unassigned.find((p) => p.pageId === homeId)?.isSiteHome).toBe(true);
+      expect(unassigned.find((p) => p.pageId === anyId)?.isSiteHome).toBeUndefined();
+
+      // The live run's exact call.
+      const minted = await op("create_variant", { sourcePageId: homeId, localeCode: "de" });
+      if (!minted.ok) throw new Error(minted.error.message);
+      const v = minted.value as { pageId: string; isLocaleRoot: boolean };
+      variantId = v.pageId;
+      expect(v.isLocaleRoot).toBe(true);
+      const path = (await sqlSystem((tx) =>
+        tx.unsafe(`SELECT current_path FROM pages WHERE id = '${v.pageId}'`),
+      )) as { current_path: string }[];
+      expect(path[0]?.current_path).toBe("/de");
+    } finally {
+      await sqlSystem(async (tx) => {
+        const ids = [homeId, variantId].filter((id): id is string => id !== null);
+        await tx.unsafe(
+          `DELETE FROM redirects WHERE to_path = '/de' OR from_path IN ('/home-de', '/de/home-de')`,
+        );
+        await tx.unsafe(`DELETE FROM pages WHERE id IN (${ids.map((id) => `'${id}'`).join(", ")})`);
+      });
+    }
+  });
 });
 
 /**
