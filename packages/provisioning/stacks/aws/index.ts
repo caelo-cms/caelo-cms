@@ -40,6 +40,10 @@ import {
 } from "../../dist/aws-task-roles.js";
 import { generateBootstrapToken } from "../../dist/bootstrap-token.js";
 import { ADMIN_MEMORY_DEFAULT, memoryQuantityMiB } from "../../dist/stack-contract.js";
+import {
+  CLOUDFRONT_SVG_BEHAVIORS,
+  cloudFrontHeadersPolicy,
+} from "../../dist/static-security-headers.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -245,6 +249,19 @@ const redirectFunction = new aws.cloudfront.Function(`${namePrefix}-redirects`, 
   keyValueStoreAssociations: [redirectKvs.arn],
 });
 
+// === 6c. Security response headers (#891) ===
+// nosniff on every response; the sandboxing CSP on every SVG, so an
+// uploaded SVG opened directly runs no script on the site's origin
+// (src/static-security-headers.ts).
+const siteHeadersPolicy = new aws.cloudfront.ResponseHeadersPolicy(`${namePrefix}-site-headers`, {
+  name: `${namePrefix}-site-headers`,
+  ...cloudFrontHeadersPolicy("site"),
+});
+const svgHeadersPolicy = new aws.cloudfront.ResponseHeadersPolicy(`${namePrefix}-svg-headers`, {
+  name: `${namePrefix}-svg-headers`,
+  ...cloudFrontHeadersPolicy("svg"),
+});
+
 // === 7. CloudFront distribution ===
 const distribution = new aws.cloudfront.Distribution(`${namePrefix}-cdn`, {
   enabled: true,
@@ -273,8 +290,30 @@ const distribution = new aws.cloudfront.Distribution(`${namePrefix}-cdn`, {
     defaultTtl: 60,
     maxTtl: 86400,
     functionAssociations: [{ eventType: "viewer-request", functionArn: redirectFunction.arn }],
+    responseHeadersPolicyId: siteHeadersPolicy.id,
   },
   orderedCacheBehaviors: [
+    // #891 — SVGs first (first match wins), each like the behavior it
+    // shadows except for the CSP policy.
+    ...CLOUDFRONT_SVG_BEHAVIORS.map(({ pathPattern, targetOriginId }) => ({
+      pathPattern,
+      targetOriginId,
+      viewerProtocolPolicy: "redirect-to-https",
+      allowedMethods: ["GET", "HEAD"],
+      cachedMethods: ["GET", "HEAD"],
+      forwardedValues: { queryString: false, cookies: { forward: "none" } },
+      minTtl: 0,
+      ...(targetOriginId === "media"
+        ? { defaultTtl: 31536000, maxTtl: 31536000 }
+        : {
+            defaultTtl: 60,
+            maxTtl: 86400,
+            functionAssociations: [
+              { eventType: "viewer-request", functionArn: redirectFunction.arn },
+            ],
+          }),
+      responseHeadersPolicyId: svgHeadersPolicy.id,
+    })),
     {
       pathPattern: "/media/*",
       targetOriginId: "media",
@@ -285,6 +324,7 @@ const distribution = new aws.cloudfront.Distribution(`${namePrefix}-cdn`, {
       minTtl: 0,
       defaultTtl: 31536000,
       maxTtl: 31536000,
+      responseHeadersPolicyId: siteHeadersPolicy.id,
     },
   ],
   viewerCertificate: {

@@ -21,6 +21,7 @@ import {
   rollService,
   serviceRollArgs,
 } from "./stack-converge.js";
+import { GCP_STATIC_RESPONSE_HEADERS } from "./static-security-headers.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
@@ -43,6 +44,12 @@ function fakeGcloud(answers: Record<string, GcloudResult[]>, fallback: GcloudRes
   };
   return { run, calls };
 }
+
+/** A static backend bucket already at the stack's CDN policy + headers. */
+const IN_SHAPE_BACKEND = {
+  cdnPolicy: STATIC_CDN_POLICY,
+  customResponseHeaders: GCP_STATIC_RESPONSE_HEADERS,
+};
 
 const policy = (bindings: { role: string; members: string[]; condition?: unknown }[]) =>
   ok(JSON.stringify({ bindings }));
@@ -750,6 +757,17 @@ describe("ensureStackInvariants", () => {
       ],
       "compute backend-buckets list": [ok("caelo-production-static-backend-9f8e7d6\n")],
       "compute firewall-rules list": [ok("[]")],
+      // #891 — every live SVG already served as a download.
+      "storage objects list": [
+        ok(
+          JSON.stringify([
+            {
+              storage_url: "gs://acme-caelo-production-static/_assets/a.0123456789abcdef.svg",
+              content_disposition: "attachment",
+            },
+          ]),
+        ),
+      ],
     });
 
     it("raises the pre-#555 1h/24h TTLs to a year", async () => {
@@ -772,7 +790,7 @@ describe("ensureStackInvariants", () => {
       const report = await ensureStackInvariants(gcp, { run, sleep: async () => {} });
       expect(report.mustAbort).toBe(false);
       expect(calls).toContain(
-        `compute backend-buckets update caelo-production-static-backend-9f8e7d6 --project=acme --cache-mode=CACHE_ALL_STATIC --default-ttl=3600 --max-ttl=${STATIC_CDN_POLICY.maxTtl} --client-ttl=${STATIC_CDN_POLICY.clientTtl} --quiet`,
+        `compute backend-buckets update caelo-production-static-backend-9f8e7d6 --project=acme --cache-mode=CACHE_ALL_STATIC --default-ttl=3600 --max-ttl=${STATIC_CDN_POLICY.maxTtl} --client-ttl=${STATIC_CDN_POLICY.clientTtl} --custom-response-header=X-Content-Type-Options: nosniff --quiet`,
       );
       expect(report.outcomes.find((o) => o.id.startsWith("Cloud CDN"))?.status).toBe("applied");
       // Every IAM invariant was already present.
@@ -782,12 +800,25 @@ describe("ensureStackInvariants", () => {
     it("leaves a backend bucket already at the stack's policy alone", async () => {
       const answers = {
         ...fullGcp(),
-        "compute backend-buckets describe": [ok(JSON.stringify({ cdnPolicy: STATIC_CDN_POLICY }))],
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
       };
       const { run, calls } = fakeGcloud(answers);
       const report = await ensureStackInvariants(gcp, { run, sleep: async () => {} });
       expect(calls.some((c) => c.startsWith("compute backend-buckets update"))).toBe(false);
       expect(report.outcomes.every((o) => o.status === "present")).toBe(true);
+    });
+
+    // #891 regression: the backend bucket served every file without nosniff.
+    it("adds the nosniff response header to a bucket already at the CDN policy", async () => {
+      const answers = {
+        ...fullGcp(),
+        "compute backend-buckets describe": [ok(JSON.stringify({ cdnPolicy: STATIC_CDN_POLICY }))],
+      };
+      const { run, calls } = fakeGcloud(answers);
+      const report = await ensureStackInvariants(gcp, { run, sleep: async () => {} });
+      const update = calls.find((c) => c.startsWith("compute backend-buckets update"));
+      expect(update).toContain("--custom-response-header=X-Content-Type-Options: nosniff");
+      expect(report.outcomes.find((o) => o.id.startsWith("Cloud CDN"))?.status).toBe("applied");
     });
 
     it("warns (no abort) when the CDN update fails", async () => {
@@ -807,7 +838,7 @@ describe("ensureStackInvariants", () => {
         ...fullGcp(),
         "storage buckets get-iam-policy": [policy([])],
         "secrets get-iam-policy": [policy([])],
-        "compute backend-buckets describe": [ok(JSON.stringify({ cdnPolicy: STATIC_CDN_POLICY }))],
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
       };
       const { run, calls } = fakeGcloud(answers);
       await ensureStackInvariants(gcp, { run, sleep: async () => {} });
@@ -827,7 +858,7 @@ describe("ensureStackInvariants", () => {
       const answers = {
         ...fullGcp(),
         "secrets get-iam-policy": [policy([])],
-        "compute backend-buckets describe": [ok(JSON.stringify({ cdnPolicy: STATIC_CDN_POLICY }))],
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
       };
       const { run, calls } = fakeGcloud(answers);
       await ensureStackInvariants(gcp, { run, sleep: async () => {} });

@@ -48,6 +48,7 @@ import {
   STATIC_CDN_POLICY,
   secretFileVolumesTemplate,
 } from "../../dist/stack-contract.js";
+import { GCP_STATIC_RESPONSE_HEADERS } from "../../dist/static-security-headers.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -870,14 +871,17 @@ const wafPolicy = new gcp.compute.SecurityPolicy(
 );
 
 // Tier 1 backend — static GCS bucket via Cloud CDN. The CDN policy (one-year
-// client/edge TTL so immutable assets stay immutable, #555) is shared with
-// `cms-provision upgrade`, which applies it to existing installs.
+// client/edge TTL so immutable assets stay immutable, #555) and the response
+// headers (#891: nosniff on every file; SVGs are stored as downloads by the
+// publisher, see static-security-headers.ts) are shared with
+// `cms-provision upgrade`, which applies them to existing installs.
 const staticBackendBucket = new gcp.compute.BackendBucket(
   `${namePrefix}-static-backend`,
   {
     bucketName: staticBucket.name,
     enableCdn: true,
     cdnPolicy: { ...STATIC_CDN_POLICY },
+    customResponseHeaders: [...GCP_STATIC_RESPONSE_HEADERS],
   },
   opts,
 );
