@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.63
+
+### Fixes
+- e9a73338 keep the served Firebase preview alive by TTL refresh, not an expireTime clear (#969) (#972)
+
 ## v0.10.62
 
 ### Features
