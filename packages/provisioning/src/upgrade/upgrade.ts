@@ -91,8 +91,14 @@ export interface GcpUpgradeDeps {
   readonly migrate: (
     imageRef: string,
   ) => Promise<{ readonly ok: boolean; readonly error?: string }>;
+  /**
+   * The health probe for `plan`'s install. `accessJustChanged`: the
+   * converge before it changed access the probe relies on, so its baseline
+   * waits for that to take effect (health.ts, #734).
+   */
   readonly healthProbe: (
     plan: AppRollPlan,
+    context: { readonly accessJustChanged: boolean },
   ) => Promise<
     | { readonly ok: true; readonly probe: HealthProbe }
     | { readonly ok: false; readonly error: string }
@@ -229,7 +235,9 @@ export async function upgradeGcpInstallOutcome(
   // 5. App-roll, with the converge steps that sit between its own.
   let health: HealthProbe | null = null;
   if (!target.skipHealthCheck) {
-    const probe = await deps.healthProbe(plan);
+    const probe = await deps.healthProbe(plan, {
+      accessJustChanged: converge.accessJustChanged(),
+    });
     if (!probe.ok) {
       r.error(probe.error);
       r.warn("No migrations ran and no traffic moved.");
