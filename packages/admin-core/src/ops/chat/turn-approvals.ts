@@ -329,14 +329,31 @@ export const claimTurnApprovalsOp = defineOperation({
   /** The claimed decisions, already appended to the transcript. */
   output: z.object({ decisions: z.array(turnApprovalDecision) }),
   handler: async (ctx, input, tx) => {
+    const accessRefusal = await chatAccessRefusal(
+      tx as TransactionRunner,
+      ctx,
+      input.chatSessionId,
+    );
+    if (accessRefusal !== null) {
+      return err({
+        kind: "HandlerError",
+        operation: "chat.claim_turn_approvals",
+        message: accessRefusal,
+      });
+    }
     let decisions: TurnApprovalDecision[];
     if (input.decision) {
       const d = input.decision;
       const rows = (await tx.execute(sql`
-        SELECT source, status FROM chat_turn_approvals
+        SELECT source, status, tool_name, required_permissions FROM chat_turn_approvals
         WHERE chat_session_id = ${input.chatSessionId}::uuid AND approval_id = ${d.approvalId}
         FOR UPDATE
-      `)) as unknown as { source: TurnApprovalSource; status: string }[];
+      `)) as unknown as {
+        source: TurnApprovalSource;
+        status: string;
+        tool_name: string;
+        required_permissions: string[];
+      }[];
       const row = rows[0];
       if (row?.status !== "pending") {
         return err({
@@ -352,6 +369,21 @@ export const claimTurnApprovalsOp = defineOperation({
           message:
             "This approval belongs to the external agent (MCP): decide it on its card. The agent's own call continues its work; the Live Edit AI does not.",
         });
+      }
+      if (d.approved && row.required_permissions.length > 0) {
+        const refusal = await approverRefusal(
+          tx as TransactionRunner,
+          ctx,
+          row.tool_name,
+          row.required_permissions as Permission[],
+        );
+        if (refusal !== null) {
+          return err({
+            kind: "HandlerError",
+            operation: "chat.claim_turn_approvals",
+            message: refusal,
+          });
+        }
       }
       await tx.execute(sql`
         UPDATE chat_turn_approvals

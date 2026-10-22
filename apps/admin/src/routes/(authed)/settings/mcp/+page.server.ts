@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import type { McpRemoteConnectionRow } from "@caelo-cms/admin-core";
+import type { McpRemoteAccessBlockRow, McpRemoteConnectionRow } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
+import { MCP_SURFACE_PERMISSION } from "@caelo-cms/shared";
 import { error, fail } from "@sveltejs/kit";
+import type { RemoteMcpState } from "#lib/mcp-remote-access.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
+import { currentRemoteMcpAvailability } from "#lib/server/google-iap.js";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -21,9 +24,41 @@ type TokenRow = {
   expiresAt: string;
 };
 
+/**
+ * Where remote MCP stands on this install, for the state-aware top card
+ * (#968): never "set up" once it is on, always both URLs when it is.
+ */
+async function remoteState(locals: App.Locals): Promise<RemoteMcpState> {
+  const availability = currentRemoteMcpAvailability();
+  if (availability.status === "not-available") return availability;
+  if (availability.status === "needs-upgrade") return availability;
+  const { adapter, registry } = getQueryContext();
+  const client = await execute(registry, adapter, locals.ctx, "operator_oauth.get", {});
+  if (!client.ok) throw error(500, `operator_oauth.get failed: ${JSON.stringify(client.error)}`);
+  // Remote MCP is on exactly when the install's Google sign-in client is
+  // set (#914: no separate switch).
+  if ((client.value as { client: unknown }).client === null) {
+    return { status: "off", signInSettingsPath: availability.signInSettingsPath };
+  }
+  const seo = await execute(registry, adapter, locals.ctx, "site_defaults.get_seo", {});
+  if (!seo.ok) throw error(500, `site_defaults.get_seo failed: ${JSON.stringify(seo.error)}`);
+  // The connector name names the site; before its base URL is configured
+  // the MCP address's own host is the site's address people know.
+  const base = (seo.value as { siteBaseUrl: string | null }).siteBaseUrl;
+  const siteHost = new URL(base ?? availability.mcpPublicUrl).host;
+  return { status: "on", urls: availability.urls, siteHost };
+}
+
 export const load: PageServerLoad = async ({ locals, url }) => {
   requirePermission(locals, "settings.read");
   const { adapter, registry } = getQueryContext();
+  const permissions = locals.user?.permissions;
+  const canWrite = permissions?.has("settings.write") === true;
+  // Which remote surfaces this user may connect — the URLs shown follow it.
+  const mayUse = {
+    chat: permissions?.has(MCP_SURFACE_PERMISSION.chat) === true,
+    admin: permissions?.has(MCP_SURFACE_PERMISSION.admin) === true,
+  };
   const r = await execute(registry, adapter, locals.ctx, "mcp_tokens.list", {});
   if (!r.ok) throw error(500, `Could not list MCP tokens: ${JSON.stringify(r.error)}`);
   // RLS (migration 0315) scopes the rows: an Owner (settings.write) gets
@@ -35,14 +70,28 @@ export const load: PageServerLoad = async ({ locals, url }) => {
   // Issue #37 — set by the provisioner on IAP-protected installs; the MCP
   // shim needs it to get through IAP.
   const iapServiceAccount = process.env.CAELO_MCP_IAP_SERVICE_ACCOUNT?.trim() || null;
-  // Issue #806 — people connected through a remote MCP client (IAP identity).
+  // Issue #806/#968 — apps connected by URL (IAP identity), one row per
+  // (user, surface, app), plus users an Owner blocked for every app.
   const remote = await execute(registry, adapter, locals.ctx, "mcp_remote_connections.list", {});
   if (!remote.ok) {
     throw error(500, "Could not load the remote MCP connections (mcp_remote_connections.list).");
   }
-  const remoteConnections = (remote.value as { connections: McpRemoteConnectionRow[] }).connections;
-  const canWrite = locals.user?.permissions.has("settings.write") === true;
-  return { tokens, visibility, adminUrl, iapServiceAccount, remoteConnections, canWrite };
+  const { connections: remoteConnections, blocks: remoteBlocks } = remote.value as {
+    connections: McpRemoteConnectionRow[];
+    blocks: McpRemoteAccessBlockRow[];
+  };
+  return {
+    tokens,
+    visibility,
+    adminUrl,
+    iapServiceAccount,
+    remote: await remoteState(locals),
+    mayUse,
+    remoteConnections,
+    remoteBlocks,
+    canWrite,
+    selfId: locals.user?.id ?? null,
+  };
 };
 
 export const actions: Actions = {
@@ -114,6 +163,30 @@ export const actions: Actions = {
     });
     if (!r.ok) return fail(400, { error: opMessage(r.error) });
     return { ok: true, remoteUpdated: id };
+  },
+  remoteBlockUser: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const actorId = String(form.get("actorId") ?? "");
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "mcp_remote_connections.block_user", {
+      actorId,
+    });
+    if (!r.ok) return fail(400, { error: opMessage(r.error) });
+    return { ok: true, remoteUpdated: actorId };
+  },
+  remoteUnblockUser: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const actorId = String(form.get("actorId") ?? "");
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "mcp_remote_connections.unblock_user", {
+      actorId,
+    });
+    if (!r.ok) return fail(400, { error: opMessage(r.error) });
+    return { ok: true, remoteUpdated: actorId };
   },
   remoteSetCap: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");

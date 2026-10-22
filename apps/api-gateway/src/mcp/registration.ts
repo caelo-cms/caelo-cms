@@ -27,6 +27,7 @@
 
 import { z } from "zod";
 import { readBodyWithCap } from "../middleware/body-cap.js";
+import { isWellFormedText, mcpClientKey } from "./access-token.js";
 import type { McpContext } from "./context.js";
 import { json, oauthError } from "./http.js";
 import { isAllowedRedirectUri } from "./redirect-allowlist.js";
@@ -208,6 +209,18 @@ async function resolveCimd(ctx: McpContext, url: URL): Promise<ClientResolution>
   };
 }
 
+/**
+ * The client key ({@link mcpClientKey}) of a `client_id` the token endpoint
+ * already accepted. No network: a CIMD id is its own key, and a DCR id's
+ * name is inside its seal. A DCR id whose seal no longer opens (its key was
+ * rotated out) still has an identity: the hash of the id.
+ */
+export function clientKeyOf(ctx: McpContext, clientId: string): string {
+  if (clientId.startsWith("https://")) return mcpClientKey(clientId, null);
+  const opened = open(ctx.config.openKeys, "client", clientId, ClientSealSchema, ctx.nowSeconds());
+  return mcpClientKey(clientId, opened.ok ? (opened.value.client_name ?? null) : null);
+}
+
 /** Resolve a `client_id` from an authorization request. */
 export async function resolveClient(ctx: McpContext, clientId: string): Promise<ClientResolution> {
   if (clientId.startsWith("https://")) {
@@ -285,6 +298,14 @@ export async function handleRegister(req: Request, ctx: McpContext): Promise<Res
   }
   if (reg.response_types?.some((r) => r !== "code")) {
     return oauthError("invalid_client_metadata", 'response_types may only contain "code"');
+  }
+  // The name ends up in the client's key, which the proxy URI-encodes into
+  // a header; a lone UTF-16 surrogate would make that throw (#968).
+  if (reg.client_name !== undefined && !isWellFormedText(reg.client_name)) {
+    return oauthError(
+      "invalid_client_metadata",
+      "client_name must be well-formed Unicode text (no unpaired surrogates)",
+    );
   }
   const refused = reg.redirect_uris.filter((u) => !isAllowedRedirectUri(u));
   if (refused.length > 0) {
