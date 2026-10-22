@@ -491,7 +491,10 @@ export function scanSlot(slot: ReferenceSlot, lookup: LinkTargetLookup): SlotFin
     ...lookup,
     pageIdForPath(path) {
       const id = lookup.pageIdForPath(path);
-      if (id !== null) literals.push({ display: path, pageId: id, where });
+      // A literal `/` is not legacy storage: the write path keeps it literal
+      // while no homepage exists yet (site chrome is built first), and the
+      // root cannot dangle — a Stage refuses a site without one.
+      if (id !== null && path !== "/") literals.push({ display: path, pageId: id, where });
       return id;
     },
     mediaIdForSlug(slug) {

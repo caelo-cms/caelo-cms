@@ -262,6 +262,94 @@ describe("flagged elements", () => {
   });
 });
 
+describe("non-scoring insights (e2e-livedit 2026-10: network-dependency-tree-insight)", () => {
+  /** The insight as Lighthouse 13 reports it on a page whose HTML loads a
+   *  stylesheet: numeric 0, metricSavings {LCP: 0}, a list of sections. */
+  function networkTree(preconnectCandidates: { origin: string; wastedMs: number }[]): Audit {
+    return {
+      ...audit("network-dependency-tree-insight", 0, "numeric"),
+      metricSavings: { LCP: 0 },
+      details: {
+        type: "list",
+        items: [
+          {
+            type: "list-section",
+            value: { type: "network-tree", chains: {}, longestChain: { duration: 120 } },
+          },
+          {
+            type: "list-section",
+            title: "Preconnected origins",
+            description: "[preconnect] hints help the browser establish a connection earlier…",
+            value: { type: "text", value: "no origins were preconnected" },
+          },
+          {
+            type: "list-section",
+            title: "Preconnect candidates",
+            description: "Add preconnect hints to your most important origins…",
+            value:
+              preconnectCandidates.length > 0
+                ? { type: "table", headings: [], items: preconnectCandidates }
+                : { type: "text", value: "No additional origins are good candidates" },
+          },
+        ],
+      },
+    };
+  }
+
+  function run(insight: Audit, weight: number): LhrLike {
+    return {
+      requestedUrl: "https://s/",
+      categories: {
+        performance: {
+          score: 1,
+          auditRefs: [{ id: "network-dependency-tree-insight", group: "insights", weight }],
+        },
+      },
+      audits: { [insight.id]: insight },
+    };
+  }
+
+  it("is no finding when it names nothing and Lighthouse estimates no saving", () => {
+    expect(failingAudits(run(networkTree([]), 0))).toEqual([]);
+  });
+
+  it("does not report Lighthouse's section copy as flagged entries", () => {
+    // Weighted here only so the finding survives to show its elements.
+    const [finding] = failingAudits(run(networkTree([]), 1));
+    expect(finding?.id).toBe("network-dependency-tree-insight");
+    expect(finding && "elements" in finding).toBe(false);
+  });
+
+  it("stays a finding when it names an origin to preconnect", () => {
+    const [finding] = failingAudits(
+      run(networkTree([{ origin: "https://fonts.example", wastedMs: 300 }]), 0),
+    );
+    expect(finding?.elements).toEqual([{ url: "https://fonts.example" }]);
+  });
+
+  it("stays a finding when Lighthouse estimates a saving", () => {
+    const insight = { ...networkTree([]), metricSavings: { LCP: 150 } };
+    expect(failingAudits(run(insight, 0)).map((f) => f.id)).toEqual([
+      "network-dependency-tree-insight",
+    ]);
+  });
+
+  it("reads a node a list details names (lcp-discovery shape)", () => {
+    const insight: Audit = {
+      ...audit("network-dependency-tree-insight", 0, "numeric"),
+      details: {
+        type: "list",
+        items: [
+          { type: "checklist", items: {} },
+          { type: "node", selector: "main > img.hero", snippet: '<img class="hero">' },
+        ],
+      },
+    };
+    const [finding] = failingAudits(run(insight, 0));
+    expect(finding?.elements?.[0]).toMatchObject({ selector: "main > img.hero" });
+  });
+});
+
 describe("staging-exempt audits", () => {
   // Staging is noindex by design, so `is-crawlable` fails on every staged
   // page (seen in the e2e-livedit run: SEO 58 from that audit alone).
