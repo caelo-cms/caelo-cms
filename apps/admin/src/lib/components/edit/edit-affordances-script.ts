@@ -164,11 +164,14 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     return node && node.nodeType === 1 ? node : node ? node.parentNode : null;
   }
 
+  // The reference points at the outlined element (targetOf); the
+  // context stays the surrounding block's text, so an image in a <p> or
+  // <a> still tells the AI what it sits next to.
   function buildRef(el, moduleEl, selectedText) {
     var block = blockFor(el, moduleEl);
     var ref = {
       moduleId: moduleEl.getAttribute("data-caelo-module-id") || "",
-      selector: selectorFor(block, moduleEl),
+      selector: selectorFor(targetOf(el, moduleEl), moduleEl),
       label: clip(labelFor(moduleEl), LIMITS.label),
     };
     if (selectedText) ref.selectedText = clip(selectedText, LIMITS.selectedText);
