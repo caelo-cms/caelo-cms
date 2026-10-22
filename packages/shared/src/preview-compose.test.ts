@@ -818,4 +818,31 @@ describe("theme favicon in <head>", () => {
     expect(out.html).toContain('href="/x&quot;&gt;&lt;script&gt;"');
     expect(out.html).not.toContain('/x"><script>');
   });
+
+  it("base64-encodes the page-wide module script bundle when JS contains </script or <!--", () => {
+    const mod = {
+      ...blankModule,
+      html: "<p>x</p>",
+      js: 'const tpl = "</script><img src=x onerror=alert(1)>";',
+    };
+    const preview = composePagePreview({
+      templateHtml: `<html><head></head><body><caelo-slot name="content">_</caelo-slot></body></html>`,
+      templateCss: "",
+      blocks: [{ blockName: "content", modules: [mod] }],
+    });
+    expect(preview.html).not.toContain("<img src=x onerror=alert(1)>");
+    expect(preview.html).toContain('src="data:text/javascript;base64,');
+
+    const withLayout = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [{ blockName: "content", modules: [mod] }],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+    });
+    expect(withLayout.html).not.toContain("<img src=x onerror=alert(1)>");
+    expect(withLayout.html).toContain('src="data:text/javascript;base64,');
+  });
 });
