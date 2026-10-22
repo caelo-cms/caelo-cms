@@ -6,10 +6,12 @@
  * `cms-provision upgrade`, both as the operator's own gcloud identity.
  *
  * Trust boundary. Who may pass the admin's IAP gate and sign as `caelo-mcp`
- * follows the Caelo user list; which OAuth client may call the admin
- * programmatically (IAP `programmatic_clients`, remote MCP #806) follows the
- * client the Owner configured under Settings → MCP → Remote. The admin does NOT write that: its runtime
- * service account holds no IAM-policy rights. A Cloud Run job with its own
+ * follows the Caelo user list; which OAuth client IAP signs people in with
+ * and accepts programmatically (the project's IAP `oauthSettings`: browser
+ * client, its secret and `programmaticClients`, #914) follows the Google
+ * sign-in client
+ * the Owner configured under Settings → Google sign-in. The admin does NOT
+ * write that: its runtime service account holds no IAM-policy rights. A Cloud Run job with its own
  * service account (admin-core security/operator-access/sync-job.ts) is the
  * only principal that may change those two bindings, and it only ever grants
  * individual `user:` emails read from the database. The admin may only start
@@ -21,11 +23,16 @@
  *
  * What this ensures, every step idempotent:
  *   1. the Cloud Scheduler API;
- *   2. the custom role `caeloOperatorAccess` (get/setIamPolicy, and
- *      get/updateSettings for `programmatic_clients`);
- *   3. the job's service account, bound to that role on exactly the admin's
- *      IAP resource and the `caelo-mcp` service account, plus
- *      `cloudsql.instanceUser` + `logging.logWriter`;
+ *   2. the custom roles `caeloOperatorAccess` (get/setIamPolicy, and
+ *      get/updateSettings on a web service) and `caeloOperatorAccessIapProject`
+ *      (get/updateSettings of the project's IAP settings, where Google
+ *      applies a custom OAuth client — admin-core iap-settings.ts);
+ *   3. the job's service account, bound to `caeloOperatorAccess` on exactly
+ *      the admin's IAP resource and the `caelo-mcp` service account, to
+ *      `caeloOperatorAccessIapProject` on the project, `secretAccessor`
+ *      on exactly the Google sign-in client's secret (#914: IAP needs the
+ *      client secret too), plus `cloudsql.instanceUser` +
+ *      `logging.logWriter`;
  *   4. removal of the admin run SA's operator-access grants an earlier
  *      revision of this feature gave it;
  *   5. Cloud SQL IAM database authentication (flag + the job's IAM database
@@ -45,6 +52,7 @@ import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import {
   gcpNamePrefix,
+  gcpSecretId,
   mcpIapServiceAccountEmail,
   operatorAccessJobName,
   operatorAccessScheduleName,
@@ -53,6 +61,7 @@ import {
   runServiceAccountEmail,
 } from "./gcp-names.js";
 import { type IapResource, iapResourceArgs } from "./mcp-iap.js";
+import { operatorOAuthClientSecretResource } from "./stack-contract.js";
 
 type Run = (args: string[]) => Promise<GcloudResult>;
 
@@ -69,20 +78,38 @@ export const OPERATOR_ACCESS_ROLE: CustomRoleSpec = {
   roleId: "caeloOperatorAccess",
   title: "Caelo operator access",
   description:
-    "Lets the Caelo operator-access sync job set who passes the admin's IAP gate, which OAuth client may call it programmatically (remote MCP), and who may sign as caelo-mcp. Bound only on those two resources, only to the job's service account.",
+    "Lets the Caelo operator-access sync job set who passes the admin's IAP gate, which OAuth client IAP signs people in with and accepts programmatically (Google sign-in, remote MCP), and who may sign as caelo-mcp. Bound only on those two resources, only to the job's service account.",
   permissions: [
     "iap.webServices.getIamPolicy",
     "iap.webServices.setIamPolicy",
-    // #806 — the admin IAP resource's `programmatic_clients` (the remote-MCP
-    // OAuth client). IAP settings permissions per resource level:
-    // cloud.google.com/iap/docs/customizing ("Web Services": getSettings /
-    // updateSettings); the role is bound on exactly the admin's IAP web
-    // service, so it reaches no other resource's settings.
+    // #914 — the admin IAP resource's own `oauthSettings`, which the job
+    // keeps empty so the project's Google sign-in client applies (a client
+    // there would override it). IAP settings permissions per resource level:
+    // roles/iap.settingsAdmin; the role is bound on exactly the admin's IAP
+    // web service, so it reaches no other resource's settings.
     "iap.webServices.getSettings",
     "iap.webServices.updateSettings",
     "iam.serviceAccounts.getIamPolicy",
     "iam.serviceAccounts.setIamPolicy",
   ],
+};
+
+/**
+ * #914 — the project-level IAP settings, where the job sets the Google
+ * sign-in client (`oauthSettings`). Google applies a custom OAuth client for
+ * Cloud Run IAP, and programmatic clients, only at project level or above
+ * (admin-core security/operator-access/iap-settings.ts). A separate role
+ * because it is bound on the PROJECT: `caeloOperatorAccess` there would
+ * reach every IAP resource's IAM policy. `iap.projects.*Settings` cover the
+ * project-level settings only, no lower level and no IAM policy
+ * (roles/iap.settingsAdmin lists the permission per level).
+ */
+export const OPERATOR_ACCESS_PROJECT_IAP_ROLE: CustomRoleSpec = {
+  roleId: "caeloOperatorAccessIapProject",
+  title: "Caelo operator access: project IAP settings",
+  description:
+    "Lets the Caelo operator-access sync job set which OAuth client IAP signs people in with and accepts programmatically (the install's Google sign-in client) in the project's IAP settings. Bound only on the project, only to the job's service account.",
+  permissions: ["iap.projects.getSettings", "iap.projects.updateSettings"],
 };
 
 /** Custom role an earlier revision bound to the admin run SA on `gcp`; its binding is removed. */
@@ -196,6 +223,12 @@ export interface OperatorAccessSyncTarget {
 /** Env var of the sync job listing {@link OperatorAccessSyncTarget.mcpSigners}. */
 export const MCP_SIGNERS_ENV = "CAELO_OPERATOR_ACCESS_MCP_SIGNERS";
 
+/** #914 — env var of the sync job naming the Google sign-in client's secret. */
+export const OPERATOR_OAUTH_CLIENT_SECRET_ENV = "CAELO_OPERATOR_OAUTH_CLIENT_SECRET";
+
+/** The role the job holds on exactly the Google sign-in client's secret (#914). */
+export const OPERATOR_OAUTH_CLIENT_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor";
+
 export type OperatorAccessSyncResult =
   | { readonly ok: true; readonly done: string[] }
   | { readonly ok: false; readonly done: string[]; readonly error: string };
@@ -234,10 +267,12 @@ export async function ensureOperatorAccessSync(
   if (!api.ok) return fail("enable cloudscheduler.googleapis.com", api);
   done.push("Cloud Scheduler API enabled");
 
-  // 2. The custom role.
-  const roleError = await ensureCustomRole(run, projectId, OPERATOR_ACCESS_ROLE);
-  if (roleError) return { ok: false, done, error: roleError };
-  done.push(`custom role ${OPERATOR_ACCESS_ROLE.roleId}`);
+  // 2. The custom roles.
+  for (const role of [OPERATOR_ACCESS_ROLE, OPERATOR_ACCESS_PROJECT_IAP_ROLE]) {
+    const roleError = await ensureCustomRole(run, projectId, role);
+    if (roleError) return { ok: false, done, error: roleError };
+    done.push(`custom role ${role.roleId}`);
+  }
 
   // 3. The job's own service account and its grants.
   const saDescribe = await run([
@@ -286,7 +321,28 @@ export async function ensureOperatorAccessSync(
     if (!r.ok) return fail(`grant the job ${g.what}`, r);
     done.push(`job: ${g.what}`);
   }
-  for (const role of ["roles/cloudsql.instanceUser", "roles/logging.logWriter"]) {
+  // #914 — the job hands the Google sign-in client to IAP (`oauthSettings`
+  // needs the secret too), so it reads that one secret; no other.
+  const clientSecret = gcpSecretId(env, "operator-oauth-client");
+  const accessor = await retry([
+    "secrets",
+    "add-iam-policy-binding",
+    clientSecret,
+    `--member=${jobMember}`,
+    `--role=${OPERATOR_OAUTH_CLIENT_ACCESSOR_ROLE}`,
+    "--condition=None",
+    project,
+    "--quiet",
+    "--format=none",
+  ]);
+  if (!accessor.ok) return fail(`grant the job read access to ${clientSecret}`, accessor);
+  done.push(`job: ${OPERATOR_OAUTH_CLIENT_ACCESSOR_ROLE} on ${clientSecret}`);
+  for (const role of [
+    // #914 — the project's IAP settings: the Google sign-in client.
+    customRoleName(projectId, OPERATOR_ACCESS_PROJECT_IAP_ROLE.roleId),
+    "roles/cloudsql.instanceUser",
+    "roles/logging.logWriter",
+  ]) {
     const r = await retry([
       "projects",
       "add-iam-policy-binding",
@@ -364,6 +420,7 @@ export async function ensureOperatorAccessSync(
     `CAELO_MCP_IAP_SERVICE_ACCOUNT=${mcpSa}`,
     `CAELO_OPERATOR_ACCESS_STATIC_MEMBERS=${installIapAllowlist(target.ownerEmail).join(",")}`,
     `CAELO_OPERATOR_ACCESS_DB_HOST=${target.databaseHost}`,
+    `${OPERATOR_OAUTH_CLIENT_SECRET_ENV}=${operatorOAuthClientSecretResource(projectId, env)}`,
     ...(target.mcpSigners && target.mcpSigners.length > 0
       ? [`${MCP_SIGNERS_ENV}=${target.mcpSigners.join(",")}`]
       : []),

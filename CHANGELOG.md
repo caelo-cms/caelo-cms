@@ -1,5 +1,107 @@
 # Changelog
 
+## v0.10.64
+
+### Features
+- f29f25fc Firestore store, Issues-only GitHub App, daily issue cap + kill switch (#980) (#989)
+- 5ef6801b let the Owner re-send reports that ended in failed (#982) (#988)
+
+### Fixes
+- e9a73338 keep the served Firebase preview alive by TTL refresh, not an expireTime clear (#969) (#972)
+
+### Chores
+- fc9c6636 v0.10.63 (#999)
+
+### Other
+- 53d26749 publish a signed bug-intake image on every merge to main (#981) (#986)
+
+## v0.10.63
+
+### Fixes
+- e9a73338 keep the served Firebase preview alive by TTL refresh, not an expireTime clear (#969) (#972)
+
+## v0.10.62
+
+### Features
+- d5381070 skip a scheduled install, ownerAction in the release manifest, converge IAM self-check (#868, #884, #759) (#960)
+- 4674c3d5 owner-reset on self-hosted and gcp (#770) (#959)
+- 3c587f5f deploy-time minify, CSS scope check and interaction kit (#158, #160) (#958)
+
+### Fixes
+- 6a3065de serve uploaded SVGs with a restrictive CSP from the edge on every provider (#891) (#950)
+- 7f66e9f1 name the GCP project after the install's domain (#963)
+- e7f02366 stop/resume/remove plugins in the running host only after commit (#585) (#951)
+- c1f1a276 honest upgrade errors, planned-change list and a verified break-glass upgrade (#630, #804, #737, #816) (#961)
+- 3216359a run page previews in an opaque-origin sandbox (#946) (#957)
+- 9b72e538 delete-refusal dead end (#63), sitemap toggle (#567), URL-migration gate (#586) (#947)
+- a96f01e7 payload matches the consent text, saves show the real error (#949)
+- fa1fbdc4 upgrade survives pre-#650 gateways, fresh IAM grants and parallel installs (#948)
+
+### Tests
+- 6a10f046 rendered design assertions + two-page consistency scenario + design judge (#161) (#956)
+
+## v0.10.61
+
+### Fixes
+- b1378886 mask the IAP oauthSettings PATCH leaf by leaf (#914) (#964)
+
+## v0.10.60
+
+### Fixes
+- 9fe68d5e a user without a Google account no longer blocks the IAP sync (#597) (#955)
+
+## v0.10.59
+
+### Features
+- ed4edb8c Caelo-operated intake that files one GitHub issue per defect (#903, #906) (#911)
+- 8710edf0 forward AI bug reports to the Caelo team on the Owner's opt-in (#904, #905, #906) (#910)
+- 677fd881 edit links, replace images and change shared content in place (#918) (#933)
+- a5ab24d4 edit text in place in the preview, no AI round-trip (#917) (#931)
+
+### Refactors
+- 056e10fa delete the text-rewrite-on-move path (#724, rollout G) (#878)
+
+## v0.10.58
+
+### Features
+- 1d7cb69b select text / right-click → Ask AI with a precise reference (#916) (#929)
+- 9aaf55cc reference integrity blocks Stage and Publish live (#724, rollout F) (#893)
+- de808516 migrate literal internal links to references (#724, rollout E) (#880)
+- 84d6984f one Google sign-in client for IAP login, IAP programmatic access and remote MCP (#914) (#932)
+- 5e1407c2 link-resolve composition point; links resolve per language (#724, rollout D) (#877)
+- 7ccd8dd2 canonicalise internal links at write time (#724, rollout C) (#873)
+
+### Fixes
+- b77ce4b5 pin digests without listing the stack config; create a missing audit job (#938)
+- 99ff5c8f bug_report says honestly where a report went (#902) (#907)
+- 1a58cae3 keep serving the published build after Publish live; served channel never expires (#908) (#909)
+- db5268ad store each tool result once so a mixed invalid-call step cannot wedge the chat (#915)
+- b8e8eb64 capture desktop at the operator's live preview size (#913)
+- d02e46bd wrap numeric typography sub-fields and merge siblings (#912)
+- 9ffda1da build the notification bell's name from its content (#934)
+
+## v0.10.57
+
+### Fixes
+- 757e624f let UPGRADER_SMOKE=off pass the release gate (#936)
+
+## v0.10.56
+
+### Features
+- fdd97978 remote MCP infra + guided Owner setup (#806, part D) (#894)
+- d3712a38 contract-bumping releases install from Caelo via a signed converge job (#819) (#883)
+- 1ffe7a6f IAM self-check + real-GCP upgrader smoke test per release (#818) (#879)
+- cc0340ce make the package listable in MCP directories (#841) (#886)
+- 67036cbf remote Streamable HTTP endpoints behind IAP + remote connections (#806, part B) (#892)
+- 79067cb1 one derived state and one primary action on Settings → Updates (#861, #817) (#867)
+
+### Fixes
+- 0c4c7c43 renumber unreleased cms_admin migrations above the shipped 0315 (#930)
+- 5b428d27 tag only a release PR merged onto the commit it was cut from (#900)
+- 08cfe272 decide before taking the state lock, lease-break dead locks, refresh the DB token (#815) (#872)
+- 8118b38d harden the remote-MCP OAuth broker and proxy (#806, part C follow-up) (#899)
+- 07ce7b15 heal install.json drift from signed releases; compare serving images by their deployed digest (#860) (#865)
+
 ## v0.10.55
 
 ### Features

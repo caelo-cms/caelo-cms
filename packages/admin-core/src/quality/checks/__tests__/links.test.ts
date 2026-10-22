@@ -10,7 +10,13 @@
 import { describe, expect, it } from "bun:test";
 import type { StagedBuild, StagedPage } from "../check.js";
 import { findingSchema } from "../findings.js";
-import { createLinksCheck, LINKS_CHECK_ID, linkFindings, MAX_PROBES } from "../links.js";
+import {
+  createLinksCheck,
+  LINKS_CHECK_ID,
+  linkFindings,
+  MAX_PROBES,
+  type ReportedDraftLink,
+} from "../links.js";
 import {
   extractLinks,
   followRedirects,
@@ -89,6 +95,7 @@ const INPUT = {
   layouts: [LAYOUT],
   redirects: [] as RedirectRow[],
   siteUrls: ["https://example.com", "www.example.com"],
+  reportedDraftLinks: [] as ReportedDraftLink[],
 };
 
 const HOME = page(1, "/", mod(TEXT, '<a href="/team">Team</a>'));
@@ -97,12 +104,13 @@ const TEAM = page(3, "/team", mod(TEXT, "<p>The team.</p>"));
 
 async function findingsOf(
   pages: readonly StagedPage[],
-  opts: { files?: string[]; redirects?: RedirectRow[] } = {},
+  opts: { files?: string[]; redirects?: RedirectRow[]; reported?: ReportedDraftLink[] } = {},
 ) {
   const build = buildWith(opts.files ?? []);
   const findings = await linkFindings(pages, build, {
     ...INPUT,
     redirects: opts.redirects ?? [],
+    reportedDraftLinks: opts.reported ?? [],
   });
   for (const f of findings) expect(findingSchema.safeParse(f).success).toBe(true);
   return { findings, probed: build.probed };
@@ -124,6 +132,68 @@ describe("links/broken-internal", () => {
     expect(broken[0]?.message).toContain("nothing is served at /pricng");
     expect(broken[0]?.fix?.tool).toBe("set_page_module_content");
     expect(broken[0]?.fix?.hint).toContain("bulk_create_redirects");
+  });
+
+  it("#724 F — a stored link to an unpublished page is left to the references check (one finding per defect)", async () => {
+    const about = page(
+      2,
+      "/about",
+      mod(TEXT, '<a href="/coming-soon/">Soon</a> <a href="/gone">x</a>'),
+    );
+    const { findings } = await findingsOf([HOME, about, TEAM], {
+      reported: [
+        {
+          targetPath: "/coming-soon",
+          pageIds: [about.pageId],
+          origin: { kind: "module", moduleId: TEXT.id },
+        },
+      ],
+    });
+    const broken = findings.filter((f) => f.ruleId === "links/broken-internal");
+    expect(broken).toHaveLength(1);
+    expect(broken[0]?.message).toContain('"/gone"');
+  });
+
+  it("#724 F — a link to a draft page the references check does not report stays a blocking error", async () => {
+    // Regression (Codex on #893): every link whose path belonged to a draft
+    // page was skipped, so plugin output and literals whose redirect chain
+    // ended at a draft shipped a 404 with no blocking finding.
+    const about = page(
+      2,
+      "/about",
+      [
+        mod(TEXT, '<a href="/coming-soon/">stored</a>'),
+        `<div data-caelo-plugin="events"><a href="/coming-soon/">plugin output</a></div>`,
+        mod(CTA, '<a href="/old-offer">legacy</a>'),
+      ].join(""),
+    );
+    const reported: ReportedDraftLink[] = [
+      {
+        targetPath: "/coming-soon",
+        pageIds: [about.pageId],
+        origin: { kind: "module", moduleId: TEXT.id },
+      },
+    ];
+    const { findings } = await findingsOf([HOME, about, TEAM], {
+      reported,
+      redirects: [
+        { fromPath: "/old-offer", toPath: "/older-offer", statusCode: 301 },
+        { fromPath: "/older-offer", toPath: "/coming-soon", statusCode: 301 },
+      ],
+    });
+    const broken = findings.filter((f) => f.ruleId === "links/broken-internal");
+    expect(broken.map((f) => [f.pageId, f.severity])).toEqual([
+      [about.pageId, "error"],
+      [about.pageId, "error"],
+    ]);
+    expect(broken.map((f) => f.message).join(" ")).toContain('"/old-offer"');
+    expect(broken.map((f) => f.message).join(" ")).toContain('plugin "events"');
+    // The same stored link on another page is not this page's report.
+    const team = page(3, "/team", mod(TEXT, '<a href="/coming-soon/">stored</a>'));
+    const other = await findingsOf([HOME, about, team], { reported });
+    expect(
+      other.findings.filter((f) => f.ruleId === "links/broken-internal").map((f) => f.pageId),
+    ).toContain(team.pageId);
   });
 
   it("pages answer to every form: trailing slash, index.html, query, fragment, relative", async () => {
@@ -448,6 +518,7 @@ describe("createLinksCheck", () => {
       layouts: async () => INPUT.layouts,
       redirects: async () => [],
       siteUrls: async () => INPUT.siteUrls,
+      reportedDraftLinks: async () => [],
     });
     expect(check.id).toBe(LINKS_CHECK_ID);
     const about = page(2, "/about", mod(TEXT, '<a href="/nope">x</a>'));
@@ -462,6 +533,7 @@ describe("createLinksCheck", () => {
       layouts: async () => [],
       redirects: async () => [],
       siteUrls: async () => [],
+      reportedDraftLinks: async () => [],
     });
     const failing: StagedBuild = {
       baseUrl: BASE,

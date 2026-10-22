@@ -16,11 +16,11 @@
  *   - emits human-readable progress + a final summary
  */
 
-import { join, resolve as resolvePath } from "node:path";
+import { join } from "node:path";
 import { provisioningUpgradeCommand } from "@caelo-cms/shared";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
-import { activeAccount, gcloud } from "./gcloud.js";
+import { activeAccount, checkGcloudAuth, gcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep } from "./gcloud-retry.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
 import { INFRA_CONTRACT_VERSION } from "./infra-contract.js";
@@ -39,6 +39,7 @@ import {
   recordInfraContractVersion,
   scrubInstallProgress,
   selectInstall,
+  stackWorkDir,
   writeMetadata,
 } from "./install-state.js";
 import { runMigrationsViaCloudRunJob } from "./migration-runner.js";
@@ -73,11 +74,12 @@ import {
   type RollSlug,
 } from "./upgrade/app-roll.js";
 import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
-import { findServiceUrl, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
+import { findServiceUrl, lookupFailure, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe, type HealthProbe } from "./upgrade/health.js";
 import { recordRolledDigests } from "./upgrade/record-rolled.js";
 import {
   canonicalReleaseTag,
+  ensureCosignAvailable,
   fetchLatestReleaseTag,
   RELEASE_REGISTRY,
   releaseImageRef,
@@ -148,12 +150,20 @@ async function chooseInstalls(opts: {
 
 function exitNoInstall(message: string): never {
   log.error(red(message));
-  if (listInstalls().length === 0) {
-    log.warn(
-      `Run ${bold(selfCommand())} first to provision an install, OR copy ${dim("~/.caelo-<install-id>/")} from the provisioning machine.`,
-    );
-  }
+  log.warn(noInstallHint());
   process.exit(1);
+}
+
+/**
+ * What to do when this machine has no copy of the install. A Google Cloud
+ * install keeps its records in its own project, so the fix is `attach`, not
+ * the installer: the installer would provision a new site (#816).
+ */
+export function noInstallHint(): string {
+  return [
+    `A Google Cloud install keeps its records in its own project: run ${bold(selfCommand("attach", "--project", "<gcp-project-id>"))} once on this machine (or pass ${bold("--project <gcp-project-id>")} to upgrade, which attaches it first).`,
+    `A self-hosted install is managed on its own server. To create a new install instead, run ${bold(selfCommand())}.`,
+  ].join("\n");
 }
 
 /** The one install a single-install command (rotate-secret, truncate, destroy) acts on. */
@@ -212,6 +222,27 @@ function installRegion(meta: InstallMetadata, requested?: string): string {
   }
 }
 
+/**
+ * Pre-flight for a lifecycle command on a GCP install, before any lock,
+ * lookup or change: gcloud can mint a token now (#630: expired credentials
+ * otherwise surface as "service not found" half-way through) and, for an
+ * upgrade that verifies signatures, cosign is on PATH (#816).
+ *
+ * @returns false when the command must stop (the reason is printed)
+ */
+async function gcpPreflight(opts: { readonly cosign: boolean }): Promise<boolean> {
+  const auth = await checkGcloudAuth();
+  if (!auth.ok) {
+    log.error(red(`Nothing was changed: ${auth.error}`));
+    return false;
+  }
+  if (opts.cosign && !(await ensureCosignAvailable())) {
+    log.error(red("Nothing was changed: the release images cannot be verified without cosign."));
+    return false;
+  }
+  return true;
+}
+
 // =========================================================================
 // status — health check + monthly cost
 // =========================================================================
@@ -264,27 +295,34 @@ async function getLatestReleaseTag(): Promise<string | null> {
 
 async function gcpStatus(meta: InstallMetadata): Promise<void> {
   if (!meta.projectId) return;
+  if (!(await gcpPreflight({ cosign: false }))) return;
   const s = spinner();
   s.start("Resolving deployed resources + checking health...");
 
   const region = installRegion(meta);
-  const adminName = await resolveGcpResourceName(
+  const admin = await resolveGcpResourceName(
     gcloud,
     "run-service",
     "caelo-production-admin",
     meta.projectId,
     region,
   );
-  const sqlName = await resolveGcpResourceName(
+  const sql = await resolveGcpResourceName(
     gcloud,
     "sql-instance",
     "caelo-production-pg",
     meta.projectId,
   );
-  if (!adminName || !sqlName) {
-    s.stop(red("Could not resolve deployed resource names — is the install live?"));
+  if (admin.status !== "found") {
+    s.stop(red(lookupFailure(admin, "caelo-production-admin* Cloud Run service", "operator")));
     return;
   }
+  if (sql.status !== "found") {
+    s.stop(red(lookupFailure(sql, "caelo-production-pg* Cloud SQL instance", "operator")));
+    return;
+  }
+  const adminName = admin.name;
+  const sqlName = sql.name;
 
   const adminUri = await gcloud([
     "run",
@@ -366,9 +404,43 @@ interface UpgradeOpts {
    * `--install` or the picker (chooseInstalls).
    */
   readonly installId?: string;
+  /**
+   * #816 — the GCP project the install lives in. The upgrade attaches it
+   * from the project's ops bucket first (state-command.ts attachProject),
+   * so it works on a machine (or a fresh Cloud Shell) with no local copy.
+   */
+  readonly project?: string;
 }
 
 export async function upgradeCommand(opts: UpgradeOpts = {}): Promise<void> {
+  if (opts.project) {
+    if (!(await gcpPreflight({ cosign: false }))) {
+      process.exitCode = 1;
+      return;
+    }
+    const { attachProject } = await import("./state-command.js");
+    const attached = attachProject(opts.project);
+    let wanted: string | undefined;
+    try {
+      wanted = installFlag(process.argv);
+    } catch (e) {
+      log.error(red(e instanceof Error ? e.message : String(e)));
+      process.exit(2);
+    }
+    const selected = selectInstall(listInstalls(), wanted ?? attached);
+    if (!selected.ok) return exitNoInstall(selected.message);
+    if (selected.meta.installId !== attached) {
+      log.error(
+        red(
+          `--install ${wanted} is not the install in project ${opts.project} (${attached}). Drop one of the two flags.`,
+        ),
+      );
+      process.exit(2);
+    }
+    const meta = currentMetadata(selected.meta);
+    if (!(await upgradeInstall(meta.installId, meta, opts))) process.exitCode = 1;
+    return;
+  }
   if (opts.installId) {
     const selected = selectInstall(listInstalls(), opts.installId);
     if (!selected.ok) return exitNoInstall(selected.message);
@@ -493,6 +565,7 @@ async function upgradeInstall(
   if (!meta.projectId) return false;
   const provider = meta.provider;
   const projectId = meta.projectId;
+  if (!(await gcpPreflight({ cosign: opts.skipVerify !== true }))) return false;
 
   // #815 — the install's state lock, the one the in-app upgrader job,
   // `pulumi up` and `state migrate` take: a Cloud Shell upgrade must not
@@ -569,6 +642,7 @@ async function upgradeLockedInstall(
       infraContractVersion: INFRA_CONTRACT_VERSION,
       skipVerify: opts.skipVerify === true,
       skipHealthCheck: opts.skipHealthCheck === true,
+      credentials: "operator",
     },
     {
       run,
@@ -578,7 +652,7 @@ async function upgradeLockedInstall(
       verifyImages: verifyCosignAll,
       migrate: (imageRef) =>
         runMigrationsViaCloudRunJob({ projectId, region, imageOverride: imageRef }, { run }),
-      healthProbe: (plan) => gcpHealthProbe(run, http, plan),
+      healthProbe: (plan, context) => gcpHealthProbe(run, http, plan, context),
       recordDigests: async (digests) => {
         recorded = await recordRolledRelease(
           installId,
@@ -621,6 +695,7 @@ async function gcpHealthProbe(
   run: GcloudRunner,
   http: HttpFetch,
   plan: AppRollPlan,
+  context: { readonly accessJustChanged: boolean },
 ): Promise<{ ok: true; probe: HealthProbe } | { ok: false; error: string }> {
   const { install } = plan;
   const urls: Partial<Record<RollSlug, string>> = {};
@@ -644,7 +719,7 @@ async function gcpHealthProbe(
         adminServiceUrl: urls.admin as string,
         gatewayServiceUrl: urls.gateway as string,
       },
-      { run, http, sleep: realSleep },
+      { run, http, sleep: realSleep, accessJustChanged: context.accessJustChanged },
     ),
   };
 }
@@ -676,7 +751,12 @@ export function recordRolledRelease(
         readPassphrase: () => readSecret(installId, "pulumi-passphrase"),
       });
       const { writeImageDigestsToStack } = await import("./wizards/gcp-pulumi.js");
-      return writeImageDigestsToStack({ backend, provider, digests: d });
+      return writeImageDigestsToStack({
+        installRoot: installRoot(installId),
+        backend,
+        provider,
+        digests: d,
+      });
     },
     stackRecovery: (d) => stackConfigRecovery(installId, local ?? {}, provider, d),
     installJsonLocation: bucket
@@ -702,7 +782,7 @@ function stackConfigRecovery(
   digests: ImageDigests,
 ): string {
   const env = backendShellEnv(meta, installRoot(installId));
-  const cwd = `--cwd ${resolvePath(import.meta.dir, "../stacks", provider)} --stack ${GCP_STACK_ENV}`;
+  const cwd = `--cwd ${stackWorkDir(installRoot(installId), provider)} --stack ${GCP_STACK_ENV}`;
   const lines = Object.entries(digests).map(
     ([svc, d]) => `  ${env} pulumi config set ${cwd} caelo-${provider}:image-digest-${svc} ${d}`,
   );
@@ -730,12 +810,13 @@ async function backupOf(meta: InstallMetadata): Promise<boolean> {
     return false;
   }
   if (!meta.projectId) return false;
+  if (!(await gcpPreflight({ cosign: false }))) return false;
 
   const s = spinner();
   s.start("Resolving Cloud SQL instance + triggering on-demand backup...");
   const r = await takeSqlBackup(
     gcloud,
-    { projectId: meta.projectId, env: GCP_STACK_ENV },
+    { projectId: meta.projectId, env: GCP_STACK_ENV, credentials: "operator" },
     "backup",
   );
   if (!r.ok) {
@@ -776,21 +857,28 @@ export async function rotateSecretCommand(
   }
   if (!meta.projectId) return;
   const region = installRegion(meta);
+  if (!(await gcpPreflight({ cosign: false }))) {
+    process.exitCode = 1;
+    return;
+  }
 
   if (name === SEAL_KEY_SECRET) {
-    const gatewayService = await resolveGcpResourceName(
+    const gateway = await resolveGcpResourceName(
       gcloud,
       "run-service",
       "caelo-production-gateway",
       meta.projectId,
       region,
     );
-    if (!gatewayService) {
+    if (gateway.status !== "found") {
       log.error(
-        red("Could not find the caelo-production-gateway* Cloud Run service — nothing rotated"),
+        red(
+          `${lookupFailure(gateway, "caelo-production-gateway* Cloud Run service", "operator")} — nothing rotated`,
+        ),
       );
       return;
     }
+    const gatewayService = gateway.name;
     const target = { projectId: meta.projectId, region, env: GCP_STACK_ENV, gatewayService };
     const report = opts.finish
       ? await finishSealKeyRotation(target, {}, { now: opts.now === true })
@@ -807,23 +895,41 @@ export async function rotateSecretCommand(
   s.start(`Rotating ${secret}...`);
   const services: Partial<Record<"admin" | "gateway", string>> = {};
   for (const slug of ["admin", "gateway"] as const) {
-    const serviceName = await resolveGcpResourceName(
+    const service = await resolveGcpResourceName(
       gcloud,
       "run-service",
       `caelo-production-${slug}`,
       meta.projectId,
       region,
     );
-    if (!serviceName) {
-      s.stop(red(`Could not find caelo-production-${slug}* Cloud Run service — nothing rotated`));
+    if (service.status !== "found") {
+      s.stop(
+        red(
+          `${lookupFailure(service, `caelo-production-${slug}* Cloud Run service`, "operator")} — nothing rotated`,
+        ),
+      );
       return;
     }
-    services[slug] = serviceName;
+    services[slug] = service.name;
   }
-  const sqlInstance =
-    rolesOfSecret(secret).length > 0
-      ? await resolveGcpResourceName(gcloud, "sql-instance", "caelo-production-pg", meta.projectId)
-      : null;
+  let sqlInstance: string | null = null;
+  if (rolesOfSecret(secret).length > 0) {
+    const sql = await resolveGcpResourceName(
+      gcloud,
+      "sql-instance",
+      "caelo-production-pg",
+      meta.projectId,
+    );
+    if (sql.status !== "found") {
+      s.stop(
+        red(
+          `${lookupFailure(sql, "caelo-production-pg* Cloud SQL instance", "operator")} — nothing rotated`,
+        ),
+      );
+      return;
+    }
+    sqlInstance = sql.name;
+  }
   const report = await rotateRuntimeSecret(
     {
       projectId: meta.projectId,

@@ -28,7 +28,7 @@ import { setPageModuleContentTool } from "../ai/tools/set-page-module-content.js
 import { setDeployBridge } from "../ops/deploy.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
-import { linkSourcesFromOps } from "../quality/checks/links-sources.js";
+import { linkSourcesFromOps, referenceSourcesFromOps } from "../quality/checks/links-sources.js";
 import { createCoreCheckRegistry } from "../quality/checks/registry.js";
 import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
@@ -150,6 +150,7 @@ async function stageAndAudit(title: string): Promise<string> {
       lighthouse: cleanLighthouse,
       structure: structureSourcesFromOps(registry, adapter, SYS),
       links: linkSourcesFromOps(registry, adapter, SYS),
+      references: referenceSourcesFromOps(registry, adapter, SYS),
     }),
     env: {
       provider: "aws",

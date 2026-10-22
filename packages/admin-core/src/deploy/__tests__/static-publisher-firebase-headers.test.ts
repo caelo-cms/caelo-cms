@@ -24,7 +24,12 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { HTML_CACHE_CONTROL, IMMUTABLE_CACHE_CONTROL } from "@caelo-cms/shared";
+import {
+  HTML_CACHE_CONTROL,
+  IMMUTABLE_CACHE_CONTROL,
+  NOSNIFF,
+  SVG_DOCUMENT_CSP,
+} from "@caelo-cms/shared";
 import { VERSION_CONFIG_HEADERS } from "../static-publisher-firebase.js";
 
 describe("VERSION_CONFIG_HEADERS — Firebase Hosting REST API shape", () => {
@@ -164,6 +169,41 @@ describe("VERSION_CONFIG_HEADERS — Content-Type for favicons", () => {
     for (const p of ["/favicon.ico", "/_assets/brand-favicon.ico", "/about/"]) {
       expect(cacheControlsFor(p).length).toBeLessThanOrEqual(1);
       expect(headerValuesFor(p, "Content-Type").length).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
+describe("VERSION_CONFIG_HEADERS — security headers (#891)", () => {
+  // Regression: the public site served uploaded SVGs from the CDN without a
+  // CSP, so a script that got past sanitizeSvg ran on the site's origin
+  // (the same origin as /api/*) when the SVG was opened directly.
+  it("every SVG path gets the sandboxing CSP, in any case and under any directory", () => {
+    for (const p of [
+      "/_assets/logo.0123456789abcdef.svg",
+      "/_assets/brand/icon.0123456789abcdef.svg",
+      "/_assets/legacy-logo.SVG",
+      "/uploads/x.svg",
+    ]) {
+      expect(headerValuesFor(p, "Content-Security-Policy")).toEqual([SVG_DOCUMENT_CSP]);
+    }
+  });
+
+  it("pages, rasters, fonts and PDFs get no CSP (sandbox would break pages and the PDF viewer)", () => {
+    for (const p of [
+      "/",
+      "/about/",
+      "/_assets/hero.0123456789abcdef.png",
+      "/_assets/fonts/inter/29ede7bd4be32ab0.woff2",
+      "/_assets/brochure.pdf",
+      "/_assets/logo.svgz",
+    ]) {
+      expect(headerValuesFor(p, "Content-Security-Policy")).toEqual([]);
+    }
+  });
+
+  it("every path gets nosniff exactly once", () => {
+    for (const p of ["/", "/about", "/_assets/logo.0123456789abcdef.svg", "/api/forms", "/x.js"]) {
+      expect(headerValuesFor(p, "X-Content-Type-Options")).toEqual([NOSNIFF]);
     }
   });
 });

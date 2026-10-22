@@ -265,7 +265,7 @@ describe("mcp_remote_connections ops", () => {
     expect(ai.ok).toBe(false);
   });
 
-  it("shows a non-Owner only their own connections and lets them change none (0316)", async () => {
+  it("shows a non-Owner only their own connections and lets them change none (0322)", async () => {
     const editorCtx: ExecutionContext = {
       actorId: USERS.editor.id,
       actorKind: "human",

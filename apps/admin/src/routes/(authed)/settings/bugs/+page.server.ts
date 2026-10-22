@@ -2,15 +2,19 @@
 
 /**
  * "Detected bugs" — operator-facing view of `ai_bug_reports`, the defects
- * the AI filed while working (see `ops/ai/bug-reports.ts`). Read-only list
- * plus a client-side export (Markdown for a GitHub issue, or JSON) so an
- * operator hitting a problem can hand us a self-contained report.
+ * the AI filed while working (see `ops/ai/bug-reports.ts`), plus the
+ * Owner's choice whether they go to the Caelo team (epic #901,
+ * `ops/ai/bug-forwarding.ts`). The Markdown / JSON export stays for
+ * installs that keep forwarding off.
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { fail } from "@sveltejs/kit";
+import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
-import type { PageServerLoad } from "./$types";
+import type { Actions, PageServerLoad } from "./$types";
 
 export interface BugReport {
   id: string;
@@ -26,12 +30,78 @@ export interface BugReport {
   status: string;
   /** 'ai' = model-filed via bug_report; 'auto' = chat-runner auto-captured. */
   source: string;
+  /** Where the report went (#902): local_only | queued | sent | failed. */
+  forwardingState: "local_only" | "queued" | "sent" | "failed";
+  forwardError: string | null;
+  /** Once sent: open | fixed | regression | wontfix. */
+  upstreamStatus: "open" | "fixed" | "regression" | "wontfix" | null;
+  upstreamIssueUrl: string | null;
+  upstreamFixedIn: string | null;
+}
+
+export interface BugForwarding {
+  enabled: boolean;
+  decidedAt: string | null;
+  counts: {
+    localOnly: number;
+    queued: number;
+    sent: number;
+    failed: number;
+    /** Open reports not yet with the Caelo team (filed before opt-in, or sending failed). */
+    unsent: number;
+    /** Not sent, but marked fixed/invalid, so the send button leaves them out. */
+    closedUnsent: number;
+  };
 }
 
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.read");
   const { adapter, registry } = getQueryContext();
-  const r = await execute(registry, adapter, locals.ctx, "ai_bug_reports.list", { limit: 200 });
+  const [r, f] = await Promise.all([
+    execute(registry, adapter, locals.ctx, "ai_bug_reports.list", { limit: 200 }),
+    execute(registry, adapter, locals.ctx, "bug_forwarding.get", {}),
+  ]);
+  if (!f.ok) throw new Error(`bug_forwarding.get: ${JSON.stringify(f.error)}`);
   const reports: BugReport[] = r.ok ? (r.value as { reports: BugReport[] }).reports : [];
-  return { reports };
+  return { reports, forwarding: f.value as BugForwarding };
+};
+
+export const actions: Actions = {
+  setForwarding: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const enabled = form.get("enabled") === "1";
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "bug_forwarding.set", { enabled });
+    if (!r.ok) {
+      return fail(400, {
+        error: `Could not save the setting: ${opErrorMessage(r.error, "the server refused the change")}`,
+      });
+    }
+    return {
+      ok: enabled
+        ? "Detected bugs are now sent to the Caelo team."
+        : "Detected bugs stay on this site.",
+    };
+  },
+  queueUnsent: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "bug_forwarding.queue_unsent", {});
+    if (!r.ok) {
+      return fail(400, {
+        error: opErrorMessage(r.error, "Turn on sending to the Caelo team first."),
+      });
+    }
+    const { queued } = r.value as { queued: number };
+    return {
+      ok:
+        queued === 1
+          ? "1 report will be sent to the Caelo team."
+          : `${queued} reports will be sent to the Caelo team.`,
+    };
+  },
 };

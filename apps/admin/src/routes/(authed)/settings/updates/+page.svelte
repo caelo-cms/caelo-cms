@@ -52,6 +52,8 @@
   let cancelOpen = $state(false);
   /** #819 — "Continue" for a converge whose run died. */
   let continueOpen = $state(false);
+  /** #868 — "Skip this time" for a scheduled automatic install. */
+  let skipOpen = $state(false);
   /** A wrong or missing password: the dialog it was typed into opens again with the message. */
   const stepUpError = $derived(
     form && "stepUpRequired" in form && form.stepUpRequired && "action" in form
@@ -62,6 +64,7 @@
     if (stepUpError?.action === "install") confirmOpen = true;
     if (stepUpError?.action === "cancel") cancelOpen = true;
     if (stepUpError?.action === "continueUpdate") continueOpen = true;
+    if (stepUpError?.action === "skipScheduled") skipOpen = true;
   });
 
   const status = $derived(data.status);
@@ -130,7 +133,11 @@
   /** "Check now" runs a GitHub request; the control says so while it does. */
   let checking = $state(false);
   /** The release notes in Owner words (#862): no hashes, issue numbers or "BREAKING". */
-  const notes = $derived(status.releaseNotes ? ownerReleaseNotes(status.releaseNotes) : null);
+  const notes = $derived(
+    status.releaseNotes
+      ? ownerReleaseNotes(status.releaseNotes, { breakingAction: status.ownerAction })
+      : null,
+  );
   const noteGroups = $derived(
     notes
       ? [
@@ -269,6 +276,16 @@
             <Button data-testid="open-install-dialog" onclick={() => (confirmOpen = true)}>
               {action.label}
             </Button>
+            {#if pageState.secondary?.kind === "skip"}
+              <Button
+                type="button"
+                variant="outline"
+                data-testid="open-skip-dialog"
+                onclick={() => (skipOpen = true)}
+              >
+                Skip this time…
+              </Button>
+            {/if}
             <span class="text-xs text-muted-foreground">
               You confirm with your password · about 5 to 15 minutes
               {#if data.selfHosted}· installed by the update agent on your server{data.agent?.status
@@ -276,6 +293,21 @@
                   : ""}{/if}
             </span>
           </div>
+          {#if pageState.secondary?.kind === "skip"}
+            <form id="skip-scheduled-form" method="post" action="?/skipScheduled">
+              <input type="hidden" name="_csrf" value={data.csrfToken} />
+              <input type="hidden" name="version" value={pageState.secondary.version} />
+            </form>
+            <PasswordConfirmDialog
+              bind:open={skipOpen}
+              formId="skip-scheduled-form"
+              title={`Skip the automatic install of v${pageState.secondary.version}?`}
+              description="Caelo won't install this version by itself. It stays available here, so you can install it whenever you're ready, and the next newer version installs automatically again."
+              submitLabel="Skip this version"
+              error={stepUpError?.action === "skipScheduled" ? stepUpError.error : null}
+              testid="skip-dialog"
+            />
+          {/if}
         {:else if action.kind === "terminal" || action.kind === "server_command"}
           {#if data.upgrade?.kind === "cli"}
             {@render cliInstructions(data.upgrade, action.version)}
@@ -284,7 +316,7 @@
           <CloudShellUpgrade
             version={action.version}
             consoleUrl={data.cloudShell.consoleUrl}
-            commands={data.cloudShell.commands}
+            command={data.cloudShell.command}
             prominent
           />
         {:else if action.kind === "continue" && latestRequest}
@@ -558,7 +590,7 @@
               <CloudShellUpgrade
                 version={status.latestVersion}
                 consoleUrl={data.cloudShell.consoleUrl}
-                commands={data.cloudShell.commands}
+                command={data.cloudShell.command}
               />
             </div>
           {/if}

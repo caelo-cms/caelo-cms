@@ -127,8 +127,9 @@ export function localStateDir(installRoot: string): string {
  * Pulumi reaches the bucket and the KMS key with the operator's Application
  * Default Credentials. Both set `PULUMI_FALLBACK_TO_STATE_SECRETS_MANAGER`:
  * Pulumi then takes the secrets provider (KMS key or passphrase salt) from
- * the install's own state when the stack's config file in the package's
- * stack dir names none (wizards/gcp-pulumi.ts alignedStackSettings).
+ * the install's own state when the stack's settings file in its work dir
+ * (install-state.ts stackWorkDir) names none (wizards/gcp-pulumi.ts
+ * alignedStackSettings).
  *
  * @param meta the install (its `stateBackend`, absent = local)
  * @param opts.installRoot `~/.caelo-<id>`

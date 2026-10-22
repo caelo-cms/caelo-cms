@@ -179,7 +179,7 @@ export const mergeDraftToMainOp = defineOperation({
     mergedAt: z.string(),
     /** The merged headers — pass them to chat.finalize_draft_stage. */
     mergedHeaderIds: z.array(z.string()),
-    brokenInternalLinks: z.array(z.string()),
+    linkWarnings: z.array(z.string()),
     /** Other chats whose changes ride along because they share an entity. */
     alsoIncludes: z.array(affectedChatSchema),
   }),
@@ -235,7 +235,7 @@ export const mergeDraftToMainOp = defineOperation({
       },
     );
     if (!merged.ok) return err(merged.error);
-    const { siteSnapshotId, entityCount, brokenInternalLinks } = merged.value;
+    const { siteSnapshotId, entityCount, linkWarnings } = merged.value;
     // Even a merge of nothing: the AI still triggers the staging build an
     // automatic publish would promote.
     if (ai) await recordAiStageHold(tx, ctx, input.chatSessionIds);
@@ -265,7 +265,7 @@ export const mergeDraftToMainOp = defineOperation({
       entityCount,
       mergedAt,
       mergedHeaderIds: [...selection.headerIds],
-      brokenInternalLinks,
+      linkWarnings,
       alsoIncludes: selection.alsoIncludes.map((a) => ({ ...a, labels: [...a.labels] })),
     });
   },

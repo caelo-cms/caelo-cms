@@ -7,13 +7,14 @@
  *
  * - **Deploy-time env** (set by provisioning): `CAELO_MCP_PUBLIC_URL`,
  *   `CAELO_ADMIN_URL`, `CAELO_MCP_OAUTH_SEAL_KEY`,
- *   `CAELO_MCP_OAUTH_CLIENT_FILE`, and — only while a seal-key rotation is
+ *   `CAELO_OPERATOR_OAUTH_CLIENT_FILE`, and — only while a seal-key rotation is
  *   in progress — `CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS`: values sealed under
  *   the previous key (refresh tokens live up to 30 days) still open, new
  *   ones are sealed under the current key. Absent means "no rotation in
  *   progress", not "use something else".
- * - **The Google OAuth client** the Owner creates AFTER deploy. It reaches
- *   the gateway as a Cloud Run secret volume (`CAELO_MCP_OAUTH_CLIENT_FILE`)
+ * - **The Google OAuth client** the Owner creates AFTER deploy — the install's
+ *   Google sign-in client (#914), the same one IAP signs people in with. It reaches
+ *   the gateway as a Cloud Run secret volume (`CAELO_OPERATOR_OAUTH_CLIENT_FILE`)
  *   whose placeholder content `{}` means "not set up yet", so it is re-read
  *   with a short cache instead of once at boot: saving it must not need a
  *   redeploy.
@@ -36,7 +37,7 @@ export const MCP_ENV = {
   adminUrl: "CAELO_ADMIN_URL",
   sealKey: "CAELO_MCP_OAUTH_SEAL_KEY",
   previousSealKey: "CAELO_MCP_OAUTH_SEAL_KEY_PREVIOUS",
-  clientFile: "CAELO_MCP_OAUTH_CLIENT_FILE",
+  clientFile: "CAELO_OPERATOR_OAUTH_CLIENT_FILE",
 } as const;
 
 /** The two MCP surfaces the gateway exposes. */
@@ -74,7 +75,7 @@ export type ConfigResult =
 
 /** The message every endpoint answers with while the Owner has not set the feature up. */
 export const NOT_SET_UP_MESSAGE =
-  "Remote MCP is not set up on this site. An Owner enables it under Settings → MCP.";
+  "Remote MCP is not set up on this site. An Owner enables it by setting up Google sign-in under Settings → Google sign-in.";
 
 /** The structured 503 for an install that cannot serve remote MCP yet. */
 export function notConfiguredResponse(message: string): Response {
@@ -244,7 +245,7 @@ export class McpConfigLoader {
         ok: false,
         notSetUp: false,
         message:
-          "Remote MCP is misconfigured on this install: the stored Google OAuth client is not JSON. An Owner saves it again under Settings → MCP.",
+          "Remote MCP is misconfigured on this install: the stored Google OAuth client is not JSON. An Owner saves it again under Settings → Google sign-in.",
       };
     }
     const parsed = ClientFileSchema.safeParse(raw);
@@ -253,7 +254,7 @@ export class McpConfigLoader {
         ok: false,
         notSetUp: false,
         message:
-          "Remote MCP is misconfigured on this install: the stored Google OAuth client needs both client_id and client_secret. An Owner saves it again under Settings → MCP.",
+          "Remote MCP is misconfigured on this install: the stored Google OAuth client needs both client_id and client_secret. An Owner saves it again under Settings → Google sign-in.",
       };
     }
     if (!("client_id" in parsed.data)) {

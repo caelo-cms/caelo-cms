@@ -15,7 +15,11 @@
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
-import { clearPendingScreenshots, deliverScreenshot } from "../screenshot-orchestrator.js";
+import {
+  clearPendingScreenshots,
+  deliverScreenshot,
+  type ScreenshotCaptureMeta,
+} from "../screenshot-orchestrator.js";
 import type { ToolContext } from "../tools/dispatch.js";
 import { screenshotPageTool } from "../tools/screenshot-page.js";
 
@@ -26,12 +30,12 @@ const CTX = { actorId: "00000000-0000-0000-0000-00000000ffff", actorKind: "syste
 /** Drive the tool with a fake ChatPanel that answers the SSE event. */
 async function run(
   input: Record<string, unknown>,
-  meta:
-    | { canvasWidth: number; canvasHeight: number; pageWidth: number; pageHeight: number }
-    | undefined,
+  meta: ScreenshotCaptureMeta | undefined,
+  events: unknown[] = [],
 ) {
   const toolCtx = {
     pushClientEvent: (ev: { requestId: string }) => {
+      events.push(ev);
       // Deliver on the next tick, like the operator's browser would.
       queueMicrotask(() =>
         deliverScreenshot(ev.requestId, {
@@ -87,5 +91,59 @@ describe("screenshot_page capture geometry", () => {
     expect(r.ok).toBe(true);
     expect(r.content).toContain("element .x");
     expect(r.content).not.toContain("Crop:");
+  });
+
+  // Regression: a fixed 1280px capture showed the AI a 3-line headline the
+  // operator's ~1740px preview wrapped onto 4 lines. The result must say
+  // whose view the image shows.
+  it("states the operator's live preview size when the capture used it", async () => {
+    const r = await run(
+      {},
+      {
+        canvasWidth: 1743,
+        canvasHeight: 980,
+        pageWidth: 1728,
+        pageHeight: 7808,
+        viewportWidth: 1743,
+        viewportHeight: 980,
+        viewportSource: "operator-preview",
+      },
+    );
+    expect(r.content).toContain("Rendered at 1743×980px — the operator's live preview size");
+  });
+
+  it("warns when desktop fell back to the preset (no live preview open)", async () => {
+    const r = await run(
+      {},
+      {
+        canvasWidth: 1280,
+        canvasHeight: 800,
+        pageWidth: 1265,
+        pageHeight: 7808,
+        viewportWidth: 1280,
+        viewportHeight: 800,
+        viewportSource: "preset",
+      },
+    );
+    expect(r.content).toContain("NOT necessarily the operator's view");
+  });
+
+  it("forwards an explicit width to the operator's browser", async () => {
+    const events: unknown[] = [];
+    const r = await run(
+      { width: 1920 },
+      {
+        canvasWidth: 1920,
+        canvasHeight: 800,
+        pageWidth: 1905,
+        pageHeight: 7000,
+        viewportWidth: 1920,
+        viewportHeight: 800,
+        viewportSource: "requested",
+      },
+      events,
+    );
+    expect(events[0]).toMatchObject({ kind: "request-screenshot", width: 1920 });
+    expect(r.content).toContain("Rendered at 1920px wide (the width you requested)");
   });
 });

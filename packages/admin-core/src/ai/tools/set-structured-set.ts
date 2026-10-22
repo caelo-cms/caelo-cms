@@ -29,6 +29,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { setStructuredSetToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setStructuredSetTool: ToolDefinitionWithHandler<
@@ -41,7 +42,8 @@ export const setStructuredSetTool: ToolDefinitionWithHandler<
     "Read before you write: sets are NOT inlined in the system prompt — call `get_structured_set({kind, slug})` first and modify its items. " +
     "Visibility: writing a set does NOT by itself change the site. The only built-in binding renders a set through a module whose slug is exactly `nav-menu-<set-slug>` placed directly in a layout/page block — that module's own HTML is replaced by the built-in renderer (`children` render as nested submenus). No AI tool can mint such a slug today (admin UI only — issue #414); if no bound module exists, render nav in the chrome module via a `link-list` field instead. Other kinds render only where module HTML/JS consumes them. " +
     "Common slugs: nav-menu/header-main, nav-menu/footer-main, tags/blog. " +
-    "Theme tokens are NOT structured sets anymore (v0.11.0) — use `set_theme_tokens` for theme edits and `propose_create_theme` to mint a new theme.",
+    "Theme tokens are NOT structured sets anymore (v0.11.0) — use `set_theme_tokens` for theme edits and `propose_create_theme` to mint a new theme." +
+    INTERNAL_LINK_CONTRACT,
   schema: setStructuredSetToolInput,
   inputSchema: {
     type: "object",

@@ -27,7 +27,7 @@
 
 import { BASE_TECHNICAL_CSS } from "./base-css.js";
 import type { ModuleFieldKind } from "./content.js";
-import { NAV_FUNCTIONAL_CSS, NAV_TOGGLE_JS } from "./interactions.js";
+import { findInteractionIds, interactionAssets } from "./interactions.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
 import {
   type NestedModuleResource,
@@ -276,8 +276,6 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   const contentByName = new Map<string, string>();
   const allCss: string[] = [];
   const allJs: string[] = [];
-  // issue #160 — see composePageWithLayout.
-  let navRendered = false;
   // issue #158 — same per-module dedup as composePageWithLayout.
   const seenAssetModules = new Set<string>();
   const moduleFailures: ComposeModuleFailure[] = [];
@@ -298,7 +296,6 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
       const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
       let baseHtml: string;
       if (navMenuItems !== null) {
-        navRendered = true;
         const nav = renderNavMenuHtml(navMenuItems, input.linkResolver);
         baseHtml = nav.html;
         recordFailures(moduleFailures, block.blockName, m, nav.failures);
@@ -328,13 +325,12 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     }
   }
 
-  if (navRendered) {
-    allCss.push(NAV_FUNCTIONAL_CSS);
-    allJs.push(NAV_TOGGLE_JS);
-  }
-
   const replaced = applySlotReplacements(input.templateHtml, { contentByName });
   let html = replaced.html;
+  // issue #160 — see composePageWithLayout.
+  const interactions = interactionAssets(new Set(findInteractionIds(html).known));
+  allCss.push(...interactions.css);
+  allJs.push(...interactions.js);
 
   // Theme brand metadata (favicon) leads the injected head block — it
   // is document metadata, not styling, and is independent of the
@@ -465,13 +461,13 @@ function renderNavMenuHtml(
     return typeof o.label === "string" && typeof o.href === "string";
   });
   // issue #160 — mobile-ready markup: toggle button (three functional
-  // bars via currentColor) + collapsible list. The functional CSS/JS
-  // ships once per page from ./interactions.ts when a nav rendered.
+  // bars via currentColor) + collapsible list. `data-caelo-ui` pulls the
+  // functional CSS/JS from ./interactions.ts in once per page.
   const toggle =
     '<button type="button" class="caelo-nav-toggle" aria-expanded="false" aria-label="Menu">' +
     '<span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span>' +
     "</button>";
-  const html = `<nav class="caelo-nav-menu" data-nav-open="false">${toggle}<ul>${safeItems.map(renderNavItem).join("")}</ul></nav>`;
+  const html = `<nav class="caelo-nav-menu" data-caelo-ui="mobile-nav" data-nav-open="false">${toggle}<ul>${safeItems.map(renderNavItem).join("")}</ul></nav>`;
   return { html, failures: missing.map((reason) => ({ field: "", reason })) };
 }
 
@@ -797,9 +793,6 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   // brittle and reads as a bug).
   const cssParts: string[] = [];
   const jsParts: string[] = [];
-  // issue #160 — set when any nav-menu module rendered; pulls the
-  // functional nav CSS/JS in exactly once per page.
-  let navRendered = false;
   // issue #158 — a module placed N times contributes its CSS/JS ONCE
   // (first occurrence wins; source order is otherwise preserved).
   // Duplicate rule blocks made the cascade order-dependent and bloated
@@ -824,7 +817,6 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
     let baseHtml: string;
     if (navMenuItems !== null) {
-      navRendered = true;
       const nav = renderNavMenuHtml(navMenuItems, input.linkResolver);
       baseHtml = nav.html;
       recordFailures(moduleFailures, blockName, m, nav.failures);
@@ -916,16 +908,27 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     if (css.trim().length > 0) cssParts.push(css);
   }
 
-  if (navRendered) {
-    cssParts.push(NAV_FUNCTIONAL_CSS);
-    jsParts.push(NAV_TOGGLE_JS);
-  }
-
-  // 3. Render the layout HTML, substituting all named slots.
-  const replaced = applySlotReplacements(input.layoutHtml, {
+  // 3. Render the layout HTML, substituting all named slots. The
+  //    layout's own markup (the page frame around the blocks) stores
+  //    internal links as references too (#724 rollout C canonicalises
+  //    layouts.create / .update), so they resolve here like module HTML
+  //    — BEFORE the slots are filled, so already-resolved block HTML is
+  //    not scanned twice. A failure lands in `missingSlots` (the
+  //    preview's missing-content surface; the static build refuses it).
+  const layoutLinkMarkers: string[] = [];
+  const layoutHtml = resolveLinkRefsInHtml(input.layoutHtml, input.linkResolver, layoutLinkMarkers);
+  const replaced = applySlotReplacements(layoutHtml, {
     contentByName: layoutContentByName,
   });
   let html = replaced.html;
+
+  // issue #160 — every vetted interaction the page's markup asks for
+  // (`data-caelo-ui="…"`, from modules, the nav renderer, the layout or
+  // the template, withheld modules included) ships once, after module
+  // CSS/JS so its functional rules win over a module's display rules.
+  const interactions = interactionAssets(new Set(findInteractionIds(html).known));
+  cssParts.push(...interactions.css);
+  jsParts.push(...interactions.js);
 
   // Theme brand metadata (favicon) — see composePagePreview.
   const themeHeadLinks = themeHeadFragment(input.theme);
@@ -974,6 +977,7 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   ]);
   const missingSet = new Set<string>([...renderedTemplate.missingSlots, ...replaced.missingSlots]);
   for (const name of replacedSet) missingSet.delete(name);
+  for (const marker of layoutLinkMarkers) missingSet.add(marker);
   return {
     html,
     replacedSlots: [...replacedSet],

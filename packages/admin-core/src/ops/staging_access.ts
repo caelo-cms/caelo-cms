@@ -466,18 +466,19 @@ export const issueStagingOpenLinkOp = defineOperation({
 
 /**
  * Record which staged build staging.<domain> serves (#650): its provider
- * origin and run, or null when nothing is staged (after Publish live).
- * Written by deploy.trigger / deploy.promote inside their transaction;
- * the gateway reads it to know where to proxy.
+ * origin and run. Written by deploy.trigger inside its transaction; the
+ * gateway reads it to know where to proxy. Publish live leaves it alone, so
+ * after a release staging keeps showing the published state until the
+ * next Stage.
  */
 export async function setStagingOrigin(
   tx: Tx,
-  staged: { readonly originUrl: string | null; readonly runId: string } | null,
+  staged: { readonly originUrl: string | null; readonly runId: string },
 ): Promise<void> {
   await tx.execute(sql`
     UPDATE staging_access SET
-      origin_url    = ${staged?.originUrl ?? null},
-      origin_run_id = ${staged === null ? null : sql`${staged.runId}::uuid`},
+      origin_url    = ${staged.originUrl},
+      origin_run_id = ${staged.runId}::uuid,
       updated_at    = now()
     WHERE id = 1
   `);

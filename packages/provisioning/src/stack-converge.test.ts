@@ -21,6 +21,7 @@ import {
   rollService,
   serviceRollArgs,
 } from "./stack-converge.js";
+import { GCP_STATIC_RESPONSE_HEADERS } from "./static-security-headers.js";
 
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
@@ -44,6 +45,12 @@ function fakeGcloud(answers: Record<string, GcloudResult[]>, fallback: GcloudRes
   return { run, calls };
 }
 
+/** A static backend bucket already at the stack's CDN policy + headers. */
+const IN_SHAPE_BACKEND = {
+  cdnPolicy: STATIC_CDN_POLICY,
+  customResponseHeaders: GCP_STATIC_RESPONSE_HEADERS,
+};
+
 const policy = (bindings: { role: string; members: string[]; condition?: unknown }[]) =>
   ok(JSON.stringify({ bindings }));
 
@@ -63,6 +70,9 @@ const firebase: InstallTarget = {
   services: { admin: "caelo-production-admin-aaa", gateway: "caelo-production-gateway-bbb" },
 };
 const gcp: InstallTarget = { ...firebase, provider: "gcp" };
+
+const ingressJson = (ingress: string) =>
+  JSON.stringify({ metadata: { annotations: { "run.googleapis.com/ingress": ingress } } });
 
 const serviceJson = (env: unknown[]) =>
   JSON.stringify({ spec: { template: { spec: { containers: [{ env }] } } } });
@@ -312,13 +322,13 @@ describe("planContractEnv", () => {
     // #650 — the same roll converges the protected staging domain's host
     // and gate key onto an install that predates it.
     expect(plan.services.admin.flags).toEqual([
-      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_CONVERGE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-converge,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_MCP_OAUTH_CLIENT_STORE=projects/acme/secrets/caelo-production-mcp-oauth-client,CAELO_STAGING_HOST=staging.acme.com",
+      "--update-env-vars=CAELO_SITE_URL=https://acme.com,MEDIA_ROOT_DIR=/app/apps/admin/data/media,CAELO_MCP_IAP_SERVICE_ACCOUNT=caelo-mcp@acme.iam.gserviceaccount.com,CAELO_OPERATOR_ACCESS_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync,CAELO_UPGRADER_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-upgrader,CAELO_CONVERGE_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-converge,CAELO_AUDIT_JOB=projects/acme/locations/europe-west1/jobs/caelo-production-audit,CAELO_AUDIT_RESULTS_BUCKET=acme-caelo-production-audit-results,CAELO_OPERATOR_OAUTH_CLIENT_STORE=projects/acme/secrets/caelo-production-operator-oauth-client,CAELO_STAGING_HOST=staging.acme.com",
       "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest",
     ]);
     expect(plan.services.gateway.flags).toEqual([
       // The gateway learns which forwarded address is the visitor (#845).
       // #806 — and where the remote-MCP broker's client file and seal key are.
-      "--update-env-vars=CAELO_TRUSTED_PROXY_HOPS=1,CAELO_MCP_OAUTH_CLIENT_FILE=/secrets/mcp-oauth-client/client.json",
+      "--update-env-vars=CAELO_TRUSTED_PROXY_HOPS=1,CAELO_OPERATOR_OAUTH_CLIENT_FILE=/secrets/operator-oauth-client/client.json",
       "--update-secrets=CAELO_STAGING_GATE_SECRET=caelo-production-staging-gate-secret:latest,CAELO_MCP_OAUTH_SEAL_KEY=caelo-production-mcp-oauth-seal-key:latest",
     ]);
   });
@@ -494,6 +504,7 @@ describe("ensureStackInvariants", () => {
       policy([{ role: "roles/run.invoker", members: [IAP_AGENT] }]),
     ],
     "compute firewall-rules list": [ok("[]")],
+    "run services describe caelo-production-gateway-bbb": [ok(ingressJson("all"))],
   });
 
   it("is a read-only no-op on an install that is already in shape", async () => {
@@ -502,10 +513,59 @@ describe("ensureStackInvariants", () => {
     expect(report.mustAbort).toBe(false);
     expect(report.outcomes.every((o) => o.status === "present")).toBe(true);
     expect(report.outcomes).toHaveLength(
-      stackIamInvariants("gcp-firebase").length + ABSENT_DEFAULT_FIREWALL_RULES.length,
+      stackIamInvariants("gcp-firebase").length + ABSENT_DEFAULT_FIREWALL_RULES.length + 1,
     );
     expect(calls.some((c) => c.startsWith("compute firewall-rules delete"))).toBe(false);
     expect(calls.some((c) => c.includes("add-iam-policy-binding"))).toBe(false);
+    expect(calls.some((c) => c.startsWith("run services update"))).toBe(false);
+  });
+
+  describe("gcp-firebase gateway ingress (#732)", () => {
+    it("opens a load-balancer-only gateway to all traffic, and a re-run is a no-op", async () => {
+      const answers = fullFirebase();
+      answers["run services describe caelo-production-gateway-bbb"] = [
+        ok(ingressJson("internal-and-cloud-load-balancing")),
+      ];
+      const { run, calls } = fakeGcloud(answers);
+      const report = await ensureStackInvariants(firebase, { run, sleep: async () => {} });
+      expect(report.mustAbort).toBe(false);
+      expect(calls).toContain(
+        "run services update caelo-production-gateway-bbb --region=europe-west1 --project=acme --ingress=all --quiet",
+      );
+      expect(report.outcomes.filter((o) => o.status === "applied").map((o) => o.id)).toEqual([
+        "ingress internal-and-cloud-load-balancing → all on caelo-production-gateway-bbb",
+      ]);
+
+      const again = fakeGcloud(fullFirebase());
+      const rerun = await ensureStackInvariants(firebase, {
+        run: again.run,
+        sleep: async () => {},
+      });
+      expect(rerun.outcomes.every((o) => o.status === "present")).toBe(true);
+      expect(again.calls.some((c) => c.includes("--ingress"))).toBe(false);
+    });
+
+    it("aborts the upgrade when the ingress can't be changed", async () => {
+      const { run } = fakeGcloud({
+        ...fullFirebase(),
+        "run services describe caelo-production-gateway-bbb": [
+          ok(ingressJson("internal-and-cloud-load-balancing")),
+        ],
+        "run services update": [fail("PERMISSION_DENIED: run.services.update")],
+      });
+      const report = await ensureStackInvariants(firebase, { run, sleep: async () => {} });
+      expect(report.mustAbort).toBe(true);
+      expect(report.outcomes.find((o) => o.status === "failed")?.error).toBe(
+        "PERMISSION_DENIED: run.services.update",
+      );
+    });
+
+    it("never reads or changes the gcp gateway's ingress (its stack declares load-balancer-only)", async () => {
+      const { run, calls } = fakeGcloud({ "projects describe": [ok("42")] });
+      await ensureStackInvariants(gcp, { run, sleep: async () => {} });
+      expect(calls.some((c) => c.startsWith("run services describe"))).toBe(false);
+      expect(calls.some((c) => c.includes("--ingress"))).toBe(false);
+    });
   });
 
   it("upgrade deletes GCP's pre-populated default-network firewall rules without aborting", async () => {
@@ -697,6 +757,17 @@ describe("ensureStackInvariants", () => {
       ],
       "compute backend-buckets list": [ok("caelo-production-static-backend-9f8e7d6\n")],
       "compute firewall-rules list": [ok("[]")],
+      // #891 — every live SVG already served as a download.
+      "storage objects list": [
+        ok(
+          JSON.stringify([
+            {
+              storage_url: "gs://acme-caelo-production-static/_assets/a.0123456789abcdef.svg",
+              content_disposition: "attachment",
+            },
+          ]),
+        ),
+      ],
     });
 
     it("raises the pre-#555 1h/24h TTLs to a year", async () => {
@@ -719,7 +790,7 @@ describe("ensureStackInvariants", () => {
       const report = await ensureStackInvariants(gcp, { run, sleep: async () => {} });
       expect(report.mustAbort).toBe(false);
       expect(calls).toContain(
-        `compute backend-buckets update caelo-production-static-backend-9f8e7d6 --project=acme --cache-mode=CACHE_ALL_STATIC --default-ttl=3600 --max-ttl=${STATIC_CDN_POLICY.maxTtl} --client-ttl=${STATIC_CDN_POLICY.clientTtl} --quiet`,
+        `compute backend-buckets update caelo-production-static-backend-9f8e7d6 --project=acme --cache-mode=CACHE_ALL_STATIC --default-ttl=3600 --max-ttl=${STATIC_CDN_POLICY.maxTtl} --client-ttl=${STATIC_CDN_POLICY.clientTtl} --custom-response-header=X-Content-Type-Options: nosniff --quiet`,
       );
       expect(report.outcomes.find((o) => o.id.startsWith("Cloud CDN"))?.status).toBe("applied");
       // Every IAM invariant was already present.
@@ -729,12 +800,25 @@ describe("ensureStackInvariants", () => {
     it("leaves a backend bucket already at the stack's policy alone", async () => {
       const answers = {
         ...fullGcp(),
-        "compute backend-buckets describe": [ok(JSON.stringify({ cdnPolicy: STATIC_CDN_POLICY }))],
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
       };
       const { run, calls } = fakeGcloud(answers);
       const report = await ensureStackInvariants(gcp, { run, sleep: async () => {} });
       expect(calls.some((c) => c.startsWith("compute backend-buckets update"))).toBe(false);
       expect(report.outcomes.every((o) => o.status === "present")).toBe(true);
+    });
+
+    // #891 regression: the backend bucket served every file without nosniff.
+    it("adds the nosniff response header to a bucket already at the CDN policy", async () => {
+      const answers = {
+        ...fullGcp(),
+        "compute backend-buckets describe": [ok(JSON.stringify({ cdnPolicy: STATIC_CDN_POLICY }))],
+      };
+      const { run, calls } = fakeGcloud(answers);
+      const report = await ensureStackInvariants(gcp, { run, sleep: async () => {} });
+      const update = calls.find((c) => c.startsWith("compute backend-buckets update"));
+      expect(update).toContain("--custom-response-header=X-Content-Type-Options: nosniff");
+      expect(report.outcomes.find((o) => o.id.startsWith("Cloud CDN"))?.status).toBe("applied");
     });
 
     it("warns (no abort) when the CDN update fails", async () => {
@@ -754,7 +838,7 @@ describe("ensureStackInvariants", () => {
         ...fullGcp(),
         "storage buckets get-iam-policy": [policy([])],
         "secrets get-iam-policy": [policy([])],
-        "compute backend-buckets describe": [ok(JSON.stringify({ cdnPolicy: STATIC_CDN_POLICY }))],
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
       };
       const { run, calls } = fakeGcloud(answers);
       await ensureStackInvariants(gcp, { run, sleep: async () => {} });
@@ -774,7 +858,7 @@ describe("ensureStackInvariants", () => {
       const answers = {
         ...fullGcp(),
         "secrets get-iam-policy": [policy([])],
-        "compute backend-buckets describe": [ok(JSON.stringify({ cdnPolicy: STATIC_CDN_POLICY }))],
+        "compute backend-buckets describe": [ok(JSON.stringify(IN_SHAPE_BACKEND))],
       };
       const { run, calls } = fakeGcloud(answers);
       await ensureStackInvariants(gcp, { run, sleep: async () => {} });
@@ -789,12 +873,12 @@ describe("ensureStackInvariants", () => {
         `secrets add-iam-policy-binding caelo-production-staging-gate-secret --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
         // #806 — the remote-MCP broker's seal key and OAuth client file.
         `secrets add-iam-policy-binding caelo-production-mcp-oauth-seal-key --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
-        `secrets add-iam-policy-binding caelo-production-mcp-oauth-client --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
+        `secrets add-iam-policy-binding caelo-production-operator-oauth-client --project=acme --member=${GW_SA} --role=roles/secretmanager.secretAccessor --quiet --format=none`,
       ]);
       // #806 — the admin may add versions to the OAuth client secret, and to no other.
       const adders = calls.filter((c) => c.includes("roles/secretmanager.secretVersionAdder"));
       expect(adders).toEqual([
-        `secrets add-iam-policy-binding caelo-production-mcp-oauth-client --project=acme --member=${RUN_SA} --role=roles/secretmanager.secretVersionAdder --quiet --format=none`,
+        `secrets add-iam-policy-binding caelo-production-operator-oauth-client --project=acme --member=${RUN_SA} --role=roles/secretmanager.secretVersionAdder --quiet --format=none`,
       ]);
       for (const secret of ["internal-secret", "tool-approval-secret", "secret-kek"]) {
         expect(calls).toContain(

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { INTERACTIONS } from "./interactions.js";
 import {
   ComposeError,
   composePagePreview,
@@ -528,9 +529,94 @@ describe("composePageWithLayout", () => {
     expect(out.html).toContain('data-nav-open="false"');
     // Functional assets exactly once, even with two nav placements.
     expect(out.html.split("caelo-nav-toggle{display:none").length - 1).toBe(1);
-    expect(out.html.split("data-nav-open','false'").length - 1).toBe(1);
+    expect(out.html.split(INTERACTIONS["mobile-nav"].js).length - 1).toBe(1);
+    expect(out.html).toContain('data-caelo-ui="mobile-nav"');
     // Zero aesthetics in the functional css: no colors beyond currentColor.
     expect(out.html).not.toMatch(/caelo-nav-toggle\{[^}]*#[0-9a-f]{3}/i);
+  });
+
+  it("ships each vetted interaction once per page, whoever asks for it (issue #160)", () => {
+    const tabsModule = {
+      ...blankModule,
+      moduleId: "33333333-3333-4333-8333-333333333304",
+      slug: "pricing-tabs",
+      html: '<div class="pricing" data-caelo-ui="tabs"><div role="tablist"></div></div>',
+      css: ".pricing{display:grid}",
+    };
+    const faqModule = {
+      ...blankModule,
+      moduleId: "33333333-3333-4333-8333-333333333305",
+      slug: "faq",
+      html: '<div class="faq" data-caelo-ui="accordion"><details><summary>Q</summary>A</details></div>',
+    };
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [{ blockName: "content", modules: [tabsModule, faqModule, tabsModule] }],
+      // The layout's own chrome may ask too.
+      layoutHtml: layoutHtml.replace("<body>", "<body><div data-caelo-ui='tabs'></div>"),
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+    });
+    expect(out.html.split(INTERACTIONS.tabs.js).length - 1).toBe(1);
+    expect(out.html.split(INTERACTIONS.tabs.css).length - 1).toBe(1);
+    expect(out.html.split(INTERACTIONS.accordion.js).length - 1).toBe(1);
+    // Registry order, independent of which module asked first.
+    expect(out.html.indexOf(INTERACTIONS.accordion.js)).toBeLessThan(
+      out.html.indexOf(INTERACTIONS.tabs.js),
+    );
+    // Unused ones stay out.
+    expect(out.html).not.toContain(INTERACTIONS.carousel.js);
+    expect(out.html).not.toContain(INTERACTIONS["mobile-nav"].js);
+    // Functional rules follow module CSS so a module display rule cannot unhide a panel.
+    expect(out.html.indexOf(".pricing{display:grid}")).toBeLessThan(
+      out.html.indexOf(INTERACTIONS.tabs.css),
+    );
+  });
+
+  it("ships the interaction a withheld module needs (issue #160)", () => {
+    const gated = {
+      ...blankModule,
+      moduleId: "33333333-3333-4333-8333-333333333306",
+      slug: "gallery",
+      html: '<section class="gallery" data-caelo-ui="carousel"></section>',
+    };
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [{ blockName: "content", modules: [gated] }],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+      deferredModules: {
+        [gated.moduleId]: {
+          pluginSlug: "consent-manager",
+          reason: "marketing",
+          placeholderModuleSlug: "consent-placeholder",
+          placeholderHtml: "<p>consent</p>",
+          placeholderCss: "",
+        },
+      },
+    });
+    // The snippet binds by delegation, so it works once the plugin clones
+    // the module out of its <template> after consent.
+    expect(out.html).toContain(INTERACTIONS.carousel.js);
+  });
+
+  it("does not ship anything for a data-caelo-ui value outside the kit (issue #160)", () => {
+    const out = composePagePreview({
+      templateHtml: `<!doctype html><html><head></head><body><caelo-slot name="content"></caelo-slot></body></html>`,
+      templateCss: "",
+      blocks: [
+        {
+          blockName: "content",
+          modules: [{ ...blankModule, html: '<div data-caelo-ui="lightbox"></div>' }],
+        },
+      ],
+    });
+    expect(out.html).not.toContain('data-source="modules"');
   });
 
   it("injects the invisible technical baseline between theme and modules (issue #151)", () => {

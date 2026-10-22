@@ -14,7 +14,10 @@
  *     preview;
  *   - a change merged after the Stage blocks Publish live and names the
  *     file;
- *   - the access settings ops and their §11.A proposals.
+ *   - the access settings ops and their §11.A proposals;
+ *   - #969: the served preview is kept alive by TTL refreshes (Stage,
+ *     Publish live, deploy.refresh_staging_preview) — the fake refuses the
+ *     expireTime clear exactly like the live API.
  */
 
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
@@ -27,9 +30,11 @@ import { CAELO_VERSION, deriveStagingCredential, type ExecutionContext } from "@
 import { SQL } from "bun";
 import * as realGoogleAuth from "google-auth-library";
 import { STAGING_PUBLICATION_LOCK_KEY } from "../deploy/staging-publication-lock.js";
+import { SERVED_PREVIEW_CHANNEL_TTL } from "../deploy/static-publisher-firebase.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { configureMcpBridge } from "../ops/security/mcp_tokens.js";
 import { registerAdminOps } from "../register.js";
+import { FakeChannelLifetimes } from "./fixtures/firebase-channel-lifetime.js";
 import { ensureRoleUser } from "./fixtures/role-user.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
@@ -53,6 +58,7 @@ const GATE_SECRET = "integration-gate-secret";
 const SITE = "test-site";
 const API = "https://firebasehosting.googleapis.com/v1beta1/";
 const UPLOAD = "https://upload.test/";
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const SYSTEM: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -73,6 +79,8 @@ const EDITOR_ID = "00000000-0000-0000-0000-0000000678a2";
 class FakeFirebase {
   versions = new Map<string, { config: unknown; files: Record<string, string> }>();
   channels = new Map<string, string>(); // channelId → url
+  /** When each channel expires, as the live API keeps it (#969). */
+  lifetimes = new FakeChannelLifetimes();
   live: string[] = [];
   blobs = new Map<string, Buffer>();
   private seq = 0;
@@ -117,19 +125,34 @@ class FakeFirebase {
       const id = params.get("channelId") ?? "";
       const channelUrl = `https://${SITE}--${id}-x1y2.web.app`;
       this.channels.set(id, channelUrl);
+      this.lifetimes.create(id, parsed.ttl);
       return json({ name: `sites/${SITE}/channels/${id}`, url: channelUrl });
     }
     if (method === "GET" && route === `sites/${SITE}/channels`) {
       return json({
         channels: [...this.channels.keys(), "live"].map((id) => ({
           name: `sites/${SITE}/channels/${id}`,
+          expireTime: this.lifetimes.expireTime(id),
         })),
       });
     }
     const channel = route.match(/^sites\/[^/]+\/channels\/([^/]+)$/);
     if (method === "DELETE" && channel) {
       this.channels.delete(channel[1] ?? "");
+      this.lifetimes.forget(channel[1] ?? "");
       return new Response("", { status: 200 });
+    }
+    if (method === "GET" && channel) {
+      if (!this.channels.has(channel[1] ?? "")) return new Response("{}", { status: 404 });
+      return json({
+        name: `sites/${SITE}/channels/${channel[1]}`,
+        expireTime: this.lifetimes.expireTime(channel[1] ?? ""),
+      });
+    }
+    if (method === "PATCH" && channel) {
+      // The live API would implicitly create a missing channel; Caelo must not.
+      if (!this.channels.has(channel[1] ?? "")) throw new Error("patch on unknown channel");
+      return this.lifetimes.patch(SITE, channel[1] ?? "", params.get("updateMask"), parsed);
     }
     if (method === "POST" && /channels\/[^/]+\/releases$/.test(route)) return json({});
     if (method === "POST" && route === `sites/${SITE}/releases`) {
@@ -312,12 +335,15 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     const [row] = await stagingRow();
     expect(row?.origin_url).toBe(run!.publish_summary.previewUrl);
     expect(row?.origin_run_id).toBe(second.runId);
-    // Only the current Stage's channel is left.
+    // Only the current Stage's channel is left, refreshed to the 30-day
+    // maximum: staging must not turn into a 404 after an idle week (#969 —
+    // with the live API's refusal of the expireTime clear in the fake).
     expect([...fake.channels.keys()]).toEqual([`runid-${second.runId}`]);
+    expect(fake.lifetimes.remainingMs(`runid-${second.runId}`)).toBeGreaterThan(29 * DAY_MS);
     expect(first.runId).not.toBe(second.runId);
   });
 
-  it("Publish live rebuilds with the live host, passes the parity guard and retires the preview", async () => {
+  it("Publish live rebuilds with the live host, passes the parity guard and keeps staging on the published build", async () => {
     const staged = await ok<{ runId: string }>("deploy.trigger", {
       targetName: "staging",
       repoRoot: testRoot,
@@ -341,9 +367,124 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
                  FROM deploy_runs WHERE id = ${promoted.toRunId}::uuid`,
     )) as { status: string; site_url: string; location: string }[];
     expect(run).toEqual({ status: "succeeded", site_url: LIVE, location: liveVersion });
-    // Nothing is staged any more; no public preview is left.
-    expect(await stagingRow()).toEqual([{ origin_url: null, origin_run_id: null }]);
-    expect(fake.channels.size).toBe(0);
+    // Staging keeps serving the build that just went live instead of
+    // answering every page with "nothing staged"; only its channel is left.
+    const [stagedRun] = (await withSql(
+      (tx) => tx`SELECT publish_summary->>'previewUrl' AS preview_url
+                 FROM deploy_runs WHERE id = ${staged.runId}::uuid`,
+    )) as { preview_url: string }[];
+    expect(await stagingRow()).toEqual([
+      { origin_url: stagedRun!.preview_url, origin_run_id: staged.runId },
+    ]);
+    expect([...fake.channels.keys()]).toEqual([`runid-${staged.runId}`]);
+  });
+
+  it("#908 / #969 Publish live refreshes the served preview's TTL (one staged by an earlier version too)", async () => {
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    // What the previous version left behind: served, but on its 7-day TTL
+    // with a day left.
+    fake.lifetimes.seed(`runid-${staged.runId}`, Date.now() + DAY_MS);
+    await markAudited(staged.runId);
+    await ok("deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    expect((await stagingRow())[0]?.origin_run_id).toBe(staged.runId);
+    expect(fake.lifetimes.remainingMs(`runid-${staged.runId}`)).toBeGreaterThan(29 * DAY_MS);
+  });
+
+  it("#969 deploy.refresh_staging_preview extends the served preview after idle days and fails loudly once it is gone", async () => {
+    const staged = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    const channelId = `runid-${staged.runId}`;
+    // Ten idle days later the orchestrator's keep-alive ticks.
+    const start = Date.now();
+    fake.lifetimes.now = () => start + 10 * DAY_MS;
+    try {
+      expect(fake.lifetimes.remainingMs(channelId)).toBeLessThan(21 * DAY_MS);
+      const r = await ok<{ servedRunId: string; expiresAt: string }>(
+        "deploy.refresh_staging_preview",
+        {},
+      );
+      expect(r).toEqual({
+        servedRunId: staged.runId,
+        expiresAt: fake.lifetimes.expireTime(channelId)!,
+      });
+      expect(fake.lifetimes.remainingMs(channelId)).toBeGreaterThan(29 * DAY_MS);
+      expect(fake.lifetimes.ttlPatches.at(-1)).toEqual({
+        channelId,
+        ttl: SERVED_PREVIEW_CHANNEL_TTL,
+      });
+
+      // The AI never runs the keep-alive (no tool, op not AI-scoped).
+      const ai = await execute(
+        registry,
+        adapter,
+        { ...SYSTEM, actorKind: "ai" },
+        "deploy.refresh_staging_preview",
+        {},
+      );
+      expect(ai.ok).toBe(false);
+
+      // Expired anyway (e.g. the admin was not running for a month): loud, never recreated.
+      const url = fake.channels.get(channelId)!;
+      fake.channels.delete(channelId);
+      fake.lifetimes.forget(channelId);
+      const gone = await execute(registry, adapter, SYSTEM, "deploy.refresh_staging_preview", {});
+      expect(gone.ok).toBe(false);
+      expect(JSON.stringify(gone.ok ? null : gone.error)).toContain("Stage again");
+      expect(fake.channels.has(channelId)).toBe(false);
+      fake.channels.set(channelId, url);
+      fake.lifetimes.create(channelId, SERVED_PREVIEW_CHANNEL_TTL);
+    } finally {
+      fake.lifetimes.now = () => Date.now();
+    }
+  });
+
+  it("#908 a Stage whose preview cannot be kept alive fails, leaves that preview on its TTL and staging on the previous build", async () => {
+    const served = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    const channelsBefore = new Set(fake.channels.keys());
+    const servedExpiry = fake.lifetimes.expireTime(`runid-${served.runId}`);
+    fake.lifetimes.failTtl = SERVED_PREVIEW_CHANNEL_TTL;
+    try {
+      const r = await execute(registry, adapter, SYSTEM, "deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      expect(r.ok).toBe(false);
+      expect(JSON.stringify(r.ok ? null : r.error)).toContain("Stage again");
+    } finally {
+      fake.lifetimes.failTtl = null;
+    }
+    const failed = [...fake.channels.keys()].filter((id) => !channelsBefore.has(id));
+    expect(failed).toHaveLength(1);
+    // The failed Stage's preview expires on its own within a week; the
+    // served one is untouched.
+    expect(fake.lifetimes.remainingMs(failed[0]!)).toBeLessThanOrEqual(7 * DAY_MS);
+    expect(fake.channels.has(`runid-${served.runId}`)).toBe(true);
+    expect(fake.lifetimes.expireTime(`runid-${served.runId}`)).toBe(servedExpiry);
+    expect((await stagingRow())[0]?.origin_run_id).toBe(served.runId);
+    const [run] = (await withSql(
+      (tx) => tx`SELECT status FROM deploy_runs
+                 WHERE id = ${failed[0]!.slice("runid-".length)}::uuid`,
+    )) as { status: string }[];
+    expect(run?.status).toBe("failed");
+
+    // The next Stage retires the failed Stage's leftover preview.
+    const next = await ok<{ runId: string }>("deploy.trigger", {
+      targetName: "staging",
+      repoRoot: testRoot,
+    });
+    expect([...fake.channels.keys()]).toEqual([`runid-${next.runId}`]);
   });
 
   it("a Stage waits for an in-flight Stage / Publish live before it publishes and prunes (codex review on #652)", async () => {
@@ -405,6 +546,7 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     const newer = "00000000-0000-4000-8000-00000000a652";
     const newerUrl = `https://${SITE}--runid-${newer}-x1y2.web.app`;
     fake.channels.set(`runid-${newer}`, newerUrl);
+    fake.lifetimes.create(`runid-${newer}`, SERVED_PREVIEW_CHANNEL_TTL);
     await withSql(
       (tx) => tx`UPDATE staging_access SET origin_url = ${newerUrl}, origin_run_id = ${newer}::uuid
                  WHERE id = 1`,

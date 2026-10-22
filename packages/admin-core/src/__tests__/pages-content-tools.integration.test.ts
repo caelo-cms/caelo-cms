@@ -14,6 +14,7 @@ import { createContentInstanceTool } from "../ai/tools/create-content-instance.j
 import { deleteContentInstanceTool } from "../ai/tools/delete-content-instance.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { duplicatePageTool } from "../ai/tools/duplicate-page.js";
+import { forkPlacementContentTool } from "../ai/tools/fork-placement-content.js";
 import { getPageLogTool } from "../ai/tools/get-page-log.js";
 import { inspectBuiltPageTool } from "../ai/tools/inspect-built-page.js";
 import { setPlacementContentTool } from "../ai/tools/set-placement-content.js";
@@ -173,5 +174,33 @@ describe("content instances", () => {
       toolCtx(),
     );
     expect(r.ok).toBe(true);
+  });
+
+  // #63 — the refusal once named propose_delete_content_instance, a tool
+  // that never existed, leaving the AI at a dead end. It must point at
+  // the real detach path, and following that path must make the delete pass.
+  it("delete_content_instance on a bound instance points at a working detach path", async () => {
+    const instId = await seedInstance("Shared");
+    const bind = await setPlacementContentTool.handler(
+      SYSTEM,
+      { pageId, blockName: "content", position: 0, contentInstanceId: instId, syncMode: "synced" },
+      toolCtx(),
+    );
+    expect(bind.ok).toBe(true);
+
+    const refused = await deleteContentInstanceTool.handler(SYSTEM, { id: instId }, toolCtx());
+    expect(refused.ok).toBe(false);
+    expect(refused.content).not.toContain("propose_delete_content_instance");
+    expect(refused.content).toContain("get_content_instance");
+    expect(refused.content).toContain("fork_placement_content");
+
+    const fork = await forkPlacementContentTool.handler(
+      SYSTEM,
+      { pageId, blockName: "content", position: 0 },
+      toolCtx(),
+    );
+    expect(fork.ok).toBe(true);
+    const del = await deleteContentInstanceTool.handler(SYSTEM, { id: instId }, toolCtx());
+    expect(del.ok).toBe(true);
   });
 });

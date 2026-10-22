@@ -20,7 +20,8 @@ import {
 export const STAGING_PROVISION_SCOPE = "staging.provision";
 const ENDPOINT = "/api/internal/staging/provision";
 
-export type StagingAdminTarget = AdminInternalTarget;
+/** `staging-domain enable` is gcp-firebase only (its domain mapping is). */
+export type StagingAdminTarget = Extract<AdminInternalTarget, { provider: "gcp-firebase" }>;
 export type StagingAdminDeps = AdminInternalDeps;
 
 /** Main's draft pages, as the admin reports them. */

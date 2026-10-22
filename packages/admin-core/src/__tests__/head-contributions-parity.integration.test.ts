@@ -12,7 +12,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -24,7 +24,7 @@ import {
 import { definePlugin, type HeadEntry } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { runSeoPass } from "@caelo-cms/static-generator";
+import { buildRobotsTxtWithSitemap, runSeoPass } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
@@ -249,5 +249,42 @@ describe("#391 — generator/preview parity + sitemap contributions", () => {
       '<xhtml:link rel="alternate" hreflang="de" href="https://example.com/de/t391p-page" />',
     );
     expect(sitemap).toContain('xmlns:xhtml="http://www.w3.org/1999/xhtml"');
+  });
+
+  // #567 — the Owner's sitemap toggle was ignored: every build with a
+  // base URL wrote sitemap.xml (and with it the robots `Sitemap:` line).
+  it("seo-pass writes no sitemap when sitemapEnabled is off", async () => {
+    const offDir = mkdtempSync(join(tmpdir(), "t567-"));
+    try {
+      const page = {
+        pageId: plainPageId,
+        pageSlug: "t391p-plain",
+        html: "<html><head><title>x</title></head><body>b</body></html>",
+      };
+      const result = await adapter.withAdminTransaction(SYS_CTX, (tx) =>
+        runSeoPass({
+          tx,
+          plugins: localBuildPluginServices,
+          buildDir: offDir,
+          mediaRoot: offDir,
+          pages: [page],
+          settings: {
+            siteBaseUrl: "https://example.com",
+            sitemapEnabled: false,
+            siteLanguage: SITE_LANGUAGE,
+            organization: {},
+          },
+          pageUrlStyle: "directory",
+          notFoundPageId: null,
+        }),
+      );
+      expect(result.sitemapEmitted).toBe(false);
+      expect(existsSync(join(offDir, "sitemap.xml"))).toBe(false);
+      expect(
+        buildRobotsTxtWithSitemap("index", "https://example.com", result.sitemapEmitted),
+      ).not.toContain("Sitemap:");
+    } finally {
+      rmSync(offDir, { recursive: true, force: true });
+    }
   });
 });

@@ -19,6 +19,7 @@ import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
+import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -176,7 +177,8 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     // every page switch. The same facts live in the volatile `# Current
     // page` block, and a blockName mismatch returns a structured error
     // naming the valid set (recover-don't-punt).
-    "Each entry's `blockName` must be a block on the page's template — see `# Current page` (exhaustive list for the focused page); a mismatch error names the valid set. A block name is a template slot, NOT a module `kind`. With zero templates on the site, bootstrap first (create_layout → create_template).",
+    "Each entry's `blockName` must be a block on the page's template — see `# Current page` (exhaustive list for the focused page); a mismatch error names the valid set. A block name is a template slot, NOT a module `kind`. With zero templates on the site, bootstrap first (create_layout → create_template)." +
+    INTERNAL_LINK_CONTRACT,
   schema: buildPageInputSchema,
   inputSchema: BUILD_PAGE_INPUT_SCHEMA,
   handler: async (ctx, input, toolCtx) => {
