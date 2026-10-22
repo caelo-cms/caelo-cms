@@ -42,6 +42,7 @@
  */
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { MCP_SURFACE_COPY, MCP_SURFACE_PERMISSION } from "@caelo-cms/shared";
 import type { McpConfig, McpSurface } from "./config.js";
 import { resourceUrl } from "./context.js";
 import { GOOGLE_AUTHORIZE_URL } from "./google.js";
@@ -136,10 +137,25 @@ function surfaceOf(config: McpConfig, resource: string | null): McpSurface | nul
   return null;
 }
 
-const ACCESS_LABEL: Record<McpSurface | "both", string> = {
-  chat: "Chat with this site's AI (caelo_chat), as you",
-  admin: "The admin tools of this site (pages, modules, media, settings you may change), as you",
-  both: "This site's AI chat and admin tools, as you",
+/**
+ * What the grant opens, in the words Settings → MCP uses for the two
+ * addresses (`MCP_SURFACE_COPY`, #968), plus who may use it: the broker
+ * cannot know the user's role before Google sign-in, so the page says up
+ * front which role the address needs instead of failing silently after.
+ */
+const ACCESS: Record<McpSurface | "both", { label: string; detail: string }> = {
+  chat: {
+    label: MCP_SURFACE_COPY.chat.title,
+    detail: `${MCP_SURFACE_COPY.chat.does} Needs a role on this site that may edit content (${MCP_SURFACE_PERMISSION.chat}).`,
+  },
+  admin: {
+    label: MCP_SURFACE_COPY.admin.title,
+    detail: `${MCP_SURFACE_COPY.admin.does} Needs a role on this site that may change settings (${MCP_SURFACE_PERMISSION.admin}); with any other role, use the chat address instead.`,
+  },
+  both: {
+    label: `${MCP_SURFACE_COPY.chat.title} and ${MCP_SURFACE_COPY.admin.title.toLowerCase()}`,
+    detail: `Each works only if your role on this site allows it: chat needs ${MCP_SURFACE_PERMISSION.chat}, full admin access needs ${MCP_SURFACE_PERMISSION.admin}.`,
+  },
 };
 
 /** Everything the consent page shows and submits. */
@@ -157,7 +173,7 @@ export interface ConsentPage {
 export function consentPage(p: ConsentPage): Response {
   const site = new URL(p.config.publicUrl).host;
   const redirect = describeRedirect(p.redirectUri);
-  const access = ACCESS_LABEL[surfaceOf(p.config, p.resource) ?? "both"];
+  const access = ACCESS[surfaceOf(p.config, p.resource) ?? "both"];
   const name =
     p.clientName !== null && p.clientName.trim() !== ""
       ? `${escapeHtml(p.clientName)} <span class="warn">(name not verified)</span>`
@@ -171,7 +187,7 @@ export function consentPage(p: ConsentPage): Response {
 <dl>
 <dt>App</dt><dd>${name}</dd>
 <dt>Sends you back to</dt><dd><strong>${escapeHtml(redirect.target)}</strong>${redirect.note ? ` (${escapeHtml(redirect.note)})` : ""}<br><code>${escapeHtml(p.redirectUri)}</code></dd>
-<dt>Gets access to</dt><dd>${escapeHtml(access)}</dd>
+<dt>Gets access to</dt><dd><strong>${escapeHtml(access.label)}</strong>, as you<br>${escapeHtml(access.detail)}</dd>
 </dl>
 <p>If you approve, Google asks you to sign in next. The app can then act with your Caelo permissions until you disconnect it.</p>
 <form method="post" action="/api/mcp/oauth/authorize">
