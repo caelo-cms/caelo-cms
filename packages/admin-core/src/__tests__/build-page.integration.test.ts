@@ -576,7 +576,7 @@ describe("pages.build_page — detached entries + {$ref} nested composition (one
     expect(cta?.contentInstanceId).toBe(v.detached[0]?.contentInstanceId);
   });
 
-  it("a {$ref} pointing at a LATER (or unknown) entry fails loudly with the available handles", async () => {
+  it("a {$ref} naming no entry's ref fails loudly with the declared handles", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
       page: { slug: `i299-refbad-${TS}`, title: "Ref Bad", templateId },
       modules: [
@@ -595,7 +595,87 @@ describe("pages.build_page — detached entries + {$ref} nested composition (one
     if (r.ok) return;
     const msg = (r.error as { message?: string }).message ?? "";
     expect(msg).toContain('"$ref"');
-    expect(msg).toContain("EARLIER");
+    expect(msg).toContain("Refs declared: (none)");
+  });
+
+  // e2e-livedit detected bugs: the AI wrote the embedding entry before the
+  // module it embeds (refused as "no EARLIER entry"), and carried
+  // add_module's `position` into an entry (refused as an unknown key).
+  it("resolves a {$ref} to a LATER entry, and `position` inserts on an existing page", async () => {
+    const built = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { slug: `i299-later-${TS}`, title: "Later Ref", templateId },
+      modules: [
+        {
+          blockName: "content",
+          displayName: "I299 Later Teaser",
+          description: "Teaser written before the button it embeds.",
+          kind: "cta",
+          html: "<section><h2>{{headline}}</h2>{{>cta}}</section>",
+          fields: [
+            { name: "headline", kind: "text", label: "Headline" },
+            { name: "cta", kind: "module", label: "CTA", allowedModuleTypes: ["button"] },
+          ],
+          content: { source: "inline", values: { headline: "Ready?", cta: { $ref: "btn" } } },
+        },
+        {
+          ref: "btn",
+          displayName: "I299 Later Button",
+          description: "Nested-only button declared after its parent.",
+          kind: "cta",
+          type: "button",
+          html: "<button>{{label}}</button>",
+          fields: [{ name: "label", kind: "text", label: "Label" }],
+          content: { source: "inline", values: { label: "Go" } },
+        },
+      ],
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const v = built.value as {
+      pageId: string;
+      placements: { moduleId: string; contentInstanceId: string; position: number }[];
+      detached: { ref: string; moduleId: string }[];
+    };
+    expect(v.placements.length).toBe(1);
+    const ci = await execute(registry, adapter, systemCtx, "content_instances.get", {
+      id: v.placements[0]?.contentInstanceId as string,
+    });
+    if (!ci.ok) throw new Error("teaser ci get failed");
+    const cta = (ci.value as { instance: { values: { cta?: Record<string, unknown> } } }).instance
+      .values.cta;
+    expect(cta?.moduleId).toBe(v.detached[0]?.moduleId);
+
+    const top = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { pageId: v.pageId },
+      modules: [
+        {
+          blockName: "content",
+          position: "top",
+          displayName: "I299 Top Banner",
+          description: "Banner inserted above the teaser.",
+          kind: "content",
+          html: "<p>{{text}}</p>",
+          fields: [{ name: "text", kind: "text", label: "Text" }],
+          content: { source: "inline", values: { text: "Hello" } },
+        },
+      ],
+    });
+    expect(top.ok).toBe(true);
+    if (!top.ok) return;
+    const placed = (top.value as { placements: { moduleId: string; position: number }[] })
+      .placements[0];
+    expect(placed?.position).toBe(0);
+    const page = await execute(registry, adapter, systemCtx, "pages.get_with_modules", {
+      pageId: v.pageId,
+    });
+    if (!page.ok) throw new Error("page read failed");
+    const content = (
+      page.value as { page: { blocks: { blockName: string; modules: { moduleId: string }[] }[] } }
+    ).page.blocks.find((b) => b.blockName === "content");
+    expect(content?.modules.map((m) => m.moduleId)).toEqual([
+      placed?.moduleId as string,
+      v.placements[0]?.moduleId as string,
+    ]);
   });
 
   it('moduleId {"$ref"} re-places a module minted earlier in the SAME call (run-A regression)', async () => {

@@ -60,6 +60,31 @@ describe("buildPageInputSchema — page target modes", () => {
     expect(issue.message).toContain("title");
   });
 
+  it("create mode takes the new page's meta description (trimmed), so it is Stage-ready from this call", () => {
+    const r = buildPageInputSchema.safeParse({
+      page: { slug: "pricing", title: "Pricing", metaDescription: "  Plans and prices.  " },
+      modules: [mintModule],
+    });
+    expect(r.success).toBe(true);
+    if (!r.success) return;
+    expect(r.data.page.metaDescription).toBe("Plans and prices.");
+  });
+
+  it("rejects a blank meta description and one given with pageId (fill-once is autofill_page_seo's job there)", () => {
+    const blank = buildPageInputSchema.safeParse({
+      page: { slug: "pricing", title: "Pricing", metaDescription: "   " },
+      modules: [],
+    });
+    expect(blank.success).toBe(false);
+    const existing = buildPageInputSchema.safeParse({
+      page: { pageId: UUID, metaDescription: "Plans and prices." },
+      modules: [],
+    });
+    expect(existing.success).toBe(false);
+    if (existing.success) return;
+    expect(existing.error.issues[0]!.message).toContain("autofill_page_seo");
+  });
+
   it("rejects a page target with neither pageId nor slug+title", () => {
     const r = buildPageInputSchema.safeParse({
       page: { slug: "pricing" },
@@ -131,6 +156,36 @@ describe("buildPageInputSchema — module entry modes name the failing index", (
       modules: Array.from({ length: 41 }, () => mintModule),
     });
     expect(r.success).toBe(false);
+  });
+
+  // e2e-livedit detected bug: the AI carried add_module's `position` into
+  // build_page entries and the whole call was refused as an unknown key.
+  it("accepts add_module's `position` grammar per placed entry", () => {
+    for (const position of ["top", "bottom", 0, 3, "2"]) {
+      const r = buildPageInputSchema.safeParse({
+        page: { pageId: UUID },
+        modules: [{ ...mintModule, position }],
+      });
+      expect(r.success).toBe(true);
+      if (r.success) {
+        expect(r.data.modules[0]?.position).toEqual(position === "2" ? 2 : position);
+      }
+    }
+    const bad = buildPageInputSchema.safeParse({
+      page: { pageId: UUID },
+      modules: [{ ...mintModule, position: "middle" }],
+    });
+    expect(bad.success).toBe(false);
+  });
+
+  it("rejects `position` on a detached (unplaced) entry", () => {
+    const { blockName: _b, ...detached } = mintModule;
+    const r = buildPageInputSchema.safeParse({
+      page: { pageId: UUID },
+      modules: [{ ...detached, ref: "card", position: "top" }],
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) expect(r.error.issues[0]?.message).toContain("DETACHED");
   });
 });
 

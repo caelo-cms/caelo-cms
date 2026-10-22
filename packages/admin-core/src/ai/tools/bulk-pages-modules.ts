@@ -26,7 +26,11 @@ import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
-import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
+import {
+  MODULE_CSS_DESCRIPTION,
+  MODULE_HTML_DESCRIPTION,
+  MODULE_JS_CONTRACT,
+} from "./_module-js-contract.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 import { countMovedUrls, PAGE_MOVE_APPROVAL_THRESHOLD } from "./move-pages.js";
 
@@ -359,8 +363,8 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
             // Same shared meta + fields schemas add_module / edit_module use —
             // so the bulk tool exposes the identical authoring surface.
             ...MODULE_META_JSON_SCHEMA_PROPS,
-            html: { type: "string" },
-            css: { type: "string" },
+            html: { type: "string", description: MODULE_HTML_DESCRIPTION },
+            css: { type: "string", description: MODULE_CSS_DESCRIPTION },
             js: { type: "string", description: MODULE_JS_CONTRACT },
             fields: MODULE_FIELDS_JSON_SCHEMA,
           },

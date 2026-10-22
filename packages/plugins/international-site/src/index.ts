@@ -404,6 +404,23 @@ function provisionalSlug(slug: string, localeCode: string): string {
   return `${base}-${locale}-${nonce}`;
 }
 
+/**
+ * The page core serves at the site root — core's own verdict
+ * (`site_defaults.get` → `rootPageId`): the designated home, or, with
+ * no designation, the top-level magic-slug page (`home`). Asking the
+ * designation alone disagreed with core on every site whose home is the
+ * magic-slug page: core served it at "/", the operator and the AI
+ * called it the home, and create_variant refused the slug-less call its
+ * own tool description prescribes for the home.
+ */
+async function siteHomePageId(cms: CmsHandle): Promise<string | null> {
+  const defaults = await cms.call<{ defaults: { rootPageId: string | null } | null }>(
+    "site_defaults.get",
+    {},
+  );
+  return defaults.defaults?.rootPageId ?? null;
+}
+
 /** Shared by link_page_variants and create_variant: join `pageId` into
  *  `groupPageId`'s variant group (minting the group with the anchor as
  *  source when none exists), then refresh the composed path. */
@@ -431,11 +448,7 @@ async function linkPageIntoGroup(
   // root ("/de"). A root has no parent and no child pages: a nested page
   // would keep its parent chain, and children under a root would stop
   // extending their parent's URL. Refuse before writing anything.
-  const defaults = await cms.call<{ defaults: { homePageId: string | null } | null }>(
-    "site_defaults.get",
-    {},
-  );
-  if (defaults.defaults?.homePageId === groupPageId) {
+  if ((await siteHomePageId(cms)) === groupPageId) {
     const listed = await cms.call<{
       pages: { id: string; currentPath: string; parentPageId: string | null }[];
     }>("pages.list", {});
@@ -600,12 +613,8 @@ async function localeRootPageIds(
 ): Promise<Set<string>> {
   const out = new Set<string>();
   const cms = cmsOf(ctx);
-  const defaults = await cms.call<{ defaults: { homePageId: string | null } | null }>(
-    "site_defaults.get",
-    {},
-  );
-  const homePageId = defaults.defaults?.homePageId ?? null;
-  if (!homePageId) return out; // no designation: core's magic-slug rule stands
+  const homePageId = await siteHomePageId(cms);
+  if (!homePageId) return out; // the site has no home page at all
   const homeVariant = (
     (await q.list("page_variants", {
       page_id: homePageId,
@@ -934,6 +943,10 @@ export default definePlugin<PluginContextTier1>({
         pages: { id: string; slug: string; title: string; status: string; currentPath: string }[];
       }>("pages.list", {});
       const pageById = new Map(pagesResult.pages.map((p) => [p.id, p]));
+      // Marks the site home, so the AI knows up front that its
+      // create_variant takes no slug (every other page needs one).
+      const homePageId = await siteHomePageId(cms);
+      const homeFlag = (pageId: string) => (pageId === homePageId ? { isSiteHome: true } : {});
 
       const groups = new Map<string, Array<Record<string, unknown>>>();
       const linkedPageIds = new Set<string>();
@@ -950,6 +963,7 @@ export default definePlugin<PluginContextTier1>({
           pageStatus: page.status,
           locale: v.locale_code,
           translationStatus: v.translation_status,
+          ...homeFlag(v.page_id),
         });
         groups.set(v.group_id, list);
       }
@@ -976,7 +990,13 @@ export default definePlugin<PluginContextTier1>({
         // have NO translations yet — the AI's to-do surface.
         unassignedPages: pagesResult.pages
           .filter((p) => !linkedPageIds.has(p.id))
-          .map((p) => ({ pageId: p.id, slug: p.slug, title: p.title, path: p.currentPath })),
+          .map((p) => ({
+            pageId: p.id,
+            slug: p.slug,
+            title: p.title,
+            path: p.currentPath,
+            ...homeFlag(p.id),
+          })),
         staleCounts,
         // #592 — the shared chrome (layout header/footer/menus, content
         // synced across pages) and what each language has for it.
@@ -1036,11 +1056,12 @@ export default definePlugin<PluginContextTier1>({
       // expression of "this is the German homepage" — reusing the
       // source's own `home` — collides with the English page and leaves
       // the AI improvising renames that cannot succeed either.
-      const defaults = await cms.call<{ defaults: { homePageId: string | null } | null }>(
-        "site_defaults.get",
-        {},
-      );
-      const isLocaleRoot = defaults.defaults?.homePageId === sourcePageId;
+      //
+      // "Home" is core's verdict, not just the designation: a site whose
+      // home is the magic-slug page (`home`, no site_defaults row) serves
+      // it at "/" too, and the AI rightly omits the slug for it.
+      const homePageId = await siteHomePageId(cms);
+      const isLocaleRoot = homePageId === sourcePageId;
 
       const pages = await cms.call<{
         pages: { id: string; slug: string; currentPath: string; parentPageId: string | null }[];
@@ -1062,11 +1083,16 @@ export default definePlugin<PluginContextTier1>({
           ctx,
         );
         if (variantParentId === null) {
-          const parentPath =
-            pages.pages.find((p) => p.id === source.parentPageId)?.currentPath ??
-            source.parentPageId;
+          const parent = pages.pages.find((p) => p.id === source.parentPageId);
+          const parentPath = parent?.currentPath ?? source.parentPageId;
+          // The suggested call must itself succeed: it carries a slug
+          // unless the parent is the home (whose counterpart takes none).
+          const slugArg =
+            source.parentPageId === homePageId
+              ? ""
+              : `, slug: "<${localeCode} slug for '${parent?.slug ?? "the parent"}'>"`;
           throw new Error(
-            `create_variant: "${source.currentPath}" sits under ${parentPath}, which has no ${localeCode} counterpart yet. Create that first — create_variant({ sourcePageId: "${source.parentPageId}", localeCode: "${localeCode}" }) — then retry this page; its ${localeCode} version is placed under it.`,
+            `create_variant: "${source.currentPath}" sits under ${parentPath}, which has no ${localeCode} counterpart yet. Create that first — create_variant({ sourcePageId: "${source.parentPageId}", localeCode: "${localeCode}"${slugArg} }) — then retry this page; its ${localeCode} version is placed under it.`,
           );
         }
       }
@@ -1530,7 +1556,7 @@ export default definePlugin<PluginContextTier1>({
     {
       name: "intl_status",
       description:
-        "Fetch the FULL translation state in one call: registered locales (code, strategy, default flag), every variant group (which pages are language-counterparts of each other, with per-variant translation status and current path), pages not yet in any group (they belong to the default locale and have no translations), and per-locale stale counts. " +
+        "Fetch the FULL translation state in one call: registered locales (code, strategy, default flag), every variant group (which pages are language-counterparts of each other, with per-variant translation status and current path), pages not yet in any group (they belong to the default locale and have no translations), and per-locale stale counts. The site home carries `isSiteHome: true` (its create_variant takes no slug). " +
         "Call this FIRST for any i18n question ('is X translated?', 'what is missing in German?') — never ask the operator. " +
         "NOT for changing anything: use create_variant / link_page_variants / set_locales to act.",
       operationName: "intl_status",
@@ -1542,7 +1568,7 @@ export default definePlugin<PluginContextTier1>({
         "Create the language counterpart of a page: duplicates the source page as a DRAFT, joins it into the source's variant group, and composes its URL (e.g. /de/<slug>). " +
         "The slug is freely localizable ('preise' for 'pricing') or may equal the source's ('about' → /de/about) — URLs must differ, slugs need not; linkage is by group, never by slug. " +
         "Nested pages: the variant is placed under the SAME-LOCALE counterpart of the source's parent (/pricing/teams → /de/preise/teams). If that parent has no counterpart yet, the call fails naming it — create_variant the parent first. " +
-        "OMIT `slug` when the source is the site's HOME page — its counterpart is the root of its locale ('/de'), carries no URL segment, and gets a derived slug automatically. Passing one there is an error. " +
+        "`slug` is REQUIRED for every page except the site's HOME page (the one intl_status marks `isSiteHome: true`, served at '/'): OMIT it there — the home's counterpart is the root of its locale ('/de'), carries no URL segment, and gets a derived slug automatically. Passing one for the home, or omitting it for any other page, is an error. " +
         "Use when a page has no variant in the target locale yet (check intl_status). The draft still carries the SOURCE language — run the translation flow next, then publish. " +
         "NOT for linking two ALREADY-EXISTING pages — that is link_page_variants.",
       operationName: "create_variant",
@@ -1561,7 +1587,7 @@ export default definePlugin<PluginContextTier1>({
             minLength: 1,
             maxLength: 200,
             description:
-              "Localized URL segment under /<locale>/. Required for an ordinary page; MUST be omitted when the source is the site home.",
+              "Localized URL segment under /<locale>/ ('preise' for 'pricing'). REQUIRED for every page except the site home (intl_status `isSiteHome: true`); MUST be omitted for the home.",
           },
           title: { type: "string", minLength: 1, maxLength: 256 },
         },
@@ -1869,7 +1895,7 @@ export default definePlugin<PluginContextTier1>({
         "",
         "Flow:",
         "1. Call intl_status FIRST. It answers every 'is X translated / what is missing' question.",
-        "2. If the target-language counterpart does not exist yet: create_variant with a LOCALIZED slug ('preise' for 'pricing', not 'pricing-de'). For the site's HOME page omit the slug entirely — its counterpart is the locale root ('/de') and has no URL segment. The draft still carries the source language.",
+        "2. If the target-language counterpart does not exist yet: create_variant with a LOCALIZED slug ('preise' for 'pricing', not 'pricing-de'). For the site's HOME page (intl_status marks it `isSiteHome: true`) omit the slug entirely — its counterpart is the locale root ('/de') and has no URL segment; every other page needs a slug. The draft still carries the source language.",
         "3. Call translate_variant on the counterpart. It translates the WHOLE page in one context-aware pass — title and every content field — honouring the site glossary and style guide. Never translate field-by-field yourself, and never edit shared module HTML to translate it: module code is shared across pages, content lives in per-page values.",
         "4. The result stays a DRAFT. Summarise what was translated and let the operator review before publishing.",
         "5. When intl_status shows stale variants (source pages changed after translation), prefer ONE translate_all_stale call over repeated translate_variant calls.",

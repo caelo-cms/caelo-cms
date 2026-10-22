@@ -148,6 +148,20 @@ describe("sanitizeSvg — strips executable content", () => {
     );
     expect(out).toBe(`<svg ${NS}><rect xml:space="preserve"/></svg>`);
   });
+
+  it("strips external http/https and protocol-relative hrefs on <image>, <feImage>, and <use>", () => {
+    const out = sanitizeSvg(
+      `<svg ${NS} xmlns:xlink="http://www.w3.org/1999/xlink">` +
+        '<image href="https://evil.example/beacon.png" width="1" height="1"/>' +
+        '<feImage xlink:href="http://169.254.169.254/latest/meta-data/"/>' +
+        '<use href="//evil.example/sprite.svg#icon"/>' +
+        '<a href="//evil.example/phish">x</a>' +
+        "</svg>",
+    );
+    expect(out).toBe(
+      `<svg ${NS} xmlns:xlink="http://www.w3.org/1999/xlink"><image width="1" height="1"/><feImage/><use/><a>x</a></svg>`,
+    );
+  });
 });
 
 describe("sanitizeSvg — keeps legitimate content", () => {

@@ -11,7 +11,12 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket, resetOverlayLayoutFor, runBunInline } from "./helpers.js";
+import {
+  acceptConfirm,
+  clearLoginRateBucket,
+  resetOverlayLayoutFor,
+  runBunInline,
+} from "./helpers.js";
 
 const ts = Date.now();
 const NEW_SLUG = `e2e-campaign-${ts}`;
@@ -73,6 +78,7 @@ test("Owner creates a layout via /settings/layouts/new then deletes it", async (
   // Delete it (no templates reference it, so the button is enabled).
   const row = page.locator("li").filter({ hasText: NEW_SLUG });
   await row.getByRole("button", { name: "Delete" }).click();
+  await acceptConfirm(page);
 
   // The row should no longer be present.
   await expect(page.getByText(NEW_SLUG, { exact: false })).toHaveCount(0);

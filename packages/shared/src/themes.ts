@@ -882,19 +882,21 @@ export function removeDtcgPath(
   doc: ThemeDocument,
   path: string,
 ): { tokens: ThemeDocument; removed: boolean } {
-  const out: ThemeDocument = JSON.parse(JSON.stringify(doc));
   const parts = path.split(".");
+  if (parts.some(isUnsafeKey)) return { tokens: doc, removed: false };
+  const out: ThemeDocument = JSON.parse(JSON.stringify(doc));
   let cur: Record<string, unknown> = out;
   for (let i = 0; i < parts.length - 1; i++) {
     const k = parts[i];
     if (!k) continue;
+    if (!Object.hasOwn(cur, k)) return { tokens: doc, removed: false };
     const next = cur[k];
     if (!next || typeof next !== "object") return { tokens: doc, removed: false };
     cur = next as Record<string, unknown>;
   }
   const last = parts[parts.length - 1];
   if (!last) return { tokens: doc, removed: false };
-  if (!(last in cur)) return { tokens: doc, removed: false };
+  if (!Object.hasOwn(cur, last)) return { tokens: doc, removed: false };
   delete cur[last];
   return { tokens: out, removed: true };
 }

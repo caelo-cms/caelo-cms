@@ -165,6 +165,8 @@ export interface DispatchDeps {
   chatBranchId: string;
   options: ChatRunnerOptions;
   runChatTurn: RunChatTurnFn;
+  /** This turn's always-loaded tool names (see ToolContext.preloadedToolNames). */
+  preloadedToolNames?: ReadonlySet<string>;
 }
 
 /**
@@ -329,6 +331,7 @@ export async function dispatchToolCall(
           // issue #412 — only the SSE route sets this; screenshot_page
           // picks its backend (operator browser vs server render) from it.
           ...(options.operatorBrowserAttached ? { operatorBrowserAttached: true } : {}),
+          ...(deps.preloadedToolNames ? { preloadedToolNames: deps.preloadedToolNames } : {}),
           // issue #664 — Stop reaches the work a tool starts (subagents).
           ...(options.abortSignal ? { abortSignal: options.abortSignal } : {}),
           ...(options.agentRunId ? { agentRunId: options.agentRunId } : {}),

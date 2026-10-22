@@ -16,6 +16,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
+import { readContentRow } from "../content-edit/read-row.js";
 import { CONTENT_ENTITY_KINDS, resolveContentTarget } from "../content-edit/registry.js";
 import { applyStringEdits, contentSha, renderEditSnippet } from "../content-edit/text-ops.js";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
@@ -26,7 +27,7 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const editContentInput = z
   .object({
-    entityKind: z.enum(["module", "template"]),
+    entityKind: z.enum(CONTENT_ENTITY_KINDS),
     entityId: z.string().uuid(),
     field: z.string().min(1).max(32),
     edits: z
@@ -54,13 +55,13 @@ type EditContentInput = z.infer<typeof editContentInput>;
 export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
   name: "edit_content",
   description:
-    "Surgically edit a module's or template's body (html/css/js) by string replacement — the cheap, minimal-diff way to change existing code. " +
+    "Surgically edit a module's, template's or layout's body (html/css/js) by string replacement — the cheap, minimal-diff way to change existing code. " +
     "Pass `entityKind` + `entityId` + `field` + an `edits` array of {oldString, newString, replaceAll?}. Each `oldString` must be UNIQUE in the body (add surrounding context if not) unless `replaceAll:true`; edits apply in order, atomically (all-or-nothing). " +
     "Read the body first with read_content and copy exact text (incl. whitespace) into `oldString`; optionally pass its `sha=` as `expectedSha` to guard against a concurrent change. " +
     "On success it returns the NEW `sha=` plus a line-numbered snippet of each changed region — chain another edit_content in the same turn using that sha and the fresh line numbers, WITHOUT re-reading. " +
     "PREFER this over edit_module for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. " +
     "Use edit_module instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. " +
-    "TEMPLATES ARE GATED: an edit_content on a template is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim a template edit was applied." +
+    "TEMPLATES AND LAYOUTS ARE GATED: an edit_content on a template or layout is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim such an edit was applied." +
     INTERNAL_LINK_CONTRACT,
   schema: editContentInput,
   inputSchema: z.toJSONSchema(editContentInput) as Record<string, unknown>,
@@ -80,13 +81,9 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
     }
 
     // Read current body (branch-aware via the entity's get op).
-    const getRes = await execute(toolCtx.registry, toolCtx.adapter, ctx, target.getOp, {
-      [target.idArg]: input.entityId,
-    });
-    if (!getRes.ok) {
-      return { ok: false, content: `${target.getOp} failed: ${describeError(getRes.error)}` };
-    }
-    const body = target.readRow(getRes.value)[input.field] ?? "";
+    const row = await readContentRow(ctx, toolCtx, target, input.entityId);
+    if (!row.ok) return { ok: false, content: row.content };
+    const body = row.bodies[input.field] ?? "";
 
     // Optional freshness guard (Claude Code's read-before-edit, adapted to a
     // stateless server: uniqueness is the primary net; this catches the
@@ -125,7 +122,7 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
 
     const plural = applied.replacements === 1 ? "" : "s";
 
-    // Gated (template): the write op queued a proposal — surface the
+    // Gated (template, layout): the write op queued a proposal — surface the
     // canonical "Queued proposal <uuid>:" shape so ChatPanel's ProposeCard
     // renders the inline Approve/Reject buttons, and DO NOT claim success.
     if (target.write.gated) {

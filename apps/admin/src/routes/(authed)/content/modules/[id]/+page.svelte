@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Image as ImageIcon } from "lucide-svelte";
   import { onDestroy, onMount } from "svelte";
   import MediaPicker from "#lib/components/MediaPicker.svelte";
@@ -146,7 +147,7 @@
         <CardTitle class="text-base text-destructive">Danger zone</CardTitle>
       </CardHeader>
       <CardContent>
-        <form method="post" action="?/delete">
+        <form method="post" action="?/delete" use:confirmSubmit={{ title: `Delete module ${module.slug}?`, description: "It disappears from every page that uses it.", confirmLabel: "Delete module" }}>
           <input type="hidden" name="_csrf" value={data.csrfToken} />
           <Button type="submit" variant="destructive">Soft-delete this module</Button>
         </form>
