@@ -86,6 +86,71 @@ export async function activeAccount(
   return value.length > 0 ? value : null;
 }
 
+/**
+ * gcloud's stderr when the stored credentials can no longer mint a token:
+ * an expired or revoked refresh token, a reauth policy that wants the
+ * password again, or a reauth prompt it may not show because prompts are off
+ * ({@link gcloudEnv}). Every one is fixed by logging in again, not by
+ * retrying (#630).
+ */
+const GCLOUD_AUTH_ERROR =
+  /Reauthentication|reauth|invalid_grant|cannot prompt|refreshing your current auth tokens|do not currently have an active account/i;
+
+/** Whether a failed gcloud call failed because its credentials expired (#630). */
+export function isGcloudAuthError(stderr: string): boolean {
+  return GCLOUD_AUTH_ERROR.test(stderr);
+}
+
+/** The fix for expired credentials on the Owner's machine or in Cloud Shell. */
+export const GCLOUD_REAUTH_HINT =
+  "gcloud credentials expired. Run `gcloud auth login` (and `gcloud auth application-default login` where Pulumi runs), then run this command again.";
+
+/** The first non-empty line of gcloud's stderr, for a one-line error. */
+export function gcloudErrorLine(stderr: string): string {
+  return (
+    stderr
+      .split("\n")
+      .map((l) => l.replace(/^ERROR:\s*/, "").trim())
+      .find((l) => l.length > 0) ?? "no error output"
+  );
+}
+
+export type GcloudAuthCheck =
+  | { readonly ok: true; readonly account: string }
+  | { readonly ok: false; readonly error: string };
+
+/**
+ * Pre-flight for every lifecycle command that talks to GCP: an active
+ * account AND a token gcloud can mint now. {@link activeAccount} alone
+ * passes with expired credentials (`auth list` reads local config only), so
+ * the first real lookup failed and read as "service not found" (#630).
+ * The token itself is discarded.
+ */
+export async function checkGcloudAuth(
+  run: (args: string[]) => Promise<GcloudResult> = gcloud,
+): Promise<GcloudAuthCheck> {
+  const account = await activeAccount(run);
+  if (!account) {
+    return {
+      ok: false,
+      error:
+        "No gcloud account is logged in. Run `gcloud auth login` with the Owner's Google account, then run this command again.",
+    };
+  }
+  const token = await run(["auth", "print-access-token", "--quiet"]);
+  if (token.ok) return { ok: true, account };
+  if (isGcloudAuthError(token.stderr)) {
+    return {
+      ok: false,
+      error: `${GCLOUD_REAUTH_HINT} (${account}: ${gcloudErrorLine(token.stderr)})`,
+    };
+  }
+  return {
+    ok: false,
+    error: `gcloud could not get an access token for ${account}: ${gcloudErrorLine(token.stderr)}. Check \`gcloud auth list\` and the network, then run this command again.`,
+  };
+}
+
 export interface BillingAccount {
   id: string;
   displayName: string;
@@ -114,6 +179,23 @@ export async function listBillingAccounts(): Promise<BillingAccount[]> {
 export async function projectExists(projectId: string): Promise<boolean> {
   const r = await gcloud(["projects", "describe", projectId, "--format=value(projectId)"]);
   return r.ok && r.stdout.trim() === projectId;
+}
+
+/**
+ * Human-readable GCP project name for an install, e.g. `Caelo searchviu-com`.
+ * Carries the domain so an operator with several installs can tell them apart
+ * in the Cloud Console project picker (every install used to be "Caelo CMS").
+ * GCP display names allow only letters, digits, spaces, hyphens, quotes and
+ * `!`, at 4–30 chars — so dots become hyphens and long domains are cut.
+ */
+export function projectDisplayName(domain: string): string {
+  const prefix = "Caelo ";
+  const slug = domain
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .slice(0, 30 - prefix.length)
+    .replace(/^-+|-+$/g, "");
+  return `${prefix}${slug}`;
 }
 
 export async function createProject(projectId: string, displayName: string): Promise<GcloudResult> {

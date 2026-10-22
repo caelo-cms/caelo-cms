@@ -127,6 +127,8 @@ export default async function globalSetup(): Promise<void> {
   writeFileSync(resolve(ADMIN_LOG_DIR, "scenario-metrics.jsonl"), "");
   writeFileSync(resolve(ADMIN_LOG_DIR, "metrics-report.txt"), "");
   writeFileSync(resolve(ADMIN_LOG_DIR, "metrics.json"), "[]");
+  // issue #161 — computed-style design probes + AI-judge scores (design-probe.ts).
+  writeFileSync(resolve(ADMIN_LOG_DIR, "design-report.jsonl"), "");
   const logFd = openSync(ADMIN_LOG_PATH, "a");
 
   const adminEnv: NodeJS.ProcessEnv = {

@@ -202,6 +202,11 @@ export interface RenderedPageForGate {
   readonly pageSlug: string;
   readonly html: string;
   readonly moduleFailures: readonly ComposeModuleFailure[];
+  /**
+   * Link failure markers of the layout's own HTML (the page frame, not a
+   * module) — a reference there that could not resolve (#724).
+   */
+  readonly layoutLinkMarkers?: readonly string[];
 }
 
 /**
@@ -226,6 +231,10 @@ export function assertNoRenderFailures(pages: readonly RenderedPageForGate[]): v
         `page "${page.pageSlug}" module "${f.moduleSlug}" (block ${f.blockName})${field}: ${f.reason}`,
       );
     }
+    for (const marker of page.layoutLinkMarkers ?? []) {
+      structured += 1;
+      lines.push(`page "${page.pageSlug}" layout HTML: ${marker}`);
+    }
     // Backstop for markers that did not come through the structured
     // channel (e.g. a marker comment stored inside module HTML).
     if (structured === 0) {
@@ -245,6 +254,8 @@ export function assertNoRenderFailures(pages: readonly RenderedPageForGate[]): v
       "{ moduleId, contentInstanceId } reference or without the broken item — and Stage again. " +
       "A `link-target-missing:page/<id>` (or `media/<id>`) is a link to a page (image) that was deleted: " +
       "set the link to an existing page's path from list_pages (or an existing image from find_media) or remove it; " +
-      "a `link-ref-malformed:<text>` is a link written in a form no page or file matches — fix it the same way.",
+      "a `link-ref-malformed:<text>` is a link written in a form no page or file matches — fix it the same way. " +
+      "A `link-variant-missing:page/<id>:<variant>` is a link to a page with no version in this page's variant " +
+      "(its language): give that page a version in it, or point the link at a page that has one.",
   );
 }

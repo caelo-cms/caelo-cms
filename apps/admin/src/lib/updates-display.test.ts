@@ -62,7 +62,13 @@ describe("updatePageState (#861): one state, one primary action", () => {
     events: [],
     deadRunLogsUrl: null,
     deadRunContinuable: false,
-    scheduler: { lastRunAt: null, lastAction: null, lastVersion: null, lastWaitUntil: null },
+    scheduler: {
+      lastRunAt: null,
+      lastAction: null,
+      lastVersion: null,
+      lastWaitUntil: null,
+      skippedVersion: null,
+    },
     policy: AUTO_POLICY,
     now: NOW,
     installRoute: "in_product",
@@ -84,6 +90,7 @@ describe("updatePageState (#861): one state, one primary action", () => {
     lastAction: "wait",
     lastVersion: LATEST,
     lastWaitUntil: "2026-10-20T03:00:00.000Z",
+    skippedVersion: null,
   };
   const upToDate = {
     installedVersion: INSTALLED,
@@ -360,6 +367,38 @@ describe("updatePageState (#861): one state, one primary action", () => {
     expect(updatePageState(input({ scheduler: { ...WAITING, lastWaitUntil: null } })).kind).toBe(
       "update_available",
     );
+  });
+
+  it("#868 scheduled: offers Skip this time next to Install now, to the Owner only", () => {
+    const s = updatePageState(input({ scheduler: WAITING }));
+    expect(s.secondary).toEqual({ kind: "skip", version: LATEST });
+    // A role that may only run the upgrade command cannot change what installs unattended.
+    const viewer = updatePageState(
+      input({ scheduler: WAITING, canInstall: false, canUpgrade: true, installRoute: "terminal" }),
+    );
+    expect(viewer.kind).toBe("scheduled");
+    expect(viewer.secondary).toBeUndefined();
+    // No other state has a second action.
+    expect(updatePageState(input({})).secondary).toBeUndefined();
+  });
+
+  it("#868 skipped: no longer scheduled, still installable, and says why", () => {
+    const s = updatePageState(
+      input({
+        scheduler: { ...WAITING, skippedVersion: LATEST },
+        status: { ...input({}).status, infraChange: true },
+        convergeJob: true,
+      }),
+    );
+    expect(s.kind).toBe("update_available");
+    expect(s.action).toEqual({ kind: "install", version: LATEST, label: `Install v${LATEST}…` });
+    expect(s.detail).toBe(
+      "You skipped its automatic install: it waits for you here, and the next newer release installs automatically again. This update also changes settings in your Google Cloud project, so it takes a little longer.",
+    );
+    // A skip of an older release does not touch the newest one.
+    expect(
+      updatePageState(input({ scheduler: { ...WAITING, skippedVersion: "0.10.52" } })).kind,
+    ).toBe("scheduled");
   });
 
   it("scheduled: the current policy wins over the scheduler's last decision", () => {

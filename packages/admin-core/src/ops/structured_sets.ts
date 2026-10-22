@@ -9,17 +9,21 @@
  *
  * Why a single table: every named-list editor surface ends up
  * structurally identical (CRUD on a `(kind, slug, items)` triple). One
- * primitive avoids a sprawl of one-off tables and gives `change_page_slug`
- * a single place to walk when retargeting links across menus + footers
- * + taxonomies + future kinds.
+ * primitive avoids a sprawl of one-off tables.
+ *
+ * Internal links in set items are stored as page references (epic #724,
+ * `canonicaliseSetItems`), so a page rename or move changes no set: the
+ * reference resolves to the page's current path at render time.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok, structuredSetKind, validateStructuredSetItems } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { ZodError, z } from "zod";
 import { recordAudit } from "../audit.js";
+import { canonicaliseSetItems } from "../links/canonicalise-writes.js";
+import { withHumanisedLinks } from "../links/humanise.js";
+import { recordPendingImportLinks } from "../links/import-targets.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { emitSnapshot } from "../snapshots/index.js";
 import { jsonbParam } from "../sql-helpers.js";
@@ -270,6 +274,27 @@ export const setStructuredSetOp = defineOperation({
         : ((existingRow.items as unknown[]) ?? [])
       : [];
 
+    // Epic #724 — every item `href` (submenus included) is stored as a
+    // reference; a link to no page refuses the write. Links already in
+    // the stored items are grandfathered.
+    const linkCanon = await canonicaliseSetItems(tx, ctx, validated, prevItems);
+    if (!linkCanon.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "structured_sets.set",
+        input,
+        succeeded: false,
+        resultSummary: `link-canonicalisation: ${linkCanon.issues.length} issue(s)`,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "structured_sets.set",
+        message: linkCanon.message,
+      });
+    }
+    validated = linkCanon.value;
+
     // v0.5.3 — when ctx.chatBranchId is set, do NOT overwrite live
     // items. Two paths:
     //
@@ -394,75 +419,81 @@ export const setStructuredSetOp = defineOperation({
       }
     }
 
+    // Epic #724 — links to pages the chat's import run will still build.
+    await recordPendingImportLinks(tx, linkCanon.pending, { kind: "structured_set", id });
     return ok({ setId: id });
   },
 });
 
-export const getStructuredSetOp = defineOperation({
-  name: "structured_sets.get",
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      kind: structuredSetKind,
-      slug: z.string().min(1).max(120),
-    })
-    .strict(),
-  output: z.object({ set: setRow.nullable() }),
-  handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
+export const getStructuredSetOp = withHumanisedLinks(
+  defineOperation({
+    name: "structured_sets.get",
+    actorScope: ["human", "ai", "system"],
+    database: "cms_admin",
+    input: z
+      .object({
+        kind: structuredSetKind,
+        slug: z.string().min(1).max(120),
+      })
+      .strict(),
+    output: z.object({ set: setRow.nullable() }),
+    handler: async (_ctx, input, tx) => {
+      const rows = (await tx.execute(sql`
       SELECT id::text AS id, kind, slug, display_name, items, updated_at
       FROM structured_sets
       WHERE kind = ${input.kind} AND slug = ${input.slug}
       LIMIT 1
     `)) as unknown as {
-      id: string;
-      kind: string;
-      slug: string;
-      display_name: string;
-      items: unknown;
-      updated_at: string | Date;
-    }[];
-    const r = rows[0];
-    return ok({ set: r ? rowToOut(r) : null });
-  },
-});
+        id: string;
+        kind: string;
+        slug: string;
+        display_name: string;
+        items: unknown;
+        updated_at: string | Date;
+      }[];
+      const r = rows[0];
+      return ok({ set: r ? rowToOut(r) : null });
+    },
+  }),
+);
 
-export const listStructuredSetsOp = defineOperation({
-  name: "structured_sets.list",
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z.object({ kind: structuredSetKind.optional() }).strict(),
-  output: z.object({ sets: z.array(setRow) }),
-  handler: async (_ctx, input, tx) => {
-    const rows = input.kind
-      ? ((await tx.execute(sql`
+export const listStructuredSetsOp = withHumanisedLinks(
+  defineOperation({
+    name: "structured_sets.list",
+    actorScope: ["human", "ai", "system"],
+    database: "cms_admin",
+    input: z.object({ kind: structuredSetKind.optional() }).strict(),
+    output: z.object({ sets: z.array(setRow) }),
+    handler: async (_ctx, input, tx) => {
+      const rows = input.kind
+        ? ((await tx.execute(sql`
           SELECT id::text AS id, kind, slug, display_name, items, updated_at
           FROM structured_sets WHERE kind = ${input.kind}
           ORDER BY kind, slug
         `)) as unknown as {
-          id: string;
-          kind: string;
-          slug: string;
-          display_name: string;
-          items: unknown;
-          updated_at: string | Date;
-        }[])
-      : ((await tx.execute(sql`
+            id: string;
+            kind: string;
+            slug: string;
+            display_name: string;
+            items: unknown;
+            updated_at: string | Date;
+          }[])
+        : ((await tx.execute(sql`
           SELECT id::text AS id, kind, slug, display_name, items, updated_at
           FROM structured_sets
           ORDER BY kind, slug
         `)) as unknown as {
-          id: string;
-          kind: string;
-          slug: string;
-          display_name: string;
-          items: unknown;
-          updated_at: string | Date;
-        }[]);
-    return ok({ sets: rows.map(rowToOut) });
-  },
-});
+            id: string;
+            kind: string;
+            slug: string;
+            display_name: string;
+            items: unknown;
+            updated_at: string | Date;
+          }[]);
+      return ok({ sets: rows.map(rowToOut) });
+    },
+  }),
+);
 
 export const deleteStructuredSetOp = defineOperation({
   name: "structured_sets.delete",
@@ -486,74 +517,3 @@ export const deleteStructuredSetOp = defineOperation({
     return ok({});
   },
 });
-
-/**
- * P6.7.5 — slug-rewrite helper. Walks every nav-menu / link-list item
- * (and recursively into nav-menu children) and swaps any `href`
- * matching `oldPath` to `newPath`. Called from the page-update path
- * when the slug changes so menus stay valid in the same transaction
- * as the redirect insert.
- *
- * Path matching is exact — `oldPath = "/about-us"` doesn't touch
- * `"/about-us/team"`. That's deliberate; partial-match rewriting
- * lives in the cross-page link rewriter (P8).
- */
-export async function rewriteSlugReferences(
-  tx: TransactionRunner,
-  oldPath: string,
-  newPath: string,
-): Promise<{ rewrittenSets: number }> {
-  const sets = (await tx.execute(sql`
-    SELECT id::text AS id, kind, items::text AS items
-    FROM structured_sets
-    WHERE kind IN ('nav-menu', 'link-list')
-  `)) as unknown as { id: string; kind: string; items: string }[];
-
-  let touched = 0;
-  for (const s of sets) {
-    const items = JSON.parse(s.items) as unknown[];
-    const next = rewriteHrefsInArray(items, oldPath, newPath);
-    if (next.changed) {
-      // See note in setStructuredSetOp — cast through ::text first.
-      const nextJson = JSON.stringify(next.items);
-      await tx.execute(sql`
-        UPDATE structured_sets
-        SET items = ${nextJson}::text::jsonb, updated_at = now()
-        WHERE id = ${s.id}::uuid
-      `);
-      touched += 1;
-    }
-  }
-  return { rewrittenSets: touched };
-}
-
-interface HrefRewriteResult {
-  items: unknown[];
-  changed: boolean;
-}
-
-function rewriteHrefsInArray(
-  items: unknown[],
-  oldPath: string,
-  newPath: string,
-): HrefRewriteResult {
-  let changed = false;
-  const next = items.map((it) => {
-    if (!it || typeof it !== "object") return it;
-    const obj = it as Record<string, unknown>;
-    const out: Record<string, unknown> = { ...obj };
-    if (typeof obj.href === "string" && obj.href === oldPath) {
-      out.href = newPath;
-      changed = true;
-    }
-    if (Array.isArray(obj.children)) {
-      const child = rewriteHrefsInArray(obj.children as unknown[], oldPath, newPath);
-      if (child.changed) {
-        out.children = child.items;
-        changed = true;
-      }
-    }
-    return out;
-  });
-  return { items: next, changed };
-}

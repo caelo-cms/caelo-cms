@@ -66,6 +66,7 @@ export function buildReleaseManifest(input: {
     },
     security: input.meta.security,
     advisories: input.meta.advisories,
+    ...(input.meta.ownerAction !== null ? { ownerAction: input.meta.ownerAction } : {}),
   });
 }
 

@@ -246,9 +246,16 @@ describe("static build — internal references", () => {
     const linking = await buildPage(
       `${PFX}-mal`,
       "published",
-      `<a href="caelo:page/${target}/team">Team</a>`,
-      {},
-      [],
+      "<p>{{body_text}}</p>",
+      { body_text: "M" },
+      TEXT,
+    );
+    // Write-time canonicalisation (rollout C) refuses a malformed
+    // reference, so the broken markup is seeded underneath the ops — the
+    // shape content written before #724 (or by hand in SQL) can have.
+    await asSystem(
+      (tx) => tx`UPDATE modules SET html = ${`<a href="caelo:page/${target}/team">Team</a>`}
+                 WHERE display_name = ${`${PFX} ${PFX}-mal Body`}`,
     );
     const root = mkdtempSync(join(tmpdir(), "caelo-link-refs-build-"));
     const build = adapter.withAdminTransaction(SYSTEM, (tx) =>

@@ -62,11 +62,31 @@ describe("iapOperators", () => {
   });
 });
 
+/** The IAP policy before the MCP account existed: operators only. */
+const OPERATORS_ONLY = JSON.stringify({
+  bindings: [
+    {
+      role: "roles/iap.httpsResourceAccessor",
+      members: ["user:owner@example.com", "group:editors@example.com"],
+    },
+  ],
+});
+
+/** The MCP account's own policy once every operator may sign as it. */
+const SIGNERS = JSON.stringify({
+  bindings: [
+    {
+      role: "roles/iam.serviceAccountTokenCreator",
+      members: ["user:owner@example.com", "group:editors@example.com"],
+    },
+  ],
+});
+
 describe("ensureMcpIapAccess", () => {
   it("creates the SA, allowlists it on IAP and lets every IAP operator sign as it", async () => {
     const { run, calls } = fakeGcloud({
       "iam service-accounts describe": [fail("NOT_FOUND")],
-      "iap web get-iam-policy": [ok(POLICY)],
+      "iap web get-iam-policy": [ok(OPERATORS_ONLY)],
     });
     const r = await ensureMcpIapAccess({
       projectId: "p",
@@ -79,6 +99,11 @@ describe("ensureMcpIapAccess", () => {
       ok: true,
       serviceAccount: mcpIapServiceAccountEmail("p"),
       operators: ["user:owner@example.com", "group:editors@example.com"],
+      granted: [
+        "roles/iap.httpsResourceAccessor → serviceAccount:caelo-mcp@p.iam.gserviceaccount.com",
+        "roles/iam.serviceAccountTokenCreator → user:owner@example.com",
+        "roles/iam.serviceAccountTokenCreator → group:editors@example.com",
+      ],
     });
     const lines = calls.map((c) => c.join(" "));
     expect(lines.some((l) => l.startsWith("iam service-accounts create caelo-mcp"))).toBe(true);
@@ -92,11 +117,47 @@ describe("ensureMcpIapAccess", () => {
     }
   });
 
-  it("is a no-op re-run when the SA exists (no create)", async () => {
-    const { run, calls } = fakeGcloud({ "iap web get-iam-policy": [ok(POLICY)] });
+  it("is a no-op re-run when everything is in place: no create, no binding written, nothing granted", async () => {
+    const { run, calls } = fakeGcloud({
+      "iap web get-iam-policy": [ok(POLICY)],
+      "iam service-accounts get-iam-policy": [ok(SIGNERS)],
+    });
     const r = await ensureMcpIapAccess({ projectId: "p", resource: cloudRun, run });
-    expect(r.ok).toBe(true);
+    expect(r.ok && r.granted).toEqual([]);
     expect(calls.some((c) => c.join(" ").startsWith("iam service-accounts create"))).toBe(false);
+    expect(calls.some((c) => c.includes("add-iam-policy-binding"))).toBe(false);
+  });
+
+  it("#734 — names only the grant this run added (a new operator on the allowlist)", async () => {
+    const { run, calls } = fakeGcloud({
+      "iap web get-iam-policy": [ok(POLICY)],
+      "iam service-accounts get-iam-policy": [
+        ok(
+          JSON.stringify({
+            bindings: [
+              {
+                role: "roles/iam.serviceAccountTokenCreator",
+                members: ["user:owner@example.com"],
+              },
+            ],
+          }),
+        ),
+      ],
+    });
+    const r = await ensureMcpIapAccess({ projectId: "p", resource: cloudRun, run });
+    expect(r.ok && r.granted).toEqual([
+      "roles/iam.serviceAccountTokenCreator → group:editors@example.com",
+    ]);
+    expect(calls.filter((c) => c.includes("add-iam-policy-binding"))).toHaveLength(1);
+  });
+
+  it("writes every binding when the account's policy can't be read (and counts them as granted)", async () => {
+    const { run } = fakeGcloud({
+      "iap web get-iam-policy": [ok(POLICY)],
+      "iam service-accounts get-iam-policy": [fail("PERMISSION_DENIED")],
+    });
+    const r = await ensureMcpIapAccess({ projectId: "p", resource: cloudRun, run });
+    expect(r.ok && r.granted).toHaveLength(2);
   });
 
   it("addresses the LB backend service on the gcp provider", async () => {
@@ -117,7 +178,7 @@ describe("ensureMcpIapAccess", () => {
   it("retries bindings while a new SA propagates", async () => {
     const { run, calls } = fakeGcloud({
       "iam service-accounts describe": [fail("NOT_FOUND")],
-      "iap web get-iam-policy": [ok(POLICY)],
+      "iap web get-iam-policy": [ok(OPERATORS_ONLY)],
       "iap web add-iam-policy-binding": [fail("Service account caelo-mcp@p does not exist.")],
     });
     const slept: number[] = [];

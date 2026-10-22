@@ -5,8 +5,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+  BREAKING_SUBJECT,
+  breakingCommitsSince,
   changedPathsSince,
   checkInfraContract,
+  checkOwnerAction,
   expectedLastContractVersion,
   infraContractVersionAt,
   LAST_CONTRACT_BEFORE_MANIFESTS,
@@ -27,6 +30,7 @@ const META: ReleaseMeta = {
   acknowledgeContractMigrations: false,
   acknowledgeInfraNeutral: false,
   lastContractVersion: "0.10.42",
+  ownerAction: null,
 };
 const GHSA = "GHSA-2c2m-4x8q-wx9f";
 const d = (c: string) => `sha256:${c.repeat(64)}`;
@@ -54,6 +58,15 @@ describe("validateReleaseMetaShape", () => {
     expect(
       validateReleaseMetaShape({ ...META, security: true, advisories: ["CVE-2026-1"] }),
     ).toHaveLength(1);
+  });
+
+  it("#868: accepts one line of owner action, refuses blank, multi-line or overlong text", () => {
+    expect(
+      validateReleaseMetaShape({ ...META, ownerAction: "Re-enter the SMTP password." }),
+    ).toEqual([]);
+    for (const ownerAction of ["", " padded ", "two\nlines", "x".repeat(301)]) {
+      expect(validateReleaseMetaShape({ ...META, ownerAction })).toHaveLength(1);
+    }
   });
 
   it("parses the comma-list input", () => {
@@ -216,6 +229,48 @@ describe("infra contract against a real previous tag (git)", () => {
   });
 });
 
+describe("ownerAction rule (#868)", () => {
+  it("recognises breaking conventional-commit subjects only", () => {
+    expect(BREAKING_SUBJECT.test("feat(updates)!: drop the old step-up")).toBe(true);
+    expect(BREAKING_SUBJECT.test("fix!: x")).toBe(true);
+    expect(BREAKING_SUBJECT.test("feat(updates): add skip")).toBe(false);
+    expect(BREAKING_SUBJECT.test("chore: bump! deps")).toBe(false);
+  });
+
+  it("requires an owner action for a breaking release and refuses one without", () => {
+    const breaking = ["feat(x)!: remove y"];
+    expect(checkOwnerAction({ breakingSubjects: breaking, ownerAction: null })).toContain(
+      "feat(x)!: remove y",
+    );
+    expect(checkOwnerAction({ breakingSubjects: breaking, ownerAction: "Do z." })).toBeNull();
+    expect(checkOwnerAction({ breakingSubjects: [], ownerAction: null })).toBeNull();
+    expect(checkOwnerAction({ breakingSubjects: [], ownerAction: "Do z." })).toContain(
+      "never show it",
+    );
+  });
+
+  it("finds the breaking commits since a tag (git)", () => {
+    const repo = mkdtempSync(join(tmpdir(), "caelo-owner-action-"));
+    try {
+      const git = (...args: string[]) => {
+        const p = Bun.spawnSync(["git", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+        if (p.exitCode !== 0) throw new Error(new TextDecoder().decode(p.stderr));
+      };
+      git("init", "-q");
+      git("config", "user.email", "t@example.com");
+      git("config", "user.name", "t");
+      git("commit", "-q", "--allow-empty", "-m", "feat!: before the tag");
+      git("tag", "v0.1.0");
+      git("commit", "-q", "--allow-empty", "-m", "fix: harmless");
+      git("commit", "-q", "--allow-empty", "-m", "feat(updates)!: breaks something");
+      expect(breakingCommitsSince("v0.1.0", repo)).toEqual(["feat(updates)!: breaks something"]);
+      expect(breakingCommitsSince(null, repo)).toHaveLength(2);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("buildReleaseManifest / parseDigestFlags", () => {
   const digests = { admin: d("a"), gateway: d("b"), ops: d("c") };
 
@@ -235,6 +290,18 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
       lastContractVersion: "0.10.42",
     });
     expect(m.manifestVersion).toBe(1);
+    // No breaking change declared: no ownerAction key at all.
+    expect("ownerAction" in m).toBe(false);
+  });
+
+  it("#868: signs the owner action into the manifest when declared", () => {
+    const m = buildReleaseManifest({
+      meta: { ...META, ownerAction: "Re-enter the SMTP password in Settings → Email." },
+      digests,
+      contractMigrations: false,
+      migrationHead: "0332_x",
+    });
+    expect(m.ownerAction).toBe("Re-enter the SMTP password in Settings → Email.");
   });
 
   it("refuses a version without a known channel and a bad digest", () => {

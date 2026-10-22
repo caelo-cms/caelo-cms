@@ -11,11 +11,18 @@
  * metrics — a rising count is a regression signal even while the suite
  * stays green, because the AI is routing around defects, not failing).
  *
+ * Every row carries a `forwardingState` (#902) saying where the report
+ * went: `queued` when the Owner opted in to sending reports to the Caelo
+ * team (bug_forwarding.set), otherwise `local_only`. The tool result says
+ * which, instead of implying the Caelo team was told. The row also stores
+ * its defect fingerprint (shared/bug-intake.ts) so the intake can merge the
+ * same defect across installs.
+ *
  * Not audited: internal AI telemetry, same stance as ai_moduleize_attempts.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { ok } from "@caelo-cms/shared";
+import { computeBugFingerprint, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 
@@ -35,32 +42,43 @@ const createBugReportInput = z
   })
   .strict();
 
+/** Where a bug report went — see migration 0329 for the meaning of each state. */
+export const bugForwardingState = z.enum(["local_only", "queued", "sent", "failed"]);
+export type BugForwardingState = z.infer<typeof bugForwardingState>;
+
 export const createBugReportOp = defineOperation({
   name: "ai_bug_reports.create",
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: createBugReportInput,
-  output: z.object({ id: z.string() }),
+  output: z.object({ id: z.string(), forwardingState: bugForwardingState }),
   handler: async (ctx, input, tx) => {
     // Auto-captured reports dedupe within a session: the same tool failing with
     // the same message would otherwise file one row per retry. AI-filed reports
     // rely on the model's "report once per defect" contract instead.
     if (input.source === "auto" && input.chatSessionId) {
       const dup = (await tx.execute(sql`
-        SELECT id::text AS id FROM ai_bug_reports
+        SELECT id::text AS id, forwarding_state AS "forwardingState" FROM ai_bug_reports
         WHERE source = 'auto'
           AND chat_session_id = ${input.chatSessionId}::uuid
           AND suspected_tool IS NOT DISTINCT FROM ${input.suspectedTool ?? null}
           AND what_happened = ${input.whatHappened}
           AND status IN ('new', 'triaged')
         LIMIT 1
-      `)) as unknown as Array<{ id: string }>;
-      if (dup[0]) return ok({ id: dup[0].id });
+      `)) as unknown as Array<{ id: string; forwardingState: BugForwardingState }>;
+      if (dup[0]) return ok(dup[0]);
     }
+    const fingerprint = await computeBugFingerprint({
+      source: input.source,
+      suspectedTool: input.suspectedTool ?? null,
+      title: input.title,
+      whatHappened: input.whatHappened,
+    });
     const rows = (await tx.execute(sql`
       INSERT INTO ai_bug_reports
         (chat_session_id, actor_id, title, what_happened, expected,
-         suspected_tool, evidence, severity, blocked_task, source)
+         suspected_tool, evidence, severity, blocked_task, source,
+         fingerprint, forwarding_state, next_forward_at)
       VALUES (
         ${input.chatSessionId ?? null}::uuid,
         ${ctx.actorId}::uuid,
@@ -71,11 +89,18 @@ export const createBugReportOp = defineOperation({
         ${input.evidence ?? null},
         ${input.severity},
         ${input.blockedTask},
-        ${input.source}
+        ${input.source},
+        ${fingerprint},
+        CASE WHEN (SELECT bug_forwarding_enabled FROM telemetry_settings WHERE id = 1)
+             THEN 'queued' ELSE 'local_only' END,
+        CASE WHEN (SELECT bug_forwarding_enabled FROM telemetry_settings WHERE id = 1)
+             THEN now() END
       )
-      RETURNING id::text AS id
-    `)) as unknown as Array<{ id: string }>;
-    return ok({ id: rows[0]?.id ?? "" });
+      RETURNING id::text AS id, forwarding_state AS "forwardingState"
+    `)) as unknown as Array<{ id: string; forwardingState: BugForwardingState }>;
+    const row = rows[0];
+    if (!row) throw new Error("ai_bug_reports INSERT returned no row");
+    return ok(row);
   },
 });
 
@@ -101,6 +126,13 @@ const bugReportRow = z.object({
   status: z.string(),
   /** 'ai' (model-filed via bug_report) or 'auto' (chat-runner auto-captured). */
   source: z.string(),
+  forwardingState: bugForwardingState,
+  /** Last send failure, shown so the Owner sees why a report did not go out. */
+  forwardError: z.string().nullable(),
+  /** Upstream state once sent: open | fixed | regression | wontfix. */
+  upstreamStatus: z.string().nullable(),
+  upstreamIssueUrl: z.string().nullable(),
+  upstreamFixedIn: z.string().nullable(),
 });
 
 export const listBugReportsOp = defineOperation({
@@ -124,6 +156,11 @@ export const listBugReportsOp = defineOperation({
              blocked_task AS "blockedTask",
              status,
              source,
+             forwarding_state AS "forwardingState",
+             forward_error AS "forwardError",
+             upstream_status AS "upstreamStatus",
+             upstream_issue_url AS "upstreamIssueUrl",
+             upstream_fixed_in AS "upstreamFixedIn",
              count(*) OVER ()::int AS total
       FROM ai_bug_reports
       ${where}

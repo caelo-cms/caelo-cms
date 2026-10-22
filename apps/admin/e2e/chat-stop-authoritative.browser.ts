@@ -195,7 +195,10 @@ test("an external agent working in the chat is listed, keeps the Live Edit AI ou
     kind: "nav-menu",
     slug: s,
     displayName: "stop e2e nav",
-    items: [{ label: "Home", href: "/" }],
+    // An external URL: internal links must name an existing page
+    // (#724 write-time canonicalisation), and this spec is about Stop,
+    // not about which pages the fixture site has.
+    items: [{ label: "Home", href: "https://example.com/" }],
   });
   expect((await mcpTool(request, token, chatSessionId, "set_structured_set", nav(slug))).ok).toBe(
     true,

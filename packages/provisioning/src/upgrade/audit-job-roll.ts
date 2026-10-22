@@ -37,7 +37,9 @@ export async function describeAuditJobImage(
     "--format=value(spec.template.spec.template.spec.containers[0].image)",
   ]);
   if (!r.ok) {
-    return /NOT_FOUND|not found|could not be found/i.test(r.stderr)
+    // gcloud's own wording for a missing job is "Cannot find job [<name>]."
+    // (no NOT_FOUND code), so match that too.
+    return /NOT_FOUND|not found|could not be found|cannot find/i.test(r.stderr)
       ? { ok: true, image: null }
       : { ok: false, error: r.stderr.trim() };
   }

@@ -21,6 +21,7 @@ const base: Omit<ComposeSpec, "images"> = {
   postgresPassword: "pgpw",
   rolePasswords: { admin: "adminpw", public: "publicpw" },
   caeloSecretKek: "0".repeat(64),
+  internalSecret: "i".repeat(48),
   anthropicApiKey: "sk-ant-x",
   diskSize: "20Gi",
   ports: { http: 80, https: 443 },
@@ -33,6 +34,30 @@ function service(yaml: string, name: string): string {
   const end = yaml.indexOf("\n\n", start);
   return yaml.slice(start, end === -1 ? undefined : end);
 }
+
+describe("self-hosted Compose — internal secret (#770)", () => {
+  const yaml = generateDockerCompose({
+    ...base,
+    images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+  });
+
+  it("gives the admin CAELO_INTERNAL_SECRET and the gateway nothing of it", () => {
+    expect(service(yaml, "caelo-admin")).toContain(
+      `      CAELO_INTERNAL_SECRET: "${"i".repeat(48)}"`,
+    );
+    expect(service(yaml, "caelo-gateway")).not.toContain("CAELO_INTERNAL_SECRET");
+  });
+
+  it("refuses a secret the admin would reject", () => {
+    expect(() =>
+      generateDockerCompose({
+        ...base,
+        internalSecret: "short",
+        images: { mode: "release", admin: ADMIN, gateway: GATEWAY },
+      }),
+    ).toThrow("internalSecret");
+  });
+});
 
 describe("self-hosted Compose — release images (#696)", () => {
   const yaml = generateDockerCompose({

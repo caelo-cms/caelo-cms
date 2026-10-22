@@ -226,7 +226,7 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
     "`name` = the internal editor label (page picker / breadcrumbs; not public), " +
     "`title` = the HTML <title> tag (browser tab + search results), " +
     "`slug` = the URL path. If the operator just says 'rename' without saying which, ASK before guessing — 'rename' usually means `name`. " +
-    "**Changing `slug` moves the page's public URL — and the URL of every page nested below it**: a 301 from each old URL is created automatically and every nav-menu / link-list / module / content link pointing at them is rewritten, in one transaction. " +
+    "**Changing `slug` moves the page's public URL — and the URL of every page nested below it**: a 301 from each old URL is created automatically in the same transaction, for links from outside the site. Links on this site (nav menus, link lists, modules, content) follow the page on their own — do not update them after a rename. " +
     `A rename that moves ${PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs (the page plus its subtree) needs one Owner click in chat before it runs. ` +
     "To put a page under another page (or back at the top level) use move_pages, not this tool. " +
     "Pass `redirectFromOld: 'skip'` ONLY when the operator explicitly says the old URL should 404 — the default keeps inbound links alive. " +
@@ -277,7 +277,7 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
               minLength: 1,
               maxLength: 120,
               description:
-                "URL path. Changing it auto-creates a 301 from the old URL and rewrites links pointing at it.",
+                "URL path. Changing it auto-creates a 301 from the old URL; links on the site follow the page automatically.",
             },
             templateId: { type: "string", format: "uuid" },
             status: { type: "string", enum: ["draft", "published", "archived"] },

@@ -81,7 +81,9 @@ describe("structured_sets branched writes (v0.5.3)", () => {
       kind: "nav-menu",
       slug: SET_SLUG,
       displayName: "Test Menu",
-      items: [{ label: "Home", href: "/" }],
+      // External: an internal link must name an existing page (#724),
+      // and this file seeds no homepage.
+      items: [{ label: "Home", href: "https://example.com/" }],
     });
     if (!seed.ok) throw new Error("seed");
     const setId = (seed.value as { setId: string }).setId;
@@ -108,7 +110,7 @@ describe("structured_sets branched writes (v0.5.3)", () => {
       kind: "nav-menu",
       slug: SET_SLUG,
       displayName: "Test Menu",
-      items: [{ label: "Branched Home", href: "/" }],
+      items: [{ label: "Branched Home", href: "https://example.com/" }],
     });
     expect(branchedWrite.ok).toBe(true);
 

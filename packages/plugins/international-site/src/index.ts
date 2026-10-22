@@ -59,6 +59,7 @@ import {
   type ChromeDeps,
   chromeStatus,
   chromeTranslationBasis,
+  listAll,
   prepareChromeTranslation,
   reattachChromeVariant,
   reattachChromeVariantDelegated,
@@ -67,6 +68,7 @@ import {
   setChromeVariants,
   translateChrome,
 } from "./chrome-ops.js";
+import { chromeLinkLocations } from "./link-locations.js";
 import {
   type GlossaryRow,
   pageTranslationBasis,
@@ -280,6 +282,50 @@ async function localesByPage(
   }
   return out;
 }
+
+/**
+ * Epic #724 (rollout D) — this plugin's answer at core's link-resolve
+ * composition point: every page's language (its variant row's locale, or
+ * the default locale for pages outside any group — the zero-diff
+ * retrofit invariant) and its variant group. Core then sends every
+ * internal link on a page to the linked page's version in that page's
+ * language, in module HTML, rich text, link fields, menus and chrome
+ * alike. Empty when no locales are registered: one language, nothing
+ * to map. One read of the variant table, not one per page — a build asks
+ * for the whole site.
+ */
+async function pageVariantPartition(
+  q: PluginAdminQuery,
+  pageIds: readonly string[],
+  locales: ReadonlyMap<string, LocaleRow>,
+): Promise<Record<string, { variant: string; group: string | null }>> {
+  const out: Record<string, { variant: string; group: string | null }> = {};
+  if (locales.size === 0) return out;
+  const def = defaultLocale(locales);
+  if (!def) {
+    throw new Error(
+      "international-site: locales are registered but none is the default — set_locales with exactly one isDefault",
+    );
+  }
+  const rows = (await listAll(q, "page_variants")) as unknown as PageVariantRow[];
+  const rowByPage = new Map(rows.map((r) => [r.page_id, r]));
+  for (const id of pageIds) {
+    const row = rowByPage.get(id);
+    if (!row) {
+      out[id] = { variant: def.code, group: null };
+      continue;
+    }
+    if (!locales.has(row.locale_code)) {
+      throw new Error(
+        `international-site: page ${id} references locale "${row.locale_code}" which is not registered`,
+      );
+    }
+    out[id] = { variant: row.locale_code, group: row.group_id };
+  }
+  return out;
+}
+
+const linkResolveArgs = z.object({ pageIds: z.array(z.string().uuid()) }).strict();
 
 /** What the chrome and page translation operations need, with a fresh
  *  locale registry (#592, #741). */
@@ -682,6 +728,7 @@ export default definePlugin<PluginContextTier1>({
     "domain_events",
     "head_contributions",
     "content_variants",
+    "link_resolve",
   ],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
@@ -769,6 +816,24 @@ export default definePlugin<PluginContextTier1>({
         localesByPage(deps.q, pageIds, deps.locales),
       );
     },
+
+    /**
+     * #724 rollout D — the link-resolve composition point: every page's
+     * language and variant group, so core resolves internal links to the
+     * same-language version of their target. Read-only.
+     */
+    link_resolve: async (ctx, args) => {
+      const { pageIds } = linkResolveArgs.parse(args);
+      const q = adminQueryOf(ctx);
+      const reg = await refreshLocaleCache(q, ctx);
+      return { pages: await pageVariantPartition(q, pageIds, reg.byCode) };
+    },
+
+    /**
+     * #724 rollout E — where this plugin stores internal links (the
+     * chrome variants' own values), for core's link migration. Read-only.
+     */
+    link_locations: async (ctx) => chromeLinkLocations(adminQueryOf(ctx), cmsOf(ctx)),
 
     /**
      * #592 — translate a language's shared chrome in one AI call. #741 —
@@ -1750,6 +1815,8 @@ export default definePlugin<PluginContextTier1>({
   dataListsOperation: "language_links",
   contributionsOperation: "head_contributions",
   contentVariantsOperation: "content_variants",
+  linkResolveOperation: "link_resolve",
+  linkLocationsOperation: "link_locations",
   /**
    * #399 — companion skills (CLAUDE.md §2: skills are the official way
    * to teach AI behaviour; no prompt scaffolding in tool handlers).

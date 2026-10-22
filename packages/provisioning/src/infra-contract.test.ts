@@ -20,8 +20,8 @@ describe("infrastructure contract steps", () => {
     );
   });
 
-  it("is at 10: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5), ops-bucket list (6), gateway proxy hops (7), quality-audit job (8), converge job (9), remote MCP (10)", () => {
-    expect(INFRA_CONTRACT_VERSION).toBe(10);
+  it("is at 13: public_role revoke (3), URL-map redirects role (4), no gateway cms_admin login (5), ops-bucket list (6), gateway proxy hops (7), quality-audit job (8), converge job (9), remote MCP (10), Google sign-in (11), project-level sign-in client (12), edge security headers (13)", () => {
+    expect(INFRA_CONTRACT_VERSION).toBe(13);
     expect(INFRA_CONTRACT_STEPS[3]).toContain("#633");
     expect(INFRA_CONTRACT_STEPS[4]).toContain("#587");
     expect(INFRA_CONTRACT_STEPS[5]).toContain("#635");
@@ -30,6 +30,9 @@ describe("infrastructure contract steps", () => {
     expect(INFRA_CONTRACT_STEPS[8]).toContain("#875");
     expect(INFRA_CONTRACT_STEPS[9]).toContain("#819");
     expect(INFRA_CONTRACT_STEPS[10]).toContain("#806");
+    expect(INFRA_CONTRACT_STEPS[11]).toContain("#914");
+    expect(INFRA_CONTRACT_STEPS[12]).toContain("project's IAP settings");
+    expect(INFRA_CONTRACT_STEPS[13]).toContain("#891");
   });
 
   it("lists the pending steps oldest first", () => {
@@ -40,6 +43,6 @@ describe("infrastructure contract steps", () => {
   });
 
   it("names a version a newer release added by number", () => {
-    expect(infraStepsText(10, 11)).toBe("infrastructure step 11 (see that release's notes)");
+    expect(infraStepsText(13, 14)).toBe("infrastructure step 14 (see that release's notes)");
   });
 });

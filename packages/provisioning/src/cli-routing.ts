@@ -93,7 +93,7 @@ export const CLI_COMMANDS: readonly CliCommandDoc[] = [
   },
   {
     name: "upgrade",
-    args: "[--version x.y.z] [--channel stable|rc|beta] [--region <r>] [--skip-verify] [--skip-health-check] [--install <id|domain|all>]",
+    args: "[--version x.y.z] [--channel stable|rc|beta] [--region <r>] [--skip-verify] [--skip-health-check] [--install <id|domain|all>] [--project <gcp-project-id>]",
     summary:
       "Roll the install to a newer release (latest stable by default) after verifying the image signatures.",
   },

@@ -7,6 +7,7 @@ import {
   alignedStackSettings,
   assertStackRegion,
   deployedStackRegion,
+  presentImageOverrides,
   pulumiGcpEnv,
   resolveSecretReplication,
   stateOnlyEnv,
@@ -192,7 +193,7 @@ describe("pulumiGcpEnv with the install's ops bucket (#696)", () => {
   });
 });
 
-describe("alignedStackSettings (#696 — the package's stale Pulumi.production.yaml)", () => {
+describe("alignedStackSettings (#696 — a settings file the state moved away from)", () => {
   const KMS =
     "gcpkms://projects/acme/locations/europe-west1/keyRings/caelo/cryptoKeys/pulumi-state";
   const gcs = { kind: "gcs" as const, secretsProvider: KMS };
@@ -242,5 +243,19 @@ describe("stateOnlyEnv (#696)", () => {
     expect(env.GOOGLE_OAUTH_ACCESS_TOKEN).toBe("");
     expect(env.GOOGLE_IMPERSONATE_SERVICE_ACCOUNT).toBe("");
     expect(env.PULUMI_BACKEND_URL).toBe("gs://acme-caelo-ops/pulumi");
+  });
+});
+
+describe("presentImageOverrides", () => {
+  it("reads the settings file as-is, so a stack missing its required keys still pins (regression: `pulumi config` refused to list it and every upgrade from a new CLI version failed)", () => {
+    const freshBunxSettings = { "caelo-gcp-firebase:image-digest-admin": "sha256:a" };
+    expect(presentImageOverrides("gcp-firebase", freshBunxSettings)).toEqual([]);
+    expect(presentImageOverrides("gcp", { "caelo-gcp:image-admin": "x:1" })).toEqual([
+      "caelo-gcp:image-admin",
+    ]);
+  });
+
+  it("finds nothing in a settings file without config", () => {
+    expect(presentImageOverrides("gcp", undefined)).toEqual([]);
   });
 });

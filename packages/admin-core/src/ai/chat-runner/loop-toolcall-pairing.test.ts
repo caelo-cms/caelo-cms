@@ -27,7 +27,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { z } from "zod";
 
-import type { AIProvider } from "../provider.js";
+import type { AIProvider, ProviderEvent } from "../provider.js";
 import { FixtureProvider } from "../providers/anthropic.js";
 import type { ToolRegistry } from "../tools/index.js";
 import { runToolLoop, type ToolLoopResult } from "./loop.js";
@@ -71,8 +71,11 @@ function buildFixtureQueryApi(): {
   registry: OperationRegistry;
   adapter: DatabaseAdapter;
   appended: AppendedMessage[];
+  /** Every SDK assembly persisted (inline on append, or stamped per step). */
+  assemblies: unknown[];
 } {
   const appended: AppendedMessage[] = [];
+  const assemblies: unknown[] = [];
   const registry = new OperationRegistry();
   registry.register(
     defineOperation({
@@ -82,6 +85,7 @@ function buildFixtureQueryApi(): {
       input: z.looseObject({ role: z.string(), content: z.string() }),
       output: z.looseObject({}),
       handler: async (_ctx, input) => {
+        assemblies.push(...((input.responseMessages as unknown[] | null | undefined) ?? []));
         appended.push({
           role: input.role,
           content: input.content,
@@ -110,7 +114,10 @@ function buildFixtureQueryApi(): {
       database: "cms_admin",
       input: z.looseObject({}),
       output: z.looseObject({}),
-      handler: async () => ok({ updated: true }),
+      handler: async (_ctx, input) => {
+        assemblies.push(...((input.responseMessages as unknown[] | undefined) ?? []));
+        return ok({ updated: true });
+      },
     }),
   );
   registry.register(
@@ -130,7 +137,7 @@ function buildFixtureQueryApi(): {
       input: unknown,
     ) => op.handler(ctx, input, {} as TransactionRunner),
   } as unknown as DatabaseAdapter;
-  return { registry, adapter, appended };
+  return { registry, adapter, appended, assemblies };
 }
 
 async function runLoop(
@@ -223,5 +230,59 @@ describe("runToolLoop — tool_use/tool_result pairing at a non-tool_use stop", 
     expect(result.stopReason).toBe("max_tokens");
     const toolResultEvents = events.filter((e) => e.kind === "tool-result");
     expect(toolResultEvents).toHaveLength(2);
+  });
+});
+
+/** Step 0 replays `first`; every later step just ends the turn. */
+class FirstStepProvider extends FixtureProvider {
+  #calls = 0;
+  constructor(private readonly first: ProviderEvent[]) {
+    super([]);
+  }
+  protected override nextStepEvents(): readonly ProviderEvent[] {
+    this.#calls++;
+    if (this.#calls === 1) return this.first;
+    return [
+      { kind: "text-delta", text: "Done." },
+      { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
+      { kind: "done", stopReason: "end_turn" },
+    ];
+  }
+}
+
+describe("runToolLoop — a step mixing a valid call with one the SDK rejects", () => {
+  // The live wedge ("each tool_use must have a single result. Found multiple
+  // `tool_result` blocks"): the SDK answers a call it rejects at parse time
+  // (unknown tool) with its own error result, in the SAME tool message as the
+  // valid call's result. The whole message was kept in the stored assembly
+  // while the valid result was also persisted as its tool row — every later
+  // turn replayed it twice.
+  it("stores every result exactly once across tool rows and the assembly", async () => {
+    const fixture = buildFixtureQueryApi();
+    const provider = new FirstStepProvider([
+      {
+        kind: "tool-call",
+        id: "toolu_valid",
+        name: "offer_choices",
+        arguments: { question: "Lighter headings?", options: [] },
+      },
+      { kind: "tool-call", id: "toolu_unknown", name: "no_such_tool", arguments: {} },
+      { kind: "usage", inputTokens: 100, outputTokens: 20, cachedTokens: 0 },
+      { kind: "done", stopReason: "tool_use" },
+    ]);
+    await runLoop(provider, fixture);
+
+    const rowIds = fixture.appended.filter((m) => m.role === "tool").map((m) => m.toolCallId);
+    const assemblyIds: string[] = [];
+    for (const m of fixture.assemblies as { role: string; content: unknown }[]) {
+      if (m.role !== "tool" || !Array.isArray(m.content)) continue;
+      for (const part of m.content as { type: string; toolCallId: string }[]) {
+        if (part.type === "tool-result") assemblyIds.push(part.toolCallId);
+      }
+    }
+    // Our dispatched result lives in its tool row only; the SDK's own error
+    // result for the rejected call lives in the assembly only.
+    expect(rowIds).toEqual(["toolu_valid"]);
+    expect(assemblyIds).toEqual(["toolu_unknown"]);
   });
 });

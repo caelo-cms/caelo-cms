@@ -70,6 +70,7 @@ import {
 import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
 import {
   findServingImage,
+  lookupFailure,
   resolveGcpResourceName,
   servingImageDigests,
 } from "./upgrade/gcp-lookup.js";
@@ -81,6 +82,7 @@ import {
   preflightErrorReason,
   preflightMissingReason,
   runIamPreflight,
+  UPGRADER_PREFLIGHT_VOICE,
   upgraderAccessChecks,
 } from "./upgrader-iam-preflight.js";
 import {
@@ -467,11 +469,15 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       return stopWith(
         "needs_cloud_shell",
         ["iam-preflight"],
-        preflightMissingReason(access.missing),
+        preflightMissingReason(access.missing, UPGRADER_PREFLIGHT_VOICE),
       );
     }
     if (access.kind === "error") {
-      return stopWith("failed", ["iam-preflight"], preflightErrorReason(access.errors));
+      return stopWith(
+        "failed",
+        ["iam-preflight"],
+        preflightErrorReason(access.errors, UPGRADER_PREFLIGHT_VOICE),
+      );
     }
     r.info("The upgrader has every permission this update needs.");
 
@@ -491,6 +497,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
         env: deps.env,
         domain: meta.domain,
         stagingHost: meta.stagingDomain ?? `staging.${meta.domain}`,
+        credentials: "job",
       },
       images,
       deps.run,
@@ -510,7 +517,7 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     const sBak = r.step("Backing up the database before anything changes...");
     const backup = await takeSqlBackup(
       deps.run,
-      { projectId: deps.projectId, env: deps.env },
+      { projectId: deps.projectId, env: deps.env, credentials: "job" },
       `pre-upgrade to ${m.version}`,
       deps.now,
     );
@@ -665,9 +672,10 @@ async function servingDigests(
       deps.projectId,
       deps.region,
     );
-    const image = service
-      ? await findServingImage(deps.run, deps.projectId, deps.region, service)
-      : null;
+    if (service.status !== "found") {
+      return { ok: false, error: lookupFailure(service, `${prefix}* Cloud Run service`, "job") };
+    }
+    const image = await findServingImage(deps.run, deps.projectId, deps.region, service.name);
     if (!image) return { ok: false, error: `could not read which image the ${slug} serves` };
     digests[slug] = servingImageDigests(image);
   }

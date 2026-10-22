@@ -125,7 +125,7 @@ export const actions: Actions = {
         fileCount: staged.value.fileCount,
         buildId: staged.value.buildId,
         mergedEntityCount: staged.value.mergedEntityCount,
-        brokenInternalLinks: [...staged.value.brokenInternalLinks],
+        linkWarnings: [...staged.value.linkWarnings],
         alsoIncludes: staged.value.alsoIncludes.map((a) => a.title),
         previewUrl,
         previewLabel,
