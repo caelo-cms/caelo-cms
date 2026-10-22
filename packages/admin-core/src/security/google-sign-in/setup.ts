@@ -28,20 +28,28 @@
  *      versions, never read them) and records the ID (`operator_oauth.set`).
  *   3. The operator-access sync job (its own SA may read that secret) sets
  *      the project's IAP `oauthSettings` to the client (operator-access/iap-settings.ts).
- *   4. The self-check asks the admin's URL as a signed-out browser would and
- *      expects IAP to send it to Google with OUR client ID
- *      ({@link checkAdminSignInRedirect}).
+ *   4. The self-check asks Google whether both redirect URIs are still on
+ *      the client (#967: a URI removed in the console later locks everyone
+ *      out with IAP error code 9; {@link checkClientRedirectUris}), then asks
+ *      the admin's URL as a signed-out browser would and expects IAP to send
+ *      it to Google with OUR client ID ({@link checkAdminSignInRedirect}).
+ *
+ * Before step 2 the client passes the preflight (preflight.ts): both
+ * redirect URIs and the ID/secret pair, verified against Google, so a
+ * client that would lock people out is never stored or applied.
  *
  * Every check reports ok/failed with the next step — a half-configured
  * install never looks finished.
  */
 
+import { iapRedirectUri as iapRedirectUriOf } from "@caelo-cms/shared";
 import {
   GOOGLE_IAP_PROVIDERS,
   GOOGLE_ORG_DOMAIN_ENV,
   parseOrganisationDomains,
 } from "../identity-gate.js";
 import { type GoogleDeps, googleCall } from "../operator-access/google-iam.js";
+import { oauthClientConsoleUrl, probeRedirectUri, redirectUriLine } from "./preflight.js";
 
 /** Admin env var naming the Secret Manager secret the Owner writes the client to. */
 export const OPERATOR_OAUTH_CLIENT_STORE_ENV = "CAELO_OPERATOR_OAUTH_CLIENT_STORE";
@@ -192,6 +200,10 @@ export async function addSecretVersion(
 /** One line of a self-check (Google sign-in or remote MCP). */
 export interface SelfCheckLine {
   readonly id:
+    | "redirect-uri-broker"
+    | "redirect-uri-iap"
+    | "client-secret"
+    | "consent-screen"
     | "iap-sync"
     | "admin-sign-in"
     | "gateway-client"
@@ -329,6 +341,31 @@ export async function checkAdminSignInRedirect(
   };
 }
 
+/**
+ * #967: are both redirect URIs still on the configured client? Read-only
+ * GETs of Google's authorize endpoint (preflight.ts); a URI removed in the
+ * console since the setup shows up here with the exact fix.
+ */
+export async function checkClientRedirectUris(
+  deps: SelfCheckDeps,
+  input: {
+    readonly projectId: string;
+    readonly clientId: string;
+    readonly brokerRedirectUri: string;
+  },
+): Promise<SelfCheckLine[]> {
+  const consoleUrl = oauthClientConsoleUrl(input.projectId, input.clientId);
+  const iapUri = iapRedirectUriOf(input.clientId);
+  const [broker, iap] = await Promise.all([
+    probeRedirectUri(deps, input.clientId, input.brokerRedirectUri),
+    probeRedirectUri(deps, input.clientId, iapUri),
+  ]);
+  return [
+    redirectUriLine("redirect-uri-broker", input.brokerRedirectUri, broker, consoleUrl),
+    redirectUriLine("redirect-uri-iap", iapUri, iap, consoleUrl),
+  ];
+}
+
 /** The Google sign-in self-check, in the order the chain runs. */
 export async function runSignInSelfCheck(
   deps: SelfCheckDeps,
@@ -338,10 +375,17 @@ export async function runSignInSelfCheck(
     readonly removedClientId?: string | null;
     readonly sync: IapSyncOutcome;
     readonly timeoutMs?: number;
+    /** With a client configured: where its redirect URIs are checked (#967). */
+    readonly redirectUris?: { readonly projectId: string; readonly brokerRedirectUri: string };
   },
 ): Promise<SelfCheckLine[]> {
+  const uris =
+    input.clientId && input.redirectUris
+      ? await checkClientRedirectUris(deps, { ...input.redirectUris, clientId: input.clientId })
+      : [];
   const sync = iapSyncLine(input.sync, input.clientId !== null);
   return [
+    ...uris,
     sync,
     // Without a finished sync IAP cannot have changed yet: one look, no wait.
     await checkAdminSignInRedirect(

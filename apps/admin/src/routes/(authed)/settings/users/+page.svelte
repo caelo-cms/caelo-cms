@@ -16,6 +16,9 @@
   import { Label } from "#lib/components/ui/label/index.js";
 
   let { data, form } = $props();
+  /** #970 — the user whose "Change email" field is open. */
+  let changingEmailFor = $state<string | null>(null);
+  const report = $derived(data.operatorAccess?.status === "ok" ? data.operatorAccess.report : null);
 
   // A user/role change waits for the Google IAP sync job (up to 90 s, see
   // admin-core user_access.ts). Without visible progress a second click
@@ -72,20 +75,85 @@
   {:else if data.operatorAccess?.status === "ok" && data.operatorAccess.run}
     {@const run = data.operatorAccess.run}
     {#if run.state === "failed" || run.state === "cancelled"}
-      <Alert variant="destructive">
+      <Alert variant="destructive" data-testid="operator-access-sync-failed">
         <AlertDescription>
           The last Google IAP sync {run.state === "failed" ? "failed" : "was cancelled"}
           ({run.execution}{run.completedAt ? `, ${run.completedAt}` : ""}). IAP may not match this
           list. <a class="underline" href={run.logsUrl} target="_blank" rel="noreferrer">Read its log</a>,
           fix the cause, then re-sync.
+          {#if report?.signInClientProblem}
+            <span class="mt-1 block">Google sign-in client: {report.signInClientProblem}</span>
+          {/if}
         </AlertDescription>
       </Alert>
     {:else}
-      <p class="text-xs text-muted-foreground">
-        Google IAP sync: {run.state === "running" ? "running now" : `in sync as of ${run.completedAt ?? "the last run"}`}
+      <p class="text-xs text-muted-foreground" data-testid="operator-access-sync-status">
+        Google IAP sync: {run.state === "running"
+          ? "running now"
+          : `in sync as of ${run.completedAt ?? "the last run"}${data.noGoogleAccount.length > 0 ? ", except the users listed below" : ""}`}
         (<a class="underline" href={run.logsUrl} target="_blank" rel="noreferrer">log</a>).
       </p>
     {/if}
+  {/if}
+
+  {#if data.noGoogleAccount.length > 0}
+    <Alert variant="destructive" data-testid="users-no-google-account">
+      <AlertDescription class="space-y-2">
+        <p class="font-medium">These users have no Google account and cannot sign in:</p>
+        <p class="text-xs">
+          Google lets only Google accounts (Gmail or Google Workspace) through the admin's sign-in.
+          Change the email to the person's Google account address, or delete the user.
+        </p>
+        <ul class="space-y-2">
+          {#each data.noGoogleAccount as user (user.id)}
+            <li class="space-y-2 rounded-md border bg-background p-2" data-testid="users-no-google-account-row">
+              <div class="flex flex-wrap items-center gap-2">
+                <strong>{user.email}</strong>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={syncing}
+                  onclick={() => (changingEmailFor = changingEmailFor === user.id ? null : user.id)}
+                >
+                  Change email
+                </Button>
+                {#if !user.isFirstOwner}
+                  <form method="post" action="?/delete" use:enhance={whileSyncing(false)}>
+                    <input type="hidden" name="_csrf" value={data.csrfToken} />
+                    <input type="hidden" name="userId" value={user.id} />
+                    <Button type="submit" size="sm" variant="destructive" disabled={syncing}>Delete</Button>
+                  </form>
+                {/if}
+              </div>
+              {#if changingEmailFor === user.id}
+                <form
+                  method="post"
+                  action="?/changeEmail"
+                  use:enhance={whileSyncing(true)}
+                  class="flex flex-wrap items-end gap-2"
+                >
+                  <input type="hidden" name="_csrf" value={data.csrfToken} />
+                  <input type="hidden" name="userId" value={user.id} />
+                  <div class="space-y-1">
+                    <Label for={`email-${user.id}`} class="text-xs">Google account address</Label>
+                    <Input
+                      id={`email-${user.id}`}
+                      name="email"
+                      type="email"
+                      required
+                      class="h-8 w-72"
+                      placeholder="name@gmail.com"
+                    />
+                  </div>
+                  <Button type="submit" size="sm" disabled={syncing}>Save email</Button>
+                </form>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </AlertDescription>
+    </Alert>
   {/if}
 
   {#if form?.error}
@@ -183,6 +251,14 @@
           <div class="space-y-2">
             <Label for="email">Email</Label>
             <Input id="email" name="email" type="email" autocomplete="username" required />
+            {#if data.operatorAccess}
+              <p class="text-xs text-muted-foreground" data-testid="users-create-google-hint">
+                Use the person's Google account address (Gmail or Google Workspace): only Google
+                accounts can sign in to this admin. Google offers no way to check an address
+                before saving, so Caelo checks it with the access sync right after you create the
+                user with a role and shows the answer here (a user without a role gets no access, so Google is not asked).
+              </p>
+            {/if}
           </div>
         </div>
         <div class="space-y-2">
@@ -201,6 +277,15 @@
           </div>
         </fieldset>
         <Button type="submit" disabled={syncing}>Create user</Button>
+        {#if form && "createdWithoutGoogleAccount" in form && form.createdWithoutGoogleAccount}
+          <Alert variant="destructive" data-testid="users-created-no-google-account">
+            <AlertDescription>
+              {form.createdEmail} was created, but Google has no account with that address, so they
+              cannot sign in yet. Change the email to their Google account address (above, under
+              "These users have no Google account"), or delete the user.
+            </AlertDescription>
+          </Alert>
+        {/if}
       </form>
     </CardContent>
   </Card>

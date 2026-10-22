@@ -9,6 +9,7 @@
  * (and in the Live Edit chat) generates it on click and shows it once.
  */
 
+import { refusedMembersMessage } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -58,16 +59,23 @@ export const actions: Actions = {
       return fail(400, { error: message });
     }
     const v = r.value as { userId: string | null; credentialHandoff: unknown };
-    const access = v.userId ? await syncOperatorAccessFromPanel(locals) : { ok: true as const };
+    const access = v.userId
+      ? await syncOperatorAccessFromPanel(locals)
+      : { ok: true as const, refusedMembers: [] as string[] };
     return {
       ok: true,
       // Google IAP sync outcome; `error` makes the layout toast it loudly.
       ...("error" in access ? { error: access.error } : {}),
-      message: v.credentialHandoff
-        ? "Proposal applied. Collect the new user's one-time password below."
-        : v.userId
-          ? `Proposal applied (userId=${v.userId.slice(0, 8)}…).`
-          : "Proposal applied.",
+      message: `${
+        v.credentialHandoff
+          ? "Proposal applied. Collect the new user's one-time password below."
+          : v.userId
+            ? `Proposal applied (userId=${v.userId.slice(0, 8)}…).`
+            : "Proposal applied."
+      }${
+        // #970 — an approved user whose address has no Google account cannot sign in.
+        access.refusedMembers.length ? ` ${refusedMembersMessage(access.refusedMembers)}` : ""
+      }`,
     };
   },
   reject: async ({ request, locals }) => {

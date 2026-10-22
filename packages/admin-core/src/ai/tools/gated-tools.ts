@@ -215,6 +215,16 @@ async function withOperatorAccessSync(
   if (sync.status === "failed") {
     return { ...applied, operatorAccess: sync, warning: `${message} Tell the operator this.` };
   }
+  // #970 — users Google has no account for are applied to nobody: the
+  // change stands, but they cannot sign in until their address is a Google
+  // account. A warning, so the AI relays it instead of reporting success.
+  if (sync.status === "synced" && sync.refusedMembers?.length) {
+    return {
+      ...applied,
+      operatorAccess: sync,
+      warning: `${message} Tell the operator this. To fix it, propose_create_user with the person's Google account address and propose_delete_user for the old one, or let the Owner change the email in /settings/users.`,
+    };
+  }
   return { ...applied, operatorAccess: sync, ...(message ? { note: message } : {}) };
 }
 

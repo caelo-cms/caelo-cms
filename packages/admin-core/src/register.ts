@@ -619,7 +619,12 @@ import {
   readToolApprovalForExecuteOp,
   rejectToolApprovalOp,
 } from "./ops/tool_approvals.js";
-import { operatorAccessMembersOp, recordOperatorAccessSyncOp } from "./ops/user_access.js";
+import {
+  operatorAccessMembersOp,
+  operatorAccessRunOp,
+  recordOperatorAccessRunOp,
+  recordOperatorAccessSyncOp,
+} from "./ops/user_access.js";
 import {
   executeUserProposalOp,
   listPendingUserProposalsOp,
@@ -637,6 +642,7 @@ import {
   deleteUserOp,
   isSetupCompleteOp,
   listUsersOp,
+  setUserEmailOp,
   setUserRolesOp,
 } from "./ops/users.js";
 
@@ -666,6 +672,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listUsersOp);
   registry.register(createUserOp);
   registry.register(setUserRolesOp);
+  registry.register(setUserEmailOp);
   registry.register(deleteUserOp);
   registry.register(changePasswordOp);
   registry.register(adminSetPasswordOp);
@@ -680,6 +687,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeUserDeleteOp);
   registry.register(executeUserProposalOp);
   registry.register(recordOperatorAccessSyncOp);
+  registry.register(recordOperatorAccessRunOp);
+  registry.register(operatorAccessRunOp);
   registry.register(operatorAccessMembersOp);
   registry.register(rejectUserProposalOp);
   registry.register(listPendingUserProposalsOp);

@@ -8,6 +8,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { iapRedirectUri } from "@caelo-cms/shared";
+import { recordedGoogleOAuthFetch } from "../google-sign-in/recorded-google-oauth.js";
 import type { GoogleDeps } from "./google-iam.js";
 import {
   compareOAuthSettings,
@@ -19,6 +21,15 @@ import {
   secretHashMatches,
 } from "./iap-settings.js";
 import { type LogEntry, runSync, type SyncJobConfig } from "./sync-job.js";
+
+/** #967 — Google's OAuth endpoints (recorded answers): every client complete. */
+const OAUTH_OK = {
+  fetch: recordedGoogleOAuthFetch({
+    exists: () => true,
+    registered: () => true,
+    secretValid: () => true,
+  }),
+};
 
 const PROJECT = "https://iap.googleapis.com/v1/projects/123";
 const SERVICE =
@@ -311,6 +322,7 @@ describe("runSync — oauthSettings step", () => {
     const logs: LogEntry[] = [];
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readEmails: async () => [],
       readOAuthClientId: async () => CLIENT,
       readOAuthClientFile: file,
@@ -337,6 +349,7 @@ describe("runSync — oauthSettings step", () => {
     const logs: LogEntry[] = [];
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readEmails: async () => [],
       readOAuthClientId: async () => null,
       readOAuthClientFile: file,
@@ -360,6 +373,7 @@ describe("runSync — oauthSettings step", () => {
     const logs: LogEntry[] = [];
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readEmails: async () => [],
       readOAuthClientId: async () => CLIENT,
       readOAuthClientFile: file,
@@ -378,6 +392,7 @@ describe("runSync — oauthSettings step", () => {
     let fileReads = 0;
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readEmails: async () => [],
       readOAuthClientId: async () => null,
       readOAuthClientFile: async () => {
@@ -396,6 +411,7 @@ describe("runSync — oauthSettings step", () => {
     const logs: LogEntry[] = [];
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readEmails: async () => [],
       readOAuthClientId: async () => {
         throw new Error("permission denied for table operator_oauth_client");
@@ -416,6 +432,7 @@ describe("runSync — oauthSettings step", () => {
     const logs: LogEntry[] = [];
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readEmails: async () => [],
       readOAuthClientId: async () => CLIENT,
       readOAuthClientFile: async () => ({}),
@@ -426,10 +443,38 @@ describe("runSync — oauthSettings step", () => {
     expect(logs.some((l) => l.message.includes("save the client again"))).toBe(true);
   });
 
+  it("#967: never hands IAP a client that lacks IAP's redirect URI, and reports the fix", async () => {
+    const { deps, calls, current } = fakeIap({ clientId: OTHER, programmaticClients: [OTHER] });
+    const logs: LogEntry[] = [];
+    const r = await runSync(config, {
+      google: deps,
+      oauthProbe: {
+        fetch: recordedGoogleOAuthFetch({
+          exists: () => true,
+          registered: (id, uri) => uri !== iapRedirectUri(id),
+          secretValid: () => true,
+        }),
+      },
+      readEmails: async () => [],
+      readOAuthClientId: async () => CLIENT,
+      readOAuthClientFile: file,
+      log: (e) => logs.push(e),
+    });
+    expect(r.outcome).toBe("failed");
+    expect(current()).toEqual({ clientId: OTHER, programmaticClients: [OTHER] });
+    expect(calls.some((c) => c.method === "PATCH")).toBe(false);
+    expect(r.signInClientProblem).toContain(iapRedirectUri(CLIENT));
+    expect(r.signInClientProblem).toContain("Add URI");
+    expect(logs.some((l) => l.severity === "ERROR" && l.message.includes("left unchanged"))).toBe(
+      true,
+    );
+  });
+
   it("fails the run when IAP refuses the update", async () => {
     const { deps } = fakeIap(undefined, { failPatch: true });
     const r = await runSync(config, {
       google: deps,
+      oauthProbe: OAUTH_OK,
       readEmails: async () => [],
       readOAuthClientId: async () => CLIENT,
       readOAuthClientFile: file,

@@ -438,6 +438,74 @@ export const setUserRolesOp = defineOperation({
 });
 
 /**
+ * #970 — change a user's email: the fix for a user whose address has no
+ * Google account (Google refuses to let it through IAP), offered next to
+ * them on /settings/users. Same guards as creation: unique among active
+ * users, and the identity gate must admit the new address. The next IAP
+ * sync grants the new address and drops the old one.
+ */
+export const setUserEmailOp = defineOperation({
+  name: "users.set_email",
+  // Why human-only: Owner-only — security domain, like users.create. The
+  // email is the user's sign-in identity and their IAP principal. The AI
+  // changes users only through the approval-gated propose tools: for a
+  // wrong address it proposes the user again with the right one and
+  // proposes deleting the old one.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({ userId: z.string().uuid(), email: z.string().trim().email().max(254) }),
+  output: z.object({ previousEmail: z.string() }),
+  handler: async (ctx, input, tx) => {
+    const fail = async (message: string, summary: string) => {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "users.set_email",
+        input,
+        succeeded: false,
+        entityId: input.userId,
+        resultSummary: summary,
+      });
+      return err({ kind: "HandlerError" as const, operation: "users.set_email", message });
+    };
+    const rows = (await withSystemRls(tx, ctx, () =>
+      tx.execute(sql`
+        SELECT email FROM users WHERE id = ${input.userId}::uuid AND deleted_at IS NULL LIMIT 1
+      `),
+    )) as unknown as { email: string }[];
+    const current = rows[0];
+    if (!current) return fail("user not found (or deleted)", "not-found");
+    if (current.email.toLowerCase() === input.email.toLowerCase()) {
+      return fail(`the user already has the email ${input.email}`, "unchanged");
+    }
+    const dup = (await withSystemRls(tx, ctx, () =>
+      tx.execute(sql`
+        SELECT 1 AS exists FROM users
+        WHERE lower(email) = lower(${input.email}) AND deleted_at IS NULL LIMIT 1
+      `),
+    )) as unknown as { exists: number }[];
+    if (dup.length > 0) {
+      return fail(`another user already has the email ${input.email}`, "email-already-exists");
+    }
+    const refusal = await identityGateRefusal(tx, input.email);
+    if (refusal) return fail(refusal, "identity-gate");
+    await withSystemRls(tx, ctx, () =>
+      tx.execute(sql`UPDATE users SET email = ${input.email} WHERE id = ${input.userId}::uuid`),
+    );
+    await recordAudit(tx, {
+      actorId: ctx.actorId,
+      requestId: ctx.requestId,
+      operation: "users.set_email",
+      input,
+      succeeded: true,
+      entityId: input.userId,
+      resultSummary: `email changed from ${current.email}`,
+    });
+    return ok({ previousEmail: current.email });
+  },
+});
+
+/**
  * Soft-delete: sets `deleted_at = now()`. Audit history stays linked because
  * the actor row + audit_events rows are untouched. A future `users.restore`
  * op can revive a soft-deleted account by clearing the flag.

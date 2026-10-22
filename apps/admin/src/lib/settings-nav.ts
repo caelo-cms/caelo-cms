@@ -486,7 +486,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         href: "/settings/google-sign-in",
         label: "Google sign-in",
         description:
-          "Let users outside your Google organisation (Gmail, other companies) sign in to the admin.",
+          "Only needed for remote MCP (ChatGPT, claude.ai) or users outside your Google organisation (Gmail, other companies).",
         permission: "settings.read",
         icon: "key",
         keywords: [

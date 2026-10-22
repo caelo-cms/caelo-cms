@@ -27,9 +27,21 @@
  *      none of them when none is, and keeps the admin's IAP resource free
  *      of a client of its own that would override the project's
  *      (iap-settings.ts says why the project level); a client it cannot
- *      read leaves the settings unchanged, never cleared;
- *   4. exits non-zero when anything failed, so the execution shows as failed
- *      to the admin (gcp-job-trigger.ts) and in Cloud Run.
+ *      read leaves the settings unchanged, never cleared — and so does a
+ *      client Google says lacks IAP's redirect URI (#967: applying it would
+ *      lock everyone out with IAP error code 9; the problem is reported);
+ *   4. #970 — records a report of the run (`users.record_operator_access_run`:
+ *      which members Google refused, how many other errors, any sign-in
+ *      client problem) so /settings/users can name the refused users;
+ *   5. exits non-zero when anything other than refused members failed, so
+ *      the execution shows as failed to the admin (gcp-job-trigger.ts) and
+ *      in Cloud Run. A run whose only problem is refused members exits 0
+ *      ("done with warnings", run-report.ts).
+ *
+ * Writing the report is the one write the job's database role may make
+ * (migration 0335: INSERT on `operator_access_sync_runs` and its audit
+ * rows, nothing else).
+ *
  *
  * Its whole input is the database and the env the provisioner set on the
  * job: the admin may start it but holds no `run.jobs.runWithOverrides`, so
@@ -37,10 +49,16 @@
  */
 
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
-import { cloudSqlIamDatabaseUrls } from "@caelo-cms/shared";
+import { cloudSqlIamDatabaseUrls, iapRedirectUri } from "@caelo-cms/shared";
 import { SYSTEM_ACTOR_ID } from "../../audit.js";
 import { operatorOAuthClientForSyncOp } from "../../ops/security/operator_oauth.js";
-import { operatorAccessMembersOp } from "../../ops/user_access.js";
+import { operatorAccessMembersOp, recordOperatorAccessRunOp } from "../../ops/user_access.js";
+import {
+  oauthClientConsoleUrl,
+  type PreflightDeps,
+  probeRedirectUri,
+  redirectUriLine,
+} from "../google-sign-in/preflight.js";
 import {
   defaultGoogleDeps,
   type GoogleDeps,
@@ -55,6 +73,12 @@ import {
   type OAuthSettingsReconciled,
   reconcileOAuthSettings,
 } from "./iap-settings.js";
+import {
+  classifySyncRun,
+  refusedEmail,
+  type SyncRunOutcome,
+  type SyncRunReport,
+} from "./run-report.js";
 
 export const IAP_ACCESSOR_ROLE = "roles/iap.httpsResourceAccessor";
 export const TOKEN_CREATOR_ROLE = "roles/iam.serviceAccountTokenCreator";
@@ -120,11 +144,22 @@ export interface SyncDeps {
   readonly readOAuthClientId: () => Promise<string | null>;
   /** #914 — the sign-in client as stored in Secret Manager (read only when an ID is set). */
   readonly readOAuthClientFile: () => Promise<OAuthClientFile>;
+  /** #967 — Google's public OAuth endpoints, to check IAP's redirect URI before applying a client. */
+  readonly oauthProbe: PreflightDeps;
   readonly log: (entry: LogEntry) => void;
 }
 
 export interface SyncReport {
+  /** True unless something other than refused members failed. */
   readonly ok: boolean;
+  /** #970 — succeeded / succeeded_with_warnings (refused members only) / failed. */
+  readonly outcome: SyncRunOutcome;
+  /** #970 — emails Google has no account for; granted to nobody. */
+  readonly refusedMembers: readonly string[];
+  /** Errors other than refused members. */
+  readonly errorCount: number;
+  /** #967 — why the Google sign-in client was not applied, with the fix. */
+  readonly signInClientProblem: string | null;
   readonly iap?: ResourceReconciled;
   readonly mcp?: ResourceReconciled;
   /** #914 — the project-level `oauthSettings` (the Google sign-in client). */
@@ -135,14 +170,28 @@ export interface SyncReport {
 
 /** One reconcile pass over both managed bindings. Never throws. */
 export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<SyncReport> {
-  let ok = true;
+  let errorCount = 0;
+  const refused = new Set<string>();
+  const signInClient: { problem: string | null } = { problem: null };
+  const report = (parts: Partial<SyncReport> = {}): SyncReport => {
+    const refusedMembers = [...refused].sort();
+    const outcome = classifySyncRun({ refusedMembers, errorCount });
+    return {
+      ...parts,
+      ok: outcome !== "failed",
+      outcome,
+      refusedMembers,
+      errorCount,
+      signInClientProblem: signInClient.problem,
+    };
+  };
   const { members: staticMembers, rejected: rejectedStatic } = parseStaticMembers(
     config.staticMembers,
   );
   const { members: mcpSigners, rejected: rejectedSigners } = parseStaticMembers(config.mcpSigners);
   const rejected = [...rejectedStatic, ...rejectedSigners];
   for (const entry of rejected) {
-    ok = false;
+    errorCount += 1;
     deps.log({
       severity: "ERROR",
       message: `static member "${entry}" ignored: only user:, group: and serviceAccount: principals are ever granted`,
@@ -157,7 +206,8 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
       severity: "ERROR",
       message: `could not read the user list: ${e instanceof Error ? e.message : String(e)}`,
     });
-    return { ok: false };
+    errorCount += 1;
+    return report();
   }
   const { members, invalidEmails } = desiredMembers(emails, staticMembers);
   for (const email of invalidEmails) {
@@ -176,10 +226,13 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
   ): Promise<ResourceReconciled | undefined> => {
     try {
       const r = await reconcileResourceRole(deps.google, resourceUrl, role, desired, read);
-      // Everyone else was still brought in line; the run reports failure so
-      // the admin shows it, naming who cannot be granted.
+      // Everyone else was still brought in line. A refused user is a
+      // warning, not a failure (#970): the report names them and the admin
+      // shows them with Delete / Change email.
       for (const member of r.unknownPrincipals) {
-        ok = false;
+        const email = refusedEmail(member);
+        if (email) refused.add(email);
+        else errorCount += 1;
         deps.log({
           severity: "ERROR",
           message: `could not grant ${role} to ${member} on ${what}: Google has no account with that address — the Caelo user cannot sign in. In /settings/users delete the user and create them again with the address of their Google account; every other member was updated`,
@@ -207,7 +260,7 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
       if (!r.next) deps.log({ severity: "INFO", message: `${role} on ${what} already up to date` });
       return r;
     } catch (e) {
-      ok = false;
+      errorCount += 1;
       deps.log({
         severity: "ERROR",
         message: `could not update ${role} on ${what}: ${e instanceof Error ? e.message : String(e)}`,
@@ -224,7 +277,8 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
       severity: "ERROR",
       message: `metadata server: ${e instanceof Error ? e.message : String(e)}`,
     });
-    return { ok: false };
+    errorCount += 1;
+    return report();
   }
   // IAP resource names use the project NUMBER
   // (cloud.google.com/iap/docs/managing-access#resources_and_permissions).
@@ -243,24 +297,29 @@ export async function runSync(config: SyncJobConfig, deps: SyncDeps): Promise<Sy
     new Set([...members, ...mcpSigners]),
     { query: "?options.requestedPolicyVersion=3" },
   );
-  const oauthSettings = await syncOAuthSettings(deps, iapProjectResourceUrl(projectNumber));
+  const oauthSettings = await syncOAuthSettings(
+    deps,
+    iapProjectResourceUrl(projectNumber),
+    // The secret's resource name carries the project id the console links need.
+    /^projects\/([^/]+)\//.exec(config.oauthClientSecret)?.[1] ?? projectNumber,
+    (problem) => {
+      signInClient.problem = problem;
+    },
+  );
   // Only once the project holds the right client: clearing the resource's
   // own client first could leave IAP on the wrong one in between.
   const resourceOAuthOverride = oauthSettings
     ? await clearResourceOAuthOverride(deps, iapResourceUrl)
     : undefined;
-  return {
-    ok:
-      ok &&
-      iap !== undefined &&
-      mcp !== undefined &&
-      oauthSettings !== undefined &&
-      resourceOAuthOverride !== undefined,
+  // Each undefined step logged its own ERROR (a failed `apply` counted itself).
+  if (!oauthSettings) errorCount += 1;
+  if (oauthSettings && !resourceOAuthOverride) errorCount += 1;
+  return report({
     ...(iap ? { iap } : {}),
     ...(mcp ? { mcp } : {}),
     ...(oauthSettings ? { oauthSettings } : {}),
     ...(resourceOAuthOverride ? { resourceOAuthOverride } : {}),
-  };
+  });
 }
 
 /**
@@ -283,6 +342,8 @@ export interface OAuthClientFile {
 async function syncOAuthSettings(
   deps: SyncDeps,
   projectSettingsUrl: string,
+  project: string,
+  reportProblem: (problem: string) => void,
 ): Promise<OAuthSettingsReconciled | undefined> {
   const what = "the project's IAP OAuth settings";
   const unchanged = (message: string): undefined => {
@@ -310,6 +371,24 @@ async function syncOAuthSettings(
       );
     }
     desired = { clientId, clientSecret: file.client_secret };
+    // #967 — never hand IAP a client Google would refuse IAP's redirect for:
+    // every sign-in would fail with IAP error code 9. Left unchanged, and
+    // reported so Settings → Google sign-in shows the fix.
+    const uri = iapRedirectUri(clientId);
+    const verdict = await probeRedirectUri(deps.oauthProbe, clientId, uri);
+    if (verdict.kind !== "registered") {
+      const line = redirectUriLine(
+        "redirect-uri-iap",
+        uri,
+        verdict,
+        oauthClientConsoleUrl(project, clientId),
+      );
+      const problem = `${line.detail} ${line.nextStep ?? ""}`.trim();
+      reportProblem(problem);
+      return unchanged(
+        `the Google sign-in client ${clientId} did not pass the redirect-URI check: ${problem}`,
+      );
+    }
   }
   let r: OAuthSettingsReconciled;
   try {
@@ -419,6 +498,40 @@ export async function readOAuthClientSecret(
   return parsed as OAuthClientFile;
 }
 
+/**
+ * #970 — record the run's report under its Cloud Run execution id
+ * (`CLOUD_RUN_EXECUTION`, set by Cloud Run on every job task).
+ */
+export async function recordRunReport(
+  call: (op: string, input: unknown) => Promise<unknown>,
+  execution: string | undefined,
+  report: SyncReport,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!execution?.trim()) {
+    return {
+      ok: false,
+      error:
+        "CLOUD_RUN_EXECUTION is not set, so this run's report cannot be recorded; the job runs as a Cloud Run job only.",
+    };
+  }
+  const input: SyncRunReport = {
+    execution: execution.trim(),
+    outcome: report.outcome,
+    refusedMembers: [...report.refusedMembers],
+    errorCount: report.errorCount,
+    signInClientProblem: report.signInClientProblem,
+  };
+  try {
+    await call("users.record_operator_access_run", input);
+    return { ok: true };
+  } catch (e) {
+    return {
+      ok: false,
+      error: `could not record this run's report: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
 async function main(): Promise<void> {
   const log = (entry: LogEntry) => console.log(JSON.stringify(entry));
   let config: SyncJobConfig;
@@ -434,8 +547,9 @@ async function main(): Promise<void> {
   const registry = new OperationRegistry();
   registry.register(operatorAccessMembersOp);
   registry.register(operatorOAuthClientForSyncOp);
-  /** One read-only connection for both reads, opened on first use. */
-  const read = async (op: string): Promise<unknown> => {
+  registry.register(recordOperatorAccessRunOp);
+  /** One connection for the reads and the run report, opened on first use. */
+  const call = async (op: string, input: unknown): Promise<unknown> => {
     if (!adapter) {
       const email = await google.metadata("instance/service-accounts/default/email");
       const urls = cloudSqlIamDatabaseUrls(config.databaseHost, email, await google.accessToken());
@@ -454,11 +568,12 @@ async function main(): Promise<void> {
         requestId: `operator-access-sync-${Date.now()}`,
       },
       op,
-      {},
+      input,
     );
     if (!r.ok) throw new Error(JSON.stringify(r.error));
     return r.value;
   };
+  const read = (op: string) => call(op, {});
   const readEmails = async () =>
     ((await read("users.operator_access_members")) as { emails: string[] }).emails;
   const readOAuthClientId = async () =>
@@ -470,13 +585,24 @@ async function main(): Promise<void> {
       readEmails,
       readOAuthClientId,
       readOAuthClientFile,
+      oauthProbe: { fetch },
       log,
     });
     log({
-      severity: report.ok ? "INFO" : "ERROR",
-      message: report.ok ? "operator access in sync" : "operator access sync finished with errors",
+      severity:
+        report.outcome === "failed" ? "ERROR" : report.outcome === "succeeded" ? "INFO" : "WARNING",
+      message:
+        report.outcome === "succeeded"
+          ? "operator access in sync"
+          : report.outcome === "succeeded_with_warnings"
+            ? `operator access in sync except ${report.refusedMembers.length} user(s) Google has no account for`
+            : "operator access sync finished with errors",
     });
-    if (!report.ok) process.exitCode = 1;
+    // #970 — the admin learns who was refused from this report, so a run
+    // that cannot record it fails loudly instead of looking clean.
+    const recorded = await recordRunReport(call, process.env.CLOUD_RUN_EXECUTION, report);
+    if (!recorded.ok) log({ severity: "ERROR", message: recorded.error });
+    if (!report.ok || !recorded.ok) process.exitCode = 1;
   } finally {
     await adapter?.close();
   }
