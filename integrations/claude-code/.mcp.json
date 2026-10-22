@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "caelo": {
+      "command": "bunx",
+      "args": ["--package", "@caelo-cms/mcp-server@0.10.64", "caelo-admin-mcp"],
+      "env": {
+        "CAELO_ADMIN_URL": "${user_config.admin_url}",
+        "CAELO_MCP_TOKEN": "${user_config.mcp_token}",
+        "CAELO_IAP_SERVICE_ACCOUNT": "${user_config.iap_service_account}"
+      }
+    }
+  }
+}

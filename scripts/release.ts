@@ -15,7 +15,9 @@
  *   3. Updates root package.json + every workspace package.json `version`,
  *      bun.lock, which records those versions, the MCP Registry entry
  *      (packages/mcp-server/server.json) and the Power-MCP catalogue
- *      snapshot (packages/mcp-server/power-catalogue.json), both #841.
+ *      snapshot (packages/mcp-server/power-catalogue.json), both #841,
+ *      and the Claude Code plugin (integrations/claude-code: plugin.json
+ *      version + the mcp-server release its .mcp.json starts).
  *   4. Re-signs every Tier-1 plugin manifest under packages/plugins/<slug>/
  *      via apps/admin/scripts/sign-tier1-manifest.ts (the same script
  *      `bun run plugins:sign` uses).
@@ -76,6 +78,20 @@ const ROOT_PKG = resolve(REPO_ROOT, "package.json");
  * in lockstep like every package.json.
  */
 const MCP_SERVER_JSON = resolve(REPO_ROOT, "packages/mcp-server/server.json");
+
+/**
+ * The Claude Code plugin (integrations/claude-code). Its `.mcp.json` pins
+ * the exact mcp-server release (the plugin directory refuses `@latest`);
+ * the shim still re-execs as the admin's release at startup (#764), so
+ * the pin only decides which release bootstraps. Bumped with every
+ * release so `claude plugin update` sees a new version.
+ */
+const CLAUDE_PLUGIN_JSON = resolve(
+  REPO_ROOT,
+  "integrations/claude-code/.claude-plugin/plugin.json",
+);
+const CLAUDE_PLUGIN_MCP_JSON = resolve(REPO_ROOT, "integrations/claude-code/.mcp.json");
+const PLUGIN_MCP_PIN = /@caelo-cms\/mcp-server@[^"]+"/g;
 
 interface McpServerJson {
   version: string;
@@ -205,6 +221,32 @@ function bumpMcpServerJson(newVersion: string, dryRun: boolean): void {
   entry.version = newVersion;
   for (const pkg of entry.packages) pkg.version = newVersion;
   if (!dryRun) writeFileSync(MCP_SERVER_JSON, `${JSON.stringify(entry, null, 2)}\n`);
+}
+
+function bumpClaudePlugin(newVersion: string, dryRun: boolean): void {
+  const manifest = JSON.parse(readFileSync(CLAUDE_PLUGIN_JSON, "utf8")) as { version: string };
+  manifest.version = newVersion;
+  const mcp = readFileSync(CLAUDE_PLUGIN_MCP_JSON, "utf8");
+  const nextMcp = mcp.replace(PLUGIN_MCP_PIN, `@caelo-cms/mcp-server@${newVersion}"`);
+  if (nextMcp === mcp && !mcp.includes(`@caelo-cms/mcp-server@${newVersion}"`)) {
+    throw new Error("integrations/claude-code/.mcp.json has no @caelo-cms/mcp-server pin to bump");
+  }
+  if (dryRun) return;
+  writeFileSync(CLAUDE_PLUGIN_JSON, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(CLAUDE_PLUGIN_MCP_JSON, nextMcp);
+}
+
+/** The plugin's manifest version and every mcp-server pin in its .mcp.json, with their files. */
+function claudePluginVersions(): { file: string; v: string }[] {
+  const manifest = JSON.parse(readFileSync(CLAUDE_PLUGIN_JSON, "utf8")) as { version: string };
+  const mcp = readFileSync(CLAUDE_PLUGIN_MCP_JSON, "utf8");
+  return [
+    { file: CLAUDE_PLUGIN_JSON, v: manifest.version },
+    ...[...mcp.matchAll(PLUGIN_MCP_PIN)].map((m) => ({
+      file: CLAUDE_PLUGIN_MCP_JSON,
+      v: m[0].slice("@caelo-cms/mcp-server@".length, -1),
+    })),
+  ];
 }
 
 function bumpVersionFile(newVersion: string, dryRun: boolean): void {
@@ -369,6 +411,9 @@ function checkLockstep(target: string): { ok: boolean; mismatches: { file: strin
   for (const v of [entry.version, ...entry.packages.map((pkg) => pkg.version)]) {
     if (v !== target) mismatches.push({ file: MCP_SERVER_JSON, v });
   }
+  for (const pin of claudePluginVersions()) {
+    if (pin.v !== target) mismatches.push(pin);
+  }
   return { ok: mismatches.length === 0, mismatches };
 }
 
@@ -488,6 +533,9 @@ async function main(): Promise<void> {
 
   bumpMcpServerJson(newVersion, dryRun);
   console.log(`✓ packages/mcp-server/server.json updated`);
+
+  bumpClaudePlugin(newVersion, dryRun);
+  console.log(`✓ integrations/claude-code plugin version + mcp-server pin updated`);
 
   writePowerCatalogue(newVersion, dryRun);
   console.log(`✓ packages/mcp-server/power-catalogue.json regenerated`);
