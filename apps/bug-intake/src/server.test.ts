@@ -81,10 +81,11 @@ async function signed(
   });
 }
 
-const register = (publicKey: string) =>
+const register = (publicKey: string, ip = "203.0.113.1") =>
   handler(
     new Request("https://bugs.test/v1/installs", {
       method: "POST",
+      headers: { "x-forwarded-for": ip },
       body: JSON.stringify({
         protocolVersion: 1,
         installId: INSTALL,
@@ -119,12 +120,15 @@ beforeEach(() => {
     tracker,
     matcher: { match: async () => null },
     issueThresholdInstalls: 1,
+    maxNewIssuesPerDay: 100,
+    issuesPaused: false,
   });
   handler = createIntakeHandler({
     service,
     store,
     now: () => NOW,
     installLimiter: new RateLimiter(3, 60_000),
+    globalRegisterLimiter: new RateLimiter(4, 60 * 60_000),
   });
 });
 
@@ -189,6 +193,15 @@ describe("bug intake HTTP", () => {
     const limited = await handler(await signed("/v1/reports", JSON.stringify(report)));
     expect(limited.status).toBe(429);
     expect((await errorOf(limited)).retryable).toBe(true);
+  });
+
+  it("limits registrations across all addresses, not only per address (retryable)", async () => {
+    for (let i = 1; i <= 4; i++) {
+      expect((await register(keys.publicKey, `198.51.100.${i}`)).status).toBe(204);
+    }
+    const res = await register(keys.publicKey, "198.51.100.99");
+    expect(res.status).toBe(429);
+    expect(await errorOf(res)).toMatchObject({ retryable: true });
   });
 
   it("refuses oversized bodies before parsing", async () => {

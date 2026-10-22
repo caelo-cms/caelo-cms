@@ -1,6 +1,6 @@
 {
   "name": "@caelo-cms/bug-intake",
-  "version": "0.10.61",
+  "version": "0.10.64",
   "private": true,
   "license": "MPL-2.0",
   "description": "Caelo-operated service that receives AI-detected bug reports from opted-in installs, de-duplicates them across installs and files one GitHub issue per defect (epic #901).",
@@ -12,6 +12,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.81",
     "@caelo-cms/shared": "workspace:*",
+    "@google-cloud/firestore": "9.3.1",
     "ai": "^7.0.142",
     "zod": "4.6.7"
   },

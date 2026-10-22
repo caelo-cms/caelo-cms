@@ -50,6 +50,8 @@ Out of scope (please report upstream):
 
 The incident response runbook for operators (rotation flow when a secret leaks, audit-trail forensics, postmortem template) lives in **[`docs/incident-response.md`](./docs/incident-response.md)**. Read §G for the secret-leak playbook before you need it.
 
+**Uploaded SVGs.** An SVG opened directly in a browser is a document that can run script in the origin serving it, and the public site shares its origin with the API gateway (`/api/*`). Caelo strips script from SVGs at upload, and every serving layer adds a second line behind that. The admin, the staging preview and the live site on AWS, Azure, Firebase Hosting and self-hosted Caddy send a sandboxing `Content-Security-Policy` on SVG responses. On the `gcp` stack the CDN cannot set a per-file CSP, so live SVGs are served as downloads (`Content-Disposition: attachment`) instead. Every static response also carries `X-Content-Type-Options: nosniff`. Existing installs get these headers through `cms-provision upgrade`, which converges the edge and rewrites the self-hosted Caddyfile (#891).
+
 ## Cryptographic surfaces
 
 Caelo uses cryptographic primitives in three places. Issues with any of them are critical-severity:

@@ -59,6 +59,8 @@ export interface AgentCliContext {
   convergeRoles(): Promise<ConvergeOutcome>;
   /** The Compose file for `images` from config.json. */
   renderCompose(images: ReleaseImages): string;
+  /** Re-write the Caddyfile (config + domains table) and reload Caddy (#891). */
+  refreshCaddy(): Promise<{ ok: true } | { ok: false; error: string }>;
   randomSecret(): string;
 }
 
@@ -544,6 +546,7 @@ async function agentApply(argv: readonly string[], ctx: AgentCliContext): Promis
             runner: bunHostRunner,
             renderCompose: (images) => ctx.renderCompose(images),
             convergeRoles: () => ctx.convergeRoles(),
+            refreshCaddy: () => ctx.refreshCaddy(),
             log,
           },
         ),

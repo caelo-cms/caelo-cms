@@ -24,7 +24,7 @@
       <AlertDescription class="space-y-2">
         <p>
           No email is set up for this install, so we can't send you a reset link. Whoever manages
-          the install's cloud account can create one with:
+          the install — its cloud account, or the server it runs on — can create one with:
         </p>
         <pre class="overflow-x-auto rounded-md bg-muted p-3 text-xs"><code
             >bunx @caelo-cms/provisioning owner-reset</code

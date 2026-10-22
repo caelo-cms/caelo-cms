@@ -269,7 +269,9 @@ export async function runSeoPass(args: {
   // sitemap.xml — written for every env (see the file header): staging
   // never references it (its robots.txt has no `Sitemap:` line and the
   // host answers `X-Robots-Tag: noindex`), and promote ships it as-is.
-  const sitemapEnabled = args.settings.siteBaseUrl.length > 0;
+  // #567 — the Owner's toggle gates it; robots.txt follows
+  // `sitemapEmitted`, so turning it off also drops the `Sitemap:` line.
+  const sitemapEnabled = args.settings.sitemapEnabled && args.settings.siteBaseUrl.length > 0;
   if (sitemapEnabled) {
     const entries = seoBundles
       .filter((b) => isSitemapEntry(b, args.notFoundPageId))
