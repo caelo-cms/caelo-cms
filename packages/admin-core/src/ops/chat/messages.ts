@@ -209,11 +209,20 @@ export const setResponseMessagesOp = defineOperation({
     })
     .strict(),
   output: z.object({ updated: z.boolean() }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    const ownerFilter =
+      ctx.actorKind === "human"
+        ? sql`AND EXISTS (
+            SELECT 1 FROM chat_sessions s
+            WHERE s.id = chat_messages.chat_session_id
+              AND s.created_by = ${ctx.actorId}::uuid
+          )`
+        : sql``;
     const rows = (await tx.execute(sql`
       UPDATE chat_messages
       SET response_messages = ${jsonbParam(input.responseMessages)}
       WHERE id = ${input.messageId}::uuid AND role = 'assistant'
+        ${ownerFilter}
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     if (!rows[0]?.id) {
@@ -238,10 +247,19 @@ export const markChatMessageInterruptedOp = defineOperation({
   database: "cms_admin",
   input: z.object({ messageId: z.string().uuid() }).strict(),
   output: z.object({}),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    const ownerFilter =
+      ctx.actorKind === "human"
+        ? sql`AND EXISTS (
+            SELECT 1 FROM chat_sessions s
+            WHERE s.id = chat_messages.chat_session_id
+              AND s.created_by = ${ctx.actorId}::uuid
+          )`
+        : sql``;
     await tx.execute(sql`
       UPDATE chat_messages SET status = 'interrupted'
       WHERE id = ${input.messageId}::uuid
+        ${ownerFilter}
     `);
     return ok({});
   },

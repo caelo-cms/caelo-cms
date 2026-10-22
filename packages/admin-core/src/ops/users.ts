@@ -564,6 +564,10 @@ export const deleteUserOp = defineOperation({
       WHERE actor_id = ${input.userId}::uuid AND revoked_at IS NULL
       RETURNING id
     `)) as unknown as { id: string }[];
+    await tx.execute(sql`
+      UPDATE mcp_remote_connections SET revoked_at = now()
+      WHERE actor_id = ${input.userId}::uuid AND revoked_at IS NULL
+    `);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -722,8 +726,17 @@ export const adminSetPasswordOp = defineOperation({
     await tx.execute(
       sql`UPDATE users SET password_hash = ${newHash} WHERE id = ${input.userId}::uuid`,
     );
-    // Force the target to re-authenticate with the new password everywhere.
+    // Force the target to re-authenticate with the new password everywhere,
+    // including active MCP bearer tokens and remote connections.
     await tx.execute(sql`DELETE FROM sessions WHERE user_id = ${input.userId}::uuid`);
+    await tx.execute(sql`
+      UPDATE mcp_tokens SET revoked_at = now()
+      WHERE actor_id = ${input.userId}::uuid AND revoked_at IS NULL
+    `);
+    await tx.execute(sql`
+      UPDATE mcp_remote_connections SET revoked_at = now()
+      WHERE actor_id = ${input.userId}::uuid AND revoked_at IS NULL
+    `);
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
