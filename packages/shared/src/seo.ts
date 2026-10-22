@@ -340,12 +340,16 @@ export function renderSeoHead(input: SeoMetaInput): string {
  * the layout HTML.
  */
 export function injectSeoIntoHead(html: string, headBlock: string): string {
-  // Strip a layout-supplied <title> if present; we'll re-emit it in
-  // the headBlock at the right position.
-  const titleStripped = html.replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, "");
-  if (titleStripped.includes("</head>")) {
-    return titleStripped.replace("</head>", () => `${headBlock}\n</head>`);
+  const headCloseMatch = /<\/head\s*>/i.exec(html);
+  if (headCloseMatch) {
+    const headEnd = headCloseMatch.index;
+    // Strip a layout-supplied <title> inside <head> only (never an SVG
+    // <title> in <body>); we re-emit the page title in headBlock.
+    const beforeClose = html.slice(0, headEnd).replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, "");
+    const afterClose = html.slice(headEnd);
+    return `${beforeClose}${headBlock}\n${afterClose}`;
   }
   // No closing head tag — prepend the block to the document.
+  const titleStripped = html.replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, "");
   return `${headBlock}\n${titleStripped}`;
 }

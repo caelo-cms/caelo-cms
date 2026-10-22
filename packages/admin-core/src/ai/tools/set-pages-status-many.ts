@@ -13,6 +13,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { setPagesStatusManyToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { stageReadinessSuffix } from "./_stage-readiness.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setPagesStatusManyTool: ToolDefinitionWithHandler<
@@ -54,7 +55,7 @@ export const setPagesStatusManyTool: ToolDefinitionWithHandler<
         : " They stay on staging / live until the next Stage / Publish live rebuilds without them.";
     return {
       ok: true,
-      content: `${v.updatedCount} page(s) set to ${input.status}.${next}`,
+      content: `${v.updatedCount} page(s) set to ${input.status}.${next}${await stageReadinessSuffix(ctx, toolCtx)}`,
     };
   },
 };

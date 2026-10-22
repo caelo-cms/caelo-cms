@@ -41,6 +41,39 @@ interface SkillRow {
   status: "awaiting_activation" | "active" | "archived";
 }
 
+/**
+ * The closing note naming a skill's tools. It must not claim more than is
+ * true: loading a skill does NOT load its tools into the running turn — the
+ * tool list is fixed for the turn, and only the core set plus the preload
+ * hints of skills engaged before the turn ship in full; the rest sit behind
+ * tool search. The note used to say "now available to you" for all of them,
+ * and the model then called a deferred tool (bootstrap_site_scaffold) it
+ * could not emit — what came out instead was a `bug_report` with the
+ * literal values "placeholder" (two e2e-livedit runs, 2026-10), after which
+ * the model searched the tool and called it properly.
+ *
+ * @param preloaded - this turn's always-loaded tool names; undefined on
+ *   surfaces that list every tool with its schema (Power-MCP).
+ */
+export function skillToolsNote(
+  tools: readonly string[],
+  preloaded: ReadonlySet<string> | undefined,
+): string {
+  if (tools.length === 0) return "";
+  if (preloaded === undefined) return `\n\nTools this skill uses: ${tools.join(", ")}.`;
+  const loaded = tools.filter((t) => preloaded.has(t));
+  const deferred = tools.filter((t) => !preloaded.has(t));
+  const parts = [`\n\nTools this skill uses: ${tools.join(", ")}.`];
+  if (loaded.length > 0) parts.push(` Already in your tool list: ${loaded.join(", ")}.`);
+  if (deferred.length > 0) {
+    parts.push(
+      ` Possibly NOT loaded yet: ${deferred.join(", ")} — loading this skill does not load them. ` +
+        "Before calling one that is not in your tool list, load it with the tool-search tool (search its exact name); never call a different tool in its place.",
+    );
+  }
+  return parts.join("");
+}
+
 export const loadSkillTool: ToolDefinitionWithHandler<
   import("@caelo-cms/shared").LoadSkillToolInput
 > = {
@@ -80,10 +113,7 @@ export const loadSkillTool: ToolDefinitionWithHandler<
         continue;
       }
       loaded.push(skill.slug);
-      const toolsNote =
-        skill.allowlistedTools.length > 0
-          ? `\n\nTools this skill uses (now available to you): ${skill.allowlistedTools.join(", ")}.`
-          : "";
+      const toolsNote = skillToolsNote(skill.allowlistedTools, toolCtx.preloadedToolNames);
       sections.push(
         `Loaded skill "${skill.slug}" — ${skill.displayName}. Follow these instructions for the rest of this chat:\n\n${skill.body}${toolsNote}`,
       );

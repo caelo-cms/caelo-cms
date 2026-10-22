@@ -32,10 +32,16 @@ import {
   type SlotAlignment,
   stripJsonFence,
   type TranslationResultPayload,
-  translationResultPayload,
   validateMetaDescription,
   validateStructuralLock,
 } from "./translation.js";
+import {
+  type TranslationContract,
+  toTranslationPayload,
+  translationAnswerSchema,
+  translationContractOf,
+  translationJsonSchema,
+} from "./translation-contract.js";
 
 /** What a page translation needs from the plugin. */
 export interface TranslationDeps {
@@ -289,8 +295,10 @@ export function parsePageTranslationAnswer(
 ): TranslationResultPayload {
   let payload: TranslationResultPayload;
   try {
-    payload = translationResultPayload.parse(
-      typeof answer === "string" ? JSON.parse(stripJsonFence(answer)) : answer,
+    payload = toTranslationPayload(
+      translationAnswerSchema(pageTranslationContract(p)).parse(
+        typeof answer === "string" ? JSON.parse(stripJsonFence(answer)) : answer,
+      ),
     );
   } catch (e) {
     throw new Error(
@@ -303,6 +311,18 @@ export function parsePageTranslationAnswer(
   validateStructuralLock(payload, p.alignment, p.mode, buildSlotIndex(p.sourceSlots));
   validateMetaDescription(payload, p.mode, p.sourceMetaDescription, p.variantMetaDescription);
   return payload;
+}
+
+/** The answer contract of a prepared translation — what the prompt
+ *  describes and the answer is held to (./translation-contract.ts). */
+export function pageTranslationContract(p: PreparedPageTranslation): TranslationContract {
+  return translationContractOf({
+    mode: p.mode,
+    sourceSlots: p.sourceSlots,
+    alignment: p.alignment,
+    sourceMetaDescription: p.sourceMetaDescription,
+    variantMetaDescription: p.variantMetaDescription,
+  });
 }
 
 /**
@@ -370,23 +390,36 @@ export async function writePageTranslation(
   return { mode: p.mode, slotsApplied, titleApplied, seo };
 }
 
-/** The install-side pass: prepare → the install's AI → write. */
+/**
+ * The install-side pass: prepare → the install's AI → write. The answer
+ * comes back as SDK structured output constrained to this page's contract
+ * (CLAUDE.md §12), so the model cannot offer a key the page has no value
+ * for; the Zod + structural-lock checks still run on it.
+ */
 export async function translateVariantPage(
   deps: TranslationDeps,
   ai: PluginAi,
   args: { variantPageId: string; mode?: "auto" | "full" | "update" },
 ): Promise<PageTranslationOutcome> {
   const prepared = await preparePageTranslation(deps, args);
-  const result = await ai.complete({
+  const retryHint =
+    "Re-run translate_variant; if this repeats, the page may contain content the model cannot return as JSON.";
+  const result = await ai.generateObject({
     system: prepared.prompt.system,
     messages: [{ role: "user", content: prepared.prompt.user }],
+    jsonSchema: translationJsonSchema(pageTranslationContract(prepared)),
     maxTokens: 16_000,
     purpose: "translation",
   });
+  if (result.object === undefined || result.object === null || typeof result.object !== "object") {
+    throw new Error(
+      `translation response did not match the contract: the model returned no object that fits the schema. ${retryHint}`,
+    );
+  }
   const payload = parsePageTranslationAnswer(
-    result.text,
+    result.object as Readonly<Record<string, unknown>>,
     prepared,
-    "Re-run translate_variant; if this repeats, the page may contain content the model cannot return as JSON.",
+    retryHint,
   );
   return writePageTranslation(deps, prepared, payload);
 }

@@ -190,6 +190,11 @@ describe("reference integrity policy (#724 decisions)", () => {
     });
   });
 
+  it("a literal site-root link is not legacy storage — chrome written before the homepage stays clean", () => {
+    expect(scan(model(placed(ABOUT, "/")), "production")).toEqual([]);
+    expect(scan(model(placed(ABOUT, "/#features")), "production")).toEqual([]);
+  });
+
   it("text that looks like a path is not a link (#846)", () => {
     const m = mod(1, "<p>{{label}}</p>", [{ name: "label", kind: "text" }]);
     const ci = id(201);

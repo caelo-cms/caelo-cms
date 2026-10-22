@@ -549,7 +549,8 @@ function sanitizeCssTokenValue(value: string): string {
     out = out
       .replace(/<\/style/gi, "")
       .replace(/<!--/g, "")
-      .replace(/--!?>/g, "");
+      .replace(/--!?>/g, "")
+      .replace(/[;{}]/g, "");
   } while (out !== prev);
   return out;
 }

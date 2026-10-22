@@ -335,6 +335,82 @@ export function validateSource(opts: {
         return;
       }
 
+      // WithStatement — dynamic scope manipulation defeats static identifier analysis.
+      if (type === "WithStatement") {
+        failures.push({
+          kind: "forbidden-eval",
+          nodeType: type,
+          location: locOf(node),
+          hint: "with statements are not allowed in plugin code.",
+        });
+        return;
+      }
+
+      // ObjectPattern — destructuring `.constructor` (`const { constructor: F } = fn`)
+      // or forbidden globals (`const { eval: e } = ...`) bypasses MemberExpression checks.
+      if (type === "ObjectPattern") {
+        const properties = (node as { properties?: unknown[] }).properties ?? [];
+        for (const prop of properties) {
+          if (!prop || typeof prop !== "object") continue;
+          const propType = (prop as { type?: string }).type;
+          if (propType === "RestElement") continue;
+          const keyName = memberPropertyName({
+            property: (prop as { key?: unknown }).key,
+            computed: (prop as { computed?: boolean }).computed,
+          });
+          if (keyName === "constructor" || keyName === "eval" || keyName === "Function") {
+            failures.push({
+              kind: "forbidden-eval",
+              nodeType: type,
+              snippet: `{ ${keyName} }`,
+              location: locOf(prop),
+              hint: `Destructuring "${keyName}" is not allowed in plugin code.`,
+            });
+            return;
+          }
+          if (keyName === "Deno") {
+            failures.push({
+              kind: "forbidden-deno-access",
+              nodeType: type,
+              snippet: "{ Deno }",
+              location: locOf(prop),
+              hint: "Deno.* is not accessible to plugins. Use ctx.query / ctx.api / ctx.theme.",
+            });
+            return;
+          }
+          if (keyName === "require") {
+            failures.push({
+              kind: "forbidden-require",
+              nodeType: type,
+              snippet: "{ require }",
+              location: locOf(prop),
+              hint: 'require() is not allowed. Use static `import` from "@caelo-cms/plugin-sdk".',
+            });
+            return;
+          }
+          if (keyName === "fetch" || keyName === "XMLHttpRequest" || keyName === "WebSocket") {
+            failures.push({
+              kind: "forbidden-call",
+              nodeType: type,
+              snippet: `{ ${keyName} }`,
+              location: locOf(prop),
+              hint: `${keyName}() is not allowed. Use ctx.api / ctx.query for I/O.`,
+            });
+            return;
+          }
+          if (keyName !== null && GLOBAL_OBJECT_NAMES.has(keyName)) {
+            failures.push({
+              kind: "forbidden-globalthis-alias",
+              nodeType: type,
+              snippet: `{ ${keyName} }`,
+              location: locOf(prop),
+              hint: `${keyName} may only be used for direct member access (${keyName}.X); do not alias it or pass it around.`,
+            });
+            return;
+          }
+        }
+      }
+
       // MemberExpression — check .constructor, computed globalThis[...], and globalThis/window/self forbidden properties.
       if (type === "MemberExpression") {
         const member = node as { object?: unknown; property?: unknown; computed?: boolean };

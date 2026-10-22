@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -45,7 +46,7 @@
           {#each data.modules as m (m.entityId)}
             <li class="flex items-center justify-between gap-2 text-sm">
               <span><strong>{m.state.slug}</strong> — {m.state.displayName}</span>
-              <form method="post" action="?/revertModule">
+              <form method="post" action="?/revertModule" use:confirmSubmit={{ title: `Revert module ${m.state.slug} to this snapshot?`, description: "A new snapshot is added to the history, so you can undo this there.", confirmLabel: "Revert module" }}>
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="moduleId" value={m.entityId} />
                 <Button type="submit" variant="outline" size="sm">Revert this module</Button>
@@ -67,7 +68,7 @@
           {#each data.templates as t (t.entityId)}
             <li class="flex items-center justify-between gap-2 text-sm">
               <span><strong>{t.state.slug}</strong> — {t.state.displayName}</span>
-              <form method="post" action="?/revertTemplate">
+              <form method="post" action="?/revertTemplate" use:confirmSubmit={{ title: `Revert template ${t.state.slug} to this snapshot?`, description: "A new snapshot is added to the history, so you can undo this there.", confirmLabel: "Revert template" }}>
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="templateId" value={t.entityId} />
                 <Button type="submit" variant="outline" size="sm">Revert this template</Button>
@@ -89,7 +90,7 @@
           {#each data.pages as p (p.entityId)}
             <li class="flex items-center justify-between gap-2 text-sm">
               <span><strong>{p.state.slug}</strong> — {p.state.title}</span>
-              <form method="post" action="?/revertPage">
+              <form method="post" action="?/revertPage" use:confirmSubmit={{ title: `Revert page ${p.state.slug} to this snapshot?`, description: "A new snapshot is added to the history, so you can undo this there.", confirmLabel: "Revert page" }}>
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="pageId" value={p.entityId} />
                 <Button type="submit" variant="outline" size="sm">Revert this page (metadata)</Button>
@@ -111,7 +112,7 @@
           {#each data.pageLayouts as l (l.entityId)}
             <li class="flex items-center justify-between gap-2 text-sm">
               <span>Layout for page {l.entityId.slice(0, 8)}</span>
-              <form method="post" action="?/revertPage">
+              <form method="post" action="?/revertPage" use:confirmSubmit={{ title: "Restore this page layout from the snapshot?", description: "A new snapshot is added to the history, so you can undo this there.", confirmLabel: "Restore layout" }}>
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="pageId" value={l.entityId} />
                 <Button type="submit" variant="outline" size="sm">Restore this layout</Button>
@@ -131,11 +132,7 @@
       <form
         method="post"
         action="?/revertSite"
-        onsubmit={(e) => {
-          if (!confirm("Revert the entire site to this snapshot? A new snapshot will be appended.")) {
-            e.preventDefault();
-          }
-        }}
+        use:confirmSubmit={{ title: "Revert the entire site to this snapshot?", description: "A new snapshot is added to the history, so you can undo this there.", confirmLabel: "Revert site" }}
       >
         <input type="hidden" name="_csrf" value={data.csrfToken} />
         <Button type="submit" variant="destructive">Revert site to this snapshot</Button>

@@ -143,6 +143,14 @@ export interface ToolContext {
    */
   readonly operatorBrowserAttached?: boolean;
   /**
+   * The tools whose full definition ships in this turn's request (the core
+   * set plus the engaged skills' preload hints); every other catalogue tool
+   * may sit behind the provider's tool search. Set by the chat-runner only —
+   * surfaces that list every tool (Power-MCP) leave it undefined. load_skill
+   * reads it so it never claims a deferred tool is callable as-is.
+   */
+  readonly preloadedToolNames?: ReadonlySet<string>;
+  /**
    * Issue #664 — the running turn's stop signal (the operator's Stop, a
    * lost turn lease, a closed request). A tool that runs long work of its
    * own (spawn_subagent's child turns) ties that work to it, so Stop ends

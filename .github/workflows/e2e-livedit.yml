@@ -366,7 +366,7 @@ jobs:
       # RLS is FORCEd behind a non-empty `caelo.actor_kind` GUC, so we SET
       # it in the same session. `-q` suppresses the SET command tag so
       # stdout is pure JSON. `if: always()` so a red suite still reports.
-      # Annotations only — this step never fails the job.
+      # This step never fails the job; the gate step below does.
       - name: Capture AI-detected bugs from ai_bug_reports
         if: always() && steps.provider-preflight.outcome == 'success'
         env:
@@ -404,6 +404,15 @@ jobs:
           if [ "${BLOCKING}" != "0" ]; then
             echo "::warning title=e2e-livedit bugs::${BLOCKING} blocking bug report(s) filed during this run — see the PR comment's Detected bugs table."
           fi
+
+      # Detected-bug gate. A tool error the AI had to recover from is our
+      # defect (CLAUDE.md §1A/§4); as warnings these piled up unowned under
+      # every PR. Any report not triaged in e2e-livedit/lib/known-bugs.ts
+      # (issue-linked) fails the job. Runs after the capture above and before
+      # the always() uploads + PR comment, which still run on failure.
+      - name: Gate on new detected bugs
+        if: always() && steps.provider-preflight.outcome == 'success'
+        run: bun run apps/admin/e2e-livedit/lib/bug-gate.ts
 
       # Durable per-run cost record — the trend metric the operator wants.
       # Separate from the failure-only artifact below: this uploads on
