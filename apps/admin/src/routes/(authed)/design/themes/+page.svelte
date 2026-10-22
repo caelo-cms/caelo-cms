@@ -1,6 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   // v0.11.1 (issue #76) — /design/themes list-view.
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -160,7 +161,7 @@
               <Button type="submit" variant="ghost" size="sm">Clone</Button>
             </form>
             {#if !theme.isActive}
-              <form method="post" action="?/delete">
+              <form method="post" action="?/delete" use:confirmSubmit={{ title: `Delete theme ${theme.displayName}?`, confirmLabel: "Delete theme" }}>
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="themeId" value={theme.id} />
                 <Button type="submit" variant="ghost" size="sm">Delete</Button>

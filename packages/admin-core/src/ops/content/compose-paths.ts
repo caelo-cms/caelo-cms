@@ -57,6 +57,27 @@ function isCompositionHome(
   return isHomeSlug(slug);
 }
 
+/**
+ * The page core composes at "/" in `tree` — the root half of
+ * {@link isCompositionHome} without plugin annotations: the designated
+ * home when one is set, else the top-level magic-slug page. Null when
+ * the site has neither. `site_defaults.get` reports it as `rootPageId`
+ * so readers (URL plugins deciding which page's counterparts are locale
+ * roots) never re-derive the rule from the designation alone.
+ */
+export function compositionRootPageId(
+  tree: PageTree,
+  designatedHomePageId: string | null,
+): string | null {
+  if (designatedHomePageId !== null) return designatedHomePageId;
+  for (const node of tree.byId.values()) {
+    if (isCompositionHome(node.id, node.slug, node.parentPageId !== null, null, {})) {
+      return node.id;
+    }
+  }
+  return null;
+}
+
 async function loadDesignatedHomePageId(tx: TransactionRunner): Promise<string | null> {
   const rows = (await tx.execute(sql`
     SELECT home_page_id::text AS home_page_id FROM site_defaults WHERE id = 1 LIMIT 1

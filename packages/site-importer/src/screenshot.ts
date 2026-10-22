@@ -212,6 +212,33 @@ export function sameOriginHeaderPatch(
   return { ...existingHeaders, ...headers };
 }
 
+/**
+ * Fail-closed route handler for own-origin preview captures (`external: false`):
+ * only GET/HEAD requests targeting `selfOrigin` are continued (with any
+ * `sameOriginHeaders` credential merged in). Cross-origin requests (third-party
+ * hosts, cloud metadata IPs like 169.254.169.254, other localhost ports, `file:`,
+ * `data:`) and non-GET/HEAD requests are aborted so untrusted module scripts
+ * rendered inside the branch preview cannot trigger SSRF or cross-origin egress.
+ */
+export async function handleSameOriginRoute(
+  route: PlaywrightRoute,
+  selfOrigin: string,
+  extraHeaders: Record<string, string> = {},
+): Promise<void> {
+  const req = route.request();
+  const method = req.method().toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    await route.abort("blockedbyclient");
+    return;
+  }
+  const patched = sameOriginHeaderPatch(req.url(), selfOrigin, req.headers(), extraHeaders);
+  if (!patched) {
+    await route.abort("blockedbyclient");
+    return;
+  }
+  await route.continue({ headers: patched });
+}
+
 /** Result of `launchBundledChromium`. `browser` is Playwright's opaque
  *  Browser handle (dynamic import, no @types). */
 export type BundledChromiumLaunch =
@@ -443,31 +470,16 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
       // browser context is even opened.
       assertPublicHttpUrl(url, { allowedHosts });
     }
+    const selfUrl = new URL(url);
     const ctx = await browser.newContext({
       viewport: { width: opts.width ?? 1280, height: opts.height ?? 800 },
       // Non-routed egress (navigation preconnects, WebRTC) goes to the
       // black hole and service workers are blocked — see browser-egress.ts.
-      ...(opts.external ? lockedDownContextOptions(blackhole.server) : {}),
+      // Own-origin captures (`external: false`) bypass the black-hole proxy
+      // ONLY for the navigation URL's `host:port` so `route.continue()` reaches
+      // the local preview route while every other host/port is black-holed.
+      ...lockedDownContextOptions(blackhole.server, opts.external ? undefined : selfUrl.host),
     });
-    if (opts.sameOriginHeaders) {
-      // Deliberately NOT `newContext({ extraHTTPHeaders })`: that would send
-      // the caller's credential (the preview capture token) to EVERY host the
-      // page embeds — external fonts, CDN images, analytics. Route-inject the
-      // headers only when the request targets the navigation URL's origin.
-      // Never combined with the `external` route guard below: only Caelo's
-      // own-origin captures (`external: false`) pass sameOriginHeaders.
-      const selfOrigin = new URL(url).origin;
-      const headers = opts.sameOriginHeaders;
-      await ctx.route("**/*", async (route: PlaywrightRoute) => {
-        const patched = sameOriginHeaderPatch(
-          route.request().url(),
-          selfOrigin,
-          route.request().headers(),
-          headers,
-        );
-        await route.continue(patched ? { headers: patched } : undefined);
-      });
-    }
     let navTarget = navigationKey(url);
     let navFinalUrl: string | undefined;
     if (opts.external) {
@@ -483,10 +495,22 @@ export async function createPlaywrightScreenshotter(guardOpts?: {
           },
         });
       });
-      // WebSockets bypass `ctx.route`; a rendered page must not open one to
-      // an internal address. Closing without connectToServer() never dials.
-      await ctx.routeWebSocket(/.*/, (ws: { close(): Promise<void> }) => ws.close());
+    } else {
+      // Deliberately NOT `newContext({ extraHTTPHeaders })`: that would send
+      // the caller's credential (the preview capture token) to EVERY host the
+      // page embeds — external fonts, CDN images, analytics. Route-inject the
+      // headers only when the request targets the navigation URL's origin, and
+      // abort all cross-origin or non-GET/HEAD requests fail-closed.
+      const selfOrigin = selfUrl.origin;
+      const headers = opts.sameOriginHeaders ?? {};
+      await ctx.route("**/*", async (route: PlaywrightRoute) => {
+        await handleSameOriginRoute(route, selfOrigin, headers);
+      });
     }
+    // WebSockets bypass `ctx.route`; a rendered page (external or own-origin
+    // branch preview) must not open one to an internal address. Closing
+    // without connectToServer() never dials.
+    await ctx.routeWebSocket(/.*/, (ws: { close(): Promise<void> }) => ws.close());
     const page = await ctx.newPage();
     try {
       // `domcontentloaded` is fast + reliable; then a SHORT best-effort wait

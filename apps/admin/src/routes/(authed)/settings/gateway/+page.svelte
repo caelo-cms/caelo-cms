@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Activity, KeyRound, Shield } from "lucide-svelte";
   import { enhance } from "$app/forms";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -108,7 +109,7 @@
       </CardDescription>
     </CardHeader>
     <CardContent>
-      <form method="post" action="?/rotateSecret" use:enhance>
+      <form method="post" action="?/rotateSecret" use:enhance use:confirmSubmit={{ title: "Rotate the cookie secret?", description: "Every visitor is signed out and has to log in again.", confirmLabel: "Rotate secret" }}>
         <Button type="submit" variant="destructive">Rotate cookie secret</Button>
       </form>
     </CardContent>

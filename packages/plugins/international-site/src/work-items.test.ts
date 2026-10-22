@@ -159,7 +159,9 @@ function world() {
   };
 
   let aiCalls = 0;
-  const ctx = (opts: { delegated: boolean; answer?: string }) =>
+  /** `answer`: the text `ctx.ai.complete` returns (chrome); `object`:
+   *  the structured answer `ctx.ai.generateObject` returns (pages). */
+  const ctx = (opts: { delegated: boolean; answer?: string; object?: unknown }) =>
     ({
       invocation: { origin: "chat", actorId: "a", aiDelegated: opts.delegated },
       adminQuery: q,
@@ -171,6 +173,13 @@ function world() {
             throw new Error("AiDelegated: test ctx — the plugin must not call ai");
           if (opts.answer === undefined) throw new Error("test ctx has no scripted answer");
           return { text: opts.answer, inputTokens: 1, outputTokens: 1 };
+        },
+        generateObject: async () => {
+          aiCalls += 1;
+          if (opts.delegated)
+            throw new Error("AiDelegated: test ctx — the plugin must not call ai");
+          if (opts.object === undefined) throw new Error("test ctx has no scripted object");
+          return { object: opts.object, inputTokens: 1, outputTokens: 1 };
         },
       },
     }) as unknown as PluginContextTier1;
@@ -197,7 +206,7 @@ const op = (name: string) => {
 const PAGE_ANSWER = {
   title: "Preise",
   metaDescription: "Faire Tarife für jedes Team",
-  slots: [{ slot: "s0", values: { hero_title: "Hallo" } }],
+  slots: [{ slot: "s0", values: [{ field: "hero_title", value: "Hallo" }] }],
 };
 const CHROME_ANSWER = { targets: [{ target: "c0", strings: { "nav[0].label": "Über uns" } }] };
 
@@ -257,7 +266,8 @@ describe("delegated translate_variant", () => {
       variantPageId: DE,
     })) as WorkItemResult;
     const applied = (await op("apply_translations")(delegated.ctx({ delegated: true }), {
-      items: [answerFor(r, JSON.stringify(PAGE_ANSWER))],
+      // Text answers may arrive fenced — the delegated path tolerates it.
+      items: [answerFor(r, `\`\`\`json\n${JSON.stringify(PAGE_ANSWER)}\n\`\`\``)],
     })) as { applied: number; failed: number; results: Array<Record<string, unknown>> };
     expect(delegated.aiCalls()).toBe(0);
     expect(applied.applied).toBe(1);
@@ -272,10 +282,8 @@ describe("delegated translate_variant", () => {
 
     const install = world();
     const direct = await op("translate_variant")(
-      install.ctx({
-        delegated: false,
-        answer: `\`\`\`json\n${JSON.stringify(PAGE_ANSWER)}\n\`\`\``,
-      }),
+      // The install's model answers through structured output (§12).
+      install.ctx({ delegated: false, object: PAGE_ANSWER }),
       { variantPageId: DE },
     );
     expect(install.aiCalls()).toBe(1);
@@ -358,7 +366,10 @@ describe("apply_translations validation", () => {
     const err = await op("apply_translations")(w.ctx({ delegated: true }), {
       items: [
         answerFor(chrome, CHROME_ANSWER),
-        answerFor(page, { ...PAGE_ANSWER, slots: [{ slot: "hero", values: { hero_title: "x" } }] }),
+        answerFor(page, {
+          ...PAGE_ANSWER,
+          slots: [{ slot: "hero", values: [{ field: "hero_title", value: "x" }] }],
+        }),
       ],
     }).catch((e: Error) => e);
     expect(err).toBeInstanceOf(Error);

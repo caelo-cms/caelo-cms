@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket } from "./helpers.js";
+import { acceptConfirm, clearLoginRateBucket } from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
 
@@ -68,8 +68,8 @@ test("Advanced History drawer reverts a module", async ({ page }) => {
   await expect(page).toHaveURL(/\/content\/history\/[0-9a-f-]+$/, { timeout: 15_000 });
 
   // Revert this module.
-  page.once("dialog", (d) => d.accept());
   await page.getByRole("button", { name: /revert this module/i }).click();
+  await acceptConfirm(page);
   await expect(page.getByRole("alert").getByText(/Module reverted\./)).toBeVisible({
     timeout: 15_000,
   });

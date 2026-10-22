@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { enhance } from "$app/forms";
   import CredentialHandoffs from "#lib/components/CredentialHandoffs.svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
@@ -136,14 +137,14 @@
                 <Button type="submit" size="sm" variant="outline" disabled={syncing}>Update roles</Button>
               </form>
               {#if !user.isFirstOwner}
-                <form method="post" action="?/delete" use:enhance={whileSyncing(false)}>
+                <form method="post" action="?/delete" use:enhance={whileSyncing(false)} use:confirmSubmit={{ title: `Delete user ${user.email}?`, description: "They lose access to the admin immediately.", confirmLabel: "Delete user" }}>
                   <input type="hidden" name="_csrf" value={data.csrfToken} />
                   <input type="hidden" name="userId" value={user.id} />
                   <Button type="submit" size="sm" variant="destructive" disabled={syncing}>Delete</Button>
                 </form>
               {/if}
             </div>
-            <form method="post" action="?/resetPassword" class="mt-2 flex flex-wrap items-end gap-2">
+            <form method="post" action="?/resetPassword" class="mt-2 flex flex-wrap items-end gap-2" use:confirmSubmit={{ title: `Set a new password for ${user.email}?`, description: "Their current password stops working immediately.", confirmLabel: "Set password" }}>
               <input type="hidden" name="_csrf" value={data.csrfToken} />
               <input type="hidden" name="userId" value={user.id} />
               <div class="space-y-1">

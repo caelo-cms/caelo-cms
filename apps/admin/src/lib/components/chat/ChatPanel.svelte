@@ -11,7 +11,12 @@
    * to /content/chat/[sessionId]/stream stays untouched.
    */
 
-  import { CHAT_IMAGE_MIMES, CHAT_MAX_ATTACHMENTS, CHAT_MAX_ATTACHMENT_BYTES } from "@caelo-cms/shared";
+  import {
+    CHAT_IMAGE_MIMES,
+    CHAT_MAX_ATTACHMENTS,
+    CHAT_MAX_ATTACHMENT_BYTES,
+    screenshotTargetNotRendered,
+  } from "@caelo-cms/shared";
   import { ArrowDown, ImagePlus, Lock, Square, Unlock } from "lucide-svelte";
   import { onMount, tick } from "svelte";
   import { page } from "$app/state";
@@ -1106,6 +1111,17 @@
         // viewport crop.
         captureTarget.scrollIntoView?.();
       }
+      // A 0×0 target paints a 0×0 canvas, which toBlob cannot encode. Script-
+      // revealed elements (a consent banner) are 0×0 here because this frame
+      // runs no scripts; the tool hands that case to the server-side renderer.
+      const notRendered = screenshotTargetNotRendered(
+        req.selector ?? "page body",
+        captureTarget.getBoundingClientRect(),
+      );
+      if (notRendered) {
+        await uploadFailure(notRendered);
+        return;
+      }
       // html2canvas-pro: maintained fork with modern CSS color support
       // (color-mix(), oklch, color()) — the original html2canvas parser
       // threw "unsupported color function" on AI-authored module CSS and
@@ -1137,7 +1153,12 @@
         canvas.toBlob(resolve, "image/jpeg", 0.85),
       );
       if (!blob) {
-        await uploadFailure("canvas.toBlob returned null");
+        // The target had a size, so the canvas did too: what is left is a
+        // canvas the browser cannot encode (beyond its maximum canvas area).
+        await uploadFailure(
+          screenshotTargetNotRendered(req.selector ?? "page body", canvas) ??
+            `the ${canvas.width}×${canvas.height}px capture could not be encoded (beyond this browser's canvas size limit) — capture a smaller element via selector`,
+        );
         return;
       }
       const arrayBuffer = await blob.arrayBuffer();

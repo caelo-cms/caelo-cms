@@ -39,6 +39,12 @@
  *     that run not built yet is kept and listed in `run.pending`; the
  *     caller records it and the run's finalisation converts it (or
  *     reports it) once the run's pages exist.
+ *   - the site root: `/` (with an optional `#anchor` / `?query`) while no
+ *     page serves it yet is kept literal, not refused. Every site has a
+ *     root page by the time it ships — the staged build refuses one
+ *     without — so the link cannot dangle, and site chrome (the brand
+ *     link, `/#features` nav items) is routinely written before the
+ *     homepage. Once the homepage exists, `/` canonicalises as usual.
  */
 
 import {
@@ -322,6 +328,16 @@ export function canonicaliseUrl(
     run.pending.push({ value: v, path: normalised, where });
     return value;
   }
+  if (pageId === null && normalised === "/") {
+    // The site root before its page exists (a header built ahead of the
+    // homepage). It cannot dangle: the staged build refuses a site with
+    // no page at "/" (CLAUDE.md §2: loud there, not here). Kept literal;
+    // the next save after the homepage exists stores its reference.
+    if ((query !== null && !QUERY_OK.test(query)) || (anchor !== null && !ANCHOR_OK.test(anchor))) {
+      if (!run.grandfathered.has(v)) issue(run, "unsupported-link-form", v, where);
+    }
+    return value;
+  }
   if (pageId === null) {
     const lastSegment = path.slice(path.lastIndexOf("/") + 1);
     const isFile = FILE_EXT_RE.test(lastSegment);
@@ -592,7 +608,8 @@ export function describeLinkIssues(issues: readonly LinkCanonicaliseIssue[]): st
     `Internal link check failed — ${lines.join("; ")}${more}. ` +
     "Internal links must point at an existing page or media asset. Next step: use the exact path " +
     "of an existing page (list_pages shows every page's path) or an existing media URL (find_media); " +
-    "if the page does not exist yet, create it first (or leave the link out and add it once the page " +
-    "exists). For a link to another site, write the full https:// URL."
+    "if the page does not exist yet, create it first (build_page with `modules: []` makes an empty page " +
+    "shell) or leave the link out and add it once the page exists. The site root `/` is always valid. " +
+    "For a link to another site, write the full https:// URL."
   );
 }
