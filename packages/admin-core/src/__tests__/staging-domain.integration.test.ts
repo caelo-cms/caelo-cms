@@ -443,7 +443,14 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       repoRoot: testRoot,
     });
     const liveRun = await timedRun(promoted.toRunId);
-    expect(topLevel(liveRun)).toEqual(["prepare", "generator", "parity", "publish"]);
+    expect(topLevel(liveRun)).toEqual([
+      "prepare",
+      "lock-wait",
+      "select-preview",
+      "generator",
+      "parity",
+      "publish",
+    ]);
     expect(names(liveRun)).toEqual(
       expect.arrayContaining([
         "generator.compose",
@@ -452,7 +459,10 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
         "publish.release",
       ]),
     );
-    expect(liveRun.took_ms).toBeGreaterThan(0);
+    const liveStepsMs = liveRun.phase_timings
+      .filter((p) => !p.phase.includes("."))
+      .reduce((n, p) => n + p.ms, 0);
+    expect(liveRun.took_ms).toBeGreaterThanOrEqual(liveStepsMs - 5);
     expect(liveRun.publish_summary).not.toHaveProperty("phases");
   });
 

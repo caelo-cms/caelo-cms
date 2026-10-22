@@ -341,6 +341,21 @@ function phaseTimingsParam(timer: PhaseTimer) {
   return jsonbParam(timer.phases());
 }
 
+/**
+ * The database clock now, as a run's `started_at`. Read before the run's
+ * PhaseTimer starts, so `finished_at - started_at` always covers the
+ * timed steps — the row itself is inserted only after preparation, and
+ * the column default would start the run there (#1003).
+ */
+async function runStartedAt(tx: TransactionRunner): Promise<string> {
+  const rows = (await tx.execute(sql`SELECT clock_timestamp()::text AS at`)) as unknown as {
+    at: string;
+  }[];
+  const at = rows[0]?.at;
+  if (!at) throw new Error("clock_timestamp() returned no row");
+  return at;
+}
+
 /** One log line per finished run with its step timings (Cloud Logging / docker logs). */
 function logRunTimings(
   kind: "stage" | "build" | "publish-live",
@@ -574,6 +589,7 @@ export const triggerDeployOp = defineOperation({
     unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
   }),
   handler: async (ctx, input, tx) => {
+    const startedAt = await runStartedAt(tx);
     const timer = new PhaseTimer();
     const targetRows = (await tx.execute(
       input.targetName
@@ -627,8 +643,8 @@ export const triggerDeployOp = defineOperation({
         const message =
           fav.error.kind === "HandlerError" ? fav.error.message : JSON.stringify(fav.error);
         await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', clock_timestamp(),
+          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
                   ${`Blocked, favicon: ${message}`})
         `);
         return err({ kind: "HandlerError", operation: "deploy.trigger", message });
@@ -650,8 +666,8 @@ export const triggerDeployOp = defineOperation({
       const held = await aiStageHoldRefusal(tx);
       if (held) {
         await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', clock_timestamp(),
+          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
                   ${`Automatic publish stopped: ${held}`})
         `);
         return err({ kind: "HandlerError", operation: "deploy.trigger", message: held });
@@ -668,8 +684,8 @@ export const triggerDeployOp = defineOperation({
       const missingSeo = describeMissingMetaDescriptions(await pagesMissingMetaDescription(tx));
       if (missingSeo) {
         await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', clock_timestamp(),
+          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
                   ${`Blocked, missing SEO: ${missingSeo}`})
         `);
         return err({ kind: "HandlerError", operation: "deploy.trigger", message: missingSeo });
@@ -680,8 +696,8 @@ export const triggerDeployOp = defineOperation({
       if (gate.ok) override = gate.override;
       if (!gate.ok) {
         await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', clock_timestamp(),
+          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
                   ${`Blocked by the quality gate: ${gate.message}`})
         `);
         return err({ kind: "HandlerError", operation: "deploy.trigger", message: gate.message });
@@ -719,10 +735,10 @@ export const triggerDeployOp = defineOperation({
     // #834 — the Caelo version rendering this build: Publish live's parity
     // guard names an upgrade between Stage and Publish live as the cause.
     const runIdRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status, render_fingerprint, covered_ai_hold_ids,
-                               caelo_version)
-      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${fingerprint},
-              ${uuidList(coveredHolds)}, ${CAELO_VERSION})
+      INSERT INTO deploy_runs (target_id, actor_id, status, started_at, render_fingerprint,
+                               covered_ai_hold_ids, caelo_version)
+      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${startedAt}::timestamptz,
+              ${fingerprint}, ${uuidList(coveredHolds)}, ${CAELO_VERSION})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const runId = runIdRows[0]?.id;
@@ -863,6 +879,7 @@ export const triggerDeployOp = defineOperation({
     ) {
       const stagingBaseUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
       const check = await verifyStagedBuildServed({ stagingBaseUrl, runId });
+      timer.lap("verify-served");
       if (!check.served) {
         const outputRoot = resolve(repoRoot, effectiveTarget.outDir);
         const message =
@@ -872,9 +889,11 @@ export const triggerDeployOp = defineOperation({
         await tx.execute(sql`
           UPDATE deploy_runs
           SET status = 'failed', finished_at = clock_timestamp(),
-              error_message = ${message}
+              error_message = ${message},
+              phase_timings = ${phaseTimingsParam(timer)}
           WHERE id = ${runId}::uuid
         `);
+        logRunTimings(runKind, runId, timer, { status: "failed" });
         return err({
           kind: "HandlerError",
           operation: "deploy.trigger",
@@ -1019,6 +1038,7 @@ export const promoteDeployOp = defineOperation({
     buildId: z.string(),
   }),
   handler: async (ctx, input, tx) => {
+    const startedAt = await runStartedAt(tx);
     const timer = new PhaseTimer();
     if (input.fromTarget === input.toTarget) {
       return err({
@@ -1105,8 +1125,8 @@ export const promoteDeployOp = defineOperation({
     const toTarget = rowToTarget(to);
 
     const toRunIdRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status)
-      VALUES (${to.id}::uuid, ${ctx.actorId}::uuid, 'running')
+      INSERT INTO deploy_runs (target_id, actor_id, status, started_at)
+      VALUES (${to.id}::uuid, ${ctx.actorId}::uuid, 'running', ${startedAt}::timestamptz)
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const toRunId = toRunIdRows[0]?.id;
@@ -1128,6 +1148,7 @@ export const promoteDeployOp = defineOperation({
       // publish has decided what staging serves next (lock order: live
       // release first, see staging-publication-lock.ts).
       if (fromRow?.site_url) await lockStagingPublication(tx);
+      timer.lap("lock-wait");
       const provider = process.env.CAELO_PROVIDER;
       const publisher = await loadStaticPublisher(provider);
       if (fromRow?.site_url) {
@@ -1138,6 +1159,7 @@ export const promoteDeployOp = defineOperation({
         // stopped expiring, and sweeps up previews a failed retirement left.
         // Done before the release, so a failure publishes nothing.
         await selectServedStagingPreview(publisher, await servedStagingRun(tx));
+        timer.lap("select-preview");
       }
       const { siteBaseUrl } = await readSeoSettings(tx);
       // #650 — a build staged with its own staging host cannot be copied
@@ -1184,7 +1206,6 @@ export const promoteDeployOp = defineOperation({
             caelo_version = ${rebuilt ? CAELO_VERSION : sql`(SELECT caelo_version FROM deploy_runs WHERE id = ${fromRunId}::uuid)`}
         WHERE id = ${toRunId}::uuid
       `);
-      logRunTimings("publish-live", toRunId, timer, { status: "succeeded" });
       // Issue #620 — a human Publish live ships the staged build, and with
       // it exactly the AI Stages that build covered.
       if (to.env === "production" && ctx.actorKind === "human" && fromRow) {
@@ -1193,6 +1214,8 @@ export const promoteDeployOp = defineOperation({
           productionRunId: toRunId,
         });
       }
+      // Last fallible step done: one line per run, never succeeded + failed.
+      logRunTimings("publish-live", toRunId, timer, { status: "succeeded" });
       return ok({ fromRunId, toRunId, buildId: summary.destinationBuildId });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
@@ -1401,6 +1424,7 @@ export const rollbackDeployOp = defineOperation({
     .strict(),
   output: z.object({ buildId: z.string(), newRunId: z.string() }),
   handler: async (ctx, input, tx) => {
+    const startedAt = await runStartedAt(tx);
     const targetRows = (await tx.execute(sql`
       SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
       FROM deploy_targets WHERE name = ${input.targetName} LIMIT 1
@@ -1460,9 +1484,10 @@ export const rollbackDeployOp = defineOperation({
     // run itself a valid rollback source later — without it the Firebase
     // publisher refuses a run with no `publish_summary.location`.
     const newRunRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, build_id, publish_summary)
-      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'succeeded', clock_timestamp(), ${buildId},
-              ${jsonbParam(summary)})
+      INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id,
+                               publish_summary)
+      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'succeeded', ${startedAt}::timestamptz,
+              clock_timestamp(), ${buildId}, ${jsonbParam(summary)})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const newRunId = newRunRows[0]?.id ?? "";
