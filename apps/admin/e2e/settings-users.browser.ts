@@ -109,5 +109,6 @@ test("#970: a user without a Google account is named right after creation, with 
   const user = page.locator("li", { hasText: fixed });
   await expect(user).toBeVisible();
   await user.getByRole("button", { name: "Delete" }).first().click();
+  await acceptConfirm(page);
   await expect(page.locator("li", { hasText: fixed })).toHaveCount(0);
 });
