@@ -91,12 +91,16 @@ install_from_cache() {
   [[ ${#debs[@]} -gt 0 ]] || return 1
   echo "Installing ${#debs[@]} cached .deb files offline"
   sudo dpkg -i "${debs[@]}" || return 1
-  local still_missing
-  still_missing="$(list_missing_packages)" || return 1
-  if [[ -n "$still_missing" ]]; then
-    echo "Cache did not cover: $still_missing" >&2
-    return 1
-  fi
+  # The cache key is the hash of the planned set, so checking that set is
+  # enough; no second apt simulation needed.
+  local pkg
+  while read -r pkg; do
+    [[ -n "$pkg" ]] || continue
+    if [[ "$(dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null || true)" != "installed" ]]; then
+      echo "Cache did not cover: $pkg" >&2
+      return 1
+    fi
+  done <"$MISSING_FILE"
 }
 
 # The original path, run once per cache key: apt installs from the mirror.

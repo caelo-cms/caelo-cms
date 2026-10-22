@@ -134,8 +134,9 @@ jobs:
         # Same step as ci.yml's check job (scripts/release-gate-env.test.ts
         # R3 keeps them in step): since #869 the site-importer's live
         # Chromium suites FAIL under CI without a browser, which failed the
-        # v0.10.54 publish after its release PR had merged.
-        run: bun node_modules/playwright/cli.js install chromium --with-deps
+        # v0.10.54 publish after its release PR had merged. #984 - apt fonts
+        # from actions/cache, not the Ubuntu mirror.
+        uses: ./.github/actions/playwright-chromium
 
       - name: Test
         run: bun run test
