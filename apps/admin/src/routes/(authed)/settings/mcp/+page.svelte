@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import CredentialHandoffs from "#lib/components/CredentialHandoffs.svelte";
   import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import McpClientSetup from "#lib/components/McpClientSetup.svelte";
@@ -72,6 +73,9 @@
   </div>
 
   <McpRemoteAccess remote={data.remote} mayUse={data.mayUse} canWrite={data.canWrite} />
+
+  <!-- #971 — tokens minted by an approved AI proposal. -->
+  <CredentialHandoffs csrfToken={data.csrfToken} kind="mcp_token" refreshKey={form} />
 
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>

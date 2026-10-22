@@ -200,6 +200,7 @@ import {
   proposeUrlMigrationOp,
   rejectUrlMigrationOp,
 } from "./ops/content/url_migrations.js";
+import { issueCredentialOp, listCredentialHandoffsOp } from "./ops/credential_handoffs.js";
 import {
   listDeployRunsOp,
   listDeployTargetsOp,
@@ -678,8 +679,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // v0.2.21 — users propose/execute pairs. AI proposes via
   // users.propose_*; Owner approves at /settings/users/pending which
   // calls users.execute_proposal (human-only) → runs the underlying
-  // users.{create,set_roles,delete} op. Passwords on create are
-  // server-generated at execute time; AI never handles credentials.
+  // users.{create,set_roles,delete} op. AI never handles credentials: a
+  // created user's one-time password is issued later by the approver
+  // through a credential handoff (#971).
   registry.register(proposeUserCreateOp);
   registry.register(proposeUserSetRolesOp);
   registry.register(proposeUserDeleteOp);
@@ -690,6 +692,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(operatorAccessMembersOp);
   registry.register(rejectUserProposalOp);
   registry.register(listPendingUserProposalsOp);
+  registry.register(listCredentialHandoffsOp);
+  registry.register(issueCredentialOp);
   registry.register(loginOp);
   registry.register(logoutOp);
   registry.register(resolveSessionOp);
@@ -979,10 +983,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(unblockMcpRemoteUserOp);
   registry.register(setMcpRemoteConnectionCapOp);
   // v0.2.27 — mcp_tokens propose/execute pairs (create / revoke).
-  // AI proposes new tokens by displayName + cap; the Owner approves
-  // at /settings/mcp/pending and the plaintext token is generated
-  // server-side and shown ONCE in the response banner. Same shape
-  // as users.execute_proposal returning the temp password.
+  // AI proposes new tokens by displayName + cap; the Owner approves and
+  // collects the token from a credential handoff (#971), like the new
+  // user's password from users.execute_proposal.
   registry.register(proposeMcpTokenCreateOp);
   registry.register(proposeMcpTokenRevokeOp);
   registry.register(executeMcpTokenProposalOp);

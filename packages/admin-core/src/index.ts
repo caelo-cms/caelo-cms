@@ -116,6 +116,12 @@ export * from "./media/storage.js";
 // #589 — approver permissions declared on the §11.A executor ops.
 export { approverPermissionsOf } from "./ops/_approver-permission.js";
 export * from "./ops/auth.js";
+// #971 — credentials an approval produced, collected by the approver in the admin.
+export {
+  type CredentialHandoffRef,
+  type CredentialKind,
+  HANDOFF_LOCATIONS,
+} from "./ops/credential_handoffs.js";
 export * from "./ops/deploy.js";
 // issue #297 — pure cost-gate math for the approve UI (shows the ceiling a
 // click will arm; requires a budget input when the estimate failed).

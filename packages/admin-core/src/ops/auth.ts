@@ -243,8 +243,9 @@ type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 /**
  * Store a fresh one-hour reset token for `userId` (only its SHA-256 lands in
  * `password_reset_tokens`) and return the raw token for the caller to deliver.
+ * Also the set-password link a credential handoff emails a new user (#971).
  */
-async function issueResetToken(
+export async function issueResetToken(
   tx: Tx,
   userId: string,
 ): Promise<{ token: string; expiresAt: string }> {

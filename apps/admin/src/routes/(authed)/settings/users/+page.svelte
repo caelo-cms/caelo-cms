@@ -2,6 +2,7 @@
   // SPDX-License-Identifier: MPL-2.0
   import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { enhance } from "$app/forms";
+  import CredentialHandoffs from "#lib/components/CredentialHandoffs.svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -53,6 +54,9 @@
       </form>
     {/if}
   </div>
+
+  <!-- #971 — passwords of users created by an approved AI proposal. -->
+  <CredentialHandoffs csrfToken={data.csrfToken} kind="user_temporary_password" refreshKey={form} />
 
   {#if syncing}
     <Alert>

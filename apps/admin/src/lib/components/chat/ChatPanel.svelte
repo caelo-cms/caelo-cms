@@ -42,6 +42,7 @@
   } from "#lib/components/agents/agent-runs-client.js";
   import DebugPanel from "./DebugPanel.svelte";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
+  import CredentialHandoffs from "../CredentialHandoffs.svelte";
   import InlineDiff from "./InlineDiff.svelte";
   import QualityFixOfferCard from "./QualityFixOfferCard.svelte";
   import {
@@ -341,6 +342,8 @@
     requestedVia: RequestedVia;
   }
   let sdkApprovals = $state<SdkApproval[]>([]);
+  // #971 — bumped to re-read the "One-time credentials" strip.
+  let credentialRefresh = $state(0);
   // Cards whose decision is on its way from this tab: a pending-list
   // refresh racing it must not bring them back meanwhile.
   const decidedApprovalIds = new Set<string>();
@@ -400,6 +403,10 @@
   }
 
   async function loadPendingProposals(): Promise<void> {
+    // #971 — an approval may have left a one-time credential for this
+    // operator; the strip re-reads whenever the pending state does. A write
+    // that does not read the state, so an $effect calling this never loops.
+    credentialRefresh = performance.now();
     try {
       const res = await fetch(`/content/chat/${session.id}/pending`, {
         headers: { accept: "application/json" },
@@ -2700,6 +2707,10 @@
             {/if}
           </div>
         {/if}
+        <!-- #971 — a credential an approval in this chat produced (a new
+             user's password, an MCP token): shown to the approver only,
+             never to the AI. -->
+        <CredentialHandoffs {csrfToken} refreshKey={credentialRefresh} />
         <!-- Plan B (SDK approval gate) — inline Approve/Reject for a gated tool
              a turn in this chat paused on. This chat's own AI resumes (or
              reacts to a denial) as soon as the operator decides; an external
