@@ -31,7 +31,7 @@
 
 import type { DatabaseAdapter, OperationRegistry, QueryError } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, PhaseTimer, type PhaseTiming } from "@caelo-cms/shared";
 import { describeError } from "../ai/tools/_describe-error.js";
 import type { DraftPagesSummary } from "../deploy/draft-pages.js";
 import type { UnpublishedLinkTarget } from "../deploy/unpublished-links.js";
@@ -225,6 +225,7 @@ export async function stageChatSessions(
   } = {},
 ): Promise<{ ok: true; value: StagedChats } | { ok: false; error: StageFailure }> {
   const { adapter, registry } = deps;
+  const timer = new PhaseTimer();
   const stagedBy = options.stagedBy ?? "operator";
   const ids = [...new Set(chatSessionIds)];
   if (ids.length === 0) {
@@ -259,6 +260,7 @@ export async function stageChatSessions(
     }
     (session.branchKind === "draft" ? draftIds : isolatedIds).push(chatSessionId);
   }
+  timer.lap("select");
   // Issue #620 — the shared draft's chats are one unit (one selective
   // merge of exactly their changes); every isolated chat is its own unit.
   const units: Unit[] = [
@@ -369,9 +371,12 @@ export async function stageChatSessions(
     }
   }
 
+  timer.lap("merge");
   const deployed = await execute(registry, adapter, ctx, "deploy.trigger", {
     targetName: "staging",
   });
+  if (deployed.ok) timer.include("deploy", (deployed.value as { phases: PhaseTiming[] }).phases);
+  timer.lap("deploy");
   if (!deployed.ok) {
     // issue #262 — run #7's "silent no-op": keep this breadcrumb so a Stage
     // failure is ALWAYS visible in stderr. finalize is deliberately NOT
@@ -419,6 +424,7 @@ export async function stageChatSessions(
       };
     }
   }
+  timer.lap("finalize");
 
   const summary = deployed.value as {
     runId: string;
@@ -444,6 +450,20 @@ export async function stageChatSessions(
     branch: combineStageClassifications(classified.map((c) => c.value)),
     stagedBy,
   });
+  timer.lap("enqueue-audit");
+  // The whole wait behind the Stage button, step by step; the deploy.*
+  // breakdown is also stored on the run (deploy_runs.phase_timings).
+  console.info(
+    `[stage] staged ${summary.pageCount} pages in ${timer.totalMs()} ms`,
+    JSON.stringify({
+      runId: summary.runId,
+      chats: ids.length,
+      pageCount: summary.pageCount,
+      fileCount: summary.fileCount,
+      totalMs: timer.totalMs(),
+      phases: timer.phases(),
+    }),
+  );
 
   return {
     ok: true,

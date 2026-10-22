@@ -40,6 +40,8 @@ import {
   isRasterImageMime,
   linkMarkersOf,
   type ModuleFieldKind,
+  PhaseTimer,
+  type PhaseTiming,
   redirectTargetIssue,
   type ThemeDocument,
   themeFaviconRendition,
@@ -110,6 +112,11 @@ export interface GenerateResult {
   readonly pageCount: number;
   readonly fileCount: number;
   readonly durationMs: number;
+  /**
+   * Where `durationMs` went, pass by pass, in build order. A Stage
+   * reports them with its own steps (deploy_runs.phase_timings).
+   */
+  readonly phases: readonly PhaseTiming[];
   /** Absolute path to the build dir under builds/<runId>. */
   readonly buildDir: string;
   /**
@@ -441,6 +448,7 @@ export async function generateSite(args: {
   syncCurrent?: boolean;
 }): Promise<GenerateResult> {
   const start = Date.now();
+  const timer = new PhaseTimer();
   const { tx, target, runId } = args;
   if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
     throw new Error(`static-generator: invalid runId "${runId}"`);
@@ -559,6 +567,7 @@ export async function generateSite(args: {
     incremental: (args.changedPageIds?.length ?? 0) > 0,
   });
   if (rootError !== null) throw new Error(rootError);
+  timer.lap("load-pages");
 
   // P6.7.6 — load layout modules once for the whole build, keyed by
   // layout_id. Per-page composition picks its layout's set; same
@@ -763,6 +772,7 @@ export async function generateSite(args: {
     }
   }
 
+  timer.lap("load-site");
   let fileCount = 0;
   args.onProgress?.({ pagesDone: 0, pagesTotal: pageRows.length });
 
@@ -925,6 +935,7 @@ export async function generateSite(args: {
   const renderedForGate: RenderedPageForGate[] = [];
   const linkIndex = await loadBuildLinkIndex(tx, target.env, pageUrlStyle, args.plugins);
   const unpublishedLinkTargets: UnpublishedLinkTarget[] = [];
+  timer.lap("load-content");
 
   for (let i = 0; i < pageRows.length; i++) {
     const page = pageRows[i];
@@ -1005,6 +1016,7 @@ export async function generateSite(args: {
   // malformed list item, …) would ship as a silently empty section.
   // Refuse the build and name every page / module / field instead.
   assertNoRenderFailures(renderedForGate);
+  timer.lap("compose");
 
   // P7 — media pass. Mutates each composedPages[i].html in place to
   // swap /_caelo/media/... URLs for /_assets/...; copies variant bytes
@@ -1047,6 +1059,7 @@ export async function generateSite(args: {
   // X-Robots-Tag header (see seo-pass.ts header).
   // Mutates each composedPages[i].html in place, same pattern as
   // runMediaPass.
+  timer.lap("media");
   const seoResult = await runSeoPass({
     tx,
     plugins: args.plugins,
@@ -1058,6 +1071,7 @@ export async function generateSite(args: {
     notFoundPageId,
   });
   if (seoResult.sitemapEmitted) fileCount += 1;
+  timer.lap("seo");
 
   // P13 — plugin render pass: per page call each active
   // Tier-1 plugin's `staticRender(...)`, splice into the page body at
@@ -1071,6 +1085,7 @@ export async function generateSite(args: {
     pageUrlStyle,
   });
 
+  timer.lap("plugin-render");
   // #449 — plugin client assets: one call per contributing plugin for
   // the whole build, written under `_caelo/plugin/<slug>/` with the
   // content hash in the name, then referenced from every page. Runs
@@ -1097,7 +1112,9 @@ export async function generateSite(args: {
 
   // issue #158 — minify the composer's inline CSS/JS last, after every
   // pass that still rewrites inside them (media URLs, plugin assets).
+  timer.lap("plugin-assets");
   minifyPageAssets(composedPages);
+  timer.lap("minify");
 
   // v0.2.85 — per-key Content-Type sidecar. When pageUrlStyle is
   // 'no-extension' the page files are bare slugs (no `.html`), so
@@ -1200,6 +1217,7 @@ export async function generateSite(args: {
     pageUrlStyle,
   });
 
+  timer.lap("write");
   // Atomic-ish swap. `current/` is a regular directory (not a symlink)
   // because Docker Desktop / VirtioFS bind mounts on macOS don't follow
   // symlinks reliably across the host/container boundary. We sync the
@@ -1215,12 +1233,15 @@ export async function generateSite(args: {
   // Best-effort old-build retention: keep the most recent 5, remove the
   // rest. Failures are swallowed because they don't affect the live
   // serving target (which is `current/`).
+  timer.lap("sync-current");
   await pruneOldBuilds(buildsDir, runId, 5);
+  timer.lap("prune");
 
   return {
     pageCount: pageRows.length,
     fileCount,
     durationMs: Date.now() - start,
+    phases: timer.phases(),
     buildDir,
     unpublishedLinkTargets,
   };
