@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.10.64
+
+### Features
+- f29f25fc Firestore store, Issues-only GitHub App, daily issue cap + kill switch (#980) (#989)
+- 5ef6801b let the Owner re-send reports that ended in failed (#982) (#988)
+
+### Fixes
+- e9a73338 keep the served Firebase preview alive by TTL refresh, not an expireTime clear (#969) (#972)
+
+### Chores
+- fc9c6636 v0.10.63 (#999)
+
+### Other
+- 53d26749 publish a signed bug-intake image on every merge to main (#981) (#986)
+
+## v0.10.63
+
+### Fixes
+- e9a73338 keep the served Firebase preview alive by TTL refresh, not an expireTime clear (#969) (#972)
+
 ## v0.10.62
 
 ### Features
