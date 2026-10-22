@@ -231,25 +231,17 @@ describe("captcha (PoW)", () => {
     expect(r2.ok).toBe(false);
   });
 
-  it("rejects a wrong nonce", async () => {
-    // Use a strict 6-char target prefix so the chance of a random
-    // nonce accidentally satisfying it is ~1/16M. The trivial "0"
-    // prefix from the surrounding suite would otherwise let a fixed
-    // wrong nonce pass roughly 6% of CI runs.
-    const strictConfig = { provider: "pow" as const, powTargetPrefix: "abcdef" };
-    const challenge = await issuePowChallenge(adapter, {
-      config: strictConfig,
-      visitorIdHash,
-    });
-    const r = await verifyPowProof(
+  it("rejects a wrong nonce without burning the challenge", async () => {
+    const proof = await solved(visitorIdHash);
+    const bad = await verifyPowProof(
       adapter,
-      {
-        challenge: challenge.challenge,
-        nonce: "definitely-wrong-zz",
-      },
+      { challenge: proof.challenge, nonce: unsolvedNonce(proof.challenge, config.powTargetPrefix) },
       visitorIdHash,
     );
-    expect(r.ok).toBe(false);
+    expect(bad).toEqual({ ok: false, reason: "proof does not satisfy target prefix" });
+    // The valid proof for the same challenge must still succeed afterwards.
+    const good = await verifyPowProof(adapter, proof, visitorIdHash);
+    expect(good).toEqual({ ok: true });
   });
 
   it("rejects an unknown challenge", async () => {
@@ -263,6 +255,21 @@ describe("captcha (PoW)", () => {
     );
     expect(r).toEqual({ ok: false, reason: expect.stringContaining("unknown captcha challenge") });
   });
+
+  /**
+   * A nonce that provably does NOT solve `challenge`. Any fixed "wrong-looking"
+   * string is not enough: the target here is one hex char, so an arbitrary
+   * nonce satisfies it with probability 1/16 against a random challenge and
+   * the "wrong" proof would legitimately claim it. Scan until the digest
+   * misses the prefix.
+   */
+  function unsolvedNonce(challenge: string, target: string): string {
+    for (let i = 0; ; i++) {
+      const nonce = `wrong-${i}`;
+      const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
+      if (!hex.startsWith(target)) return nonce;
+    }
+  }
 
   /** Issue a challenge to `issuedTo` and solve it. */
   async function solved(issuedTo: string): Promise<{ challenge: string; nonce: string }> {

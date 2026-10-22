@@ -9,8 +9,9 @@
 
 import { describe, expect, it } from "bun:test";
 import type { VisitorConsentRule } from "@caelo-cms/plugin-host";
-import { signCookieValue } from "./middleware/signed-cookie.js";
-import { parseCookies, resolveVisitor } from "./visitor.js";
+import { hashVisitorId } from "./middleware/captcha.js";
+import { signCookieValue, verifySignedCookie } from "./middleware/signed-cookie.js";
+import { parseCookies, resolveVisitor, VISITOR_COOKIE_MAX_AGE } from "./visitor.js";
 
 const SECRET = "test-secret-677";
 const RULE: VisitorConsentRule = {
@@ -128,5 +129,37 @@ describe("parseCookies", () => {
 
   it("decodes values and ignores pairs without a name", () => {
     expect(parseCookies("=x; c=%7B%7D;  d=1")).toEqual({ c: "{}", d: "1" });
+  });
+});
+
+describe("signed-cookie hex & session maxAge hardening", () => {
+  it("rejects signatures with trailing non-hex characters inside a byte pair", async () => {
+    const signed = await sign("abc");
+    const [val, ts] = signed.split(".");
+    const badSig = `${"0z".repeat(32)}`;
+    expect(
+      await verifySignedCookie({ signed: `${val}.${ts}.${badSig}`, secret: SECRET }),
+    ).toBeNull();
+  });
+
+  it("rejects an expired caelo_session cookie older than VISITOR_COOKIE_MAX_AGE", async () => {
+    const token = "a".repeat(64);
+    const oldSession = await signCookieValue({
+      value: token,
+      secret: SECRET,
+      issuedAt: Math.floor(Date.now() / 1000) - VISITOR_COOKIE_MAX_AGE - 10,
+    });
+    const freshSession = await signCookieValue({
+      value: token,
+      secret: SECRET,
+    });
+    expect((await resolve(req(`caelo_session=${oldSession}`))).sessionToken).toBeNull();
+    expect((await resolve(req(`caelo_session=${freshSession}`))).sessionToken).toBe(token);
+  });
+
+  it("hashes visitor IDs with 256-bit SHA-256 (64 hex chars)", () => {
+    const h = hashVisitorId("22222222-2222-4222-8222-222222222222");
+    expect(h).toMatch(/^[0-9a-f]{64}$/);
+    expect(h).not.toBe(hashVisitorId("33333333-3333-4333-8333-333333333333"));
   });
 });
