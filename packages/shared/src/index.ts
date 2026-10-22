@@ -69,6 +69,7 @@ export * from "./skills.js";
 export * from "./snapshots.js";
 export * from "./staging-gate.js";
 export * from "./static-cache-policy.js";
+export * from "./static-security-headers.js";
 export * from "./strip-cdata.js";
 export * from "./structured-sets.js";
 export * from "./subagents.js";

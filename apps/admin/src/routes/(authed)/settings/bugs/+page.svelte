@@ -60,7 +60,10 @@
     local_only: { label: "This site only", hint: "Stored on this site. The Caelo team has not received it." },
     queued: { label: "Queued", hint: "Will be sent to the Caelo team automatically." },
     sent: { label: "Sent", hint: "The Caelo team received this report." },
-    failed: { label: "Not sent", hint: "Sending to the Caelo team failed. It is stored on this site." },
+    failed: {
+      label: "Not sent",
+      hint: "Sending to the Caelo team failed. It is stored on this site; while sending is on, the Send button above tries again.",
+    },
   };
 
   // A fenced code block's fence must be LONGER than any backtick run it
@@ -156,16 +159,22 @@
       {#if forwarding.enabled}
         <span class="text-sm">
           <strong>On.</strong>
-          {forwarding.counts.sent} sent · {forwarding.counts.queued} waiting{forwarding.counts.failed > 0
-            ? ` · ${forwarding.counts.failed} not sent`
+          <!-- "not sent" is the same number as the button below; reports
+               marked fixed or invalid are never sent and are named apart. -->
+          {forwarding.counts.sent} sent · {forwarding.counts.queued} waiting{forwarding.counts.unsent > 0
+            ? ` · ${forwarding.counts.unsent} not sent`
+            : ""}{forwarding.counts.closedUnsent > 0
+            ? `. ${forwarding.counts.closedUnsent} marked fixed or invalid ${forwarding.counts.closedUnsent === 1 ? "stays" : "stay"} on this site.`
             : ""}
         </span>
-        {#if forwarding.counts.earlierUnsent > 0}
-          <form method="post" action="?/queueEarlier">
+        <!-- Covers reports filed before the opt-in and reports whose sending
+             failed: both have not reached the Caelo team, one click sends them. -->
+        {#if forwarding.counts.unsent > 0}
+          <form method="post" action="?/queueUnsent">
             <input type="hidden" name="_csrf" value={data.csrfToken} />
             <Button type="submit" size="sm">
-              <Send class="mr-2 size-4" /> Send {forwarding.counts.earlierUnsent} earlier report{forwarding
-                .counts.earlierUnsent === 1
+              <Send class="mr-2 size-4" /> Send {forwarding.counts.unsent} unsent report{forwarding
+                .counts.unsent === 1
                 ? ""
                 : "s"}
             </Button>

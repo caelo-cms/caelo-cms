@@ -589,6 +589,40 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
     ) as { cachePolicyVersion?: number };
     expect(written.cachePolicyVersion).toBe(CACHE_POLICY_VERSION);
   });
+
+  // #891 regression: GCS serves only a fixed set of metadata headers, so an
+  // uploaded SVG went live with nothing stopping it from running as a
+  // document on the site's origin when opened directly.
+  it("an SVG is stored as a download (Content-Disposition: attachment) on staging AND after promote", async () => {
+    const SVG = "_assets/logo.0123456789abcdef.svg";
+    const PNG = "_assets/hero.0123456789abcdef.png";
+    await mkdir(join(buildDir, "_assets"), { recursive: true });
+    await writeFile(join(buildDir, SVG), "<svg xmlns='http://www.w3.org/2000/svg'/>", "utf8");
+    await writeFile(join(buildDir, PNG), new Uint8Array([137, 80, 78, 71]));
+    await writePromotableManifest();
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-svg", target: TARGET });
+    const metaOf = (bucket: MockBucket, key: string) =>
+      bucket.files.get(key)?.metadata as
+        | { contentType?: string; contentDisposition?: string; cacheControl?: string }
+        | undefined;
+    expect(metaOf(stagingBucket, `run-svg/${SVG}`)?.contentDisposition).toBe("attachment");
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-svg",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com",
+    });
+    expect(metaOf(staticBucket, SVG)).toMatchObject({
+      contentType: "image/svg+xml",
+      contentDisposition: "attachment",
+      cacheControl: IMMUTABLE_CACHE_CONTROL,
+    });
+    // Rasters and pages stay inline.
+    expect(metaOf(staticBucket, PNG)?.contentDisposition).toBeUndefined();
+    expect(metaOf(staticBucket, "en/about/index.html")?.contentDisposition).toBeUndefined();
+  });
 });
 
 // Reused from static-publisher-gcs.ts (kept in sync; tested above by

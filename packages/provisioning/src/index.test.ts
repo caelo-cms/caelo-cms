@@ -3,7 +3,11 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CONTENT_HASHED_PATH_PATTERN, IMMUTABLE_CACHE_CONTROL } from "@caelo-cms/shared";
+import {
+  CONTENT_HASHED_PATH_PATTERN,
+  IMMUTABLE_CACHE_CONTROL,
+  SVG_DOCUMENT_CSP,
+} from "@caelo-cms/shared";
 import { generateBootstrapToken } from "./bootstrap-token.js";
 import { generateCaddyfile } from "./caddy.js";
 import { loadCdnCopyAdapter, selfHostedCdnCopy } from "./cdn-copy.js";
@@ -92,7 +96,37 @@ describe("Caddy cache policy for content-hashed assets", () => {
       );
       expect(body).toContain(`header @content_hashed Cache-Control "${IMMUTABLE_CACHE_CONTROL}"`);
       expect(body).toContain('\t@ico path *.ico\n\theader @ico Content-Type "image/x-icon"\n');
+      // #891 — the same security headers as the generated vhosts.
+      expect(body).toContain('\theader X-Content-Type-Options "nosniff"\n');
+      expect(body).toContain(
+        `\t@svg path *.svg\n\theader @svg Content-Security-Policy "${SVG_DOCUMENT_CSP}"\n`,
+      );
     }
+  });
+
+  // #891 regression: the public vhost served uploaded SVGs without a CSP, so
+  // a script that got past sanitizeSvg ran on the site's origin (which also
+  // serves /api/*) when the SVG's URL was opened.
+  it("public vhosts (live and staging) sandbox SVGs and nosniff everything; admin vhosts are untouched", () => {
+    const out = generateCaddyfile({
+      ...spec,
+      domains: [
+        ...spec.domains,
+        { hostname: "staging.example.com", kind: "public", env: "staging" },
+      ],
+    });
+    const blocks = [
+      out.match(/\nexample\.com \{[\s\S]*?\n\}/)?.[0] ?? "",
+      out.match(/\nstaging\.example\.com \{[\s\S]*?\n\}/)?.[0] ?? "",
+    ];
+    for (const block of blocks) {
+      expect(block).toContain('  header X-Content-Type-Options "nosniff"\n');
+      expect(block).toContain(
+        `  @svg path *.svg\n  header @svg Content-Security-Policy "${SVG_DOCUMENT_CSP}"\n`,
+      );
+    }
+    const adminBlock = out.match(/admin\.example\.com \{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(adminBlock).not.toContain("Content-Security-Policy");
   });
 
   it("public vhosts serve .ico favicons as image/x-icon; admin vhosts are untouched", () => {

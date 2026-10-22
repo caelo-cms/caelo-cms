@@ -72,6 +72,11 @@ jobs:
       # self-hosted Caddyfile with the pinned Caddy image. Required here, so
       # a runner without Docker fails the job instead of skipping the check.
       CAELO_CADDY_VALIDATE: required
+      # #980 - firestore-store.test.ts runs the bug intake's Firestore store
+      # against the emulator started below. Required here, so a missing
+      # emulator fails the job instead of skipping the suite.
+      CAELO_FIRESTORE_EMULATOR: required
+      FIRESTORE_EMULATOR_HOST: 127.0.0.1:8915
 
     services:
       postgres:
@@ -162,6 +167,24 @@ jobs:
         # FAIL under CI without a browser instead of passing vacuously.
         # Same repo-pinned CLI the screenshotter's launch hint names.
         run: bun node_modules/playwright/cli.js install chromium --with-deps
+
+      - name: Start Firestore emulator (bug intake store tests)
+        # #980 - the emulator jar firebase-tools pins, verified by SHA-256
+        # before it runs. Java 21 is preinstalled on ubuntu-latest.
+        env:
+          EMULATOR_VERSION: 1.22.0
+          EMULATOR_SHA256: 9b6498b7f62714d67f48f59b3818883cd682dbcd46b9f59511de81c97bb5166c
+        run: |
+          jar="$RUNNER_TEMP/cloud-firestore-emulator.jar"
+          curl -fsSL -o "$jar" "https://storage.googleapis.com/firebase-preview-drop/emulator/cloud-firestore-emulator-v${EMULATOR_VERSION}.jar"
+          echo "${EMULATOR_SHA256}  $jar" | sha256sum -c -
+          nohup "$JAVA_HOME_21_X64/bin/java" -jar "$jar" --host=127.0.0.1 --port=8915 > "$RUNNER_TEMP/firestore-emulator.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -fs "http://$FIRESTORE_EMULATOR_HOST/" > /dev/null && exit 0
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/firestore-emulator.log"
+          exit 1
 
       - name: Test + coverage gate
         # Issue #14 — runs the full suite split into the unit

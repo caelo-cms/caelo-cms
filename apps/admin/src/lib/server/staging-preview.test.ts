@@ -11,9 +11,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { SVG_DOCUMENT_CSP } from "@caelo-cms/shared";
 import type { Bucket } from "@google-cloud/storage";
 import { isHttpError } from "@sveltejs/kit";
-import { SVG_DOCUMENT_CSP } from "./media-headers.js";
 import { STAGED_DOCUMENT_CSP } from "./preview-sandbox.js";
 import { createStagingPreviewHandler, gcsStagingPreviewBuckets } from "./staging-preview.js";
 
