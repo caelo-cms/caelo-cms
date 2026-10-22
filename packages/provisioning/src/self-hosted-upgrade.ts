@@ -21,7 +21,9 @@
  *      was retired in (run-order.ts): past it, nothing running uses it;
  *   6. recreate the admin, health-check it (`/_caelo/health`, which proves
  *      the DB pool and roles); then the gateway (`/healthz`);
- *   7. record the release in `.caelo/release.json`.
+ *   7. re-write the Caddyfile and reload Caddy — the edge headers live there
+ *      (#891), and only the new release's generator knows them;
+ *   8. record the release in `.caelo/release.json`.
  * Any failure after step 3 puts the previous Compose file back; once a
  * container was recreated the previous images are started again and
  * health-checked (rollback). The database is never restored automatically:
@@ -90,6 +92,13 @@ export interface SelfHostedUpgradeDeps {
    * (`convergeSelfHostedRoles`); drops roles a release retired (#635).
    */
   readonly convergeRoles: () => Promise<ConvergeOutcome>;
+  /**
+   * Re-writes the Caddyfile from the install's config + domains table and
+   * reloads Caddy (#891): the edge headers (the SVG CSP, nosniff) live in
+   * the Caddyfile this release's generator writes, so an upgrade that only
+   * rolled the containers would leave the install on the old edge config.
+   */
+  readonly refreshCaddy: () => Promise<{ ok: true } | { ok: false; error: string }>;
   readonly fetchImpl?: typeof fetch;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => Date;
@@ -130,7 +139,8 @@ type UpgradeStage =
   | "migrate"
   | "roles"
   | "roll-admin"
-  | "roll-gateway";
+  | "roll-gateway"
+  | "caddy";
 
 /** Where an install from before #696 keeps its original Compose file during the move. */
 export function legacyComposePath(caeloDir: string): string {
@@ -287,6 +297,10 @@ export async function upgradeSelfHosted(
         false,
       );
     }
+    // A run that stopped after the roll (or an install upgraded before the
+    // Caddyfile was part of the upgrade) gets this release's edge config.
+    const caddy = await refreshCaddy(deps);
+    if (!caddy.ok) return caddy.failure;
     log.info(`Already on ${current.version} (${shortDigest(images.admin)}); nothing to do.`);
     return { ok: true, status: "already-current", version: current.version };
   }
@@ -378,7 +392,13 @@ export async function upgradeSelfHosted(
     log.info(`${service} healthy ✓`);
   }
 
-  // 7. Record.
+  // 7. The Caddyfile this release generates (edge headers, #891). The new
+  // containers already serve; a failure is reported before the release is
+  // recorded, so a re-run (the already-current path above) retries it.
+  const caddy = await refreshCaddy(deps);
+  if (!caddy.ok) return caddy.failure;
+
+  // 8. Record.
   log.phase?.("record");
   recordRelease(
     caeloDir,
@@ -388,6 +408,23 @@ export async function upgradeSelfHosted(
   );
   log.step(`Upgraded to ${target.version}. Backup kept at ${backup.dir}`);
   return { ok: true, status: "upgraded", version: target.version };
+}
+
+/** Step 7: re-write + reload the Caddyfile; on failure, the result to return. */
+async function refreshCaddy(
+  deps: SelfHostedUpgradeDeps,
+): Promise<{ ok: true } | { ok: false; failure: SelfHostedUpgradeResult }> {
+  deps.log.step("Re-writing the Caddyfile and reloading Caddy");
+  const r = await deps.refreshCaddy();
+  if (r.ok) return { ok: true };
+  return {
+    ok: false,
+    failure: fail(
+      "caddy",
+      `${r.error}\nThe new release is running, but Caddy may still serve the previous Caddyfile (without this release's security headers). Fix the cause, then run \`${selfCommand("regenerate-caddy")}\` or re-run the upgrade.`,
+      false,
+    ),
+  };
 }
 
 function fail(

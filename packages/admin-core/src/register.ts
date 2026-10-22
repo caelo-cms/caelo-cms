@@ -17,7 +17,7 @@ import {
   getBugForwardingOp,
   markBugIntakeRegisteredOp,
   previewBugForwardingOp,
-  queueEarlierBugReportsOp,
+  queueUnsentBugReportsOp,
   recordBugClusterStatusOp,
   recordBugForwardResultOp,
   setBugForwardingOp,
@@ -204,6 +204,7 @@ import {
   listDeployRunsOp,
   listDeployTargetsOp,
   promoteDeployOp,
+  refreshStagingPreviewOp,
   rollbackDeployOp,
   triggerDeployOp,
   updateDeployProgressOp,
@@ -982,6 +983,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);
   registry.register(updateDeployProgressOp);
+  // #969 — the orchestrator's keep-alive for the served staging preview.
+  registry.register(refreshStagingPreviewOp);
   // v0.2.19 — propose/execute pair for promote + rollback. AI proposes
   // (human + ai + system); Owner approves at /settings/deployments/pending
   // which calls execute_proposal (human + system) → runs the underlying op.
@@ -1069,7 +1072,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // Epic #901 — forwarding bug reports to the Caelo team (opt-in).
   registry.register(getBugForwardingOp);
   registry.register(setBugForwardingOp);
-  registry.register(queueEarlierBugReportsOp);
+  registry.register(queueUnsentBugReportsOp);
   registry.register(previewBugForwardingOp);
   registry.register(claimDueBugReportsOp);
   registry.register(recordBugForwardResultOp);

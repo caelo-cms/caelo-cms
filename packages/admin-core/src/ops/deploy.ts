@@ -1265,6 +1265,47 @@ async function selectServedStagingPreview(
 }
 
 /**
+ * #969 — keep the preview staging serves alive between Stages. A provider
+ * whose served preview has a finite lifetime (Firebase Hosting: preview
+ * channels live at most 30 days and cannot be made permanent) extends it
+ * again; Stage and Publish live do the same through selectStagingPreview,
+ * this covers the idle stretch in between. Runs under the staging
+ * publication lock, so it refreshes exactly the preview a concurrent Stage
+ * or Publish live leaves served. A served preview that is already gone
+ * fails loudly (Stage again) — never a silent no-op.
+ */
+export const refreshStagingPreviewOp = defineOperation({
+  name: "deploy.refresh_staging_preview",
+  // Why human-only: a maintenance tick the redeploy orchestrator runs on a
+  // timer; it decides nothing an editor or the AI chooses (Stage already
+  // refreshes the preview), so it carries no AI tool.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({
+    servedRunId: z.string().nullable(),
+    expiresAt: z.string().nullable(),
+  }),
+  handler: async (_ctx, _input, tx) => {
+    const publisher = await loadStaticPublisher(process.env.CAELO_PROVIDER);
+    if (!publisher.refreshStagingPreview) return ok({ servedRunId: null, expiresAt: null });
+    await lockStagingPublication(tx);
+    const servedRunId = await servedStagingRun(tx);
+    if (servedRunId === null) return ok({ servedRunId: null, expiresAt: null });
+    try {
+      const { expiresAt } = await publisher.refreshStagingPreview({ servedRunId });
+      return ok({ servedRunId, expiresAt });
+    } catch (e) {
+      return err({
+        kind: "HandlerError",
+        operation: "deploy.refresh_staging_preview",
+        message: `the staging preview of build ${servedRunId} could not be kept alive: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  },
+});
+
+/**
  * Rollback: re-target a target's `current` symlink at any prior
  * succeeded build for that target. Atomic, no rebuild. The caller
  * passes the deploy_runs.id whose `build_id` should become live.
