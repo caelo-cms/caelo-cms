@@ -43,6 +43,10 @@ function toolCtxRecording(opInputs: Record<string, unknown>[]): ToolContext {
         opInputs.push(input as Record<string, unknown>);
         return ok({});
       }
+      // #158 — a css-only edit_module reads the stored root for the scope check.
+      if (op.name === "modules.get") {
+        return ok({ module: { html: '<section class="hero"><a class="cta"></a></section>' } });
+      }
       return ok({});
     },
   } as unknown as DatabaseAdapter;

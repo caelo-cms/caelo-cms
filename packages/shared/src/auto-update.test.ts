@@ -58,6 +58,7 @@ function input(over: Partial<AutoUpdateInput> & { version?: string; publishedHou
     facts: FACTS,
     upgraderAvailable: true,
     convergeAvailable: true,
+    skippedVersion: null,
     now: NOW,
     ...rest,
   } satisfies AutoUpdateInput;
@@ -373,6 +374,30 @@ describe("decideAutoUpdate — modes and versions", () => {
 
   it("no release known yet → none", () => {
     expect(decideAutoUpdate({ ...input({}), release: null }).action).toBe("none");
+  });
+});
+
+describe("decideAutoUpdate — the Owner skipped a scheduled install (#868)", () => {
+  it("does not install or schedule the skipped release, but still offers it", () => {
+    for (const publishedHoursAgo of [48, 2]) {
+      const d = decideAutoUpdate(input({ publishedHoursAgo, skippedVersion: VERSIONS.patch }));
+      expect(d.action).toBe("notify");
+      if (d.action !== "notify") continue;
+      expect(d.version).toBe(VERSIONS.patch);
+      expect(d.reason).toContain("skipped the automatic install of v0.10.48");
+    }
+  });
+
+  it("installs a newer release than the skipped one automatically again", () => {
+    const d = decideAutoUpdate(input({ version: "0.10.49", skippedVersion: VERSIONS.patch }));
+    expect(d.action).toBe("install");
+  });
+
+  it("leaves every other decision about the skipped release as it was", () => {
+    const d = decideAutoUpdate(
+      input({ skippedVersion: VERSIONS.patch, facts: { ...FACTS, contractMigrations: true } }),
+    );
+    expect(d.action).toBe("manual");
   });
 });
 

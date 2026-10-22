@@ -23,9 +23,16 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOption
 
 import { sql } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
+import { recordAudit } from "./audit.js";
 import { branchNotFound, firstInvisibleBranch, namedBranches } from "./branch-access.js";
 import { extractPgFields, isRlsDenial, OperationAbortError, type QueryError } from "./errors.js";
 import type { OperationDefinition, TransactionRunner } from "./operation.js";
+import {
+  collectPostCommitEffects,
+  type PostCommitEffect,
+  type PostCommitFailure,
+  runPostCommitEffects,
+} from "./post-commit.js";
 
 /**
  * Two connection pools per process — one per PostgreSQL role. Application code
@@ -122,6 +129,16 @@ function validatePoolMax(value: number, source: string): number {
 interface ConnectionIdentity {
   readonly user: string;
   readonly database: string;
+}
+
+/**
+ * The error text for effects that failed after their commit: the write is
+ * saved (repeating it would apply it twice), only its in-process follow-up
+ * did not happen.
+ */
+function postCommitFailureMessage(failures: ReadonlyArray<PostCommitFailure>): string {
+  const list = failures.map((f) => `${f.effect.label} (${f.message})`).join("; ");
+  return `The change is saved, but its follow-up in the running server failed: ${list}. Do not repeat the change. Restart the admin server so the running state is rebuilt from the saved data; the failure is in the audit log.`;
 }
 
 export class DatabaseAdapter {
@@ -267,23 +284,15 @@ export class DatabaseAdapter {
 
     const db = op.database === "cms_admin" ? this.#adminDb(`operation ${op.name}`) : this.#public;
     let publishAfterCommit = false;
+    // Filled by handlers via `afterCommit(tx, …)`; only read once the
+    // transaction below committed (a throw skips it along with the tx).
+    let postCommit: PostCommitEffect[] = [];
 
     let result: Result<O, QueryError>;
     try {
       result = await db.transaction(async (tx) => {
-        await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
-        await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
-        await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
-        // P5: optional chat-branch / chat-task identity. Snapshot writes
-        // read these via ctx.chatBranchId / ctx.chatTaskId; the session
-        // vars exist for any future read-side query that wants to scope
-        // by branch without an extra parameter.
-        await tx.execute(
-          sql`SELECT set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true)`,
-        );
-        await tx.execute(
-          sql`SELECT set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`,
-        );
+        postCommit = collectPostCommitEffects(tx);
+        await this.#setIdentity(tx, ctx);
 
         // Issue #569 — a branch the caller may not see is answered as
         // "not found" before the handler runs, so no op can read or write
@@ -325,18 +334,94 @@ export class DatabaseAdapter {
         ...(pgDetail ? { pgDetail } : {}),
       });
     }
+    // #585 — the commit happened, so both follow-ups run whatever the
+    // other's outcome: deferred in-process effects, then the projection.
+    const effectFailures = await this.#settlePostCommit(op.name, ctx, postCommit);
+    let publishFailure: string | null = null;
     if (publishAfterCommit) {
       try {
         await this.#publishAfterCommit();
       } catch (thrown) {
-        return err({
-          kind: "HandlerError",
-          operation: op.name,
-          message: `The change is saved, but the public site does not serve it yet: publishing it failed (${thrown instanceof Error ? thrown.message : String(thrown)}). Do not repeat the change; it is published automatically within seconds once the public database answers.`,
+        publishFailure = `The change is saved, but the public site does not serve it yet: publishing it failed (${thrown instanceof Error ? thrown.message : String(thrown)}). Do not repeat the change; it is published automatically within seconds once the public database answers.`;
+      }
+    }
+    if (effectFailures.length > 0) {
+      const effects = postCommitFailureMessage(effectFailures);
+      return err({
+        kind: "HandlerError",
+        operation: op.name,
+        message: publishFailure === null ? effects : `${effects} ${publishFailure}`,
+      });
+    }
+    if (publishFailure !== null) {
+      return err({ kind: "HandlerError", operation: op.name, message: publishFailure });
+    }
+    return result;
+  }
+
+  /** Session identity every transaction of this adapter runs under (RLS reads it). */
+  async #setIdentity(tx: TransactionRunner, ctx: ExecutionContext): Promise<void> {
+    await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
+    await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
+    await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
+    // P5: optional chat-branch / chat-task identity. Snapshot writes
+    // read these via ctx.chatBranchId / ctx.chatTaskId; the session
+    // vars exist for any future read-side query that wants to scope
+    // by branch without an extra parameter.
+    await tx.execute(
+      sql`SELECT set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true)`,
+    );
+    await tx.execute(sql`SELECT set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`);
+  }
+
+  /**
+   * Issue #585 — run the effects a committed transaction deferred with
+   * `afterCommit`. A failure is loud on three channels: an error log, a
+   * failed audit row (`<operation>.post_commit`) and the returned list,
+   * which the caller turns into an error result.
+   */
+  async #settlePostCommit(
+    operation: string,
+    ctx: ExecutionContext,
+    effects: ReadonlyArray<PostCommitEffect>,
+  ): Promise<PostCommitFailure[]> {
+    if (effects.length === 0) return [];
+    const failures = await runPostCommitEffects(effects);
+    for (const failure of failures) {
+      // The operation name stays out of the console line: it is in the
+      // audit row, found by `requestId`, and the effect label already says
+      // what failed. Logging values derived from the op object would also
+      // carry the credential ops' (password, OAuth client) data flow into
+      // the log sink, which CodeQL flags as clear-text logging.
+      console.error("[query-api] post-commit effect failed", {
+        effect: failure.effect.label,
+        entityId: failure.effect.entityId ?? null,
+        requestId: ctx.requestId,
+        error: failure.message,
+      });
+      if (this.#admin === null) continue;
+      try {
+        await this.#admin.transaction(async (tx) => {
+          await this.#setIdentity(tx, ctx);
+          await recordAudit(tx, {
+            actorId: ctx.actorId,
+            requestId: ctx.requestId,
+            operation: `${operation}.post_commit`,
+            input: { effect: failure.effect.label },
+            succeeded: false,
+            entityId: failure.effect.entityId ?? null,
+            resultSummary: `${failure.effect.label}: ${failure.message}`.slice(0, 500),
+          });
+        });
+      } catch (thrown) {
+        console.error("[query-api] could not audit the failed post-commit effect", {
+          effect: failure.effect.label,
+          requestId: ctx.requestId,
+          error: thrown instanceof Error ? thrown.message : String(thrown),
         });
       }
     }
-    return result;
+    return failures;
   }
 
   async close(): Promise<void> {
@@ -361,14 +446,10 @@ export class DatabaseAdapter {
     const admin = this.#adminDb("withAdminTransaction");
     if (!this.#skipVerify) await this.verifyRoles();
     let publishAfterCommit = false;
+    let postCommit: PostCommitEffect[] = [];
     const out = await admin.transaction(async (tx) => {
-      await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
-      await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
-      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
-      await tx.execute(
-        sql`SELECT set_config('caelo.chat_branch_id', ${ctx.chatBranchId ?? ""}, true)`,
-      );
-      await tx.execute(sql`SELECT set_config('caelo.chat_task_id', ${ctx.chatTaskId ?? ""}, true)`);
+      postCommit = collectPostCommitEffects(tx);
+      await this.#setIdentity(tx, ctx);
       // Issue #569 — same branch-visibility gate as runOperation.
       const denied = await firstInvisibleBranch(tx, namedBranches(ctx, undefined));
       if (denied !== null) {
@@ -378,8 +459,12 @@ export class DatabaseAdapter {
       publishAfterCommit = await this.#projectionDirty(tx);
       return result;
     });
-    // #635 — published state changed: live on the public side before returning.
+    // #585 — deferred in-process effects, after the commit only.
+    const effectFailures = await this.#settlePostCommit("withAdminTransaction", ctx, postCommit);
+    // #635 — published state changed: live on the public side before
+    // returning. Runs even when an effect failed: the change is committed.
     if (publishAfterCommit) await this.#publishAfterCommit();
+    if (effectFailures.length > 0) throw new Error(postCommitFailureMessage(effectFailures));
     return out;
   }
 
@@ -394,12 +479,17 @@ export class DatabaseAdapter {
     fn: (tx: TransactionRunner) => Promise<T>,
   ): Promise<T> {
     if (!this.#skipVerify) await this.verifyRoles();
-    return await this.#public.transaction(async (tx) => {
+    let postCommit: PostCommitEffect[] = [];
+    const out = await this.#public.transaction(async (tx) => {
+      postCommit = collectPostCommitEffects(tx);
       await tx.execute(sql`SELECT set_config('caelo.actor_id', ${ctx.actorId}, true)`);
       await tx.execute(sql`SELECT set_config('caelo.actor_kind', ${ctx.actorKind}, true)`);
       await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${ctx.pluginId ?? ""}, true)`);
       return await fn(tx);
     });
+    const effectFailures = await this.#settlePostCommit("withPublicTransaction", ctx, postCommit);
+    if (effectFailures.length > 0) throw new Error(postCommitFailureMessage(effectFailures));
+    return out;
   }
 
   /** Test-only: raw access for fixture setup / adversarial direct queries. */

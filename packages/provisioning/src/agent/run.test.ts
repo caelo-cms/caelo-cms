@@ -12,6 +12,7 @@ import type { StoredUpdatePolicy } from "@caelo-cms/shared";
 import type { ReleaseManifest, ReleaseManifestResult } from "../release-manifest.js";
 import type { SelfHostedRelease } from "../self-hosted-release.js";
 import type { ClaimedUpdate, UpdateEnd, UpdateFacts } from "../upgrader-job.js";
+import { UpgradeLockAccessError, UpgradeLockHeldError } from "./lock.js";
 import type { AgentHeartbeat, AgentQueue } from "./queue.js";
 import { type AgentApplyRequest, type AgentRunDeps, runAgentOnce } from "./run.js";
 
@@ -216,10 +217,26 @@ describe("runAgentOnce", () => {
       name: "another upgrade holds the lock",
       over: {
         lock: () => {
-          throw new Error("`cms-provision upgrade` is running on this install (pid 42).");
+          throw new UpgradeLockHeldError(
+            "`cms-provision upgrade` is running on this install (pid 42).",
+          );
         },
       },
       expect: "failed/state-locked",
+      reason: /Try again when it has finished/,
+    },
+    {
+      name: "a lock the agent cannot write is not reported as busy (#804)",
+      over: {
+        lock: () => {
+          throw new UpgradeLockAccessError(
+            "the upgrade lock /opt/caelo/.caelo/upgrade.lock cannot be written (EACCES). Give the account write access, then try again.",
+          );
+        },
+      },
+      expect: "failed/lock-access",
+      reason:
+        /^Nothing was changed: the upgrade lock \/opt\/caelo\/.caelo\/upgrade.lock cannot be written \(EACCES\)\. Give the account write access, then try again\.$/,
     },
     {
       name: "a malformed release.json",

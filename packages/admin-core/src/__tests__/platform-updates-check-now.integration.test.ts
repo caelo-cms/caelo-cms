@@ -71,6 +71,7 @@ async function lastCheck(minutesAgo: number | null, latest: string | null = null
       UPDATE release_check_cache
          SET latest_version = ${latest}, release_url = NULL, release_notes = NULL,
              published_at = NULL, latest_infra_change = NULL, infra_change_from = NULL,
+             latest_owner_action = NULL,
              fetched_at = ${
                minutesAgo === null
                  ? new Date(0).toISOString()
@@ -252,6 +253,28 @@ describe("checkReleasesNow + platform_updates.check_now", () => {
     expect((await status()).infraChange).toBeNull();
   });
 
+  it("#868: stores the release manifest's owner action for the page", async () => {
+    await lastCheck(40, "0.0.1");
+    const gh = github(RELEASE);
+    await checkReleasesNow({
+      registry,
+      adapter,
+      ctx: reader,
+      fetchImpl: gh.fetchImpl,
+      readManifest: manifests(manifest(CAELO_VERSION, 6), {
+        ...manifest("99.1.0", 6),
+        ownerAction: "Re-enter the SMTP password in Settings → Email.",
+      }),
+      provider: "gcp",
+    });
+    expect((await status()).ownerAction).toBe("Re-enter the SMTP password in Settings → Email.");
+
+    // A release without one (or without a readable manifest): none.
+    await lastCheck(40, "0.0.1");
+    await checkReleasesNow({ registry, adapter, ctx: reader, fetchImpl: gh.fetchImpl, ...ROUTE });
+    expect((await status()).ownerAction).toBeNull();
+  });
+
   it("a failed check clears the release, stamps the time and says why", async () => {
     await lastCheck(40, "0.0.1");
     const gh = github(
@@ -309,6 +332,7 @@ describe("checkReleasesNow + platform_updates.check_now", () => {
         releaseNotes: null,
         publishedAt: null,
         infraChange: null,
+        ownerAction: null,
       },
     });
     expect(r.ok).toBe(false);

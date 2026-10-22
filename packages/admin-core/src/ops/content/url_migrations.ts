@@ -22,7 +22,7 @@
  * default-locale-bare case) need no operator click at all.
  */
 
-import { MAIN_RENDER } from "@caelo-cms/plugin-host";
+import { MAIN_RENDER, type UrlCompositionView } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -50,10 +50,12 @@ export interface UrlMigrationDiffEntry {
  * Compute the live-page URL diff: stored current_path vs a fresh
  * resolution through the active contribution set. Exported for the
  * activation flows (#393/#395) that check for the zero-diff retrofit
- * before deciding whether an Owner click is needed.
+ * before deciding whether an Owner click is needed. `view` composes the
+ * fresh side as if a plugin were gone (the uninstall diff, #585).
  */
 export async function computeUrlMigrationDiff(
   tx: Parameters<NonNullable<(typeof createRedirectOp)["handler"]>>[2],
+  view?: UrlCompositionView,
 ): Promise<UrlMigrationDiffEntry[]> {
   const pages = (await tx.execute(sql`
     SELECT id::text AS id, slug, current_path
@@ -66,6 +68,7 @@ export async function computeUrlMigrationDiff(
     pages.map((p) => p.id),
     // The diff compares live paths against live plugin state.
     MAIN_RENDER,
+    view,
   );
   const diff: UrlMigrationDiffEntry[] = [];
   for (const p of pages) {

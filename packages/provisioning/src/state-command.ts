@@ -14,7 +14,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { confirm, isCancel, log, note } from "@clack/prompts";
 import { bold, red } from "kleur/colors";
-import { activeAccount } from "./gcloud.js";
+import { checkGcloudAuth } from "./gcloud.js";
 import {
   adoptStateBackend,
   currentMetadata,
@@ -30,6 +30,7 @@ import {
 } from "./install-state.js";
 import { installIapAllowlist } from "./operator-access.js";
 import { ensureOpsBackend } from "./ops-backend.js";
+import { writePlanFile } from "./preview-plan.js";
 import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
 import { selfCommand } from "./self-command.js";
 import { attachInstall } from "./state-attach.js";
@@ -43,7 +44,7 @@ import {
 } from "./state-backend.js";
 import { migrateState } from "./state-migrate.js";
 import { realStatePulumiOps } from "./state-pulumi.js";
-import { acquireStateLock, GcsStateStore, realSyncGcloud } from "./state-store.js";
+import { acquireStateLock, GcsStateStore, realSyncGcloud, type SyncGcloud } from "./state-store.js";
 import { clackReporter } from "./upgrade/reporter.js";
 import { GCP_STACK_KNOB_DEFAULTS } from "./wizards/gcp-pulumi.js";
 
@@ -153,11 +154,12 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
     );
     process.exit(1);
   }
-  const operator = await activeAccount();
-  if (!operator) {
-    log.error(red("No active gcloud account. Run `gcloud auth login`, then re-run."));
+  const auth = await checkGcloudAuth();
+  if (!auth.ok) {
+    log.error(red(`Nothing was changed: ${auth.error}`));
     process.exit(1);
   }
+  const operator = auth.account;
   const provisioner = provisionerServiceAccountEmail(projectId);
   note(
     [
@@ -257,6 +259,7 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
         renameSync(dir, moved);
         return moved;
       },
+      writePlan: (label, steps) => writePlanFile(root, label, steps),
     },
   );
   if (!result.ok) {
@@ -272,6 +275,18 @@ export async function attachCommand(argv: readonly string[]): Promise<void> {
     console.log("Usage: cms-provision attach --project <gcp-project-id>");
     process.exit(2);
   }
+  attachProject(projectId);
+}
+
+/**
+ * Attach the install whose records live in `projectId`'s ops bucket (or
+ * refresh this machine's copy of them); exits with the reason when that
+ * fails. `upgrade --project` runs it first, so the break-glass upgrade
+ * needs nothing to survive in $HOME between runs (#816).
+ *
+ * @returns the attached install's id
+ */
+export function attachProject(projectId: string): string {
   const r = attachInstall(projectId, {
     run: realSyncGcloud,
     rootFor: installRoot,
@@ -287,7 +302,19 @@ export async function attachCommand(argv: readonly string[]): Promise<void> {
       ? `${r.domain} was already attached; its local copy of install.json is up to date.`
       : `Attached ${bold(r.domain)} (${r.installId}). status, upgrade, backup and re-running the installer now work from this machine.`,
   );
-  log.info(
-    "Infrastructure runs need Application Default Credentials once on this machine: gcloud auth application-default login",
-  );
+  const adc = adcNote(realSyncGcloud);
+  if (adc) log.info(adc);
+  return r.installId;
+}
+
+/**
+ * The note `attach` prints about Application Default Credentials, or null
+ * when this machine has working ones. Only infrastructure runs (re-running
+ * the installer, `state migrate`) use ADC; `upgrade`, `status` and `backup`
+ * do not, so a note on every attach sent Owners on a detour (#816).
+ */
+export function adcNote(run: SyncGcloud): string | null {
+  const r = run(["auth", "application-default", "print-access-token"]);
+  if (r.ok) return null;
+  return "No Application Default Credentials on this machine. upgrade, status and backup don't need them; re-running the installer or `state migrate` does: gcloud auth application-default login";
 }

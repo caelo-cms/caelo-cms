@@ -128,12 +128,14 @@ export const refreshPagePathTool: ToolDefinitionWithHandler<RefreshPagePathInput
     if (!r.ok) {
       return { ok: false, content: `pages.refresh_current_path failed: ${describeError(r.error)}` };
     }
-    const v = r.value as { path: string; moved: boolean };
+    const v = r.value as { path: string; moved: boolean; awaitingUrlMigration: boolean };
     return {
       ok: true,
-      content: v.moved
-        ? `Page URL is now ${v.path}${input.redirectFromOld === "skip" ? "" : " (the old URL 301s to it)"}.`
-        : `Page URL unchanged: ${v.path}. (In a chat, a live page's URL moves only when the chat is published.)`,
+      content: v.awaitingUrlMigration
+        ? `Page URL unchanged: ${v.path}. A URL-setting change is waiting for its migration, and this page moves with it — call propose_url_migration (the Owner approves the move and its 301s); do not refresh pages one by one.`
+        : v.moved
+          ? `Page URL is now ${v.path}${input.redirectFromOld === "skip" ? "" : " (the old URL 301s to it)"}.`
+          : `Page URL unchanged: ${v.path}. (In a chat, a live page's URL moves only when the chat is published.)`,
       value: v,
     };
   },
