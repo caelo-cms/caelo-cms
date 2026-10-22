@@ -431,6 +431,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
 
+      # issue #161 — computed-style design probes + the non-blocking
+      # AI-judge rubric scores (design-probe.ts), uploaded on every run so
+      # the score trend has no gaps before the judge is promoted to a gate.
+      - name: Upload design report (always)
+        if: always() && steps.provider-preflight.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-livedit-design-${{ github.run_id }}-${{ github.run_attempt }}
+          path: apps/admin/test-results/livedit/design-report.jsonl
+          if-no-files-found: warn
+          retention-days: 90
+
       # The chat transcripts every scenario reset writes (helpers.ts
       # dumpChatTranscripts), uploaded on EVERY run: a scenario that failed
       # its first attempt and passed the retry ("flaky") leaves the job

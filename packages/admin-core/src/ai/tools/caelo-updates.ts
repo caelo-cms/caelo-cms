@@ -139,7 +139,8 @@ const ACTION_WORDS: Record<NonNullable<SchedulerStatus["lastAction"]>, string> =
   notify: "the Owner installs it by hand",
   wait: "waiting",
   install: "queued an automatic install",
-  manual: "needs a manual install (destructive database changes)",
+  manual:
+    "the Owner installs it from Settings → Updates (it makes destructive database changes, or it changes the cloud setup and the policy does not install those automatically)",
   needs_cloud_shell: "needs the Owner to run it in Cloud Shell (it changes the cloud setup)",
   blocked: "cannot install automatically",
 };
@@ -161,6 +162,11 @@ export const getCaeloAutoUpdateStatusTool = makeReadTool<Record<string, never>>(
         `Last check ${s.lastRunAt.slice(0, 16).replace("T", " ")} UTC${s.lastVersion ? ` about v${s.lastVersion}` : ""}: ${s.lastAction ? ACTION_WORDS[s.lastAction] : "no decision"}${s.lastWaitUntil ? ` (until about ${s.lastWaitUntil.slice(0, 16).replace("T", " ")} UTC)` : ""}.`,
       );
       if (s.lastReason) lines.push(s.lastReason);
+    }
+    if (s.skippedVersion !== null && s.skippedVersion !== s.lastVersion) {
+      lines.push(
+        `The Owner skipped the automatic install of v${s.skippedVersion}; it does not install on its own.`,
+      );
     }
     if (s.notifications.length === 0) {
       lines.push("No update emails yet.");

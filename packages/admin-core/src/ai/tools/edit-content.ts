@@ -154,7 +154,10 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
     if (input.entityKind === "module" && input.field === "css") {
       suffix =
         (await cssVarWarningSuffix(ctx, toolCtx, applied.content)) +
-        (await designGuardSuffix(ctx, toolCtx, { css: applied.content }));
+        (await designGuardSuffix(ctx, toolCtx, {
+          css: applied.content,
+          scopeModuleId: input.entityId,
+        }));
     } else if (input.entityKind === "module" && input.field === "html") {
       // #820 — an html edit can turn a module into a copy of another one.
       suffix = await designGuardSuffix(ctx, toolCtx, {

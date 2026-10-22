@@ -20,6 +20,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { judgeDesign, probeDesign, recordDesignReport } from "./design-probe.js";
 import { expect, test } from "./fixtures.js";
 import { ADMIN_LOG_PATH } from "./global-setup.js";
 import {
@@ -37,6 +38,13 @@ import {
   sendChatPromptAndWait,
   verifyPublishedPageWithVision,
 } from "./helpers.js";
+import {
+  checkColorVariety,
+  checkTypeHierarchy,
+  checkWebFontsDelivered,
+  distinctChromaticColors,
+  findTemplateLeaks,
+} from "./lib/design-assertions.js";
 import {
   logOffset,
   metricsBetween,
@@ -470,10 +478,13 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // didn't implement Mustache section iteration. After Plan B
     // (shared template engine), the published HTML must NEVER contain
     // `{{#` or `{{/` markers. Closes the open thread on #62.
+    // issue #161 widens it to every literal mustache tag (an unbound
+    // `{{theme_logo_url}}`, an unset `{{hero_title}}`) and every
+    // `caelo:missing` marker (#70) — none may reach a visitor.
     expect(
-      productionBody,
-      "Published HTML must not leak {{# or {{/ markers — see #71, closes the open thread on #62",
-    ).not.toMatch(/\{\{[#/]/);
+      findTemplateLeaks(productionBody),
+      "Published HTML must not leak template tags or caelo:missing markers — see #70/#71/#161",
+    ).toEqual([]);
     // The previous "MPL 2.0" production HTML substring check was
     // dropped — it depended on the AI emitting a literal copyright
     // footer module, which the AI doesn't do deterministically at
@@ -542,9 +553,43 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     if (!design.hasSurfaceAlt) designWarnings.push("no color.surface-alt for section alternation");
     if (design.webFontFamilies.length === 0)
       designWarnings.push("typography uses system stacks only");
+
+    // ── Rendered design (issue #161 tier 2) ────────────────────────
+    // The token checks above prove the palette EXISTS; these read the
+    // COMPUTED styles of the published page (still open from the vision
+    // verdict) to prove the page USES it. Thresholds are the regression
+    // floor, not a taste bar: a flat type scale, a page rendered entirely
+    // in neutrals with no section rhythm, a declared web font that never
+    // reached the visitor. Richer variety starts as a warning.
+    const probe = await probeDesign(page);
+    const renderedViolations = [
+      ...checkTypeHierarchy(probe.type),
+      ...checkColorVariety(probe.colors, 1),
+      ...checkWebFontsDelivered(design.webFontFamilies, probe.fonts),
+    ];
+    const renderedChromatic = distinctChromaticColors(probe.colors.usedColors).length;
+    if (renderedChromatic < 2) {
+      designWarnings.push(
+        `page renders ${renderedChromatic} distinct chromatic color(s); the palette's accent never reaches the page`,
+      );
+    }
     for (const w of designWarnings) {
       console.warn(`[design-report] ${w} — candidate for promotion to a hard assertion`);
     }
+    // AI-judge rubric: recorded, never asserted (issue #161 — promote only
+    // once the 10x determinism recipe has measured its variance).
+    const judge = await judgeDesign(page);
+    recordDesignReport({
+      scenario: "homepage",
+      url: productionUrl,
+      probe,
+      violations: [...renderedViolations, ...designWarnings.map((w) => `warning: ${w}`)],
+      judge,
+    });
+    expect(
+      renderedViolations,
+      "Published homepage fails the rendered design floor (computed styles, issue #161)",
+    ).toEqual([]);
 
     // ── Step 7: Re-edit the hero headline (AC #2 part 2) ───────────
     const preReeditSnapshot = snapshotMostRecentPage(startTimestamp);

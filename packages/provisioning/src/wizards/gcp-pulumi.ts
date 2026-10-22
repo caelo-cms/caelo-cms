@@ -18,6 +18,7 @@ import { AUDIT_PARALLELISM_DEFAULT } from "../audit-job-setup.js";
 import { checkpointableOutputs } from "../checkpoint-secrets.js";
 import { GCP_STACK_ENV } from "../gcp-names.js";
 import { type ImageDigests, stackWorkDir } from "../install-state.js";
+import { collectPreviewSteps, type PlannedStep } from "../preview-plan.js";
 import {
   AMBIENT_GOOGLE_CREDENTIAL_ENV,
   withoutAmbientGoogleCredentials,
@@ -533,14 +534,26 @@ export function pulumiGcpEnv(
   };
 }
 
+/** Thrown when the review (preview-plan.ts planGate) stops `pulumi up` after the preview. */
+export class PulumiUpDeclinedError extends Error {
+  override readonly name = "PulumiUpDeclinedError";
+}
+
 /**
  * Run `pulumi up` against the GCP stack via the Automation SDK.
  * Streams resource-create events to the supplied onEvent callback so
  * the wizard can render a live progress bar.
+ *
+ * On a stack that already holds resources, a preview runs first (#737) and
+ * `review` sees its planned steps: it lists them and decides (planGate)
+ * whether `up` may apply them. Nothing is applied when it says no.
+ *
+ * @throws PulumiUpDeclinedError when `review` declines the plan
  */
 export async function pulumiUpGcp(
   inputs: PulumiUpInputs,
   onEvent: (kind: "resource" | "error" | "log", message: string) => void,
+  review: (steps: readonly PlannedStep[]) => Promise<boolean>,
 ): Promise<PulumiUpResult> {
   const env = pulumiGcpEnv(process.env, inputs);
 
@@ -592,6 +605,17 @@ export async function pulumiUpGcp(
   // Refresh state first to detect drift from any out-of-band changes.
   await assertStackProject(stack, provider, inputs.projectId);
   await stack.refresh({ onOutput: (msg) => onEvent("log", msg) });
+
+  // #737 — never `up` a deployed stack blind: list what it would change
+  // (replaces and deletes first) and let the review stop it. A first run
+  // on an empty stack only creates, so it skips the extra preview.
+  if (stateResources.length > 0) {
+    const collector = collectPreviewSteps();
+    await stack.preview({ onEvent: collector.onEvent });
+    if (!(await review(collector.steps()))) {
+      throw new PulumiUpDeclinedError("pulumi up was not run: the planned changes were declined.");
+    }
+  }
 
   // Run `up`. The onEvent callback receives the same JSON-RPC events
   // Pulumi prints to stdout in --json mode.

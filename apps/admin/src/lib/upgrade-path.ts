@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import {
-  cloudShellInstallUrl,
+  cloudShellUpgradeCommand,
+  cloudShellUpgradeUrl,
   installHintFromSiteUrl,
   provisioningCommand,
   provisioningUpgradeCommand,
@@ -155,21 +156,23 @@ function installProjectId(env: Pick<UpgradePathEnv, "CAELO_UPGRADER_JOB">): stri
   );
 }
 
-/** Bun's official installer — Cloud Shell has Node but not Bun. */
-const BUN_INSTALL =
-  'curl -fsSL https://bun.sh/install | bash && export PATH="$HOME/.bun/bin:$PATH"';
-
 /**
- * How to install a release that changes the install's cloud setup (#696,
- * maintainer decision 1): in Google Cloud Shell — a terminal in the browser,
- * signed in as the Owner — because only the Owner's own identity may change
- * the project's permissions; the admin's upgrader may not.
+ * The break-glass way to install a release that changes the install's cloud
+ * setup, when installing from Settings → Updates keeps failing (#696
+ * maintainer decision 1, #816): in Google Cloud Shell — a terminal in the
+ * browser, signed in as the Owner — because only the Owner's own identity
+ * may change the project's permissions; the admin's upgrader may not.
  *
- * The "Open Cloud Shell" link is the release-pinned one every Caelo surface
- * shows (`cloudShellInstallUrl`, the caelo-cms/install walkthrough on the
- * release's branch). The pinned commands are the copyable fallback: Bun,
- * then fetch the install's records from its own project, then the same
- * upgrade the CLI runs anywhere.
+ * One button and one line. The button opens the release's UPGRADE
+ * walkthrough (`cloudShellUpgradeUrl`, caelo-cms/install on the release's
+ * branch), never the install wizard. The line is what that walkthrough
+ * runs: `./run.sh upgrade`, which verifies its tools (Bun, cosign, the
+ * provisioner's npm provenance), attaches the install from its project and
+ * upgrades it. Nothing is installed unverified.
+ *
+ * A release whose branch has no upgrade walkthrough (a pre-release, or one
+ * before `CLOUD_SHELL_UPGRADE_FIRST_VERSION`) gets no button; the line is
+ * then the CLI's upgrade command, for the computer the Owner installed from.
  *
  * @returns null when the CLI path itself is unavailable (see resolveUpgradePath)
  */
@@ -177,23 +180,22 @@ export function cloudShellUpgrade(
   env: UpgradePathEnv,
   version: string,
 ): {
-  /** null for a pre-release, which has no pinned Cloud Shell branch. */
+  /** The walkthrough link; null when the release's branch has none. */
   readonly consoleUrl: string | null;
   readonly projectId: string | null;
-  readonly commands: readonly string[];
+  /** The one line to run: in the walkthrough, or (no link) on the installing computer. */
+  readonly command: string;
 } | null {
   const path = resolveUpgradePath(env, version);
   // Self-hosted installs upgrade on their own server, never in Cloud Shell.
   if (path.kind !== "cli" || path.provider === "self-hosted") return null;
   const projectId = installProjectId(env);
-  const commands = [BUN_INSTALL];
-  if (projectId) commands.push(provisioningCommand(version, ["attach", "--project", projectId]));
-  commands.push(path.command);
-  let consoleUrl: string | null = null;
-  try {
-    consoleUrl = cloudShellInstallUrl(version, path.provider);
-  } catch {
-    // Pre-releases get no release branch in caelo-cms/install: commands only.
-  }
-  return { consoleUrl, projectId, commands };
+  const consoleUrl = cloudShellUpgradeUrl(version, path.provider);
+  return {
+    consoleUrl,
+    projectId,
+    command: consoleUrl
+      ? cloudShellUpgradeCommand({ project: projectId, install: path.install })
+      : path.command,
+  };
 }

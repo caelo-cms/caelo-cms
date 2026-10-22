@@ -57,6 +57,8 @@ import {
   describeServiceJson,
   findCurrentRevision,
   findServiceUrl,
+  type GcloudCredentials,
+  lookupFailure,
   pinTraffic,
   resolveGcpResourceName,
 } from "./gcp-lookup.js";
@@ -78,6 +80,8 @@ export interface AppRollInstall {
   readonly domain: string;
   /** The protected staging host the admin is told about (#650). */
   readonly stagingHost: string;
+  /** Whose gcloud credentials the lookups run with; names the fix for an auth failure. */
+  readonly credentials: GcloudCredentials;
 }
 
 /** The release image one service rolls to. */
@@ -147,15 +151,20 @@ export async function planAppRoll(
   const services: ServicePlan[] = [];
   for (const slug of ROLL_ORDER) {
     const prefix = `caelo-${install.env}-${slug}`;
-    const serviceName = await resolveGcpResourceName(
+    const lookup = await resolveGcpResourceName(
       run,
       "run-service",
       prefix,
       install.projectId,
       install.region,
     );
-    if (!serviceName)
-      return { ok: false, error: `Could not find the ${prefix}* Cloud Run service` };
+    if (lookup.status !== "found") {
+      return {
+        ok: false,
+        error: lookupFailure(lookup, `${prefix}* Cloud Run service`, install.credentials),
+      };
+    }
+    const serviceName = lookup.name;
     const priorRevision = await findCurrentRevision(
       run,
       install.projectId,

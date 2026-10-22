@@ -17,11 +17,21 @@ class FakeTracker implements IssueTracker {
   issues = new Map<number, IssueState & { title: string; body: string; labels: string[] }>();
   comments = new Map<number, string[]>();
   releasesList: ReleaseInfo[] = [];
-  calls = { create: 0, update: 0 };
+  calls = { create: 0, update: 0, comment: 0 };
+  failNextCreate = false;
   #next = 100;
+
+  /** Every call that changes something on GitHub. */
+  get writes() {
+    return this.calls.create + this.calls.update + this.calls.comment;
+  }
 
   async createIssue(i: { title: string; body: string; labels: string[] }) {
     this.calls.create++;
+    if (this.failNextCreate) {
+      this.failNextCreate = false;
+      throw new Error("GitHub said no");
+    }
     const number = this.#next++;
     const url = `https://github.com/caelo-cms/caelo-cms/issues/${number}`;
     this.issues.set(number, {
@@ -45,6 +55,7 @@ class FakeTracker implements IssueTracker {
     return structuredClone(this.issues.get(n)!);
   }
   async addComment(n: number, body: string) {
+    this.calls.comment++;
     this.comments.set(n, [...(this.comments.get(n) ?? []), body]);
   }
   async recentCommentBodies(n: number) {
@@ -90,12 +101,14 @@ let store: MemoryStore;
 let tracker: FakeTracker;
 let matcher: FakeMatcher;
 let clock: Date;
-const service = (threshold = 1) =>
+const service = (threshold = 1, opts: { cap?: number; paused?: boolean } = {}) =>
   new IntakeService({
     store,
     tracker,
     matcher,
     issueThresholdInstalls: threshold,
+    maxNewIssuesPerDay: opts.cap ?? 100,
+    issuesPaused: opts.paused ?? false,
     now: () => clock,
   });
 
@@ -244,6 +257,106 @@ describe("IntakeService", () => {
     expect(tracker.comments.get(100)).toEqual(["Now reported from 10+ installs."]);
     await s.ingest(INSTALL_A, report());
     expect(tracker.comments.get(100)?.length).toBe(1);
+  });
+
+  it("caps new issues per UTC day, files the queued defect after the reset, and keeps updating existing issues", async () => {
+    const s = service(1, { cap: 1 });
+    const first = await s.ingest(INSTALL_A, report());
+    expect(first.issueUrl).toContain("/issues/100");
+
+    // Over today's cap: stored and counted, but no issue yet.
+    const capped = await s.ingest(INSTALL_A, report({ fingerprint: "f".repeat(64) }));
+    expect(capped.issueUrl).toBeNull();
+    expect((await store.getCluster(capped.clusterId))?.value.occurrences).toBe(1);
+    expect(await store.pendingIssueClusters(10)).toEqual([capped.clusterId]);
+    expect(tracker.calls.create).toBe(1);
+
+    // The cap is on new issues only: the existing one still gets its counters.
+    const updates = tracker.calls.update;
+    await s.ingest(INSTALL_B, report());
+    expect(tracker.calls.update).toBe(updates + 1);
+    expect(tracker.issues.get(100)?.body).toContain("| Installs reporting it | 2 |");
+    await s.ingest(INSTALL_B, report({ fingerprint: "f".repeat(64) }));
+    expect(tracker.calls.create).toBe(1);
+
+    // Still the same UTC day, one second before midnight: nothing new.
+    clock = new Date("2026-10-20T23:59:59Z");
+    await s.status([first.clusterId]);
+    expect(tracker.calls.create).toBe(1);
+
+    // After the reset, any request files the queue, even one about another cluster.
+    clock = new Date("2026-10-21T00:00:01Z");
+    await s.status([first.clusterId]);
+    expect(tracker.calls.create).toBe(2);
+    const filed = (await store.getCluster(capped.clusterId))!.value;
+    expect(filed.issueUrl).toContain("/issues/101");
+    expect(tracker.issues.get(101)?.body).toContain("| Installs reporting it | 2 |");
+    expect(await store.pendingIssueClusters(10)).toEqual([]);
+    expect(store.issueSlots.get("2026-10-21")).toBe(1);
+  });
+
+  it("files queued defects oldest first, a bounded batch per request", async () => {
+    const s = service(1, { cap: 1 });
+    await s.ingest(INSTALL_A, report({ fingerprint: "0".repeat(64) }));
+    const queued: string[] = [];
+    for (const [i, fp] of ["5", "6", "7", "8", "9"].entries()) {
+      clock = new Date(`2026-10-20T1${i}:00:00Z`);
+      queued.push((await s.ingest(INSTALL_A, report({ fingerprint: fp.repeat(64) }))).clusterId);
+    }
+    const big = service(1, { cap: 100 });
+    clock = new Date("2026-10-21T08:00:00Z");
+    await big.status([]);
+    // Three per request, in arrival order.
+    expect(await store.pendingIssueClusters(10)).toEqual(queued.slice(3));
+    expect((await store.getCluster(queued[0]!))?.value.issueNumber).toBe(101);
+    await big.status([]);
+    expect(await store.pendingIssueClusters(10)).toEqual([]);
+  });
+
+  it("gives the slot back and keeps the defect queued when GitHub refuses the create", async () => {
+    const s = service(1, { cap: 1 });
+    tracker.failNextCreate = true;
+    await expect(s.ingest(INSTALL_A, report())).rejects.toThrow("GitHub said no");
+    expect(store.issueSlots.get("2026-10-20")).toBe(0);
+    expect(await store.pendingIssueClusters(10)).toHaveLength(1);
+    // The next request retries it within the same day's budget.
+    await s.status([]);
+    expect(tracker.issues.get(100)).toBeDefined();
+    expect(await store.pendingIssueClusters(10)).toEqual([]);
+  });
+
+  it("writes nothing to GitHub while paused, then catches up when unpaused", async () => {
+    // An existing issue, closed as fixed in 0.10.60.
+    const live = service();
+    const a = await live.ingest(INSTALL_A, report());
+    tracker.close(100, "completed", "2026-10-21T00:00:00Z", ["fixed-in:v0.10.60"]);
+    clock = new Date("2026-10-22T00:00:00Z");
+    await live.status([a.clusterId]);
+    const before = tracker.writes;
+
+    const paused = service(1, { paused: true });
+    // New defect, a new install + version on the existing issue, and a
+    // report from the fixed version that would normally reopen it.
+    const fresh = await paused.ingest(INSTALL_A, report({ fingerprint: "9".repeat(64) }));
+    const again = await paused.ingest(INSTALL_B, report({ caeloVersion: "0.10.61" }));
+    await paused.status([a.clusterId, fresh.clusterId]);
+
+    expect(tracker.writes).toBe(before);
+    expect(fresh.issueUrl).toBeNull();
+    expect(again.status).toBe("fixed");
+    expect(tracker.issues.get(100)?.state).toBe("closed");
+    // Reports were still accepted, counted and kept.
+    expect(store.reports.size).toBe(3);
+    expect((await store.getCluster(a.clusterId))?.value.installHashes.length).toBe(2);
+    expect(await store.pendingIssueClusters(10)).toEqual([fresh.clusterId]);
+
+    // Unpaused: the queued defect is filed, and the regression is caught on its next report.
+    const resumed = service();
+    clock = new Date("2026-10-22T01:00:00Z");
+    expect((await resumed.ingest(INSTALL_B, report({ caeloVersion: "0.10.61" }))).status).toBe(
+      "regression",
+    );
+    expect((await store.getCluster(fresh.clusterId))?.value.issueUrl).toContain("/issues/101");
   });
 
   it("pins the first key per install and refuses a different one", async () => {

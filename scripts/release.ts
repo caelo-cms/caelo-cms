@@ -35,6 +35,10 @@
  *                                  previous stable tag (manual-install release)
  *   --ack-infra-neutral            infra-contract files changed but nothing
  *                                  IAM/secret/resource-relevant (no bump)
+ *   --owner-action "<sentence>"    what the Owner has to do for the
+ *                                  release's breaking change (required when
+ *                                  a commit since the previous release is
+ *                                  `type!:`, refused otherwise; #868)
  *   --checks-only                  run those checks and exit, changing nothing
  * See scripts/release-checks.ts for the rules.
  *   8. Prints next-steps for the operator (`git push --follow-tags`,
@@ -120,6 +124,8 @@ async function declareRelease(newVersion: string): Promise<ReleaseMeta> {
     acknowledgeInfraNeutral: arg("ack-infra-neutral"),
     // Derived by the checks below (carry-forward), never a flag.
     lastContractVersion: null,
+    // #868 — checked below: required exactly when a commit is breaking.
+    ownerAction: argValue("owner-action") ?? null,
   };
   const checks = await runReleaseChecks(meta, {
     repoRoot: REPO_ROOT,
@@ -473,6 +479,7 @@ async function main(): Promise<void> {
       "Usage:\n" +
         "  bun run scripts/release.ts <patch|minor|major|x.y.z> [--dry-run]\n" +
         "      [--security --advisories GHSA-…,…] [--ack-contract-migrations] [--ack-infra-neutral]\n" +
+        '      [--owner-action "<what the Owner does for the breaking change>"]\n' +
         "      [--checks-only]   # run the release-cut checks, change nothing\n" +
         "  bun run scripts/release.ts --check     # verify lockstep, no bump",
     );

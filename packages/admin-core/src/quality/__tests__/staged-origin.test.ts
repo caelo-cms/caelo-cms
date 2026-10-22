@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node
 import { createServer, request, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SVG_DOCUMENT_CSP } from "@caelo-cms/shared";
 import {
   apiTargetFor,
   localBuildSource,
@@ -68,6 +69,7 @@ describe("serveStagedBuild over a local build", () => {
     writeFileSync(join(build, "favicon.ico"), new Uint8Array([0, 0, 1, 0]));
     writeFileSync(join(build, "_assets", "fonts", "inter", "0123456789abcdef.woff2"), "font");
     writeFileSync(join(build, "_assets", "logo.0123456789abcdef.png"), "png");
+    writeFileSync(join(build, "_assets", "mark.0123456789abcdef.svg"), "<svg/>");
     writeFileSync(join(build, "pricing"), "<h1>pricing</h1>");
     writeFileSync(
       join(build, "_content-types.json"),
@@ -120,6 +122,16 @@ describe("serveStagedBuild over a local build", () => {
       const page = await fetch(`${origin.baseUrl}${path}`);
       expect(page.headers.get("cache-control") ?? "").not.toContain("no-store");
     }
+  });
+
+  it("serves SVGs with the sandboxing CSP and everything nosniff, like staging (#891)", async () => {
+    const svg = await fetch(`${origin.baseUrl}/_assets/mark.0123456789abcdef.svg`);
+    expect(svg.headers.get("content-type")).toBe("image/svg+xml");
+    expect(svg.headers.get("content-security-policy")).toBe(SVG_DOCUMENT_CSP);
+    expect(svg.headers.get("x-content-type-options")).toBe("nosniff");
+    const page = await fetch(`${origin.baseUrl}/about/`);
+    expect(page.headers.get("content-security-policy")).toBeNull();
+    expect(page.headers.get("x-content-type-options")).toBe("nosniff");
   });
 
   it("is read-only and refuses escapes", async () => {
