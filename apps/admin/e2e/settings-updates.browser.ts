@@ -6,8 +6,8 @@
  * sentence and exactly one primary action; one flow below per state:
  * no_permission, in_progress, interrupted, rolled_back, break_glass (a
  * refused run, and a release predicted to change the cloud setup, #817),
- * update_available, scheduled, up_to_date, unknown — plus a stale Cloud
- * Shell request that stays in the history, a run that died without
+ * update_available, scheduled (with "Skip this time", #868), up_to_date,
+ * unknown — plus a stale Cloud Shell request that stays in the history, a run that died without
  * reporting back (`interrupted`, its log), and a day-old check that no
  * longer claims "Up to date" (`unknown`). Also pins:
  *   - an Owner sees the newest release and the exact, version-pinned upgrade
@@ -54,6 +54,8 @@ import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 const LATEST = "99.0.0";
 const COMMAND = `bunx @caelo-cms/provisioning@${LATEST} upgrade --version ${LATEST} --install localhost`;
+/** #816 — the one line the Cloud Shell upgrade walkthrough runs. */
+const SHELL_COMMAND = "./run.sh upgrade --install localhost";
 const ts = Date.now();
 const REVIEWER_EMAIL = `e2e-updates-reviewer-${ts}@example.com`;
 const REVIEWER_PASSWORD = "reviewer dev password";
@@ -92,9 +94,15 @@ const FIXTURE_SCRIPT = `
     } else if (op === "reset-install") {
       await tx\`DELETE FROM platform_update_requests\`;
       await tx\`UPDATE release_check_cache SET latest_version = \${process.env.E2E_LATEST || "99.0.0"},
-                 latest_infra_change = NULL, infra_change_from = NULL, fetched_at = now() WHERE id = 1\`;
+                 latest_infra_change = NULL, infra_change_from = NULL, latest_owner_action = NULL,
+                 fetched_at = now() WHERE id = 1\`;
       await tx\`UPDATE platform_update_scheduler SET last_action = NULL, last_version = NULL,
-                 last_wait_until = NULL, last_reason = NULL\`;
+                 last_wait_until = NULL, last_reason = NULL, skipped_version = NULL,
+                 skipped_by = NULL, skipped_at = NULL\`;
+    } else if (op === "owner-action") {
+      // What the release check stores from the newest release's manifest (#868).
+      await tx\`UPDATE release_check_cache SET latest_owner_action = \${process.env.E2E_OWNER_ACTION}
+                 WHERE id = 1\`;
     } else if (op === "ended-run") {
       // A finished run for the newest release, as the upgrader job leaves it:
       // E2E_STATUS, the phases it reached (E2E_PHASES, comma-separated).
@@ -209,7 +217,8 @@ const FIXTURE_SCRIPT = `
     } else if (op === "auto-reset") {
       await tx\`DELETE FROM platform_update_notifications\`;
       await tx\`UPDATE platform_update_scheduler SET lease_holder = NULL, last_run_at = NULL,
-                 last_version = NULL, last_action = NULL, last_reason = NULL, last_wait_until = NULL\`;
+                 last_version = NULL, last_action = NULL, last_reason = NULL, last_wait_until = NULL,
+                 skipped_version = NULL, skipped_by = NULL, skipped_at = NULL\`;
       await tx\`UPDATE platform_update_policy SET mode = 'notify', auto_security = false,
                  auto_patch = false, auto_minor = false, auto_converge = false, window_start = NULL, window_end = NULL,
                  window_timezone = 'UTC', soak_hours = 24, security_soak_hours = 2, paused = false,
@@ -276,8 +285,10 @@ const FIXTURE_SCRIPT = `
         UPDATE release_check_cache
            SET latest_version = NULL, release_url = NULL, release_notes = NULL,
                published_at = NULL, latest_infra_change = NULL, infra_change_from = NULL,
-               fetched_at = '1970-01-01T00:00:00Z'
+               latest_owner_action = NULL, fetched_at = '1970-01-01T00:00:00Z'
          WHERE id = 1\`;
+      await tx\`UPDATE platform_update_scheduler SET skipped_version = NULL, skipped_by = NULL,
+                 skipped_at = NULL\`;
       await tx\`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE email = \${email})\`;
       await tx\`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email = \${email})\`;
       await tx\`DELETE FROM users WHERE email = \${email}\`;
@@ -612,11 +623,20 @@ test("break_glass: without the converge job, a run that needs Cloud Shell shows 
   await expect(page.getByTestId("update-state-detail")).toContainText("infrastructure contract");
   // Never an Install button next to the Cloud Shell step for the same release.
   await expectOnlyAction(page, "open-cloud-shell");
-  await expect(page.getByTestId("open-cloud-shell")).toHaveAttribute(
+  // #816 — one button to the release's UPGRADE walkthrough (never the
+  // install wizard) and one verified ./run.sh line, no pasted installer.
+  const shell = page.getByTestId("open-cloud-shell");
+  await expect(shell).toHaveAttribute(
     "href",
-    /^https:\/\/(shell|console)\.cloud\.google\.com\//,
+    new RegExp(
+      `^https://shell\\.cloud\\.google\\.com/cloudshell/editor\\?.*cloudshell_git_branch=release-v${LATEST}&cloudshell_tutorial=upgrade-gcp\\.md$`,
+    ),
   );
-  await expect(card(page).getByTestId("cloud-shell-command").last()).toHaveText(COMMAND);
+  await expect(card(page).getByTestId("cloud-shell-command")).toHaveCount(1);
+  await expect(card(page).getByTestId("cloud-shell-command")).toHaveText(SHELL_COMMAND);
+  await expect(card(page)).not.toContainText("bun.sh");
+  await expect(card(page)).not.toContainText("paste these");
+  await expect(card(page)).not.toContainText("skip-verify");
   // The refused run never reads "Finished".
   await page.getByTestId("last-attempt").locator("summary").click();
   await expect(page.getByTestId("last-attempt").locator('[data-phase="finish"]')).toContainText(
@@ -638,6 +658,11 @@ test("break_glass: without the converge job, a release that changes the cloud se
     `v${LATEST} also changes settings in your Google Cloud project`,
   );
   await expectOnlyAction(page, "open-cloud-shell");
+  // #816 — the card never links the install walkthrough.
+  await expect(page.getByTestId("open-cloud-shell")).toHaveAttribute(
+    "href",
+    /cloudshell_tutorial=upgrade-gcp\.md$/,
+  );
   // No job was started: nothing in the history.
   await expect(page.getByTestId("section-history")).toHaveCount(0);
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
@@ -706,6 +731,64 @@ test("scheduled: names when it installs by itself, and offers Install now", asyn
   await page.reload();
   await expect(card(page)).toHaveAttribute("data-state", "update_available");
   runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
+});
+
+test("#868 scheduled: Skip this time, confirmed with the password, keeps it installable by hand", async ({
+  page,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-on", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "auto-status",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_LATEST: LATEST,
+  });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(card(page)).toHaveAttribute("data-state", "scheduled");
+  await expect(card(page).getByTestId("open-skip-dialog")).toHaveText("Skip this time…");
+
+  await page.getByTestId("open-skip-dialog").click();
+  let dialog = page.getByTestId("skip-dialog");
+  await expect(dialog).toContainText(`Skip the automatic install of v${LATEST}?`);
+  // A wrong password changes nothing.
+  await dialog.getByTestId("skip-dialog-password").fill("not the password");
+  await dialog.getByTestId("skip-dialog-submit").click();
+  dialog = page.getByTestId("skip-dialog");
+  await expect(dialog.getByTestId("skip-dialog-error")).toContainText("Wrong password");
+  await expect(card(page)).toHaveAttribute("data-state", "scheduled");
+
+  await dialog.getByTestId("skip-dialog-password").fill(OWNER_PASSWORD);
+  await dialog.getByTestId("skip-dialog-submit").click();
+  // Not scheduled any more, still installable from here, and says why.
+  await expect(card(page)).toHaveAttribute("data-state", "update_available");
+  await expect(page.getByTestId("update-state-detail")).toContainText(
+    "You skipped its automatic install",
+  );
+  await expect(page.getByTestId("open-install-dialog")).toHaveText(`Install v${LATEST}…`);
+  await expect(card(page).getByTestId("open-skip-dialog")).toHaveCount(0);
+  // The scheduler's status line says so too, after a reload (it is in the database).
+  await page.reload();
+  await expect(card(page)).toHaveAttribute("data-state", "update_available");
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "auto-reset", E2E_EMAIL: REVIEWER_EMAIL });
+});
+
+test("#868 a breaking release says what the Owner does, from its release manifest", async ({
+  page,
+}) => {
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
+  runBunInline(FIXTURE_SCRIPT, {
+    E2E_OP: "owner-action",
+    E2E_EMAIL: REVIEWER_EMAIL,
+    E2E_OWNER_ACTION: "Re-enter your email password in Settings → Email after the update.",
+  });
+  await login(page, "dev-owner@example.com", OWNER_PASSWORD);
+  await page.goto("/settings/updates");
+  await expect(page.getByTestId("release-notes-breaking")).toHaveText(
+    "Before you update: Re-enter your email password in Settings → Email after the update.",
+  );
+  runBunInline(FIXTURE_SCRIPT, { E2E_OP: "reset-install", E2E_EMAIL: REVIEWER_EMAIL });
 });
 
 test("up_to_date: no action, Check now as a small link", async ({ page }) => {

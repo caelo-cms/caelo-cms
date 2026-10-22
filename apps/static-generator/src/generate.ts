@@ -55,6 +55,7 @@ import { loadSiteFontUsage } from "./font-usage-sources.js";
 import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { loadBuildLinkIndex } from "./link-index.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
+import { minifyPageAssets } from "./minify-pass.js";
 import {
   assertNoRenderFailures,
   loadNestedModules,
@@ -1093,6 +1094,10 @@ export async function generateSite(args: {
   // page would ship raw `{{#list}}` markers to visitors (the plugin is off,
   // or its answer never reached the build). Refuse the build and name them.
   assertNoPluginMarkers(composedPages, await args.plugins.declaredDataListNames());
+
+  // issue #158 — minify the composer's inline CSS/JS last, after every
+  // pass that still rewrites inside them (media URLs, plugin assets).
+  minifyPageAssets(composedPages);
 
   // v0.2.85 — per-key Content-Type sidecar. When pageUrlStyle is
   // 'no-extension' the page files are bare slugs (no `.html`), so

@@ -23,6 +23,10 @@ import type { DeployTarget } from "@caelo-cms/static-generator";
 // Snapshot the real module so afterAll can undo the process-global
 // mock.module below (issue #305 — same pattern as the GCS test).
 import * as realGoogleAuth from "google-auth-library";
+import {
+  FakeChannelLifetimes,
+  FIREBASE_EXPIRE_TIME_CLEAR_REFUSED,
+} from "../../__tests__/fixtures/firebase-channel-lifetime.js";
 
 const realGoogleAuthExports = { ...realGoogleAuth };
 
@@ -42,6 +46,7 @@ const API = "https://firebasehosting.googleapis.com/v1beta1/";
 const UPLOAD = "https://upload.test/";
 const SITE = "test-site";
 const SITE_BASE_URL = "https://www.example.com";
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 interface HeaderEntry {
   glob?: string;
@@ -66,8 +71,8 @@ class FakeFirebase {
   live: string[] = []; // versionNames released on the live channel (newest first)
   blobs = new Map<string, Buffer>(); // sha256 → gzipped body
   deletedChannels: string[] = [];
-  /** channelId → its finite ttl; null once the channel never expires. */
-  channelExpiry = new Map<string, string | null>();
+  /** When each channel expires, as the live API keeps it (#969). */
+  lifetimes = new FakeChannelLifetimes();
   /** Channels whose DELETE answers 503, as a transient API failure would. */
   failDelete = new Set<string>();
   private seq = 0;
@@ -96,6 +101,7 @@ class FakeFirebase {
     const id = `seed${++this.seq}`;
     this.versions.set(id, { config, files, status: "FINALIZED" });
     this.channels.set(channelId, [this.versionName(id)]);
+    this.lifetimes.create(channelId, "604800s");
   }
 
   fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -154,14 +160,10 @@ class FakeFirebase {
       const all = [...this.channels.keys(), "live"];
       const page = params.get("pageToken") === "p2" ? all.slice(1) : all.slice(0, 1);
       return json({
-        channels: page.map((id) => {
-          const expiry = this.channelExpiry.get(id);
-          return {
-            name: `sites/${SITE}/channels/${id}`,
-            // Firebase lists expireTime only for channels it deletes on its own.
-            ...(expiry ? { expireTime: `in ${expiry}` } : {}),
-          };
-        }),
+        channels: page.map((id) => ({
+          name: `sites/${SITE}/channels/${id}`,
+          expireTime: this.lifetimes.expireTime(id),
+        })),
         ...(params.get("pageToken") === "p2" ? {} : { nextPageToken: "p2" }),
       });
     }
@@ -175,24 +177,28 @@ class FakeFirebase {
         return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
       }
       this.deletedChannels.push(channel[1]!);
+      this.lifetimes.forget(channel[1]!);
       return new Response("", { status: 200 });
     }
-    if (method === "PATCH" && channel) {
-      if (!this.channels.has(channel[1]!)) throw new Error("patch on unknown channel");
-      const mask = params.get("updateMask");
-      if (mask === "expireTime" && parsed.expireTime === null) {
-        this.channelExpiry.set(channel[1]!, null);
-      } else if (mask === "ttl" && typeof parsed.ttl === "string") {
-        this.channelExpiry.set(channel[1]!, parsed.ttl);
-      } else {
-        throw new Error(`unexpected channel patch ${mask} ${JSON.stringify(parsed)}`);
+    if (method === "GET" && channel) {
+      if (!this.channels.has(channel[1]!)) {
+        return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
       }
-      return json({});
+      return json({
+        name: `sites/${SITE}/channels/${channel[1]}`,
+        expireTime: this.lifetimes.expireTime(channel[1]!),
+      });
+    }
+    if (method === "PATCH" && channel) {
+      // The live API would implicitly create a missing channel; Caelo must
+      // never rely on that (staging would serve an empty channel).
+      if (!this.channels.has(channel[1]!)) throw new Error("patch on unknown channel");
+      return this.lifetimes.patch(SITE, channel[1]!, params.get("updateMask"), parsed);
     }
     if (method === "POST" && route === `sites/${SITE}/channels`) {
       const channelId = params.get("channelId") ?? "";
       this.channels.set(channelId, []);
-      this.channelExpiry.set(channelId, parsed.ttl ?? null);
+      this.lifetimes.create(channelId, parsed.ttl);
       return json({
         name: `sites/${SITE}/channels/${channelId}`,
         url: `https://${SITE}--${channelId}.web.app`,
@@ -432,6 +438,7 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
       await firebaseHostingPublisher.publishStaging({ buildDir, runId, target: STAGING });
     }
     fake.channels.set("someone-elses-channel", []);
+    fake.lifetimes.create("someone-elses-channel", "604800s");
     const r = await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-new" });
     expect([...r.retired].sort()).toEqual(["runid-run-old-1", "runid-run-old-2"]);
     expect(r.notRetired).toEqual([]);
@@ -442,36 +449,100 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
     expect([...fake.channels.keys()]).toEqual(["someone-elses-channel"]);
   });
 
-  it("#908 publishStaging keeps the finite TTL: a Stage that fails before selection leaves nothing that never expires", async () => {
+  it("#908 publishStaging keeps the finite TTL: a Stage that fails before selection leaves nothing beyond a week", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-dies", target: STAGING });
     expect(fake.channels.get("runid-run-dies")?.length).toBe(1);
-    expect(fake.channelExpiry.get("runid-run-dies")).toBe("604800s");
+    expect(fake.lifetimes.remainingMs("runid-run-dies")).toBeLessThanOrEqual(7 * DAY_MS);
   });
 
-  it("#908 selection lifts the served channel's TTL, so an idle staging never expires into 404s", async () => {
+  it("#969 the fake refuses the expireTime clear exactly like the live API", async () => {
+    // Guards the fake itself: #909 passed its tests because the fake
+    // accepted a request the live API answers with this 400.
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-x", target: STAGING });
+    const res = await fake.fetch(`${API}sites/${SITE}/channels/runid-run-x?updateMask=expireTime`, {
+      method: "PATCH",
+      body: JSON.stringify({ expireTime: null }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(FIREBASE_EXPIRE_TIME_CLEAR_REFUSED);
+  });
+
+  it("#969 selection succeeds and refreshes the served channel's TTL to 30 days (no expireTime clear)", async () => {
+    const { firebaseHostingPublisher, SERVED_PREVIEW_CHANNEL_TTL } = await import(
+      "../static-publisher-firebase.js"
+    );
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-idle", target: STAGING });
-    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-idle" });
-    expect(fake.channelExpiry.get("runid-run-idle")).toBeNull();
+    const r = await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-idle" });
+    expect(SERVED_PREVIEW_CHANNEL_TTL).toBe("2592000s");
+    expect(fake.lifetimes.ttlPatches).toEqual([
+      { channelId: "runid-run-idle", ttl: SERVED_PREVIEW_CHANNEL_TTL },
+    ]);
+    expect(r.servedExpiresAt).toBe(fake.lifetimes.expireTime("runid-run-idle"));
+    // An idle week (the #969 acceptance) and more cannot expire it.
+    expect(fake.lifetimes.remainingMs("runid-run-idle")).toBeGreaterThan(29 * DAY_MS);
   });
 
-  it("#908 selection also lifts the TTL of a served channel staged before served channels stopped expiring", async () => {
+  it("#969 selection refreshes the TTL of a served channel staged by an earlier version (7-day TTL)", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
-    // Staged and recorded by the previous version: served, but still on
-    // its 7-day TTL. Publish live re-selects it and must keep it alive.
+    // Staged and recorded by the previous version: served, but on its
+    // 7-day TTL with 2 days left. Publish live re-selects it.
     fake.seedVersion("runid-run-legacy", { headers: [] }, { "/index.html": "abc" });
-    fake.channelExpiry.set("runid-run-legacy", "604800s");
+    fake.lifetimes.seed("runid-run-legacy", Date.now() + 2 * DAY_MS);
     await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-legacy" });
     expect(fake.channels.has("runid-run-legacy")).toBe(true);
-    expect(fake.channelExpiry.get("runid-run-legacy")).toBeNull();
+    expect(fake.lifetimes.remainingMs("runid-run-legacy")).toBeGreaterThan(29 * DAY_MS);
   });
 
-  it("#908 a channel that stops being served gets its TTL back, so a failed delete still expires", async () => {
+  it("#969 refreshStagingPreview pushes the served channel's expiry out again and touches nothing else", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-old", target: STAGING });
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
+    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-a" });
+    expect(fake.deletedChannels).toEqual(["runid-run-old"]);
+    // 20 idle days later the keep-alive ticks.
+    const start = Date.now();
+    fake.lifetimes.now = () => start + 20 * DAY_MS;
+    expect(fake.lifetimes.remainingMs("runid-run-a")).toBeLessThan(11 * DAY_MS);
+    const patchesBefore = fake.lifetimes.ttlPatches.length;
+    const r = await firebaseHostingPublisher.refreshStagingPreview!({ servedRunId: "run-a" });
+    expect(r.expiresAt).toBe(fake.lifetimes.expireTime("runid-run-a"));
+    expect(fake.lifetimes.remainingMs("runid-run-a")).toBeGreaterThan(29 * DAY_MS);
+    expect(fake.lifetimes.ttlPatches.slice(patchesBefore).map((p) => p.channelId)).toEqual([
+      "runid-run-a",
+    ]);
+    expect(fake.deletedChannels).toEqual(["runid-run-old"]);
+  });
+
+  it("#969 refreshStagingPreview fails loudly when the served channel is gone, and never recreates it", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await expect(
+      firebaseHostingPublisher.refreshStagingPreview!({ servedRunId: "run-gone" }),
+    ).rejects.toThrow("Stage again");
+    expect(fake.channels.size).toBe(0);
+  });
+
+  it("#969 a TTL refresh Firebase answers without an expireTime fails loudly", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
+    const inner = fake.fetch;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (init?.method === "PATCH" && String(input).includes("updateMask=ttl")) {
+        return new Response(JSON.stringify({ name: "x" }), { status: 200 });
+      }
+      return inner(input, init);
+    }) as typeof fetch;
+    await expect(
+      firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-a" }),
+    ).rejects.toThrow("returned no expireTime");
+  });
+
+  it("#908 a channel that stops being served gets the short TTL back, so a failed delete still expires within a week", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
     await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-a" });
-    expect(fake.channelExpiry.get("runid-run-a")).toBeNull();
+    expect(fake.lifetimes.remainingMs("runid-run-a")).toBeGreaterThan(29 * DAY_MS);
 
     await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-b", target: STAGING });
     fake.failDelete.add("runid-run-a");
@@ -479,14 +550,23 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
     expect(r.retired).toEqual([]);
     expect(r.notRetired.map((n) => n.preview)).toEqual(["runid-run-a"]);
     expect(fake.channels.has("runid-run-a")).toBe(true);
-    expect(fake.channelExpiry.get("runid-run-a")).toBe("604800s");
-    expect(fake.channelExpiry.get("runid-run-b")).toBeNull();
+    expect(fake.lifetimes.remainingMs("runid-run-a")).toBeLessThanOrEqual(7 * DAY_MS);
+    expect(fake.lifetimes.remainingMs("runid-run-b")).toBeGreaterThan(29 * DAY_MS);
 
     // The next selection retires it.
     fake.failDelete.clear();
     const next = await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-b" });
     expect(next.retired).toEqual(["runid-run-a"]);
     expect([...fake.channels.keys()]).toEqual(["runid-run-b"]);
+  });
+
+  it("#969 a never-served preview is deleted without a TTL round-trip", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-a", target: STAGING });
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-b", target: STAGING });
+    await firebaseHostingPublisher.selectStagingPreview!({ servedRunId: "run-b" });
+    expect(fake.lifetimes.ttlPatches.map((p) => p.channelId)).toEqual(["runid-run-b"]);
+    expect(fake.deletedChannels).toEqual(["runid-run-a"]);
   });
 
   it("#908 selecting a served channel that no longer exists fails loudly and retires nothing", async () => {
@@ -517,5 +597,82 @@ describe("withTargetRobotsHeader", () => {
       { glob: "/**/*.html", headers: { "Cache-Control": "public, max-age=60" } },
       { glob: "**", headers: { "X-Robots-Tag": "noindex" } },
     ]);
+  });
+});
+
+describe("outlivesRetiredPreviewTtl (#969)", () => {
+  const NOW = Date.parse("2026-10-21T12:00:00Z");
+
+  it("is false for a preview within the regular 7-day TTL", async () => {
+    const { outlivesRetiredPreviewTtl } = await import("../static-publisher-firebase.js");
+    expect(outlivesRetiredPreviewTtl("2026-10-28T12:00:00Z", NOW)).toBe(false);
+    expect(outlivesRetiredPreviewTtl("2026-10-22T00:00:00Z", NOW)).toBe(false);
+  });
+
+  it("is true for a served (30-day) preview and for one without an expiry", async () => {
+    const { outlivesRetiredPreviewTtl } = await import("../static-publisher-firebase.js");
+    expect(outlivesRetiredPreviewTtl("2026-11-20T12:00:00Z", NOW)).toBe(true);
+    expect(outlivesRetiredPreviewTtl("2026-10-28T12:00:01Z", NOW)).toBe(true);
+    expect(outlivesRetiredPreviewTtl(null, NOW)).toBe(true);
+  });
+
+  it("fails loudly on an expireTime it cannot read", async () => {
+    const { outlivesRetiredPreviewTtl } = await import("../static-publisher-firebase.js");
+    expect(() => outlivesRetiredPreviewTtl("in 604800s", NOW)).toThrow("unparseable");
+  });
+});
+
+describe("firebaseHostingPublisher — security headers (#891)", () => {
+  it("Publish live of a version staged before #891 goes live with the SVG CSP + nosniff", async () => {
+    // A pre-#891 staging version: cache entries + staging robots, no
+    // security entries.
+    fake.seedVersion(
+      "runid-pre-891",
+      {
+        headers: [
+          { regex: "^/_assets/", headers: { "Cache-Control": "public, max-age=3600" } },
+          { glob: "**", headers: { "X-Robots-Tag": "noindex" } },
+        ],
+      },
+      { "/index.html": "abc" },
+    );
+    const { firebaseHostingPublisher, SECURITY_HEADER_ENTRIES } = await import(
+      "../static-publisher-firebase.js"
+    );
+    await firebaseHostingPublisher.promoteToProduction({
+      sourceRunId: "pre-891",
+      sourceBuildDir: buildDir,
+      fromTarget: STAGING,
+      toTarget: PRODUCTION,
+      siteBaseUrl: SITE_BASE_URL,
+    });
+    expect(fake.liveVersion().config.headers).toEqual([
+      { regex: "^/_assets/", headers: { "Cache-Control": "public, max-age=3600" } },
+      ...SECURITY_HEADER_ENTRIES,
+    ]);
+  });
+});
+
+describe("withSecurityHeaders", () => {
+  it("replaces stale security entries (case-insensitive) and keeps everything else", async () => {
+    const { withSecurityHeaders, SECURITY_HEADER_ENTRIES } = await import(
+      "../static-publisher-firebase.js"
+    );
+    const cache = { glob: "/**/*.html", headers: { "Cache-Control": "public, max-age=60" } };
+    const config = {
+      rewrites: [{ glob: "/api/**" }],
+      headers: [
+        cache,
+        { glob: "**/*.svg", headers: { "content-security-policy": "default-src *" } },
+        { glob: "**", headers: { "x-content-type-options": "nosniff" } },
+      ],
+    };
+    expect(withSecurityHeaders(config)).toEqual({
+      rewrites: [{ glob: "/api/**" }],
+      headers: [cache, ...SECURITY_HEADER_ENTRIES],
+    });
+    // Idempotent: a config that already has them is left as it is.
+    const once = withSecurityHeaders(config);
+    expect(withSecurityHeaders(once)).toEqual(once);
   });
 });

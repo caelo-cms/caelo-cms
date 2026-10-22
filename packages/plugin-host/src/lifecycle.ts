@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * @caelo-cms/plugin-host/lifecycle — admin-core's plugins.disable / activate
- * ops call this after the DB write to keep the live host's registries in
- * sync. Without it, disable just flips a status row and leaves tools +
- * workers running until process restart.
+ * @caelo-cms/plugin-host/lifecycle — admin-core's plugin ops (activate,
+ * disable, revoke a grant, uninstall) call this once their transaction has
+ * committed (post-commit effects, `admin-core/ops/plugins/host-sync.ts`,
+ * #585) to keep the live host's registries in sync. Without it, disable
+ * just flips a status row and leaves tools + workers running until process
+ * restart; called before the commit, a rollback would leave the host out of
+ * step with the database.
  */
 
 import { pluginDataListsRegistry } from "./data-lists.js";
@@ -33,8 +36,8 @@ export function applyPluginLifecycle(slug: string, action: PluginLifecycleAction
  * #393 — full runtime removal for uninstall: the plugin disappears from
  * every registry (tools, prompt context, workers, URL contributions,
  * the loaded-plugins map). Unlike disable, this is not reversible
- * without a fresh bootstrap — the uninstall op deletes the DB rows and
- * drops the schemas right after.
+ * without a fresh bootstrap — it runs once the uninstall op's deletion of
+ * the DB rows has committed, and the schemas are dropped right after.
  */
 export function deregisterPlugin(slug: string): void {
   setPluginDisabled(slug, false);

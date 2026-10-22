@@ -17,10 +17,14 @@
 
 import { getMediaStorage } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
-import { FAVICON_VARIANT, MEDIA_VARIANT_TAGS, type MediaVariantTag } from "@caelo-cms/shared";
+import {
+  FAVICON_VARIANT,
+  MEDIA_VARIANT_TAGS,
+  type MediaVariantTag,
+  mediaSecurityHeaders,
+} from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
-import { mediaSecurityHeaders } from "#lib/server/media-headers.js";
-import { requireUserOrPreviewScreenshotToken } from "#lib/server/preview-screenshot-auth.js";
+import { requirePreviewAssetAccess } from "#lib/server/preview-screenshot-auth.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
 
@@ -28,10 +32,10 @@ import type { RequestHandler } from "./$types";
 // every preview page's <head>, so it must resolve here too.
 const VALID_VARIANTS = new Set<string>([...MEDIA_VARIANT_TAGS, FAVICON_VARIANT]);
 
-export const GET: RequestHandler = async ({ params, locals, request }) => {
+export const GET: RequestHandler = async ({ params, locals, request, cookies }) => {
   // issue #412 — the server-side screenshot browser presents a signed
   // capture token instead of a session; same read grant either way.
-  const ctx = requireUserOrPreviewScreenshotToken(locals, request);
+  const ctx = await requirePreviewAssetAccess(locals, request, cookies);
 
   const { assetId, variant } = params;
   if (!assetId || !variant || !VALID_VARIANTS.has(variant)) {

@@ -33,6 +33,11 @@ export interface IntakeHandlerDeps {
   now?: () => number;
   /** Per client IP, for unsigned registrations. */
   registerLimiter?: RateLimiter;
+  /**
+   * All registrations together (key `*`): a per-IP limit alone does not bound
+   * an attacker with many addresses, and every registered key can file issues.
+   */
+  globalRegisterLimiter: RateLimiter;
   /** Per verified install, for reports and status refreshes. */
   installLimiter?: RateLimiter;
 }
@@ -63,8 +68,12 @@ export function createIntakeHandler(deps: IntakeHandlerDeps): (req: Request) => 
 
     try {
       if (path === "/v1/installs") {
+        // Per address first, so one noisy address cannot spend the global budget.
         if (!registerLimiter.take(clientIp(req), now())) {
           return refuse(429, "Too many registrations from this address.", true);
+        }
+        if (!deps.globalRegisterLimiter.take("*", now())) {
+          return refuse(429, "Too many registrations right now; retry later.", true);
         }
         const parsed = bugIntakeRegisterRequest.safeParse(safeJson(body));
         if (!parsed.success)

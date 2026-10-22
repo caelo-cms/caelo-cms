@@ -12,6 +12,7 @@ import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { opErrorMessage } from "#lib/server/op-error.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
@@ -46,7 +47,10 @@ export interface BugForwarding {
     queued: number;
     sent: number;
     failed: number;
-    earlierUnsent: number;
+    /** Open reports not yet with the Caelo team (filed before opt-in, or sending failed). */
+    unsent: number;
+    /** Not sent, but marked fixed/invalid, so the send button leaves them out. */
+    closedUnsent: number;
   };
 }
 
@@ -70,21 +74,34 @@ export const actions: Actions = {
     const enabled = form.get("enabled") === "1";
     const { adapter, registry } = getQueryContext();
     const r = await execute(registry, adapter, locals.ctx, "bug_forwarding.set", { enabled });
-    if (!r.ok) return fail(400, { error: "Could not save the setting." });
+    if (!r.ok) {
+      return fail(400, {
+        error: `Could not save the setting: ${opErrorMessage(r.error, "the server refused the change")}`,
+      });
+    }
     return {
       ok: enabled
         ? "Detected bugs are now sent to the Caelo team."
         : "Detected bugs stay on this site.",
     };
   },
-  queueEarlier: async ({ request, locals }) => {
+  queueUnsent: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");
     const form = await request.formData();
     await assertCsrfToken(form, locals);
     const { adapter, registry } = getQueryContext();
-    const r = await execute(registry, adapter, locals.ctx, "bug_forwarding.queue_earlier", {});
-    if (!r.ok) return fail(400, { error: "Turn on sending to the Caelo team first." });
+    const r = await execute(registry, adapter, locals.ctx, "bug_forwarding.queue_unsent", {});
+    if (!r.ok) {
+      return fail(400, {
+        error: opErrorMessage(r.error, "Turn on sending to the Caelo team first."),
+      });
+    }
     const { queued } = r.value as { queued: number };
-    return { ok: `${queued} earlier report(s) will be sent to the Caelo team.` };
+    return {
+      ok:
+        queued === 1
+          ? "1 report will be sent to the Caelo team."
+          : `${queued} reports will be sent to the Caelo team.`,
+    };
   },
 };

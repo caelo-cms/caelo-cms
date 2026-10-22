@@ -5,7 +5,8 @@
  *
  * What `cms-provision owner-reset` calls (as the operator's own cloud
  * identity, through the admin's IAP) when an Owner is locked out and the
- * install cannot email a reset link. Body `{ email?, requestedBy }`; the answer carries
+ * install cannot email a reset link. Body `{ email?, requestedBy }` (Google
+ * Cloud) or `{ email?, requestedByHostUser }` (self-hosted, #770); the answer carries
  * the raw reset token, which the CLI turns into the `/reset?token=…` link
  * and prints. The response is the only place the token travels: it is never
  * logged, so it does not end up in the project's Cloud Logging.
@@ -22,6 +23,13 @@
  * authoritative record is Google's Data Access audit log for the
  * iamcredentials `signJwt` and secretmanager `AccessSecretVersion` calls the
  * CLI makes as the operator (GCP install docs at caelo-cms.com/docs/, "Owner reset").
+ *
+ * `requestedByHostUser` is the self-hosted counterpart (#770): `<user>@<host>`
+ * of the CLI process, which reaches here through `docker compose exec` on the
+ * install's host. Equally self-asserted and labelled so; the host's own
+ * login records are the authoritative ones. A separate field rather than a
+ * second format of `requestedBy`, so the audit row says which kind of
+ * identity it names, and #769's Google Cloud request stays as it is.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -48,13 +56,26 @@ const requestedBy = z
   .max(320)
   .regex(/^[A-Za-z0-9._%+@:/=-]+$/, "must be the gcloud account the command ran as");
 
+/** `<user>@<host>` of the CLI process on a self-hosted install's host (owner-reset.ts). */
+const requestedByHostUser = z
+  .string()
+  .max(318)
+  .regex(
+    /^[A-Za-z0-9._-]{1,64}@[A-Za-z0-9.-]{1,253}$/,
+    "must be <user>@<host> of the command on the install's host",
+  );
+
 const SYSTEM_CTX: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
   actorKind: "system",
   requestId: "internal-owner-reset",
 };
 
-const body = z.object({ email: z.string().email().max(254).optional(), requestedBy }).strict();
+const email = z.string().email().max(254).optional();
+const body = z.union([
+  z.object({ email, requestedBy }).strict(),
+  z.object({ email, requestedByHostUser }).strict(),
+]);
 
 export const POST: RequestHandler = async ({ request }) => {
   await requireInternalAuth(request, SCOPE);
@@ -72,7 +93,10 @@ export const POST: RequestHandler = async ({ request }) => {
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, SYSTEM_CTX, "auth.issue_owner_reset", {
     ...(parsed.email !== undefined ? { email: parsed.email } : {}),
-    source: `${SOURCE} by gcloud account ${parsed.requestedBy} (self-asserted)`,
+    source:
+      "requestedBy" in parsed
+        ? `${SOURCE} by gcloud account ${parsed.requestedBy} (self-asserted)`
+        : `${SOURCE} by host user ${parsed.requestedByHostUser} on the install's host (self-asserted)`,
   });
   if (!r.ok) {
     const message =

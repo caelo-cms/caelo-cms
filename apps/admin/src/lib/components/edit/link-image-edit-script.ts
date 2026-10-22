@@ -158,7 +158,7 @@ export const LINK_IMAGE_EDIT_SCRIPT = `
         var alt = marked.fields.alt;
         if (alt && !shownAsText(moduleEl, marked.at, alt)) msg.alt = edit(alt, "");
         if (scope) msg.scope = scope;
-        parent.postMessage(msg, origin());
+        postToEditor(msg);
       },
       function () {},
     );

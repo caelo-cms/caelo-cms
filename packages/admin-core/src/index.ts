@@ -249,6 +249,7 @@ export {
 // P12+ at-rest secret encryption (project KEK + AES-GCM).
 export {
   decryptSecret,
+  deriveKekSubkey,
   type EncryptedSecret,
   encryptSecret,
   generateKekHex,

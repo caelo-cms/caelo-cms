@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * #769 — `owner-reset` asks the admin for a reset link through IAP (as
+ * #769 — `owner-reset` on gcp-firebase asks the admin for a reset link through IAP (as
  * caelo-mcp) with the internal token for scope `auth.owner_reset`, and builds
  * the link on the admin URL the operator can open.
  */
@@ -13,7 +13,7 @@ import { describeOwnerReset, OWNER_RESET_SCOPE, requestOwnerReset } from "./owne
 const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
 const ADMIN = "https://caelo-production-admin-abc-ew.a.run.app";
-const target = { projectId: "proj", region: "europe-west1" };
+const target = { provider: "gcp-firebase" as const, projectId: "proj", region: "europe-west1" };
 
 function fakeGcloud(
   overrides: Record<string, GcloudResult> = {},

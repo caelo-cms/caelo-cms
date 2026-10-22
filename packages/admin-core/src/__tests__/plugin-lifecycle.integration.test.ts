@@ -21,7 +21,10 @@ import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { configurePluginUninstallFinalizer } from "../ops/plugins/uninstall.js";
+import {
+  configurePluginUninstallFinalizer,
+  executeUninstallPluginOp,
+} from "../ops/plugins/uninstall.js";
 import { registerAdminOps } from "../register.js";
 import { ensureRoleUser } from "./fixtures/role-user.js";
 
@@ -304,6 +307,36 @@ describe("#393 — lifecycle completion", () => {
     expect(preview.dataLoss).toBe(true);
     expect(preview.urlSlotsReleased).toEqual(["path-prefix"]);
     expect(preview.skillsArchived).toEqual(["t393-skill"]);
+
+    // #585 — an execute whose transaction rolls back leaves the running
+    // host and the data untouched: the plugin is still loaded, its URL
+    // slot still shapes paths, and no schema was dropped.
+    await expect(
+      adapter.withAdminTransaction(HUMAN_CTX, async (tx) => {
+        const r = await executeUninstallPluginOp.handler(
+          HUMAN_CTX,
+          { proposalId: (proposed.value as { proposalId: string }).proposalId },
+          tx,
+        );
+        if (!r.ok) throw new Error(JSON.stringify(r.error));
+        // Applied in the tx, but nothing has left the host yet.
+        expect(loadedPlugins.bySlug("t393-life")).toBeDefined();
+        throw new Error("forced rollback after the uninstall statements");
+      }),
+    ).rejects.toThrow("forced rollback");
+    expect(loadedPlugins.bySlug("t393-life")).toBeDefined();
+    expect(urlContributionsRegistry.bySlot("path-prefix")?.pluginSlug).toBe("t393-life");
+    expect(droppedSchemas).toEqual([]);
+    const stillInstalled = await sqlSystem(async (tx) => {
+      const plugins = (await tx.unsafe(
+        `SELECT COUNT(*)::int AS n FROM plugins WHERE slug = 't393-life'`,
+      )) as { n: number }[];
+      const schema = (await tx.unsafe(
+        `SELECT COUNT(*)::int AS n FROM pg_namespace WHERE nspname = 'plugin_t393_life'`,
+      )) as { n: number }[];
+      return { plugins: plugins[0]?.n, schema: schema[0]?.n };
+    });
+    expect(stillInstalled).toEqual({ plugins: 1, schema: 1 });
 
     const executed = await execute(registry, adapter, HUMAN_CTX, "plugins.execute_proposal", {
       proposalId: (proposed.value as { proposalId: string }).proposalId,

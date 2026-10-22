@@ -39,6 +39,7 @@ import type { UpdateEnd, UpdateEndStatus } from "../upgrader-job.js";
 import { recordUpdateEnd } from "../upgrader-job.js";
 import { eventReporter, type JobLog } from "../upgrader-reporter.js";
 import type { VerifiedCli } from "./cli-provenance.js";
+import { UpgradeLockHeldError } from "./lock.js";
 import type { AgentQueue } from "./queue.js";
 
 /** What the target release's `agent apply` is told (argv of the child). */
@@ -70,7 +71,11 @@ export interface AgentRunDeps {
   readonly readInstalled: () => SelfHostedRelease | null;
   /** fetchVerifiedReleaseManifest against the fixed registry. */
   readonly fetchManifest: (version: string) => Promise<ReleaseManifestResult>;
-  /** Take the install's upgrade lock (agent/lock.ts); throws when held. */
+  /**
+   * Take the install's upgrade lock (agent/lock.ts): throws
+   * UpgradeLockHeldError when another upgrade holds it, any other error
+   * when the lock cannot be written.
+   */
   readonly lock: () => () => void;
   /**
    * Install the target release's CLI and verify its npm signatures +
@@ -169,11 +174,17 @@ export async function runAgentOnce(deps: AgentRunDeps): Promise<AgentRunResult> 
     try {
       release = deps.lock();
     } catch (e) {
-      return await stopWith(
-        "failed",
-        ["state-locked"],
-        `Nothing was changed: ${errorText(e)} Try again when it has finished.`,
-      );
+      // #804 — only another upgrade holding the lock is "busy"; a lock the
+      // agent cannot write (permissions, a full disk) is a server problem
+      // that waiting never fixes.
+      if (e instanceof UpgradeLockHeldError) {
+        return await stopWith(
+          "failed",
+          ["state-locked"],
+          `Nothing was changed: ${errorText(e)} Try again when it has finished.`,
+        );
+      }
+      return await stopWith("failed", ["lock-access"], `Nothing was changed: ${errorText(e)}`);
     }
 
     r.phase("verify");

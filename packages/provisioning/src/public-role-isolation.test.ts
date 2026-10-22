@@ -46,7 +46,7 @@ describe("revokePublicRoleMembershipsArgs (#633)", () => {
 });
 
 describe("revokePublicRoleMemberships", () => {
-  const install = { projectId: "acme", env: "production" };
+  const install = { projectId: "acme", env: "production", credentials: "operator" } as const;
 
   it("finds the instance, then revokes", async () => {
     const { run, calls } = fake((l) => (l.startsWith("sql instances list") ? ok("pg-1\n") : ok()));
@@ -73,7 +73,18 @@ describe("revokePublicRoleMemberships", () => {
     const { run, calls } = fake(() => ok(""));
     const r = await revokePublicRoleMemberships(install, { run, sleep: noSleep });
     expect(r.status).toBe("failed");
-    expect(r.error).toBe("the Cloud SQL instance was not found");
+    expect(r.error).toBe("Could not find the Cloud SQL instance");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("a failed listing is reported as such, not as a missing instance (#630)", async () => {
+    const { run, calls } = fake(() =>
+      fail("ERROR: Reauthentication failed. cannot prompt during non-interactive execution."),
+    );
+    const r = await revokePublicRoleMemberships(install, { run, sleep: noSleep });
+    expect(r.status).toBe("failed");
+    expect(r.error).toContain("gcloud auth login");
+    expect(r.error).not.toContain("Could not find");
     expect(calls).toHaveLength(1);
   });
 

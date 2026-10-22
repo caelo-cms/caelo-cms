@@ -59,6 +59,7 @@ import {
   linkBilling,
   listBillingAccounts,
   PROVISIONER_ROLE_LIST,
+  projectDisplayName,
   projectExists,
   REQUIRED_API_LIST,
   serviceAccountExists,
@@ -95,6 +96,7 @@ import {
   resolveOperatorAccessTarget,
 } from "../operator-access.js";
 import { ensureOpsBackend } from "../ops-backend.js";
+import { formatPlan, type PlannedStep, planGate, writePlanFile } from "../preview-plan.js";
 import {
   convergeKeylessProvisioner,
   PROVISIONER_ACCOUNT_ID,
@@ -117,7 +119,7 @@ import {
   resolveBackend,
 } from "../state-backend.js";
 import { acquireStateLock, GcsStateStore } from "../state-store.js";
-import { resolveGcpResourceName } from "../upgrade/gcp-lookup.js";
+import { lookupFailure, resolveGcpResourceName } from "../upgrade/gcp-lookup.js";
 import {
   releaseVersionForDigest,
   resolveOpsImageRef,
@@ -127,7 +129,12 @@ import { ensureUpgraderJob, resolveUpgraderTarget } from "../upgrader-setup.js";
 import { ensureUrlMapRedirectsAccess } from "../url-map-redirects-access.js";
 import { estimateGcpCost } from "./gcp-cost.js";
 import { promptProjectId } from "./gcp-prompts.js";
-import { GCP_STACK_KNOB_DEFAULTS, pulumiUpGcp, readStackOutput } from "./gcp-pulumi.js";
+import {
+  GCP_STACK_KNOB_DEFAULTS,
+  PulumiUpDeclinedError,
+  pulumiUpGcp,
+  readStackOutput,
+} from "./gcp-pulumi.js";
 
 export interface GcpWizardOpts {
   installId: string;
@@ -177,7 +184,7 @@ export async function runGcpWizard(opts: GcpWizardOpts): Promise<void> {
   if (meta) writeMetadata(installId, { ...meta, projectId, region });
 
   // === 3. Project create ===
-  await stepProjectCreate(installId, projectId);
+  await stepProjectCreate(installId, projectId, opts.domain);
 
   // === 4. Billing link ===
   await stepBillingLink(installId, projectId, opts.nonInteractive);
@@ -396,6 +403,7 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     // v0.3.1 — route pulumi up at the right stack folder + use the
     // matching config namespace.
     provider,
+    nonInteractive: opts.nonInteractive,
   });
   recordImageDigests(installId, imageDigests);
 
@@ -692,7 +700,11 @@ async function stepRegion(
   return choice as string;
 }
 
-async function stepProjectCreate(installId: string, projectId: string): Promise<void> {
+async function stepProjectCreate(
+  installId: string,
+  projectId: string,
+  domain: string,
+): Promise<void> {
   const stepName = `project-create-${projectId}`;
   if (isStepDone(installId, stepName)) {
     log.success(`Project ${bold(projectId)} ${dim("(already created)")}`);
@@ -705,7 +717,7 @@ async function stepProjectCreate(installId: string, projectId: string): Promise<
   }
   const s = spinner();
   s.start(`Creating GCP project ${projectId}...`);
-  const r = await createProject(projectId, "Caelo CMS");
+  const r = await createProject(projectId, projectDisplayName(domain));
   if (!r.ok) {
     s.stop(red(`Failed: ${r.stderr.trim()}`));
     log.error(
@@ -917,7 +929,11 @@ async function stepGrantBaseRoles(
 async function stepPublicRoleIsolation(projectId: string): Promise<void> {
   const s = spinner();
   s.start("Removing public_role from the Cloud SQL superuser group...");
-  const r = await revokePublicRoleMemberships({ projectId, env: GCP_STACK_ENV });
+  const r = await revokePublicRoleMemberships({
+    projectId,
+    env: GCP_STACK_ENV,
+    credentials: "operator",
+  });
   if (r.status === "failed") {
     s.stop(red(`Failed: ${r.error ?? ""}`));
     log.error("Re-run the wizard once the cause is fixed (this step is idempotent).");
@@ -1161,7 +1177,7 @@ async function stepRemoteMcp(
       projectId,
       region,
     );
-  const [admin, gateway] = [await name("admin"), await name("gateway")];
+  const [adminLookup, gatewayLookup] = [await name("admin"), await name("gateway")];
   const failed = (error: string) => {
     s.stop(yellow(`Remote MCP not prepared: ${error}`));
     log.warn(
@@ -1169,7 +1185,17 @@ async function stepRemoteMcp(
     );
     return false;
   };
-  if (!admin || !gateway) return failed("the admin or gateway Cloud Run service was not found");
+  if (adminLookup.status !== "found") {
+    return failed(
+      lookupFailure(adminLookup, `caelo-${GCP_STACK_ENV}-admin* Cloud Run service`, "operator"),
+    );
+  }
+  if (gatewayLookup.status !== "found") {
+    return failed(
+      lookupFailure(gatewayLookup, `caelo-${GCP_STACK_ENV}-gateway* Cloud Run service`, "operator"),
+    );
+  }
+  const [admin, gateway] = [adminLookup.name, gatewayLookup.name];
   const edge = await ensureRemoteMcpEdge({ provider, projectId, env: GCP_STACK_ENV, domain });
   if (!edge.ok) return failed(edge.error);
   const env = await ensureRemoteMcpIdentityEnv({
@@ -1436,6 +1462,50 @@ interface PulumiUpOpts {
   imageDigests: ImageDigests;
   /** v0.3.1 — provider variant; routes pulumi up at the right stack. */
   provider?: "gcp" | "gcp-firebase";
+  /** No terminal to ask (the install job, `--non-interactive`): see planGate. */
+  nonInteractive: boolean;
+}
+
+/**
+ * The installer's review of a deployed stack's plan before `pulumi up`
+ * (#737): the grouped list, the full diff in the install dir, and a y/N
+ * for any replace or delete. A data-bearing one is asked about by name and
+ * defaults to No; without a terminal it is refused (planGate).
+ *
+ * @returns whether `pulumi up` may apply the plan
+ */
+async function reviewPulumiPlan(
+  installId: string,
+  steps: readonly PlannedStep[],
+  nonInteractive: boolean,
+): Promise<boolean> {
+  const gate = planGate(steps, { interactive: !nonInteractive && process.stdin.isTTY === true });
+  if (steps.length === 0) {
+    log.info(dim("Preview: no changes planned."));
+    return true;
+  }
+  const file = writePlanFile(installRoot(installId), "installer", steps);
+  note([...formatPlan(steps), "", `Full diff: ${file}`].join("\n"), "pulumi up will change");
+  if (gate.kind === "proceed") return true;
+  if (gate.kind === "refuse") {
+    log.error(
+      red(
+        `Nothing was applied: this plan replaces or deletes resources that hold the site's data, and an unattended run cannot confirm that. Read ${file}; if the change is intended, re-run the installer in a terminal and confirm it there.`,
+      ),
+    );
+    return false;
+  }
+  const answer = await confirm({
+    message: gate.losesData
+      ? red("This plan DESTROYS the data named above. Apply it anyway?")
+      : "This plan replaces or deletes the resources listed above. Apply it?",
+    initialValue: false,
+  });
+  if (isCancel(answer) || answer !== true) {
+    log.warn(`Nothing was applied. The plan is in ${file}.`);
+    return false;
+  }
+  return true;
 }
 
 async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void> {
@@ -1488,7 +1558,8 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
   log.info(`Pulumi up — wall-clock 8–15 min (Cloud SQL is the long pole). Streaming progress...`);
 
   let resourceCount = 0;
-  let result: Awaited<ReturnType<typeof pulumiUpGcp>>;
+  let result: Awaited<ReturnType<typeof pulumiUpGcp>> | undefined;
+  let declined = "";
   try {
     result = await pulumiUpGcp(
       {
@@ -1514,9 +1585,17 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
         // logs: silent — too noisy for a live progress UI; pulumi
         // diagnostics will print on failure via the SDK's onOutput.
       },
+      (steps) => reviewPulumiPlan(installId, steps, opts.nonInteractive),
     );
+  } catch (e) {
+    if (!(e instanceof PulumiUpDeclinedError)) throw e;
+    declined = e.message;
   } finally {
     releaseLock();
+  }
+  if (result === undefined) {
+    cancel(declined);
+    process.exit(1);
   }
   process.stdout.write("\n");
   log.success(
@@ -1915,6 +1994,7 @@ async function readBootstrapUrl(installId: string, provider: string): Promise<st
   const meta = readMetadata(installId);
   if (!meta) throw new Error(`No install.json for install '${installId}'.`);
   const value = await readStackOutput({
+    installRoot: installRoot(installId),
     backend: resolveBackend(meta, {
       installRoot: installRoot(installId),
       readPassphrase: () => readSecret(installId, "pulumi-passphrase"),

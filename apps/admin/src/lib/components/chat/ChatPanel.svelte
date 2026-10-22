@@ -996,9 +996,13 @@
    * server-side `awaitScreenshot` Promise so the AI's
    * `screenshot_page` tool returns the image bytes.
    *
-   * Iframe source: `/edit/preview-by-path/<slug>?branch=<chatBranchId>`
-   * — same URL the live-edit overlay uses. Capture is same-origin
-   * (admin-served), so html2canvas can read the contentDocument.
+   * Source: `/edit/preview/<pageId>?branch=<chatBranchId>` — the same
+   * composed page the live-edit overlay shows — fetched and rendered as
+   * srcdoc in a `sandbox="allow-same-origin"` frame WITHOUT scripts
+   * (#946): html2canvas can read the contentDocument, the page's own
+   * scripts cannot run with the operator's session. Script-built DOM is
+   * therefore not in this capture; the server-side backend (headless
+   * Chromium, opaque origin) runs scripts.
    *
    * Failure paths: if the iframe doesn't load, html2canvas throws,
    * or the operator closed the tab during capture, we POST the
@@ -1030,14 +1034,19 @@
     iframe.style.height = `${height}px`;
     iframe.style.border = "0";
     iframe.style.visibility = "hidden";
+    // #946 — the capture frame shares the admin origin (html2canvas must
+    // read its DOM and paint same-origin media untainted), so it must
+    // never run the page's scripts: `allow-same-origin` WITHOUT
+    // `allow-scripts`. Never add `allow-scripts` here — together they would
+    // hand the module scripts the operator's session.
+    iframe.setAttribute("sandbox", "allow-same-origin");
     // The preview path needs the slug. We don't know it from
     // the SSE event (only pageId + chatBranchId), so use the
     // pages/preview pageId-based route which the editor iframe also
     // uses. Builds the right URL server-side based on pageId.
     const params = new URLSearchParams();
     if (req.chatBranchId) params.set("branch", req.chatBranchId);
-    iframe.src = `/edit/preview/${req.pageId}${params.size > 0 ? `?${params}` : ""}`;
-    document.body.appendChild(iframe);
+    const previewSrc = `/edit/preview/${req.pageId}${params.size > 0 ? `?${params}` : ""}`;
 
     const uploadFailure = async (msg: string): Promise<void> => {
       try {
@@ -1054,6 +1063,15 @@
     };
 
     try {
+      // The preview document itself is served as an opaque-origin sandbox
+      // (CSP), which html2canvas could not read; its HTML is rendered
+      // here as srcdoc instead, under the script-less sandbox above.
+      const preview = await fetch(previewSrc);
+      if (!preview.ok) {
+        await uploadFailure(`preview render failed (HTTP ${preview.status})`);
+        return;
+      }
+      iframe.srcdoc = await preview.text();
       // Wait for iframe load (or timeout). Capture happens on the
       // load event so html2canvas sees the rendered DOM.
       await new Promise<void>((resolve, reject) => {
@@ -1062,6 +1080,7 @@
           resolve();
         };
         iframe.addEventListener("load", onLoad);
+        document.body.appendChild(iframe);
         setTimeout(() => reject(new Error("iframe load timeout (10s)")), 10_000);
       });
 

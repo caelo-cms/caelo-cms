@@ -10,13 +10,92 @@
 import { describe, expect, it } from "bun:test";
 import type { GcloudResult } from "../gcloud.js";
 import type { GcloudRunner } from "../gcloud-retry.js";
-import { findServingImage, servingImageDigests } from "./gcp-lookup.js";
+import {
+  findServingImage,
+  lookupFailure,
+  resolveGcpResourceName,
+  servingImageDigests,
+} from "./gcp-lookup.js";
 
 const INDEX = `sha256:${"a".repeat(64)}`;
 const PLATFORM = `sha256:${"b".repeat(64)}`;
 const REPO = "europe-west1-docker.pkg.dev/caelo-website/caelo-cms-images/admin";
 
 const ok = (stdout: string): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
+const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
+const REAUTH =
+  "ERROR: (gcloud.run.services.list) There was a problem refreshing your current auth tokens: Reauthentication failed. cannot prompt during non-interactive execution.";
+
+describe("resolveGcpResourceName (#630)", () => {
+  const lookup = (r: GcloudResult) =>
+    resolveGcpResourceName(async () => r, "run-service", "caelo-production-admin", "acme", "eu");
+
+  it("finds the first listed name", async () => {
+    expect(await lookup(ok("\ncaelo-production-admin-3efcfea\nother\n"))).toEqual({
+      status: "found",
+      name: "caelo-production-admin-3efcfea",
+    });
+  });
+
+  it("an empty listing is not-found", async () => {
+    expect(await lookup(ok("\n"))).toEqual({ status: "not-found" });
+  });
+
+  it("a failed listing is an error with gcloud's stderr, never not-found", async () => {
+    expect(await lookup(fail(REAUTH))).toEqual({
+      status: "error",
+      stderr: REAUTH,
+      authExpired: true,
+    });
+    expect(await lookup(fail("ERROR: PERMISSION_DENIED: run.services.list"))).toEqual({
+      status: "error",
+      stderr: "ERROR: PERMISSION_DENIED: run.services.list",
+      authExpired: false,
+    });
+  });
+});
+
+describe("lookupFailure", () => {
+  const what = "caelo-production-admin* Cloud Run service";
+
+  it("not-found reads as before", () => {
+    expect(lookupFailure({ status: "not-found" }, what, "operator")).toBe(
+      "Could not find the caelo-production-admin* Cloud Run service",
+    );
+  });
+
+  it("expired operator credentials name gcloud auth login and what gcloud said", () => {
+    const m = lookupFailure(
+      { status: "error", stderr: REAUTH, authExpired: true },
+      what,
+      "operator",
+    );
+    expect(m).toContain("gcloud credentials expired");
+    expect(m).toContain("gcloud auth login");
+    expect(m).toContain("gcloud auth application-default login");
+    expect(m).toContain("Reauthentication failed");
+    expect(m).not.toContain("Could not find");
+  });
+
+  it("a job never tells anyone to run gcloud auth login", () => {
+    const m = lookupFailure({ status: "error", stderr: REAUTH, authExpired: true }, what, "job");
+    expect(m).not.toContain("gcloud auth login");
+    expect(m).toContain("Nothing was changed");
+    expect(m).toContain("Cloud Shell");
+  });
+
+  it("any other failure surfaces gcloud's first error line", () => {
+    expect(
+      lookupFailure(
+        { status: "error", stderr: "ERROR: PERMISSION_DENIED: nope\nmore", authExpired: false },
+        what,
+        "operator",
+      ),
+    ).toBe(
+      "Could not list the caelo-production-admin* Cloud Run service: gcloud failed (PERMISSION_DENIED: nope)",
+    );
+  });
+});
 
 function gcloud(revision: GcloudResult): GcloudRunner {
   return async (args) => {
