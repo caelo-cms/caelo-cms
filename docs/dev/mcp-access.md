@@ -59,11 +59,11 @@ The key is sealed into the access token next to the surface (RFC 8707 resource).
 
 Removing the person under Settings → Users (or taking away their role) ends all their access, tokens and remote, within IAP's propagation time.
 
-Only an Owner (`settings.write`) and system change connections and blocks. This is enforced by RLS (migrations 0322, 0335), not only by the route. Everyone else sees their own rows read-only. The AI never reads or writes either table (the ops are `human` + `system`).
+Only an Owner (`settings.write`) and system change connections and blocks. This is enforced by RLS (migrations 0322, 0339), not only by the route. Everyone else sees their own rows read-only. The AI never reads or writes either table (the ops are `human` + `system`).
 
 ### Rows from before per-app connections
 
-Migration 0335 keeps existing rows with `client_key IS NULL`. The first app whose MCP `initialize` reports the same client name as the row's `client_label` takes the row over. The row's revocation, cap and work session carry over to "its last client". Any other app gets a row of its own. That is the case the per-app model fixes: a revoked "Claude Code" row no longer locks out ChatGPT. Until the row is claimed, it still constrains the user's other apps on that surface:
+Migration 0339 keeps existing rows with `client_key IS NULL`. The first app whose MCP `initialize` reports the same client name as the row's `client_label` takes the row over. The row's revocation, cap and work session carry over to "its last client". Any other app gets a row of its own. That is the case the per-app model fixes: a revoked "Claude Code" row no longer locks out ChatGPT. Until the row is claimed, it still constrains the user's other apps on that surface:
 - A new app's row starts with the old row's cap and AI delegation.
 - If the old row is revoked, a request that does not identify its app (no MCP `initialize`, for example a client resuming after the upgrade) is refused with a "reconnect this app" message. That request might come from the revoked app itself. Reconnecting makes the app identify itself, and adoption then decides.
 

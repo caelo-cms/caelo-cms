@@ -1,7 +1,7 @@
 -- SPDX-License-Identifier: MPL-2.0
 -- caelo:contract the previous image inserts remote connections with ON CONFLICT (actor_id, surface), whose unique constraint this migration replaces by (actor_id, surface, client_key)
 --
--- 0335 — issue #968: one remote MCP connection per client app.
+-- 0339 — issue #968: one remote MCP connection per client app.
 --
 -- 0319 kept one row per (user, surface); `client_label` only named the last
 -- app that used it. Revoking "Claude Code" therefore also locked out the

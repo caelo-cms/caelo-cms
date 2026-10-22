@@ -3,12 +3,12 @@
 /**
  * Issue #806 — the Owner's controls over remote MCP connections
  * (`mcp_remote_connections`, migration 0319): one row per (user, surface,
- * client app) since #968 (migration 0335), created on the app's first
+ * client app) since #968 (migration 0339), created on the app's first
  * remote request (see mcp_principal.ts).
  *
  *   mcp_remote_connections.list    — the connections and user blocks the
  *                                    caller may see (an Owner: all; others:
- *                                    their own — RLS, migrations 0322/0335),
+ *                                    their own — RLS, migrations 0322/0339),
  *                                    with emails.
  *   mcp_remote_connections.revoke  — sticky, for that one app: its next
  *                                    request is refused, and no request
@@ -169,7 +169,7 @@ async function selectBlocks(
   ctx: Pick<ExecutionContext, "actorKind">,
   actorId?: string,
 ): Promise<McpRemoteAccessBlockRow[]> {
-  // Caller's RLS (0335), like the connections: an Owner sees every block,
+  // Caller's RLS (0339), like the connections: an Owner sees every block,
   // anyone else only their own.
   const rows = (await tx.execute(sql`
     SELECT actor_id::text AS actor_id, blocked_at, blocked_by::text AS blocked_by
@@ -361,7 +361,7 @@ export const blockMcpRemoteUserOp = defineOperation({
   input: blockInput,
   output: z.object({ block: blockRow }),
   handler: async (ctx, input, tx) => {
-    // RLS (0335) lets only a human Owner or system insert; a refusal
+    // RLS (0339) lets only a human Owner or system insert; a refusal
     // surfaces as a thrown policy error, so check the scope first and
     // answer like the other ops.
     const canManage = (await tx.execute(

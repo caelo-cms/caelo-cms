@@ -194,7 +194,7 @@ async function selectConnection(
 /**
  * The pre-#968 row of (user, surface) becomes this app's row when the app's
  * MCP `initialize` names the client that row last saw — "the row of its
- * last client" (migration 0335). Its revocation, cap and work session carry
+ * last client" (migration 0339). Its revocation, cap and work session carry
  * over; an app with another name never inherits them.
  */
 async function adoptLegacyRow(
