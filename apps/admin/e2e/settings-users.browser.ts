@@ -12,7 +12,7 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket } from "./helpers.js";
+import { acceptConfirm, clearLoginRateBucket } from "./helpers.js";
 
 const OWNER_EMAIL = "dev-owner@example.com";
 const OWNER_PASSWORD = "dev owner password";
@@ -39,7 +39,15 @@ test("owner creates and deletes another user from /settings/users", async ({ pag
   await expect(row).toBeVisible();
   await expect(page.getByText("Could not create user.")).toHaveCount(0);
 
+  // Cancelling the confirm leaves the user in place — the Delete button
+  // alone must never delete.
   await row.getByRole("button", { name: "Delete" }).click();
+  await page.getByTestId("confirm-dialog").getByTestId("confirm-cancel").click();
+  await expect(page.getByTestId("confirm-dialog")).toBeHidden();
+  await expect(row).toBeVisible();
+
+  await row.getByRole("button", { name: "Delete" }).click();
+  await acceptConfirm(page);
   await expect(page.locator("li", { hasText: email })).toHaveCount(0);
   await expect(page.getByText("Could not delete user.")).toHaveCount(0);
 });

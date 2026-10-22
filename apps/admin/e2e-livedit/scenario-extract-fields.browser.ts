@@ -26,12 +26,16 @@ import {
   sendChatPromptAndWait,
 } from "./helpers.js";
 
+// The CTA links to the seeded homepage ("/"). A link to a page that does
+// not exist (it used to be "/get-started") is refused by the write-time
+// internal-link check — correctly — so every run filed a tool error the
+// scenario itself provoked, unrelated to what it tests (the extractor).
 const EXTRACT_PROMPT =
   "Please add a new module to the homepage's content block at position 0. " +
   "Slug: `welcome-hero`. Display name: Welcome hero. " +
   "Description: Standalone marketing hero. Kind: hero. " +
   "HTML — pass it AS-IS (no pre-templatising; no fields[] array) so the server-side " +
-  'extractor runs and shows what it produces: `<h1>Welcome to Caelo</h1><a href="/get-started">Get started</a>`';
+  'extractor runs and shows what it produces: `<h1>Welcome to Caelo</h1><a href="/">Get started</a>`';
 
 interface ExtractedModuleSnapshot {
   moduleId: string | null;

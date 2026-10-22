@@ -563,6 +563,7 @@ import { revertModuleOp } from "./ops/snapshots/revert_module.js";
 import { revertPageOp } from "./ops/snapshots/revert_page.js";
 import { revertSiteOp } from "./ops/snapshots/revert_site.js";
 import { revertTemplateOp } from "./ops/snapshots/revert_template.js";
+import { stageReadinessOp } from "./ops/stage_readiness.js";
 import {
   getStagingAccessOp,
   issueStagingOpenLinkOp,
@@ -986,6 +987,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P6 deploy
   registry.register(listDeployTargetsOp);
   registry.register(listDeployRunsOp);
+  registry.register(stageReadinessOp);
   registry.register(triggerDeployOp);
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);

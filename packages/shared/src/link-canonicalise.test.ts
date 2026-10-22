@@ -180,6 +180,35 @@ describe("canonicaliseUrl", () => {
     expect(strict.issues.map((i) => i.kind)).toEqual(["unknown-page-path"]);
   });
 
+  // e2e-livedit detected bugs: the site header (brand link "/", nav
+  // "/#features") is built before the homepage exists and was refused.
+  it("keeps the site root literal while no page serves it, never an issue", () => {
+    const noRoot: LinkTargetLookup = {
+      ...lookup,
+      pageIdForPath: (p) => (p === "/" ? null : lookup.pageIdForPath(p)),
+    };
+    const r = linkCanonicaliseRun(noRoot);
+    expect(canonicaliseUrl("/", r, "html")).toBe("/");
+    expect(canonicaliseUrl("/#features", r, "fields.nav.default[1].href")).toBe("/#features");
+    expect(canonicaliseUrl("https://example.com/?ref=nav", r, "x")).toBe(
+      "https://example.com/?ref=nav",
+    );
+    expect(canonicaliseHtmlLinks('<a href="/">Home</a><a href="/#features">F</a>', r, "html")).toBe(
+      '<a href="/">Home</a><a href="/#features">F</a>',
+    );
+    expect(r.issues).toEqual([]);
+    // A suffix the stored grammar cannot carry is still refused, and any
+    // other unknown path still is an issue: only the root is guaranteed.
+    canonicaliseUrl('/#bad"anchor', r, "y");
+    canonicaliseUrl("/get-started", r, "z");
+    expect(r.issues.map((i) => [i.kind, i.value])).toEqual([
+      ["unsupported-link-form", '/#bad"anchor'],
+      ["unknown-page-path", "/get-started"],
+    ]);
+    // Once the homepage exists the root becomes its reference as usual.
+    expect(canonicaliseUrl("/#features", run(), "x")).toBe(`caelo:page/${HOME}#features`);
+  });
+
   it("reports a malformed reference instead of passing it through", () => {
     const r = run();
     const bad = [

@@ -113,13 +113,16 @@ const SAFE_DATA_URL_RE = /^data:image\/(?:png|jpe?g|gif|webp|avif)[;,]/;
 const URL_IGNORED_CHARS_RE = /[\u0000- \u007f]+/g;
 
 /** A link value the browser could follow into script — or into another document. */
-function isSafeLink(value: string): boolean {
+function isSafeLink(tagName: string, value: string): boolean {
   const v = value.replace(URL_IGNORED_CHARS_RE, "").toLowerCase();
   if (v === "" || v.startsWith("#")) return true;
+  if (v.startsWith("//")) return false;
   const scheme = /^([a-z][a-z0-9+.-]*):/.exec(v);
   // No scheme before the first path/query/fragment delimiter = relative URL.
   if (!scheme) return true;
-  if (scheme[1] === "http" || scheme[1] === "https") return true;
+  if (scheme[1] === "http" || scheme[1] === "https") {
+    return tagName.toLowerCase() === "a";
+  }
   return SAFE_DATA_URL_RE.test(v);
 }
 
@@ -132,7 +135,7 @@ function isLinkAttribute(lowerName: string): boolean {
  * Names are compared case-insensitively where an HTML parser would be
  * case-insensitive (an inlined SVG reads `ONLOAD` / `HREF` too).
  */
-function keepAttribute(name: string, value: string): boolean {
+function keepAttribute(tagName: string, name: string, value: string): boolean {
   const lower = name.toLowerCase();
   if (lower.startsWith("on")) return false;
   if (lower === "xmlns") return value === SVG_NS;
@@ -141,7 +144,7 @@ function keepAttribute(name: string, value: string): boolean {
   if (lower.includes(":") && !lower.startsWith("xlink:") && !lower.startsWith("xml:")) {
     return false;
   }
-  if (isLinkAttribute(lower)) return isSafeLink(value);
+  if (isLinkAttribute(lower)) return isSafeLink(tagName, value);
   return true;
 }
 
@@ -213,7 +216,7 @@ export function sanitizeSvg(svg: string): string {
         flushOpen();
         let tag = `<${name}`;
         for (const [attr, value] of Object.entries(attribs)) {
-          if (!keepAttribute(attr, value)) continue;
+          if (!keepAttribute(name, attr, value)) continue;
           if (attr.toLowerCase().startsWith("xlink:")) usesXlink = true;
           tag += ` ${attr}="${escapeAttr(value)}"`;
         }

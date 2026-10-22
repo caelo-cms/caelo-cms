@@ -7,6 +7,7 @@
   // request; the Owner revokes (sticky), restores, and sets the AI cost cap
   // (+ "may use Caelo's AI" on the admin surface). The guided setup that
   // turns remote MCP on lives elsewhere (#806 PR D).
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import type { McpRemoteConnectionRow } from "@caelo-cms/admin-core";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -136,7 +137,7 @@
                       <Button type="submit" variant="outline" size="sm">Restore</Button>
                     </form>
                   {:else}
-                    <form method="post" action="?/remoteRevoke">
+                    <form method="post" action="?/remoteRevoke" use:confirmSubmit={{ title: `Revoke the connection of ${c.email ?? c.actorId}?`, description: "The connected agent loses access immediately. You can restore it later from this list.", confirmLabel: "Revoke" }}>
                       <input type="hidden" name="_csrf" value={csrfToken} />
                       <input type="hidden" name="id" value={c.id} />
                       <Button type="submit" variant="destructive" size="sm">Revoke</Button>
