@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Layout } from "lucide-svelte";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
@@ -60,7 +61,7 @@
                   >
                     Edit
                   </a>
-                  <form method="post" action="?/delete">
+                  <form method="post" action="?/delete" use:confirmSubmit={{ title: `Delete layout ${layout.displayName}?`, confirmLabel: "Delete layout" }}>
                     <input type="hidden" name="_csrf" value={data.csrfToken} />
                     <input type="hidden" name="layoutId" value={layout.id} />
                     <Button

@@ -25,8 +25,8 @@ import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 const grepContentInput = z
   .object({
     pattern: z.string().min(1).max(500),
-    /** Restrict to one entity kind; omit to search modules + templates. */
-    entityKind: z.enum(["module", "template"]).optional(),
+    /** Restrict to one entity kind; omit to search every kind. */
+    entityKind: z.enum(CONTENT_ENTITY_KINDS).optional(),
     /** Restrict to one body field (html/css/js); omit to search all. */
     field: z.string().min(1).max(32).optional(),
     isRegex: z.boolean().optional(),
@@ -87,7 +87,7 @@ async function grepKind(
 export const grepContentTool: ToolDefinitionWithHandler<GrepContentInput> = {
   name: "grep_content",
   description:
-    "Search every module (and template) body for a string or regex — find WHERE to edit before calling edit_content. " +
+    "Search every module, template and layout body for a string or regex — find WHERE to edit before calling edit_content. " +
     "Pass `pattern` (literal substring, or a JS regex with `isRegex:true`), optional `ignoreCase`, and narrow with `entityKind` and/or `field` (html/css/js). " +
     "Returns matching lines as `<kind> <slug> (<id>) <field>:<lineNo>: <text>` so you can jump straight to read_content + edit_content on the right entity. " +
     "Use when the operator says 'change X everywhere it appears' or you need to locate a class / string across the catalog.",
@@ -100,7 +100,7 @@ export const grepContentTool: ToolDefinitionWithHandler<GrepContentInput> = {
         content: `unknown entityKind "${input.entityKind}". Valid: ${CONTENT_ENTITY_KINDS.join(", ")}.`,
       };
     }
-    const kinds: ContentEntityKind[] =
+    const kinds: readonly ContentEntityKind[] =
       input.entityKind !== undefined ? [input.entityKind] : CONTENT_ENTITY_KINDS;
     const limit = input.limit ?? DEFAULT_LIMIT;
 

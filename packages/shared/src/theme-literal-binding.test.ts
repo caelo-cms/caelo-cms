@@ -62,9 +62,29 @@ describe("applyThemeLiteralBinding", () => {
     expect(r.suggestions).toEqual([{ literal: "6rem", varName: "--spacing-xl" }]);
   });
 
+  it("leaves a var() fallback literal as written (e2e-livedit: edit_content anchors missed)", () => {
+    // The AI authors `var(--x, #literal)`; rebinding the fallback stored
+    // CSS it never wrote and its next edit_content anchor did not match.
+    const css =
+      ".f{border-top:1px solid var(--color-foreground, #0f172a);background:var(--color-surface, #4f46e5);color:var( --color-x ,#0F172A)}";
+    const r = applyThemeLiteralBinding(css, TOKENS);
+    expect(r.css).toBe(css);
+    expect(r.rewrites).toEqual([]);
+  });
+
+  it("still binds a bare literal next to a var() reference", () => {
+    const r = applyThemeLiteralBinding(
+      ".f{color:var(--color-foreground);background:#4f46e5}",
+      TOKENS,
+    );
+    expect(r.css).toBe(".f{color:var(--color-foreground);background:var(--color-primary)}");
+  });
+
   it("formats a report and stays silent on no-ops", () => {
     const bound = applyThemeLiteralBinding(".a{color:#0F172A}", TOKENS);
     expect(formatBindingReport(bound)).toContain("#0F172A→var(--color-foreground)");
+    // The AI must know the stored css differs from what it sent.
+    expect(formatBindingReport(bound)).toContain("anchor later edit_content calls");
     const noop = applyThemeLiteralBinding(".a{color:#123456}", TOKENS);
     expect(formatBindingReport(noop)).toBeNull();
   });

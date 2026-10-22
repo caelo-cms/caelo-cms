@@ -26,6 +26,9 @@ import type { ThemeDocument } from "./themes.js";
 
 const COLOR_LITERAL_RE = /#[0-9a-fA-F]{3,8}\b|(?:oklch|rgba?|hsla?|lab|lch|hwb)\([^()]*\)/g;
 const DIMENSION_VALUE_RE = /^-?\d+(\.\d+)?(rem|em|px|%)$/;
+/** The text before a literal ends in an open `var(--name,` — the literal is
+ *  (the start of) that var's fallback. */
+const VAR_FALLBACK_BEFORE_RE = /var\(\s*--[\w-]+\s*,[^()]*$/i;
 
 export interface ThemeValueMap {
   /** normalized color value → var name (first-declared wins). */
@@ -107,11 +110,18 @@ export function applyThemeLiteralBinding(css: string, tokens: ThemeDocument): Li
   });
 
   out = out.replace(COLOR_LITERAL_RE, (literal, offset: number) => {
-    // Never rewrite inside an already-produced var(...) fallback or a
-    // remaining gradient (a gradient that did NOT match stays literal
-    // by decision — rebinding its stops would half-tokenise it).
+    // Never rewrite inside a remaining gradient (a gradient that did NOT
+    // match stays literal by decision — rebinding its stops would
+    // half-tokenise it) or a var() fallback. The author already referenced
+    // a var there; rebinding its fallback produced
+    // `var(--color-border, var(--color-border))` and
+    // `var(--color-surface, var(--color-primary-foreground))` — CSS the AI
+    // never wrote, so its next edit_content anchored on its own copy
+    // missed (5 "oldString not found" in e2e-livedit, 2026-10). An unknown
+    // var name in front of the fallback is reported by the unknown-var check.
     const before = out.slice(Math.max(0, offset - 64), offset);
     if (/gradient\([^()]*$/i.test(before)) return literal;
+    if (VAR_FALLBACK_BEFORE_RE.test(before)) return literal;
     const varName = map.colors.get(normalizeColor(literal));
     if (varName === undefined) return literal;
     const entry = counts.get(literal) ?? { to: varName, count: 0 };
@@ -145,7 +155,9 @@ export function formatBindingReport(result: LiteralBindingResult): string | null
     parts.push(
       `🔗 bound ${total} literal(s) to theme vars: ${result.rewrites
         .map((r) => `${r.from}→var(${r.to})${r.count > 1 ? `×${r.count}` : ""}`)
-        .join(", ")}`,
+        .join(
+          ", ",
+        )} — the STORED css has var(…) in place of those literals, so anchor later edit_content calls on that text, not on the css you sent`,
     );
   }
   if (result.suggestions.length > 0) {

@@ -24,9 +24,10 @@
  * `static` target when verifying a Confirm-publish), and proactively
  * flag drift to the operator before they click Confirm.
  *
- * Self-hosted installs return a NotImplemented error — built HTML
- * lives on the operator's local disk, not behind a storage API
- * the admin process can read uniformly.
+ * Off GCP the tool is not offered at all (install-availability.ts):
+ * built HTML lives on the operator's local disk or another cloud's
+ * storage, not behind a storage API the admin process can read
+ * uniformly. The handler's own check only guards a direct dispatch.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -34,6 +35,7 @@ import { z } from "zod";
 import { readStagedBuildFiles, readStagedObject } from "../../deploy/staged-build-files.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { isGcpInstall } from "./install-availability.js";
 
 const inspectBuiltInput = z
   .object({
@@ -58,8 +60,7 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
   description:
     "Read the BUILT HTML of a page from the staging or static bucket — what publishStaging or promoteToProduction actually uploaded. " +
     "USE THIS AFTER STAGE to verify the build matches the live preview's expectations. Catches drift the live preview can't show: SEO meta absence, hashed-asset URLs, plugin render transforms, CSP-relevant <script src> tags, robots.txt overrides. " +
-    "Default target='staging' reads from the staged build; pass target='static' to read what's currently serving production. " +
-    "Cloud-only (CAELO_PROVIDER=gcp). Self-hosted Stage writes to local disk; that path returns a NotImplemented error here.",
+    "Default target='staging' reads from the staged build; pass target='static' to read what's currently serving production.",
   schema: inspectBuiltInput,
   inputSchema: {
     type: "object",
@@ -82,11 +83,11 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    if (process.env.CAELO_PROVIDER !== "gcp") {
+    if (!isGcpInstall(process.env)) {
       return {
         ok: false,
         content:
-          "inspect_built_page is only available on GCP installs. CAELO_PROVIDER is not 'gcp' (you may be on self-hosted, AWS, or Azure). Use inspect_page_render to read the live Postgres render instead.",
+          "inspect_built_page is only available on GCP installs (this install is not one, so the tool is not in your tool list). Use inspect_page_render to read the composed render instead.",
       };
     }
 

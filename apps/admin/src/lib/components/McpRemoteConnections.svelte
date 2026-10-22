@@ -8,6 +8,7 @@
   // restores it, sets its AI cost cap (+ "may use Caelo's AI" on the admin
   // surface), and can block every app of a person, new ones included.
   // Everyone else sees only their own apps, read-only.
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import type { McpRemoteAccessBlockRow, McpRemoteConnectionRow } from "@caelo-cms/admin-core";
   import { MCP_SURFACE_COPY } from "@caelo-cms/shared";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -107,17 +108,29 @@
             </span>
           {/if}
           {#if canWrite}
-            <form
-              method="post"
-              action={p.block ? "?/remoteUnblockUser" : "?/remoteBlockUser"}
-              class="ml-auto"
-            >
-              <input type="hidden" name="_csrf" value={csrfToken} />
-              <input type="hidden" name="actorId" value={p.actorId} />
-              <Button type="submit" variant={p.block ? "outline" : "destructive"} size="sm">
-                {p.block ? "Unblock" : "Block all apps"}
-              </Button>
-            </form>
+            {#if p.block}
+              <form method="post" action="?/remoteUnblockUser" class="ml-auto">
+                <input type="hidden" name="_csrf" value={csrfToken} />
+                <input type="hidden" name="actorId" value={p.actorId} />
+                <Button type="submit" variant="outline" size="sm">Unblock</Button>
+              </form>
+            {:else}
+              <form
+                method="post"
+                action="?/remoteBlockUser"
+                class="ml-auto"
+                use:confirmSubmit={{
+                  title: `Block every app of ${p.email}?`,
+                  description:
+                    "All of this person's connected apps lose access immediately, including apps they connect later. You can unblock them here.",
+                  confirmLabel: "Block all apps",
+                }}
+              >
+                <input type="hidden" name="_csrf" value={csrfToken} />
+                <input type="hidden" name="actorId" value={p.actorId} />
+                <Button type="submit" variant="destructive" size="sm">Block all apps</Button>
+              </form>
+            {/if}
           {/if}
         </div>
         {#if p.apps.length > 0}
@@ -211,7 +224,16 @@
                           <Button type="submit" variant="outline" size="sm">Restore</Button>
                         </form>
                       {:else}
-                        <form method="post" action="?/remoteRevoke">
+                        <form
+                          method="post"
+                          action="?/remoteRevoke"
+                          use:confirmSubmit={{
+                            title: `Revoke ${c.clientName} for ${p.email}?`,
+                            description:
+                              "This app loses access immediately; the person's other apps keep working. You can restore it later from this list.",
+                            confirmLabel: "Revoke",
+                          }}
+                        >
                           <input type="hidden" name="_csrf" value={csrfToken} />
                           <input type="hidden" name="id" value={c.id} />
                           <Button type="submit" variant="destructive" size="sm">Revoke</Button>

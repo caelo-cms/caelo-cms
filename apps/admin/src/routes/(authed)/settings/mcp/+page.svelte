@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import McpClientSetup from "#lib/components/McpClientSetup.svelte";
   import McpRemoteAccess from "#lib/components/McpRemoteAccess.svelte";
@@ -169,7 +170,7 @@
                     <TableCell class="text-xs">{t.expiresAt.slice(0, 10)}</TableCell>
                     <TableCell>
                       {#if status === "active"}
-                        <form method="post" action="?/revoke">
+                        <form method="post" action="?/revoke" use:confirmSubmit={{ title: `Revoke token ${t.displayName}?`, description: "Every agent using this token loses access immediately. A revoked token cannot be restored.", confirmLabel: "Revoke token" }}>
                           <input type="hidden" name="_csrf" value={data.csrfToken} />
                           <input type="hidden" name="id" value={t.id} />
                           <Button type="submit" variant="destructive" size="sm">Revoke</Button>

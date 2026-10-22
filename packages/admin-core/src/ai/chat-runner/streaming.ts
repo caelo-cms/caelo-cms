@@ -421,6 +421,12 @@ export async function* streamProviderTurn(
     return content;
   };
 
+  // The tools whose definitions ship in full this turn; load_skill uses it
+  // to say which of a skill's tools still need a tool-search load.
+  const preloadedToolNames: ReadonlySet<string> = new Set(
+    args.filteredTools.filter((t) => t.alwaysLoaded).map((t) => t.name),
+  );
+
   /** One wrapped dispatch — runs under the serial gate, after the anchor. */
   const runWrappedDispatch = async (
     toolCallId: string,
@@ -474,6 +480,7 @@ export async function* streamProviderTurn(
         chatBranchId: args.chatBranchId,
         options: args.options,
         runChatTurn: args.runChatTurn,
+        preloadedToolNames,
       },
       {
         emit: (event) => queue.push(event),

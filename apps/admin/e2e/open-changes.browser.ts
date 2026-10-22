@@ -15,7 +15,7 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket, runBunInline } from "./helpers.js";
+import { acceptConfirm, clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 test.beforeAll(clearLoginRateBucket);
 // One seed shared by both tests: a second worker would re-run it with a
@@ -176,8 +176,8 @@ test("lists open chats with the takeover note and discards a chat", async ({ pag
     timeout: 15_000,
   });
 
-  page.once("dialog", (d) => d.accept());
   await page.locator(`[data-chat-id="${chats.c}"]`).getByTestId("discard-chat").click();
+  await acceptConfirm(page);
   await expect(page.locator(`[data-chat-id="${chats.c}"]`)).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator(`[data-chat-id="${chats.b}"]`)).toBeVisible();
 });
@@ -192,8 +192,8 @@ test("asks before a discard also undoes another draft chat's later change", asyn
   await page.goto("/content/changes");
   const cardD = page.locator(`[data-chat-id="${chats.d}"]`);
   await expect(cardD).toContainText(`${TAG} Layered`);
-  page.once("dialog", (d) => d.accept());
   await cardD.getByTestId("discard-chat").click();
+  await acceptConfirm(page);
   // Refused with the overlap named — nothing discarded yet.
   await expect(page.getByText(`'${TAG} Built on top'`).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.locator(`[data-chat-id="${chats.d}"]`)).toBeVisible();

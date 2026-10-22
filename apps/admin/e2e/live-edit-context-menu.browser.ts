@@ -183,6 +183,27 @@ test("select → Ask AI sends a precise reference; right-click → chip", async 
   await referenceViaContextMenu(page, section.locator("p"));
   await expect(page.getByTestId("chip")).toHaveCount(1);
 
+  // The outline marks what the menu acts on: the right-clicked paragraph,
+  // not the whole module. The module is outlined only once the operator
+  // selects the whole section.
+  const outline = preview.locator("caelo-edit-ui .outline");
+  const paragraph = section.locator("p");
+  const outlines = async (target: typeof section) => {
+    const o = await outline.boundingBox();
+    const t = await target.boundingBox();
+    if (!o || !t) throw new Error("outline or target has no box");
+    for (const k of ["x", "y", "width", "height"] as const) {
+      expect(Math.abs(o[k] - t[k])).toBeLessThanOrEqual(8);
+    }
+  };
+  await paragraph.click({ button: "right", position: { x: 8, y: 8 } });
+  await expect(preview.getByTestId("caelo-context-menu")).toBeVisible();
+  await expect(outline).toBeVisible();
+  await outlines(paragraph);
+  await preview.getByTestId("caelo-menu-select-section").click();
+  await expect(preview.getByTestId("caelo-selection-toolbar")).toBeVisible();
+  await outlines(section);
+
   // Shift+right-click keeps the browser's own menu (no Caelo menu).
   await section
     .locator("p")

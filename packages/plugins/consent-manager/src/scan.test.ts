@@ -28,6 +28,31 @@ describe("externalHosts", () => {
     ).toEqual(["fonts.gstatic.com"]);
   });
 
+  it("finds a CSS @import without url() wrapper in externalHosts and moduleHosts", () => {
+    expect(
+      externalHosts({ css: '@import "https://fonts.googleapis.com/css2?family=Inter";' }),
+    ).toEqual(["fonts.googleapis.com"]);
+    expect(
+      moduleHosts({
+        html: "<div>Hello</div>",
+        css: "@import 'https://cdn.example.org/theme.css';",
+        js: "",
+        contentValues: [],
+      }),
+    ).toEqual(["cdn.example.org"]);
+  });
+
+  it("detects protocol-relative URLs with embedded control characters or whitespace", () => {
+    expect(
+      moduleHosts({
+        html: '<img src="\t//tracker.example.com/pixel.gif">',
+        css: "",
+        js: "",
+        contentValues: [],
+      }),
+    ).toEqual(["tracker.example.com"]);
+  });
+
   it("finds a fetch in module JS", () => {
     expect(externalHosts({ js: 'fetch("https://api.example.org/track")' })).toEqual([
       "api.example.org",

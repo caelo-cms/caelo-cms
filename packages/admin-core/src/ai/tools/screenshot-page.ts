@@ -13,8 +13,9 @@
  *   renders the chat branch's preview via the signed-token route (see
  *   `../preview-screenshot.ts`). Used when no operator browser consumes
  *   client events (Power-MCP dispatch, `mcp.send_chat`, subagent child
- *   turns) and as the fallback when the SSE capture times out (operator
- *   closed the tab mid-turn).
+ *   turns), when the SSE capture times out (operator closed the tab
+ *   mid-turn), and when the target has no size in the script-less browser
+ *   capture (an element only the page's scripts reveal).
  *
  * Backend selection keys on `toolCtx.operatorBrowserAttached`, NOT on
  * `pushClientEvent` alone: the chat-runner installs an event sink on
@@ -23,6 +24,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import { isScreenshotTargetNotRendered } from "@caelo-cms/shared";
 import { z } from "zod";
 import { capturePreviewScreenshot } from "../preview-screenshot.js";
 import { awaitScreenshot, type ScreenshotViewportSource } from "../screenshot-orchestrator.js";
@@ -88,11 +90,31 @@ export type ScreenshotPageInput = z.infer<typeof screenshotInput>;
  * flood the in-process Chromium; every failure mode returns AI-actionable
  * content (CLAUDE.md §11) instead of throwing.
  */
+/**
+ * Why a capture the operator's browser was asked for ended up server-side:
+ * it did not answer in time, or its script-less render cannot show the
+ * target (see `SCREENSHOT_TARGET_NOT_RENDERED`).
+ */
+type ServerSideHandoff = "browser-timeout" | "not-rendered-in-browser";
+
+const HANDOFF_FAILURE_NOTE: Record<ServerSideHandoff, string> = {
+  "browser-timeout": " (The operator's browser was asked first and did not answer within 30s.)",
+  "not-rendered-in-browser":
+    " (The operator's browser was asked first; its capture runs without the page's scripts and the element had no size there.)",
+};
+
+const HANDOFF_SUCCESS_NOTE: Record<ServerSideHandoff, string> = {
+  "browser-timeout":
+    " (The operator's browser did not answer within 30s, so the server rendered instead.)",
+  "not-rendered-in-browser":
+    " (The element is revealed by the page's scripts — e.g. a consent banner — and the operator's browser capture runs without scripts, so the server rendered it with scripts instead.)",
+};
+
 async function captureServerSide(
   input: ScreenshotPageInput,
   chatBranchId: string | undefined,
   toolCtx: ToolContext,
-  sseTimeoutNote?: string,
+  handoff?: ServerSideHandoff,
 ): Promise<ToolResult> {
   const budget = takePreviewScreenshotBudget(toolCtx.chatSessionId);
   if (!budget.ok) {
@@ -112,9 +134,7 @@ async function captureServerSide(
     ...(input.selector ? { selector: input.selector } : {}),
   });
   if (!r.ok) {
-    const alsoTimedOut = sseTimeoutNote
-      ? " (The operator's browser was asked first and did not answer within 30s.)"
-      : "";
+    const alsoTimedOut = handoff ? HANDOFF_FAILURE_NOTE[handoff] : "";
     if (r.reason === "playwright-unavailable") {
       return {
         ok: false,
@@ -145,7 +165,7 @@ async function captureServerSide(
       `Screenshot captured (${input.viewport ?? "desktop"} viewport${
         input.selector ? `, element ${input.selector}` : ""
       }) by the server-side renderer — a real Chromium render of this chat's branch preview, no html2canvas approximation.${dims}${viewportNote}` +
-      `${sseTimeoutNote ? " (The operator's browser did not answer within 30s, so the server rendered instead.)" : ""} ` +
+      `${handoff ? HANDOFF_SUCCESS_NOTE[handoff] : ""} ` +
       "The image is available to you in THIS turn — analyse it on your next step; do not end the turn to wait for it.",
     image: r.image,
   };
@@ -286,7 +306,13 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
       // browser and stay loud — the server render would mask a real
       // browser-side problem the model should see.
       if (/timed out/i.test(message)) {
-        return captureServerSide(input, chatBranchId, toolCtx, message);
+        return captureServerSide(input, chatBranchId, toolCtx, "browser-timeout");
+      }
+      // The browser capture runs without the page's scripts (#946), so an
+      // element a script reveals has no size there — a limit of that
+      // backend, not a page problem. The server renderer runs scripts.
+      if (isScreenshotTargetNotRendered(message)) {
+        return captureServerSide(input, chatBranchId, toolCtx, "not-rendered-in-browser");
       }
       return {
         ok: false,

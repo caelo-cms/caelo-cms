@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { CheckCircle2, Download, Trash2 } from "lucide-svelte";
   import { enhance } from "$app/forms";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -106,7 +107,7 @@
         <CardDescription>Drops un-accepted import_pages rows; accepted pages stay.</CardDescription>
       </CardHeader>
       <CardContent>
-        <form method="post" action="?/cleanup" use:enhance>
+        <form method="post" action="?/cleanup" use:enhance use:confirmSubmit={{ title: "Clean up this import run?", description: "Imported pages you have not accepted are dropped. Accepted pages stay.", confirmLabel: "Clean up" }}>
           <input type="hidden" name="runId" value={data.run.id} />
           <Button type="submit" variant="destructive" class="gap-2">
             <Trash2 class="size-4" /> Mark complete + clean up

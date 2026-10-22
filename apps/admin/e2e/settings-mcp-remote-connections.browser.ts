@@ -18,7 +18,7 @@
  */
 
 import { expect, type Page, test } from "@playwright/test";
-import { clearLoginRateBucket, runBunInline } from "./helpers.js";
+import { acceptConfirm, clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 const EMAIL = `e2e-remote-${Date.now()}@example.test`;
 const PASSWORD = "e2e remote editor password";
@@ -74,6 +74,7 @@ test("the Owner revokes one app and the person's other app keeps working", async
   await expect(chatgpt).toContainText("active");
 
   await claude.getByRole("button", { name: "Revoke" }).click();
+  await acceptConfirm(page);
   await expect(page.getByText("Remote connection updated.")).toBeVisible();
   await expect(claude).toContainText("revoked");
   await expect(claude).toContainText("by dev-owner@example.com");
@@ -92,6 +93,7 @@ test("the Owner blocks every app of a person and lifts the block", async ({ page
   await signIn(page, "dev-owner@example.com", "dev owner password");
   await page.goto("/settings/mcp");
   await person(page).getByRole("button", { name: "Block all apps" }).click();
+  await acceptConfirm(page);
   await expect(person(page)).toContainText("all apps blocked");
   const rows = person(page).getByTestId("mcp-remote-row");
   await expect(rows.filter({ hasText: "blocked" })).toHaveCount(2);

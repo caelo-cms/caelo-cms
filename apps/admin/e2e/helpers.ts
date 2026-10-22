@@ -196,3 +196,16 @@ export async function referenceViaContextMenu(page: Page, target: Locator): Prom
   await preview.getByTestId("caelo-menu-reference").click();
   await expect(page.getByTestId("chip").first()).toBeVisible({ timeout: 5_000 });
 }
+
+/**
+ * Accept the confirm dialog every destructive admin form opens
+ * (`use:confirmSubmit`). Call right after clicking the destructive button;
+ * asserts the dialog asked first, so a form that silently loses its gate
+ * fails here instead of passing.
+ */
+export async function acceptConfirm(page: Page): Promise<void> {
+  const dialog = page.getByTestId("confirm-dialog");
+  await expect(dialog).toBeVisible({ timeout: 5_000 });
+  await dialog.getByTestId("confirm-accept").click();
+  await expect(dialog).toBeHidden();
+}
