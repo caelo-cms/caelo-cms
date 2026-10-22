@@ -6,13 +6,14 @@
  * metadata + status tracking + the Owner observability surface.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { releaseLeasesByHolder } from "../../entity-leases.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { approverRefusal } from "../_approver-permission.js";
 import { evaluateFinishRunAuthorization } from "./finish-authorization.js";
 
 const runRow = z.object({
@@ -255,7 +256,7 @@ export const listSubagentRunsOp = defineOperation({
     })
     .strict(),
   output: z.object({ runs: z.array(runRow) }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     const filters = [];
     if (input.parentChatSessionId !== undefined) {
       if (input.parentChatSessionId === null) {
@@ -265,6 +266,20 @@ export const listSubagentRunsOp = defineOperation({
       }
     }
     if (input.role) filters.push(sql`role = ${input.role}`);
+    if (ctx.actorKind === "human") {
+      const refusal = await approverRefusal(tx as TransactionRunner, ctx, "subagent_runs.list", [
+        "settings.write",
+      ]);
+      if (refusal !== null) {
+        filters.push(
+          sql`EXISTS (
+            SELECT 1 FROM chat_sessions s
+            WHERE (s.id = subagent_runs.parent_chat_session_id OR s.id = subagent_runs.subagent_chat_session_id)
+              AND s.created_by = ${ctx.actorId}::uuid
+          )`,
+        );
+      }
+    }
     const where =
       filters.length === 0
         ? sql``
@@ -293,7 +308,20 @@ export const getSubagentRunOp = defineOperation({
   database: "cms_admin",
   input: z.object({ id: z.string().uuid() }).strict(),
   output: z.object({ run: runRow.nullable() }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
+    let actorFilter = sql``;
+    if (ctx.actorKind === "human") {
+      const refusal = await approverRefusal(tx as TransactionRunner, ctx, "subagent_runs.get", [
+        "settings.write",
+      ]);
+      if (refusal !== null) {
+        actorFilter = sql`AND EXISTS (
+          SELECT 1 FROM chat_sessions s
+          WHERE (s.id = subagent_runs.parent_chat_session_id OR s.id = subagent_runs.subagent_chat_session_id)
+            AND s.created_by = ${ctx.actorId}::uuid
+        )`;
+      }
+    }
     const rows = (await tx.execute(sql`
       SELECT id::text AS id,
              parent_chat_session_id::text AS parent_chat_session_id,
@@ -303,7 +331,10 @@ export const getSubagentRunOp = defineOperation({
              role, task, model_tier, model, status, result_json,
              cost_microcents, duration_ms, error_message,
              started_at, finished_at, created_at
-      FROM subagent_runs WHERE id = ${input.id}::uuid LIMIT 1
+      FROM subagent_runs
+      WHERE id = ${input.id}::uuid
+        ${actorFilter}
+      LIMIT 1
     `)) as unknown as RunDb[];
     const r = rows[0];
     return ok({ run: r ? rowToOut(r) : null });

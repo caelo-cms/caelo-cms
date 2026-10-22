@@ -111,15 +111,31 @@ export function mcpConfigJson(format: "mcpServers" | "vscode", args: McpCommandA
 
 /** One remote MCP surface: the URL a client connects to and the name it is listed under. */
 export interface RemoteMcpServer {
-  /** `caelo` (caelo_chat) or `caelo-admin` (Power-MCP), as for the local server. */
+  /**
+   * `caelo-<site>` (caelo_chat) or `caelo-<site>-admin` (Power-MCP): the
+   * site in the name keeps two Caelo sites apart in one client's config
+   * (#968), where a fixed `caelo` would make the second overwrite the first.
+   */
   name: string;
   /** `<public origin>/api/mcp/chat` or `/api/mcp/admin`. */
   url: string;
 }
 
-/** The remote server for `surface`, named like the local one. */
-export function remoteMcpServer(surface: "chat" | "admin", url: string): RemoteMcpServer {
-  return { name: surface === "admin" ? "caelo-admin" : "caelo", url };
+/**
+ * The remote server for `surface` on the site at `siteHost`
+ * (`viu.one` → `caelo-viu-one`, `caelo-viu-one-admin`).
+ */
+export function remoteMcpServer(
+  surface: "chat" | "admin",
+  url: string,
+  siteHost: string,
+): RemoteMcpServer {
+  const site = siteHost
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const base = `caelo-${site}`;
+  return { name: surface === "admin" ? `${base}-admin` : base, url };
 }
 
 /**
