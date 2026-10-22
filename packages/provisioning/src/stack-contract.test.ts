@@ -72,7 +72,8 @@ describe("adminEnvContract", () => {
       MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
       CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@acme.iam.gserviceaccount.com",
       // #806 — where Settings → MCP → Remote writes the OAuth client.
-      CAELO_MCP_OAUTH_CLIENT_STORE: "projects/acme/secrets/caelo-production-mcp-oauth-client",
+      CAELO_OPERATOR_OAUTH_CLIENT_STORE:
+        "projects/acme/secrets/caelo-production-operator-oauth-client",
       CAELO_OPERATOR_ACCESS_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
       CAELO_UPGRADER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
@@ -107,7 +108,8 @@ describe("adminEnvContract", () => {
       MEDIA_ROOT_DIR: "/app/apps/admin/data/media",
       CAELO_MCP_IAP_SERVICE_ACCOUNT: "caelo-mcp@acme.iam.gserviceaccount.com",
       // #806 — where Settings → MCP → Remote writes the OAuth client.
-      CAELO_MCP_OAUTH_CLIENT_STORE: "projects/acme/secrets/caelo-production-mcp-oauth-client",
+      CAELO_OPERATOR_OAUTH_CLIENT_STORE:
+        "projects/acme/secrets/caelo-production-operator-oauth-client",
       CAELO_OPERATOR_ACCESS_JOB:
         "projects/acme/locations/europe-west1/jobs/caelo-production-operator-access-sync",
       CAELO_UPGRADER_JOB: "projects/acme/locations/europe-west1/jobs/caelo-production-upgrader",
@@ -174,7 +176,7 @@ describe("gatewayEnvContract", () => {
       PUBLIC_DATABASE_PASSWORD: "secret:caelo-production-public-role-password:latest",
       CAELO_STAGING_GATE_SECRET: "secret:caelo-production-staging-gate-secret:latest",
       // #806 — the remote-MCP broker: its client file and its seal key.
-      CAELO_MCP_OAUTH_CLIENT_FILE: "/secrets/mcp-oauth-client/client.json",
+      CAELO_OPERATOR_OAUTH_CLIENT_FILE: "/secrets/operator-oauth-client/client.json",
       CAELO_MCP_OAUTH_SEAL_KEY: "secret:caelo-production-mcp-oauth-seal-key:latest",
     });
   });
@@ -212,7 +214,7 @@ describe("gatewayEnvContract", () => {
       "staging-gate-secret",
       // #806 — the broker's seal key (env) and OAuth client (file).
       "mcp-oauth-seal-key",
-      "mcp-oauth-client",
+      "operator-oauth-client",
     ]);
     for (const v of gateway) {
       expect(v.name).not.toMatch(/KEK|INTERNAL|TOOL_APPROVAL|PUBLIC_ADMIN/);
@@ -318,8 +320,8 @@ describe("runtime secrets", () => {
       // The secret file counts like an env secret: the SA reads it.
       {
         service: "gateway",
-        secret: "mcp-oauth-client",
-        stackResource: "gateway-mcp-oauth-client-binding",
+        secret: "operator-oauth-client",
+        stackResource: "gateway-operator-oauth-client-binding",
       },
     ]);
   });
@@ -338,6 +340,7 @@ describe("self-hosted compose", () => {
       postgresPassword: "p",
       rolePasswords: { admin: "a", public: "b" },
       caeloSecretKek: "k",
+      internalSecret: "i".repeat(48),
       diskSize: "10G",
       ports: { http: 80, https: 443 },
       project: "caelo-example-com",
@@ -377,14 +380,14 @@ describe("stackIamInvariants", () => {
     }
   });
 
-  it("grants the gateway SA only its own role password, the staging gate key, remote MCP's two secrets + telemetry roles", () => {
+  it("grants the gateway SA only its own role password, the staging gate key, the sign-in client, the seal key + telemetry roles", () => {
     for (const provider of ["gcp", "gcp-firebase"] as const) {
       const gateway = stackIamInvariants(provider).filter((i) => i.member === "gateway-sa");
       expect(gateway.map((i) => `${i.role} ${JSON.stringify(i.target)}`).sort()).toEqual([
         'roles/logging.logWriter {"kind":"project"}',
         'roles/monitoring.metricWriter {"kind":"project"}',
-        'roles/secretmanager.secretAccessor {"kind":"secret","name":"mcp-oauth-client"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"mcp-oauth-seal-key"}',
+        'roles/secretmanager.secretAccessor {"kind":"secret","name":"operator-oauth-client"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"public-role-password"}',
         'roles/secretmanager.secretAccessor {"kind":"secret","name":"staging-gate-secret"}',
       ]);

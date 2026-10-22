@@ -49,7 +49,7 @@ const GCP_GATEWAY_SECRETS = [
   // #806 — the remote-MCP broker: its Google OAuth client (a file) and seal
   // key. Neither is a cms_admin credential.
   "mcp-oauth-seal-key",
-  "mcp-oauth-client",
+  "operator-oauth-client",
 ];
 
 /** The source of a stack program. */
@@ -135,6 +135,7 @@ describe("self-hosted: the generated compose gateway service (#635)", () => {
       postgresPassword: "superpw",
       rolePasswords: { admin: "adminpw", public: "publicpw" },
       caeloSecretKek: "0".repeat(64),
+      internalSecret: "i".repeat(48),
       diskSize: "20Gi",
       images: {
         mode: "release" as const,

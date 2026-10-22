@@ -2,11 +2,12 @@
 
 /**
  * A slug change moves a page's public URL, so `pages.update` must ALWAYS keep
- * the old URL alive (301) and drag every link along — for the singular path AND
- * the `pages.update_many` bulk path, in one transaction.
+ * the old URL alive (301) — for the singular path AND the `pages.update_many`
+ * bulk path, in one transaction. Links on the site follow the page because
+ * they are page references (epic #724); nothing rewrites them.
  *
- * Regression cover for the bug this file was written against: the redirect +
- * link-rewrite logic used to live in the `change_page_slug` TOOL as a chain of
+ * Regression cover for the bug this file was written against: the redirect
+ * logic used to live in the `change_page_slug` TOOL as a chain of
  * separate execute() calls, so `pages.update_many` — the path the AI is
  * explicitly steered to for multi-page edits — wrote the slug and produced ZERO
  * redirects, silently stranding every inbound link. The bulk case below is the
@@ -203,8 +204,10 @@ describe("pages.update_many — bulk slug changes create per-page 301s (the regr
   });
 });
 
-describe("pages.update — a slug change drags nav links with it", () => {
-  it("rewrites a nav-menu href that pointed at the old URL", async () => {
+describe("pages.update — nav links follow a slug change", () => {
+  // Since #724 the nav item stores a reference to the page, so the read
+  // shows the new path without any text rewrite.
+  it("a nav-menu href that pointed at the old URL shows the new one", async () => {
     const pageId = await makePage(`${PFX}-nav-old`);
     const setSlug = `${PFX}-menu`;
     const seeded = await execute(registry, adapter, SYSTEM, "structured_sets.set", {
@@ -212,7 +215,8 @@ describe("pages.update — a slug change drags nav links with it", () => {
       slug: setSlug,
       displayName: "Main",
       items: [
-        { label: "Home", href: "/" },
+        // External: this file seeds no homepage for "/" to name (#724).
+        { label: "Home", href: "https://example.com/" },
         { label: "Target", href: `/${PFX}-nav-old` },
       ],
     });
@@ -232,6 +236,6 @@ describe("pages.update — a slug change drags nav links with it", () => {
     const items = (got.value as { set: { items: { label: string; href: string }[] } }).set.items;
     expect(items.find((i) => i.label === "Target")?.href).toBe(`/${PFX}-nav-new`);
     // Untouched links stay untouched.
-    expect(items.find((i) => i.label === "Home")?.href).toBe("/");
+    expect(items.find((i) => i.label === "Home")?.href).toBe("https://example.com/");
   });
 });

@@ -425,6 +425,34 @@ export type ChatAttachment = z.infer<typeof chatAttachmentSchema>;
 /** issue #190 — attachments-per-message cap; bounds provider payload size. */
 export const CHAT_MAX_ATTACHMENTS = 4;
 
+/**
+ * An element reference riding a chat message. `selector` is empty for a
+ * module picked from the composer's module dropdown. `selectedText` and
+ * `context` come from a right-click / text selection in the live-edit
+ * preview (#916): what the operator selected and the text of the block
+ * around it, so the AI knows exactly what was meant. `blockName` /
+ * `position` / `field` / `index` (#917) name the placement field the text
+ * comes from when the preview marked it, so the AI can address it in
+ * `set_page_module_content` without inspecting the page first.
+ */
+export const chatChipSchema = z
+  .object({
+    moduleId: z.string().uuid(),
+    selector: z.string().max(500),
+    label: z.string().min(1).max(200),
+    selectedText: z.string().min(1).max(2000).optional(),
+    context: z.string().min(1).max(500).optional(),
+    blockName: z.string().min(1).max(80).optional(),
+    position: z.number().int().nonnegative().optional(),
+    field: z.string().min(1).max(200).optional(),
+    index: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+export type ChatChip = z.infer<typeof chatChipSchema>;
+
+/** Cap on chips per message; bounds the persisted user-message size. */
+export const CHAT_MAX_CHIPS = 20;
+
 export const chatSendMessageInput = z
   .object({
     chatSessionId: z.string().uuid(),
@@ -434,17 +462,7 @@ export const chatSendMessageInput = z
     content: z.string().min(1).max(8000).optional(),
     previewSelection: pluginPreviewSelectionSchema.optional(),
     /** Element-reference chips appended to the message. */
-    chips: z
-      .array(
-        z
-          .object({
-            moduleId: z.string().uuid(),
-            selector: z.string().min(1).max(500),
-            label: z.string().min(1).max(200),
-          })
-          .strict(),
-      )
-      .default([]),
+    chips: z.array(chatChipSchema).max(CHAT_MAX_CHIPS).default([]),
     /** issue #190 — operator-attached images (see chatAttachmentSchema). */
     attachments: z.array(chatAttachmentSchema).max(CHAT_MAX_ATTACHMENTS).default([]),
     /**

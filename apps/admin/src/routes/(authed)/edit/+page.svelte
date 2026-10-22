@@ -14,12 +14,12 @@
    * every load — the parent updates activePageId/URL/chat-branch
    * context to match.
    *
-   * Element-click chips only fire while alt+ctrl+meta are held (see
-   * inject-script). Without modifier the iframe behaves like the live
-   * site.
+   * There is no edit mode: left clicks in the iframe behave like the
+   * live site, a right-click or a text selection inside a module offers
+   * Ask AI / Add to chat (see inject-script + edit-affordances-script).
    */
 
-  import { enhance } from "$app/forms";
+  import { type ActionResult, applyAction, deserialize, enhance } from "$app/forms";
   import { goto, refreshAll } from "$app/navigation";
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
@@ -30,10 +30,18 @@
   import { localPluginPreview, previewFromResult } from "#lib/components/edit/plugin-preview.js";
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
   import Overlay from "#lib/components/edit/Overlay.svelte";
+  import MediaPicker from "#lib/components/MediaPicker.svelte";
   import StageDeployButton from "#lib/components/edit/StageDeployButton.svelte";
   import {
-    type CaeloMessage,
-    isCaeloMessage,
+    type FieldEdit,
+    type FieldEditMessage,
+    type ImageReplaceMessage,
+    newPreviewChannel,
+    postToPreview,
+    previewMessage,
+    previewNavigationTarget,
+    previewUrl,
+    samePreviewDocument,
   } from "#lib/components/edit/iframe-protocol.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Combobox } from "#lib/components/ui/combobox/index.js";
@@ -121,12 +129,29 @@
   // bookmarks; the live surface should hit the primary currentPath
   // branch so a plugin-prefixed page (e.g. `/de/preise`) resolves the
   // same way here as it does everywhere else.
+  // #946 — the preview is an opaque-origin sandbox; this editor's random
+  // channel is how the two sides recognise each other (iframe-protocol.ts).
+  const previewChannel = newPreviewChannel();
   const previewSrc = $derived(
     activePage
-      ? `/edit/preview-by-path${activePage.currentPath === "/" ? "" : activePage.currentPath}?branch=${data.activeChat.chatBranchId}`
+      ? previewUrl(activePage.currentPath, {
+          channel: previewChannel,
+          branch: data.activeChat.chatBranchId,
+        })
       : "",
   );
   let iframe = $state<HTMLIFrameElement | null>(null);
+  // The iframe's src is set here, not bound in the markup: the editor also
+  // navigates the iframe itself (`caelo:navigate`, #946), and once the
+  // preview reports the page it landed on, `previewSrc` follows to the same
+  // page — that must not load it a second time (losing the link's #anchor).
+  $effect(() => {
+    const src = previewSrc;
+    if (!iframe || !src) return;
+    if (!samePreviewDocument(iframe.getAttribute("src"), src, window.location.origin)) {
+      iframe.src = src;
+    }
+  });
   // v0.8.0 — derive directly from server-loaded chat.branch_change_count.
   // The pre-v0.8 path kept a local mutable counter that incremented on
   // every AI tool result (overcounting — tool calls != entity writes,
@@ -137,9 +162,6 @@
   const pendingChanges = $derived(data.branchChangeCount ?? 0);
   let pendingSwitchTo = $state<string | null>(null);
   let dialogOpen = $state(false);
-  // P6.7.3 — Edit mode toggle. ON: clicks in the iframe become chips.
-  // OFF: live-site browsing (links navigate, JS runs).
-  let editMode = $state(false);
   // Height of the page chrome above the preview (cross-chat banner +
   // toolbar); the pinned-right overlay is placed below it.
   let bannerHeight = $state(0);
@@ -164,18 +186,6 @@
     const editedSet = new Set(ids);
     return all.filter((m) => editedSet.has(m.moduleId));
   });
-
-  function setEditMode(on: boolean): void {
-    editMode = on;
-    iframe?.contentWindow?.postMessage(
-      { kind: "caelo:set-edit-mode", on },
-      window.location.origin,
-    );
-  }
-
-  function toggleEditMode(): void {
-    setEditMode(!editMode);
-  }
 
   function onPageChange(value: string): void {
     if (pluginPreviewUrl) closePluginPreview();
@@ -223,29 +233,33 @@
     };
     document.addEventListener("click", openLink, true);
     const handler = (ev: MessageEvent) => {
-      if (ev.source !== iframe?.contentWindow) return;
-      if (!isCaeloMessage(ev.data)) return;
-      const msg = ev.data as CaeloMessage;
-      if (msg.kind === "caelo:element-clicked") {
-        window.dispatchEvent(
-          new CustomEvent("caelo:chip", {
-            detail: {
-              moduleId: msg.moduleId,
-              selector: msg.selector,
-              label: msg.label,
-            },
-          }),
-        );
+      // The preview window, opaque origin AND this editor's channel: an
+      // external page the preview navigated to must not drive saves (see
+      // previewMessage).
+      const msg = previewMessage(ev, iframe?.contentWindow, previewChannel);
+      if (!msg) return;
+      if (msg.kind === "caelo:element-referenced") {
+        // Chip (+ Ask AI composer focus) for the chat; the Overlay expands itself
+        // first when collapsed so ChatPanel is mounted to receive it.
+        const { kind: _kind, ...detail } = msg;
+        window.dispatchEvent(new CustomEvent("caelo:chip", { detail }));
+      } else if (msg.kind === "caelo:field-edit") {
+        void saveFields(msg);
+      } else if (msg.kind === "caelo:image-replace") {
+        imageReplace = msg;
+        imagePickerOpen = true;
       } else if (msg.kind === "caelo:ready") {
-        // The iframe finished loading — re-apply edit-mode if it was on
-        // before the navigation/reload. The iframe forgets the body
-        // class on each load.
-        if (editMode) {
-          iframe?.contentWindow?.postMessage(
-            { kind: "caelo:set-edit-mode", on: true },
-            window.location.origin,
-          );
-        }
+        // Link-target suggestions for the preview's link editor (#918).
+        postToPreview(iframe?.contentWindow, {
+          kind: "caelo:page-paths",
+          pages: data.pages.map((p) => ({ path: p.currentPath, title: p.title })),
+        });
+      } else if (msg.kind === "caelo:navigate") {
+        // #946 — the sandboxed preview cannot navigate itself (its own
+        // navigations carry no session); the editor does, after checking
+        // the target is a preview page. Always a fresh load (a reload too).
+        const target = previewNavigationTarget(msg.href, previewChannel, window.location.origin);
+        if (target && iframe) iframe.src = target;
       } else if (msg.kind === "caelo:navigated") {
         displayPath = msg.path || null;
         // Click-through navigation inside the iframe — sync activePageId
@@ -318,8 +332,69 @@
     if (reloadTimer !== null) clearTimeout(reloadTimer);
     reloadTimer = setTimeout(() => {
       reloadTimer = null;
-      iframe?.contentWindow?.postMessage({ kind: "caelo:reload" }, window.location.origin);
+      postToPreview(iframe?.contentWindow, { kind: "caelo:reload" });
     }, 200);
+  }
+
+  /**
+   * #917 / #918 — save in-place edits from the preview through the
+   * `editFields` action on this chat's branch, then reload the preview; it
+   * shows the stored values either way (the new ones, or the old ones when
+   * the save was refused). `applyAction` hands the outcome to the layout's
+   * toast effect like any form action.
+   */
+  async function saveFields(msg: Omit<FieldEditMessage, "kind">): Promise<void> {
+    const body = new FormData();
+    body.set("_csrf", data.csrfToken);
+    body.set("chatSessionId", data.activeChat.id);
+    body.set("chatBranchId", data.activeChat.chatBranchId);
+    body.set("pageId", msg.pageId);
+    body.set("blockName", msg.blockName);
+    body.set("position", String(msg.position));
+    body.set("edits", JSON.stringify(msg.edits));
+    if (msg.scope) body.set("scope", msg.scope);
+    try {
+      const res = await fetch("?/editFields", {
+        method: "POST",
+        body,
+        headers: { "x-sveltekit-action": "true" },
+      });
+      const result: ActionResult = deserialize(await res.text());
+      // An unexpected server error would otherwise replace the editor
+      // with the error page; report it like a refused save instead.
+      const outcome: ActionResult =
+        result.type === "error"
+          ? {
+              type: "failure",
+              status: 500,
+              data: { error: "Not saved: the server failed." },
+              location: result.location ?? `${location.pathname}${location.search}`,
+            }
+          : result;
+      await applyAction(outcome);
+    } finally {
+      void refreshAll();
+      scheduleReload();
+    }
+  }
+
+  // #918 — "Replace image…" in the preview: the picked image goes into the
+  // marked `src` field, its alt text into the marked `alt` field (if any).
+  let imageReplace = $state<ImageReplaceMessage | null>(null);
+  let imagePickerOpen = $state(false);
+  function onImagePicked(m: { url: string; alt: string }): void {
+    const req = imageReplace;
+    imageReplace = null;
+    if (!req) return;
+    const edits: FieldEdit[] = [{ ...req.src, text: m.url }];
+    if (req.alt && m.alt.trim().length > 0) edits.push({ ...req.alt, text: m.alt });
+    void saveFields({
+      pageId: req.pageId,
+      blockName: req.blockName,
+      position: req.position,
+      edits,
+      ...(req.scope ? { scope: req.scope } : {}),
+    });
   }
 
   function onAiToolResult(payload: {
@@ -436,23 +511,15 @@
       <div class="ml-auto"></div>
     {/if}
 
-    <button
-      type="button"
-      onclick={toggleEditMode}
-      disabled={!!pluginPreviewUrl}
-      data-testid="edit-mode-toggle"
-      aria-pressed={editMode}
-      class={cn(
-        "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors",
-        editMode
-          ? "border-link bg-link/10 text-link hover:bg-link/15"
-          : "border-border bg-background text-foreground hover:bg-accent",
-      )}
-      title="When on, clicks in the page select an element to edit"
-    >
-      <MousePointerClick class="size-3.5" />
-      {editMode ? "Editing — click an element" : "Edit elements"}
-    </button>
+    {#if !pluginPreviewUrl}
+      <span
+        class="hidden items-center gap-1.5 text-xs text-muted-foreground lg:inline-flex"
+        data-testid="edit-hint"
+      >
+        <MousePointerClick class="size-3.5" />
+        Right-click or select text in the page to ask the AI
+      </span>
+    {/if}
     <button
       type="button"
       onclick={() => (diffOpen = !diffOpen)}
@@ -541,9 +608,9 @@
     {:else if previewSrc}
       <iframe
         bind:this={iframe}
-        src={previewSrc}
         title="Live preview"
-        sandbox="allow-scripts allow-same-origin"
+        data-caelo-live-preview
+        sandbox="allow-scripts"
         class="h-full w-full border-0 bg-white"
         style:pointer-events={overlayDragging ? "none" : "auto"}
       ></iframe>
@@ -587,7 +654,14 @@
 
   <!-- Dock beside plugin documents so the chat never covers the selected page. -->
   <div class={pluginPreviewUrl ? "h-[45vh] shrink-0 md:h-full md:w-[420px]" : "contents"}>
-  <Overlay
+  <!-- #918 — "Replace image…" from the preview's right-click menu. -->
+<MediaPicker
+  bind:open={imagePickerOpen}
+  onClose={() => (imageReplace = null)}
+  onPick={onImagePicked}
+/>
+
+<Overlay
     docked={!!pluginPreviewUrl}
     chromeBottom={bannerHeight + toolbarHeight}
     previewSelection={previewSelection ?? previewContext}

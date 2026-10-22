@@ -16,7 +16,11 @@
  *     per-runId preview channel with a 7-day TTL. #650 — the channel
  *     URL is never shown: the gateway serves staging.<domain> from it
  *     behind the access gate, older channels are pruned when a newer
- *     Stage succeeds, the last one after Publish live.
+ *     Stage succeeds, the last one after Publish live. #969 — a preview
+ *     channel cannot be made permanent (Firebase refuses to clear its
+ *     expireTime), so the served one is kept alive by refreshing its TTL
+ *     to Firebase's 30-day maximum on every Stage, Publish live and
+ *     periodic keep-alive (refreshStagingPreview).
  *   - Publish live: a release on the live channel. When staging has
  *     its own host (#650) it is a fresh version of the rebuild with the
  *     live host (publishLiveBuild, after the parity guard); otherwise a
@@ -43,14 +47,34 @@ import {
   CONTENT_HASHED_PATH_PATTERN,
   HTML_CACHE_CONTROL,
   IMMUTABLE_CACHE_CONTROL,
+  NOSNIFF,
+  SVG_DOCUMENT_CSP,
+  SVG_PATH_PATTERN,
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
-import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
+import type {
+  PromoteSummary,
+  PublishSummary,
+  StagingPreviewRefresh,
+  StagingPreviewSelection,
+  StaticPublisher,
+} from "./static-publisher.js";
 
 const FIREBASE_HOSTING_API = "https://firebasehosting.googleapis.com/v1beta1";
 const PARALLEL_UPLOADS = 50;
 const PREVIEW_CHANNEL_TTL_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Firebase `ttl` duration of a preview channel staging does not serve. */
+const PREVIEW_CHANNEL_TTL = `${PREVIEW_CHANNEL_TTL_DAYS * 24 * 60 * 60}s`;
+/**
+ * #969 — the longest a preview channel can live: Firebase documents "up to
+ * 30 days" (firebase-tools enforces it as MAX_DURATION) and refuses to clear
+ * a preview channel's expireTime, so only the live channel never expires.
+ */
+const SERVED_PREVIEW_CHANNEL_TTL_DAYS = 30;
+/** Firebase `ttl` duration the served preview is refreshed to. */
+export const SERVED_PREVIEW_CHANNEL_TTL = `${SERVED_PREVIEW_CHANNEL_TTL_DAYS * 24 * 60 * 60}s`;
 
 export function siteName(): string {
   const site = process.env.CAELO_FIREBASE_SITE;
@@ -163,7 +187,23 @@ export const FIREBASE_SHORT_CACHE_PATH_PATTERN =
  * extension table picks. It sets no Cache-Control, so overlapping a
  * Cache-Control entry on the path never makes two entries set the same
  * header.
+ *
+ * The {@link SECURITY_HEADER_ENTRIES} close the list (#891): every
+ * response `nosniff`, every SVG the sandboxing CSP. Neither sets
+ * Cache-Control or Content-Type, so they overlap the entries above
+ * without two entries ever setting the same header.
  */
+export const SECURITY_HEADER_ENTRIES = [
+  {
+    regex: "^/",
+    headers: { "X-Content-Type-Options": NOSNIFF },
+  },
+  {
+    regex: SVG_PATH_PATTERN,
+    headers: { "Content-Security-Policy": SVG_DOCUMENT_CSP },
+  },
+] as const;
+
 export const VERSION_CONFIG_HEADERS = [
   {
     regex: CONTENT_HASHED_PATH_PATTERN,
@@ -177,6 +217,7 @@ export const VERSION_CONFIG_HEADERS = [
     regex: "\\.ico$",
     headers: { "Content-Type": "image/x-icon" },
   },
+  ...SECURITY_HEADER_ENTRIES,
 ] as const;
 
 /**
@@ -225,6 +266,24 @@ export function withTargetRobotsHeader(
       ? [...kept, { glob: "**", headers: { [ROBOTS_HEADER]: "noindex" } }]
       : kept;
   return { ...config, headers };
+}
+
+const SECURITY_HEADER_NAMES = new Set(
+  SECURITY_HEADER_ENTRIES.flatMap((e) => Object.keys(e.headers).map((k) => k.toLowerCase())),
+);
+
+/**
+ * Return `config` with the current {@link SECURITY_HEADER_ENTRIES} in
+ * place of whatever security entries it carried. Promote and rollback
+ * re-release a SOURCE version's config; a version staged (or released)
+ * before #891 has no SVG CSP, and this is what keeps such a version from
+ * going live without it.
+ */
+export function withSecurityHeaders(config: FirebaseVersionConfig): FirebaseVersionConfig {
+  const kept = (config.headers ?? []).filter(
+    (e) => !Object.keys(e.headers ?? {}).some((k) => SECURITY_HEADER_NAMES.has(k.toLowerCase())),
+  );
+  return { ...config, headers: [...kept, ...SECURITY_HEADER_ENTRIES] };
 }
 
 /**
@@ -427,7 +486,8 @@ async function versionConfig(
  * for `target`: same files except robots.txt (the target's policy, with
  * the `Sitemap:` line when the version carries a sitemap.xml), same
  * config except the env-level robots header (see
- * withTargetRobotsHeader). Page HTML + sitemap.xml are reused by hash —
+ * withTargetRobotsHeader) and the current security headers (see
+ * withSecurityHeaders — a version from before #891 lacks the SVG CSP). Page HTML + sitemap.xml are reused by hash —
  * the generator renders them env-independently.
  */
 async function releaseAsTarget(args: {
@@ -471,7 +531,9 @@ async function releaseAsTarget(args: {
   const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
     method: "POST",
     body: JSON.stringify({
-      config: withTargetRobotsHeader(args.sourceConfig, args.target.robotsDefault),
+      config: withSecurityHeaders(
+        withTargetRobotsHeader(args.sourceConfig, args.target.robotsDefault),
+      ),
     }),
     token,
   });
@@ -626,10 +688,19 @@ async function createVersionFromBuild(args: {
   };
 }
 
-/** Ids of every `runid-*` preview channel Stage created on the site (any order). */
-async function listRunPreviewChannels(site: string, token: string): Promise<string[]> {
-  type ListChannelsResponse = { channels?: { name: string }[]; nextPageToken?: string };
-  const ids: string[] = [];
+/** A `runid-*` preview channel Stage created, with when Firebase deletes it (null: never). */
+interface RunPreviewChannel {
+  readonly id: string;
+  readonly expireTime: string | null;
+}
+
+/** Every `runid-*` preview channel Stage created on the site (any order). */
+async function listRunPreviewChannels(site: string, token: string): Promise<RunPreviewChannel[]> {
+  type ListChannelsResponse = {
+    channels?: { name: string; expireTime?: string | null }[];
+    nextPageToken?: string;
+  };
+  const found: RunPreviewChannel[] = [];
   let pageToken: string | undefined;
   do {
     const page = await firebaseFetch<ListChannelsResponse>(
@@ -638,11 +709,99 @@ async function listRunPreviewChannels(site: string, token: string): Promise<stri
     );
     for (const c of page.channels ?? []) {
       const id = c.name.split("/").pop() ?? "";
-      if (id.startsWith(RUN_CHANNEL_PREFIX)) ids.push(id);
+      if (id.startsWith(RUN_CHANNEL_PREFIX)) found.push({ id, expireTime: c.expireTime ?? null });
     }
     pageToken = page.nextPageToken;
   } while (pageToken);
-  return ids;
+  return found;
+}
+
+function isNotFound(e: unknown): boolean {
+  return e instanceof FirebaseHostingHttpError && e.status === 404;
+}
+
+function messageOf(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * #969 — whether a preview about to be retired outlives the regular preview
+ * TTL from `nowMs` on (it was the served one, refreshed to 30 days, or it
+ * carries no expiry at all), so it must get the short TTL back before the
+ * delete: a failed delete then still takes it offline within a week.
+ */
+export function outlivesRetiredPreviewTtl(expireTime: string | null, nowMs: number): boolean {
+  if (expireTime === null) return true;
+  const expiresAt = Date.parse(expireTime);
+  if (Number.isNaN(expiresAt)) {
+    throw new Error(
+      `firebase publisher: Firebase reported an unparseable channel expireTime ${JSON.stringify(expireTime)}`,
+    );
+  }
+  return expiresAt > nowMs + PREVIEW_CHANNEL_TTL_DAYS * DAY_MS;
+}
+
+/**
+ * Set a channel's TTL (`expireTime` = now + `ttl`) — the only way Firebase
+ * changes a preview channel's lifetime; `updateMask=expireTime` with a null
+ * expireTime is refused with 400 "mask included expire_time, while channel
+ * has no expire time assigned" (#969). Returns the expireTime Firebase now
+ * reports, and fails loudly when it reports none.
+ */
+async function setChannelTtl(
+  site: string,
+  channelId: string,
+  ttl: string,
+  token: string,
+): Promise<string> {
+  const updated = await firebaseFetch<{ expireTime?: string | null }>(
+    `sites/${site}/channels/${channelId}?updateMask=ttl`,
+    { method: "PATCH", body: JSON.stringify({ ttl }), token },
+  );
+  if (!updated.expireTime) {
+    throw new Error(
+      `firebase publisher: setting ttl=${ttl} on preview channel ${channelId} returned no expireTime, so its lifetime is unknown. Check the channel in the Firebase console (Hosting → preview channels).`,
+    );
+  }
+  return updated.expireTime;
+}
+
+/** The error for a served preview Firebase no longer has. */
+function servedPreviewGone(servedRunId: string, channelId: string): Error {
+  return new Error(
+    `staging serves build ${servedRunId}, but its preview channel ${channelId} no longer exists on Firebase Hosting (it expired or was deleted), so staging cannot serve it. Stage again, then retry.`,
+  );
+}
+
+/**
+ * Retire a preview that staging no longer serves. One that outlives the
+ * regular TTL (the previously served one) first gets the short TTL back:
+ * if the delete then fails (transient API error), the preview still
+ * disappears within a week instead of staying publicly reachable for a
+ * month. Already gone counts as retired.
+ */
+async function retirePreviewChannel(
+  site: string,
+  channel: RunPreviewChannel,
+  token: string,
+): Promise<void> {
+  let ttlError: unknown = null;
+  if (outlivesRetiredPreviewTtl(channel.expireTime, Date.now())) {
+    try {
+      await setChannelTtl(site, channel.id, PREVIEW_CHANNEL_TTL, token);
+    } catch (e) {
+      if (!isNotFound(e)) ttlError = e;
+    }
+  }
+  try {
+    await firebaseFetch(`sites/${site}/channels/${channel.id}`, { method: "DELETE", token });
+  } catch (e) {
+    if (isNotFound(e)) return;
+    if (ttlError === null) throw e;
+    throw new Error(
+      `${messageOf(e)}; shortening its TTL failed too (${messageOf(ttlError)}), so it stays reachable until its current expiry (${channel.expireTime ?? "none"}) or until a later Stage or Publish live retires it`,
+    );
+  }
 }
 
 export const firebaseHostingPublisher: StaticPublisher = {
@@ -659,15 +818,17 @@ export const firebaseHostingPublisher: StaticPublisher = {
     //    staging.<domain> to it behind the access gate, and it is never
     //    shown to operators or the AI. Firebase cannot lock a channel
     //    (preview channels are public by URL), so older channels are
-    //    deleted as soon as a newer Stage succeeds and the last one after
-    //    Publish live (pruneStagingPreviews), and the TTL is the backstop.
+    //    deleted as soon as a newer Stage succeeds. The 7-day TTL stays
+    //    until the Stage selects the channel as the one staging serves
+    //    (selectStagingPreview refreshes it to 30 days), so a Stage that
+    //    fails after this point leaves nothing public beyond a week.
     const channelId = channelIdFor(runId);
     const channel = await firebaseFetch<CreateChannelResponse>(
       `sites/${site}/channels?channelId=${channelId}`,
       {
         method: "POST",
         body: JSON.stringify({
-          ttl: `${PREVIEW_CHANNEL_TTL_DAYS * 24 * 60 * 60}s`,
+          ttl: PREVIEW_CHANNEL_TTL,
           retainedReleaseCount: 1,
         }),
         token,
@@ -712,22 +873,54 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return summary;
   },
 
-  async pruneStagingPreviews({ keepRunId }) {
+  async selectStagingPreview({ servedRunId }): Promise<StagingPreviewSelection> {
     const site = siteName();
     const token = await googleAuthToken();
-    const keep = keepRunId === null ? null : channelIdFor(keepRunId);
-    const deleted: string[] = [];
-    for (const id of await listRunPreviewChannels(site, token)) {
-      if (id === keep) continue;
-      try {
-        await firebaseFetch(`sites/${site}/channels/${id}`, { method: "DELETE", token });
-      } catch (e) {
-        // Already gone (expired, deleted by a concurrent prune) is the goal.
-        if (!(e instanceof FirebaseHostingHttpError && e.status === 404)) throw e;
+    const channels = await listRunPreviewChannels(site, token);
+    const servedId = servedRunId === null ? null : channelIdFor(servedRunId);
+
+    // The served preview first: staging.<domain> proxies to it until the
+    // next Stage — after Publish live too, where it shows the published
+    // state — so an idle period must not expire it into a 404 on every
+    // page. #969 — Firebase cannot make a preview channel permanent; its
+    // TTL is refreshed to the 30-day maximum here and by the periodic
+    // keep-alive (refreshStagingPreview).
+    let servedExpiresAt: string | null = null;
+    if (servedRunId !== null && servedId !== null) {
+      if (!channels.some((c) => c.id === servedId)) {
+        throw servedPreviewGone(servedRunId, servedId);
       }
-      deleted.push(id);
+      servedExpiresAt = await setChannelTtl(site, servedId, SERVED_PREVIEW_CHANNEL_TTL, token);
     }
-    return { deleted };
+
+    const retired: string[] = [];
+    const notRetired: { preview: string; error: string }[] = [];
+    for (const channel of channels) {
+      if (channel.id === servedId) continue;
+      try {
+        await retirePreviewChannel(site, channel, token);
+        retired.push(channel.id);
+      } catch (e) {
+        notRetired.push({ preview: channel.id, error: messageOf(e) });
+      }
+    }
+    return { retired, notRetired, servedExpiresAt };
+  },
+
+  async refreshStagingPreview({ servedRunId }): Promise<StagingPreviewRefresh> {
+    const site = siteName();
+    const token = await googleAuthToken();
+    const channelId = channelIdFor(servedRunId);
+    // Read first: a PATCH on a missing channel would implicitly create an
+    // empty one, and staging would serve 404s without anyone noticing.
+    try {
+      await firebaseFetch(`sites/${site}/channels/${channelId}`, { token });
+    } catch (e) {
+      if (isNotFound(e)) throw servedPreviewGone(servedRunId, channelId);
+      throw e;
+    }
+    const expiresAt = await setChannelTtl(site, channelId, SERVED_PREVIEW_CHANNEL_TTL, token);
+    return { expiresAt };
   },
 
   async promoteToProduction({ sourceRunId, fromTarget, toTarget, siteBaseUrl }) {
@@ -768,7 +961,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
     const token = await googleAuthToken();
     // The Hosting version the run released, as its publish summary recorded
     // it — not the run's preview channel, which #650 deletes once a newer
-    // Stage succeeds or the build is published. A promoted run's version is
+    // Stage succeeds. A promoted run's version is
     // already production-shaped; a staging run's carries staging's robots,
     // so the release is re-derived for the rollback target either way —
     // a no-op rewrite for a version that already matches it.

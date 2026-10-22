@@ -163,8 +163,14 @@ describe("ensureAuditJob", () => {
   });
 
   it("gives a job the converge creates the default parallelism, as a fresh install's", async () => {
+    // gcloud's verbatim stderr for a missing job: no NOT_FOUND code (regression:
+    // the converge failed with "read job caelo-production-audit" on every
+    // install that had no audit job yet).
     const { run, calls } = fakeGcloud([
-      [/^run jobs describe/, fail("ERROR: Cannot find job [caelo-production-audit]. NOT_FOUND")],
+      [
+        /^run jobs describe/,
+        fail("ERROR: (gcloud.run.jobs.describe) Cannot find job [caelo-production-audit]."),
+      ],
     ]);
     const { parallelism: _, ...converge } = TARGET;
     const r = await ensureAuditJob(converge, { run, sleep: async () => {} });

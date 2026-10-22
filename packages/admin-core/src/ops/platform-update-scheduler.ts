@@ -11,6 +11,9 @@
  *   platform_updates.scheduler_status      the last decision + recent emails
  *                                          (Settings → Updates, the AI)
  *
+ * The Owner's "Skip this time" (platform-update-skip.ts, #868) writes the
+ * skipped release onto the same row; the tick hands it to the decision.
+ *
  * The scheduler (platform-updates/scheduler.ts) runs inside every admin
  * instance (CLAUDE.md §11.B Tier 5). What keeps N instances from doing N
  * things:
@@ -254,6 +257,14 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
       ? { unavailable: "the newest release changed while it was being checked" }
       : input.facts;
 
+    // #868 — the release whose automatic install the Owner skipped.
+    const skippedVersion =
+      (
+        (await tx.execute(sql`
+          SELECT skipped_version FROM platform_update_scheduler WHERE id = 1
+        `)) as unknown as { skipped_version: string | null }[]
+      )[0]?.skipped_version ?? null;
+
     let decision = decideAutoUpdate({
       policy,
       installedVersion: CAELO_VERSION,
@@ -262,6 +273,7 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
       upgraderAvailable: input.upgraderAvailable,
       upgraderProblem: input.upgraderProblem,
       convergeAvailable: input.convergeAvailable,
+      skippedVersion,
       now: new Date(),
     });
 
@@ -345,7 +357,10 @@ export const platformUpdatesSchedulerTickOp = defineOperation({
     // 5. Emails about the newest release.
     let queued = 0;
     const forDecision = notificationForDecision(decision);
-    if (forDecision && decision.action !== "none" && !alreadyTried && !raced) {
+    // A skipped release was announced when it was scheduled; the Owner
+    // chose to wait, so no second "available" email.
+    const skipped = decision.action !== "none" && decision.version === skippedVersion;
+    if (forDecision && decision.action !== "none" && !alreadyTried && !raced && !skipped) {
       const added = await enqueueNotification(tx, {
         kind: forDecision.kind,
         dedupeKey: `${forDecision.kind}:${decision.version}`,
@@ -539,6 +554,8 @@ const schedulerStatusSchema = z.object({
   lastReason: z.string().nullable(),
   /** When a waiting release becomes installable (soak over / window opens). */
   lastWaitUntil: z.string().nullable(),
+  /** #868 — the release whose automatic install the Owner skipped; null when none. */
+  skippedVersion: z.string().nullable(),
   notifications: z.array(updateNotificationSchema),
 });
 /** Output of `platform_updates.scheduler_status`. */
@@ -553,7 +570,8 @@ export const platformUpdatesSchedulerStatusOp = defineOperation({
   handler: async (_ctx, input, tx) => {
     const s = (
       (await tx.execute(sql`
-        SELECT last_run_at, last_version, last_action, last_reason, last_wait_until
+        SELECT last_run_at, last_version, last_action, last_reason, last_wait_until,
+               skipped_version
           FROM platform_update_scheduler WHERE id = 1
       `)) as unknown as {
         last_run_at: Date | string | null;
@@ -561,6 +579,7 @@ export const platformUpdatesSchedulerStatusOp = defineOperation({
         last_action: SchedulerStatus["lastAction"];
         last_reason: string | null;
         last_wait_until: Date | string | null;
+        skipped_version: string | null;
       }[]
     )[0];
     if (!s) return handlerError("platform_updates.scheduler_status", MISSING_SCHEDULER_ROW);
@@ -585,6 +604,7 @@ export const platformUpdatesSchedulerStatusOp = defineOperation({
       lastAction: s.last_action,
       lastReason: s.last_reason,
       lastWaitUntil: iso(s.last_wait_until),
+      skippedVersion: s.skipped_version,
       notifications: notes.map((n) => ({
         id: n.id,
         kind: n.kind,

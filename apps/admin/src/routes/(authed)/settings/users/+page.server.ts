@@ -67,7 +67,12 @@ export const actions: Actions = {
       displayName,
       roleNames,
     });
-    if (!result.ok) return fail(400, { error: "Could not create user." });
+    // #914 — the op's own message carries the reason and the next step
+    // (a duplicate email, a weak password, an address the identity gate in
+    // front of the admin would never let through).
+    if (!result.ok) {
+      return fail(400, { error: opErrorMessage(result.error, "Could not create user.") });
+    }
     return syncOperatorAccessFromPanel(locals);
   },
 

@@ -5,8 +5,9 @@
  *
  * - a page created under a parent composes "/<parent path>/<slug>";
  * - `pages.move_many` moves a page AND its subtree in one transaction:
- *   current_path, a 301 per moved URL, chain collapse, nav-menu and
- *   module link rewrites;
+ *   current_path, a 301 per moved URL, chain collapse; nav-menu and
+ *   module links follow as page references and no stored text is
+ *   rewritten (epic #724);
  * - a parent rename cascades to every descendant;
  * - structural refusals (cycle, depth > 6, homepage as parent / nested
  *   homepage, deleting a page with children) change nothing and name the
@@ -150,7 +151,11 @@ describe("nested page URLs — create + compose", () => {
 });
 
 describe("nested page URLs — pages.move_many", () => {
-  it("moves a subtree with 301s, nav + module link rewrites, chain collapse", async () => {
+  // Since #724 nav and module links are stored as page references, so a
+  // move rewrites no stored link: reads show the new paths. A legacy
+  // literal link (content written before #724 that the migration could
+  // not convert) is not rewritten either: it reaches the page via the 301.
+  it("moves a subtree with 301s, links following by reference, chain collapse", async () => {
     const target = await makePage("tgt");
     const page = await makePage("mv");
     const sub = await makePage("mv-sub", page);
@@ -172,11 +177,18 @@ describe("nested page URLs — pages.move_many", () => {
     const mod = await execute(registry, adapter, SYSTEM, "modules.create", {
       slug: `${PFX}-links`,
       displayName: "Links",
-      html: `<a href="${oldSub}">sub</a><a href="${oldPage}-x">look-alike</a>`,
+      html: `<a href="${oldSub}">sub</a>`,
       fields: [{ name: "body", kind: "text", label: "Body" } as never],
     });
     if (!mod.ok) throw new Error("module seed");
     const moduleId = (mod.value as { moduleId: string }).moduleId;
+    // A legacy literal link to the moved page (pre-#724 content), written
+    // underneath the ops — the write ops would store a reference.
+    const legacyLink = `<a href="${oldPage}">legacy</a>`;
+    await q(
+      (tx) => tx`UPDATE modules SET html = html || ${legacyLink}
+      WHERE id = ${moduleId}::uuid`,
+    );
 
     const r = await move([{ pageId: page, parentPageId: target }]);
     expect(r.ok).toBe(true);
@@ -196,15 +208,30 @@ describe("nested page URLs — pages.move_many", () => {
       (tx) => tx`SELECT items FROM structured_sets WHERE slug = ${`${PFX}-nav`}`,
     )) as unknown as { items: unknown }[];
     const items = JSON.stringify(setRows[0]?.items);
-    expect(items).toContain(newPage);
-    expect(items).toContain(newSub);
+    expect(items).toContain(`"href":"caelo:page/${page}"`);
+    expect(items).toContain(`"href":"caelo:page/${sub}"`);
+    const readSet = await execute(registry, adapter, SYSTEM, "structured_sets.get", {
+      kind: "nav-menu",
+      slug: `${PFX}-nav`,
+    });
+    if (!readSet.ok) throw new Error("get nav");
+    const readItems = JSON.stringify((readSet.value as { set: { items: unknown } }).set.items);
+    expect(readItems).toContain(`"href":"${newPage}"`);
+    expect(readItems).toContain(`"href":"${newSub}"`);
     const html = (
       (await q((tx) => tx`SELECT html FROM modules WHERE id = ${moduleId}::uuid`)) as unknown as {
         html: string;
       }[]
     )[0]?.html;
-    expect(html).toContain(`href="${newSub}"`);
-    expect(html).toContain(`href="${oldPage}-x"`);
+    expect(html).toContain(`href="caelo:page/${sub}"`);
+    // No text rewrite: the legacy literal is stored exactly as written,
+    // and the old URL it names answers with the 301 asserted above.
+    expect(html).toContain(legacyLink);
+    const readModule = await execute(registry, adapter, SYSTEM, "modules.get", { moduleId });
+    if (!readModule.ok) throw new Error("get module");
+    expect((readModule.value as { module: { html: string } }).module.html).toContain(
+      `href="${newSub}"`,
+    );
 
     // Moving back: the page reclaims its old URL — the redirect sitting
     // on it yields instead of shadowing the page.
@@ -442,7 +469,7 @@ describe("nested page URLs — move effects + approval sizing", () => {
     expect(await redirectTo(`/${PFX}-legacy-b`)).toBe(`/${PFX}-cc`);
   });
 
-  it("a content link rewrite bumps the content instance version", async () => {
+  it("a move rewrites no stored content: a legacy literal value and its version stay", async () => {
     const page = await makePage("civ");
     const mod = await execute(registry, adapter, SYSTEM, "modules.create", {
       slug: `${PFX}-civ-mod`,
@@ -465,8 +492,9 @@ describe("nested page URLs — move effects + approval sizing", () => {
     const after = (await q(
       (tx) => tx`SELECT "values", version FROM content_instances WHERE id = ${ci.id}::uuid`,
     )) as unknown as { values: { cta_href: string }; version: number | string }[];
-    expect(after[0]?.values.cta_href).toBe(`/${PFX}-civ-t/${PFX}-civ`);
-    expect(Number(after[0]?.version)).toBe(Number(ci.version) + 1);
+    expect(after[0]?.values.cta_href).toBe(`/${PFX}-civ`);
+    expect(Number(after[0]?.version)).toBe(Number(ci.version));
+    expect(await redirectTo(`/${PFX}-civ`)).toBe(`/${PFX}-civ-t/${PFX}-civ`);
   });
 
   it("delete approval counts a cascaded subtree", async () => {

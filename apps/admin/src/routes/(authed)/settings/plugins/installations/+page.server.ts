@@ -1,10 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import {
-  activateApprovedExternalPlugin,
-  applyPluginLifecycle,
-  pluginManifest,
-} from "@caelo-cms/plugin-host";
+import { activateApprovedExternalPlugin, pluginManifest } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -107,8 +103,8 @@ export const actions: Actions = {
       capability: form.get("capability"),
     });
     if (!revoked.ok) return fail(409, { error: message(revoked.error) });
+    // The op stops a disabled plugin in the running host after its commit.
     const result = revoked.value as { slug: string; disabled: boolean };
-    if (result.disabled) applyPluginLifecycle(result.slug, "disable");
     return {
       ok: true,
       message: result.disabled

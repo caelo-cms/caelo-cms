@@ -69,11 +69,14 @@ export const OPS_IMAGE_REPOSITORY =
  * tail it. Granted only to installs that use the job. Not an escalation: the
  * provisioner already holds `resourcemanager.projectIamAdmin`.
  */
-export const INSTALL_JOB_ROLES: readonly string[] = [
+export const INSTALL_JOB_ROLES = [
   "roles/iam.roleAdmin",
   "roles/cloudscheduler.admin",
   "roles/logging.logWriter",
-];
+] as const;
+
+/** One of {@link INSTALL_JOB_ROLES}. */
+export type InstallJobRole = (typeof INSTALL_JOB_ROLES)[number];
 
 /** Resources the job runs with: Pulumi + the Node language host want memory. */
 const JOB_CPU = "2";

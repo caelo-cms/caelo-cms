@@ -189,7 +189,11 @@ page. The usual suspects:
   (`packages/provisioning/src/upgrader-iam-preflight.ts`) found missing
   permissions and named each of them. Fix the grant in
   `upgrader-setup.ts`; a Cloud Shell `cms-provision upgrade` on the smoke
-  install re-converges it.
+  install re-converges it. A release that changes the cloud setup runs
+  the converge job instead, whose self-check
+  (`packages/provisioning/src/converge-job-preflight.ts`) uses the same
+  code `iam-preflight` for the provisioner's grants; fix those in
+  `converge-job-setup.ts`.
 - Migration job errors mentioning `compute.subnetworks` would mean Direct
   VPC egress needs more than Google documents (only the Cloud Run service
   agent needs compute permissions); see the note in `upgrader-setup.ts`.

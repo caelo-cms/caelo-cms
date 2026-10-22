@@ -3,11 +3,24 @@
 /** The install's upgrade lock (agent/lock.ts) and the agent's settings (agent/config.ts). */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_DB_PORT_DEFAULT, agentConfigFor, agentDbConnection } from "./config.js";
-import { acquireUpgradeLock, upgradeLockPath } from "./lock.js";
+import {
+  acquireUpgradeLock,
+  UpgradeLockAccessError,
+  UpgradeLockHeldError,
+  upgradeLockPath,
+} from "./lock.js";
 
 describe("acquireUpgradeLock", () => {
   let dir: string;
@@ -47,6 +60,48 @@ describe("acquireUpgradeLock", () => {
   it("leaves no temp files behind", () => {
     acquireUpgradeLock(dir, "the update agent")();
     expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it("contention is an UpgradeLockHeldError (#804)", () => {
+    acquireUpgradeLock(dir, "the update agent", { pid: 101, alive: () => true });
+    expect(() => acquireUpgradeLock(dir, "x", { pid: 102, alive: () => true })).toThrow(
+      UpgradeLockHeldError,
+    );
+    writeFileSync(upgradeLockPath(dir), "{not json");
+    expect(() => acquireUpgradeLock(dir, "x")).toThrow(UpgradeLockHeldError);
+  });
+
+  // Root ignores permission bits, so the EACCES case only runs as a normal user.
+  it.skipIf(process.getuid?.() === 0)(
+    "a directory it cannot write is an access error naming the lock file, not busy (#804)",
+    () => {
+      chmodSync(dir, 0o500);
+      try {
+        let thrown: unknown;
+        try {
+          acquireUpgradeLock(dir, "the update agent");
+        } catch (e) {
+          thrown = e;
+        }
+        expect(thrown).toBeInstanceOf(UpgradeLockAccessError);
+        expect((thrown as Error).message).toContain(upgradeLockPath(dir));
+        expect((thrown as Error).message).toContain("write access");
+        expect((thrown as Error).message).not.toMatch(/running on this install|try again when/i);
+      } finally {
+        chmodSync(dir, 0o700);
+      }
+    },
+  );
+
+  it("a missing install directory is an access error, not busy (#804)", () => {
+    let thrown: unknown;
+    try {
+      acquireUpgradeLock(join(dir, "gone"), "the update agent");
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeInstanceOf(UpgradeLockAccessError);
+    expect((thrown as Error).message).toContain("does not exist");
   });
 });
 

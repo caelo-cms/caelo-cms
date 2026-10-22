@@ -10,8 +10,9 @@
  * about the page (international-site knows its locale) can answer, per
  * placement: render these values instead, or (layout placements only)
  * render this other module, or — loudly — this placement has a problem
- * (no variant for the page's language; a menu link whose target has no
- * page in that language).
+ * (no variant for the page's language). Internal links inside the
+ * values are not the plugin's business: core resolves them per page
+ * through the link-resolve point (link-resolve.ts).
  *
  * Without an active contributor nothing changes and no plugin is called.
  * The editor preview and the static generator both resolve through here
@@ -29,7 +30,6 @@ import {
   type ContentVariantResolution,
   contentVariantResolution,
 } from "@caelo-cms/plugin-sdk";
-import type { PageUrlStyle } from "@caelo-cms/shared";
 import {
   isPluginDisabled,
   loadedPlugins,
@@ -70,13 +70,10 @@ function contributors() {
  * Ask every contributing plugin which content each placement shows.
  *
  * @param pages every page of the render pass with its placements.
- * @param pageUrlStyle the serving target's style, so page links a plugin
- *   rewrites come from core's URL builder (pages.resolve_public_urls).
  */
 export async function resolveContentVariants(
   pages: ReadonlyArray<ContentVariantPage>,
   scope: RenderScope,
-  pageUrlStyle: PageUrlStyle,
 ): Promise<ResolvedContentVariants> {
   const out = new Map<string, Map<string, ResolvedContentVariant>>();
   if (pages.length === 0) return out;
@@ -94,7 +91,7 @@ export async function resolveContentVariants(
       invocation: renderInvocation(scope),
       pluginSlug: lp.slug,
       operationName,
-      args: { pages: [...pages], pageUrlStyle },
+      args: { pages: [...pages] },
     });
     if (!r.ok) {
       throw new Error(

@@ -215,6 +215,18 @@ test.describe("e2e-livedit migration — keep-design end to end", () => {
         findingSurfaced,
         "the migration must surface the seeded typo or dead link (notes or closing report)",
       ).toBe(true);
+
+      // #724 — links the rebuild wrote to pages it had not built yet were
+      // kept and recorded against the run; by the closing report every
+      // one is either a page reference or a reported finding, never left
+      // pending.
+      const runLinks = dbJson<{ status: string; n: number }[]>(
+        "return await tx`SELECT status, count(*)::int AS n FROM import_run_links GROUP BY status`;",
+      );
+      expect(
+        runLinks.find((r) => r.status === "pending")?.n ?? 0,
+        "every link to a page of the run must be resolved (resolve_import_links) or reported by the end",
+      ).toBe(0);
     } finally {
       site.stop();
     }

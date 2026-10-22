@@ -5,14 +5,14 @@
  *
  * A Stage publishes its preview channel, records it as the staging origin
  * (`staging_access.origin_url`) and deletes every other preview channel;
- * Publish live clears the origin and deletes them all. Two of these
- * interleaving would delete the channel the other one just recorded: Stage
- * A prunes B's fresh channel, then B records that deleted channel as the
- * origin — both report success and staging serves nothing.
+ * Publish live reads the origin and deletes every channel but that one.
+ * Two of these interleaving would delete the channel the other one just
+ * recorded: Stage A prunes B's fresh channel, then B records that deleted
+ * channel as the origin — both report success and staging serves nothing.
  *
  * So the publish-record-prune sequence runs under one transaction-scoped
  * advisory lock: a Stage takes it before it publishes, Publish live before
- * it clears and prunes. A later Stage waits for the earlier one to commit
+ * it reads the origin and prunes. A later Stage waits for the earlier one to commit
  * and then supersedes it, which is the order operators expect. Lock order
  * against live-release-lock.ts is fixed (live release first, then this),
  * and a Stage never takes the live-release lock, so the two cannot

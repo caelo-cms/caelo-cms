@@ -29,6 +29,8 @@ import { hostname } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import {
   assertDurableMediaRoot,
+  BugIntakeClient,
+  bugIntakeUrl,
   buildEmailTransport,
   configureMcpBridge,
   configurePluginUninstallFinalizer,
@@ -42,6 +44,7 @@ import {
   makePluginImageProvider,
   makePluginTextProvider,
   startAutoUpdateScheduler,
+  startBugForwardingWorker,
   startChatImageGcWorker,
   startDomainEventGcWorker,
   startProposalGcWorker,
@@ -228,6 +231,10 @@ async function bootstrapPlugins(): Promise<void> {
   // are in place, then keep it current from the outbox.
   const publisher = startPublicProjectionPublisher({ adapter });
   await publisher.publishAll();
+  // #724 rollout E — after the plugin host, so plugins' link hooks take
+  // part, and after the gateway projection, which must not wait on a
+  // site-wide content conversion (nor on the editor rows it locks).
+  await migrateLinksOnce();
   // P12 review-pass #3 — startup warning if any loaded plugin declared
   // the `email` capability but no transport is configured. These sends
   // would fall through to the stderr stub silently otherwise.
@@ -241,6 +248,38 @@ async function bootstrapPlugins(): Promise<void> {
       );
     }
   }
+}
+
+// Epic #724 rollout E — the one-time data migration that turns existing
+// literal internal links (`/about`) into page references. It is a Query
+// API op, not a SQL migration: the conversion needs the canonicaliser and
+// the site's page lookup. Runs once per install (the op skips when an
+// applied run exists, under an advisory lock so two booting instances do
+// not both convert); a failure is logged loudly, leaves the links as they
+// are, and is retried at the next start. The Owner sees the report and
+// can re-run or revert it at Settings → Internal links.
+async function migrateLinksOnce(): Promise<void> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, SYSTEM_CTX, "links.migrate_to_references", {
+    trigger: "boot",
+    onlyIfNeverApplied: true,
+  });
+  if (!r.ok) {
+    console.error(
+      "[bootstrap.link_migration] FAILED — stored internal links stay literal until it succeeds (retried at the next start; Settings → Internal links runs it by hand)",
+      r.error,
+    );
+    return;
+  }
+  const v = r.value as {
+    skipped: boolean;
+    run: { runId: string; counts: Record<string, number>; unresolvedCount: number } | null;
+  };
+  if (v.skipped || !v.run) return;
+  const converted = Object.values(v.run.counts).reduce((a, b) => a + b, 0);
+  console.log(
+    `[bootstrap.link_migration] ${converted} internal link(s) stored as references; ${v.run.unresolvedCount} could not be converted (report: Settings → Internal links, run ${v.run.runId})`,
+  );
 }
 
 // P14 — pending bootstrap token uptake. cms-provision init writes
@@ -357,6 +396,21 @@ function bootstrapQualityAudits(): void {
   qualityAuditBootstrapped = true;
   const { adapter, registry } = getQueryContext();
   startQualityAuditWorker({ adapter, registry });
+}
+
+// Epic #901 — sends AI bug reports to the Caelo bug intake once the Owner
+// opted in on /settings/bugs. Idle (one cheap read per minute) while off.
+// CAELO_BUG_INTAKE_URL points a fork or a test run at another intake.
+let bugForwardingBootstrapped = false;
+function bootstrapBugForwarding(): void {
+  if (bugForwardingBootstrapped) return;
+  bugForwardingBootstrapped = true;
+  const { adapter, registry } = getQueryContext();
+  startBugForwardingWorker({
+    adapter,
+    registry,
+    client: new BugIntakeClient({ baseUrl: bugIntakeUrl(process.env) }),
+  });
 }
 
 // P13 — debounced auto-redeploy + gateway log GC. Polls audit_events
@@ -546,6 +600,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapMcpBridge();
   bootstrapDomainEventGc();
   bootstrapQualityAudits();
+  bootstrapBugForwarding();
   bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   await seedSiteBaseUrl();

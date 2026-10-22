@@ -231,6 +231,19 @@ export function installRoot(installId: string): string {
 }
 
 /**
+ * Where Pulumi runs for one install (#736): `<installRoot>/stack/<provider>/`.
+ * It holds the install's own stack settings file (`Pulumi.production.yaml`)
+ * and a project file pointing at the package's stack program
+ * (wizards/gcp-pulumi.ts `prepareStackWorkDir`). The settings file used to
+ * live in the package's stack dir, shared by every install of the provider
+ * on the machine: two CLI runs for different installs at once could preview
+ * or `up` one install's state with the other's config.
+ */
+export function stackWorkDir(installRoot: string, provider: "gcp" | "gcp-firebase"): string {
+  return join(installRoot, "stack", provider);
+}
+
+/**
  * Stable install id from the (provider, projectId-or-domain) pair so a re-run
  * with the same inputs always lands on the same `~/.caelo-<id>/` directory.
  * The id is short + readable — `gcp-caelo-website` / `self-hosted-mysite-com`.

@@ -313,7 +313,11 @@ export const listBugReportsTool = makeListReadTool<
   name: "list_bug_reports",
   description:
     "List the defect reports already filed against Caelo (by you via bug_report, or auto-captured by the chat), newest first. " +
-    "Call BEFORE bug_report to see whether the problem is already reported; filter by status (new / triaged / fixed / invalid).",
+    "Call BEFORE bug_report to see whether the problem is already reported; filter by status (new / triaged / fixed / invalid). " +
+    "The forwarding column says where each report went: local_only = stored on this site only, the Caelo team has NOT seen it; " +
+    "queued = will be sent to the Caelo team; sent = the Caelo team received it; failed = sending failed, stored here only. " +
+    'local_only and failed reports reach the Caelo team only when the Owner clicks "Send unsent reports" on Settings → Detected bugs (with sending turned on); you cannot send them yourself. ' +
+    "Never tell the operator the Caelo team knows about a report unless its forwarding is sent.",
   opName: "ai_bug_reports.list",
   input: z.object({ status: z.enum(["new", "triaged", "fixed", "invalid"]).optional() }).strict(),
   buildOpInput: (input) => ({
@@ -327,6 +331,7 @@ export const listBugReportsTool = makeListReadTool<
     { key: "status", value: (r) => r.status },
     { key: "severity", value: (r) => r.severity },
     { key: "tool", value: (r) => r.suspectedTool ?? "" },
+    { key: "forwarding", value: (r) => r.forwardingState },
     { key: "title", value: (r) => r.title },
   ],
   emptyMessage: "No bug reports filed (for that status).",

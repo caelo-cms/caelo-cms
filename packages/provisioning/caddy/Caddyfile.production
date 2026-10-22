@@ -30,6 +30,13 @@
 	# page's <link rel="icon" type> declares, not the host mime.types name.
 	@ico path *.ico
 	header @ico Content-Type "image/x-icon"
+	# #891 — nothing is content-sniffed, and an uploaded SVG opened directly
+	# runs no script on this origin. Keep the CSP in sync with
+	# SVG_DOCUMENT_CSP in @caelo-cms/shared (enforced by
+	# packages/provisioning/src/index.test.ts).
+	header X-Content-Type-Options "nosniff"
+	@svg path *.svg
+	header @svg Content-Security-Policy "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; sandbox"
 	encode gzip
 	try_files {path} {path}/index.html
 	file_server

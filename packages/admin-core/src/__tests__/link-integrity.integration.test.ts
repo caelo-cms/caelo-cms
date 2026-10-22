@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Internal-link integrity scan (`scanBranchInternalLinks`) — the check
- * wired into chat.publish / chat.merge_to_main. It collects every
- * internal href in the shipped pages (raw module HTML + content_instance
- * values) and flags the ones that resolve to no existing page. Runs
- * against real Postgres through the op layer to seed pages, then invokes
- * the helper inside an admin tx (the same view the publish op uses).
+ * Reference integrity (#724 rollout F) over LEGACY literal links: content
+ * written before #724 stores `/about`, not `caelo:page/<id>`. The check
+ * reports a working literal as a warning (the link migration converts it)
+ * and one that matches no page as `broken-literal` — scanned by declared
+ * field kind (#846), so image paths and path-shaped copy are never links.
+ * Seeds through the op layer, writes the legacy literals underneath it,
+ * and runs the check inside an admin tx (the same view the Stage merge uses).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { scanBranchInternalLinks } from "../ops/content/link-integrity.js";
+import { checkReferences } from "../ops/content/link-integrity.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -88,24 +89,45 @@ beforeAll(async () => {
 
   // A page whose module links to BOTH the existing target (good) and a
   // page that was never built (broken) — via a hardcoded href in the
-  // module HTML AND a url content value.
+  // module HTML AND a url content value. Since #724 the write ops refuse
+  // a link to no page and store valid ones as references, so literal
+  // links like these exist only in content written before; the page is
+  // built valid and the legacy literals are written underneath the ops.
   const linker = await execute(registry, adapter, systemCtx, "pages.build_page", {
     page: { slug: LINKER_SLUG, title: "LINT Linker", templateId },
     modules: [
       {
         blockName: "content",
         displayName: "LINT Linker Nav",
-        html: `<nav><a href="/${TARGET_SLUG}">good</a><a href="/does-not-exist">bad html link</a><a href="#top">frag</a><a href="https://example.com">ext</a></nav>`,
+        html: `<nav><a href="#top">frag</a><a href="{{cta_href}}">cta</a></nav>`,
         fields: [{ name: "cta_href", kind: "url", label: "CTA href" }],
-        content: { source: "inline", values: { cta_href: "/also-missing" } },
+        content: { source: "inline", values: { cta_href: "https://example.com/cta" } },
       },
     ],
   });
   if (!linker.ok) throw new Error(`linker seed failed: ${JSON.stringify(linker.error)}`);
+  const legacy = new SQL(ADMIN_URL!);
+  try {
+    await legacy.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx`UPDATE modules
+               SET html = ${`<nav><a href="/${TARGET_SLUG}">good</a><a href="/does-not-exist">bad html link</a><a href="#top">frag</a><a href="https://example.com">ext</a>{{cta_href}}</nav>`}
+               WHERE display_name = 'LINT Linker Nav'`;
+      await tx`UPDATE content_instances
+               SET "values" = ${JSON.stringify({ cta_href: "/also-missing" })}::jsonb
+               WHERE module_id IN (SELECT id FROM modules WHERE display_name = 'LINT Linker Nav')`;
+    });
+  } finally {
+    await legacy.end();
+  }
 
   // #846 — a page whose content values exercise every field kind. Only the
   // link-bearing kinds (link / url default / link-list / richtext / nested
   // sub-module) may be reported; image + text + text-list paths never.
+  // The dead links and the legacy image paths are written as
+  // `https://legacy.invalid/…` (#724 refuses an internal link to no page
+  // and a file path nothing serves) and turned into the legacy literals
+  // below, underneath the ops.
   const kinds = await execute(registry, adapter, systemCtx, "pages.build_page", {
     page: { slug: KINDS_SLUG, title: "LINT Kinds", templateId },
     modules: [
@@ -114,7 +136,7 @@ beforeAll(async () => {
         // No blockName → detached sub-module, rendered only through the
         // parent's module-list. Its HTML + values must still be scanned.
         displayName: "LINT Kinds Card",
-        html: `<article><a href="/missing-nested-html">{{card_label}}</a><a href="{{card_href}}">go</a><img src="{{card_image}}"></article>`,
+        html: `<article><a href="https://legacy.invalid/missing-nested-html">{{card_label}}</a><a href="{{card_href}}">go</a><img src="{{card_image}}"></article>`,
         fields: [
           { name: "card_label", kind: "text", label: "Card label" },
           { name: "card_href", kind: "link", label: "Card link" },
@@ -124,8 +146,8 @@ beforeAll(async () => {
           source: "inline",
           values: {
             card_label: "/shop/nested-text",
-            card_href: "/missing-nested-link",
-            card_image: "/media/nested.webp",
+            card_href: "https://legacy.invalid/missing-nested-link",
+            card_image: "https://legacy.invalid/media/nested.webp",
           },
         },
       },
@@ -146,7 +168,7 @@ beforeAll(async () => {
             name: "fallback_href",
             kind: "url",
             label: "Fallback href",
-            default: "/missing-default-url",
+            default: "https://legacy.invalid/missing-default-url",
           },
           { name: "menu", kind: "link-list", label: "Menu" },
           { name: "body", kind: "richtext", label: "Body" },
@@ -155,15 +177,15 @@ beforeAll(async () => {
         content: {
           source: "inline",
           values: {
-            hero_image: "/media/foo.webp",
+            hero_image: "https://legacy.invalid/media/foo.webp",
             alert_text: "/shop/xyz",
             tags: ["/shop/tag-path"],
-            primary_link: "/missing-link",
+            primary_link: "https://legacy.invalid/missing-link",
             menu: [
               { label: "Good", href: `/${TARGET_SLUG}` },
-              { label: "Bad", href: "/missing-link-list" },
+              { label: "Bad", href: "https://legacy.invalid/missing-link-list" },
             ],
-            body: `<p>See <a href="/missing-richtext">this</a> and <a href="/${TARGET_SLUG}">that</a>.</p>`,
+            body: `<p>See <a href="https://legacy.invalid/missing-richtext">this</a> and <a href="/${TARGET_SLUG}">that</a>.</p>`,
             cards: [{ $ref: "card" }],
           },
         },
@@ -184,6 +206,13 @@ beforeAll(async () => {
     await db.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`UPDATE content_instances SET "values" = "values" || jsonb_build_object('stray_path', ${"/missing-undeclared"}::text) WHERE id = ${placementCi}::uuid`;
+      await tx`UPDATE modules
+               SET html = replace(html, 'https://legacy.invalid/', '/'),
+                   fields = replace(fields::text, 'https://legacy.invalid/', '/')::jsonb
+               WHERE display_name LIKE 'LINT Kinds %'`;
+      await tx`UPDATE content_instances
+               SET "values" = replace("values"::text, 'https://legacy.invalid/', '/')::jsonb
+               WHERE module_id IN (SELECT id FROM modules WHERE display_name LIKE 'LINT Kinds %')`;
     });
   } finally {
     await db.end();
@@ -195,37 +224,60 @@ afterAll(async () => {
   await adapter.close();
 });
 
-describe("scanBranchInternalLinks", () => {
+/** The legacy literals the check reports: `broken-literal` targets, unquoted. */
+async function brokenLiterals(): Promise<string[]> {
+  const issues = await adapter.withAdminTransaction(systemCtx, (tx) =>
+    checkReferences(tx, { branchId: null, env: "staging" }),
+  );
+  return issues.filter((i) => i.problem === "broken-literal").map((i) => i.target.slice(1, -1));
+}
+
+describe("reference integrity over legacy literal links (#846 field kinds)", () => {
   it("flags internal links (HTML + content values) that resolve to no page, and NOT valid ones", async () => {
-    const result = await adapter.withAdminTransaction(systemCtx, (tx) =>
-      scanBranchInternalLinks(tx, null),
-    );
+    const broken = await brokenLiterals();
     // Broken: the hardcoded /does-not-exist and the /also-missing content value.
-    expect(result.brokenInternalLinks).toContain("/does-not-exist");
-    expect(result.brokenInternalLinks).toContain("/also-missing");
+    expect(broken).toContain("/does-not-exist");
+    expect(broken).toContain("/also-missing");
     // Not broken: the link to the existing target page.
-    expect(result.brokenInternalLinks).not.toContain(`/${TARGET_SLUG}`);
+    expect(broken).not.toContain(`/${TARGET_SLUG}`);
     // Fragments + absolute URLs are not internal-page links — never flagged.
-    expect(result.brokenInternalLinks).not.toContain("#top");
-    expect(result.brokenInternalLinks).not.toContain("https://example.com");
+    expect(broken).not.toContain("#top");
+    expect(broken).not.toContain("https://example.com");
   });
 
-  it("#846: scans content values by declared field kind — image/text paths are never links", async () => {
-    const result = await adapter.withAdminTransaction(systemCtx, (tx) =>
-      scanBranchInternalLinks(tx, null),
+  it("a working legacy literal is a warning that names its conversion, never a block", async () => {
+    const issues = await adapter.withAdminTransaction(systemCtx, (tx) =>
+      checkReferences(tx, { branchId: null, env: "production" }),
     );
-    const broken = result.brokenInternalLinks;
-    // Not links: image paths, plain text / text-list copy that starts with
-    // `/`, and a stored value with no declared field.
+    const literal = issues.find(
+      (i) => i.problem === "literal-link" && i.target === `"/${TARGET_SLUG}"`,
+    );
+    expect(literal?.severity).toBe("warning");
+    expect(literal?.message).toContain("get_link_migration_report");
+    // Legacy literals never block: the staged-build check owns broken ones.
+    expect(
+      issues.filter((i) => i.problem === "broken-literal" || i.problem === "literal-link"),
+    ).not.toContainEqual(expect.objectContaining({ severity: "block" }));
+  });
+
+  it("#846: scans content values by declared field kind — text paths are never links", async () => {
+    const broken = await brokenLiterals();
+    // Not links: plain text / text-list copy that starts with `/`, and a
+    // stored value with no declared field.
     for (const notALink of [
-      "/media/foo.webp",
       "/shop/xyz",
       "/shop/tag-path",
-      "/media/nested.webp",
       "/shop/nested-text",
       "/missing-undeclared",
     ]) {
       expect(broken).not.toContain(notALink);
+    }
+    // An image value is a file reference since rollout C (the write path
+    // refuses a file nothing serves, `unknown-file`), so a legacy image
+    // path nothing serves is reported as the broken file link it is —
+    // never as a page link.
+    for (const deadFile of ["/media/foo.webp", "/media/nested.webp"]) {
+      expect(broken).toContain(deadFile);
     }
     // Still links, still reported when they point at no page: link value,
     // url field default (what renders when no value is set), link-list

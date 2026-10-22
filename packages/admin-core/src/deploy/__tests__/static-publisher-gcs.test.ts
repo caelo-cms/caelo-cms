@@ -390,6 +390,34 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
     const robots = staticBucket.files.get("robots.txt");
     expect(robots?.body?.toString("utf8")).toContain("Allow: /");
   });
+
+  // #567 — turning the sitemap off: the build has no sitemap.xml, but the
+  // previous live build's copy is still in the bucket until the prune.
+  // robots.txt must follow the build, not that leftover.
+  it("drops the Sitemap line and the old sitemap when the build has none", async () => {
+    staticBucket.files.set("sitemap.xml", {
+      ...makeFile(staticBucket, "sitemap.xml"),
+      body: Buffer.from("<urlset>old</urlset>"),
+    });
+    await writeFile(
+      join(buildDir, "routing-manifest.json"),
+      JSON.stringify({ env: "staging", envNoindexInHtml: false }),
+      "utf8",
+    );
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-nositemap", target: TARGET });
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-nositemap",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://www.example.com",
+    });
+    expect(staticBucket.files.get("robots.txt")?.body?.toString("utf8")).toBe(
+      "User-agent: *\nAllow: /\n",
+    );
+    expect(staticBucket.files.has("sitemap.xml")).toBe(false);
+  });
 });
 
 describe("gcsStaticPublisher — Cache-Control per path class", () => {
@@ -529,6 +557,40 @@ describe("gcsStaticPublisher — Cache-Control per path class", () => {
       staticBucket.files.get("_state/last-build-manifest.json")?.body?.toString("utf8") ?? "{}",
     ) as { cachePolicyVersion?: number };
     expect(written.cachePolicyVersion).toBe(CACHE_POLICY_VERSION);
+  });
+
+  // #891 regression: GCS serves only a fixed set of metadata headers, so an
+  // uploaded SVG went live with nothing stopping it from running as a
+  // document on the site's origin when opened directly.
+  it("an SVG is stored as a download (Content-Disposition: attachment) on staging AND after promote", async () => {
+    const SVG = "_assets/logo.0123456789abcdef.svg";
+    const PNG = "_assets/hero.0123456789abcdef.png";
+    await mkdir(join(buildDir, "_assets"), { recursive: true });
+    await writeFile(join(buildDir, SVG), "<svg xmlns='http://www.w3.org/2000/svg'/>", "utf8");
+    await writeFile(join(buildDir, PNG), new Uint8Array([137, 80, 78, 71]));
+    await writePromotableManifest();
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-svg", target: TARGET });
+    const metaOf = (bucket: MockBucket, key: string) =>
+      bucket.files.get(key)?.metadata as
+        | { contentType?: string; contentDisposition?: string; cacheControl?: string }
+        | undefined;
+    expect(metaOf(stagingBucket, `run-svg/${SVG}`)?.contentDisposition).toBe("attachment");
+    await gcsStaticPublisher.promoteToProduction({
+      sourceRunId: "run-svg",
+      sourceBuildDir: buildDir,
+      fromTarget: TARGET,
+      toTarget: PROD_TARGET,
+      siteBaseUrl: "https://example.com",
+    });
+    expect(metaOf(staticBucket, SVG)).toMatchObject({
+      contentType: "image/svg+xml",
+      contentDisposition: "attachment",
+      cacheControl: IMMUTABLE_CACHE_CONTROL,
+    });
+    // Rasters and pages stay inline.
+    expect(metaOf(staticBucket, PNG)?.contentDisposition).toBeUndefined();
+    expect(metaOf(staticBucket, "en/about/index.html")?.contentDisposition).toBeUndefined();
   });
 });
 

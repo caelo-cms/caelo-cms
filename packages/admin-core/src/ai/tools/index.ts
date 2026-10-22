@@ -24,6 +24,7 @@ import {
   listCaeloUpdatesTool,
 } from "./caelo-updates.js";
 import { cancelProposalTool } from "./cancel-proposal.js";
+import { checkLinksTool } from "./check-links.js";
 import {
   getPageSeoTool,
   listImportRunsTool,
@@ -86,13 +87,18 @@ import {
   listUnpublishedChangesTool,
 } from "./history-tools.js";
 import { importMediaFromUrlsTool } from "./import-media-from-urls.js";
-import { acceptImportPagesTool, cleanupImportRunTool } from "./import-run-actions.js";
+import {
+  acceptImportPagesTool,
+  cleanupImportRunTool,
+  resolveImportLinksTool,
+} from "./import-run-actions.js";
 import { addImportPageNotesTool, getImportRunReportTool } from "./import-run-report.js";
 import { importThemeTool } from "./import-theme.js";
 import { inspectBuiltPageTool } from "./inspect-built-page.js";
 import { inspectDesignDraftTool } from "./inspect-design-draft.js";
 import { inspectExternalPageTool } from "./inspect-external-page.js";
 import { inspectPageRenderTool } from "./inspect-page-render.js";
+import { getLinkMigrationReportTool } from "./link-migration-tools.js";
 import { listContentInstancesTool } from "./list-content-instances.js";
 import { listImportPagesTool } from "./list-import-pages.js";
 import { listLayoutsTool } from "./list-layouts.js";
@@ -123,6 +129,7 @@ import {
   listRateLimitProfilesTool,
 } from "./operator-dashboard-tools.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
+import { patchPageModuleFieldsTool } from "./patch-page-module-fields.js";
 import {
   listPluginGrantsTool,
   listPluginInstallationsTool,
@@ -258,6 +265,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(grepContentTool);
   // #820 — every field-value write carries the repeated-markup hint.
   registry.register(withFieldMarkupGuard(setPageModuleContentTool, (i) => [i.contentValues]));
+  // #917 — targeted text edits of one placement (escaped plain text, so no
+  // markup guard needed); the same op Live Edit's in-place editing uses.
+  registry.register(patchPageModuleFieldsTool);
   // issue #299 — bulk-first build path (CLAUDE.md §11): one call builds a
   // page (modules + content + placements); the _many variants batch
   // incremental passes on existing pages.
@@ -331,6 +341,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // issue #197 — rebuild notes + the migration's closing report.
   registry.register(addImportPageNotesTool);
   registry.register(getImportRunReportTool);
+  // Epic #724 rollout E — the link migration report.
+  registry.register(getLinkMigrationReportTool);
   // issue #280 — migration cost gate: record the operator's budget +
   // check cumulative spend against it (pause-and-ask, not auto-stop).
   registry.register(setMigrationBudgetTool);
@@ -447,6 +459,8 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(optimizePageSeoTool);
   // P8 AI-first review pass — bulk variants + redirect surface.
   registry.register(findRedirectsTool);
+  // Epic #724 (rollout F) — reference integrity: what Stage / Publish live say about internal links.
+  registry.register(checkLinksTool);
   // #553 — quality gate read surface (Lighthouse audits after a Stage).
   registry.register(getQualityAuditTool);
   registry.register(checkStageAuditTool);
@@ -474,7 +488,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // metadata edits across many pages/modules in one tool call.
   registry.register(deletePagesManyTool);
   registry.register(updatePagesManyTool);
-  // 0263 — nested page URLs: reparent pages (subtree + 301s + link rewrites).
+  // 0263 — nested page URLs: reparent pages (subtree + 301s).
   registry.register(movePagesTool);
   registry.register(updateModulesManyTool);
   // v0.9.13 — singular + bulk status flip. Drafts are LIVE-EDIT ONLY;
@@ -595,6 +609,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(deleteModulesManyTool);
   registry.register(acceptImportPagesTool);
   registry.register(cleanupImportRunTool);
+  registry.register(resolveImportLinksTool);
   registry.register(sendTestEmailTool);
   // Agent-tool parity, part 2: the operator dashboards and maintenance
   // reads/writes the exceptions file listed as gaps.

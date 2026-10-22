@@ -22,7 +22,7 @@ const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitC
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
 const SECRET = "s".repeat(40);
 const ADMIN = "https://caelo-production-admin-abc-ew.a.run.app";
-const target = { projectId: "proj", region: "europe-west1" };
+const target = { provider: "gcp-firebase" as const, projectId: "proj", region: "europe-west1" };
 
 function fakeGcloud(overrides: Record<string, GcloudResult> = {}) {
   const answers: Record<string, GcloudResult> = {

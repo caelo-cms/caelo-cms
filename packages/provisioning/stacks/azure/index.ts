@@ -45,6 +45,10 @@ import {
   GATEWAY_TRUSTED_PROXY_HOPS,
   TRUSTED_PROXY_HOPS_ENV,
 } from "../../dist/stack-contract.js";
+import {
+  FRONT_DOOR_SECURITY_RULE_SET,
+  frontDoorSecurityRules,
+} from "../../dist/static-security-headers.js";
 
 const cfg = new pulumi.Config();
 const domain = cfg.require("domain");
@@ -281,6 +285,23 @@ const redirectRuleSet = new azure.cdn.RuleSet(`${namePrefix}-fd-redirects`, {
   ruleSetName: "caeloRedirects",
 });
 
+// #891 — the security response headers: nosniff on every response, the
+// sandboxing CSP on every SVG (src/static-security-headers.ts). A set of
+// its own: the deploy replaces the redirects set's rules wholesale.
+const securityRuleSet = new azure.cdn.RuleSet(`${namePrefix}-fd-security`, {
+  resourceGroupName: rg.name,
+  profileName: frontDoor.name,
+  ruleSetName: FRONT_DOOR_SECURITY_RULE_SET,
+});
+for (const rule of frontDoorSecurityRules()) {
+  new azure.cdn.Rule(`${namePrefix}-fd-security-${rule.ruleName}`, {
+    resourceGroupName: rg.name,
+    profileName: frontDoor.name,
+    ruleSetName: securityRuleSet.name,
+    ...rule,
+  });
+}
+
 new azure.cdn.Route(
   `${namePrefix}-fd-route`,
   {
@@ -290,7 +311,7 @@ new azure.cdn.Route(
     routeName: "static",
     originGroup: { id: staticOriginGroup.id },
     customDomains: [{ id: siteDomain.id }],
-    ruleSets: [{ id: redirectRuleSet.id }],
+    ruleSets: [{ id: redirectRuleSet.id }, { id: securityRuleSet.id }],
     patternsToMatch: ["/*"],
     // Without a cache configuration Front Door does not cache the route at
     // all; static files are edge-cached per their Cache-Control (§11.B

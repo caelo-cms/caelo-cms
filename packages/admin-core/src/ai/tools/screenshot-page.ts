@@ -25,7 +25,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { capturePreviewScreenshot } from "../preview-screenshot.js";
-import { awaitScreenshot } from "../screenshot-orchestrator.js";
+import { awaitScreenshot, type ScreenshotViewportSource } from "../screenshot-orchestrator.js";
 import { describeError } from "./_describe-error.js";
 import { takePreviewScreenshotBudget } from "./_preview-screenshot-budget.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
@@ -43,11 +43,38 @@ export function screenshotFailureContent(errorMessage: string): string {
   return `screenshot_page failed: ${errorMessage}`;
 }
 
+/**
+ * State the capture viewport as fact. "Desktop" is not one width: module
+ * type sizes scale with `vw`, so a fixed 1280px capture showed the AI a
+ * 3-line headline that the operator's ~1740px preview wrapped onto 4 —
+ * and the AI could not fix what it could not see. The sentence tells the
+ * AI whose view it got and when line breaks may differ. Pure for tests.
+ */
+export function describeCaptureViewport(
+  viewport: ScreenshotPageInput["viewport"],
+  width: number,
+  height: number,
+  source: ScreenshotViewportSource,
+): string {
+  switch (source) {
+    case "operator-preview":
+      return ` Rendered at ${width}×${height}px — the operator's live preview size, so line breaks and wrapping match what the operator sees.`;
+    case "requested":
+      return ` Rendered at ${width}px wide (the width you requested), ${height}px tall.`;
+    case "preset":
+      return (viewport ?? "desktop") === "desktop"
+        ? ` Rendered at the ${width}×${height}px desktop preset — NOT necessarily the operator's view; text can wrap differently at their width.`
+        : ` Rendered at the ${viewport} preset ${width}×${height}px.`;
+  }
+}
+
 const screenshotInput = z
   .object({
     pageId: z.string().uuid(),
     chatBranchId: z.string().uuid().optional(),
     viewport: z.enum(["desktop", "tablet", "mobile"]).optional(),
+    /** Explicit layout width in CSS px — check another breakpoint on purpose. */
+    width: z.number().int().min(320).max(3840).optional(),
     /** issue #250 (WS4) — CSS selector for a single-element capture. */
     selector: z.string().min(1).max(300).optional(),
   })
@@ -81,6 +108,7 @@ async function captureServerSide(
     pageId: input.pageId,
     ...(chatBranchId ? { chatBranchId } : {}),
     ...(input.viewport ? { viewport: input.viewport } : {}),
+    ...(input.width !== undefined ? { width: input.width } : {}),
     ...(input.selector ? { selector: input.selector } : {}),
   });
   if (!r.ok) {
@@ -105,12 +133,18 @@ async function captureServerSide(
     };
   }
   const dims = r.widthPx !== undefined ? ` Image: ${r.widthPx}×${r.heightPx}px.` : "";
+  const viewportNote = describeCaptureViewport(
+    input.viewport,
+    r.viewportWidth,
+    r.viewportHeight,
+    input.width !== undefined ? "requested" : "preset",
+  );
   return {
     ok: true,
     content:
       `Screenshot captured (${input.viewport ?? "desktop"} viewport${
         input.selector ? `, element ${input.selector}` : ""
-      }) by the server-side renderer — a real Chromium render of this chat's branch preview, no html2canvas approximation.${dims}` +
+      }) by the server-side renderer — a real Chromium render of this chat's branch preview, no html2canvas approximation.${dims}${viewportNote}` +
       `${sseTimeoutNote ? " (The operator's browser did not answer within 30s, so the server rendered instead.)" : ""} ` +
       "The image is available to you in THIS turn — analyse it on your next step; do not end the turn to wait for it.",
     image: r.image,
@@ -123,6 +157,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
     "Capture a screenshot of the rendered page (the image comes back WITHIN this same turn — keep working and analyse it on your next step, do NOT end your turn to wait for it). Use for the GROSS visual impression — 'does the hero feel crowded?', 'is the color/imagery right?', 'what's the overall layout impression?'. " +
     "Works on EVERY surface: in an interactive chat the operator's browser captures (html2canvas on their exact viewport); without an attached browser (MCP, background sends, subagent turns) the server renders the branch preview in real headless Chromium instead — the result text names which backend ran. " +
     "FIDELITY LIMIT (browser-captured results only) — html2canvas is an APPROXIMATION, not a real browser render. It reliably mis-renders TWO things: (1) fine text spacing — words can show large irregular gaps that look like broken text-align:justify, and (2) flex-wrap — wrapping rows can stack one-item-per-line. These are html2canvas artifacts, NOT real CSS bugs. If a browser-captured screenshot shows justified-looking word gaps or single-column flex stacking, DO NOT edit CSS or file a bug from the screenshot alone — confirm against `inspect_page_render` first. Server-rendered results are real Chromium output and carry no such artifacts. " +
+    "DESKTOP IS NOT ONE WIDTH — type sized with vw/clamp() wraps differently per width, so a headline that sits on 3 lines at 1280px can take 4 at 1740px. In an interactive chat, desktop captures the operator's live preview size (the result states the size and whose view it is); omit `width` for that capture. For typography/layout reviews ALSO capture a second desktop width via `width` (1280 when the operator's view is wider, 1920 when it is narrower) and make the design hold at both. When the operator reports a wrap or break you don't see, re-capture without `width` before concluding it is fine. " +
     "ALWAYS call this after composing a page or making structural/styling changes — desktop AND mobile viewports — and fix real issues the screenshot reveals BEFORE telling the operator you're done (max two review rounds; skip for content-only edits). " +
     "For ANY spacing/layout/CSS question (word gaps, flex stacking, white halo around the header, wrong colors, broken layout) prefer `inspect_page_render` — its summary then `target`/`search` give the composed HTML and each CSS layer separately, the accurate source of truth for spacing + layout. " +
     "Pass `selector` (CSS selector) to capture a SINGLE element instead of the whole page — right choice when checking one module (a footer, a hero) instead of the page. By default the capture shows THIS chat's branch preview (your pending edits included); pass `chatBranchId` only to capture a different branch. The image is available to you in this turn only, not persisted across the chat.",
@@ -143,7 +178,14 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
         type: "string",
         enum: ["desktop", "tablet", "mobile"],
         description:
-          "Optional viewport hint. ChatPanel applies the corresponding iframe dimensions before capture (1280x800 / 768x1024 / 375x812). Defaults to desktop.",
+          "Optional viewport. desktop (default) captures at the operator's live preview size in an interactive chat (falls back to the 1280x800 preset when no preview is open or on the server-side renderer); tablet = 768x1024, mobile = 375x812.",
+      },
+      width: {
+        type: "integer",
+        minimum: 320,
+        maximum: 3840,
+        description:
+          "Optional layout width in CSS px — overrides the viewport's width (height stays the viewport's). Use it to check a SECOND desktop width on purpose (e.g. 1280 and 1920), not for the first capture: omitting it shows you the operator's own view.",
       },
       selector: {
         type: "string",
@@ -202,6 +244,7 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
       ...(toolCtx.toolCallId ? { toolCallId: toolCtx.toolCallId } : {}),
       ...(chatBranchId ? { chatBranchId } : {}),
       ...(input.selector ? { selector: input.selector } : {}),
+      ...(input.width !== undefined ? { width: input.width } : {}),
       viewport: input.viewport ?? "desktop",
     });
     try {
@@ -218,9 +261,20 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
             : ` Crop: ${m.canvasWidth}×${m.canvasHeight}px out of the ${m.pageWidth}×${m.pageHeight}px page.`
           : ` Image: ${m.canvasWidth}×${m.canvasHeight}px (full page: ${m.pageWidth}×${m.pageHeight}px).`
         : "";
+      const viewportNote =
+        m?.viewportWidth !== undefined &&
+        m.viewportHeight !== undefined &&
+        m.viewportSource !== undefined
+          ? describeCaptureViewport(
+              input.viewport,
+              m.viewportWidth,
+              m.viewportHeight,
+              m.viewportSource,
+            )
+          : "";
       return {
         ok: true,
-        content: `Screenshot captured (${input.viewport ?? "desktop"} viewport${input.selector ? `, element ${input.selector}` : ""}).${geometry} The image is available to you in THIS turn — analyse it on your next step; do not end the turn to wait for it.`,
+        content: `Screenshot captured (${input.viewport ?? "desktop"} viewport${input.selector ? `, element ${input.selector}` : ""}).${geometry}${viewportNote} The image is available to you in THIS turn — analyse it on your next step; do not end the turn to wait for it.`,
         image,
       };
     } catch (e) {

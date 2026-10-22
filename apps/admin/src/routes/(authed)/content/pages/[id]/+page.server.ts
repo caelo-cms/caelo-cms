@@ -104,7 +104,8 @@ export const actions: Actions = {
   /**
    * Epic #690 — move the page under another page (or to the top level),
    * optionally renaming it in the same step. The whole subtree moves
-   * with it; old URLs get 301s and links are rewritten (pages.move_many).
+   * with it; old URLs get 301s, and links on the site follow the page
+   * because they are page references (pages.move_many, epic #724).
    */
   move: async ({ params, request, locals }) => {
     requirePermission(locals, "content.write");

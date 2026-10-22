@@ -18,6 +18,7 @@ import { z } from "zod";
 import { INFRA_CONTRACT_VERSION } from "../packages/provisioning/src/infra-contract.ts";
 import { isInfraContractPath } from "../packages/provisioning/src/release-contract.ts";
 import { compareSemver } from "../packages/provisioning/src/release-manifest.ts";
+import { OWNER_ACTION_MAX_CHARS } from "../packages/shared/src/release-manifest.ts";
 import {
   formatFindings,
   lintMigrationsSince,
@@ -43,6 +44,13 @@ export const ReleaseMetaSchema = z.strictObject({
    * forward release to release; see {@link expectedLastContractVersion}.
    */
   lastContractVersion: z.string().nullable(),
+  /**
+   * #868 — what the Owner has to do for this release's breaking change, in
+   * one sentence; signed into the manifest as `ownerAction` and shown in
+   * Settings → Updates. Required when a commit since the previous release
+   * is breaking (`type!:`), refused otherwise (it would never be shown).
+   */
+  ownerAction: z.string().nullable(),
 });
 export type ReleaseMeta = z.infer<typeof ReleaseMetaSchema>;
 
@@ -87,7 +95,65 @@ export function validateReleaseMetaShape(meta: ReleaseMeta): string[] {
   for (const id of meta.advisories) {
     if (!GHSA_ID.test(id)) errors.push(`"${id}" is not a GHSA id (GHSA-xxxx-xxxx-xxxx).`);
   }
+  if (meta.ownerAction !== null) {
+    const action = meta.ownerAction;
+    if (action.trim() !== action || action.length === 0 || /[\r\n]/.test(action)) {
+      errors.push(
+        "owner_action must be one sentence on one line, without leading or trailing spaces.",
+      );
+    } else if (action.length > OWNER_ACTION_MAX_CHARS) {
+      errors.push(
+        `owner_action is ${action.length} characters; keep it to one sentence of at most ${OWNER_ACTION_MAX_CHARS}.`,
+      );
+    }
+  }
   return errors;
+}
+
+/**
+ * A breaking conventional-commit subject (`feat(x)!: …`) — what
+ * scripts/release.ts marks `⚠ BREAKING` in the release notes and the
+ * Owner's page turns into "Before you update".
+ */
+export const BREAKING_SUBJECT = /^\w+(?:\([^)]*\))?!:/;
+
+/**
+ * Subjects of the breaking commits between `ref` and HEAD (every commit up
+ * to HEAD when `ref` is null), merges excluded like the changelog.
+ */
+export function breakingCommitsSince(ref: string | null, repoRoot: string): string[] {
+  const log = git(
+    ["log", ref ? `${ref}..HEAD` : "HEAD", "--no-merges", "--pretty=format:%s"],
+    repoRoot,
+  );
+  if (!log.ok) {
+    throw new Error(`git log ${ref ?? ""}..HEAD failed — is the tag fetched (fetch-depth: 0)?`);
+  }
+  return log.out.split("\n").filter((subject) => BREAKING_SUBJECT.test(subject));
+}
+
+/**
+ * The ownerAction rule (#868): a release with a breaking commit names what
+ * the Owner has to do (or that nothing is: "Nothing to do — Caelo handles
+ * this during the update."), and one without a breaking commit names
+ * nothing, since the Owner's page shows the sentence only for a breaking
+ * release. No silent default either way.
+ */
+export function checkOwnerAction(opts: {
+  breakingSubjects: readonly string[];
+  ownerAction: string | null;
+}): string | null {
+  if (opts.breakingSubjects.length > 0 && opts.ownerAction === null) {
+    return (
+      `breaking commits since the previous release, but no owner_action:\n  ${opts.breakingSubjects.join("\n  ")}\n` +
+      'Say in one sentence what the Owner has to do before or after installing it (release-cut input owner_action / --owner-action "…"). ' +
+      'If Caelo applies it during the update, say so: "Nothing to do — Caelo handles this during the update."'
+    );
+  }
+  if (opts.breakingSubjects.length === 0 && opts.ownerAction !== null) {
+    return "owner_action was given, but no commit since the previous release is breaking (type!:), so Settings → Updates would never show it. Drop it, or mark the breaking commit.";
+  }
+  return null;
 }
 
 /** Fetch for the GitHub API; injectable for tests. */
@@ -338,6 +404,12 @@ export async function runReleaseChecks(
     previousTag !== null &&
     (infraContractVersionAt(previousTag, opts.repoRoot) ?? INFRA_CONTRACT_VERSION) <
       INFRA_CONTRACT_VERSION;
+
+  const ownerAction = checkOwnerAction({
+    breakingSubjects: breakingCommitsSince(previousTag, opts.repoRoot),
+    ownerAction: meta.ownerAction,
+  });
+  if (ownerAction) errors.push(ownerAction);
 
   if (meta.advisories.length > 0) {
     errors.push(...(await verifyAdvisoriesPublished(meta.advisories, opts)));
