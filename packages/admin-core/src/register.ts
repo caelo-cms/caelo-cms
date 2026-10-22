@@ -494,10 +494,12 @@ import {
   mcpOpenSessionOp,
 } from "./ops/security/mcp_power.js";
 import {
+  blockMcpRemoteUserOp,
   listMcpRemoteConnectionsOp,
   restoreMcpRemoteConnectionOp,
   revokeMcpRemoteConnectionOp,
   setMcpRemoteConnectionCapOp,
+  unblockMcpRemoteUserOp,
 } from "./ops/security/mcp_remote_connections.js";
 import {
   createMcpTokenOp,
@@ -964,6 +966,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listMcpRemoteConnectionsOp);
   registry.register(revokeMcpRemoteConnectionOp);
   registry.register(restoreMcpRemoteConnectionOp);
+  registry.register(blockMcpRemoteUserOp);
+  registry.register(unblockMcpRemoteUserOp);
   registry.register(setMcpRemoteConnectionCapOp);
   // v0.2.27 — mcp_tokens propose/execute pairs (create / revoke).
   // AI proposes new tokens by displayName + cap; the Owner approves
