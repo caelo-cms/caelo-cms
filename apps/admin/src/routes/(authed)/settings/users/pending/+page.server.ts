@@ -4,9 +4,9 @@
  * v0.2.21 — Owner queue for AI-proposed user lifecycle changes
  * (create / set_roles / delete). Mirrors layouts/pending shape.
  *
- * Approve on a `create` proposal returns a one-time temporary password
- * — surfaced once in the form-action result for the Owner to copy.
- * It is not persisted past this response.
+ * Approve on a `create` proposal leaves a one-time password for the
+ * approver to collect (#971): the "One-time credentials" box on this page
+ * (and in the Live Edit chat) generates it on click and shows it once.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -57,18 +57,17 @@ export const actions: Actions = {
           : "approve failed";
       return fail(400, { error: message });
     }
-    const v = r.value as { userId: string | null; temporaryPassword: string | null };
+    const v = r.value as { userId: string | null; credentialHandoff: unknown };
     const access = v.userId ? await syncOperatorAccessFromPanel(locals) : { ok: true as const };
     return {
       ok: true,
       // Google IAP sync outcome; `error` makes the layout toast it loudly.
       ...("error" in access ? { error: access.error } : {}),
-      message: v.userId
-        ? `Proposal applied (userId=${v.userId.slice(0, 8)}…).`
-        : "Proposal applied.",
-      // One-time display: the Owner copies this and shares with the new
-      // user out-of-band. Reloading the page does NOT bring it back.
-      temporaryPassword: v.temporaryPassword,
+      message: v.credentialHandoff
+        ? "Proposal applied. Collect the new user's one-time password below."
+        : v.userId
+          ? `Proposal applied (userId=${v.userId.slice(0, 8)}…).`
+          : "Proposal applied.",
     };
   },
   reject: async ({ request, locals }) => {

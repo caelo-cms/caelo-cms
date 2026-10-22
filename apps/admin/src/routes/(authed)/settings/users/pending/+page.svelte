@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import CredentialHandoffs from "#lib/components/CredentialHandoffs.svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -18,33 +19,24 @@
     <h1 class="text-2xl font-semibold tracking-tight">Pending user actions</h1>
     <p class="text-sm text-muted-foreground">
       AI-proposed user invitations, role changes, and deletions wait here for your click. Approving
-      a <code>create</code> proposal generates a one-time temporary password — it appears here once
-      and is never shown again, so copy it before navigating away.
+      a <code>create</code> proposal leaves the new user's one-time password under "One-time
+      credentials" — shown once when you click it (or emailed to the user as a set-password link).
+      The AI never sees it.
     </p>
   </div>
 
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
   {/if}
-  <!-- An applied create can still carry an IAP-sync error above: the
-       one-time password must show regardless, or it is lost. -->
-  {#if form?.temporaryPassword}
-    <Alert>
-      <AlertDescription>
-        <div class="space-y-1">
-          <div>{form.message}</div>
-          <div>
-            One-time password (copy now — not shown again):
-            <code class="select-all rounded bg-muted px-2 py-1 font-mono text-sm">
-              {form.temporaryPassword}
-            </code>
-          </div>
-        </div>
-      </AlertDescription>
-    </Alert>
-  {:else if form?.message && !form?.error}
+  {#if form?.message && !form?.error}
     <Alert><AlertDescription>{form.message}</AlertDescription></Alert>
   {/if}
+  <!-- #971 — re-read after every action so a just-approved create shows. -->
+  <CredentialHandoffs
+    csrfToken={data.csrfToken}
+    kind="user_temporary_password"
+    refreshKey={form}
+  />
 
   {#if data.proposals.length === 0}
     <Card>
