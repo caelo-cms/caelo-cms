@@ -13,7 +13,7 @@
 
 import type { GcloudRunner } from "../gcloud-retry.js";
 import { gcpNamePrefix } from "../gcp-names.js";
-import { resolveGcpResourceName } from "./gcp-lookup.js";
+import { type GcloudCredentials, lookupFailure, resolveGcpResourceName } from "./gcp-lookup.js";
 
 /** A finished on-demand backup. */
 export interface SqlBackup {
@@ -38,22 +38,31 @@ export type SqlBackupResult =
  */
 export async function takeSqlBackup(
   run: GcloudRunner,
-  install: { readonly projectId: string; readonly env: string },
+  install: {
+    readonly projectId: string;
+    readonly env: string;
+    readonly credentials: GcloudCredentials;
+  },
   purpose: string,
   now: () => Date = () => new Date(),
 ): Promise<SqlBackupResult> {
-  const instance = await resolveGcpResourceName(
+  const lookup = await resolveGcpResourceName(
     run,
     "sql-instance",
     `${gcpNamePrefix(install.env)}-pg`,
     install.projectId,
   );
-  if (!instance) {
+  if (lookup.status !== "found") {
     return {
       ok: false,
-      error: `no ${gcpNamePrefix(install.env)}-pg* Cloud SQL instance in project ${install.projectId} (or listing it was denied)`,
+      error: lookupFailure(
+        lookup,
+        `${gcpNamePrefix(install.env)}-pg* Cloud SQL instance in project ${install.projectId}`,
+        install.credentials,
+      ),
     };
   }
+  const instance = lookup.name;
   const description = `caelo-cms ${purpose} ${now().toISOString()}`;
   const project = ["--project", install.projectId];
   const create = await run([

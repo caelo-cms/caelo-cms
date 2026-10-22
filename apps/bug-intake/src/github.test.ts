@@ -3,8 +3,8 @@
 /**
  * Epic #901 (#903) — the GitHub client's contract with the rest of the
  * intake: App JWT verifies with the App's public key (GitHub issues PKCS#1
- * keys), installation tokens are reused until shortly before expiry, and a
- * write that lost a race reports `conflict` instead of throwing.
+ * keys), installation tokens are reused until shortly before expiry, and
+ * every call stays on the Issues/Releases API (no repository contents, #980).
  */
 
 import { describe, expect, it } from "bun:test";
@@ -43,29 +43,53 @@ describe("GitHub client", () => {
     ).toBe(true);
   });
 
-  it("reuses the installation token and maps write races to conflict", async () => {
+  it("reuses the installation token and surfaces refusals as GitHubError", async () => {
     const { calls, fetchImpl } = fakeGitHub({
-      "PUT /repos/o/data/contents/a.json": () => new Response("{}", { status: 201 }),
-      "PUT /repos/o/data/contents/b.json": () => new Response("{}", { status: 409 }),
-      "PUT /repos/o/data/contents/c.json": () => new Response('{"message":"sha"}', { status: 422 }),
-      "PUT /repos/o/data/contents/d.json": () => new Response("{}", { status: 403 }),
+      "POST /repos/o/pub/issues": () =>
+        Response.json(
+          { number: 7, html_url: "https://github.com/o/pub/issues/7" },
+          { status: 201 },
+        ),
+      "PATCH /repos/o/pub/issues/7": () => new Response('{"message":"nope"}', { status: 403 }),
     });
     const gh = new GitHubClient(auth, { fetchImpl, now: () => Date.parse("2026-10-20T10:00:00Z") });
-    expect(await gh.putJson("o/data", "a.json", {}, null, "m")).toBe("ok");
-    expect(await gh.putJson("o/data", "b.json", {}, "sha", "m")).toBe("conflict");
-    expect(await gh.putJson("o/data", "c.json", {}, null, "m")).toBe("conflict");
-    await expect(gh.putJson("o/data", "d.json", {}, null, "m")).rejects.toBeInstanceOf(GitHubError);
+    const issue = { title: "t", body: "b", labels: [] };
+    expect(await gh.createIssue("o/pub", issue)).toEqual({
+      number: 7,
+      url: "https://github.com/o/pub/issues/7",
+    });
+    await gh.createIssue("o/pub", issue);
+    await expect(gh.updateIssue("o/pub", 7, { body: "x" })).rejects.toBeInstanceOf(GitHubError);
     expect(calls.filter((c) => c.endsWith("/access_tokens")).length).toBe(1);
   });
 
-  it("reads JSON files and treats a missing one as null", async () => {
-    const { fetchImpl } = fakeGitHub({
-      "GET /repos/o/data/contents/x.json": () =>
-        Response.json({ content: Buffer.from('{"v":1}').toString("base64"), sha: "s1" }),
+  it("touches only issue and release endpoints, so the App needs no Contents permission (#980)", async () => {
+    const issueJson = {
+      number: 7,
+      html_url: "https://github.com/o/pub/issues/7",
+      state: "open",
+      state_reason: null,
+      closed_at: null,
+      labels: [],
+    };
+    const { calls, fetchImpl } = fakeGitHub({
+      "POST /repos/o/pub/issues": () => Response.json(issueJson, { status: 201 }),
+      "PATCH /repos/o/pub/issues/7": () => Response.json(issueJson),
+      "GET /repos/o/pub/issues/7": () => Response.json(issueJson),
+      "POST /repos/o/pub/issues/7/comments": () => Response.json({}, { status: 201 }),
+      "GET /repos/o/pub/issues/7/comments": () => Response.json([{ body: "hi" }]),
+      "GET /repos/o/pub/releases": () => Response.json([]),
     });
     const gh = new GitHubClient(auth, { fetchImpl, now: () => Date.parse("2026-10-20T10:00:00Z") });
-    expect(await gh.getJson("o/data", "x.json")).toEqual({ value: { v: 1 }, sha: "s1" });
-    expect(await gh.getJson("o/data", "missing.json")).toBeNull();
+    await gh.createIssue("o/pub", { title: "t", body: "b", labels: [] });
+    await gh.updateIssue("o/pub", 7, { state: "open" });
+    await gh.getIssue("o/pub", 7);
+    await gh.addComment("o/pub", 7, "c");
+    expect(await gh.recentCommentBodies("o/pub", 7)).toEqual(["hi"]);
+    await gh.releases("o/pub");
+    const repoCalls = calls.filter((c) => !c.endsWith("/access_tokens"));
+    expect(repoCalls.length).toBe(6);
+    for (const c of repoCalls) expect(c).toMatch(/ \/repos\/o\/pub\/(issues|releases)(\/|$)/);
   });
 
   it("lists only published, final releases without the v prefix", async () => {

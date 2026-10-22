@@ -31,7 +31,7 @@ export const DEV_OWNER_PASSWORD = "dev owner password";
  * `process.env.X` inside the script avoids template-injection issues
  * with Bun's tagged-template SQL parser.
  */
-function runBunInline(script: string, extraEnv: Record<string, string> = {}): string {
+export function runBunInline(script: string, extraEnv: Record<string, string> = {}): string {
   const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
   const result = spawnSync("bun", ["-e", script], { env, encoding: "utf8" });
   if (result.status !== 0) {

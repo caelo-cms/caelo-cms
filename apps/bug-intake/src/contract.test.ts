@@ -10,6 +10,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { BugIntakeClient } from "@caelo-cms/admin-core";
 import type { BugIntakeReport } from "@caelo-cms/shared";
+import { RateLimiter } from "./rate-limit.js";
 import { createIntakeHandler } from "./server.js";
 import { IntakeService, type IssueTracker } from "./service.js";
 import { MemoryStore } from "./store.js";
@@ -70,7 +71,10 @@ describe("install client ↔ intake", () => {
         tracker,
         matcher: { match: async () => null },
         issueThresholdInstalls: 1,
+        maxNewIssuesPerDay: 100,
+        issuesPaused: false,
       }),
+      globalRegisterLimiter: new RateLimiter(100, 60 * 60_000),
     });
     const client = new BugIntakeClient({
       baseUrl: "https://bugs.test",

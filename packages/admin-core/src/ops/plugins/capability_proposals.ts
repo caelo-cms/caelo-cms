@@ -15,10 +15,10 @@
  *   `plugins.execute_proposal` for `kind = 'revoke_capability'` after the
  *   operator's Approve. It runs `plugins.revoke_capability`'s own handler,
  *   so the `plugins.install` permission check on the approver, the
- *   grant/version bookkeeping and the audit row are the Owner page's.
+ *   grant/version bookkeeping, the audit row and the post-commit stop of
+ *   the running plugin (#585) are the Owner page's.
  */
 
-import { applyPluginLifecycle } from "@caelo-cms/plugin-host";
 import { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
 import { pluginCapability } from "@caelo-cms/plugin-sdk";
 import { defineOperation } from "@caelo-cms/query-api";
@@ -271,10 +271,6 @@ export async function applyRevokeCapabilityProposal(
       message: `plugins.revoke_capability failed: ${"message" in r.error ? r.error.message : r.error.kind}`,
     });
   }
-  // Same hot-update the Owner page does after its revoke: a disabled
-  // plugin's tools leave the catalogue and its workers stop now, not at
-  // the next restart.
-  if (r.value.disabled) applyPluginLifecycle(r.value.slug, "disable");
   await tx.execute(sql`
     UPDATE plugin_pending_actions
        SET status = 'applied', decided_by = ${ctx.actorId}::uuid, decided_at = now()

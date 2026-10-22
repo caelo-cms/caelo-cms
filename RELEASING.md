@@ -32,8 +32,9 @@ the release manifest (see ["Release manifest"](#release-manifest)):
 `security` + `advisories` for a security release,
 `ack_contract_migrations` when the release carries destructive
 migrations, `ack_infra_neutral` when infra-contract files changed
-without an IAM/secret/resource change. These are checked first, before
-the paid real-AI gate, so a refused declaration costs nothing.
+without an IAM/secret/resource change, `owner_action` when a commit is
+breaking (see ["Owner action"](#owner-action)). These are checked first,
+before the paid real-AI gate, so a refused declaration costs nothing.
 
 One-time setup: CI needs the shipped-plugin manifest signing key
 (release.ts re-signs the plugin manifests; the `TIER1` in the secret
@@ -199,6 +200,7 @@ bun scripts/release.ts patch --dry-run   # preview without writing
 bun scripts/release.ts patch --security --advisories GHSA-xxxx-xxxx-xxxx
 bun scripts/release.ts minor --ack-contract-migrations
 bun scripts/release.ts patch --ack-infra-neutral
+bun scripts/release.ts minor --owner-action "Re-enter your email password in Settings → Email after the update."
 bun scripts/release.ts patch --checks-only   # run the release checks, change nothing
 ```
 
@@ -326,9 +328,14 @@ Every release ships one signed `release-manifest.json` (epic #696):
   "infraContractVersion": 1,
   "migrations": { "contract": false, "head": "0262_tool_approval_branch", "lastContractVersion": "0.10.42" },
   "security": false,
-  "advisories": []
+  "advisories": [],
+  "ownerAction": "Nothing to do — Caelo handles this during the update."
 }
 ```
+
+`ownerAction` is present only on a release with a breaking commit (see
+["Owner action"](#owner-action)); it is optional in the schema, so
+`manifestVersion` stays 1 and older readers ignore it.
 
 `release.yml`'s `release-manifest` job builds it after the images are
 pushed (digests resolved from the version tags), re-runs every
@@ -380,6 +387,23 @@ manifest still says `security: true` — but the upgrader treats it as
 Cloud Shell" with the reason (`assessAutoInstall` in
 `release-manifest.ts`). The infra comparison is against the *installed*
 contract version, so a bump in any skipped release counts too.
+
+### Owner action
+
+A breaking commit (`feat(x)!: …`, marked `⚠ BREAKING` in the release
+notes) shows up in Settings → Updates as "Before you update: …". What
+follows the colon is the release's `ownerAction`, one sentence of what
+the Owner has to do (#868). It comes from the release-cut input
+`owner_action` (`release.ts --owner-action "…"`), lands in
+`release-meta.json` and is signed into the manifest; the admin's release
+check reads it from there.
+
+The cut (and again `release.yml`, before signing) refuses a release with
+a breaking commit since the previous stable tag and no `owner_action`,
+and refuses an `owner_action` on a release without one (the page would
+never show it). There is no default: when the update itself applies the
+change, say so — `Nothing to do — Caelo handles this during the update.`
+One line, at most 300 characters.
 
 ### Contract migrations
 

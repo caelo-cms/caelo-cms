@@ -13,6 +13,8 @@
  *   - the install registers its key once, then signs every report;
  *   - retryable failures back off, permanent ones stop, withdrawn consent
  *     un-queues;
+ *   - the Owner can re-queue a report that ended in `failed` (#982), only
+ *     while forwarding is on;
  *   - the AI can neither give consent nor send earlier reports.
  */
 
@@ -210,7 +212,7 @@ describe("bug forwarding", () => {
   });
 
   it("the AI can neither consent nor send earlier reports", async () => {
-    for (const name of ["bug_forwarding.set", "bug_forwarding.queue_earlier"]) {
+    for (const name of ["bug_forwarding.set", "bug_forwarding.queue_unsent"]) {
       const r = await execute(
         registry,
         adapter,
@@ -307,12 +309,75 @@ describe("bug forwarding", () => {
     expect((await rows()).find((r) => r.id === queued.id)?.forwardingState).toBe("local_only");
 
     await op(HUMAN, "bug_forwarding.set", { enabled: true });
-    const sent = await op<{ queued: number }>(HUMAN, "bug_forwarding.queue_earlier", {});
+    const sent = await op<{ queued: number }>(HUMAN, "bug_forwarding.queue_unsent", {});
     expect(sent.queued).toBe(2);
     await forwardDueReports(worker());
     const ids = intake.reports.map((r) => r.reportId);
     expect(ids).toContain(early.id);
     expect(ids).toContain(queued.id);
+  });
+
+  it("the Owner re-queues a report that ended in failed and the next tick sends it (#982)", async () => {
+    await op(HUMAN, "bug_forwarding.set", { enabled: true });
+    const a = await file("BF failed then resent");
+    // The intake was unreachable for every attempt: the report used up its
+    // retries and stopped.
+    await admin(
+      (tx) => tx`UPDATE ai_bug_reports SET forwarding_state = 'failed', next_forward_at = NULL,
+        forward_attempts = 8, forward_error = 'fetch failed: connection refused'
+        WHERE id = ${a.id}::uuid`,
+    );
+    // A closed report is not worth sending; it stays as it is.
+    const closed = await file("BF failed but fixed");
+    await admin(
+      (tx) => tx`UPDATE ai_bug_reports SET forwarding_state = 'failed', next_forward_at = NULL,
+        status = 'fixed' WHERE id = ${closed.id}::uuid`,
+    );
+    const before = await op<{ counts: { failed: number; unsent: number; closedUnsent: number } }>(
+      HUMAN,
+      "bug_forwarding.get",
+      {},
+    );
+    expect(before.counts).toMatchObject({ failed: 2, unsent: 1, closedUnsent: 1 });
+
+    const r = await op<{ queued: number; retried: number }>(
+      HUMAN,
+      "bug_forwarding.queue_unsent",
+      {},
+    );
+    expect(r).toEqual({ queued: 1, retried: 1 });
+    let row = (await rows()).find((x) => x.id === a.id);
+    expect(row).toMatchObject({ forwardingState: "queued", forwardError: null });
+
+    // A fresh start: the next tick claims it at once, and a retryable answer
+    // keeps it queued instead of failing on the old attempt count.
+    intake.answers.push({ status: 503, body: { error: "maintenance", retryable: true } });
+    expect(await forwardDueReports(worker())).toBe(1);
+    row = (await rows()).find((x) => x.id === a.id);
+    expect(row?.forwardingState).toBe("queued");
+
+    await admin(
+      (tx) => tx`UPDATE ai_bug_reports SET next_forward_at = now() WHERE id = ${a.id}::uuid`,
+    );
+    expect(await forwardDueReports(worker())).toBe(1);
+    expect(intake.reports.map((x) => x.reportId)).toEqual([a.id]);
+    row = (await rows()).find((x) => x.id === a.id);
+    expect(row).toMatchObject({ forwardingState: "sent", forwardError: null });
+    expect((await rows()).find((x) => x.id === closed.id)?.forwardingState).toBe("failed");
+  });
+
+  it("re-sending is refused while forwarding is off, with the next step", async () => {
+    await op(HUMAN, "bug_forwarding.set", { enabled: true });
+    const a = await file("BF failed while off");
+    await op(HUMAN, "bug_forwarding.set", { enabled: false });
+    await admin(
+      (tx) => tx`UPDATE ai_bug_reports SET forwarding_state = 'failed', forward_attempts = 8
+        WHERE id = ${a.id}::uuid`,
+    );
+    const r = await execute(registry, adapter, HUMAN, "bug_forwarding.queue_unsent", {});
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(JSON.stringify(r.error)).toContain("Turn on");
+    expect((await rows()).find((x) => x.id === a.id)?.forwardingState).toBe("failed");
   });
 
   it("refreshes upstream status so the Owner learns a fix shipped", async () => {

@@ -51,6 +51,12 @@ describe("bug_report forwarding wording (#902)", () => {
     expect(describeBugForwarding("queued")).toContain("will be sent");
   });
 
+  it("a failed report points the AI at the Owner's one-click re-send (#982)", () => {
+    const text = describeBugForwarding("failed");
+    expect(text).toContain("Send unsent reports");
+    expect(text).toContain("you cannot re-send it yourself");
+  });
+
   it("the description forbids claiming notification the result does not confirm", () => {
     expect(bugReportTool.description).toContain(
       "never claim the Caelo team was notified unless the result says it was sent",

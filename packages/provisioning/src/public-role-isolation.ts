@@ -34,6 +34,7 @@ import { findSqlInstance } from "./gateway-credentials.js";
 import { gcloud as defaultGcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
 import type { EnsureOutcome } from "./runtime-secrets.js";
+import { type GcloudCredentials, lookupFailure } from "./upgrade/gcp-lookup.js";
 
 /** The gcloud call that leaves `public_role` with no database roles. */
 export function revokePublicRoleMembershipsArgs(target: {
@@ -58,15 +59,24 @@ export function revokePublicRoleMembershipsArgs(target: {
  * instead of throwing; `failed` names the next step.
  */
 export async function revokePublicRoleMemberships(
-  install: { readonly projectId: string; readonly env: string },
+  install: {
+    readonly projectId: string;
+    readonly env: string;
+    readonly credentials: GcloudCredentials;
+  },
   deps: { readonly run?: GcloudRunner; readonly sleep?: Sleep } = {},
 ): Promise<EnsureOutcome> {
   const run = deps.run ?? defaultGcloud;
   const id = "public_role database role memberships";
-  const sqlInstance = await findSqlInstance(install, { run });
-  if (!sqlInstance) {
-    return { id, status: "failed", error: "the Cloud SQL instance was not found" };
+  const lookup = await findSqlInstance(install, { run });
+  if (lookup.status !== "found") {
+    return {
+      id,
+      status: "failed",
+      error: lookupFailure(lookup, "Cloud SQL instance", install.credentials),
+    };
   }
+  const sqlInstance = lookup.name;
   const r = await runWithRetry(
     run,
     deps.sleep ?? realSleep,

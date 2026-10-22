@@ -66,6 +66,10 @@ pulumi stack output bootstrapUrlOut
 
 Open after the domain's and the admin's DNS A records point at the load balancer IP and the managed certificate is active.
 
+## Uploaded SVGs download instead of opening
+
+Opening an SVG's URL on the live site (for example `https://<domain>/_assets/logo.<hash>.svg`) downloads the file. It still renders normally in pages. The other providers send a sandboxing CSP on SVG responses. This stack cannot: GCS serves only a fixed set of metadata headers, the backend bucket's custom headers apply to every file including pages, and the URL map's site path matcher holds the redirect rules, which cannot coexist with per-extension route rules. So the publisher stores SVGs with `Content-Disposition: attachment`, and the backend bucket adds `X-Content-Type-Options: nosniff` to every response (#891). `cms-provision upgrade` patches the SVGs already live and purges Cloud CDN once. If the upgrade warns that this step failed, the next Publish live rewrites every SVG. After that, purge the CDN with `gcloud compute url-maps invalidate-cdn-cache <url-map> --path="/*" --global`.
+
 ## v1 limitations (P15 review-pass items)
 
 - **Container image build pipeline** — operators push via `gcloud builds submit` for v1. A unified `cms-provision build-images --provider gcp` lands later.

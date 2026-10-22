@@ -7,7 +7,7 @@
  * install, so it is treated as untrusted: redacted again here, and the free
  * text is rendered inside code fences, where GitHub turns no @mention, #ref
  * or link into a notification or a cross-reference. Raw evidence is never
- * rendered; it stays in the private data repository.
+ * rendered; it stays in the intake's private Firestore database.
  */
 
 import { redactBugText } from "@caelo-cms/shared";
@@ -62,7 +62,7 @@ export function issueBody(c: ClusterRecord): string {
     "### Expected",
     fence(redactBugText(c.expected)),
     "",
-    `Evidence from each report is kept private to maintainers (cluster \`${c.id}\` in the bug-intake data repository). Close this issue as completed when the fix is merged; installs learn about it from the next release.`,
+    `Evidence from each report is kept private to maintainers (cluster \`${c.id}\` in the bug intake's private store). Close this issue as completed when the fix is merged; installs learn about it from the next release.`,
   ].join("\n");
 }
 

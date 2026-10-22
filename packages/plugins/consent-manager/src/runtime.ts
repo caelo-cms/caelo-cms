@@ -87,8 +87,25 @@ function warn(msg) {
   if (typeof console !== "undefined" && console.warn) console.warn("[caelo-consent] " + msg);
 }
 
+// The editor previews a page in an opaque-origin sandbox (#946), where
+// touching document.cookie throws. There the decision lives in memory for
+// the document's lifetime: it applies at once (so the operator can preview
+// the accepted state) and is gone on the next load.
+var cookiesBlocked = false;
+var memoryState = null;
+function cookieJar() {
+  try {
+    return doc.cookie;
+  } catch (e) {
+    cookiesBlocked = true;
+    return "";
+  }
+}
+
 function readCookie() {
-  var parts = doc.cookie ? doc.cookie.split("; ") : [];
+  var jar = cookieJar();
+  if (cookiesBlocked) return memoryState;
+  var parts = jar ? jar.split("; ") : [];
   for (var i = 0; i < parts.length; i++) {
     var p = parts[i];
     if (p.indexOf(COOKIE + "=") !== 0) continue;
@@ -106,14 +123,20 @@ function readCookie() {
 
 function writeCookie(state) {
   var oneYear = 365 * 24 * 60 * 60;
-  doc.cookie =
-    COOKIE +
-    "=" +
-    encodeURIComponent(JSON.stringify(state)) +
-    ";path=/;max-age=" +
-    oneYear +
-    ";samesite=lax" +
-    (location.protocol === "https:" ? ";secure" : "");
+  try {
+    doc.cookie =
+      COOKIE +
+      "=" +
+      encodeURIComponent(JSON.stringify(state)) +
+      ";path=/;max-age=" +
+      oneYear +
+      ";samesite=lax" +
+      (location.protocol === "https:" ? ";secure" : "");
+  } catch (e) {
+    cookiesBlocked = true;
+    memoryState = state;
+    warn("this page cannot store cookies (sandboxed preview); the decision lasts until reload");
+  }
 }
 
 function requiredKeys() {

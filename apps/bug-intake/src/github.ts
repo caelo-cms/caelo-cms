@@ -2,9 +2,11 @@
 
 /**
  * Minimal GitHub REST client for the bug intake, authenticated as a GitHub
- * App installation. Only the calls the intake makes: repository contents
- * (the data repo is the intake's storage) and issues/releases (the public
- * tracker).
+ * App installation. Only the calls the intake makes, all against the public
+ * tracker: issues and their comments (Issues: write) and the public release
+ * list (readable by any installation token on a public repository, so the
+ * App needs no Contents permission at all — #980). Storage lives in
+ * Firestore; this client must never grow a repository-contents call.
  *
  * Installation tokens live one hour; this client refreshes them five
  * minutes early. The App JWT is signed with node:crypto because GitHub
@@ -117,40 +119,6 @@ export class GitHubClient {
 
   #fail(what: string, r: { status: number; json: unknown }): never {
     throw new GitHubError(r.status, `${what}: HTTP ${r.status} ${JSON.stringify(r.json)}`);
-  }
-
-  /** Read a JSON file from a repo; null when it does not exist. */
-  async getJson<T>(repo: string, path: string): Promise<{ value: T; sha: string } | null> {
-    const r = await this.#request("GET", `/repos/${repo}/contents/${path}`);
-    if (r.status === 404) return null;
-    if (r.status !== 200) this.#fail(`read ${path}`, r);
-    const file = r.json as { content: string; sha: string };
-    return {
-      value: JSON.parse(Buffer.from(file.content, "base64").toString("utf8")) as T,
-      sha: file.sha,
-    };
-  }
-
-  /**
-   * Create (sha null) or replace (sha of the version read) a JSON file.
-   * `conflict` = someone else wrote it first; re-read and retry.
-   */
-  async putJson(
-    repo: string,
-    path: string,
-    value: unknown,
-    sha: string | null,
-    message: string,
-  ): Promise<"ok" | "conflict"> {
-    const r = await this.#request("PUT", `/repos/${repo}/contents/${path}`, {
-      message,
-      content: Buffer.from(`${JSON.stringify(value, null, 2)}\n`).toString("base64"),
-      ...(sha ? { sha } : {}),
-    });
-    if (r.status === 200 || r.status === 201) return "ok";
-    // 409: sha mismatch; 422: "sha wasn't supplied" for a file that now exists.
-    if (r.status === 409 || r.status === 422) return "conflict";
-    this.#fail(`write ${path}`, r);
   }
 
   async createIssue(

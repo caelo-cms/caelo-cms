@@ -47,6 +47,8 @@ async function setCache(
     /** The release check's route prediction (#817) and the release it was decided against. */
     infraChange?: boolean | null;
     infraChangeFrom?: string | null;
+    /** #868 — the release manifest's ownerAction. */
+    ownerAction?: string | null;
   } | null,
 ): Promise<void> {
   const sql = new SQL(ADMIN_URL!);
@@ -58,7 +60,7 @@ async function setCache(
           UPDATE release_check_cache
              SET latest_version = NULL, release_url = NULL, release_notes = NULL,
                  published_at = NULL, latest_infra_change = NULL, infra_change_from = NULL,
-                 fetched_at = '1970-01-01T00:00:00Z'
+                 latest_owner_action = NULL, fetched_at = '1970-01-01T00:00:00Z'
            WHERE id = 1`;
       } else {
         await tx`
@@ -67,6 +69,7 @@ async function setCache(
                  release_notes = ${row.notes}, published_at = ${row.publishedAt},
                  latest_infra_change = ${row.infraChange ?? null},
                  infra_change_from = ${row.infraChangeFrom ?? null},
+                 latest_owner_action = ${row.ownerAction ?? null},
                  fetched_at = '2026-10-13T10:00:00Z'
            WHERE id = 1`;
       }
@@ -110,8 +113,21 @@ describe("platform_updates.status", () => {
       publishedAt: "2026-10-12T09:00:00Z",
       checkedAt: "2026-10-13T10:00:00Z",
       infraChange: null,
+      ownerAction: null,
       updatesPath: "/settings/updates",
     });
+  });
+
+  it("#868: carries the newest release's owner action while it is newer", async () => {
+    const release = { latest: "99.0.0", url: null, notes: null, publishedAt: null };
+    await setCache({ ...release, ownerAction: "Re-enter the SMTP password." });
+    expect((await status(AI)).ownerAction).toBe("Re-enter the SMTP password.");
+    await setCache({
+      ...release,
+      latest: CAELO_VERSION,
+      ownerAction: "Re-enter the SMTP password.",
+    });
+    expect((await status(AI)).ownerAction).toBeNull();
   });
 
   it("predicts the Cloud Shell route only when decided against the running release (#817)", async () => {

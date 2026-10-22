@@ -150,14 +150,15 @@ export interface StaticPublisher {
   }): Promise<PromoteSummary>;
 
   /**
-   * #650 / #908 — make `servedRunId`'s public preview the one staging
-   * serves, and retire every other one. This is the only place a preview's
-   * lifetime changes: a preview is created with a finite TTL, so a Stage
-   * that fails before it is selected leaves nothing that outlives the TTL;
-   * selection lifts the served preview's expiry (an idle staging must not
-   * expire into 404s); a retired preview gets a finite TTL back before it
-   * is deleted, so one whose delete fails still expires. `servedRunId: null`
-   * retires them all.
+   * #650 / #908 / #969 — make `servedRunId`'s public preview the one staging
+   * serves, and retire every other one. A preview is created with a short
+   * TTL, so a Stage that fails before it is selected leaves nothing that
+   * outlives it; selection extends the served preview's lifetime as far as
+   * the provider allows (Firebase: a 30-day TTL — a preview channel cannot
+   * be made permanent), and {@link refreshStagingPreview} keeps extending it
+   * so an idle staging does not expire into 404s; a retired preview gets the
+   * short TTL back before it is deleted, so one whose delete fails still
+   * expires soon. `servedRunId: null` retires them all.
    *
    * Throws when the served preview cannot be kept alive (including when it
    * no longer exists) — the caller must not record it as served. Previews
@@ -166,6 +167,15 @@ export interface StaticPublisher {
    * not publicly reachable per run.
    */
   selectStagingPreview?(args: { servedRunId: string | null }): Promise<StagingPreviewSelection>;
+
+  /**
+   * #969 — extend the served preview's lifetime again without touching any
+   * other preview: the periodic keep-alive between Stages. Throws when the
+   * preview no longer exists (Stage again) or the provider did not extend
+   * it. Present exactly on publishers that implement selectStagingPreview
+   * with a finite served lifetime.
+   */
+  refreshStagingPreview?(args: { servedRunId: string }): Promise<StagingPreviewRefresh>;
 }
 
 /**
@@ -204,4 +214,12 @@ export interface StagingPreviewSelection {
   readonly retired: readonly string[];
   /** Previews that are still there, each with why its retirement failed. */
   readonly notRetired: readonly { readonly preview: string; readonly error: string }[];
+  /** When the served preview now expires (ISO 8601); null when nothing is served. */
+  readonly servedExpiresAt: string | null;
+}
+
+/** What {@link StaticPublisher.refreshStagingPreview} did. */
+export interface StagingPreviewRefresh {
+  /** When the served preview now expires (ISO 8601). */
+  readonly expiresAt: string;
 }

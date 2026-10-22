@@ -19,4 +19,5 @@ export {
   type OperationHandler,
   type TransactionRunner,
 } from "./operation.js";
+export { afterCommit, type PostCommitEffect } from "./post-commit.js";
 export { OperationRegistry } from "./registry.js";

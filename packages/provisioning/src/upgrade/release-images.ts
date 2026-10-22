@@ -300,23 +300,40 @@ function probeBinary(argv: string[]): boolean {
 }
 
 /**
- * Ensure cosign is on PATH. If not — and the operator is on macOS with
- * brew available — offer to `brew install cosign` interactively. Falls
- * back to printing the platform install URL + the --skip-verify
- * escape hatch when auto-install isn't possible.
- *
- * Returns true if cosign is callable after this function returns.
+ * How to get cosign onto PATH on `platform`. Owner-facing, so it names
+ * only verified installs and never the unverified escape hatch: an Owner
+ * who cannot install cosign must not be steered to roll unsigned images
+ * (#816). Cloud Shell (Linux) is where the break-glass upgrade runs; its
+ * `./run.sh upgrade` installs a checksum-verified cosign itself.
  */
-async function ensureCosignAvailable(): Promise<boolean> {
+export function cosignInstallHint(platform: NodeJS.Platform): string {
+  const lines = ["Install cosign, then run this command again:"];
+  if (platform === "darwin") lines.push("  • brew install cosign");
+  lines.push(
+    "  • Cloud Shell: run the upgrade with `./run.sh upgrade` from https://github.com/caelo-cms/install — it installs a verified cosign first",
+    "  • Linux / Windows: the signed release binary, https://docs.sigstore.dev/cosign/system_config/installation/",
+  );
+  return lines.join("\n");
+}
+
+/**
+ * Ensure cosign is on PATH; the upgrade's pre-flight runs this before it
+ * plans or changes anything, so a missing cosign never stops an upgrade
+ * half-way (#816). On macOS with brew it offers `brew install cosign`;
+ * elsewhere it prints {@link cosignInstallHint}.
+ *
+ * @returns whether cosign is callable afterwards
+ */
+export async function ensureCosignAvailable(): Promise<boolean> {
   if (probeBinary(["cosign", "version"])) return true;
 
-  log.error(red("cosign not found on PATH — required for image-signature verification."));
+  log.error(red("cosign not found on PATH — required to verify the release images' signatures."));
 
   // macOS auto-install offer. Only when `brew` is itself on PATH —
   // otherwise the operator is on a stripped-down install where
   // homebrew was never set up, and the manual instructions are more
   // useful than a failing brew shell-out.
-  if (process.platform === "darwin" && probeBinary(["brew", "--version"])) {
+  if (process.platform === "darwin" && process.stdin.isTTY && probeBinary(["brew", "--version"])) {
     const proceed = await confirm({
       message: "Install cosign via brew now? (one-shot: brew install cosign)",
       initialValue: true,
@@ -338,12 +355,7 @@ async function ensureCosignAvailable(): Promise<boolean> {
     }
   }
 
-  log.warn(
-    "Install cosign:\n" +
-      "  • brew install cosign           (macOS)\n" +
-      "  • https://docs.sigstore.dev/cosign/installation/  (other)\n" +
-      "Or pass --skip-verify to roll without signature checks (NOT recommended for production).",
-  );
+  log.warn(cosignInstallHint(process.platform));
   return false;
 }
 
