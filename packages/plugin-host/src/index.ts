@@ -109,7 +109,23 @@ export {
   readImageRequest,
   reserveImageRequest,
 } from "./image-ledger.js";
-export { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
+export {
+  applyPluginLifecycle,
+  deregisterPlugin,
+  type PluginLifecycleAction,
+} from "./lifecycle.js";
+export {
+  collectPluginLinkLocations,
+  type PluginLinkLocationSet,
+  pluginAdminSchemaName,
+  readMainPluginRow,
+  writeMainPluginColumn,
+} from "./link-locations.js";
+export {
+  hasLinkResolveContributors,
+  type ResolvedLinkVariants,
+  resolveLinkVariants,
+} from "./link-resolve.js";
 export {
   activateApprovedExternalPlugin,
   type BootstrapOpts,
@@ -132,6 +148,7 @@ export {
   applyPluginRowState,
   discardBranchPluginRows,
   insertPluginRowSnapshot,
+  loadBranchRowStates,
   type PluginRowRef,
   type PluginRowState,
   withPluginScope,
@@ -153,6 +170,7 @@ export {
   type RegisteredUrlContribution,
   type ResolvedPageUrl,
   resolvePageUrl,
+  type UrlCompositionView,
   urlContributionsRegistry,
 } from "./url-composition.js";
 export {

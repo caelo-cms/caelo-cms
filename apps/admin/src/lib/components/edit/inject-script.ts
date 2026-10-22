@@ -1,24 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-/**
- * Caelo blue for the edit-mode overlay. A literal, not an admin CSS
- * variable: the stylesheet lands inside the operator's own site, which
- * never loads the admin's tokens. White text on it is 5.8:1 (WCAG AA).
- */
-export const EDIT_OVERLAY_COLOR = "#2a64b8";
-
-/**
- * Stylesheet the runtime installs for edit mode: crosshair cursor, hover
- * outline + "Edit" label on every module root, and the top banner. Kept
- * self-contained because it styles the operator's site, not the admin.
- * The label names IBM Plex Mono first but the site rarely loads it, so
- * the stack falls back to the platform monospace.
- */
-export const EDIT_OVERLAY_CSS =
-  "body.caelo-edit-mode [data-caelo-module-id]{cursor:crosshair;}" +
-  `body.caelo-edit-mode [data-caelo-module-id]:hover{outline:2px solid ${EDIT_OVERLAY_COLOR};outline-offset:2px;position:relative;}` +
-  `body.caelo-edit-mode [data-caelo-module-id]:hover::after{content:'Edit';position:absolute;top:-1.4rem;left:0;background:${EDIT_OVERLAY_COLOR};color:#fff;font:500 11px/1 "IBM Plex Mono", Menlo, Consolas, monospace;padding:2px 6px;border-radius:3px;pointer-events:none;z-index:2147483647;}` +
-  `body.caelo-edit-mode::before{content:'Edit mode — click any element to add it as a chip';position:fixed;top:0;left:0;right:0;background:${EDIT_OVERLAY_COLOR};color:#fff;font:500 12px/1.4 system-ui;padding:6px 12px;text-align:center;z-index:2147483646;pointer-events:none;}`;
+import { EDIT_AFFORDANCES_SCRIPT } from "./edit-affordances-script.js";
+import { FIELD_EDIT_SCRIPT } from "./field-edit-script.js";
+import { LINK_IMAGE_EDIT_SCRIPT } from "./link-image-edit-script.js";
 
 /**
  * Runtime injected at the bottom of every `/edit/preview-by-path/...`
@@ -28,17 +12,23 @@ export const EDIT_OVERLAY_CSS =
  *   2. `postMessage({kind: "caelo:navigated", pageId, slug})` on
  *      every load — covers initial mount + click-through navigation so
  *      the parent's activePageId/URL/chat-branch context follows.
- *   3. **Edit mode toggle** — the parent posts
- *      `{kind: "caelo:set-edit-mode", on: true|false}` (driven by the
- *      toolbar Edit button). When ON: cursor=crosshair, hover outline +
- *      "Edit" pill on every `[data-caelo-module-id]`, click captures
- *      → `caelo:element-clicked`. When OFF: the iframe behaves like the
- *      live site — links navigate, forms submit, JS runs.
- *   4. Listen for `{kind: "caelo:reload"}` and `location.reload()`.
+ *   3. **Editing affordances** (`EDIT_AFFORDANCES_SCRIPT`) — right-click
+ *      menu + selection toolbar that post `caelo:element-referenced`
+ *      (Ask AI only flags it; no instruction). There is no edit mode: left
+ *      clicks always behave like the live site. `FIELD_EDIT_SCRIPT` adds
+ *      in-place text editing of marked fields (#917), `LINK_IMAGE_EDIT_SCRIPT`
+ *      link and image editing (#918).
+ *   4. Listen for `{kind: "caelo:reload"}` (answered with a
+ *      `caelo:navigate` to the current page, scroll position included),
+ *      and for `caelo:page-paths` (link-target suggestions, #918).
  *
- * Out of edit mode, plain clicks on same-origin absolute links are
- * rewritten to the preview-by-path equivalent so internal navigation
- * stays inside the editor surface.
+ * Plain clicks on same-origin absolute links are rewritten to the
+ * preview-by-path equivalent so internal navigation stays inside the
+ * editor surface — as a `caelo:navigate` request: the editor navigates
+ * the iframe (#946, see `navigate` below).
+ *
+ * The runtime runs inside the opaque-origin sandbox (#946): it reaches the
+ * editor only through `postToEditor()`, on the channel from its URL.
  *
  * Exported as a string so the SvelteKit endpoint can splice it into
  * the response body inside a `<script>` tag.
@@ -49,48 +39,39 @@ export const INJECT_SCRIPT = `
   if (window.__caeloInjected) return;
   window.__caeloInjected = true;
 
-  function origin() {
-    try { return parent.location.origin; } catch (_e) { return "*"; }
+  // #946 — the preview runs in an opaque-origin sandbox and cannot read
+  // the editor's origin from its window. location.origin is the origin
+  // of this document's URL — the admin's, where the editor lives — so
+  // messages go there and nowhere else. The editor's random channel (from
+  // the iframe URL) rides on every message to it: a page that does not
+  // know it — an external site the preview navigated to — cannot talk to
+  // the editor.
+  var editorOrigin = location.origin;
+  var channel = new URLSearchParams(location.search).get("channel");
+  if (channel && !/^[0-9a-f-]{36}$/.test(channel)) channel = null;
+  function postToEditor(msg) {
+    if (!channel || window.parent === window) return;
+    msg.channel = channel;
+    parent.postMessage(msg, editorOrigin);
   }
 
   // --- ready + navigated signals -------------------------------------
   function announce() {
-    parent.postMessage({ kind: "caelo:ready" }, origin());
+    postToEditor({ kind: "caelo:ready" });
     var ctx = window.__caelo || {};
     if (ctx.pageId) {
-      parent.postMessage(
-        {
-          kind: "caelo:navigated",
-          pageId: ctx.pageId,
-          slug: ctx.slug || "",
-          path: ctx.path || "",
-        },
-        origin(),
-      );
+      postToEditor({
+        kind: "caelo:navigated",
+        pageId: ctx.pageId,
+        slug: ctx.slug || "",
+        path: ctx.path || "",
+      });
     }
   }
   if (document.readyState === "complete" || document.readyState === "interactive") {
     setTimeout(announce, 0);
   } else {
     document.addEventListener("DOMContentLoaded", announce);
-  }
-
-  // --- edit-mode hover affordance ------------------------------------
-  var STYLE_ID = "caelo-edit-style";
-  if (!document.getElementById(STYLE_ID)) {
-    var s = document.createElement("style");
-    s.id = STYLE_ID;
-    s.textContent = ${JSON.stringify(EDIT_OVERLAY_CSS)};
-    document.head.appendChild(s);
-  }
-
-  function isEditMode() {
-    return document.body && document.body.classList.contains("caelo-edit-mode");
-  }
-  function setEditMode(on) {
-    if (!document.body) return;
-    if (on) document.body.classList.add("caelo-edit-mode");
-    else document.body.classList.remove("caelo-edit-mode");
   }
 
   function findModuleAncestor(el) {
@@ -114,29 +95,12 @@ export const INJECT_SCRIPT = `
     "click",
     function (ev) {
       var t = ev.target;
-      // Edit-mode click → chip, regardless of element kind.
-      if (isEditMode()) {
-        var el = t && t.nodeType === 1 ? findModuleAncestor(t) : null;
-        if (!el) return;
+      // A link label being edited in place must not navigate (#917).
+      if (t && t.nodeType === 1 && isEditing(t)) {
         ev.preventDefault();
-        ev.stopPropagation();
-        var moduleId = el.getAttribute("data-caelo-module-id") || "";
-        var label =
-          (el.getAttribute("aria-label") || "").trim() ||
-          (el.tagName.toLowerCase() + (el.id ? "#" + el.id : ""));
-        var selector =
-          el.tagName.toLowerCase() +
-          (el.id ? "#" + el.id : "") +
-          (el.className && typeof el.className === "string"
-            ? "." + el.className.trim().split(/\\s+/).slice(0, 2).join(".")
-            : "");
-        parent.postMessage(
-          { kind: "caelo:element-clicked", moduleId: moduleId, selector: selector, label: label },
-          origin(),
-        );
         return;
       }
-      // Browse mode: rewrite same-origin absolute hrefs into the
+      // Rewrite same-origin absolute hrefs into the
       // preview-by-path surface so the iframe stays inside /edit.
       var a = t && t.nodeType === 1 ? findLinkAncestor(t) : null;
       if (!a) return;
@@ -174,40 +138,61 @@ export const INJECT_SCRIPT = `
       // URLSearchParams handles the rare case where \`path\` itself
       // already carries a query string (preserved from the original
       // link's u.search above).
-      var newUrl = "/edit/preview-by-path" + path;
-      var current = new URLSearchParams(location.search);
-      var branch = current.get("branch");
-      if (branch) {
-        var nu = new URL(newUrl, location.origin);
-        nu.searchParams.set("branch", branch);
-        newUrl = nu.pathname + nu.search + nu.hash;
-      }
-      location.assign(newUrl);
+      var nu = new URL("/edit/preview-by-path" + path, location.origin);
+      var branch = new URLSearchParams(location.search).get("branch");
+      if (branch) nu.searchParams.set("branch", branch);
+      navigate(nu.pathname + nu.search + nu.hash);
     },
     true,
   );
 
-  // --- parent → iframe messages: set-edit-mode + reload ---------------
+  // #946 — the preview cannot navigate ITSELF to another preview page: in
+  // the opaque-origin sandbox its own navigations carry no session cookie
+  // (so module scripts cannot open admin pages as the operator either). The
+  // editor navigates the iframe instead; it re-validates the target and
+  // attaches its channel. Without a channel (a frame no editor listens to)
+  // a click goes nowhere.
+  function navigate(href) {
+    postToEditor({ kind: "caelo:navigate", href: href });
+  }
+
+  // A reload is a navigation the editor runs too; the scroll position
+  // rides along in the URL and is restored once the page has loaded.
+  function reload() {
+    var u = new URL(location.href);
+    u.searchParams.delete("channel");
+    var y = Math.round(window.scrollY || 0);
+    if (y > 0) u.searchParams.set("scroll", String(y));
+    else u.searchParams.delete("scroll");
+    navigate(u.pathname + u.search + u.hash);
+  }
+  var restoreY = parseInt(new URLSearchParams(location.search).get("scroll") || "", 10);
+  if (restoreY > 0) {
+    window.addEventListener("load", function () {
+      window.scrollTo(0, restoreY);
+    });
+  }
+
+  // --- right-click menu, selection toolbar, Ask AI --------------------
+  ${EDIT_AFFORDANCES_SCRIPT}
+  ${FIELD_EDIT_SCRIPT}
+  ${LINK_IMAGE_EDIT_SCRIPT}
+
+  // --- parent → iframe messages: reload --------------------------------
   // Only the editor that embeds us may drive the iframe: the previewed
   // site's own scripts (source = this window) and any other frame must not
-  // flip edit mode or force reloads (PR #863, M-08).
+  // force reloads (PR #863, M-08). Source + origin prove the sender: no
+  // script in here can post as the parent window from the admin origin.
+  // The editor never sends the channel — it must not reach whatever other
+  // document this frame may hold (#946) — and only one that set it listens.
   window.addEventListener("message", function (ev) {
+    if (!channel) return;
     if (ev.source !== window.parent || window.parent === window) return;
-    if (ev.origin !== location.origin) return;
+    if (ev.origin !== editorOrigin) return;
     if (!ev.data || typeof ev.data !== "object") return;
-    if (ev.data.kind === "caelo:set-edit-mode") {
-      setEditMode(!!ev.data.on);
-    } else if (ev.data.kind === "caelo:reload") {
-      location.reload();
-    }
-  });
-
-  // Escape exits edit mode as a safety net for users who pressed the
-  // toggle and want out without reaching for the toolbar.
-  document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape" && isEditMode()) {
-      setEditMode(false);
-      parent.postMessage({ kind: "caelo:edit-mode-changed", on: false }, origin());
+    if (ev.data.kind === "caelo:reload") reload();
+    else if (ev.data.kind === "caelo:page-paths" && Array.isArray(ev.data.pages)) {
+      pagePaths = ev.data.pages;
     }
   });
 })();

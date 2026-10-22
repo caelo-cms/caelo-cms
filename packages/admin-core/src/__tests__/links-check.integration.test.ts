@@ -25,7 +25,7 @@ import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
-import { linkSourcesFromOps } from "../quality/checks/links-sources.js";
+import { linkSourcesFromOps, referenceSourcesFromOps } from "../quality/checks/links-sources.js";
 import { createCoreCheckRegistry } from "../quality/checks/registry.js";
 import { structureSourcesFromOps } from "../quality/checks/structure-sources.js";
 import type { AuditJob } from "../quality/lighthouse-protocol.js";
@@ -148,6 +148,7 @@ async function stageAndAudit(title: string): Promise<string> {
       lighthouse: cleanLighthouse,
       structure: structureSourcesFromOps(registry, adapter, SYS),
       links: linkSourcesFromOps(registry, adapter, SYS),
+      references: referenceSourcesFromOps(registry, adapter, SYS),
     }),
     env: {
       provider: "aws",
@@ -260,8 +261,15 @@ beforeAll(async () => {
     statusCode: 301,
   });
   textModuleId = "";
-  pageIds.home = await buildPage(
-    "home",
+  pageIds.home = await buildPage("home", "<p>Home.</p>");
+  pageIds.about = await buildPage(`${PFX}about`, "<p>About.</p>");
+  pageIds.lonely = await buildPage(`${PFX}lonely`, "<p>Nobody links here.</p>");
+  // Since #724 the write ops refuse an internal link to no page and store a
+  // link through a 301 as a reference to the page it lands on, so a broken
+  // link or a redirect hop in a build comes from content written before
+  // (literal paths). Seed exactly that, underneath the ops.
+  await legacyBody(
+    pageIds.home,
     [
       `<p>Read <a href="https://example.com/${PFX}about/">about us</a>`,
       ` or the <a href="/${PFX}old-about">old about page</a>.</p>`,
@@ -269,12 +277,20 @@ beforeAll(async () => {
       `<p>Our shop lives at /${PFX}shop/xyz — just text.</p>`,
     ].join(""),
   );
-  pageIds.about = await buildPage(
-    `${PFX}about`,
+  await legacyBody(
+    pageIds.about,
     `<p>See <a href="/${PFX}pricng">pricing</a> and <a href="/">home</a>.</p>`,
   );
-  pageIds.lonely = await buildPage(`${PFX}lonely`, "<p>Nobody links here.</p>");
 });
+
+/** Write a page's `body` value directly — pre-#724 literal content. */
+async function legacyBody(pageId: string, body: string): Promise<void> {
+  await withSql(
+    (tx) => tx`UPDATE content_instances
+               SET "values" = jsonb_set("values", '{body}', to_jsonb(${body}::text))
+               WHERE id IN (SELECT content_instance_id FROM page_modules WHERE page_id = ${pageId}::uuid)`,
+  );
+}
 
 afterAll(async () => {
   for (const [k, v] of Object.entries(prev)) {

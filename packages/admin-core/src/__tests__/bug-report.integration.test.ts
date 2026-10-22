@@ -69,6 +69,10 @@ describe("bug_report tool + ai_bug_reports ops", () => {
     expect(r.ok).toBe(true);
     expect(r.content).toContain("Continue the task");
     expect(r.content).not.toContain("stop this line of work");
+    // #902 — nothing forwards yet: the result must not let the AI claim
+    // the Caelo team was told.
+    expect(r.content).toContain("stored on this site only");
+    expect(r.content).toContain("NOT notified");
   });
 
   it("a blockedTask report instructs the model to stop that line of work", async () => {
@@ -106,6 +110,23 @@ describe("bug_report tool + ai_bug_reports ops", () => {
     expect(mine[0]?.severity).toBe("blocking");
     expect(mine[1]?.blockedTask).toBe(false);
     expect(mine.every((x) => x.status === "new")).toBe(true);
+  });
+
+  it("every report records where it went — local_only until forwarding ships (#902)", async () => {
+    const created = await execute(registry, adapter, SYSTEM, "ai_bug_reports.create", {
+      title: "BRT forwarding state",
+      whatHappened: "x",
+      expected: "y",
+    });
+    if (!created.ok) throw new Error(JSON.stringify(created.error));
+    expect((created.value as { forwardingState: string }).forwardingState).toBe("local_only");
+    const listed = await execute(registry, adapter, SYSTEM, "ai_bug_reports.list", { limit: 200 });
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const rows = (listed.value as { reports: { title: string; forwardingState: string }[] })
+      .reports;
+    expect(rows.find((r) => r.title === "BRT forwarding state")?.forwardingState).toBe(
+      "local_only",
+    );
   });
 
   it("stamps source 'ai' by default and 'auto' when set, surfaced by list", async () => {

@@ -37,6 +37,11 @@
  *  10. soak period not over (security releases: their own, shorter one) → wait;
  *  11. outside the maintenance window → wait until it opens;
  *  12. otherwise → install.
+ *
+ * On top of the rules: a release the Owner skipped ("Skip this time" in
+ * Settings → Updates, #868) that the rules would install or schedule is
+ * offered instead (notify). Only that version: a newer release installs
+ * automatically again, and the skipped one stays installable by hand.
  */
 
 import {
@@ -119,6 +124,11 @@ export interface AutoUpdateInput {
   readonly convergeAvailable: boolean;
   /** Why it has none right now, in plain words (null: none set up at all). */
   readonly upgraderProblem?: string | null;
+  /**
+   * The release whose automatic install the Owner skipped
+   * (`platform_update_scheduler.skipped_version`, #868); null when none.
+   */
+  readonly skippedVersion: string | null;
   readonly now: Date;
 }
 
@@ -199,8 +209,34 @@ function isStable(version: string): boolean {
 
 const hours = (n: number) => `${n} hour${n === 1 ? "" : "s"}`;
 
+/**
+ * The scheduler's sentence for a release whose automatic install the Owner
+ * skipped (#868); the skip op writes the same one right away.
+ */
+export function skippedInstallReason(version: string): string {
+  return `The Owner skipped the automatic install of v${version}. It stays available in Settings → Updates; the next newer release installs automatically again.`;
+}
+
 /** Decide what the scheduler does now. See the file comment for the rules. */
 export function decideAutoUpdate(input: AutoUpdateInput): AutoUpdateDecision {
+  const decision = decideByRules(input);
+  if (
+    (decision.action === "install" || decision.action === "wait") &&
+    input.skippedVersion !== null &&
+    decision.version === input.skippedVersion
+  ) {
+    return {
+      action: "notify",
+      version: decision.version,
+      kind: decision.kind,
+      reason: skippedInstallReason(decision.version),
+    };
+  }
+  return decision;
+}
+
+/** The numbered rules of the file comment, without the Owner's skip. */
+function decideByRules(input: AutoUpdateInput): AutoUpdateDecision {
   const { policy, release, now } = input;
   if (!release) {
     return { action: "none", reason: "The release check has not found a Caelo release yet." };

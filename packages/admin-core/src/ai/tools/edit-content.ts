@@ -21,6 +21,7 @@ import { applyStringEdits, contentSha, renderEditSnippet } from "../content-edit
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
+import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const editContentInput = z
@@ -59,7 +60,8 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
     "On success it returns the NEW `sha=` plus a line-numbered snippet of each changed region — chain another edit_content in the same turn using that sha and the fresh line numbers, WITHOUT re-reading. " +
     "PREFER this over edit_module for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. " +
     "Use edit_module instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. " +
-    "TEMPLATES ARE GATED: an edit_content on a template is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim a template edit was applied.",
+    "TEMPLATES ARE GATED: an edit_content on a template is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim a template edit was applied." +
+    INTERNAL_LINK_CONTRACT,
   schema: editContentInput,
   inputSchema: z.toJSONSchema(editContentInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {
@@ -152,7 +154,10 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
     if (input.entityKind === "module" && input.field === "css") {
       suffix =
         (await cssVarWarningSuffix(ctx, toolCtx, applied.content)) +
-        (await designGuardSuffix(ctx, toolCtx, { css: applied.content }));
+        (await designGuardSuffix(ctx, toolCtx, {
+          css: applied.content,
+          scopeModuleId: input.entityId,
+        }));
     } else if (input.entityKind === "module" && input.field === "html") {
       // #820 — an html edit can turn a module into a copy of another one.
       suffix = await designGuardSuffix(ctx, toolCtx, {

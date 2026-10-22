@@ -55,7 +55,7 @@ import {
   readStagedBuildFiles,
   type StagedBuildFiles,
 } from "./staged-build-files.js";
-import { cacheControlForContentType, contentTypeFor } from "./static-file-policy.js";
+import { contentTypeFor, gcsObjectMetadata } from "./static-file-policy.js";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
 const PARALLEL_UPLOADS = 100;
@@ -68,7 +68,7 @@ const redirectPlanKey = (runId: string) => `_redirect-plans/${runId}.json`;
 const PER_TARGET_FILES = ["robots.txt", "routing-manifest.json"] as const;
 
 /**
- * Bump whenever `cacheControlForContentType` / `cacheControlFor`
+ * Bump whenever `gcsObjectMetadata` / `cacheControlFor`
  * change what an EXISTING object should carry. The hash-skip below
  * never re-uploads a byte-identical file, so content-hashed files
  * (fonts!) would keep the Cache-Control they were first uploaded with
@@ -78,8 +78,13 @@ const PER_TARGET_FILES = ["robots.txt", "routing-manifest.json"] as const;
  *
  *   1 — content-hashed fonts / plugin bundles immutable (Lighthouse
  *       uses-long-cache-ttl); promote keeps the staged Content-Type.
+ *   2 — #891: SVGs carry `Content-Disposition: attachment`. The converge
+ *       backfills the live bucket and purges the CDN (static-svg-gcp.ts in
+ *       @caelo-cms/provisioning); this bump makes the next publish rewrite
+ *       every object too, so a converge that could not reach the bucket is
+ *       caught up by the first Publish live.
  */
-export const CACHE_POLICY_VERSION = 1;
+export const CACHE_POLICY_VERSION = 2;
 
 interface BuildManifest {
   buildId: string;
@@ -249,20 +254,22 @@ export function createGcsStaticPublisher(
           typeof stagedContentType === "string" ? stagedContentType : contentTypeFor(relPath);
         await stagedFile.copy(h.staticBucket.file(relPath), {
           contentType,
-          metadata: { cacheControl: cacheControlForContentType(contentType, relPath) },
+          metadata: gcsObjectMetadata(contentType, relPath),
         });
         copied += 1;
       });
-      // Apply per-target robots.txt + routing-manifest overrides. After
-      // the copy loop the sitemap is live whether it changed (copied just
-      // now) or was hash-skipped as unchanged. Staging's X-Robots-Tag
-      // lives only on the staging-preview proxy response, never in object
-      // metadata, so there is no header to strip here.
-      const [sitemapLive] = await h.staticBucket.file("sitemap.xml").exists();
+      // Apply per-target robots.txt + routing-manifest overrides. Whether
+      // the build has a sitemap comes from its own file list, not the
+      // bucket: #567 — a build with the sitemap turned off leaves the
+      // previous build's sitemap.xml in the bucket until the prune below,
+      // and a `Sitemap:` line pointing at it would 404 afterwards.
+      // Staging's X-Robots-Tag lives only on the staging-preview proxy
+      // response, never in object metadata, so there is no header to
+      // strip here.
       const robotsBody = buildRobotsTxtWithSitemap(
         toTarget.robotsDefault,
         siteBaseUrl,
-        sitemapLive,
+        buildFiles.has("sitemap.xml"),
       );
       await uploadBytes(
         h.staticBucket,
@@ -562,7 +569,8 @@ async function uploadFile(
     // max-age + SWR as keyed `.html` files. The policy is keyed on the
     // site path, not the object key, so the staging `<runId>/` prefix
     // can't hide a content-hashed path.
-    metadata: { cacheControl: cacheControlForContentType(args.contentType, args.sitePath) },
+    // #891 — and an SVG is served as a download (gcsObjectMetadata).
+    metadata: gcsObjectMetadata(args.contentType, args.sitePath),
   });
 }
 

@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { type GcloudResult, grantProvisionerRoles, PROVISIONER_ROLE_LIST } from "./gcloud.js";
+import {
+  checkGcloudAuth,
+  type GcloudResult,
+  grantProvisionerRoles,
+  isGcloudAuthError,
+  PROVISIONER_ROLE_LIST,
+  projectDisplayName,
+} from "./gcloud.js";
 
 const ok: GcloudResult = { ok: true, stdout: "", stderr: "", exitCode: 0 };
 const fail = (stderr: string): GcloudResult => ({ ok: false, stdout: "", stderr, exitCode: 1 });
@@ -95,5 +102,90 @@ describe("grantProvisionerRoles", () => {
 
     expect(calls.filter((r) => r === role)).toHaveLength(3);
     expect(result.failed).toEqual([{ role, error: SA_NOT_YET_VISIBLE }]);
+  });
+});
+
+// Mirrors the Resource Manager displayName rule: 4–30 chars of letters,
+// digits, spaces, hyphens, quotes and `!`.
+const GCP_DISPLAY_NAME = /^[A-Za-z0-9 '"!-]{4,30}$/;
+
+describe("projectDisplayName", () => {
+  it("names the project after the domain so installs are distinguishable", () => {
+    expect(projectDisplayName("searchviu.com")).toBe("Caelo searchviu-com");
+    expect(projectDisplayName("docs.caelo-cms.com")).toBe("Caelo docs-caelo-cms-com");
+  });
+
+  it("stays within the GCP displayName rules for long or odd domains", () => {
+    for (const domain of [
+      "a-very-long-subdomain.of-an-even-longer-domain.example.co.uk",
+      "Example.COM",
+      "xn--mnchen-3ya.de",
+      "ab.c",
+    ]) {
+      const name = projectDisplayName(domain);
+      expect(name).toMatch(GCP_DISPLAY_NAME);
+      expect(name).not.toMatch(/-$/);
+    }
+  });
+});
+
+describe("checkGcloudAuth (#630)", () => {
+  const account = { ...ok, stdout: "owner@acme.com\n" };
+  const runner = (token: GcloudResult, list: GcloudResult = account) => {
+    const calls: string[] = [];
+    const run = async (args: string[]): Promise<GcloudResult> => {
+      calls.push(args.join(" "));
+      return args[1] === "list" ? list : token;
+    };
+    return { run, calls };
+  };
+
+  it("passes when gcloud can mint a token", async () => {
+    const { run, calls } = runner({ ...ok, stdout: "ya29.secret" });
+    expect(await checkGcloudAuth(run)).toEqual({ ok: true, account: "owner@acme.com" });
+    expect(calls[1]).toBe("auth print-access-token --quiet");
+  });
+
+  it("expired credentials pass `auth list` but fail here, with the login fix", async () => {
+    const { run } = runner(
+      fail(
+        "ERROR: (gcloud.auth.print-access-token) There was a problem refreshing your current auth tokens: Reauthentication failed. cannot prompt during non-interactive execution.",
+      ),
+    );
+    const r = await checkGcloudAuth(run);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("gcloud auth login");
+    expect(r.error).toContain("owner@acme.com");
+  });
+
+  it("no logged-in account", async () => {
+    const { run } = runner(ok, ok);
+    const r = await checkGcloudAuth(run);
+    expect(r).toEqual({
+      ok: false,
+      error:
+        "No gcloud account is logged in. Run `gcloud auth login` with the Owner's Google account, then run this command again.",
+    });
+  });
+
+  it("another failure names gcloud's error, not expired credentials", async () => {
+    const { run } = runner(fail("ERROR: network unreachable"));
+    const r = await checkGcloudAuth(run);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("network unreachable");
+    expect(r.error).not.toContain("expired");
+  });
+
+  it("recognises the reauth failures gcloud prints", () => {
+    for (const stderr of [
+      "Reauthentication failed. cannot prompt during non-interactive execution.",
+      "google.auth.exceptions.RefreshError: ('invalid_grant: Bad Request', ...)",
+      "Please run: $ gcloud auth login to obtain new credentials. reauth related error (invalid_rapt)",
+    ]) {
+      expect(isGcloudAuthError(stderr)).toBe(true);
+    }
+    expect(isGcloudAuthError("PERMISSION_DENIED: run.services.list")).toBe(false);
   });
 });

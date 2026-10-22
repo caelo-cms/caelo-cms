@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { enhance } from "$app/forms";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -13,6 +14,23 @@
   import { Label } from "#lib/components/ui/label/index.js";
 
   let { data, form } = $props();
+
+  // A user/role change waits for the Google IAP sync job (up to 90 s, see
+  // admin-core user_access.ts). Without visible progress a second click
+  // re-submits it — a duplicate create, or a second job run.
+  let syncing = $state(false);
+  const whileSyncing =
+    (reset: boolean): Parameters<typeof enhance>[1] =>
+    () => {
+      syncing = true;
+      return async ({ update }) => {
+        try {
+          await update({ reset });
+        } finally {
+          syncing = false;
+        }
+      };
+    };
 </script>
 
 <div class="space-y-6">
@@ -25,12 +43,20 @@
       <!-- Google IAP installs: the sync job recomputes who may pass IAP from
            this list (hourly, and after every user/role change). The button
            is the retry path when a run failed. -->
-      <form method="post" action="?/resyncOperatorAccess">
+      <form method="post" action="?/resyncOperatorAccess" use:enhance={whileSyncing(false)}>
         <input type="hidden" name="_csrf" value={data.csrfToken} />
-        <Button type="submit" size="sm" variant="outline">Re-sync Google IAP access</Button>
+        <Button type="submit" size="sm" variant="outline" disabled={syncing}>Re-sync Google IAP access</Button>
       </form>
     {/if}
   </div>
+
+  {#if syncing}
+    <Alert>
+      <AlertDescription>
+        Saving{data.operatorAccess ? " and updating Google IAP access — this can take up to a minute and a half" : ""}…
+      </AlertDescription>
+    </Alert>
+  {/if}
 
   {#if data.operatorAccess?.status === "error"}
     <Alert variant="destructive">
@@ -83,7 +109,12 @@
               Roles: {user.roles.join(", ") || "(none)"}
             </p>
             <div class="mt-2 flex flex-wrap items-center gap-3">
-              <form method="post" action="?/setRoles" class="flex flex-wrap items-center gap-3">
+              <form
+                method="post"
+                action="?/setRoles"
+                use:enhance={whileSyncing(false)}
+                class="flex flex-wrap items-center gap-3"
+              >
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="userId" value={user.id} />
                 {#each data.roles as roleName (roleName)}
@@ -98,13 +129,13 @@
                     {roleName}
                   </label>
                 {/each}
-                <Button type="submit" size="sm" variant="outline">Update roles</Button>
+                <Button type="submit" size="sm" variant="outline" disabled={syncing}>Update roles</Button>
               </form>
               {#if !user.isFirstOwner}
-                <form method="post" action="?/delete">
+                <form method="post" action="?/delete" use:enhance={whileSyncing(false)}>
                   <input type="hidden" name="_csrf" value={data.csrfToken} />
                   <input type="hidden" name="userId" value={user.id} />
-                  <Button type="submit" size="sm" variant="destructive">Delete</Button>
+                  <Button type="submit" size="sm" variant="destructive" disabled={syncing}>Delete</Button>
                 </form>
               {/if}
             </div>
@@ -137,7 +168,7 @@
       <CardTitle class="text-base">Create a user</CardTitle>
     </CardHeader>
     <CardContent>
-      <form method="post" action="?/create" class="space-y-4">
+      <form method="post" action="?/create" use:enhance={whileSyncing(true)} class="space-y-4">
         <input type="hidden" name="_csrf" value={data.csrfToken} />
         <div class="grid gap-4 md:grid-cols-2">
           <div class="space-y-2">
@@ -164,7 +195,7 @@
             {/each}
           </div>
         </fieldset>
-        <Button type="submit">Create user</Button>
+        <Button type="submit" disabled={syncing}>Create user</Button>
       </form>
     </CardContent>
   </Card>

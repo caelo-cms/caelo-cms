@@ -27,16 +27,22 @@ const config: SyncJobConfig = {
   staticMembers: "user:owner@x.com",
   databaseHost: "10.0.0.3",
   mcpSigners: "",
+  oauthClientSecret: "projects/p/secrets/caelo-production-operator-oauth-client",
 };
 
 /** Fake IAP + IAM policy endpoints holding real state. */
-function fakeGoogle(policies: Record<string, unknown>, failSetFor?: string) {
+function fakeGoogle(
+  policies: Record<string, unknown>,
+  failSetFor?: string,
+  /** `user:` members Google answers "does not exist" for, like a real setIamPolicy. */
+  nonexistent: readonly string[] = [],
+) {
   const sets: { url: string; policy: unknown }[] = [];
   const deps: GoogleDeps = {
     fetch: (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url.includes(":iapSettings")) {
-        // #806 — programmatic_clients; empty settings, accepted as sent.
+        // #914 — oauthSettings; empty settings, accepted as sent.
         return new Response(JSON.stringify({}), { status: 200 });
       }
       const base = url.replace(/:(get|set)IamPolicy.*$/, "");
@@ -47,6 +53,11 @@ function fakeGoogle(policies: Record<string, unknown>, failSetFor?: string) {
         return new Response("denied", { status: 403 });
       }
       const policy = (JSON.parse(String(init?.body)) as { policy: unknown }).policy;
+      const missing = nonexistent.find((m) => JSON.stringify(policy).includes(`"${m}"`));
+      if (missing) {
+        const error = { code: 400, message: `User ${missing.slice(5)} does not exist.` };
+        return new Response(JSON.stringify({ error }), { status: 400 });
+      }
       sets.push({ url: base, policy });
       policies[base] = policy;
       return new Response(JSON.stringify(policy), { status: 200 });
@@ -88,7 +99,8 @@ describe("runSync", () => {
     const { logs, log } = collect();
     const r = await runSync(config, {
       google: deps,
-      readProgrammaticClientId: async () => null,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
       readEmails: async () => ["anna@x.com"],
       log,
     });
@@ -109,6 +121,44 @@ describe("runSync", () => {
     expect(removed).toEqual(["allUsers", "domain:x.com", "user:gone@x.com", "group:g@x.com"]);
   });
 
+  it("leaves out a user Google has no account for, still removes allUsers, and reports the run as failed", async () => {
+    const { deps, policies } = fakeGoogle(
+      {
+        [IAP]: {
+          bindings: [{ role: IAP_ACCESSOR_ROLE, members: ["user:owner@x.com", MCP, "allUsers"] }],
+        },
+        [SA]: { bindings: [{ role: TOKEN_CREATOR_ROLE, members: ["user:owner@x.com"] }] },
+      },
+      undefined,
+      ["user:nobody@x.com"],
+    );
+    const { logs, log } = collect();
+    const r = await runSync(config, {
+      google: deps,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
+      readEmails: async () => ["anna@x.com", "Nobody@x.com"],
+      log,
+    });
+    expect(r.ok).toBe(false);
+    expect(membersOf(policies[IAP], IAP_ACCESSOR_ROLE)).toEqual([
+      MCP,
+      "user:anna@x.com",
+      "user:owner@x.com",
+    ]);
+    expect(membersOf(policies[SA], TOKEN_CREATOR_ROLE)).toEqual([
+      "user:anna@x.com",
+      "user:owner@x.com",
+    ]);
+    expect(r.iap?.unknownPrincipals).toEqual(["user:nobody@x.com"]);
+    const errors = logs.filter((l) => l.severity === "ERROR");
+    expect(errors.map((l) => [l.member, l.role])).toEqual([
+      ["user:nobody@x.com", IAP_ACCESSOR_ROLE],
+      ["user:nobody@x.com", TOKEN_CREATOR_ROLE],
+    ]);
+    expect(logs.some((l) => l.severity === "WARNING" && l.member === "allUsers")).toBe(true);
+  });
+
   it("keeps the upgrader's token-creator on caelo-mcp, and only there", async () => {
     const UPGRADER = "serviceAccount:caelo-production-upgrader@p.iam.gserviceaccount.com";
     const { deps, policies } = fakeGoogle({
@@ -118,7 +168,13 @@ describe("runSync", () => {
     const { log } = collect();
     const r = await runSync(
       { ...config, mcpSigners: UPGRADER },
-      { google: deps, readProgrammaticClientId: async () => null, readEmails: async () => [], log },
+      {
+        google: deps,
+        readOAuthClientId: async () => null,
+        readOAuthClientFile: async () => ({}),
+        readEmails: async () => [],
+        log,
+      },
     );
     expect(r.ok).toBe(true);
     expect(membersOf(policies[SA], TOKEN_CREATOR_ROLE)).toEqual(["user:owner@x.com", UPGRADER]);
@@ -133,7 +189,8 @@ describe("runSync", () => {
     const { log } = collect();
     const r = await runSync(config, {
       google: deps,
-      readProgrammaticClientId: async () => null,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
       readEmails: async () => [],
       log,
     });
@@ -148,7 +205,8 @@ describe("runSync", () => {
       { ...config, staticMembers: "user:owner@x.com,allUsers,domain:x.com" },
       {
         google: deps,
-        readProgrammaticClientId: async () => null,
+        readOAuthClientId: async () => null,
+        readOAuthClientFile: async () => ({}),
         readEmails: async () => ["not an email", "*@x.com"],
         log,
       },
@@ -166,7 +224,8 @@ describe("runSync", () => {
     const { logs, log } = collect();
     const r = await runSync(config, {
       google: deps,
-      readProgrammaticClientId: async () => null,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
       readEmails: async () => ["anna@x.com"],
       log,
     });
@@ -185,7 +244,8 @@ describe("runSync", () => {
     const { log } = collect();
     const r = await runSync(config, {
       google: deps,
-      readProgrammaticClientId: async () => null,
+      readOAuthClientId: async () => null,
+      readOAuthClientFile: async () => ({}),
       readEmails: async () => {
         throw new Error("permission denied for table users");
       },
@@ -199,7 +259,7 @@ describe("runSync", () => {
 describe("configFromEnv", () => {
   it("names every missing variable", () => {
     expect(() => configFromEnv({ CAELO_MCP_IAP_SERVICE_ACCOUNT: "x" })).toThrow(
-      "missing env CAELO_OPERATOR_ACCESS_IAP_WEB, CAELO_OPERATOR_ACCESS_STATIC_MEMBERS, CAELO_OPERATOR_ACCESS_DB_HOST",
+      "missing env CAELO_OPERATOR_ACCESS_IAP_WEB, CAELO_OPERATOR_ACCESS_STATIC_MEMBERS, CAELO_OPERATOR_ACCESS_DB_HOST, CAELO_OPERATOR_OAUTH_CLIENT_SECRET",
     );
   });
 });

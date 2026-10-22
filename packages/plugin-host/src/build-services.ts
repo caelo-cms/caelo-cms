@@ -50,6 +50,11 @@ import {
   runPluginStaticRender,
 } from "./dispatch.js";
 import { type CollectedContributions, collectContributions } from "./head-composition.js";
+import {
+  hasLinkResolveContributors,
+  type ResolvedLinkVariants,
+  resolveLinkVariants,
+} from "./link-resolve.js";
 import { type PublicUrlContext, type PublicUrlPage, resolvePublicPageUrls } from "./public-urls.js";
 
 type ContentVariantPages = Parameters<typeof resolveContentVariants>[0];
@@ -71,10 +76,10 @@ export interface BuildPluginServices {
   declaredDataListNames(): Promise<string[]>;
   resolveModuleDeferrals(modules: DeferralCandidates): Promise<ResolvedDeferrals>;
   hasContentVariantContributors(): Promise<boolean>;
-  resolveContentVariants(
-    pages: ContentVariantPages,
-    pageUrlStyle: PageUrlStyle,
-  ): Promise<ResolvedContentVariants>;
+  resolveContentVariants(pages: ContentVariantPages): Promise<ResolvedContentVariants>;
+  hasLinkResolveContributors(): Promise<boolean>;
+  /** The link-resolve point's page-variant partition (#724, rollout D). */
+  resolveLinkVariants(pageIds: string[]): Promise<ResolvedLinkVariants>;
   collectContributions(
     pageIds: string[],
     urlContext: PublicUrlContext,
@@ -97,8 +102,9 @@ export const localBuildPluginServices: BuildPluginServices = {
   declaredDataListNames: async () => pluginDataListsRegistry.catalogue().map((c) => c.name),
   resolveModuleDeferrals: (modules) => resolveModuleDeferrals(modules, MAIN_RENDER),
   hasContentVariantContributors: async () => hasContentVariantContributors(),
-  resolveContentVariants: (pages, pageUrlStyle) =>
-    resolveContentVariants(pages, MAIN_RENDER, pageUrlStyle),
+  resolveContentVariants: (pages) => resolveContentVariants(pages, MAIN_RENDER),
+  hasLinkResolveContributors: async () => hasLinkResolveContributors(),
+  resolveLinkVariants: (pageIds) => resolveLinkVariants(pageIds, MAIN_RENDER),
   collectContributions: (pageIds, urlContext) =>
     collectContributions(pageIds, { ...MAIN_RENDER, ...urlContext }),
   resolvePublicPageUrls: (pages, urlContext) =>
@@ -133,6 +139,8 @@ export const BUILD_PLUGIN_METHODS = [
   "resolveModuleDeferrals",
   "hasContentVariantContributors",
   "resolveContentVariants",
+  "hasLinkResolveContributors",
+  "resolveLinkVariants",
   "collectContributions",
   "resolvePublicPageUrls",
   "collectBuildAssets",

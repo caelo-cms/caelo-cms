@@ -22,7 +22,7 @@
  *   in P11.5+); it only ships the ops that read + mutate the registry.
  */
 
-import { applyPluginLifecycle, loadedPlugins } from "@caelo-cms/plugin-host";
+import { loadedPlugins } from "@caelo-cms/plugin-host";
 import {
   type EmittedSchema,
   externalArtifactDigest,
@@ -36,6 +36,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
+import { afterPluginCommit } from "./host-sync.js";
 
 // ---------------------------------------------------------------------------
 // Output shapes.
@@ -680,8 +681,9 @@ export const activatePluginOp = defineOperation({
         resultSummary: `tier=${r.tier} re-enabled`,
       });
       // Audit fix #2: hot-update the live host. Tools reappear in the
-      // AI's catalogue, workers resume, dispatch flips back to ok.
-      applyPluginLifecycle(input.slug, "enable");
+      // AI's catalogue, workers resume, dispatch flips back to ok — after
+      // the commit (#585), so a rolled-back re-enable never runs it.
+      afterPluginCommit(tx, input.slug, r.id, "enable");
       return ok({
         schemaName,
         appliedSql: existing[0]?.applied_sql ?? "",
@@ -761,8 +763,8 @@ export const activatePluginOp = defineOperation({
     });
     // Audit fix #2: ensure the live host's disabled-flag (if any from
     // a prior session) is cleared. New activations default to enabled
-    // already; this is defense-in-depth.
-    applyPluginLifecycle(input.slug, "enable");
+    // already; this is defense-in-depth. After the commit (#585).
+    afterPluginCommit(tx, input.slug, r.id, "enable");
     return ok({ schemaName, appliedSql: input.appliedSql, actorId });
   },
 });
@@ -833,8 +835,8 @@ export const disablePluginOp = defineOperation({
     });
     // Audit fix #2: hot-update the live host. Tools drop from the AI's
     // catalogue, workers pause, dispatch returns PluginDisabled — all
-    // without a process restart.
-    applyPluginLifecycle(input.slug, "disable");
+    // without a process restart, once the disable has committed (#585).
+    afterPluginCommit(tx, input.slug, id, "disable");
     return ok({});
   },
 });

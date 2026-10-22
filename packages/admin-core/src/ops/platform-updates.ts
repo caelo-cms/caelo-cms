@@ -53,6 +53,12 @@ const platformUpdateStatus = z.object({
    * release. Display only: the upgrader job decides from the signed manifest.
    */
   infraChange: z.boolean().nullable(),
+  /**
+   * #868 — what the Owner has to do for the newest release's breaking
+   * change, from its release manifest (`ownerAction`); null when it
+   * declares none, it is not known, or there is no newer release.
+   */
+  ownerAction: z.string().nullable(),
   /** Admin path where the Owner installs updates. */
   updatesPath: z.literal(UPDATES_PATH),
 });
@@ -77,7 +83,8 @@ export const platformUpdateStatusOp = defineOperation({
                   THEN to_char(fetched_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
              END AS checked_at,
              latest_infra_change,
-             infra_change_from
+             infra_change_from,
+             latest_owner_action
         FROM release_check_cache
        WHERE id = 1
     `)) as unknown as {
@@ -88,6 +95,7 @@ export const platformUpdateStatusOp = defineOperation({
       checked_at: string | null;
       latest_infra_change: boolean | null;
       infra_change_from: string | null;
+      latest_owner_action: string | null;
     }[];
     const r = rows[0];
     if (!r) {
@@ -114,6 +122,7 @@ export const platformUpdateStatusOp = defineOperation({
       // check): not known for this one until the next check.
       infraChange:
         upgradeAvailable && r.infra_change_from === CAELO_VERSION ? r.latest_infra_change : null,
+      ownerAction: upgradeAvailable ? r.latest_owner_action : null,
       updatesPath: UPDATES_PATH,
     });
   },

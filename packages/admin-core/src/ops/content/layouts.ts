@@ -19,6 +19,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
+import { canonicaliseLayoutHtml } from "../../links/canonicalise-writes.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
@@ -224,6 +225,20 @@ export const createLayoutOp = defineOperation({
         message: `layout slug "${input.slug}" already in use`,
       });
     }
+    // Epic #724 — internal links in the layout frame are stored as
+    // references, exactly like module HTML; a link to no page refuses.
+    const linkCanon = await canonicaliseLayoutHtml(tx, ctx, input.html, undefined);
+    if (!linkCanon.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "layouts.create",
+        input,
+        succeeded: false,
+        resultSummary: `link-canonicalisation: ${linkCanon.issues.length} issue(s)`,
+      });
+      return err({ kind: "HandlerError", operation: "layouts.create", message: linkCanon.message });
+    }
     // v0.9.0 — branched-create: tagged with chat_branch_id when in chat
     // context; chat.merge_to_main clears the tag to graduate to main.
     const rows = (await tx.execute(sql`
@@ -231,7 +246,7 @@ export const createLayoutOp = defineOperation({
       VALUES (
         ${input.slug},
         ${input.displayName},
-        ${input.html},
+        ${linkCanon.value},
         ${input.css},
         ${ctx.chatBranchId ?? null}::uuid
       )
@@ -305,7 +320,37 @@ export const updateLayoutOp = defineOperation({
           message: 'layout html must include <caelo-slot name="content">…</caelo-slot>',
         });
       }
-      sets.push(sql`html = ${input.html}`);
+      // Epic #724 — see layouts.create. Links already in the stored HTML
+      // are grandfathered (an edit need not fix an unrelated old link).
+      const prev = (await tx.execute(sql`
+        SELECT html FROM layouts WHERE id = ${input.layoutId}::uuid AND deleted_at IS NULL
+      `)) as unknown as { html: string }[];
+      const prevHtml = prev[0]?.html;
+      if (prevHtml === undefined) {
+        return err({
+          kind: "HandlerError",
+          operation: "layouts.update",
+          message: `layout ${input.layoutId} not found. Next step: list layouts and use an existing id.`,
+        });
+      }
+      const linkCanon = await canonicaliseLayoutHtml(tx, ctx, input.html, prevHtml);
+      if (!linkCanon.ok) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "layouts.update",
+          input,
+          succeeded: false,
+          entityId: input.layoutId,
+          resultSummary: `link-canonicalisation: ${linkCanon.issues.length} issue(s)`,
+        });
+        return err({
+          kind: "HandlerError",
+          operation: "layouts.update",
+          message: linkCanon.message,
+        });
+      }
+      sets.push(sql`html = ${linkCanon.value}`);
     }
     if (input.css !== undefined) sets.push(sql`css = ${input.css}`);
     if (sets.length === 0) {

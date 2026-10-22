@@ -161,7 +161,8 @@ describe("not configured", () => {
       expect(res.status).toBe(503);
       expect(await res.json()).toEqual({
         error: "remote_mcp_not_configured",
-        message: "Remote MCP is not set up on this site. An Owner enables it under Settings → MCP.",
+        message:
+          "Remote MCP is not set up on this site. An Owner enables it by setting up Google sign-in under Settings → Google sign-in.",
       });
     }
     const status = await h.send("/api/mcp/oauth/status");
@@ -188,7 +189,7 @@ describe("not configured", () => {
       harness({ env: { CAELO_MCP_PUBLIC_URL: "http://gw.example.com" } }),
       harness({ clientFile: JSON.stringify({ client_id: "x" }) }),
       harness({ clientFile: "not json" }),
-      harness({ env: { CAELO_MCP_OAUTH_CLIENT_FILE: "/nowhere" } }),
+      harness({ env: { CAELO_OPERATOR_OAUTH_CLIENT_FILE: "/nowhere" } }),
     ];
     for (const h of cases) {
       const res = await h.send("/api/mcp/oauth/protected-resource/chat");

@@ -18,11 +18,12 @@ export interface GoogleDeps {
   readonly metadata: (path: string) => Promise<string>;
 }
 
-/** A Google call that failed, with the HTTP status when there was one. */
+/** A Google call that failed, with the HTTP status (and response body) when there was one. */
 export class GoogleCallError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly body?: string,
   ) {
     super(message);
     this.name = "GoogleCallError";
@@ -69,16 +70,56 @@ export async function googleCall(
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   if (res.ok) return res.json();
-  const text = (await res.text()).slice(0, 500);
-  throw new GoogleCallError(`${method} ${url}: HTTP ${res.status}: ${text}`, res.status);
+  const text = await res.text();
+  throw new GoogleCallError(
+    `${method} ${url}: HTTP ${res.status}: ${text.slice(0, 500)}`,
+    res.status,
+    text,
+  );
 }
 
 /** Concurrent writers (Pulumi, another run) surface as an etag conflict. */
-const MAX_ATTEMPTS = 3;
+const MAX_CONFLICT_ATTEMPTS = 3;
+
+/** IAM's wording per principal type in "<Kind> <id> does not exist." */
+const UNKNOWN_PRINCIPAL_PREFIX: Record<string, string> = {
+  User: "user:",
+  Group: "group:",
+  "Service account": "serviceAccount:",
+};
+
+/**
+ * The member a setIamPolicy 400 refused because Google has no such account
+ * (`"User a@b.com does not exist."`), or `null` for any other error.
+ */
+export function unknownPrincipalOf(e: unknown): string | null {
+  if (!(e instanceof GoogleCallError) || e.status !== 400 || !e.body) return null;
+  let message: unknown;
+  try {
+    message = (JSON.parse(e.body) as { error?: { message?: unknown } }).error?.message;
+  } catch {
+    return null;
+  }
+  if (typeof message !== "string") return null;
+  const m = /^(User|Group|Service account) (\S+) does not exist\.?$/.exec(message.trim());
+  const prefix = m ? UNKNOWN_PRINCIPAL_PREFIX[m[1] as string] : undefined;
+  return prefix && m ? `${prefix}${(m[2] as string).toLowerCase()}` : null;
+}
+
+/** {@link Reconciled} plus the desired members Google refused as nonexistent accounts. */
+export interface ResourceReconciled extends Reconciled {
+  readonly unknownPrincipals: string[];
+}
 
 /**
  * Make `role` on the resource at `resourceUrl` (an IAP or IAM REST resource
  * URL, without the `:getIamPolicy` suffix) hold exactly `desired`.
+ *
+ * setIamPolicy is all-or-nothing: one desired member without a Google
+ * account (a Caelo user whose email is not a Google address) fails the whole
+ * write, which would also block every removal — `allUsers` added by hand
+ * would stay. So such a member is dropped from `desired`, the write is
+ * retried, and the caller gets it back in `unknownPrincipals` to report.
  */
 export async function reconcileResourceRole(
   deps: GoogleDeps,
@@ -86,21 +127,32 @@ export async function reconcileResourceRole(
   role: string,
   desired: ReadonlySet<string>,
   read: { readonly body?: unknown; readonly query?: string },
-): Promise<Reconciled> {
-  for (let attempt = 1; ; attempt++) {
+): Promise<ResourceReconciled> {
+  const wanted = new Set(desired);
+  const unknownPrincipals: string[] = [];
+  for (let conflicts = 1; ; ) {
     const policy = (await googleCall(
       deps,
       `${resourceUrl}:getIamPolicy${read.query ?? ""}`,
       "POST",
       read.body ?? {},
     )) as IamPolicy;
-    const result = reconcileRole(policy, role, desired);
-    if (!result.next) return result;
+    const result = reconcileRole(policy, role, wanted);
+    if (!result.next) return { ...result, unknownPrincipals };
     try {
       await googleCall(deps, `${resourceUrl}:setIamPolicy`, "POST", { policy: result.next });
-      return result;
+      return { ...result, unknownPrincipals };
     } catch (e) {
-      if (e instanceof GoogleCallError && e.status === 409 && attempt < MAX_ATTEMPTS) continue;
+      const unknown = unknownPrincipalOf(e);
+      // Each retry removes one member, so this ends after at most |desired| writes.
+      if (unknown && wanted.delete(unknown)) {
+        unknownPrincipals.push(unknown);
+        continue;
+      }
+      if (e instanceof GoogleCallError && e.status === 409 && conflicts < MAX_CONFLICT_ATTEMPTS) {
+        conflicts++;
+        continue;
+      }
       throw e;
     }
   }
