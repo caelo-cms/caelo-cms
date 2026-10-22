@@ -19,7 +19,7 @@
  * credential, never the value.
  *
  * Adding a credential-producing executor: add its kind to
- * {@link CREDENTIAL_KINDS} (and the 0337 CHECK), an issuer in `issueFor`, an
+ * {@link CREDENTIAL_KINDS} (and the 0342 CHECK), an issuer in `issueFor`, an
  * operator-facing location in {@link HANDOFF_LOCATIONS}, and declare
  * `producesCredential` on its gated tool (`makeProposeTool`) — the catalogue
  * test (credential-free-ai-results.test.ts) fails until all four line up.
