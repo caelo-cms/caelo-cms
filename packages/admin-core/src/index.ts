@@ -150,8 +150,10 @@ export * from "./ops/roles.js";
 // Issue #806 — remote MCP: the credential an /api/mcp/remote/* request
 // carries into the mcp.* ops, and its request-time resolution.
 export {
+  MCP_CLIENT_HEADER,
   type McpRemoteCredential,
   type McpRemoteSurface,
+  mcpClientKey,
   mcpRemoteSurface,
 } from "./ops/security/mcp_credential.js";
 export {
@@ -159,7 +161,10 @@ export {
   type RemoteMcpRefusal,
   resolveRemoteMcpPrincipal,
 } from "./ops/security/mcp_principal.js";
-export type { McpRemoteConnectionRow } from "./ops/security/mcp_remote_connections.js";
+export type {
+  McpRemoteAccessBlockRow,
+  McpRemoteConnectionRow,
+} from "./ops/security/mcp_remote_connections.js";
 // P17 PR4 — MCP bridge wiring helper.
 export { configureMcpBridge } from "./ops/security/mcp_tokens.js";
 export { STEP_UP_SIGNED_OUT } from "./ops/step-up.js";

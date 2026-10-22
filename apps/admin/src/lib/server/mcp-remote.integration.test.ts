@@ -73,12 +73,20 @@ async function callRoute(surface: Surface, request: Request): Promise<Response> 
   return handler({ request });
 }
 
+/** The client app the gateway names (#968), as it forwards it. */
+const CLIENT = "dcr:t806 app";
+const clientHeader = (client: string = CLIENT) => ({
+  "x-caelo-mcp-client": encodeURIComponent(client),
+});
+
 /** An SDK client whose HTTP requests go straight into the route handler. */
-async function connect(surface: Surface, email: string): Promise<Client> {
+async function connect(surface: Surface, email: string, app: string = CLIENT): Promise<Client> {
   const transport = new StreamableHTTPClientTransport(
     new URL(`http://admin.test/api/mcp/remote/${surface}`),
     {
-      requestInit: { headers: { "x-goog-iap-jwt-assertion": assertion(email) } },
+      requestInit: {
+        headers: { "x-goog-iap-jwt-assertion": assertion(email), ...clientHeader(app) },
+      },
       fetch: (url, init) => callRoute(surface, new Request(url, init)),
     },
   );
@@ -93,6 +101,7 @@ function initializeRequest(headers: Record<string, string>): Request {
     headers: {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
+      ...clientHeader(),
       ...headers,
     },
     body: JSON.stringify({
@@ -244,7 +253,56 @@ describe("remote MCP: refusals", () => {
     const r = await refusal("admin", { "x-goog-iap-jwt-assertion": assertion(EDITOR.email) });
     expect(r.status).toBe(403);
     expect(r.body.error).toBe("permission_denied");
-    expect(r.body.message).toContain("settings.write");
+    // #968 — names the missing permission and the role that would allow it.
+    expect(r.body.message).toContain("needs the settings.write permission");
+    expect(r.body.message).toContain("roles that do: owner");
+  });
+
+  it("400 missing_client_identity after authentication when the gateway named no app", async () => {
+    const res = await callRoute(
+      "chat",
+      new Request("http://admin.test/api/mcp/remote/chat", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          "x-goog-iap-jwt-assertion": assertion(EDITOR.email),
+        },
+        body: "{}",
+      }),
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toBe("missing_client_identity");
+  });
+
+  it("revoking one app leaves the same user's other app connected (#968)", async () => {
+    const { adapter, registry } = getQueryContext();
+    await (await connect("chat", EDITOR.email, "https://chatgpt.com/oauth/client.json")).close();
+    await (await connect("chat", EDITOR.email)).close();
+    const listed = await execute(registry, adapter, ownerCtx, "mcp_remote_connections.list", {});
+    if (!listed.ok) throw new Error("list failed");
+    const rows = (
+      listed.value as {
+        connections: { id: string; email: string; surface: string; clientKey: string }[];
+      }
+    ).connections.filter((c) => c.email === EDITOR.email && c.surface === "chat");
+    const chatgpt = rows.find((c) => c.clientKey === "https://chatgpt.com/oauth/client.json");
+    expect(rows.length).toBe(2);
+    await execute(registry, adapter, ownerCtx, "mcp_remote_connections.revoke", {
+      id: chatgpt!.id,
+    });
+    const refused = await refusal("chat", {
+      "x-goog-iap-jwt-assertion": assertion(EDITOR.email),
+      ...clientHeader("https://chatgpt.com/oauth/client.json"),
+    });
+    expect([refused.status, refused.body.error]).toEqual([403, "remote_access_revoked"]);
+    expect(refused.body.message).toContain("ChatGPT");
+    const other = await connect("chat", EDITOR.email);
+    expect((await other.listTools()).tools.length).toBeGreaterThan(0);
+    await other.close();
+    await execute(registry, adapter, ownerCtx, "mcp_remote_connections.restore", {
+      id: chatgpt!.id,
+    });
   });
 
   it("refuses a revoked connection, sticky across requests, until restored", async () => {
@@ -252,15 +310,19 @@ describe("remote MCP: refusals", () => {
     const listed = await execute(registry, adapter, ownerCtx, "mcp_remote_connections.list", {});
     if (!listed.ok) throw new Error("list failed");
     const row = (
-      listed.value as { connections: { id: string; email: string; surface: string }[] }
-    ).connections.find((c) => c.email === EDITOR.email && c.surface === "chat");
+      listed.value as {
+        connections: { id: string; email: string; surface: string; clientKey: string }[];
+      }
+    ).connections.find(
+      (c) => c.email === EDITOR.email && c.surface === "chat" && c.clientKey === CLIENT,
+    );
     expect(row).toBeDefined();
     await execute(registry, adapter, ownerCtx, "mcp_remote_connections.revoke", { id: row!.id });
     for (let i = 0; i < 2; i++) {
       const r = await refusal("chat", { "x-goog-iap-jwt-assertion": assertion(EDITOR.email) });
       expect(r.status).toBe(403);
       expect(r.body.error).toBe("remote_access_revoked");
-      expect(r.body.message).toContain("revoked under Settings → MCP");
+      expect(r.body.message).toContain("Settings → MCP");
     }
     await execute(registry, adapter, ownerCtx, "mcp_remote_connections.restore", { id: row!.id });
     const client = await connect("chat", EDITOR.email);
@@ -278,9 +340,12 @@ describe("remote MCP: refusals", () => {
         }),
       );
     expect((await malformed({})).status).toBe(401);
-    expect((await malformed({ "x-goog-iap-jwt-assertion": assertion(EDITOR.email) })).status).toBe(
-      400,
-    );
+    const parseError = await malformed({
+      "x-goog-iap-jwt-assertion": assertion(EDITOR.email),
+      ...clientHeader(),
+    });
+    expect(parseError.status).toBe(400);
+    expect(((await parseError.json()) as { error: { code: number } }).error.code).toBe(-32700);
   });
 
   it("answers GET (no server-initiated stream on a stateless server) with 405", async () => {
@@ -291,6 +356,7 @@ describe("remote MCP: refusals", () => {
         headers: {
           accept: "text/event-stream",
           "x-goog-iap-jwt-assertion": assertion(EDITOR.email),
+          ...clientHeader(),
         },
       }),
     );
