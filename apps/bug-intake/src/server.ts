@@ -3,7 +3,10 @@
 /**
  * HTTP surface of the bug intake:
  *
- *   GET  /healthz              liveness
+ *   GET  /health               liveness, for checks from outside
+ *   GET  /healthz              liveness, for container probes (Cloud Run's
+ *                              front end answers paths ending in "z" itself,
+ *                              so /healthz never reaches us from outside)
  *   POST /v1/installs          pin an install's public key (unsigned, TOFU)
  *   POST /v1/reports           one redacted report (signed)
  *   POST /v1/clusters/status   upstream state of known clusters (signed)
@@ -58,7 +61,9 @@ export function createIntakeHandler(deps: IntakeHandlerDeps): (req: Request) => 
 
   return async (req) => {
     const path = new URL(req.url).pathname;
-    if (req.method === "GET" && path === "/healthz") return new Response("ok");
+    if (req.method === "GET" && (path === "/health" || path === "/healthz")) {
+      return new Response("ok");
+    }
     if (req.method !== "POST") return refuse(404, "Not found.", false);
 
     const length = Number(req.headers.get("content-length") ?? "0");
