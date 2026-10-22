@@ -64,6 +64,7 @@ export * from "./redirect-target.js";
 export * from "./release-manifest.js";
 export * from "./responsive-images.js";
 export * from "./result.js";
+export * from "./run-batched.js";
 export * from "./safe-keys.js";
 export * from "./seo.js";
 export * from "./skills.js";

@@ -82,6 +82,15 @@ export interface PromoteSummary extends PublishSummary {
  */
 export interface StaticPublisher {
   /**
+   * True when this provider's serving layer reads `<outDir>/current/`
+   * (self-hosted Caddy bind-mounts it): the generator then mirrors every
+   * build into it. Cloud publishers upload the build directory itself and
+   * nothing reads `current/`, so the mirror is skipped (#1003 — it was the
+   * largest step of a Stage, and on Cloud Run `/tmp` is memory).
+   */
+  readonly servesCurrentDir: boolean;
+
+  /**
    * Publish the build at `buildDir` so the staged version becomes
    * reachable. For self-hosted this is the generator's own
    * `current/` sync; for cloud this uploads to the staging bucket
