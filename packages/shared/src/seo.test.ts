@@ -199,6 +199,15 @@ describe("injectSeoIntoHead", () => {
     const out = injectSeoIntoHead(html, headBlock);
     expect(out).toContain(headBlock);
   });
+
+  it("matches uppercase </HEAD> and preserves <svg><title> inside <body>", () => {
+    const html =
+      "<html><HEAD><title>LayoutTitle</title></HEAD><body><svg><title>IconTitle</title></svg></body></html>";
+    const out = injectSeoIntoHead(html, "<title>PageTitle</title>");
+    expect(out).not.toContain("LayoutTitle");
+    expect(out).toContain("<title>PageTitle</title>\n</HEAD>");
+    expect(out).toContain("<svg><title>IconTitle</title></svg>");
+  });
 });
 
 describe("schemas", () => {

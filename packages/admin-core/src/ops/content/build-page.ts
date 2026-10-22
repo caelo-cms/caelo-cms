@@ -45,7 +45,12 @@ import {
   loadPageLayoutState,
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
-import { planBuildPagePlacements, type ResolvedBuildPlacement } from "./build-page-plan.js";
+import { pagesSeoAutofillOp } from "../seo.js";
+import {
+  orderBuildEntries,
+  planBuildPagePlacements,
+  type ResolvedBuildPlacement,
+} from "./build-page-plan.js";
 import { createContentInstanceOp } from "./content-instances.js";
 import { createModuleOp } from "./modules.js";
 import { createPageOp } from "./pages.js";
@@ -105,6 +110,13 @@ export const buildPageOp = defineOperation({
      *  were NOT applied (differing metadata or any structural field). Surfaced
      *  so a change the AI intended never vanishes silently. */
     ignoredAuthoringByIndex: z.record(z.string(), z.array(z.string())),
+    /**
+     * What `page.metaDescription` did: `written` (first fill), `unchanged`
+     * (already filled with the same text), `kept-existing` (an import
+     * rebuild onto a page that already has one — fill-once, never
+     * overwritten), null when none was passed.
+     */
+    metaDescription: z.enum(["written", "unchanged", "kept-existing"]).nullable(),
   }),
   handler: async (ctx, input, tx) => {
     // Once anything has been written, failures must THROW so the tx
@@ -121,6 +133,12 @@ export const buildPageOp = defineOperation({
       if (wrote) throw new OperationAbortError(queryError);
       return err(queryError);
     };
+
+    // Minting order: an entry after every entry its {"$ref"} names (any
+    // array position). Checked before the first write, so an unknown
+    // handle or a cycle costs nothing.
+    const ordering = orderBuildEntries(input.modules);
+    if (!ordering.ok) return fail(ordering.message);
 
     // ── 0. Import linkage + idempotency ─────────────────────────────
     // issue #278 flow: `importPageId` links the built page to the
@@ -266,8 +284,10 @@ export const buildPageOp = defineOperation({
     }
 
     // ── 3. Per module: resolve module + content_instance ───────────
-    const additions: ResolvedBuildPlacement[] = [];
-    const mintedFlags: boolean[] = [];
+    // Per input index — entries are minted in dependency order but placed
+    // (and reported) in array order.
+    const additionByIndex = new Map<number, ResolvedBuildPlacement>();
+    const mintedByIndex = new Map<number, boolean>();
     const extractedFieldsByIndex: Record<string, { name: string; kind: string }[]> = {};
     // §2 (no silent drop) — a placement-only `moduleId` entry that ALSO carried
     // authoring fields does NOT re-author the shared module; per index we record
@@ -279,8 +299,9 @@ export const buildPageOp = defineOperation({
     // entries embed a nested module by writing {"$ref": "<ref>"} in a
     // module / module-list field value; resolution replaces it with the
     // real {moduleId, contentInstanceId} BEFORE content validation.
-    // Array order = dependency order (a ref must point at an earlier
-    // entry), which keeps resolution single-pass and deterministic.
+    // Entries are minted in `ordering.order` (referenced entries first,
+    // whatever their array position), which keeps resolution single-pass
+    // and deterministic.
     const localRefs = new Map<string, { moduleId: string; contentInstanceId: string }>();
     const detached: { ref: string; moduleId: string; contentInstanceId: string }[] = [];
     const resolveLocalRefs = (value: unknown, entryIndex: number): unknown => {
@@ -292,9 +313,8 @@ export const buildPageOp = defineOperation({
           const resolved = typeof handle === "string" ? localRefs.get(handle) : undefined;
           if (!resolved) {
             throw new LocalRefError(
-              `modules[${entryIndex}]: {"$ref": ${JSON.stringify(handle)}} does not match any EARLIER entry's ref. ` +
-                `Available refs at this point: ${[...localRefs.keys()].join(", ") || "(none)"} — ` +
-                "order entries so referenced modules come first.",
+              `modules[${entryIndex}]: {"$ref": ${JSON.stringify(handle)}} does not match any entry's ref ` +
+                `in this call. Refs declared: ${[...localRefs.keys()].join(", ") || "(none)"}.`,
             );
           }
           return resolved;
@@ -308,20 +328,21 @@ export const buildPageOp = defineOperation({
       }
       return value;
     };
-    for (const [i, entry] of input.modules.entries()) {
+    for (const i of ordering.order) {
+      const entry = input.modules[i] as (typeof input.modules)[number];
       let moduleId: string;
       let minted = false;
       if (entry.moduleId !== undefined && typeof entry.moduleId !== "string") {
-        // Place mode via local ref: re-place a module minted EARLIER in
-        // this call (the feature-cards case — one card module, three
-        // placements). Resolves to the referenced entry's moduleId; the
+        // Place mode via local ref: re-place a module minted in this call
+        // (the feature-cards case — one card module, three placements;
+        // ordering.order minted it first). Resolves to the referenced entry's moduleId; the
         // entry's own `content` mints/binds its own instance as usual.
         const handle = entry.moduleId.$ref;
         const resolved = localRefs.get(handle);
         if (!resolved) {
           return fail(
-            `${moduleLabel(i, entry)}: moduleId {"$ref": ${JSON.stringify(handle)}} does not match any EARLIER entry's ref. ` +
-              `Available refs at this point: ${[...localRefs.keys()].join(", ") || "(none)"} — order entries so referenced modules come first.`,
+            `${moduleLabel(i, entry)}: moduleId {"$ref": ${JSON.stringify(handle)}} does not match any entry's ref ` +
+              `in this call. Refs declared: ${[...localRefs.keys()].join(", ") || "(none)"}.`,
           );
         }
         moduleId = resolved.moduleId;
@@ -427,8 +448,8 @@ export const buildPageOp = defineOperation({
       // Content resolution — every placement binds a content_instance
       // (page_modules.content_instance_id is NOT NULL).
       let content: BuildPageContent = entry.content ?? { source: "inline", values: {} };
-      // Resolve {"$ref": "<handle>"} markers against earlier entries'
-      // minted ids BEFORE validation — the module/module-list field
+      // Resolve {"$ref": "<handle>"} markers against the referenced
+      // entries' minted ids BEFORE validation — the module/module-list field
       // validator expects the real {moduleId, contentInstanceId} shape.
       if (content.source !== "existing") {
         try {
@@ -513,9 +534,18 @@ export const buildPageOp = defineOperation({
         detached.push({ ref: entry.ref as string, moduleId, contentInstanceId });
         continue;
       }
-      additions.push({ blockName: entry.blockName, moduleId, contentInstanceId, syncMode });
-      mintedFlags.push(minted);
+      additionByIndex.set(i, {
+        blockName: entry.blockName,
+        moduleId,
+        contentInstanceId,
+        syncMode,
+        ...(entry.position !== undefined ? { position: entry.position } : {}),
+      });
+      mintedByIndex.set(i, minted);
     }
+    const placedIndices = [...additionByIndex.keys()].sort((a, b) => a - b);
+    const additions = placedIndices.map((i) => additionByIndex.get(i) as ResolvedBuildPlacement);
+    const mintedFlags = placedIndices.map((i) => mintedByIndex.get(i) ?? false);
 
     // ── 4. Placements — merge into the current layout, one write ───
     // Base layout is branch-overlay-aware so a build onto a page this
@@ -574,6 +604,39 @@ export const buildPageOp = defineOperation({
       entities: [{ kind: "pageLayout", entityId: pageId, state: layoutState }],
     });
 
+    // The page's first meta description, in the same transaction (a
+    // staging build refuses a published page without one — §2 fill-once
+    // through the autofill handler itself, so the two paths cannot drift).
+    let metaDescription: "written" | "unchanged" | "kept-existing" | null = null;
+    if (input.page.metaDescription !== undefined) {
+      const stored = createdPage
+        ? []
+        : ((await tx.execute(sql`
+            SELECT 1 AS found FROM pages_seo
+            WHERE page_id = ${pageId}::uuid AND btrim(coalesce(meta_description, '')) <> ''
+              AND meta_description <> ${input.page.metaDescription}
+          `)) as unknown as { found: number }[]);
+      if (stored.length > 0) {
+        metaDescription = "kept-existing";
+      } else {
+        const filled = await pagesSeoAutofillOp.handler(
+          ctx,
+          { pageId, metaDescription: input.page.metaDescription },
+          tx,
+        );
+        if (!filled.ok) {
+          const inner = filled.error as { message?: string };
+          // Throw, never `return err`: the page and its modules are written.
+          throw new OperationAbortError({
+            kind: "HandlerError",
+            operation: "pages.build_page",
+            message: `page.metaDescription: ${inner.message ?? filled.error.kind}`,
+          });
+        }
+        metaDescription = filled.value.alreadyFilled ? "unchanged" : "written";
+      }
+    }
+
     // Stamp the import→page linkage LAST, once pageId is final. Idempotent:
     // on a rebuild `accepted_page_id` already equals pageId; on a first
     // build (or when the prior link pointed at a since-deleted page) it now
@@ -602,6 +665,7 @@ export const buildPageOp = defineOperation({
       detached,
       extractedFieldsByIndex,
       ignoredAuthoringByIndex,
+      metaDescription,
     });
   },
 });

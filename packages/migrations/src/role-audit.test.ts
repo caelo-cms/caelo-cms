@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { assertNoRlsPolicyDrift, evaluateRlsDrift, RLS_DRIFT_SQL } from "./rls.js";
 import {
   type AuditedRole,
   assertRoleIsolation,
@@ -202,5 +203,60 @@ describe("roleAuditError", () => {
         ROLE_AUDIT_NEXT_STEP,
       ].join("\n"),
     );
+  });
+});
+
+describe("evaluateRlsDrift & assertNoRlsPolicyDrift", () => {
+  it("checks both public and plugin_% schemas for relrowsecurity, relforcerowsecurity, and pg_policies", () => {
+    expect(RLS_DRIFT_SQL).toContain("n.nspname LIKE 'plugin_%'");
+    expect(RLS_DRIFT_SQL).toContain("NOT c.relrowsecurity");
+    expect(RLS_DRIFT_SQL).toContain("NOT c.relforcerowsecurity");
+  });
+
+  it("ignores __drizzle_migrations in public and flags tables missing ENABLE, FORCE, or CREATE POLICY", () => {
+    expect(
+      evaluateRlsDrift([
+        {
+          schema_name: "public",
+          table_name: "__drizzle_migrations",
+          rls_enabled: true,
+          rls_forced: false,
+          has_policy: false,
+        },
+        {
+          schema_name: "public",
+          table_name: "pages",
+          rls_enabled: true,
+          rls_forced: false,
+          has_policy: true,
+        },
+        {
+          schema_name: "plugin_forms",
+          table_name: "submissions",
+          rls_enabled: false,
+          rls_forced: false,
+          has_policy: false,
+        },
+      ]),
+    ).toEqual([
+      "pages (missing FORCE ROW LEVEL SECURITY)",
+      "plugin_forms.submissions (missing ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY, CREATE POLICY)",
+    ]);
+  });
+
+  it("throws when evaluateRlsDrift finds any non-meta drift", async () => {
+    await expect(
+      assertNoRlsPolicyDrift({
+        unsafe: async () => [
+          {
+            schema_name: "public",
+            table_name: "users",
+            rls_enabled: true,
+            rls_forced: false,
+            has_policy: true,
+          },
+        ],
+      }),
+    ).rejects.toThrow("users (missing FORCE ROW LEVEL SECURITY)");
   });
 });

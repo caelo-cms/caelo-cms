@@ -20,11 +20,11 @@ import type { SQL as SQLType } from "bun";
 import { sql as dsql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sql";
 import { type ProjectionDatabases, publishPublicProjection } from "./public-projection.js";
+import { assertNoRlsPolicyDrift } from "./rls.js";
 import { assertPublicDatabaseIsolated, assertRoleIsolation } from "./role-audit.js";
 import { runMigrations } from "./runner.js";
 import { readShippedVisitorProjections } from "./shipped-declarations.js";
 
-type SQL = SQLType;
 const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
   ?.SQL as unknown as new (
   url: string,
@@ -55,35 +55,6 @@ const migrationsDir = resolve(
   "migrations",
   target === "admin" ? "cms_admin" : "cms_public",
 );
-
-/**
- * Drift check. Fails if any app table (non-meta) exists without at least one
- * RLS policy. Ensures a future contributor who adds a table can't silently
- * ship it without protection — the test suite won't save us, but this will.
- */
-const META_TABLES = new Set(["__drizzle_migrations"]);
-
-async function assertNoRlsPolicyDrift(sql: SQL): Promise<void> {
-  const offenders = (await sql`
-    SELECT c.relname::text AS table_name
-    FROM pg_class c
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    WHERE n.nspname = 'public'
-      AND c.relkind = 'r'
-      AND NOT EXISTS (
-        SELECT 1 FROM pg_policies p
-        WHERE p.schemaname = 'public' AND p.tablename = c.relname
-      )
-    ORDER BY c.relname
-  `) as unknown as { table_name: string }[];
-  const appOffenders = offenders.filter((r) => !META_TABLES.has(r.table_name));
-  if (appOffenders.length > 0) {
-    const names = appOffenders.map((r) => r.table_name).join(", ");
-    throw new Error(
-      `RLS drift: tables without any pg_policies row: ${names}. Add CREATE POLICY to the matching 9999_rls_policies.sql migration.`,
-    );
-  }
-}
 
 /**
  * Issue #635 — after cms_public is migrated, publish the projection the

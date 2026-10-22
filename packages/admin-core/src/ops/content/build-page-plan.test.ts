@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { PageLayoutState } from "../../snapshots/state.js";
-import { planBuildPagePlacements } from "./build-page-plan.js";
+import { orderBuildEntries, planBuildPagePlacements } from "./build-page-plan.js";
 
 const M = (n: number) => `00000000-0000-0000-0000-0000000000${String(n).padStart(2, "0")}`;
 const C = (n: number) => `00000000-0000-0000-0000-0000000001${String(n).padStart(2, "0")}`;
@@ -108,5 +108,111 @@ describe("planBuildPagePlacements", () => {
     ]);
     expect(base.blocks[0]!.moduleIds).toEqual([M(9)]);
     expect(base.blocks[0]!.placements).toHaveLength(1);
+  });
+});
+
+// e2e-livedit detected bugs: build_page refused `position` (carried over
+// from add_module) and a {"$ref"} to an entry later in the array.
+describe("planBuildPagePlacements — entry `position`", () => {
+  const base: PageLayoutState = {
+    schemaVersion: 1,
+    blocks: [
+      {
+        blockName: "content",
+        moduleIds: [M(8), M(9)],
+        placements: [
+          { moduleId: M(8), contentInstanceId: C(8), syncMode: "unsynced" },
+          { moduleId: M(9), contentInstanceId: C(9), syncMode: "unsynced" },
+        ],
+      },
+    ],
+  };
+  const add = (n: number, position?: "top" | "bottom" | number) => ({
+    blockName: "content",
+    moduleId: M(n),
+    contentInstanceId: C(n),
+    syncMode: "unsynced" as const,
+    ...(position !== undefined ? { position } : {}),
+  });
+
+  it("inserts at the top, at an index, and appends past the end", () => {
+    const plan = planBuildPagePlacements(base, [add(1, "top"), add(2, 2), add(3, 99)]);
+    const block = plan.nextLayout.blocks[0]!;
+    expect(block.moduleIds).toEqual([M(1), M(8), M(2), M(9), M(3)]);
+    expect(block.placements!.map((p) => p.contentInstanceId)).toEqual([
+      C(1),
+      C(8),
+      C(2),
+      C(9),
+      C(3),
+    ]);
+    // Final positions, after every insertion.
+    expect(plan.appended.map((p) => p.position)).toEqual([0, 2, 4]);
+  });
+
+  it("reports final positions when a later entry is inserted above an earlier one", () => {
+    const plan = planBuildPagePlacements(base, [add(1, "bottom"), add(2, "top")]);
+    expect(plan.nextLayout.blocks[0]!.moduleIds).toEqual([M(2), M(8), M(9), M(1)]);
+    expect(plan.appended.map((p) => [p.moduleId, p.position])).toEqual([
+      [M(1), 3],
+      [M(2), 0],
+    ]);
+  });
+});
+
+describe("orderBuildEntries", () => {
+  const card = { ref: "card", content: { source: "inline", values: { title: "A" } } };
+  const grid = {
+    content: { source: "inline", values: { cards: [{ $ref: "card" }, { $ref: "card2" }] } },
+  };
+  const card2 = { ref: "card2", content: { source: "inline", values: {} } };
+
+  it("keeps array order when nothing references a later entry", () => {
+    expect(orderBuildEntries([card, card2, grid])).toEqual({ ok: true, order: [0, 1, 2] });
+  });
+
+  it("mints referenced entries first, whatever their array position", () => {
+    // The live-run shape: hero, then the grid embedding cards declared after it.
+    const hero = { content: { source: "inline", values: { headline: "Hi" } } };
+    expect(orderBuildEntries([hero, grid, card, card2])).toEqual({
+      ok: true,
+      order: [0, 2, 3, 1],
+    });
+    // moduleId {"$ref"} re-placement counts as a dependency too.
+    expect(orderBuildEntries([{ moduleId: { $ref: "card" } }, card])).toEqual({
+      ok: true,
+      order: [1, 0],
+    });
+  });
+
+  it("names an unknown handle and the declared ones", () => {
+    const r = orderBuildEntries([
+      card,
+      { content: { source: "inline", values: { x: { $ref: "nope" } } } },
+    ]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.message).toContain('modules[1]: {"$ref": "nope"}');
+      expect(r.message).toContain("Refs declared: card");
+    }
+  });
+
+  it("refuses self-references and cycles", () => {
+    const self = orderBuildEntries([
+      { ref: "a", content: { source: "inline", values: { m: { $ref: "a" } } } },
+    ]);
+    expect(self.ok).toBe(false);
+    const cycle = orderBuildEntries([
+      { ref: "a", content: { source: "inline", values: { m: { $ref: "b" } } } },
+      { ref: "b", content: { source: "inline", values: { m: { $ref: "a" } } } },
+    ]);
+    expect(cycle.ok).toBe(false);
+    if (!cycle.ok) expect(cycle.message).toContain("cycle");
+  });
+
+  it("ignores $ref-shaped data of an `existing` content binding", () => {
+    expect(
+      orderBuildEntries([{ content: { source: "existing", values: { m: { $ref: "zzz" } } } }]),
+    ).toEqual({ ok: true, order: [0] });
   });
 });

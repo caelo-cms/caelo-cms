@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * PluginAi — `ctx.ai.complete` for Tier-1 plugins, wrapping the host's
- * configured AIProvider.
+ * PluginAi — `ctx.ai.complete` (text) and `ctx.ai.generateObject`
+ * (structured output) for Tier-1 plugins, wrapping the host's configured
+ * AIProvider.
  *
- * Three things happen around the provider call:
+ * Three things happen around either provider call:
  *   1. The plugin's options are validated (Zod at the SDK boundary). The
  *      declared `purpose` is passed through; the provider maps it to the
  *      Owner's per-purpose model (#593). A purpose the host has no setting
@@ -25,6 +26,7 @@ import { execute } from "@caelo-cms/query-api";
 import { recordCapLookupFailure, recordCapLookupSuccess } from "@caelo-cms/shared";
 import { z } from "zod";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import type { AICompletion, AIObjectCompletion } from "./types.js";
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 
@@ -50,6 +52,32 @@ export const pluginAiCompleteInput = z
   .strict();
 
 /**
+ * `ctx.ai.generateObject` options: the text options plus the JSON Schema
+ * the answer is constrained to. The schema must describe an object — the
+ * structured-output contract returns ONE object.
+ */
+export const pluginAiGenerateObjectInput = pluginAiCompleteInput
+  .extend({
+    jsonSchema: z
+      .record(z.string(), z.unknown())
+      .refine((s) => s.type === "object", "jsonSchema must describe an object (type: 'object')"),
+  })
+  .strict();
+
+/** Zod-parse plugin-supplied options, failing with the field paths. */
+function parseOptions<T>(schema: z.ZodType<T>, raw: unknown, method: string): T {
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(
+      `ctx.ai.${method}: invalid options — ${parsed.error.issues
+        .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+        .join("; ")}`,
+    );
+  }
+  return parsed.data;
+}
+
+/**
  * Build the `ctx.ai` handle for one plugin call.
  *
  * @param invocation who the call acts for. Its `chatTaskId` (the chat
@@ -63,38 +91,50 @@ export function makePluginAi(
   infra: PluginHostInfra,
   invocation: PluginInvocation,
 ): PluginAi {
+  /** The checks every call runs before it may reach the provider. */
+  const preflight = (method: string): NonNullable<PluginHostInfra["aiProvider"]> => {
+    if (invocation.aiDelegated) {
+      throw new Error(
+        `${AI_DELEGATED_ERROR_PREFIX} plugin '${plugin.slug}' called ctx.ai.${method} on a call whose AI work belongs to the calling agent (Power-MCP, issue #741). The operation must return an AiWorkItem instead; this is a bug in the plugin.`,
+      );
+    }
+    const provider = infra.aiProvider;
+    if (!provider) {
+      throw new Error(`ctx.ai.${method}: no AI provider configured on the host`);
+    }
+    return provider;
+  };
+  const record = (result: AIObjectCompletion | AICompletion, startedAt: number) =>
+    recordPluginAiCall(
+      plugin,
+      infra,
+      result,
+      Date.now() - startedAt,
+      invocation.chatTaskId ?? null,
+    );
   return {
     complete: async (rawOpts) => {
-      if (invocation.aiDelegated) {
-        throw new Error(
-          `${AI_DELEGATED_ERROR_PREFIX} plugin '${plugin.slug}' called ctx.ai.complete on a call whose AI work belongs to the calling agent (Power-MCP, issue #741). The operation must return an AiWorkItem instead; this is a bug in the plugin.`,
-        );
-      }
-      const provider = infra.aiProvider;
-      if (!provider) {
-        throw new Error("ctx.ai.complete: no AI provider configured on the host");
-      }
-      const parsed = pluginAiCompleteInput.safeParse(rawOpts);
-      if (!parsed.success) {
-        throw new Error(
-          `ctx.ai.complete: invalid options — ${parsed.error.issues
-            .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-            .join("; ")}`,
-        );
-      }
-      const opts = parsed.data;
+      const provider = preflight("complete");
+      const opts = parseOptions(pluginAiCompleteInput, rawOpts, "complete");
       await assertWithinPluginCap(plugin, infra);
       const startedAt = Date.now();
       const result = await provider.complete(opts);
-      await recordPluginAiCall(
-        plugin,
-        infra,
-        result,
-        Date.now() - startedAt,
-        invocation.chatTaskId ?? null,
-      );
+      await record(result, startedAt);
       return {
         text: result.text,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+      };
+    },
+    generateObject: async (rawOpts) => {
+      const provider = preflight("generateObject");
+      const opts = parseOptions(pluginAiGenerateObjectInput, rawOpts, "generateObject");
+      await assertWithinPluginCap(plugin, infra);
+      const startedAt = Date.now();
+      const result = await provider.generateObject(opts);
+      await record(result, startedAt);
+      return {
+        object: result.object,
         inputTokens: result.inputTokens,
         outputTokens: result.outputTokens,
       };
@@ -165,7 +205,7 @@ function capLookupUnavailable(slug: string): Error {
 async function recordPluginAiCall(
   plugin: LoadedPlugin,
   infra: PluginHostInfra,
-  result: Awaited<ReturnType<NonNullable<PluginHostInfra["aiProvider"]>["complete"]>>,
+  result: AIObjectCompletion | AICompletion,
   durationMs: number,
   chatSessionId: string | null,
 ): Promise<void> {

@@ -304,7 +304,9 @@ export class DatabaseAdapter {
         }
 
         const out = await op.handler(ctx, validatedInput, tx);
-        if (op.database === "cms_admin") publishAfterCommit = await this.#projectionDirty(tx);
+        if (out.ok && op.database === "cms_admin") {
+          publishAfterCommit = await this.#projectionDirty(tx);
+        }
         return out;
       });
     } catch (thrown) {

@@ -57,8 +57,11 @@ export interface LhrLike {
         readonly numericUnit?: string;
         /** Set when `scoreDisplayMode` is `error`. */
         readonly errorMessage?: string;
+        /** Lighthouse's estimate of what fixing the audit gains, per metric
+         *  (insights and opportunities). */
+        readonly metricSavings?: Readonly<Record<string, number | undefined>>;
         /** Table/list details; `items[].node` describes a flagged element. */
-        readonly details?: { readonly items?: readonly unknown[] };
+        readonly details?: { readonly type?: string; readonly items?: readonly unknown[] };
       }
     >
   >;
@@ -101,18 +104,47 @@ function consoleEntry(item: Record<string, unknown>): FlaggedElement | null {
  * hosting from a module's third-party embed or script, and guessed.
  */
 function resourceEntry(item: Record<string, unknown>): FlaggedElement | null {
-  const url = nonEmpty(item.url);
+  // `origin`: the network-dependency-tree insight's preconnect tables.
+  const url = nonEmpty(item.url) ?? nonEmpty(item.origin);
   const reason = nonEmpty(item.reason);
   if (!url && !reason) return null;
   return { ...(reason ? { explanation: reason } : {}), ...(url ? { url } : {}) };
 }
 
+/**
+ * The rows of an audit's details. A `list` details (the insight audits')
+ * holds sub-details — tables, a node, a checklist, or `list-section`s
+ * wrapping one of those (or a text / network tree); only tables' rows and
+ * nodes name anything. Read as rows themselves, the sections' generic
+ * `description` copy passed for flagged entries — the
+ * network-dependency-tree insight then "flagged" two paragraphs of
+ * Lighthouse's advice text and named nothing (e2e-livedit 2026-10).
+ */
+function detailRows(
+  details: { readonly type?: string; readonly items?: readonly unknown[] } | undefined,
+): unknown[] {
+  const items = details?.items ?? [];
+  if (details?.type !== "list") return [...items];
+  return items.flatMap((entry) => {
+    if (entry === null || typeof entry !== "object") return [];
+    const sub =
+      (entry as { type?: unknown }).type === "list-section"
+        ? (entry as { value?: unknown }).value
+        : entry;
+    if (sub === null || typeof sub !== "object") return [];
+    const inner = sub as { type?: unknown; items?: readonly unknown[] };
+    if (inner.type === "table" || inner.type === "opportunity") return [...(inner.items ?? [])];
+    if (inner.type === "node") return [{ node: inner }];
+    return [];
+  });
+}
+
 /** The elements (or console entries) an audit flagged, read from its details. */
 function flaggedElements(
-  details: { readonly items?: readonly unknown[] } | undefined,
+  details: { readonly type?: string; readonly items?: readonly unknown[] } | undefined,
 ): FlaggedElement[] {
   const out: FlaggedElement[] = [];
-  const items = details?.items ?? [];
+  const items = detailRows(details);
   for (const [index, item] of items.entries()) {
     if (out.length >= MAX_FLAGGED_ELEMENTS) {
       // #667 — say the list is a sample: ownership (platform vs site) must
@@ -222,15 +254,24 @@ function stagingCategoryScore(lhr: LhrLike, category: QualityCategory): number |
   return weight === 0 ? 1 : Math.round((sum / weight) * 100) / 100;
 }
 
+/** True when Lighthouse estimates a gain on at least one metric. */
+function hasEstimatedSavings(metricSavings: LhrLike["audits"][string]["metricSavings"]): boolean {
+  return Object.values(metricSavings ?? {}).some((v) => typeof v === "number" && v > 0);
+}
+
 /** Failing audits of one run, with the gated categories that reference
  *  each (ordered by audit id for stable output). */
 export function failingAudits(lhr: LhrLike): FailingAudit[] {
   assertUsable(lhr);
   const categoriesOf = new Map<string, QualityCategory[]>();
+  // Audits some gated category scores them with (weight > 0, or a weight
+  // the LHR does not state).
+  const weighted = new Set<string>();
   for (const category of QUALITY_CATEGORIES) {
     for (const ref of lhr.categories[category]?.auditRefs ?? []) {
       if (ref.group !== undefined && NON_FINDING_GROUPS.has(ref.group)) continue;
       if (STAGING_EXEMPT_AUDITS.has(ref.id)) continue;
+      if (ref.weight === undefined || ref.weight > 0) weighted.add(ref.id);
       const list = categoriesOf.get(ref.id) ?? [];
       list.push(category);
       categoriesOf.set(ref.id, list);
@@ -242,6 +283,17 @@ export function failingAudits(lhr: LhrLike): FailingAudit[] {
     if (!audit || audit.score === null || !SCORED_MODES.has(audit.scoreDisplayMode)) continue;
     if (audit.score >= PASS_SCORE) continue;
     const elements = flaggedElements(audit.details);
+    // An audit no category scores (weight 0 — the Performance insights),
+    // for which Lighthouse estimates no gain on any metric and whose details
+    // name nothing, leaves nothing to fix: the network-dependency-tree
+    // insight fails on every page whose HTML loads a stylesheet (any
+    // critical chain of two requests), names no origin to preconnect, and
+    // blocked Publish on pages scoring 100 (e2e-livedit 2026-10). The same
+    // audit with a preconnect candidate, or any insight with an estimated
+    // saving or a flagged resource, stays a finding.
+    if (!weighted.has(id) && !hasEstimatedSavings(audit.metricSavings) && elements.length === 0) {
+      continue;
+    }
     out.push({
       id,
       title: audit.title,

@@ -72,6 +72,13 @@ export default definePlugin<PluginContextTier1>({
     submit: async (ctx, args) => {
       const input = args as SubmitInput;
       if (
+        typeof input?.pageId !== "string" ||
+        input.pageId.trim().length === 0 ||
+        input.pageId.length > 200
+      ) {
+        throw new Error("submit: pageId must be a non-empty string up to 200 chars");
+      }
+      if (
         typeof input.score !== "number" ||
         !Number.isInteger(input.score) ||
         input.score < 1 ||
@@ -98,14 +105,17 @@ export default definePlugin<PluginContextTier1>({
       // Lookup existing vote by (visitor, page) and update OR insert.
       // The schema has no UNIQUE constraint here (the plugin's emitted schema
       // only enforces id PK), so we de-dupe at the plugin layer: list, then
-      // update if found, else insert.
+      // update if found (and clean up any concurrent duplicates), else insert.
       const existing = await ctx.query.list<"ratings", { id: string }>("ratings", {
         visitor_id: visitorId,
         page_id: input.pageId,
-        limit: 1,
+        limit: 50,
       });
       if (existing[0]) {
         await ctx.query.update("ratings", existing[0].id, { score: input.score });
+        for (const dup of existing.slice(1)) {
+          await ctx.query.delete("ratings", dup.id);
+        }
         return { recorded: true, id: existing[0].id, mode: "updated" as const };
       }
       const r = await ctx.query.insert("ratings", {
@@ -133,13 +143,20 @@ export default definePlugin<PluginContextTier1>({
      * ratings via two ctx.query passes — simple, idempotent.
      */
     _refresh: async (ctx, _args) => {
-      const ratings = await ctx.query.list<"ratings", { page_id: string; score: number }>(
+      const ratings = await ctx.query.list<
         "ratings",
-        { limit: QUERY_LIST_CAP },
-      );
-      // Bucket.
+        { page_id: string; visitor_id?: string | null; score: number }
+      >("ratings", { limit: QUERY_LIST_CAP });
+      // Bucket, deduplicating concurrent rows for the same (page_id, visitor_id)
+      // when visitor_id is present.
+      const seenVisitorVotes = new Set<string>();
       const buckets = new Map<string, { page_id: string; count: number; sum: number }>();
       for (const r of ratings) {
+        if (typeof r.visitor_id === "string" && r.visitor_id.length > 0) {
+          const visitorKey = `${r.page_id}\0${r.visitor_id}`;
+          if (seenVisitorVotes.has(visitorKey)) continue;
+          seenVisitorVotes.add(visitorKey);
+        }
         const key = r.page_id;
         const b = buckets.get(key) ?? {
           page_id: r.page_id,

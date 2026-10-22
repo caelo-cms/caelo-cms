@@ -8,6 +8,7 @@
    * live on rows.
    */
 
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Puzzle } from "lucide-svelte";
   import { enhance } from "$app/forms";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -119,7 +120,7 @@
                 <TableCell class="font-mono text-xs">{p.sourcePath ?? "—"}</TableCell>
                 <TableCell>
                   {#if p.status === "active"}
-                    <form method="post" action="?/disable" use:enhance>
+                    <form method="post" action="?/disable" use:enhance use:confirmSubmit={{ title: `Disable ${p.slug}?`, description: "Everything this plugin adds to the site stops working until you re-enable it.", confirmLabel: "Disable plugin" }}>
                       <input type="hidden" name="slug" value={p.slug} />
                     <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                       <Button type="submit" size="sm" variant="outline" data-testid="disable-{p.slug}">
@@ -238,7 +239,7 @@
                 <TableCell class="text-xs">{p.version}</TableCell>
                 <TableCell class="text-xs text-muted-foreground">{fmtTime(p.activatedAt)}</TableCell>
                 <TableCell>
-                  <form method="post" action="?/disable" use:enhance>
+                  <form method="post" action="?/disable" use:enhance use:confirmSubmit={{ title: `Disable ${p.slug}?`, description: "Everything this plugin adds to the site stops working until you re-enable it.", confirmLabel: "Disable plugin" }}>
                     <input type="hidden" name="slug" value={p.slug} />
                     <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />
                     <Button type="submit" size="sm" variant="outline" data-testid="disable-{p.slug}">

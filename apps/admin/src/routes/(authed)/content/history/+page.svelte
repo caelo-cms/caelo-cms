@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button, buttonVariants } from "#lib/components/ui/button/index.js";
@@ -56,15 +57,7 @@
               <form
                 method="post"
                 action="?/revertSite"
-                onsubmit={(e) => {
-                  if (
-                    !confirm(
-                      "Revert the entire site to this snapshot? A new snapshot will be appended to the history.",
-                    )
-                  ) {
-                    e.preventDefault();
-                  }
-                }}
+                use:confirmSubmit={{ title: "Revert the entire site to this snapshot?", description: "A new snapshot is added to the history, so you can undo this there.", confirmLabel: "Revert site" }}
               >
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="snapshotId" value={s.id} />

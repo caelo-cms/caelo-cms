@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { buttonVariants } from "#lib/components/ui/button/button-variants.js";
@@ -76,7 +77,7 @@
                     class={buttonVariants({ variant: "outline", size: "sm" })}>
                     Edit
                   </a>
-                  <form method="post" action="?/delete">
+                  <form method="post" action="?/delete" use:confirmSubmit={{ title: `Delete ${set.displayName}?`, description: `Its ${items.length} item(s) disappear from every page that shows them.`, confirmLabel: "Delete" }}>
                     <input type="hidden" name="_csrf" value={data.csrfToken} />
                     <input type="hidden" name="setId" value={set.id} />
                     <Button type="submit" size="sm" variant="destructive">Delete</Button>
