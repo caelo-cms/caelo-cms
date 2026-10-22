@@ -444,7 +444,9 @@ export async function privateList(
     );
   }
   if (plan.since !== null) wheres.push(sql`t."created_at" > ${plan.since}`);
-  for (const [k, v] of plan.equals) wheres.push(sql`t.${col(k)} = ${v}`);
+  for (const [k, v] of plan.equals) {
+    wheres.push(v === null ? sql`t.${col(k)} IS NULL` : sql`t.${col(k)} = ${v}`);
+  }
   const orderSql = plan.orderBy
     ? sql.raw(`ORDER BY t."${plan.orderBy}" ${plan.orderDir.toUpperCase()}`)
     : sql.raw("");
@@ -472,9 +474,10 @@ function matches(values: Readonly<Record<string, unknown>>, plan: ListPlan): boo
   return plan.equals.every(([k, v]) => sameValue(values[k], v));
 }
 
-function sameValue(a: unknown, b: unknown): boolean {
+export function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === null || b === null || a === undefined || b === undefined) return false;
+  if (typeof a === "object" || typeof b === "object") return jsonEqual(a, b);
   return String(a) === String(b);
 }
 

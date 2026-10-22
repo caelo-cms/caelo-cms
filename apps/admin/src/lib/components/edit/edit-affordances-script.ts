@@ -55,6 +55,12 @@ export const REFERENCE_LIMITS = {
  * reference carries the selected text and its surrounding text, so the
  * AI knows exactly what the operator meant (CLAUDE.md §1A).
  *
+ * The outline marks what the menu or toolbar acts on: the clicked or
+ * selected text block (or image), the same element the reference points
+ * at. The whole module is outlined only once the operator selects the
+ * whole section; outlining the module for a right-click on a headline
+ * suggested the action would apply to the entire section.
+ *
  * Spliced into `INJECT_SCRIPT`'s closure, so it uses that closure's
  * `postToEditor()` and `findModuleAncestor()`. Written as ES5 in a string, the
  * same as the rest of the runtime: every backslash is doubled because
@@ -148,15 +154,24 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     return el;
   }
 
+  // The element a menu or toolbar acts on: an image itself, else the
+  // text block around el (the module root when el is the module).
+  function targetOf(el, moduleEl) {
+    return el && el.tagName === "IMG" ? el : blockFor(el, moduleEl);
+  }
+
   function elementOf(node) {
     return node && node.nodeType === 1 ? node : node ? node.parentNode : null;
   }
 
+  // The reference points at the outlined element (targetOf); the
+  // context stays the surrounding block's text, so an image in a <p> or
+  // <a> still tells the AI what it sits next to.
   function buildRef(el, moduleEl, selectedText) {
     var block = blockFor(el, moduleEl);
     var ref = {
       moduleId: moduleEl.getAttribute("data-caelo-module-id") || "",
-      selector: selectorFor(block, moduleEl),
+      selector: selectorFor(targetOf(el, moduleEl), moduleEl),
       label: clip(labelFor(moduleEl), LIMITS.label),
     };
     if (selectedText) ref.selectedText = clip(selectedText, LIMITS.selectedText);
@@ -183,11 +198,17 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     var u = ensureUi();
     if (!u) return;
     state.outlined = el;
+    // A few pixels of air so the line does not touch the text, clamped
+    // into the viewport so a full-width module keeps all four sides.
     var r = el.getBoundingClientRect();
-    u.outline.style.left = r.left + "px";
-    u.outline.style.top = r.top + "px";
-    u.outline.style.width = r.width + "px";
-    u.outline.style.height = r.height + "px";
+    var left = Math.max(0, r.left - 3);
+    var top = Math.max(0, r.top - 3);
+    var right = Math.min(window.innerWidth, r.right + 3);
+    var bottom = Math.min(window.innerHeight, r.bottom + 3);
+    u.outline.style.left = left + "px";
+    u.outline.style.top = top + "px";
+    u.outline.style.width = Math.max(0, right - left) + "px";
+    u.outline.style.height = Math.max(0, bottom - top) + "px";
     u.outline.hidden = false;
   }
 
@@ -281,11 +302,11 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     return text ? "\\u201c" + clip(text, 48) + "\\u201d" : "This section";
   }
 
-  function openMenu(ref, moduleEl, x, y, f, t) {
+  function openMenu(ref, moduleEl, target, x, y, f, t) {
     var u = ensureUi();
     if (!u) return;
     state.mode = "menu";
-    showOutline(moduleEl);
+    showOutline(target);
     u.panel.className = "panel";
     u.panel.textContent = "";
     u.panel.setAttribute("role", "menu");
@@ -341,7 +362,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     var u = ensureUi();
     if (!u) return;
     state.mode = "toolbar";
-    showOutline(s.moduleEl);
+    showOutline(targetOf(s.el, s.moduleEl));
     var f = fieldOfSelection(s);
     var ref = withField(buildRef(s.el, s.moduleEl, s.text), f);
     var anchor = s.range.getBoundingClientRect();
@@ -396,7 +417,8 @@ export const EDIT_AFFORDANCES_SCRIPT = `
         inSelection ? buildRef(s.el, moduleEl, s.text) : buildRef(t, moduleEl, ""),
         f,
       );
-      openMenu(ref, moduleEl, ev.clientX, ev.clientY, f, t);
+      var target = inSelection ? targetOf(s.el, moduleEl) : targetOf(t, moduleEl);
+      openMenu(ref, moduleEl, target, ev.clientX, ev.clientY, f, t);
     },
     true,
   );

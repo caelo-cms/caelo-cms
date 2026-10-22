@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { ExternalLink, KeyRound, ShieldCheck } from "lucide-svelte";
   import { enhance } from "$app/forms";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -184,7 +185,7 @@
         </div>
         <div class="flex flex-wrap gap-2">
           {#each [["basic-auth", "Rotate basic-auth password"], ["header", "Rotate header value"]] as [which, label] (which)}
-            <form method="post" action="?/rotate" use:enhance>
+            <form method="post" action="?/rotate" use:enhance use:confirmSubmit={{ title: `${label}?`, description: "Everyone using the current value, including crawlers, loses access to staging until they get the new one.", confirmLabel: "Rotate" }}>
               <input type="hidden" name="_csrf" value={data.csrfToken} />
               <input type="hidden" name="which" value={which} />
               <Button type="submit" variant="destructive">{label}</Button>

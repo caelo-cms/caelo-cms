@@ -39,6 +39,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { LoadedPlugin, PluginHostInfra } from "./dispatch.js";
+import { sameValue } from "./private-storage.js";
 
 /** A projection section the admin has not published yet (fresh install, upgrade in flight). */
 export class ProjectionNotPublishedError extends Error {
@@ -241,9 +242,7 @@ export function makeProjectedAdminQuery(
         },
       );
       let out = found.map((r) => projectedRow.parse(r.row));
-      out = out.filter((r) =>
-        Object.entries(equals).every(([k, v]) => v === r[k] || String(v) === String(r[k])),
-      );
+      out = out.filter((r) => Object.entries(equals).every(([k, v]) => sameValue(r[k], v)));
       if (typeof since === "string") {
         out = out.filter((r) => Date.parse(String(r.created_at)) > Date.parse(since));
       }

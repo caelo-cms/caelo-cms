@@ -344,6 +344,7 @@ import {
   TOKEN_SHAPE_HINTS,
   TYPOGRAPHY_COMPOSITION_HINTS,
 } from "./theme-guidance.js";
+import { type InstallEnv, isGcpInstall } from "./tools/install-availability.js";
 
 export type { SystemPromptChunk } from "./provider.js";
 
@@ -414,7 +415,7 @@ const MODULE_MODEL_BLOCK = [
   "Tool selection:",
   "",
   "- **Creating ANY page → use `build_page` (ONE call).** It is the single page-creation tool: `modules:[]` makes an empty page shell; a populated `modules` array creates the page + every section module (each with its own semantic `fields[]`) + their content in a single all-or-nothing transaction. Do NOT hand-orchestrate a page-create + `add_module`×N + `set_page_module_content`×N chain — that is the N+1 round-trip build_page exists to replace (§11 bulk-first). Reach for `add_module` (target='page') only to add ONE more module to an already-built page.",
-  "- **Site chrome (footer, header, nav) lives in the LAYOUT — it is ONE site-wide operation.** A single `add_module` with target='layout' places the module on the layout, and a layout is shared by every page bound to it, so the chrome appears on ALL those pages at once. When the operator says \"add a footer to every page\" / \"put a nav on the whole site\", that is one `add_module` (target='layout') call — NOT a per-page loop, NOT creating pages to host it, and NEVER a subagent. A footer/header nav is a `nav-menu` structured-set (see the structured-sets guidance): `set_structured_set({kind:'nav-menu', …})` for the links, then one `add_module` (target='layout') for the rendering module. Internal links (nav items, link fields, `href`s in module HTML) are written as the page's path (`/about`, `/about#team`) and must name a page that ALREADY exists — a link to a missing page is refused, so build the pages first and link them after. Caelo stores each one as a link to the page itself, so links follow renames and moves (`update_pages_many` slug, `move_pages`) on their own: never update or re-check links after moving a page. (While you rebuild a site import, a link to a page of that run is kept and converted by `resolve_import_links` at the end.)",
+  "- **Site chrome (footer, header, nav) lives in the LAYOUT — it is ONE site-wide operation.** A single `add_module` with target='layout' places the module on the layout, and a layout is shared by every page bound to it, so the chrome appears on ALL those pages at once. When the operator says \"add a footer to every page\" / \"put a nav on the whole site\", that is one `add_module` (target='layout') call — NOT a per-page loop, NOT creating pages to host it, and NEVER a subagent. A footer/header nav is a `nav-menu` structured-set (see the structured-sets guidance): `set_structured_set({kind:'nav-menu', …})` for the links, then one `add_module` (target='layout') for the rendering module. Internal links (nav items, link fields, `href`s in module HTML) are written as the page's path (`/about`, `/about#team`) and must name a page that ALREADY exists — a link to a missing page is refused, so build the pages first and link them after. The site root `/` (and `/#section`) is the exception: always valid, so the header's brand link can be written before the homepage. Caelo stores each one as a link to the page itself, so links follow renames and moves (`update_pages_many` slug, `move_pages`) on their own: never update or re-check links after moving a page. (While you rebuild a site import, a link to a page of that run is kept and converted by `resolve_import_links` at the end.)",
   "- Use `edit_module` to change structure / styling / layout / the list of fields a module exposes.",
   "  → Affects every page using the module (in the shared draft until staged).",
   "- For a TARGETED tweak to existing html/css/js (a colour, a class, a string, a broken tag) → `read_content` then `edit_content` (surgical string-replace) instead of re-emitting the whole body via `edit_module`. Cheaper, and the diff is minimal + reviewable. `grep_content` finds the text across the whole catalog first when you don't know which module holds it.",
@@ -457,11 +458,13 @@ export type PromptSurface = "chat" | "power-mcp";
 // precomputed module-level constants — the split adds a static
 // per-surface prompt, never per-turn dynamism (CLAUDE.md §11: the system
 // prompt stays 100% static).
-function buildToolPlaybookBlock(surface: PromptSurface): string {
+function buildToolPlaybookBlock(surface: PromptSurface, builtPageInspection: boolean): string {
+  // `inspect_built_page` is named only where it can run (GCP installs) — off
+  // GCP the catalogue leaves it out too (tools/install-availability.ts).
   const inspectAndParallel =
     surface === "chat"
-      ? "**Inspect rendered output** → `inspect_page_render`, `screenshot_page`, `inspect_built_page`. **Parallel work** → `spawn_subagents`."
-      : "**Inspect rendered output** → `inspect_page_render` (composed HTML/CSS of this session's preview, pending edits included), `screenshot_page` (real-Chromium screenshot of this session's branch preview, rendered server-side — the image comes back as an MCP image content block), `inspect_built_page` (the built HTML a Stage actually uploaded). **Parallel work** → your own agent runtime; Caelo's subagent tools are not on this surface.";
+      ? `**Inspect rendered output** → \`inspect_page_render\`, \`screenshot_page\`${builtPageInspection ? ", `inspect_built_page`" : ""}. **Parallel work** → \`spawn_subagents\`.`
+      : `**Inspect rendered output** → \`inspect_page_render\` (composed HTML/CSS of this session's preview, pending edits included), \`screenshot_page\` (real-Chromium screenshot of this session's branch preview, rendered server-side — the image comes back as an MCP image content block)${builtPageInspection ? ", `inspect_built_page` (the built HTML a Stage actually uploaded)" : ""}. **Parallel work** → your own agent runtime; Caelo's subagent tools are not on this surface.`;
   // #687 — on Power-MCP the card shows in the operator's admin, not in the
   // caller's conversation; the caller must still make the call itself.
   const approvalLine =
@@ -496,10 +499,26 @@ function buildToolPlaybookBlock(surface: PromptSurface): string {
   ].join("\n");
 }
 
-const TOOL_PLAYBOOK_BLOCKS: Record<PromptSurface, string> = {
-  chat: buildToolPlaybookBlock("chat"),
-  "power-mcp": buildToolPlaybookBlock("power-mcp"),
+/**
+ * The playbook per surface for this install kind. Precomputed for both kinds
+ * so the per-call lookup is a constant: the install kind is fixed per process,
+ * so the prompt stays byte-stable within a run (cache-safe).
+ */
+const TOOL_PLAYBOOK_BLOCKS: Record<"gcp" | "other", Record<PromptSurface, string>> = {
+  gcp: {
+    chat: buildToolPlaybookBlock("chat", true),
+    "power-mcp": buildToolPlaybookBlock("power-mcp", true),
+  },
+  other: {
+    chat: buildToolPlaybookBlock("chat", false),
+    "power-mcp": buildToolPlaybookBlock("power-mcp", false),
+  },
 };
+
+/** The tool playbook block the given surface gets on the install `env` describes. */
+export function toolPlaybookBlock(surface: PromptSurface, env: InstallEnv): string {
+  return TOOL_PLAYBOOK_BLOCKS[isGcpInstall(env) ? "gcp" : "other"][surface];
+}
 // v0.5.5 — staging model. Every chat write is "pending" until it is staged
 // and published. Cacheable — applies to every chat session.
 //
@@ -522,7 +541,7 @@ const STAGING_BLOCK = [
   "",
   "Internal links point at pages, so a Stage refuses links to deleted pages (and to pages with no version in the linking page's language), and Publish live blocks links to unpublished pages. After deleting, unpublishing or translating pages, run `check_links` and fix what it names before you stage.",
   "",
-  "Before a page is staged for the first time it needs a meta description: write it from the page's content (in a migration, carry over the source page's) with `autofill_page_seo_many` — one call for every new page. A Stage refuses published pages without one and names them.",
+  "A Stage builds only PUBLISHED pages and is refused unless at least one is published, a published page serves the site root '/' (the homepage), and every published page has a meta description. So create pages Stage-ready: `build_page` with `page.metaDescription` (written from the page's content; in a migration, the source page's) and `status: 'published'` for pages that belong on the site; for existing pages without one, ONE `autofill_page_seo_many` call. When the site itself is not ready (a homepage left as a draft, an older page without a description), the site-status note and the page tools' results say 'A Stage would be refused right now' with the exact fixes — apply them before `stage_changes`, never after a refused Stage.",
   "",
   "When the requested work is done, Stage it yourself with `stage_changes`: it merges this chat's changes into the site, rebuilds the staging site (noindex) and runs the quality check. Then finish your turn: tell the user staging is ready to review and the check is running. The check's result appears in the chat; when it finds problems the user is asked whether you should fix them, and the fix request you then get lists the findings. **Publish live is always the user's click** — you never publish, and nothing you stage goes live automatically. Don't claim a change is live.",
   "",
@@ -616,7 +635,7 @@ export function composeSystemPromptChunks(
 ): SystemPromptChunk[] {
   const chunks: SystemPromptChunk[] = [
     { body: BASE_SYSTEM, cacheable: true, label: "base" },
-    { body: TOOL_PLAYBOOK_BLOCKS[surface], cacheable: true, label: "tool-playbook" },
+    { body: toolPlaybookBlock(surface, process.env), cacheable: true, label: "tool-playbook" },
     { body: MODULE_MODEL_BLOCK, cacheable: true, label: "module-model" },
     { body: STAGING_BLOCK, cacheable: true, label: "staging" },
   ];

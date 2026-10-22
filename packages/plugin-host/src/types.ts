@@ -27,6 +27,27 @@ export interface AIProvider {
     temperature?: number;
     purpose?: string;
   }): Promise<AICompletion>;
+  /**
+   * Structured output for `ctx.ai.generateObject(...)`: one object
+   * constrained to `jsonSchema` (the AI SDK's `generateObject`). `object`
+   * is `undefined` when the model's answer did not parse to the schema;
+   * provider/API errors throw. Same `purpose` → model mapping and the
+   * same provider/model/usage report as {@link complete}.
+   */
+  generateObject(opts: {
+    system: string;
+    messages: ReadonlyArray<AIMessage>;
+    jsonSchema: Record<string, unknown>;
+    maxTokens?: number;
+    temperature?: number;
+    purpose?: string;
+  }): Promise<AIObjectCompletion>;
+}
+
+/** What one structured-output call produced, and on which provider/model. */
+export interface AIObjectCompletion extends Omit<AICompletion, "text"> {
+  /** The schema-valid object, or `undefined` when none parsed. */
+  readonly object: unknown | undefined;
 }
 
 /** What one completion produced, and on which provider/model. */

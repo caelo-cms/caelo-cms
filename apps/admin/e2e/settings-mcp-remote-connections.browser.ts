@@ -11,7 +11,7 @@
  */
 
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket, runBunInline } from "./helpers.js";
+import { acceptConfirm, clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 const EMAIL = `e2e-remote-${Date.now()}@example.test`;
 
@@ -53,6 +53,7 @@ test("the Owner revokes, restores and caps a remote connection", async ({ page }
   await expect(row).toContainText("active");
 
   await row.getByRole("button", { name: "Revoke" }).click();
+  await acceptConfirm(page);
   await expect(page.getByText("Remote connection updated.")).toBeVisible();
   await expect(row).toContainText("revoked");
 

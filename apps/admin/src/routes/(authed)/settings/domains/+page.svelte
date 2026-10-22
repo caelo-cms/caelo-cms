@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { CheckCircle, Globe, ShieldAlert, ShieldQuestion, Trash2 } from "lucide-svelte";
   import { enhance } from "$app/forms";
   import { Badge } from "#lib/components/ui/badge/index.js";
@@ -192,7 +193,7 @@
                       <input type="hidden" name="domainId" value={d.id} />
                       <Button type="submit" size="sm" variant="secondary">Verify DNS</Button>
                     </form>
-                    <form method="post" action="?/remove" use:enhance>
+                    <form method="post" action="?/remove" use:enhance use:confirmSubmit={{ title: `Remove ${d.hostname}?`, description: "The site stops being served on this domain.", confirmLabel: "Remove domain" }}>
                       <input type="hidden" name="domainId" value={d.id} />
                       <Button type="submit" size="sm" variant="destructive"><Trash2 class="size-3" /></Button>
                     </form>

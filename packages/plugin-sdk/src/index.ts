@@ -914,7 +914,7 @@ export interface PluginCms {
  */
 export type PluginAiPurpose = "translation";
 
-/** Tier 1 only — single-shot generation against the configured provider. */
+/** Tier 1 only — single-shot generation (text or structured) against the configured provider. */
 export interface PluginAi {
   complete(opts: {
     system: string;
@@ -924,6 +924,40 @@ export interface PluginAi {
     /** Declared use of the call; selects the Owner's per-purpose model. */
     purpose?: PluginAiPurpose;
   }): Promise<{ text: string; inputTokens: number; outputTokens: number }>;
+  /**
+   * Structured output: the model answers with ONE object constrained to
+   * `jsonSchema` (the AI SDK's `generateObject`, CLAUDE.md §12) instead of
+   * prose a plugin parses. Use it whenever the plugin needs JSON back —
+   * the schema, not a prompt paragraph, is then the contract, so a field
+   * the plugin must not receive is simply absent from it.
+   *
+   * `object` is `undefined` when the model produced nothing that parses
+   * to the schema (repairable: re-prompt or fail loudly); provider/API
+   * errors throw. Re-validate `object` with Zod at the boundary — the
+   * provider may relax keywords (e.g. string lengths) it cannot enforce.
+   *
+   * @example
+   * const r = await ctx.ai.generateObject({
+   *   system: "Classify the comment.",
+   *   messages: [{ role: "user", content: text }],
+   *   jsonSchema: {
+   *     type: "object",
+   *     additionalProperties: false,
+   *     required: ["verdict"],
+   *     properties: { verdict: { type: "string", enum: ["ok", "spam"] } },
+   *   },
+   * });
+   */
+  generateObject(opts: {
+    system: string;
+    messages: Array<{ role: "user" | "assistant"; content: string }>;
+    /** JSON Schema (draft-07 object) the answer must satisfy. */
+    jsonSchema: Record<string, unknown>;
+    maxTokens?: number;
+    temperature?: number;
+    /** Declared use of the call; selects the Owner's per-purpose model. */
+    purpose?: PluginAiPurpose;
+  }): Promise<{ object: unknown | undefined; inputTokens: number; outputTokens: number }>;
 }
 
 /** Tier 1 only — emit a snapshot when a write affects a tracked entity.
