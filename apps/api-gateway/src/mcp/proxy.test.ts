@@ -8,7 +8,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { accessToken, BASE_ENV, CONFIGURED_FILE, PUBLIC } from "./__tests__/harness.js";
+import {
+  accessToken,
+  BASE_ENV,
+  CONFIGURED_FILE,
+  legacyAccessToken,
+  PUBLIC,
+} from "./__tests__/harness.js";
 import type { ProxyLimits } from "./context.js";
 import { MAX_PROXY_BODY_BYTES, PROXY_LIMITS } from "./proxy.js";
 import { createMcpRouter } from "./routes.js";
@@ -194,12 +200,28 @@ describe("MCP proxy", () => {
     }
   });
 
+  it("names each client app to the admin, so the same user's apps stay apart (#968)", async () => {
+    const forwarded: string[] = [];
+    for (const client of ["https://chatgpt.com/oauth/client.json", "dcr:Claude Code ✓"]) {
+      const res = await send("/api/mcp/chat", {
+        method: "POST",
+        body: "{}",
+        headers: { authorization: `Bearer ${accessToken("same-user", null, { client })}` },
+      });
+      expect(res.status).toBe(200);
+      forwarded.push(decodeURIComponent(String(seen[0]?.headers["x-caelo-mcp-client"])));
+    }
+    expect(forwarded).toEqual(["https://chatgpt.com/oauth/client.json", "dcr:Claude Code ✓"]);
+  });
+
   it("refuses a raw Google token, a forged or an expired access token without calling the admin", async () => {
     for (const bearer of [
       "eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJ4In0.c2ln",
       "ya29.google-access-token",
       accessToken("ok", null, { ttlSeconds: -1 }),
       `${accessToken("ok").slice(0, -4)}AAAA`,
+      // Minted before #968 (no client): the client refreshes and gets one that names it.
+      legacyAccessToken("ok"),
     ]) {
       const res = await send("/api/mcp/chat", {
         method: "POST",
@@ -258,6 +280,7 @@ describe("MCP proxy", () => {
           "x-goog-authenticated-user-email": "accounts.google.com:owner@example.com",
           "x-caelo-actor-id": "owner",
           "x-caelo-mcp-token": "t",
+          "x-caelo-mcp-client": "dcr:Forged",
           cookie: "caelo_session=stolen",
           "x-forwarded-for": "1.2.3.4",
           "x-forwarded-host": "evil.example",
@@ -284,9 +307,11 @@ describe("MCP proxy", () => {
     expect(up.headers["user-agent"]).toBe("claude-code/2");
     expect(up.headers["x-forwarded-host"]).toBe("gw.example.com");
     expect(up.headers["x-forwarded-proto"]).toBe("https");
+    // The client app comes from the sealed token, never from the request (#968).
+    expect(up.headers["x-caelo-mcp-client"]).toBe(encodeURIComponent("dcr:Test"));
     for (const name of Object.keys(up.headers)) {
       expect(name.startsWith("x-goog-")).toBe(false);
-      expect(name.startsWith("x-caelo-")).toBe(false);
+      if (name !== "x-caelo-mcp-client") expect(name.startsWith("x-caelo-")).toBe(false);
     }
     for (const name of [
       "cookie",

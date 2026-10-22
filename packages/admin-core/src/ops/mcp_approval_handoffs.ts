@@ -25,10 +25,11 @@
  * covered without touching each domain's executor.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { approverRefusal } from "./_approver-permission.js";
 
 type Tx = { execute: (q: ReturnType<typeof sql>) => Promise<unknown> };
 
@@ -369,7 +370,7 @@ export const listMcpApprovalHandoffsOp = defineOperation({
     })
     .strict(),
   output: z.object({ handoffs: z.array(handoffView) }),
-  handler: async (_ctx, input, tx) => {
+  handler: async (ctx, input, tx) => {
     const sessionFilter = input.chatSessionId
       ? sql`AND chat_session_id = ${input.chatSessionId}::uuid`
       : sql``;
@@ -380,10 +381,22 @@ export const listMcpApprovalHandoffsOp = defineOperation({
             sql`, `,
           )})`
         : sql``;
+    let actorFilter = sql``;
+    if (ctx.actorKind === "human") {
+      const refusal = await approverRefusal(
+        tx as TransactionRunner,
+        ctx,
+        "mcp_approval_handoffs.list",
+        ["settings.write"],
+      );
+      if (refusal !== null) {
+        actorFilter = sql`AND requested_by = ${ctx.actorId}::uuid`;
+      }
+    }
     const rows = (await tx.execute(sql`
       SELECT ${HANDOFF_COLUMNS} FROM mcp_approval_handoffs
        WHERE created_at > now() - make_interval(hours => ${input.withinHours ?? 24})
-         ${sessionFilter} ${idFilter}
+         ${sessionFilter} ${idFilter} ${actorFilter}
        ORDER BY created_at DESC
        LIMIT 200
     `)) as unknown as HandoffRow[];

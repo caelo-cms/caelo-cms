@@ -11,6 +11,7 @@
 
 import { runRemoteMcpSelfCheck } from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
+import { MCP_SURFACE_PERMISSION } from "@caelo-cms/shared";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { currentRemoteMcpAvailability } from "#lib/server/google-iap.js";
@@ -27,11 +28,29 @@ async function configuredClient(locals: App.Locals): Promise<ConfiguredClient> {
   return (r.value as { client: ConfiguredClient }).client;
 }
 
+async function siteHostOf(locals: App.Locals, mcpPublicUrl: string): Promise<string> {
+  const { adapter, registry } = getQueryContext();
+  const r = await execute(registry, adapter, locals.ctx, "site_defaults.get_seo", {});
+  if (!r.ok) throw new Error(`site_defaults.get_seo failed: ${JSON.stringify(r.error)}`);
+  // Same rule as Settings → MCP: the site's address, or the MCP address's
+  // host while the site's base URL is not configured yet.
+  return new URL((r.value as { siteBaseUrl: string | null }).siteBaseUrl ?? mcpPublicUrl).host;
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.read");
   const availability = currentRemoteMcpAvailability();
   const client = availability.status === "available" ? await configuredClient(locals) : null;
-  return { availability, client };
+  const siteHost =
+    availability.status === "available"
+      ? await siteHostOf(locals, availability.mcpPublicUrl)
+      : null;
+  // #968 — only the addresses this user's role may use are offered.
+  const mayUse = {
+    chat: locals.user?.permissions.has(MCP_SURFACE_PERMISSION.chat) === true,
+    admin: locals.user?.permissions.has(MCP_SURFACE_PERMISSION.admin) === true,
+  };
+  return { availability, client, siteHost, mayUse };
 };
 
 export const actions: Actions = {
