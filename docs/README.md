@@ -9,15 +9,18 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 ## Architecture and patterns
 
 - [propose-execute-pattern.md](./propose-execute-pattern.md) — the apply + audit engine behind human-approved (gated) AI tools, and how to gate a new domain (CLAUDE.md §11.A).
+- [internal-links.md](./internal-links.md) — internal links as page references: write-time canonicalisation, render-time resolution, and why a move rewrites no link (epic #724).
 - [module-type-and-composition.md](./module-type-and-composition.md) — the module `type` column and which modules may fill a nested slot.
 - [themes.md](./themes.md) — the theme token document, token roles, the cold-start gate and theme assets.
 - [typography-strategy.md](./typography-strategy.md) — the core font service: immutable font registry, licensing, themes and static builds.
 - [branch-aware-plugin-storage.md](./branch-aware-plugin-storage.md) — how plugin writes land on a chat's branch instead of live (CMS_REQUIREMENTS §14.7).
 - [plugin-live-preview.md](./plugin-live-preview.md) — plugin preview documents shown in Live Edit.
+- [live-edit-references.md](./live-edit-references.md) — right-click / selection references and Ask AI in the Live Edit preview, and what the AI receives.
 - [inspect-tooling-redesign.md](./inspect-tooling-redesign.md) — gist-first inspection of external pages and on-demand HTML queries.
 - [dev/public-admin-boundary.md](./dev/public-admin-boundary.md) — the public/admin boundary: the public side is assumed compromised.
 - [dev/public-admin-read-paths.md](./dev/public-admin-read-paths.md) — every path where the admin reads `cms_public` data, and how each treats it as untrusted.
 - [dev/password-management.md](./dev/password-management.md) — password policy, change, reset and Owner reset in code.
+- [internal/bug-intake.md](./internal/bug-intake.md) — maintainer runbook for the Caelo-operated bug intake that files one GitHub issue per defect.
 
 ## AI internals
 
@@ -31,7 +34,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 ## Testing and quality gates
 
 - [internal/e2e-livedit.md](./internal/e2e-livedit.md) — the real-AI Playwright suite: setup, assertion classes, adding a scenario.
-- [quality-checks.md](./quality-checks.md) — the quality audit's checks on the staged build (check framework, `structure`, `links`).
+- [quality-checks.md](./quality-checks.md) — the quality audit's checks on the staged build (check framework, `structure`, `links`, `references`) and the Stage-time reference-integrity gate (#724).
 - [dev/coverage.md](./dev/coverage.md) — the coverage gate.
 - [dev/knip.md](./dev/knip.md) — the dead-code gate.
 - [dev/madge.md](./dev/madge.md) — the circular-dependency gate.

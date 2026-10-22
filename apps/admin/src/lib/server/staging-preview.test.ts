@@ -11,9 +11,10 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { SVG_DOCUMENT_CSP } from "@caelo-cms/shared";
 import type { Bucket } from "@google-cloud/storage";
 import { isHttpError } from "@sveltejs/kit";
-import { SVG_DOCUMENT_CSP } from "./media-headers.js";
+import { STAGED_DOCUMENT_CSP } from "./preview-sandbox.js";
 import { createStagingPreviewHandler, gcsStagingPreviewBuckets } from "./staging-preview.js";
 
 const RUN = "run-1";
@@ -90,7 +91,7 @@ describe("GET /_staging-preview/<runId>/<rest>", () => {
     expect(await get(handler, "about/")).toEqual({ status: 200, message: "staged about" });
   });
 
-  it("serves staged media SVGs under the media CSP, pages without it (#863)", async () => {
+  it("serves staged media SVGs under the media CSP, pages script-less (#863, #946)", async () => {
     const handler = handlerWith({
       [FILE_LIST_KEY]: JSON.stringify({ files: ["about/index.html", "_assets/logo.abc.svg"] }),
       [`${RUN}/about/index.html`]: "staged about",
@@ -102,9 +103,12 @@ describe("GET /_staging-preview/<runId>/<rest>", () => {
     expect(svg.headers.get("content-type")).toBe("image/svg+xml");
     expect(svg.headers.get("content-security-policy")).toBe(SVG_DOCUMENT_CSP);
     expect(svg.headers.get("x-content-type-options")).toBe("nosniff");
-    // A staged page runs the site's own scripts: no sandbox CSP there.
+    // #946 — a staged page is the site's module HTML on the ADMIN origin:
+    // sandboxed, no script (it keeps its origin so assets load).
     const page = await call("about/");
-    expect(page.headers.get("content-security-policy")).toBeNull();
+    expect(page.headers.get("content-security-policy")).toBe(STAGED_DOCUMENT_CSP);
+    expect(STAGED_DOCUMENT_CSP).toContain("script-src 'none'");
+    expect(STAGED_DOCUMENT_CSP).not.toContain("allow-scripts");
     expect(page.headers.get("x-content-type-options")).toBe("nosniff");
   });
 

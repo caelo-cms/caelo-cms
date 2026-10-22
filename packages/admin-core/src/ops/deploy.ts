@@ -861,6 +861,25 @@ export const triggerDeployOp = defineOperation({
         `);
         return err({ kind: "HandlerError", operation: "deploy.trigger", message });
       }
+
+      // #650 / #908 — staging.<domain> now serves this build: the one place
+      // its preview becomes the served one (kept alive, every other preview
+      // retired) and is recorded as the origin the gateway proxies to.
+      try {
+        await selectServedStagingPreview(publisher, runId);
+      } catch (e) {
+        const message = `staging build ${runId} was published but could not be made the build staging serves: ${e instanceof Error ? e.message : String(e)}. Staging still serves the previous build; Stage again.`;
+        await tx.execute(sql`
+          UPDATE deploy_runs
+          SET status = 'failed', finished_at = now(), error_message = ${message}
+          WHERE id = ${runId}::uuid
+        `);
+        return err({ kind: "HandlerError", operation: "deploy.trigger", message });
+      }
+      await setStagingOrigin(tx, {
+        originUrl: publishSummary.previewUrl ?? null,
+        runId,
+      });
     }
 
     // The publish-anyway decision is recorded only now that the build it
@@ -883,16 +902,6 @@ export const triggerDeployOp = defineOperation({
           parity_manifest = ${parityManifest === null ? null : jsonbParam(parityManifest)}
       WHERE id = ${runId}::uuid
     `);
-
-    if (stagingOrigin) {
-      // #650 — staging.<domain> now serves this build: the gateway proxies
-      // to its origin, and every older public preview is retired.
-      await setStagingOrigin(tx, {
-        originUrl: publishSummary.previewUrl ?? null,
-        runId,
-      });
-      await pruneStagingPreviews(publisher, runId);
-    }
 
     // #650 — where staging has its own host, that host is the only staging
     // URL anyone is shown; the provider's preview origin stays internal.
@@ -1061,6 +1070,15 @@ export const promoteDeployOp = defineOperation({
       if (fromRow?.site_url) await lockStagingPublication(tx);
       const provider = process.env.CAELO_PROVIDER;
       const publisher = await loadStaticPublisher(provider);
+      if (fromRow?.site_url) {
+        // staging.<domain> keeps serving what it serves — the build about
+        // to go live, or a newer Stage — so after the release it shows the
+        // published state instead of "nothing staged". Re-selecting it keeps
+        // its preview alive even when it was staged before served previews
+        // stopped expiring, and sweeps up previews a failed retirement left.
+        // Done before the release, so a failure publishes nothing.
+        await selectServedStagingPreview(publisher, await servedStagingRun(tx));
+      }
       const { siteBaseUrl } = await readSeoSettings(tx);
       // #650 — a build staged with its own staging host cannot be copied
       // live (every absolute URL names staging.<domain>): rebuild the same
@@ -1100,15 +1118,6 @@ export const promoteDeployOp = defineOperation({
             caelo_version = ${rebuilt ? CAELO_VERSION : sql`(SELECT caelo_version FROM deploy_runs WHERE id = ${fromRunId}::uuid)`}
         WHERE id = ${toRunId}::uuid
       `);
-      if (rebuilt) {
-        // What was staged is live now: nothing is left to serve on
-        // staging.<domain>, and its public preview is retired (#650) —
-        // unless a newer Stage committed while this publish ran: that one
-        // stays served and keeps its preview.
-        const newer = await stagedRunOtherThan(tx, fromRunId);
-        if (newer === null) await setStagingOrigin(tx, null);
-        await pruneStagingPreviews(publisher, newer);
-      }
       // Issue #620 — a human Publish live ships the staged build, and with
       // it exactly the AI Stages that build covered.
       if (to.env === "production" && ctx.actorKind === "human" && fromRow) {
@@ -1223,38 +1232,78 @@ async function rebuildAndPublishLive(
 }
 
 /**
- * #650 — the run staging serves when it is not `runId`, else null. Read
+ * #650 — the run staging serves, or null when nothing was ever staged. Read
  * under the staging-publication lock, so the answer holds until commit.
  */
-async function stagedRunOtherThan(tx: TransactionRunner, runId: string): Promise<string | null> {
+async function servedStagingRun(tx: TransactionRunner): Promise<string | null> {
   const rows = (await tx.execute(sql`
     SELECT origin_run_id::text AS run_id FROM staging_access WHERE id = 1
   `)) as unknown as { run_id: string | null }[];
-  const current = rows[0]?.run_id ?? null;
-  return current !== null && current !== runId ? current : null;
+  return rows[0]?.run_id ?? null;
 }
 
 /**
- * #650 — retire public previews of staged builds that are no longer the
- * current one (all of them when `keepRunId` is null). Cleanup only: the
- * release it follows has already happened, and a preview that survives a
- * failed delete still expires with its 7-day TTL — so a failure is logged
- * loudly instead of failing a Stage or Publish live that did succeed.
+ * #650 / #908 — make `servedRunId`'s public preview the one staging serves
+ * (null: none) through the publisher, which keeps it alive and retires the
+ * rest. Throws when the served preview cannot be kept alive: the caller
+ * then neither records nor releases anything. A preview that could not be
+ * retired still expires with its restored TTL and is retried by the next
+ * selection, so that is logged loudly instead of failing the operation.
  */
-async function pruneStagingPreviews(
+async function selectServedStagingPreview(
   publisher: StaticPublisher,
-  keepRunId: string | null,
+  servedRunId: string | null,
 ): Promise<void> {
-  if (!publisher.pruneStagingPreviews) return;
-  try {
-    await publisher.pruneStagingPreviews({ keepRunId });
-  } catch (e) {
+  if (!publisher.selectStagingPreview) return;
+  const { notRetired } = await publisher.selectStagingPreview({ servedRunId });
+  if (notRetired.length > 0) {
     console.error(
-      "[deploy] could not delete superseded staging previews; they stay publicly reachable until their 7-day TTL ends",
-      { keepRunId, error: e instanceof Error ? e.message : String(e) },
+      "[deploy] could not delete superseded staging previews; they stay publicly reachable until their TTL ends or the next Stage or Publish live retires them",
+      { servedRunId, notRetired },
     );
   }
 }
+
+/**
+ * #969 — keep the preview staging serves alive between Stages. A provider
+ * whose served preview has a finite lifetime (Firebase Hosting: preview
+ * channels live at most 30 days and cannot be made permanent) extends it
+ * again; Stage and Publish live do the same through selectStagingPreview,
+ * this covers the idle stretch in between. Runs under the staging
+ * publication lock, so it refreshes exactly the preview a concurrent Stage
+ * or Publish live leaves served. A served preview that is already gone
+ * fails loudly (Stage again) — never a silent no-op.
+ */
+export const refreshStagingPreviewOp = defineOperation({
+  name: "deploy.refresh_staging_preview",
+  // Why human-only: a maintenance tick the redeploy orchestrator runs on a
+  // timer; it decides nothing an editor or the AI chooses (Stage already
+  // refreshes the preview), so it carries no AI tool.
+  actorScope: ["human", "system"],
+  database: "cms_admin",
+  input: z.object({}).strict(),
+  output: z.object({
+    servedRunId: z.string().nullable(),
+    expiresAt: z.string().nullable(),
+  }),
+  handler: async (_ctx, _input, tx) => {
+    const publisher = await loadStaticPublisher(process.env.CAELO_PROVIDER);
+    if (!publisher.refreshStagingPreview) return ok({ servedRunId: null, expiresAt: null });
+    await lockStagingPublication(tx);
+    const servedRunId = await servedStagingRun(tx);
+    if (servedRunId === null) return ok({ servedRunId: null, expiresAt: null });
+    try {
+      const { expiresAt } = await publisher.refreshStagingPreview({ servedRunId });
+      return ok({ servedRunId, expiresAt });
+    } catch (e) {
+      return err({
+        kind: "HandlerError",
+        operation: "deploy.refresh_staging_preview",
+        message: `the staging preview of build ${servedRunId} could not be kept alive: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  },
+});
 
 /**
  * Rollback: re-target a target's `current` symlink at any prior

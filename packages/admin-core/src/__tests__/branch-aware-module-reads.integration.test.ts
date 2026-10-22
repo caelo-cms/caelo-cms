@@ -61,7 +61,9 @@ const MAIN_FIELDS = [
     name: "nav_items",
     kind: "link-list",
     label: "Navigation",
-    default: [{ label: "Home", href: "/" }],
+    // External: an internal link must name an existing page (#724), and
+    // this file seeds none.
+    default: [{ label: "Home", href: "https://example.com/" }],
   },
 ];
 
@@ -248,8 +250,8 @@ describe("branch-effective module reads (read_content / edit_content / edit_modu
             kind: "link-list",
             label: "Navigation",
             default: [
-              { label: "Home", href: "/" },
-              { label: "Blog", href: "/blog" },
+              { label: "Home", href: "https://example.com/" },
+              { label: "Blog", href: "https://example.com/blog" },
             ],
           },
         ],

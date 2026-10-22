@@ -372,9 +372,17 @@ function seed(): Seed {
         RETURNING id\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)
         VALUES (\${tpl[0].id}, 'content', 'Content', 0)\`;
+      // Internal links are stored as page references (#724), so the
+      // pages exist before the footer that links to them.
+      const mk = async (slug, path) => (await tx\`INSERT INTO pages (slug, name, title, template_id, status, current_path)
+        VALUES (\${slug}, \${slug}, \${slug}, \${tpl[0].id}, 'published', \${path}) RETURNING id\`)[0].id;
+      const enPricing = await mk(P + "-pricing", "/" + P + "-pricing");
+      const enAbout = await mk(P + "-about", "/" + P + "-about");
+      const dePreise = await mk(P + "-preise", "/de/" + P + "-preise");
+      const deUeber = await mk(P + "-ueber", "/de/" + P + "-ueber");
       const fields = JSON.stringify([
         { name: "tagline", kind: "text", label: "Tagline", default: "Made with care" },
-        { name: "nav", kind: "link-list", label: "Menu", default: [{ label: "About", href: "/" + P + "-about" }] },
+        { name: "nav", kind: "link-list", label: "Menu", default: [{ label: "About", href: "caelo:page/" + enAbout }] },
       ]);
       const mod = await tx\`INSERT INTO modules (slug, display_name, type, kind, html, fields)
         VALUES (\${P + "-footer"}, 'Site footer', 'footer', 'chrome',
@@ -382,12 +390,6 @@ function seed(): Seed {
                 (\${fields}::text)::jsonb) RETURNING id\`;
       await tx\`INSERT INTO layout_modules (layout_id, block_name, position, module_id)
         VALUES (\${lay[0].id}, 'footer', 0, \${mod[0].id})\`;
-      const mk = async (slug, path) => (await tx\`INSERT INTO pages (slug, name, title, template_id, status, current_path)
-        VALUES (\${slug}, \${slug}, \${slug}, \${tpl[0].id}, 'published', \${path}) RETURNING id\`)[0].id;
-      const enPricing = await mk(P + "-pricing", "/" + P + "-pricing");
-      const enAbout = await mk(P + "-about", "/" + P + "-about");
-      const dePreise = await mk(P + "-preise", "/de/" + P + "-preise");
-      const deUeber = await mk(P + "-ueber", "/de/" + P + "-ueber");
 
       const plug = await tx\`SELECT id FROM plugins WHERE slug = 'international-site'\`;
       if (!plug[0]) throw new Error("international-site plugin not loaded in the e2e admin");
@@ -400,7 +402,7 @@ function seed(): Seed {
         await tx.unsafe(\`INSERT INTO plugin_international_site.page_variants (group_id, page_id, locale_code, translation_status)
           VALUES ('\${g}', '\${en}', 'en', 'source'), ('\${g}', '\${de}', 'de', 'up_to_date')\`);
       }
-      const values = JSON.stringify({ tagline: "Mit Sorgfalt gemacht", nav: [{ label: "Über uns", href: "/" + P + "-about" }] });
+      const values = JSON.stringify({ tagline: "Mit Sorgfalt gemacht", nav: [{ label: "Über uns", href: "caelo:page/" + enAbout }] });
       await tx\`INSERT INTO plugin_international_site.chrome_variants
         (target_key, locale_code, mode, values, translation_status, source_hash)
         VALUES (\${"layout:" + lay[0].id + ":footer:0"}, 'de', 'translated', (\${values}::text)::jsonb, 'up_to_date', 'seeded')\`;
@@ -466,7 +468,9 @@ test("an English page shows the English footer, its German counterpart the Germa
     expect(en.status()).toBe(200);
     const enHtml = await en.text();
     expect(enHtml).toContain('<p class="tag">Made with care</p>');
-    expect(enHtml).toContain(`<a href="/${PFX}-about">About</a>`);
+    // References render in the default deploy target's URL style; the
+    // e2e stack keeps the column default (`directory` → trailing slash).
+    expect(enHtml).toContain(`<a href="/${PFX}-about/">About</a>`);
 
     const de = await request.get(`${BASE}/edit/preview/${s.dePageId}`, { headers });
     expect(de.status()).toBe(200);

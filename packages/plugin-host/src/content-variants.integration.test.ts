@@ -126,7 +126,7 @@ describe("#592 — content-variants composition point", () => {
   it("without a contributor nothing is resolved", async () => {
     await boot();
     expect(hasContentVariantContributors()).toBe(false);
-    expect((await resolveContentVariants(pages, MAIN_RENDER, "directory")).size).toBe(0);
+    expect((await resolveContentVariants(pages, MAIN_RENDER)).size).toBe(0);
   });
 
   it("returns validated answers per placement, problems included", async () => {
@@ -139,7 +139,7 @@ describe("#592 — content-variants composition point", () => {
         },
       }),
     );
-    const r = (await resolveContentVariants(pages, MAIN_RENDER, "directory")).get(PAGE);
+    const r = (await resolveContentVariants(pages, MAIN_RENDER)).get(PAGE);
     expect(r?.get("layout:footer:0")).toEqual({
       pluginSlug: "t592-ok",
       moduleId: swap,
@@ -155,28 +155,24 @@ describe("#592 — content-variants composition point", () => {
         [PAGE]: { "page:content:0": { moduleId: "00000000-0000-4000-8000-00000000f592" } },
       }),
     );
-    await expect(resolveContentVariants(pages, MAIN_RENDER, "directory")).rejects.toThrow(
+    await expect(resolveContentVariants(pages, MAIN_RENDER)).rejects.toThrow(
       /only layout placements may render a different module/,
     );
   });
 
   it("refuses answers outside the pass and ill-formed answers", async () => {
     await boot(resolver("t592-stray", { [PAGE]: { "layout:header:0": { values: {} } } }));
-    await expect(resolveContentVariants(pages, MAIN_RENDER, "directory")).rejects.toThrow(
+    await expect(resolveContentVariants(pages, MAIN_RENDER)).rejects.toThrow(
       /not part of this render pass/,
     );
     await cleanup();
     await boot(resolver("t592-bad", { [PAGE]: { "layout:footer:0": { values: "x" } } }));
-    await expect(resolveContentVariants(pages, MAIN_RENDER, "directory")).rejects.toThrow(
-      /invalid resolution/,
-    );
+    await expect(resolveContentVariants(pages, MAIN_RENDER)).rejects.toThrow(/invalid resolution/);
   });
 
   it("refuses two plugins resolving the same placement", async () => {
     const answer = { [PAGE]: { "layout:footer:0": { values: {} } } };
     await boot(resolver("t592-a", answer), resolver("t592-b", answer));
-    await expect(resolveContentVariants(pages, MAIN_RENDER, "directory")).rejects.toThrow(
-      /resolved by both/,
-    );
+    await expect(resolveContentVariants(pages, MAIN_RENDER)).rejects.toThrow(/resolved by both/);
   });
 });

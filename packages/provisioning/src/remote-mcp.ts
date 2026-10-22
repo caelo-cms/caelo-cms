@@ -20,9 +20,13 @@
  * come through the shared contract like everything else
  * (runtime-secrets.ts, stack-contract.ts, upgrade/app-roll.ts).
  *
- * Nothing here enables remote MCP: that is the Owner's opt-in under
- * Settings → MCP → Remote. Until then the gateway answers 503
- * `remote_mcp_not_configured`.
+ * The same identity env carries what the admin's Google sign-in needs
+ * (#914): its own URL and the project's Google organisation domain
+ * ({@link resolveGoogleOrgDomain}).
+ *
+ * Nothing here enables remote MCP: that happens when the Owner sets up the
+ * install's Google sign-in client (Settings → Google sign-in). Until then
+ * the gateway answers 503 `remote_mcp_not_configured`.
  */
 
 import { GCP_PUBLIC_BASE_PATHS } from "@caelo-cms/shared";
@@ -82,11 +86,65 @@ function lines(stdout: string): string[] {
 // ===========================================================================
 
 /**
+ * #914 — the project's Google organisation domain (the organisation's
+ * `displayName`, which Cloud Resource Manager sets to its primary domain),
+ * or `none` when the project sits in no organisation. Read as the
+ * operator's identity: `organizations describe` needs
+ * `resourcemanager.organizations.get` on the organisation, which project
+ * Owners often have and the admin's service account never does.
+ */
+export async function resolveGoogleOrgDomain(
+  projectId: string,
+  deps: { run?: GcloudRunner } = {},
+): Promise<RemoteMcpResult<{ readonly domain: string }>> {
+  const run = deps.run ?? defaultGcloud;
+  const ancestors = await run(["projects", "get-ancestors", projectId, "--format=json"]);
+  if (!ancestors.ok) {
+    return { ok: false, error: `read the ancestors of ${projectId}: ${ancestors.stderr.trim()}` };
+  }
+  const list = parseJson(ancestors.stdout || "[]");
+  if (!Array.isArray(list)) return { ok: false, error: "get-ancestors: output is not a JSON list" };
+  const org = (list as { id?: string; type?: string }[]).find((a) => a.type === "organization");
+  if (!org?.id) return { ok: true, domain: NO_GOOGLE_ORGANISATION };
+  const describe = await run(["organizations", "describe", org.id, "--format=value(displayName)"]);
+  const domain = describe.ok ? describe.stdout.trim().toLowerCase() : "";
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
+    return {
+      ok: false,
+      error: `read organization ${org.id}: ${describe.stderr.trim() || `unexpected name "${domain}"`} (needs the Organization Viewer role)`,
+    };
+  }
+  return { ok: true, domain };
+}
+
+/** `CAELO_GOOGLE_ORG_DOMAIN` value for a project outside any organisation (admin-core identity-gate.ts). */
+export const NO_GOOGLE_ORGANISATION = "none";
+
+/**
  * Read the live identities {@link remoteMcpIdentity} derives from: the
  * project number, and the admin's backend service id (`gcp`) or both
  * services' URLs (`gcp-firebase`). Fails naming what it could not read.
+ *
+ * The organisation domain (#914) is best-effort: when it cannot be read,
+ * `orgDomainError` says why and the identity carries none, so the admin's
+ * var keeps its value — the admin then reports the organisation as unknown
+ * and refuses user creation loudly until the Owner sets up Google sign-in.
  */
 export async function resolveRemoteMcpIdentity(
+  target: RemoteMcpTarget,
+  deps: { run?: GcloudRunner } = {},
+): Promise<
+  RemoteMcpResult<{ readonly identity: RemoteMcpIdentity; readonly orgDomainError?: string }>
+> {
+  const resolved = await resolveServiceIdentity(target, deps);
+  if (!resolved.ok) return resolved;
+  const org = await resolveGoogleOrgDomain(target.projectId, deps);
+  return org.ok
+    ? { ok: true, identity: { ...resolved.identity, googleOrgDomain: org.domain } }
+    : { ok: true, identity: resolved.identity, orgDomainError: org.error };
+}
+
+async function resolveServiceIdentity(
   target: RemoteMcpTarget,
   deps: { run?: GcloudRunner } = {},
 ): Promise<RemoteMcpResult<{ readonly identity: RemoteMcpIdentity }>> {
@@ -223,13 +281,19 @@ export async function ensureRemoteMcpIdentityEnv(
   RemoteMcpResult<{
     readonly identity: RemoteMcpIdentity;
     readonly changes: Record<CloudRunSlug, EnvChange[]>;
+    readonly orgDomainError?: string;
   }>
 > {
   const resolved = await resolveRemoteMcpIdentity(target, deps);
   if (!resolved.ok) return resolved;
   const applied = await applyRemoteMcpIdentityEnv(target, resolved.identity, deps);
   if (!applied.ok) return applied;
-  return { ok: true, identity: resolved.identity, changes: applied.changes };
+  return {
+    ok: true,
+    identity: resolved.identity,
+    changes: applied.changes,
+    ...(resolved.orgDomainError ? { orgDomainError: resolved.orgDomainError } : {}),
+  };
 }
 
 // ===========================================================================

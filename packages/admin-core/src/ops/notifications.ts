@@ -21,6 +21,11 @@
  * every hour and writes to `release_check_cache`. This op just reads
  * the table — pure Postgres, no network in the tx.
  *
+ * Epic #901 — `bugForwardingUndecided`: the AI has filed at least one bug
+ * report and the Owner has not yet answered whether reports go to the
+ * Caelo team. Asked once, when it first matters; answering either way on
+ * /settings/bugs clears it.
+ *
  * Single op (not four) so the AppShell makes one network call per
  * poll. Adapter / Validator runs in the same actor scope as the
  * caller so the read is RLS-safe.
@@ -41,6 +46,7 @@ const notificationsRow = z.object({
   releaseUrl: z.string().nullable(),
   /** Where the Owner installs the update (#696) — the release notice links here. */
   updatesPath: z.literal(UPDATES_PATH),
+  bugForwardingUndecided: z.boolean(),
   total: z.number().int().nonnegative(),
 });
 
@@ -89,13 +95,16 @@ export const aggregateNotificationsOp = defineOperation({
              AND archived_at IS NULL
              AND published_at IS NULL) AS stale_branches,
         (SELECT latest_version FROM release_check_cache WHERE id = 1) AS latest_version,
-        (SELECT release_url    FROM release_check_cache WHERE id = 1) AS release_url
+        (SELECT release_url    FROM release_check_cache WHERE id = 1) AS release_url,
+        ((SELECT bug_forwarding_decided_at IS NULL FROM telemetry_settings WHERE id = 1)
+           AND EXISTS (SELECT 1 FROM ai_bug_reports)) AS bug_forwarding_undecided
     `)) as unknown as {
       pending_proposals: number | string;
       failed_deploys: number | string;
       stale_branches: number | string;
       latest_version: string | null;
       release_url: string | null;
+      bug_forwarding_undecided: boolean | null;
     }[];
     const r = rows[0] ?? {
       pending_proposals: 0,
@@ -103,6 +112,7 @@ export const aggregateNotificationsOp = defineOperation({
       stale_branches: 0,
       latest_version: null,
       release_url: null,
+      bug_forwarding_undecided: false,
     };
     const toInt = (v: number | string): number =>
       typeof v === "string" ? Number.parseInt(v, 10) : v;
@@ -113,6 +123,7 @@ export const aggregateNotificationsOp = defineOperation({
     const latestVersion = r.latest_version;
     const releaseUrl = r.release_url;
     const upgradeAvailable = latestVersion !== null && isNewerVersion(latestVersion, CAELO_VERSION);
+    const bugForwardingUndecided = r.bug_forwarding_undecided === true;
 
     return ok({
       pendingProposals,
@@ -122,10 +133,16 @@ export const aggregateNotificationsOp = defineOperation({
       latestVersion,
       releaseUrl,
       updatesPath: UPDATES_PATH,
+      bugForwardingUndecided,
       // Bell badge count includes "1" for the upgrade tile so the
       // operator notices a new release the same way they notice a
       // pending proposal.
-      total: pendingProposals + failedDeploys + staleBranches + (upgradeAvailable ? 1 : 0),
+      total:
+        pendingProposals +
+        failedDeploys +
+        staleBranches +
+        (upgradeAvailable ? 1 : 0) +
+        (bugForwardingUndecided ? 1 : 0),
     });
   },
 });

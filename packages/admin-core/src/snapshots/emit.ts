@@ -78,7 +78,10 @@ export type SnapshotOpKind =
   // v0.11.4 (issue #76 follow-up) — meta-only edit (description /
   // displayName) emits its own kind so the history view can
   // distinguish a token rewrite from a metadata change.
-  | "themes.update_meta";
+  | "themes.update_meta"
+  // Epic #724 rollout E — the literal-link → reference migration (0326).
+  | "links.migrate_to_references"
+  | "links.revert_migration";
 
 export type SnapshotEntity =
   | { readonly kind: "module"; readonly entityId: string; readonly state: ModuleState }
@@ -123,15 +126,22 @@ export async function emitSnapshot(
   tx: TransactionRunner,
   input: SnapshotInput,
 ): Promise<{ siteSnapshotId: string }> {
+  // created_at is the moment of THIS write (clock_timestamp), not the
+  // transaction start (the column default now()): every branch overlay
+  // picks an entity's latest state with `ORDER BY ss.created_at DESC`, and
+  // an op that snapshots the same entity twice in one transaction (fork a
+  // placement, then write the copy's values) must have its second state
+  // win instead of tying with the first.
   const headerRows = (await tx.execute(sql`
-    INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id, revert_of)
+    INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id, revert_of, created_at)
     VALUES (
       ${input.actorId}::uuid,
       ${input.opKind},
       ${input.description},
       ${input.chatTaskId ?? null},
       ${input.chatBranchId ?? null},
-      ${input.revertOf ?? null}
+      ${input.revertOf ?? null},
+      clock_timestamp()
     )
     RETURNING id::text AS id
   `)) as unknown as { id: string }[];

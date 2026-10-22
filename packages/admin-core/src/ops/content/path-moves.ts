@@ -7,37 +7,35 @@
  *
  * A move is never just a column write: the old URL must keep working
  * (301), redirects that pointed at the old URL must not become chains,
- * a redirect sitting on the page's NEW URL must yield to the page, and
- * every nav-menu / link-list / module / content link that named the old
- * URL must follow. All of it runs on the caller's transaction, so the
- * move commits or rolls back as a whole (CLAUDE.md §11: a multi-step
- * patch belongs inside one op).
+ * and a redirect sitting on the page's NEW URL must yield to the page.
+ * All of it runs on the caller's transaction, so the move commits or
+ * rolls back as a whole (CLAUDE.md §11: a multi-step patch belongs
+ * inside one op).
+ *
+ * No stored link is touched (epic #724). Internal links are page
+ * references (`caelo:page/<id>`) that resolve to the page's current path
+ * at render time, so nav menus, link lists, module HTML and content
+ * follow a move on their own. The 301s exist for links from OUTSIDE the
+ * site (search engines, bookmarks, other sites). A literal internal link
+ * left over from before #724 that the one-time migration could not turn
+ * into a reference is NOT rewritten either: it keeps working through the
+ * 301 and the link checks report it, so it is fixed visibly, never
+ * guessed.
  *
  * Always main-line: callers pass a context without a chat branch —
- * redirects and link targets are live state, like the paths they follow.
+ * redirects are live state, like the paths they follow.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { createRedirectOp } from "../redirects.js";
-import { rewriteModuleLinksOp } from "../seo.js";
-import { listStructuredSetsOp, setStructuredSetOp } from "../structured_sets.js";
 import type { PathMove } from "./current-path.js";
-import { buildPathMoveMap, rewritePathLinksInJson } from "./path-link-rewrite.js";
 
 /** What a move set changed besides the paths themselves. */
 export interface PathMoveEffects {
+  /** Old-URL 301s created (one per moved page unless suppressed). */
   readonly redirectsCreated: number;
-  readonly rewrittenSets: number;
-  readonly rewrittenModules: number;
-  readonly rewrittenContentInstances: number;
-  /**
-   * Link sets whose rewrite was refused (another chat holds them). Their
-   * stale links still reach the page through the 301; the caller reports
-   * them so the AI can fix them once the set is free.
-   */
-  readonly blockedSets: readonly string[];
 }
 
 /**
@@ -45,10 +43,9 @@ export interface PathMoveEffects {
  *
  * @param redirects `"skip"` suppresses the old-URL 301s (operator asked
  *   for the old URLs to 404); `{ skip }` decides per moved page (a publish
- *   carrying moves with different requests). Chain collapse, reclaim and
- *   link rewrites always run over the WHOLE move set in one pass — split
- *   passes would re-collapse one subset's fresh redirects and rewrite
- *   links twice.
+ *   carrying moves with different requests). Chain collapse and reclaim
+ *   always run over the WHOLE move set in one pass — split passes would
+ *   re-collapse one subset's fresh redirects.
  */
 export async function applyPathMoveEffects(
   ctx: ExecutionContext,
@@ -59,15 +56,7 @@ export async function applyPathMoveEffects(
   const skipsRedirect = (pageId: string): boolean =>
     redirects === "skip" ? true : redirects === "auto" ? false : redirects.skip(pageId);
   const real = moves.filter((m) => m.from !== m.to);
-  if (real.length === 0) {
-    return {
-      redirectsCreated: 0,
-      rewrittenSets: 0,
-      rewrittenModules: 0,
-      rewrittenContentInstances: 0,
-      blockedSets: [],
-    };
-  }
+  if (real.length === 0) return { redirectsCreated: 0 };
   const { chatBranchId: _b, chatTaskId: _t, ...mainCtx } = ctx;
 
   // A page now lives at each new path: a redirect from there (e.g. left
@@ -106,58 +95,5 @@ export async function applyPathMoveEffects(
     redirectsCreated += 1;
   }
 
-  const map = buildPathMoveMap(real);
-  let rewrittenSets = 0;
-  const blockedSets: string[] = [];
-  // Only these kinds carry hrefs; the rest would be wasted reads.
-  for (const kind of ["nav-menu", "link-list"] as const) {
-    const listed = await listStructuredSetsOp.handler(mainCtx, { kind }, tx);
-    if (!listed.ok) {
-      throw new Error(`page move aborted — could not list ${kind} sets to rewrite their links`);
-    }
-    const sets = (
-      listed.value as { sets: { slug: string; displayName: string; items: unknown[] }[] }
-    ).sets;
-    for (const s of sets) {
-      const next = rewritePathLinksInJson(s.items, map);
-      if (next === s.items) continue;
-      const w = await setStructuredSetOp.handler(
-        mainCtx,
-        { kind, slug: s.slug, displayName: s.displayName, items: next as unknown[] },
-        tx,
-      );
-      if (!w.ok) {
-        blockedSets.push(`${kind}:${s.slug}`);
-        continue;
-      }
-      rewrittenSets += 1;
-    }
-  }
-
-  if (map.size === 0) {
-    return {
-      redirectsCreated,
-      rewrittenSets,
-      rewrittenModules: 0,
-      rewrittenContentInstances: 0,
-      blockedSets,
-    };
-  }
-  const rewrite = await rewriteModuleLinksOp.handler(
-    { ...mainCtx, actorKind: "system" },
-    { moves: [...map].map(([fromPath, toPath]) => ({ fromPath, toPath })) },
-    tx,
-  );
-  if (!rewrite.ok) throw new Error("page move aborted — rewriting module links failed");
-  const rv = rewrite.value as {
-    rewrittenModuleIds: string[];
-    rewrittenContentInstanceIds: string[];
-  };
-  return {
-    redirectsCreated,
-    rewrittenSets,
-    rewrittenModules: rv.rewrittenModuleIds.length,
-    rewrittenContentInstances: rv.rewrittenContentInstanceIds.length,
-    blockedSets,
-  };
+  return { redirectsCreated };
 }

@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { CAELO_VERSION } from "@caelo-cms/shared";
+import { CAELO_VERSION, type ReleaseManifest } from "@caelo-cms/shared";
 import {
   fetchLatestRelease,
   predictReleaseRoute,
@@ -160,11 +160,50 @@ describe("predictReleaseRoute (#817)", () => {
   it("routes nothing when the release is not newer than what runs", async () => {
     reads = 0;
     const same = await predictReleaseRoute({ ...found, latestVersion: CAELO_VERSION }, opts);
-    expect(same).toEqual({ ...found, latestVersion: CAELO_VERSION, infraChange: null });
+    expect(same).toEqual({
+      ...found,
+      latestVersion: CAELO_VERSION,
+      infraChange: null,
+      ownerAction: null,
+    });
     expect(reads).toBe(0);
   });
 
   it("leaves the route unknown when a manifest cannot be read", async () => {
-    expect(await predictReleaseRoute(found, opts)).toEqual({ ...found, infraChange: null });
+    expect(await predictReleaseRoute(found, opts)).toEqual({
+      ...found,
+      infraChange: null,
+      ownerAction: null,
+    });
+  });
+
+  it("#868: carries the release manifest's owner action", async () => {
+    const manifest = (version: string, over: Partial<ReleaseManifest> = {}): ReleaseManifest => ({
+      manifestVersion: 1,
+      version,
+      channel: "stable",
+      digests: {
+        admin: `sha256:${"a".repeat(64)}`,
+        gateway: `sha256:${"b".repeat(64)}`,
+        ops: `sha256:${"c".repeat(64)}`,
+      },
+      minFromVersion: "0.1.0",
+      infraContractVersion: 9,
+      migrations: { contract: false, lastContractVersion: null, head: "0332_x" },
+      security: false,
+      advisories: [],
+      ...over,
+    });
+    const r = await predictReleaseRoute(found, {
+      provider: "gcp",
+      readManifest: async (version) => ({
+        ok: true,
+        manifest:
+          version === "99.0.0"
+            ? manifest(version, { ownerAction: "Re-enter the SMTP password." })
+            : manifest(version),
+      }),
+    });
+    expect(r).toEqual({ ...found, infraChange: false, ownerAction: "Re-enter the SMTP password." });
   });
 });

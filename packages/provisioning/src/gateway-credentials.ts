@@ -32,6 +32,7 @@ import {
 } from "./runtime-secrets.js";
 import { DATABASE_ROLE_SECRET } from "./stack-contract.js";
 import type { LiveEnvValue } from "./stack-converge.js";
+import { type GcpLookup, lookupFromListing } from "./upgrade/gcp-lookup.js";
 
 /**
  * Whether this roll moves `public_role` onto its own password: true while
@@ -107,13 +108,14 @@ export function planPublicRoleSwitch(
 }
 
 /**
- * The install's Cloud SQL instance (Pulumi suffixes its name), or null when
- * none or the listing fails.
+ * The install's Cloud SQL instance (Pulumi suffixes its name). A failed
+ * listing comes back as an error with gcloud's stderr, never as "not found"
+ * (#630).
  */
 export async function findSqlInstance(
   install: { readonly projectId: string; readonly env: string },
   deps: { readonly run?: GcloudRunner } = {},
-): Promise<string | null> {
+): Promise<GcpLookup> {
   const run = deps.run ?? defaultGcloud;
   const r = await run([
     "sql",
@@ -123,11 +125,5 @@ export async function findSqlInstance(
     `--filter=name~^${gcpNamePrefix(install.env)}-pg`,
     "--format=value(name)",
   ]);
-  if (!r.ok) return null;
-  return (
-    r.stdout
-      .split("\n")
-      .map((l) => l.trim())
-      .find((l) => l.length > 0) ?? null
-  );
+  return lookupFromListing(r);
 }

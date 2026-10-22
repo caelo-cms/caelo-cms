@@ -8,13 +8,17 @@
  *   - {@link planEnvUpdate}: the env-var flags for the `services update` that
  *     rolls the image, so env changes ride the same new revision — including
  *     moving a plain var to a Secret Manager reference.
- *   - {@link ensureStackInvariants}: IAM bindings + CDN settings. Each binding
+ *   - {@link ensureStackInvariants}: IAM bindings + CDN settings (incl. the
+ *     #891 response headers and the SVG backfill, static-svg-gcp.ts). Each binding
  *     is checked against the resource's policy first and only added when
  *     missing, so an operator without IAM-admin rights can still upgrade an
  *     install that is already in shape.
  *   - {@link ensureStackInvariants} also deletes the firewall rules GCP
  *     pre-populates on the `default` network (SSH, RDP, ICMP, internal)
  *     (default-firewall.ts), the one thing it removes.
+ *   - {@link ensureStackInvariants} opens a gcp-firebase gateway created
+ *     load-balancer-only to all traffic (#650, #732), before migrations:
+ *     the upgrade's own health check reaches it on its run.app URL.
  *   - {@link planMediaVolume}: the admin's media bucket volume (gen2 + Cloud
  *     Storage volume + mount), added in the same `services update` when
  *     missing.
@@ -43,8 +47,10 @@ import {
   type MediaVolumeContract,
   memoryQuantityMiB,
   RETIRED_IAM_BINDINGS,
+  RETIRED_RUNTIME_SECRETS,
   RETIRED_SERVICE_ENV,
   type RetiredIamBinding,
+  type RetiredSecretFile,
   type RuntimeEnvInputs,
   type SecretFileContract,
   type ServiceEnvInputs,
@@ -53,6 +59,8 @@ import {
   stackIamInvariants,
   staticBackendBucketPrefix,
 } from "./stack-contract.js";
+import { GCP_STATIC_RESPONSE_HEADERS } from "./static-security-headers.js";
+import { ensureSvgDownloads } from "./static-svg-gcp.js";
 
 // ===========================================================================
 // Env vars
@@ -515,7 +523,10 @@ async function ensureIam(
   return outcomes;
 }
 
-/** Bring the `gcp` stack's static backend bucket to {@link STATIC_CDN_POLICY}. */
+/**
+ * Bring the `gcp` stack's static backend bucket to {@link STATIC_CDN_POLICY}
+ * and its custom response headers to {@link GCP_STATIC_RESPONSE_HEADERS}.
+ */
 async function ensureCdnPolicy(
   install: InstallTarget,
   run: GcloudRunner,
@@ -523,7 +534,7 @@ async function ensureCdnPolicy(
   const base = {
     id: `Cloud CDN policy of ${staticBackendBucketPrefix(install.env)}*`,
     onFailure: "warn" as const,
-    why: "immutable assets stay cached for a year instead of 1h (#555)",
+    why: "immutable assets stay cached for a year instead of 1h (#555), and every file is served nosniff (#891)",
   };
   const project = `--project=${install.projectId}`;
   const list = await run([
@@ -551,12 +562,18 @@ async function ensureCdnPolicy(
     "--format=json",
   ]);
   if (describe.ok) {
-    const cdn = (JSON.parse(describe.stdout) as { cdnPolicy?: Record<string, unknown> }).cdnPolicy;
+    const live = JSON.parse(describe.stdout) as {
+      cdnPolicy?: Record<string, unknown>;
+      customResponseHeaders?: unknown;
+    };
+    const cdn = live.cdnPolicy;
     const inShape =
       cdn !== undefined &&
       (Object.keys(STATIC_CDN_POLICY) as (keyof typeof STATIC_CDN_POLICY)[]).every(
         (k) => String(cdn[k]) === String(STATIC_CDN_POLICY[k]),
-      );
+      ) &&
+      JSON.stringify(live.customResponseHeaders ?? []) ===
+        JSON.stringify(GCP_STATIC_RESPONSE_HEADERS);
     if (inShape) return { ...base, status: "present" };
   }
   const update = await run([
@@ -569,6 +586,8 @@ async function ensureCdnPolicy(
     `--default-ttl=${STATIC_CDN_POLICY.defaultTtl}`,
     `--max-ttl=${STATIC_CDN_POLICY.maxTtl}`,
     `--client-ttl=${STATIC_CDN_POLICY.clientTtl}`,
+    // Replaces the bucket's list, so this is the complete set.
+    ...GCP_STATIC_RESPONSE_HEADERS.map((h) => `--custom-response-header=${h}`),
     "--quiet",
   ]);
   return update.ok
@@ -576,10 +595,62 @@ async function ensureCdnPolicy(
     : { ...base, status: "failed", error: update.stderr.trim() };
 }
 
+/** The ingress of a described service (`all`, `internal-and-cloud-load-balancing`, …; null: unset). */
+export function liveIngress(serviceJson: string): string | null {
+  const svc = JSON.parse(serviceJson) as {
+    metadata?: { annotations?: Record<string, string> };
+  };
+  return svc.metadata?.annotations?.["run.googleapis.com/ingress"] ?? null;
+}
+
+/**
+ * Open a gcp-firebase gateway to all traffic, as the stack declares it
+ * (`INGRESS_TRAFFIC_ALL` since #650). There is no load balancer on
+ * gcp-firebase: the staging domain mapping, remote-MCP clients and the
+ * upgrade's own health probe reach the gateway's run.app URL. A gateway
+ * created before #650 kept `internal-and-cloud-load-balancing` (only
+ * `pulumi up` would change it), answered those requests with Google's HTML
+ * 404, and every upgrade rolled back after its migrations (#732).
+ *
+ * Ingress is a service-level setting: the update creates no revision, so
+ * the serving one and the app-roll's rollback target stay as they are. On
+ * `gcp` the stack declares load-balancer-only and `staging-domain enable`
+ * (admin-domain.ts) opens it deliberately, so this never runs there.
+ */
+async function ensureGatewayIngress(
+  install: InstallTarget,
+  run: GcloudRunner,
+): Promise<InvariantOutcome> {
+  const service = install.services.gateway;
+  const base = {
+    id: `ingress all on ${service}`,
+    onFailure: "abort" as const,
+    why: "the gcp-firebase stack's gateway ingress (#650); the health check, the staging domain and remote MCP reach its run.app URL",
+  };
+  const where = [`--region=${install.region}`, `--project=${install.projectId}`];
+  const describe = await run(["run", "services", "describe", service, ...where, "--format=json"]);
+  if (!describe.ok) return { ...base, status: "failed", error: describe.stderr.trim() };
+  const live = liveIngress(describe.stdout);
+  if (live === "all") return { ...base, status: "present" };
+  const update = await run([
+    "run",
+    "services",
+    "update",
+    service,
+    ...where,
+    "--ingress=all",
+    "--quiet",
+  ]);
+  return update.ok
+    ? { ...base, id: `ingress ${live ?? "(unset)"} → all on ${service}`, status: "applied" }
+    : { ...base, status: "failed", error: update.stderr.trim() };
+}
+
 /**
  * Idempotently ensure every IAM binding and CDN setting the install's stack
- * declares (stack-contract.ts), and that the firewall rules GCP pre-populates
- * on the default network are gone (ABSENT_DEFAULT_FIREWALL_RULES). Bindings
+ * declares (stack-contract.ts), a gcp-firebase gateway's ingress, and that
+ * the firewall rules GCP pre-populates on the default network are gone
+ * (ABSENT_DEFAULT_FIREWALL_RULES). Bindings
  * are only added, never removed; those firewall rules are the only deletion. Never
  * throws for a gcloud failure; the report says what failed and whether the
  * upgrade must stop.
@@ -620,7 +691,11 @@ export async function ensureStackInvariants(
     ? invariants
     : invariants.filter((i) => i.member !== "iap-service-agent");
   outcomes.push(...(await ensureIam(checkable, install, projectNumber, run, sleep)));
-  if (install.provider === "gcp") outcomes.push(await ensureCdnPolicy(install, run));
+  if (install.provider === "gcp") {
+    outcomes.push(await ensureCdnPolicy(install, run));
+    outcomes.push(await ensureSvgDownloads(install, run));
+  }
+  if (install.provider === "gcp-firebase") outcomes.push(await ensureGatewayIngress(install, run));
   outcomes.push(...(await removeDefaultFirewallRules(install.projectId, { run })));
 
   return {
@@ -677,6 +752,53 @@ export async function removeRetiredIamBindings(
       remove.ok
         ? { id, status: "removed", why: b.why }
         : { id, status: "failed", why: b.why, error: remove.stderr.trim() },
+    );
+  }
+  return outcomes;
+}
+
+/**
+ * Delete the secrets older contracts created and nothing reads any more
+ * ({@link RETIRED_RUNTIME_SECRETS}) — run by upgrade AFTER both services
+ * rolled onto revisions that no longer reference them (Cloud Run would
+ * refuse a revision whose secret is gone). Deleting a secret drops its IAM
+ * bindings with it. An absent secret is `absent`; never throws for a
+ * gcloud failure.
+ */
+export async function deleteRetiredSecrets(
+  install: Pick<InstallTarget, "projectId" | "env">,
+  deps: {
+    run?: GcloudRunner;
+    retired?: readonly { readonly name: string; readonly why: string }[];
+  } = {},
+): Promise<RetiredBindingOutcome[]> {
+  const run = deps.run ?? defaultGcloud;
+  const outcomes: RetiredBindingOutcome[] = [];
+  for (const s of deps.retired ?? RETIRED_RUNTIME_SECRETS) {
+    const id = `secret ${gcpSecretId(install.env, s.name)}`;
+    const project = `--project=${install.projectId}`;
+    const describe = await run([
+      "secrets",
+      "describe",
+      gcpSecretId(install.env, s.name),
+      project,
+      "--format=value(name)",
+    ]);
+    if (!describe.ok && RESOURCE_MISSING.test(describe.stderr)) {
+      outcomes.push({ id, status: "absent", why: s.why });
+      continue;
+    }
+    const del = await run([
+      "secrets",
+      "delete",
+      gcpSecretId(install.env, s.name),
+      project,
+      "--quiet",
+    ]);
+    outcomes.push(
+      del.ok || RESOURCE_MISSING.test(del.stderr)
+        ? { id, status: del.ok ? "removed" : "absent", why: s.why }
+        : { id, status: "failed", why: s.why, error: del.stderr.trim() },
     );
   }
   return outcomes;
@@ -895,9 +1017,21 @@ export function planSecretFiles(
   live: LiveVolumes,
   files: readonly SecretFileContract[],
   env: string,
+  retired: readonly RetiredSecretFile[] = [],
 ): RollAdditionsPlan {
   const flags: string[] = [];
   const changes: string[] = [];
+  // #914 — mounts an older contract made and nothing reads any more
+  // (RETIRED_SECRET_FILES) go in the same revision that mounts their
+  // replacement. `--remove-secrets=<dir>/<file>` drops the file, and the
+  // mount with it when it was the volume's only file (gcloud
+  // `_PruneManagedVolumeMapping`). Repeated `--remove-secrets` /
+  // `--update-secrets` flags merge (gcloud map flags use UpdateAction).
+  for (const old of retired) {
+    if (!live.mounts.some((m) => m.mountPath === old.mountDir)) continue;
+    flags.push(`--remove-secrets=${old.mountDir}/${old.fileName}`);
+    changes.push(`secret file ${old.mountDir}/${old.fileName}: removed (${old.why})`);
+  }
   for (const file of files) {
     const secretId = gcpSecretId(env, file.secret);
     const mount = live.mounts.find((m) => m.mountPath === file.mountDir);

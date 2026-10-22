@@ -15,37 +15,24 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { defaultFontsCacheDir } from "@caelo-cms/admin-core";
-import { isPinnedFontSliceFile } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
-import { requireUserOrPreviewScreenshotToken } from "#lib/server/preview-screenshot-auth.js";
+import { fontCacheFile } from "#lib/server/preview-sandbox.js";
+import { requirePreviewAssetAccess } from "#lib/server/preview-screenshot-auth.js";
 import type { RequestHandler } from "./$types";
 
-const FAMILY_RE = /^[a-z0-9-]{1,80}$/;
-const FILE_RE = /^[a-f0-9]{16}\.woff2$/;
-
-export const GET: RequestHandler = async ({ params, locals, request }) => {
+export const GET: RequestHandler = async ({ params, locals, request, cookies }) => {
   // issue #412 — the server-side screenshot browser presents a signed
   // capture token instead of a session; fonts are the same content-
   // addressed bytes either way.
-  requireUserOrPreviewScreenshotToken(locals, request);
+  await requirePreviewAssetAccess(locals, request, cookies);
 
   const { family, file } = params;
-  if (
-    !family ||
-    !file ||
-    !FAMILY_RE.test(family) ||
-    // Registry-derived slices share their name shape with the static
-    // build's cache policy — one definition in @caelo-cms/shared.
-    !(family === "pinned" ? isPinnedFontSliceFile(file) : FILE_RE.test(file))
-  ) {
-    throw error(404, "not found");
-  }
+  const path = family && file ? fontCacheFile(family, file) : null;
+  if (!path || !file) throw error(404, "not found");
 
   let body: Uint8Array;
   try {
-    body = await readFile(join(defaultFontsCacheDir(process.cwd()), family, file));
+    body = await readFile(path);
   } catch {
     throw error(404, "font file not cached");
   }

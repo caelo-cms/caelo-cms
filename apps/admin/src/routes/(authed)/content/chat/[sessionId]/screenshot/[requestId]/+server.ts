@@ -18,7 +18,12 @@
  * Cloud Run keeps long-lived SSE pinned, so this works in practice.
  */
 
-import { deliverScreenshot, failScreenshot } from "@caelo-cms/admin-core";
+import {
+  deliverScreenshot,
+  failScreenshot,
+  type ScreenshotCaptureMeta,
+  type ScreenshotViewportSource,
+} from "@caelo-cms/admin-core";
 import { error, json } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
 import type { RequestHandler } from "./$types";
@@ -42,26 +47,46 @@ interface UploadBody {
   /** 2026-07 — capture geometry (canvas + page dimensions) so the
    *  tool result can state crop-vs-full-page as a fact instead of
    *  leaving it to vision judgment (run B4 selector-crop doubt). */
-  meta?: {
-    canvasWidth: number;
-    canvasHeight: number;
-    pageWidth: number;
-    pageHeight: number;
-  };
+  meta?: ScreenshotCaptureMeta;
 }
 
-/** All four geometry fields present and sane, or the meta is dropped. */
-function sanitizeMeta(meta: UploadBody["meta"]): UploadBody["meta"] | undefined {
+const VIEWPORT_SOURCES: ReadonlySet<string> = new Set<ScreenshotViewportSource>([
+  "operator-preview",
+  "requested",
+  "preset",
+]);
+
+function isSaneDimension(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 100_000;
+}
+
+/**
+ * All four geometry fields present and sane, or the meta is dropped. The
+ * viewport triple is kept only when complete and sane — a half-reported
+ * viewport would let the tool result claim a size nobody measured.
+ */
+function sanitizeMeta(meta: UploadBody["meta"]): ScreenshotCaptureMeta | undefined {
   if (!meta) return undefined;
   const vals = [meta.canvasWidth, meta.canvasHeight, meta.pageWidth, meta.pageHeight];
-  if (vals.some((v) => typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > 100_000)) {
-    return undefined;
-  }
+  if (!vals.every(isSaneDimension)) return undefined;
+  const { viewportWidth, viewportHeight, viewportSource } = meta;
+  const viewportOk =
+    isSaneDimension(viewportWidth) &&
+    isSaneDimension(viewportHeight) &&
+    typeof viewportSource === "string" &&
+    VIEWPORT_SOURCES.has(viewportSource);
   return {
     canvasWidth: Math.round(meta.canvasWidth),
     canvasHeight: Math.round(meta.canvasHeight),
     pageWidth: Math.round(meta.pageWidth),
     pageHeight: Math.round(meta.pageHeight),
+    ...(viewportOk
+      ? {
+          viewportWidth: Math.round(viewportWidth),
+          viewportHeight: Math.round(viewportHeight),
+          viewportSource,
+        }
+      : {}),
   };
 }
 

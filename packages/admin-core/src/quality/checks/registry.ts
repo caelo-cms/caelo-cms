@@ -14,8 +14,9 @@
  *
  * `source` records who contributed an entry. Core registers Lighthouse and
  * its own findings checks, `structure` (#820: repeated free markup that
- * should be a module) and `links` (#849: broken internal links, missing
- * assets, redirect chains and loops, orphan pages) — maintainer decision:
+ * should be a module), `links` (#849: broken internal links, missing
+ * assets, redirect chains and loops, orphan pages) and `references` (#724:
+ * stored links to deleted, language-less or unpublished pages) — maintainer decision:
  * core topics like Lighthouse, not plugin add-ons. The rule about pages without a meta description
  * is enforced before the build by `deploy.trigger` (#730,
  * deploy/missing-seo.ts), so a staged build can never contain such a page.
@@ -28,6 +29,7 @@ import { type AuditJobResult, runAuditJob } from "../lighthouse-runner.js";
 import type { QualityCheck } from "./check.js";
 import { checkIdSchema } from "./findings.js";
 import { createLinksCheck, type LinkSources } from "./links.js";
+import { createReferencesCheck, type ReferenceSources } from "./references.js";
 import { createStructureCheck, type StructureSources } from "./structure.js";
 
 /** Who contributed a check. */
@@ -122,23 +124,27 @@ export class CheckRegistry {
 }
 
 /**
- * The checks core ships: Lighthouse and the `structure` and `links`
- * findings checks.
+ * The checks core ships: Lighthouse and the `structure`, `links` and
+ * `references` findings checks.
  *
  * @param options.structure - where the structure check reads module
  *   templates and layouts (required: a core check that silently did not
  *   run would read as "no findings").
  * @param options.links - where the link check reads modules, layouts,
  *   redirects and the site's own URLs (required, same reason).
+ * @param options.references - where the reference-integrity check (#724
+ *   rollout F) reads the stored-link issues (required, same reason).
  */
 export function createCoreCheckRegistry(options: {
   readonly lighthouse?: LighthouseRunner;
   readonly structure: StructureSources;
   readonly links: LinkSources;
+  readonly references: ReferenceSources;
 }): CheckRegistry {
   const registry = new CheckRegistry();
   registry.registerLighthouse(options.lighthouse ?? runAuditJob);
   registry.register(createStructureCheck(options.structure), CORE);
   registry.register(createLinksCheck(options.links), CORE);
+  registry.register(createReferencesCheck(options.references), CORE);
   return registry;
 }

@@ -28,6 +28,7 @@
     { "path": "./packages/migrations" },
     { "path": "./apps/admin" },
     { "path": "./apps/api-gateway" },
+    { "path": "./apps/bug-intake" },
     { "path": "./apps/static-generator" }
   ]
 }

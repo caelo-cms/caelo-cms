@@ -25,38 +25,63 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 
 import type { ChatMessageInput } from "../provider.js";
 
+/** The tool_use / tool_result ids nested in one passthrough (Option-C) assembly, in order. */
+function sdkPairIds(sdkMessages: readonly unknown[]): { uses: string[]; results: string[] } {
+  const uses: string[] = [];
+  const results: string[] = [];
+  for (const msg of sdkMessages) {
+    const content = (msg as { content?: unknown } | null)?.content;
+    if (!Array.isArray(content)) continue;
+    for (const part of content) {
+      const p = part as { type?: unknown; toolCallId?: unknown } | null;
+      if (typeof p?.toolCallId !== "string") continue;
+      if (p.type === "tool-call") uses.push(p.toolCallId);
+      else if (p.type === "tool-result" || p.type === "tool-error") results.push(p.toolCallId);
+    }
+  }
+  return { uses, results };
+}
+
 /**
  * Render the replayed provider history to a compact, human-readable digest
  * that flags the exact tool_use/tool_result pairing faults the 400 is about.
- * Passthrough (Option-C `sdkMessages`) rows carry their pairs inside an opaque
- * SDK assembly we don't unpack here — they're shown as `sdk(N)` so the reader
- * knows those rows are self-paired; only OUR reconstruction rows are flag-able.
+ * Passthrough (Option-C `sdkMessages`) rows are unpacked too: most pairs span
+ * a passthrough row (the call) and a reconstruction tool row (the result), so
+ * an inventory that skipped them flagged every healthy result as an orphan and
+ * hid the real fault — a result stored both inside an assembly and as a tool
+ * row ("each tool_use must have a single result").
  */
 export function summarizeHistoryForBugReport(messages: readonly ChatMessageInput[]): string {
-  const toolUseIds = new Set<string>();
-  const toolResultIds = new Set<string>();
-  for (const m of messages) {
-    for (const tc of m.toolCalls ?? []) toolUseIds.add(tc.id);
-    if (m.role === "tool" && typeof m.toolCallId === "string") toolResultIds.add(m.toolCallId);
-  }
+  const rows = messages.map((m) => {
+    const sdk = sdkPairIds(m.sdkMessages ?? []);
+    const uses = [...(m.toolCalls ?? []).map((tc) => tc.id), ...sdk.uses];
+    const results = [
+      ...(m.role === "tool" && typeof m.toolCallId === "string" ? [m.toolCallId] : []),
+      ...sdk.results,
+    ];
+    return { uses, results };
+  });
+  const toolUseIds = new Set(rows.flatMap((r) => r.uses));
+  const toolResultIds = new Set(rows.flatMap((r) => r.results));
+  const seenResultIds = new Set<string>();
 
   const lines = messages.map((m, i) => {
     const parts: string[] = [`#${i} ${m.role}`];
     if (Array.isArray(m.sdkMessages) && m.sdkMessages.length > 0) {
       parts.push(`sdk(${m.sdkMessages.length})`);
     }
-    const uses = (m.toolCalls ?? []).map((tc) => tc.id);
+    const { uses, results } = rows[i] ?? { uses: [], results: [] };
     if (uses.length > 0) {
       parts.push(
         `tool_use[${uses.map((id) => (toolResultIds.has(id) ? id : `${id}!UNANSWERED`)).join(",")}]`,
       );
     }
-    if (m.role === "tool" && typeof m.toolCallId === "string") {
-      parts.push(
-        toolUseIds.has(m.toolCallId)
-          ? `tool_result(${m.toolCallId})`
-          : `tool_result(${m.toolCallId})!ORPHAN`,
-      );
+    for (const id of results) {
+      let flag = "";
+      if (!toolUseIds.has(id)) flag = "!ORPHAN";
+      else if (seenResultIds.has(id)) flag = "!DUPLICATE";
+      seenResultIds.add(id);
+      parts.push(`tool_result(${id})${flag}`);
     }
     if (m.serverToolCalls && m.serverToolCalls.length > 0) {
       parts.push(`server_tool(${m.serverToolCalls.length})`);
@@ -66,9 +91,10 @@ export function summarizeHistoryForBugReport(messages: readonly ChatMessageInput
 
   const header =
     `Replayed provider history (${messages.length} messages). ` +
-    `!UNANSWERED = a tool_use with no following tool_result; ` +
-    `!ORPHAN = a tool_result with no prior tool_use. ` +
-    `sdk(N) rows are SDK-paired (Option C) and not flag-able here.\n`;
+    `!UNANSWERED = a tool_use with no tool_result anywhere; ` +
+    `!ORPHAN = a tool_result with no tool_use anywhere; ` +
+    `!DUPLICATE = a second tool_result for the same tool_use. ` +
+    `sdk(N) rows are SDK assemblies (Option C); their nested ids are listed.\n`;
   return (header + lines.join("\n")).slice(0, 7900);
 }
 

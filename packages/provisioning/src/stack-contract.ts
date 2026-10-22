@@ -261,12 +261,15 @@ export type RuntimeSecret =
   | "tool-approval-secret"
   | "staging-gate-secret"
   /**
-   * #806 — the Google OAuth client the remote-MCP broker signs users in
-   * with: JSON `{"client_id","client_secret"}`, `{}` while remote MCP is not
-   * set up. The Owner writes it from Settings → MCP → Remote (the admin may
-   * add versions, never read them); the gateway reads it from a file.
+   * #914 — the install's Google sign-in client: JSON
+   * `{"client_id","client_secret"}`, `{}` while it is not set up. One client
+   * for IAP browser login, IAP programmatic access and the remote-MCP broker
+   * (#806 introduced it as `mcp-oauth-client`). The Owner writes it from
+   * Settings → Google sign-in (the admin may add versions, never read them);
+   * the gateway reads it from a file, the operator-access sync job reads it
+   * to hand it to IAP.
    */
-  | "mcp-oauth-client"
+  | "operator-oauth-client"
   /**
    * #806 — the broker's AES-256-GCM key (base64, 32 bytes) that seals its
    * stateless OAuth state, codes and refresh tokens. Gateway only.
@@ -305,10 +308,11 @@ export const CLI_GENERATED_SECRETS = [
   // session cookies, derives the crawler credentials. Read by the admin
   // (issues) and the gateway (verifies).
   "staging-gate-secret",
-  // #806 — remote MCP. The client starts as the `{}` placeholder (not
-  // configured; the Owner fills it under Settings → MCP), the seal key as
-  // 32 random bytes in base64 ({@link GENERATED_SECRET_FORMAT}).
-  "mcp-oauth-client",
+  // #914 / #806 — the Google sign-in client starts as the `{}` placeholder
+  // (not configured; the Owner fills it under Settings → Google sign-in),
+  // the broker's seal key as 32 random bytes in base64
+  // ({@link GENERATED_SECRET_FORMAT}).
+  "operator-oauth-client",
   "mcp-oauth-seal-key",
 ] as const satisfies readonly RuntimeSecret[];
 
@@ -331,11 +335,27 @@ export const GENERATED_SECRET_FORMAT: Readonly<
   "staging-gate-secret": { kind: "hex32" },
   // The gateway's seal key contract (#806): base64 of exactly 32 bytes.
   "mcp-oauth-seal-key": { kind: "base64-32" },
-  // "Not configured" until the Owner pastes a client (#806). A version must
+  // "Not configured" until the Owner pastes a client (#914). A version must
   // exist from the start: Cloud Run refuses a revision whose secret volume
   // points at a secret without an enabled version.
-  "mcp-oauth-client": { kind: "placeholder", value: "{}" },
+  "operator-oauth-client": { kind: "placeholder", value: "{}" },
 };
+
+/**
+ * Secrets an older contract created that nothing reads any more. Upgrade
+ * deletes each once both services rolled onto revisions that no longer
+ * reference it (stack-converge.ts `deleteRetiredSecrets`); deleting a
+ * secret drops its IAM bindings with it. Pre-1.0 delete-don't-migrate: a
+ * renamed secret is created fresh, never copied.
+ */
+export const RETIRED_RUNTIME_SECRETS: readonly { readonly name: string; readonly why: string }[] = [
+  {
+    // #914 — renamed to `operator-oauth-client`; nobody had configured
+    // remote MCP when the rename shipped, so there is nothing to carry over.
+    name: "mcp-oauth-client",
+    why: "the Google sign-in client moved to operator-oauth-client (#914)",
+  },
+];
 
 /**
  * Each service's Secret Manager-backed env vars and the secret each reads.
@@ -375,8 +395,8 @@ export const SERVICE_SECRET_ENV: Readonly<
 // Secret files (#806)
 // ===========================================================================
 
-/** Env var naming the file that holds the remote-MCP Google OAuth client. */
-export const MCP_OAUTH_CLIENT_FILE_ENV = "CAELO_MCP_OAUTH_CLIENT_FILE";
+/** Env var naming the file that holds the install's Google sign-in client (#914). */
+export const OPERATOR_OAUTH_CLIENT_FILE_ENV = "CAELO_OPERATOR_OAUTH_CLIENT_FILE";
 
 /**
  * A Secret Manager secret mounted into a service as one file, at `latest`.
@@ -386,7 +406,7 @@ export const MCP_OAUTH_CLIENT_FILE_ENV = "CAELO_MCP_OAUTH_CLIENT_FILE";
  * time the file is read ("When reading a volume, Cloud Run always fetches
  * the secret value from the Secret Manager to use the value with the latest
  * version" — cloud.google.com/run/docs/configuring/services/secrets). So the
- * client the Owner saves under Settings → MCP reaches the running gateway
+ * client the Owner saves under Settings → Google sign-in reaches the running gateway
  * (which re-reads it within 60 s) without a new revision, and the admin
  * needs no right to deploy the gateway.
  */
@@ -401,11 +421,11 @@ export interface SecretFileContract {
   readonly version: "latest";
 }
 
-/** The gateway's remote-MCP OAuth client file (#806). */
-export const MCP_OAUTH_CLIENT_FILE: SecretFileContract = {
-  secret: "mcp-oauth-client",
-  volumeName: "mcp-oauth-client",
-  mountDir: "/secrets/mcp-oauth-client",
+/** The gateway's Google sign-in client file, read by the remote-MCP broker (#806, #914). */
+export const OPERATOR_OAUTH_CLIENT_FILE: SecretFileContract = {
+  secret: "operator-oauth-client",
+  volumeName: "operator-oauth-client",
+  mountDir: "/secrets/operator-oauth-client",
   fileName: "client.json",
   version: "latest",
 };
@@ -418,7 +438,30 @@ export function secretFilePath(file: SecretFileContract): string {
 /** Each service's secret files. The admin has none. */
 export const SERVICE_SECRET_FILES: Readonly<Record<CloudRunSlug, readonly SecretFileContract[]>> = {
   admin: [],
-  gateway: [MCP_OAUTH_CLIENT_FILE],
+  gateway: [OPERATOR_OAUTH_CLIENT_FILE],
+};
+
+/** A secret file an older contract mounted; upgrade unmounts it in the roll. */
+export interface RetiredSecretFile {
+  readonly mountDir: string;
+  readonly fileName: string;
+  readonly why: string;
+}
+
+/**
+ * Secret files older contracts mounted that nothing reads any more, per
+ * service. The roll removes each mount (`--remove-secrets=<path>`) in the
+ * same revision that mounts its replacement.
+ */
+export const RETIRED_SECRET_FILES: Readonly<Record<CloudRunSlug, readonly RetiredSecretFile[]>> = {
+  admin: [],
+  gateway: [
+    {
+      mountDir: "/secrets/mcp-oauth-client",
+      fileName: "client.json",
+      why: "the Google sign-in client is mounted from operator-oauth-client now (#914)",
+    },
+  ],
 };
 
 /**
@@ -466,8 +509,11 @@ export function serviceSecrets(service: CloudRunSlug): RuntimeSecret[] {
  * credential is in its env (apps/api-gateway `adminDatabaseAccessInEnv`).
  */
 export const RETIRED_SERVICE_ENV: Readonly<Record<CloudRunSlug, readonly string[]>> = {
-  admin: [],
+  // #914 — the sign-in client's store was renamed with its secret.
+  admin: ["CAELO_MCP_OAUTH_CLIENT_STORE"],
   gateway: [
+    // #914 — renamed to CAELO_OPERATOR_OAUTH_CLIENT_FILE with its secret.
+    "CAELO_MCP_OAUTH_CLIENT_FILE",
     "CAELO_SECRET_KEK",
     "ADMIN_DATABASE_URL",
     "ADMIN_DATABASE_PASSWORD",
@@ -547,7 +593,7 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
     { name: "PUBLIC_DATABASE_URL", value: inputs.databaseUrls.public },
     // #806 — where the remote-MCP broker reads its Google OAuth client
     // (the secret volume of SERVICE_SECRET_FILES).
-    { name: MCP_OAUTH_CLIENT_FILE_ENV, value: secretFilePath(MCP_OAUTH_CLIENT_FILE) },
+    { name: OPERATOR_OAUTH_CLIENT_FILE_ENV, value: secretFilePath(OPERATOR_OAUTH_CLIENT_FILE) },
     ...secretEnv("gateway", inputs.env),
   ];
 }
@@ -565,12 +611,12 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
  */
 export const GATEWAY_TIMEOUT_SECONDS = 3600;
 
-/** Admin env var naming the Secret Manager secret the Owner writes the OAuth client to. */
-export const MCP_OAUTH_CLIENT_STORE_ENV = "CAELO_MCP_OAUTH_CLIENT_STORE";
+/** Admin env var naming the Secret Manager secret the Owner writes the Google sign-in client to. */
+export const OPERATOR_OAUTH_CLIENT_STORE_ENV = "CAELO_OPERATOR_OAUTH_CLIENT_STORE";
 
-/** `projects/<project>/secrets/<id>` of the remote-MCP OAuth client secret. */
-export function mcpOAuthClientSecretResource(projectId: string, env: string): string {
-  return `projects/${projectId}/secrets/${gcpSecretId(env, "mcp-oauth-client")}`;
+/** `projects/<project>/secrets/<id>` of the Google sign-in client secret (#914). */
+export function operatorOAuthClientSecretResource(projectId: string, env: string): string {
+  return `projects/${projectId}/secrets/${gcpSecretId(env, "operator-oauth-client")}`;
 }
 
 // ===========================================================================
@@ -594,6 +640,12 @@ export function mcpOAuthClientSecretResource(projectId: string, env: string): st
  * (remote-mcp.ts `ensureRemoteMcpIdentityEnv`). A roll that does not set
  * them leaves them as they are (planEnvUpdate never removes a var the
  * contract does not own).
+ *
+ * #914 adds two the admin's Google sign-in needs: its own URL (the
+ * self-check opens it signed out) and the project's Google organisation
+ * domain, which the admin's service account cannot read (organisation
+ * metadata needs a grant on the organisation) but the operator's identity
+ * usually can.
  */
 export interface RemoteMcpIdentity {
   /** Where the gateway proxies `/api/mcp/<surface>` to (IAP in front). */
@@ -602,6 +654,12 @@ export interface RemoteMcpIdentity {
   readonly mcpPublicUrl: string;
   /** The `aud` of the admin's IAP JWTs. */
   readonly iapAudience: string;
+  /**
+   * #914 — the project's Google organisation domain, `none` when the project
+   * is in no organisation, undefined when it could not be read (the var is
+   * then left as it is and the admin reports the organisation as unknown).
+   */
+  readonly googleOrgDomain?: string;
 }
 
 /** Env var names of {@link RemoteMcpIdentity}. */
@@ -609,6 +667,7 @@ export const REMOTE_MCP_ENV = {
   adminUrl: "CAELO_ADMIN_URL",
   mcpPublicUrl: "CAELO_MCP_PUBLIC_URL",
   iapAudience: "CAELO_IAP_AUDIENCE",
+  googleOrgDomain: "CAELO_GOOGLE_ORG_DOMAIN",
 } as const;
 
 /** What {@link remoteMcpIdentity} derives the identity from — all read from the live install. */
@@ -668,8 +727,15 @@ export function remoteMcpIdentityEnv(
   return {
     admin: [
       { name: REMOTE_MCP_ENV.iapAudience, value: id.iapAudience },
-      // The setup page shows the redirect URI and the MCP URLs from it.
+      // The setup pages show the redirect URI and the MCP URLs from it.
       { name: REMOTE_MCP_ENV.mcpPublicUrl, value: id.mcpPublicUrl },
+      // #914 — Google sign-in's self-check opens the admin signed out.
+      { name: REMOTE_MCP_ENV.adminUrl, value: id.adminUrl },
+      // #914 — who IAP admits without the Google sign-in client
+      // (admin-core security/identity-gate.ts).
+      ...(id.googleOrgDomain
+        ? [{ name: REMOTE_MCP_ENV.googleOrgDomain, value: id.googleOrgDomain }]
+        : []),
     ],
     gateway: [
       { name: REMOTE_MCP_ENV.adminUrl, value: id.adminUrl },
@@ -722,9 +788,13 @@ export function adminEnvContract<V>(inputs: AdminEnvInputs<V>): CloudRunEnvVar<V
     // where the tasks write their results (audit-job-setup.ts).
     { name: AUDIT_JOB_ENV_VAR, value: auditJobResource(projectId, inputs.region, env) },
     { name: AUDIT_RESULTS_BUCKET_ENV_VAR, value: gcpBucketName(projectId, env, "audit-results") },
-    // #806 — where Settings → MCP → Remote writes the Google OAuth client
-    // (add-version only, see the run SA's secretVersionAdder invariant).
-    { name: MCP_OAUTH_CLIENT_STORE_ENV, value: mcpOAuthClientSecretResource(projectId, env) },
+    // #914 — where Settings → Google sign-in writes the install's Google
+    // sign-in client (add-version only, see the run SA's secretVersionAdder
+    // invariant).
+    {
+      name: OPERATOR_OAUTH_CLIENT_STORE_ENV,
+      value: operatorOAuthClientSecretResource(projectId, env),
+    },
   ];
   if (inputs.provider === "gcp") {
     // v0.2.78 — the GCS StaticPublisher: Stage uploads to staging,
@@ -850,17 +920,18 @@ function secretAccessors(): IamInvariant[] {
 /** Bindings both GCP stacks declare beyond the secret accessors and telemetry. */
 const GCP_COMMON: readonly IamInvariant[] = [
   {
-    stackResource: "admin-mcp-oauth-client-version-adder",
-    // Why the admin may write a secret at all: the Owner pastes the remote-
-    // MCP OAuth client under Settings → MCP → Remote, and the admin stores
-    // it where the gateway reads it. secretVersionAdder is add-version only
-    // (no access, no destroy, no IAM), bound on this one secret only — the
-    // admin can replace the client, never read it or any other secret.
+    stackResource: "admin-operator-oauth-client-version-adder",
+    // Why the admin may write a secret at all: the Owner pastes the
+    // install's Google sign-in client under Settings → Google sign-in, and
+    // the admin stores it where the gateway and the operator-access sync job
+    // read it. secretVersionAdder is add-version only (no access, no
+    // destroy, no IAM), bound on this one secret only — the admin can
+    // replace the client, never read it or any other secret.
     role: SECRET_VERSION_ADDER,
     member: "run-sa",
-    target: { kind: "secret", name: "mcp-oauth-client" },
+    target: { kind: "secret", name: "operator-oauth-client" },
     onFailure: "warn",
-    why: "the Owner's remote-MCP setup (Settings → MCP → Remote) stores the OAuth client; without it only that setup fails",
+    why: "the Owner's Google sign-in setup (Settings → Google sign-in) stores the OAuth client; without it only that setup fails",
   },
 ];
 
