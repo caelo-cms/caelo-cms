@@ -17,7 +17,7 @@ export const deleteContentInstanceTool: ToolDefinitionWithHandler<
   name: "delete_content_instance",
   description:
     "Soft-delete a content_instance. Only allowed when ZERO placements still bind to it (orphan instance). " +
-    "When placements exist, the op returns an error naming the affected pages: list the placements with get_content_instance, detach each via fork_placement_content (the page keeps its content as a private copy), then retry. " +
+    "When placements exist, the op returns an error listing each placement (page path, pageId, blockName, position): detach each one via fork_placement_content with those values (the page keeps its content as a private copy), then retry. In a chat this all happens on the chat's draft; the live site changes when the chat is staged. " +
     "Use list_content_instances to find orphan instances (placementCount=0) and prune them. " +
     "Prefer `delete_content_instances` over multiple `delete_content_instance` calls when deleting more than one.",
   schema: deleteContentInstanceToolInput,
