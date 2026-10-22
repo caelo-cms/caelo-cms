@@ -11,21 +11,26 @@
  *
  * Execute order inside one admin tx:
  *   1. archive plugin-shipped skills (rows survive, surface disappears);
- *   2. deregister the live runtime (tools/workers/prompt/URL slots);
- *   3. URL diff AFTER deregistration → apply moves + 301 fan-out (the
- *      generic #390 engine — pages a URL plugin had reshaped move back);
- *   4. delete the plugins row (actors FK is ON DELETE SET NULL, so the
+ *   2. URL diff composed WITHOUT the plugin → apply moves + 301 fan-out
+ *      (the generic #390 engine — pages a URL plugin had reshaped move
+ *      back);
+ *   3. delete the plugins row (actors FK is ON DELETE SET NULL, so the
  *      audit trail keeps its actor rows; cursors cascade);
- *   5. audit + mark applied;
- *   6. LAST: drop both schemas through the finalizer the host
- *      configured at bootstrap. Drops are idempotent DDL on other
- *      pools (not transactional with this tx) — running them last
- *      keeps the failure window minimal, and a failed execute leaves a
- *      still-pending proposal whose re-run is safe.
+ *   4. audit + mark applied.
+ * Then, only once that tx has COMMITTED (post-commit effects, #585):
+ *   5. deregister the live runtime (tools/workers/prompt/URL slots);
+ *   6. drop both schemas through the finalizer the host configured at
+ *      bootstrap (idempotent DDL on other pools, not transactional with
+ *      this tx).
+ * Before #585 steps 5 and 6 ran inside the tx: a failing later statement
+ * or commit then left a still-installed plugin with no runtime and no
+ * data. Now a rolled-back execute changes nothing, and a failed drop
+ * after the commit is reported loudly (error result + failed audit row)
+ * with the schema left in place, never half-applied silently.
  */
 
-import { deregisterPlugin, loadedPlugins } from "@caelo-cms/plugin-host";
-import { defineOperation } from "@caelo-cms/query-api";
+import { loadedPlugins } from "@caelo-cms/plugin-host";
+import { afterCommit, defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -39,6 +44,7 @@ import {
 } from "../_propose-helpers.js";
 import { applyUrlMigrationDiff, computeUrlMigrationDiff } from "../content/url_migrations.js";
 import { applyRevokeCapabilityProposal } from "./capability_proposals.js";
+import { afterPluginUninstallCommit } from "./host-sync.js";
 
 /** Schema-drop hooks, configured by the host at bootstrap (the ops
  *  layer has no adapter handle; DDL on both pools lives there). */
@@ -245,23 +251,21 @@ const executeUninstallPluginOpDefinition = defineOperation({
       RETURNING id
     `)) as unknown as { id: string }[];
 
-    // 2. Live runtime removal — MUST precede the URL diff so the
-    // plugin's contributions no longer shape fresh resolutions.
+    // 2. URL fan-out through the generic #390 engine, composed as if the
+    // plugin were already gone: it is still registered in the running
+    // host and leaves it only after this tx commits (step 5).
     const wasLoaded = loadedPlugins.bySlug(slug) !== undefined;
-    deregisterPlugin(slug);
-
-    // 3. URL fan-out through the generic #390 engine.
-    const diff = await computeUrlMigrationDiff(tx);
+    const diff = await computeUrlMigrationDiff(tx, { without: slug });
     const { redirectsCreated } = await applyUrlMigrationDiff(ctx, tx, diff);
 
-    // 4. Row removal (actors keep their audit trail via ON DELETE SET
+    // 3. Row removal (actors keep their audit trail via ON DELETE SET
     // NULL; plugin_event_cursors cascade).
     await tx.execute(sql`
       DELETE FROM plugin_schema_migrations WHERE plugin_id = ${payload.pluginId}::uuid
     `);
     await tx.execute(sql`DELETE FROM plugins WHERE id = ${payload.pluginId}::uuid`);
 
-    // 5. Mark + audit.
+    // 4. Mark + audit.
     await tx.execute(sql`
       UPDATE plugin_pending_actions
          SET status = 'applied', decided_by = ${ctx.actorId}::uuid, decided_at = now()
@@ -277,10 +281,21 @@ const executeUninstallPluginOpDefinition = defineOperation({
       resultSummary: `uninstalled slug=${slug} loaded=${wasLoaded} pages=${diff.length} skills=${archived.length}`,
     });
 
-    // 6. Schema drops LAST (idempotent DDL on other pools).
+    // 5. + 6. After the commit, in this order: the plugin stops running
+    // before its tables go away.
+    afterPluginUninstallCommit(tx, slug, payload.pluginId);
     const schemaName = pluginSchemaName(slug);
-    await finalizer.dropPublicSchema(schemaName);
-    await finalizer.dropAdminSchema(schemaName);
+    const drops = finalizer;
+    afterCommit(tx, {
+      label: `drop the public data schema "${schemaName}" of uninstalled plugin "${slug}"`,
+      entityId: payload.pluginId,
+      run: () => drops.dropPublicSchema(schemaName),
+    });
+    afterCommit(tx, {
+      label: `drop the admin data schema "${schemaName}" of uninstalled plugin "${slug}"`,
+      entityId: payload.pluginId,
+      run: () => drops.dropAdminSchema(schemaName),
+    });
 
     return ok({
       slug,

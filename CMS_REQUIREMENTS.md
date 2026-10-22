@@ -224,7 +224,8 @@ Core is locale-agnostic. It ships exactly the primitives an i18n plugin composes
   at most 6 levels); its path is the ancestor slugs plus its own slug, composed by the
   single core resolver before plugin contributions apply (`/de/seo-monitoring/alerts`).
   Renaming or moving a page moves its whole subtree in one transaction, with a 301 per
-  moved URL and every nav-menu / module / content link rewritten. The homepage neither
+  moved URL for links from outside the site. Links on the site are page references
+  (epic #724) and follow the move without any stored text being rewritten. The homepage neither
   has nor is a parent. Moves of 10+ URLs in one call pass the §11.A in-chat approval.
 - **Homepage designation in `site_defaults.home_page_id`.** One designated site root; the
   static generator, preview composer, and SEO pass all resolve the root from this single

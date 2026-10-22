@@ -84,7 +84,7 @@ export type IamResource =
 
 /** One thing the run will do, the permissions it takes, and where. */
 export interface AccessCheck {
-  /** What the upgrader could not do without them, in plain words. */
+  /** What the job could not do without them, in plain words. */
   readonly need: string;
   readonly resource: IamResource;
   readonly permissions: readonly string[];
@@ -305,10 +305,31 @@ const OBJECT_LIST = "storage.objects.list";
 const OBJECT_GET = "storage.objects.get";
 
 /**
+ * Who ran a self-check and how its access is repaired, for the request's
+ * end reason. The upgrader and the converge job (converge-job-preflight.ts)
+ * share the check; their identities and their repair differ.
+ */
+export interface PreflightVoice {
+  /** The job, as the sentence names it: "the upgrader". */
+  readonly subject: string;
+  /** The one next step that re-converges its grants. */
+  readonly repair: string;
+}
+
+/** The upgrader job's voice: Cloud Shell's upgrade re-converges upgrader-setup.ts. */
+export const UPGRADER_PREFLIGHT_VOICE: PreflightVoice = {
+  subject: "the upgrader",
+  repair: "Run the upgrade once with Cloud Shell; it repairs the upgrader's access.",
+};
+
+/**
  * The request's end reason for missing permissions: every one of them, each
  * with what it is for, then the one next step.
  */
-export function preflightMissingReason(missing: readonly MissingAccess[]): string {
+export function preflightMissingReason(
+  missing: readonly MissingAccess[],
+  voice: PreflightVoice,
+): string {
   const lines = missing.map((m) => {
     const where = resourceName(m.check.resource);
     const parts = [
@@ -321,12 +342,12 @@ export function preflightMissingReason(missing: readonly MissingAccess[]): strin
     ];
     return `it ${m.missing.length > 0 ? "cannot" : "may not be able to"} ${m.check.need} (${parts.join("; ")})`;
   });
-  return `Nothing was changed: the upgrader checked its access before starting and is missing permissions this update needs — ${lines.join("; ")}. Run the upgrade once with Cloud Shell; it repairs the upgrader's access.`;
+  return `Nothing was changed: ${voice.subject} checked its access before starting and is missing permissions this update needs — ${lines.join("; ")}. ${voice.repair}`;
 }
 
 /** The request's end reason when IAM could not be asked. */
-export function preflightErrorReason(errors: readonly string[]): string {
-  return `Nothing was changed: the upgrader could not check its access before starting (${errors.join("; ")}). Try again in a few minutes; if it keeps failing, run the upgrade once with Cloud Shell.`;
+export function preflightErrorReason(errors: readonly string[], voice: PreflightVoice): string {
+  return `Nothing was changed: ${voice.subject} could not check its access before starting (${errors.join("; ")}). Try again in a few minutes; if it keeps failing: ${voice.repair}`;
 }
 
 /** A resource's full name, as IAM and the messages name it. */

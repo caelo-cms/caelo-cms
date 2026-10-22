@@ -11,7 +11,8 @@
  *   - Phase 5: the automatic-update policy (which kinds install on their
  *     own, maintenance window, soak periods, pause/resume) — every change a
  *     step-up action of its own (the Owner's password, #757) — plus what the scheduler last decided and
- *     which update emails went out.
+ *     which update emails went out. A scheduled install can be skipped
+ *     for that one release ("Skip this time", `skipScheduled`, #868).
  *   - Phase 2: on installs with the upgrader job, "Install update" for whoever
  *     holds `platform.update` (the Owner): a confirmation of what will
  *     happen with the Owner's password (step-up), then the request + the job start,
@@ -352,6 +353,29 @@ export const actions: Actions = {
       });
     }
     return { ok: `Continuing the update to v${version} — follow along below.` };
+  },
+
+  /**
+   * #868 — "Skip this time": the scheduler does not install this release on
+   * its own (the Owner can still install it here; a newer release installs
+   * automatically again). Its own password confirmation, like the policy.
+   */
+  skipScheduled: async ({ request, locals, cookies }) => {
+    requirePermission(locals, "platform.update");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const check = await confirmStepUp(locals, cookies, form, "update_policy", "skipScheduled");
+    if (!check.ok) return check.failure;
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "platform_updates.skip_scheduled", {
+      version: String(form.get("version") ?? ""),
+      sessionHash: check.sessionHash,
+    });
+    if (!r.ok) return opFailure(r.error, "Could not skip the automatic install.");
+    const version = (r.value as { skippedVersion: string }).skippedVersion;
+    return {
+      ok: `v${version} won't install automatically. Install it here whenever you're ready.`,
+    };
   },
 
   /** Withdraw a request the upgrader has not picked up yet. */

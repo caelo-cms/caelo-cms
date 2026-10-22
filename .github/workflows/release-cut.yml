@@ -65,6 +65,11 @@ on:
         required: false
         default: false
         type: boolean
+      owner_action:
+        description: "Breaking release only (a type!: commit since the previous release): one sentence of what the Owner must do, shown in Settings → Updates. Required then, refused otherwise."
+        required: false
+        default: ""
+        type: string
   push:
     branches: [main]
     # Only release commits touch the version constant — this keeps the
@@ -142,9 +147,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION_INPUT: ${{ inputs.version || 'patch' }}
           FLAGS: ${{ steps.decl.outputs.flags }}
+          # Free text: passed as one quoted argument, never through FLAGS.
+          OWNER_ACTION: ${{ inputs.owner_action }}
         run: |
+          owner=()
+          if [ -n "${OWNER_ACTION}" ]; then owner=(--owner-action "${OWNER_ACTION}"); fi
           # shellcheck disable=SC2086 # FLAGS is a validated word list.
-          bun run scripts/release.ts "${VERSION_INPUT}" ${FLAGS} --checks-only
+          bun run scripts/release.ts "${VERSION_INPUT}" ${FLAGS} "${owner[@]}" --checks-only
 
       - name: Gate — real-AI suite green on this main commit
         # Main is not covered per push (e2e-livedit.yml runs on PRs only),
@@ -248,11 +257,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION_INPUT: ${{ inputs.version || 'patch' }}
           FLAGS: ${{ steps.decl.outputs.flags }}
+          OWNER_ACTION: ${{ inputs.owner_action }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          owner=()
+          if [ -n "${OWNER_ACTION}" ]; then owner=(--owner-action "${OWNER_ACTION}"); fi
           # shellcheck disable=SC2086 # FLAGS is a validated word list.
-          bun run scripts/release.ts "${VERSION_INPUT}" ${FLAGS}
+          bun run scripts/release.ts "${VERSION_INPUT}" ${FLAGS} "${owner[@]}"
 
       - name: Determine the new version
         id: ver

@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { bugReportToolInput } from "../bug-report.js";
+import { bugReportTool, bugReportToolInput, describeBugForwarding } from "../bug-report.js";
 
 const base = {
   title: "translate_variant fails",
@@ -37,5 +37,29 @@ describe("bug_report input", () => {
       evidence: "<head><title>Home</title></head><main><h1>Willkommen</h1></main>",
     });
     expect(parsed.success).toBe(true);
+  });
+});
+
+describe("bug_report forwarding wording (#902)", () => {
+  it("only the sent state lets the AI say the Caelo team was told", () => {
+    expect(describeBugForwarding("sent")).toContain("sent to the Caelo team");
+    for (const state of ["local_only", "failed"] as const) {
+      const text = describeBugForwarding(state);
+      expect(text).toContain("stored on this site");
+      expect(text).toMatch(/NOT notified|Do not tell the operator/);
+    }
+    expect(describeBugForwarding("queued")).toContain("will be sent");
+  });
+
+  it("a failed report points the AI at the Owner's one-click re-send (#982)", () => {
+    const text = describeBugForwarding("failed");
+    expect(text).toContain("Send unsent reports");
+    expect(text).toContain("you cannot re-send it yourself");
+  });
+
+  it("the description forbids claiming notification the result does not confirm", () => {
+    expect(bugReportTool.description).toContain(
+      "never claim the Caelo team was notified unless the result says it was sent",
+    );
   });
 });

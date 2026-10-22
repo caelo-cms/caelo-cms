@@ -16,6 +16,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { pendingSnapshotSql } from "../../draft.js";
+import { withHumanisedLinks } from "../../links/humanise.js";
 import { setContentInstanceValuesOp } from "./content-instances.js";
 
 const pageModuleContentRowSchema = z.object({
@@ -59,21 +60,22 @@ function rowTo(r: {
  * Returns null if the placement exists in `page_modules` but no content row
  * has been written yet (i.e. before its first edit).
  */
-export const getPageModuleContentOp = defineOperation({
-  name: "page_module_content.get",
-  // #397 — plugin actors read too (international-site's translator).
-  actorScope: ["human", "ai", "plugin", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      pageId: z.string().uuid(),
-      blockName: z.string().min(1),
-      position: z.number().int().nonnegative(),
-    })
-    .strict(),
-  output: z.object({ content: pageModuleContentRowSchema.nullable() }),
-  handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
+export const getPageModuleContentOp = withHumanisedLinks(
+  defineOperation({
+    name: "page_module_content.get",
+    // #397 — plugin actors read too (international-site's translator).
+    actorScope: ["human", "ai", "plugin", "system"],
+    database: "cms_admin",
+    input: z
+      .object({
+        pageId: z.string().uuid(),
+        blockName: z.string().min(1),
+        position: z.number().int().nonnegative(),
+      })
+      .strict(),
+    output: z.object({ content: pageModuleContentRowSchema.nullable() }),
+    handler: async (_ctx, input, tx) => {
+      const rows = (await tx.execute(sql`
       SELECT id::text AS id, page_id::text AS page_id, block_name, position,
              content_values, version, created_at, updated_at
       FROM page_module_content
@@ -82,10 +84,11 @@ export const getPageModuleContentOp = defineOperation({
         AND position = ${input.position}
       LIMIT 1
     `)) as unknown as Parameters<typeof rowTo>[0][];
-    const r = rows[0];
-    return ok({ content: r ? rowTo(r) : null });
-  },
-});
+      const r = rows[0];
+      return ok({ content: r ? rowTo(r) : null });
+    },
+  }),
+);
 
 /**
  * Set / upsert the content values for a placement. Emits a snapshot tagged
@@ -325,23 +328,24 @@ export const setPageModuleContentManyOp = defineOperation({
  * The read surface the international-site translator builds its
  * whole-page prompt from; open to plugin actors like the other reads.
  */
-export const listPageModuleContentOp = defineOperation({
-  name: "page_module_content.list_for_page",
-  actorScope: ["human", "ai", "plugin", "system"],
-  database: "cms_admin",
-  input: z.object({ pageId: z.string().uuid() }).strict(),
-  output: z.object({
-    placements: z.array(
-      z.object({
-        blockName: z.string(),
-        position: z.number().int().nonnegative(),
-        moduleSlug: z.string(),
-        values: z.record(z.string(), z.unknown()),
-      }),
-    ),
-  }),
-  handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
+export const listPageModuleContentOp = withHumanisedLinks(
+  defineOperation({
+    name: "page_module_content.list_for_page",
+    actorScope: ["human", "ai", "plugin", "system"],
+    database: "cms_admin",
+    input: z.object({ pageId: z.string().uuid() }).strict(),
+    output: z.object({
+      placements: z.array(
+        z.object({
+          blockName: z.string(),
+          position: z.number().int().nonnegative(),
+          moduleSlug: z.string(),
+          values: z.record(z.string(), z.unknown()),
+        }),
+      ),
+    }),
+    handler: async (_ctx, input, tx) => {
+      const rows = (await tx.execute(sql`
       SELECT pm.block_name, pm.position, m.slug AS module_slug,
              ci."values" AS instance_values
       FROM page_modules pm
@@ -350,22 +354,25 @@ export const listPageModuleContentOp = defineOperation({
       WHERE pm.page_id = ${input.pageId}::uuid
       ORDER BY pm.block_name ASC, pm.position ASC
     `)) as unknown as {
-      block_name: string;
-      position: number;
-      module_slug: string;
-      instance_values: unknown;
-    }[];
-    return ok({
-      placements: rows.map((r) => {
-        const raw =
-          typeof r.instance_values === "string" ? JSON.parse(r.instance_values) : r.instance_values;
-        return {
-          blockName: r.block_name,
-          position: r.position,
-          moduleSlug: r.module_slug,
-          values: (raw ?? {}) as Record<string, unknown>,
-        };
-      }),
-    });
-  },
-});
+        block_name: string;
+        position: number;
+        module_slug: string;
+        instance_values: unknown;
+      }[];
+      return ok({
+        placements: rows.map((r) => {
+          const raw =
+            typeof r.instance_values === "string"
+              ? JSON.parse(r.instance_values)
+              : r.instance_values;
+          return {
+            blockName: r.block_name,
+            position: r.position,
+            moduleSlug: r.module_slug,
+            values: (raw ?? {}) as Record<string, unknown>,
+          };
+        }),
+      });
+    },
+  }),
+);

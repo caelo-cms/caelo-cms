@@ -16,8 +16,9 @@
  *   plain segments before it becomes a storage key; `.`/`..`, backslashes
  *   and NUL are refused, and a local file must resolve inside the build;
  * - served like staging serves it: the publishers' Content-Type and
- *   Cache-Control policy (#555 immutable hashed assets, #571 .ico) plus
- *   staging's `X-Robots-Tag: noindex`.
+ *   Cache-Control policy (#555 immutable hashed assets, #571 .ico), the
+ *   media security headers every staging origin sends (#891: nosniff, the
+ *   SVG CSP) plus staging's `X-Robots-Tag: noindex`.
  */
 
 import { readFile, realpath } from "node:fs/promises";
@@ -29,6 +30,7 @@ import {
 } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { join, sep } from "node:path";
+import { mediaSecurityHeaders } from "@caelo-cms/shared";
 import { readStagedBuildFiles, readStagedObject } from "../deploy/staged-build-files.js";
 import { cacheControlForContentType, contentTypeFor } from "../deploy/static-file-policy.js";
 
@@ -300,6 +302,7 @@ export async function serveStagedBuild(
         "Content-Type": file.contentType,
         "Content-Length": String(file.bytes.byteLength),
         "Cache-Control": cacheControlForContentType(file.contentType, key),
+        ...mediaSecurityHeaders(file.contentType),
         "X-Robots-Tag": "noindex",
       });
       res.end(req.method === "HEAD" ? undefined : file.bytes);

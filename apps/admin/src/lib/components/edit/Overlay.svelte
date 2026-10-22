@@ -21,7 +21,7 @@
     GripHorizontal,
     Minimize2,
   } from "lucide-svelte";
-  import { onDestroy, onMount } from "svelte";
+  import { onDestroy, onMount, tick } from "svelte";
   import type { ChatMessage, ChatModule, ChatSession } from "#lib/components/chat/types.js";
   import ChatPanel from "#lib/components/chat/ChatPanel.svelte";
   import MediaPicker from "#lib/components/MediaPicker.svelte";
@@ -266,12 +266,26 @@
     mediaPickerOpen = true;
   }
 
+  // A reference from the preview (right-click / selection → Ask AI or
+  // Add to chat) is for ChatPanel, which is not mounted while the overlay
+  // is collapsed. Expand first, then hand the same event on once the
+  // panel has mounted; the re-dispatch finds the overlay open and passes.
+  async function onChipWhileCollapsed(ev: Event): Promise<void> {
+    if (!layout.collapsed || docked) return;
+    ev.stopImmediatePropagation();
+    layout = { ...layout, collapsed: false };
+    await tick();
+    window.dispatchEvent(new CustomEvent("caelo:chip", { detail: (ev as CustomEvent).detail }));
+  }
+
   onMount(() => {
     document.addEventListener("keydown", onGlobalKeyDown);
+    window.addEventListener("caelo:chip", onChipWhileCollapsed);
   });
   onDestroy(() => {
     if (typeof document !== "undefined") {
       document.removeEventListener("keydown", onGlobalKeyDown);
+      window.removeEventListener("caelo:chip", onChipWhileCollapsed);
     }
   });
 

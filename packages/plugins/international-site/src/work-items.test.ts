@@ -148,6 +148,10 @@ function world() {
         case "pages_seo.apply_translation":
           writes.push([op, input]);
           return { outcome: "filled" } as O;
+        // #724 D — a translated chrome variant goes through core's link
+        // canonicalisation; the fake echoes the values back unchanged.
+        case "links.canonicalise_values":
+          return { values: (i as { values: unknown }).values } as O;
         default:
           throw new Error(`unexpected core op ${op}`);
       }

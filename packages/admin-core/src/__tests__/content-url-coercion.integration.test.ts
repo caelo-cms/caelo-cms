@@ -123,7 +123,8 @@ describe("build_page url-field resilience", () => {
   it("a VALID href passes through untouched (not coerced)", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
       page: { slug: `urlc-valid-${TS}`, title: "URLC Valid", templateId },
-      modules: [ctaModule("/signup")],
+      // External: an internal path must name an existing page (#724).
+      modules: [ctaModule("https://example.com/signup")],
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -132,7 +133,7 @@ describe("build_page url-field resilience", () => {
     const ci = await execute(registry, adapter, systemCtx, "content_instances.get", { id: ciId });
     if (!ci.ok) throw new Error("ci get failed");
     const values = (ci.value as { instance: { values: Record<string, unknown> } }).instance.values;
-    expect(values.cta_href).toBe("/signup");
+    expect(values.cta_href).toBe("https://example.com/signup");
   });
 
   it("a genuinely-not-a-URL non-empty string still ABORTS with the actionable kind=url message", async () => {

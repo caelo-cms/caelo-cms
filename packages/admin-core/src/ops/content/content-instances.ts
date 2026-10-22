@@ -11,10 +11,12 @@
  * `["human", "ai", "system"]` for all 5 CRUD ops — content edits are
  * routine, not gated.
  *
- * The only escalation is `content_instances.delete` with N>0 placements:
- * direct delete returns a structured error pointing the AI at the
- * propose/execute flow (lands in v0.12.0.1 per CLAUDE.md §11.A). Direct
- * delete with zero placements is allowed.
+ * The only refusal is `content_instances.delete` with N>0 placements:
+ * deleting would strand the pages bound to the row, so the op returns a
+ * structured error pointing the AI at `fork_placement_content` for each
+ * referencing placement (#63). Forking keeps every page's content, so
+ * detach-then-delete is routine and needs no Owner gate. Direct delete
+ * with zero placements is allowed.
  *
  * Branch isolation: writes during a chat are tagged with
  * `ctx.chatBranchId` and emit a `content_instance_snapshots` row only —
@@ -42,6 +44,9 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
 import { emitDomainEvent } from "../../domain-events.js";
+import { canonicaliseInstanceValues } from "../../links/canonicalise-writes.js";
+import { withHumanisedLinks } from "../../links/humanise.js";
+import { recordPendingImportLinks } from "../../links/import-targets.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -401,45 +406,46 @@ function rowToContentInstance(r: ContentInstanceRowSql): z.infer<typeof contentI
 
 // ─── content_instances.list ──────────────────────────────────────────
 
-export const listContentInstancesOp = defineOperation({
-  name: "content_instances.list",
-  // #453 — plugin actors read too. The vendor URL an embed points at
-  // usually lives in a content value rather than in module HTML (the
-  // extractor lifts it out at authoring time), so a plugin reasoning
-  // about what a module loads cannot see it any other way. Read only;
-  // the write ops stay closed to plugins.
-  actorScope: ["human", "ai", "plugin", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      moduleId: z.string().uuid().optional(),
-      slug: z.string().min(1).max(64).optional(),
-      search: z.string().min(1).max(128).optional(),
-      pageId: z.string().uuid().optional(),
-      includeDeleted: z.boolean().default(false),
-    })
-    .strict(),
-  output: z.object({ instances: z.array(contentInstanceRowSchema) }),
-  handler: async (ctx, input, tx) => {
-    // v0.12.2 — `chat_branch_id` exists on BOTH content_instances and
-    // modules; this query joins both so the helper's unqualified
-    // `chat_branch_id` filter is ambiguous to the planner. Inline the
-    // ci-qualified equivalent here rather than touching the shared
-    // helper (other callers don't join modules).
-    const branchFilter = ctx.chatBranchId
-      ? sql` AND (ci.chat_branch_id IS NULL OR ci.chat_branch_id = ${ctx.chatBranchId}::uuid)`
-      : sql` AND ci.chat_branch_id IS NULL`;
-    const moduleFilter = input.moduleId ? sql`AND ci.module_id = ${input.moduleId}::uuid` : sql``;
-    const slugFilter = input.slug ? sql`AND ci.slug = ${input.slug}` : sql``;
-    const searchFilter = input.search
-      ? sql`AND (ci.display_name ILIKE ${`%${input.search}%`} OR ci.slug ILIKE ${`%${input.search}%`})`
-      : sql``;
-    const pageFilter = input.pageId
-      ? sql`AND EXISTS (SELECT 1 FROM page_modules pm WHERE pm.content_instance_id = ci.id AND pm.page_id = ${input.pageId}::uuid)`
-      : sql``;
-    const deletedFilter = input.includeDeleted ? sql`` : sql`AND ci.deleted_at IS NULL`;
+export const listContentInstancesOp = withHumanisedLinks(
+  defineOperation({
+    name: "content_instances.list",
+    // #453 — plugin actors read too. The vendor URL an embed points at
+    // usually lives in a content value rather than in module HTML (the
+    // extractor lifts it out at authoring time), so a plugin reasoning
+    // about what a module loads cannot see it any other way. Read only;
+    // the write ops stay closed to plugins.
+    actorScope: ["human", "ai", "plugin", "system"],
+    database: "cms_admin",
+    input: z
+      .object({
+        moduleId: z.string().uuid().optional(),
+        slug: z.string().min(1).max(64).optional(),
+        search: z.string().min(1).max(128).optional(),
+        pageId: z.string().uuid().optional(),
+        includeDeleted: z.boolean().default(false),
+      })
+      .strict(),
+    output: z.object({ instances: z.array(contentInstanceRowSchema) }),
+    handler: async (ctx, input, tx) => {
+      // v0.12.2 — `chat_branch_id` exists on BOTH content_instances and
+      // modules; this query joins both so the helper's unqualified
+      // `chat_branch_id` filter is ambiguous to the planner. Inline the
+      // ci-qualified equivalent here rather than touching the shared
+      // helper (other callers don't join modules).
+      const branchFilter = ctx.chatBranchId
+        ? sql` AND (ci.chat_branch_id IS NULL OR ci.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+        : sql` AND ci.chat_branch_id IS NULL`;
+      const moduleFilter = input.moduleId ? sql`AND ci.module_id = ${input.moduleId}::uuid` : sql``;
+      const slugFilter = input.slug ? sql`AND ci.slug = ${input.slug}` : sql``;
+      const searchFilter = input.search
+        ? sql`AND (ci.display_name ILIKE ${`%${input.search}%`} OR ci.slug ILIKE ${`%${input.search}%`})`
+        : sql``;
+      const pageFilter = input.pageId
+        ? sql`AND EXISTS (SELECT 1 FROM page_modules pm WHERE pm.content_instance_id = ci.id AND pm.page_id = ${input.pageId}::uuid)`
+        : sql``;
+      const deletedFilter = input.includeDeleted ? sql`` : sql`AND ci.deleted_at IS NULL`;
 
-    const rows = (await tx.execute(sql`
+      const rows = (await tx.execute(sql`
       SELECT
         ci.id::text AS id,
         ci.module_id::text AS module_id,
@@ -468,51 +474,53 @@ export const listContentInstancesOp = defineOperation({
       ORDER BY ci.created_at ASC
     `)) as unknown as ContentInstanceRowSql[];
 
-    // #820 — same caller-branch overlay as content_instances.get: a
-    // branched set_values lands only in content_instance_snapshots, so a
-    // list without it showed pre-edit values (and the markup guard could
-    // not see copies the same chat had just written).
-    if (ctx.chatBranchId) {
-      const states = await loadContentInstanceBranchStates(
-        tx,
-        rows.map((r) => r.id),
-        ctx.chatBranchId,
-      );
-      for (const r of rows) {
-        const overlay = states.get(r.id);
-        if (!overlay) continue;
-        r.values = overlay.values;
-        r.slug = overlay.slug;
-        r.display_name = overlay.displayName;
-        r.version = overlay.version;
-        r.deleted_at = overlay.deletedAt;
+      // #820 — same caller-branch overlay as content_instances.get: a
+      // branched set_values lands only in content_instance_snapshots, so a
+      // list without it showed pre-edit values (and the markup guard could
+      // not see copies the same chat had just written).
+      if (ctx.chatBranchId) {
+        const states = await loadContentInstanceBranchStates(
+          tx,
+          rows.map((r) => r.id),
+          ctx.chatBranchId,
+        );
+        for (const r of rows) {
+          const overlay = states.get(r.id);
+          if (!overlay) continue;
+          r.values = overlay.values;
+          r.slug = overlay.slug;
+          r.display_name = overlay.displayName;
+          r.version = overlay.version;
+          r.deleted_at = overlay.deletedAt;
+        }
       }
-    }
-    const visible = input.includeDeleted ? rows : rows.filter((r) => r.deleted_at === null);
+      const visible = input.includeDeleted ? rows : rows.filter((r) => r.deleted_at === null);
 
-    return ok({ instances: visible.map(rowToContentInstance) });
-  },
-});
+      return ok({ instances: visible.map(rowToContentInstance) });
+    },
+  }),
+);
 
 // ─── content_instances.get ───────────────────────────────────────────
 
-export const getContentInstanceOp = defineOperation({
-  name: "content_instances.get",
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z.object({ id: z.string().uuid() }).strict(),
-  output: z.object({
-    instance: contentInstanceRowSchema,
-    placements: z.array(contentInstancePlacementSchema),
-  }),
-  handler: async (ctx, input, tx) => {
-    // v0.12.2 — ci ⨝ modules both have chat_branch_id; qualify with `ci.`
-    // to avoid the planner ambiguity that the shared helper triggers.
-    // Same pattern as content_instances.list.
-    const branchFilter = ctx.chatBranchId
-      ? sql` AND (ci.chat_branch_id IS NULL OR ci.chat_branch_id = ${ctx.chatBranchId}::uuid)`
-      : sql` AND ci.chat_branch_id IS NULL`;
-    const rows = (await tx.execute(sql`
+export const getContentInstanceOp = withHumanisedLinks(
+  defineOperation({
+    name: "content_instances.get",
+    actorScope: ["human", "ai", "system"],
+    database: "cms_admin",
+    input: z.object({ id: z.string().uuid() }).strict(),
+    output: z.object({
+      instance: contentInstanceRowSchema,
+      placements: z.array(contentInstancePlacementSchema),
+    }),
+    handler: async (ctx, input, tx) => {
+      // v0.12.2 — ci ⨝ modules both have chat_branch_id; qualify with `ci.`
+      // to avoid the planner ambiguity that the shared helper triggers.
+      // Same pattern as content_instances.list.
+      const branchFilter = ctx.chatBranchId
+        ? sql` AND (ci.chat_branch_id IS NULL OR ci.chat_branch_id = ${ctx.chatBranchId}::uuid)`
+        : sql` AND ci.chat_branch_id IS NULL`;
+      const rows = (await tx.execute(sql`
       SELECT
         ci.id::text AS id,
         ci.module_id::text AS module_id,
@@ -534,35 +542,35 @@ export const getContentInstanceOp = defineOperation({
       WHERE ci.id = ${input.id}::uuid ${branchFilter}
       LIMIT 1
     `)) as unknown as ContentInstanceRowSql[];
-    const r = rows[0];
-    if (!r) {
-      return err({
-        kind: "HandlerError",
-        operation: "content_instances.get",
-        message: "content_instance not found",
-      });
-    }
-    // Run #8 R3 — overlay the caller-branch snapshot state. Branched
-    // `set_values` writes ONLY a content_instance_snapshots row (the live
-    // row is untouched until publish), so without this overlay the AI's
-    // read-back showed pre-edit values and it blindly re-edited content it
-    // had already written. Same overlay helper the write path uses for
-    // chained edits, so read and write see identical state.
-    if (ctx.chatBranchId) {
-      const overlay = await loadContentInstanceStateWithBranchOverlay(
-        tx,
-        input.id,
-        ctx.chatBranchId,
-      );
-      if (overlay) {
-        r.values = overlay.values;
-        r.slug = overlay.slug;
-        r.display_name = overlay.displayName;
-        r.version = overlay.version;
-        r.deleted_at = overlay.deletedAt;
+      const r = rows[0];
+      if (!r) {
+        return err({
+          kind: "HandlerError",
+          operation: "content_instances.get",
+          message: "content_instance not found",
+        });
       }
-    }
-    const placements = (await tx.execute(sql`
+      // Run #8 R3 — overlay the caller-branch snapshot state. Branched
+      // `set_values` writes ONLY a content_instance_snapshots row (the live
+      // row is untouched until publish), so without this overlay the AI's
+      // read-back showed pre-edit values and it blindly re-edited content it
+      // had already written. Same overlay helper the write path uses for
+      // chained edits, so read and write see identical state.
+      if (ctx.chatBranchId) {
+        const overlay = await loadContentInstanceStateWithBranchOverlay(
+          tx,
+          input.id,
+          ctx.chatBranchId,
+        );
+        if (overlay) {
+          r.values = overlay.values;
+          r.slug = overlay.slug;
+          r.display_name = overlay.displayName;
+          r.version = overlay.version;
+          r.deleted_at = overlay.deletedAt;
+        }
+      }
+      const placements = (await tx.execute(sql`
       SELECT
         pm.page_id::text AS page_id,
         p.slug AS page_slug,
@@ -577,28 +585,29 @@ export const getContentInstanceOp = defineOperation({
         AND p.deleted_at IS NULL
       ORDER BY p.current_path ASC, pm.block_name ASC, pm.position ASC
     `)) as unknown as {
-      page_id: string;
-      page_slug: string;
-      page_path: string;
-      page_title: string;
-      block_name: string;
-      position: number;
-      sync_mode: "synced" | "unsynced";
-    }[];
-    return ok({
-      instance: rowToContentInstance(r),
-      placements: placements.map((p) => ({
-        pageId: p.page_id,
-        pageSlug: p.page_slug,
-        pagePath: p.page_path,
-        pageTitle: p.page_title,
-        blockName: p.block_name,
-        position: p.position,
-        syncMode: p.sync_mode,
-      })),
-    });
-  },
-});
+        page_id: string;
+        page_slug: string;
+        page_path: string;
+        page_title: string;
+        block_name: string;
+        position: number;
+        sync_mode: "synced" | "unsynced";
+      }[];
+      return ok({
+        instance: rowToContentInstance(r),
+        placements: placements.map((p) => ({
+          pageId: p.page_id,
+          pageSlug: p.page_slug,
+          pagePath: p.page_path,
+          pageTitle: p.page_title,
+          blockName: p.block_name,
+          position: p.position,
+          syncMode: p.sync_mode,
+        })),
+      });
+    },
+  }),
+);
 
 // ─── content_instances.create ────────────────────────────────────────
 
@@ -656,6 +665,32 @@ export const createContentInstanceOp = defineOperation({
         });
       }
     }
+
+    // Epic #724 — internal links (`/about`, own-domain URLs, media URLs)
+    // are stored as references; a link to no page refuses the write.
+    const linkCanon = await canonicaliseInstanceValues(
+      tx,
+      ctx,
+      input.moduleId,
+      input.values,
+      undefined,
+    );
+    if (!linkCanon.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "content_instances.create",
+        input,
+        succeeded: false,
+        resultSummary: `link-canonicalisation: ${linkCanon.issues.length} issue(s)`,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "content_instances.create",
+        message: linkCanon.message,
+      });
+    }
+    Object.assign(input.values, linkCanon.value);
 
     // v0.12.1 — validate nested-module-ref shapes against the module's
     // declared fields[] BEFORE persisting so bad refs fail at write time
@@ -723,6 +758,11 @@ export const createContentInstanceOp = defineOperation({
       });
     }
 
+    // Epic #724 — links to pages the chat's import run will still build.
+    await recordPendingImportLinks(tx, linkCanon.pending, {
+      kind: "content_instance",
+      id: contentInstanceId,
+    });
     return ok({ contentInstanceId });
   },
 });
@@ -877,6 +917,34 @@ export const setContentInstanceValuesOp = defineOperation({
       });
     }
 
+    // Epic #724 — canonicalise internal links (see content_instances.create).
+    // Links already in the stored values are grandfathered: an edit must
+    // not add a broken link, but need not fix an unrelated old one.
+    const linkCanon = await canonicaliseInstanceValues(
+      tx,
+      ctx,
+      prev.moduleId,
+      input.values,
+      prev.values,
+    );
+    if (!linkCanon.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "content_instances.set_values",
+        input,
+        succeeded: false,
+        entityId: input.id,
+        resultSummary: `link-canonicalisation: ${linkCanon.issues.length} issue(s)`,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "content_instances.set_values",
+        message: linkCanon.message,
+      });
+    }
+    Object.assign(input.values, linkCanon.value);
+
     // v0.12.1 — validate nested-module-ref shapes against the owning
     // module's fields[] so bad refs fail at write time, not render time.
     const refValidation = await validateNestedRefs(tx, prev.moduleId, input.values);
@@ -979,6 +1047,11 @@ export const setContentInstanceValuesOp = defineOperation({
       });
     }
 
+    // Epic #724 — links to pages the chat's import run will still build.
+    await recordPendingImportLinks(tx, linkCanon.pending, {
+      kind: "content_instance",
+      id: input.id,
+    });
     return ok({ placementCount, nestedParentCount, version: nextVersion });
   },
 });
@@ -1056,11 +1129,10 @@ export const deleteContentInstanceOp = defineOperation({
 
     const placementCount = await countPlacements(tx, input.id);
     if (placementCount > 0) {
-      // Per CLAUDE.md §11.A — a hard-to-revert action (cascade across
-      // many pages) needs a propose/execute gate. The gated variant
-      // lands in v0.12.0.1; for now, surface the blast radius + the
-      // recovery path. The AI's tool description carries the same
-      // contract.
+      // Refuse instead of cascading: the AI detaches each placement via
+      // fork_placement_content (content survives as a private copy),
+      // then deletes the orphan. #63 — the message must only name tools
+      // that exist; it once pointed at a never-built propose tool.
       //
       // v0.12.2 — name the top-3 affected pages inline so the AI can
       // discover the placements without a follow-up
@@ -1081,7 +1153,7 @@ export const deleteContentInstanceOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "content_instances.delete",
-        message: `cannot delete: ${placementCount} placement(s) reference this content_instance${samples ? ` (on ${samples}${moreSuffix})` : ""}. Detach each placement first via fork_placement_content, OR (v0.12.0.1+) submit a propose_delete_content_instance proposal so the Owner can approve the cascade.`,
+        message: `cannot delete: ${placementCount} placement(s) reference this content_instance${samples ? ` (on ${samples}${moreSuffix})` : ""}. Detach each placement first: call get_content_instance to list its placements (pageId, blockName, position), then fork_placement_content for each one (the page keeps its content as a private copy), then retry the delete.`,
         nextAction: {
           tool: "fork_placement_content",
           args: {},
@@ -1335,21 +1407,17 @@ export const forkPlacementContentOp = defineOperation({
       );
     }
 
-    const placementRows = (await tx.execute(sql`
-      SELECT module_id::text AS module_id,
-             content_instance_id::text AS content_instance_id,
-             sync_mode
-      FROM page_modules
-      WHERE page_id = ${input.pageId}::uuid
-        AND block_name = ${input.blockName}
-        AND position = ${input.position}
-      LIMIT 1
-    `)) as unknown as {
-      module_id: string;
-      content_instance_id: string;
-      sync_mode: "synced" | "unsynced";
-    }[];
-    const placement = placementRows[0];
+    // Resolve the placement and the values it shows through the caller's
+    // BRANCH-OVERLAID view, like placement.set_content: on a chat branch the
+    // placement may exist only in page_layout_snapshots, and the shared
+    // instance may carry branch edits the fork must start from.
+    const overlaidLayout = await loadPageLayoutStateWithBranchOverlay(
+      tx,
+      input.pageId,
+      ctx.chatBranchId ?? null,
+    );
+    const placement = overlaidLayout.blocks.find((b) => b.blockName === input.blockName)
+      ?.placements?.[input.position];
     if (!placement) {
       return err({
         kind: "HandlerError",
@@ -1359,14 +1427,12 @@ export const forkPlacementContentOp = defineOperation({
     }
 
     // Read the source instance's values so the fork starts as a deep copy.
-    const srcRows = (await tx.execute(sql`
-      SELECT "values" AS values
-      FROM content_instances
-      WHERE id = ${placement.content_instance_id}::uuid
-      LIMIT 1
-    `)) as unknown as { values: unknown }[];
-    const srcValues = srcRows[0]?.values ?? {};
-    const valuesJson = typeof srcValues === "string" ? srcValues : JSON.stringify(srcValues);
+    const source = await loadContentInstanceStateWithBranchOverlay(
+      tx,
+      placement.contentInstanceId,
+      ctx.chatBranchId,
+    );
+    const valuesJson = JSON.stringify(source?.values ?? {});
 
     // Mint the new (unsynced) content_instance, copy values, and bind
     // the placement to it.
@@ -1374,7 +1440,7 @@ export const forkPlacementContentOp = defineOperation({
       INSERT INTO content_instances
         (module_id, "values", updated_by, chat_branch_id)
       VALUES (
-        ${placement.module_id}::uuid,
+        ${placement.moduleId}::uuid,
         ${jsonbParam(valuesJson)},
         ${ctx.actorId}::uuid,
         ${ctx.chatBranchId ?? null}::uuid
@@ -1407,9 +1473,28 @@ export const forkPlacementContentOp = defineOperation({
 
     // Emit a content_instance snapshot for the new row (so revert + audit
     // see the fork) plus a pageLayout snapshot reflecting the rebound
-    // placement.
+    // placement. On a chat branch live page_modules stays as it is, so the
+    // rebinding exists only in this snapshot: the branch-overlaid layout
+    // with this placement swapped to the new, unsynced instance (the same
+    // shape placement.set_content emits).
     const ciState = await loadContentInstanceState(tx, newCiId);
-    const layoutState = await loadPageLayoutState(tx, input.pageId);
+    const layoutState = ctx.chatBranchId
+      ? {
+          schemaVersion: 1 as const,
+          blocks: overlaidLayout.blocks.map((b) =>
+            b.blockName !== input.blockName
+              ? b
+              : {
+                  ...b,
+                  placements: (b.placements ?? []).map((p, i) =>
+                    i === input.position
+                      ? { ...p, contentInstanceId: newCiId, syncMode: "unsynced" as const }
+                      : p,
+                  ),
+                },
+          ),
+        }
+      : await loadPageLayoutState(tx, input.pageId);
     await emitSnapshot(tx, {
       actorId: ctx.actorId,
       opKind: "placement.fork_content",

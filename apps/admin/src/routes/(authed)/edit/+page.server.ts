@@ -649,6 +649,54 @@ export const actions: Actions = {
     };
   },
   /**
+   * #917 / #918 — in-place edits from the preview iframe: one or more
+   * values of one placement (text, link target, image), written on the
+   * active chat's branch through `page_module_content.patch_fields`
+   * (snapshot, so chat Undo reverts it). `scope` answers "everywhere or
+   * only here?" for shared content. The page posts here with fetch +
+   * `applyAction`, so the layout's toast effect reports the outcome.
+   */
+  editFields: async ({ request, locals }) => {
+    requirePermission(locals, "content.write");
+    const { adapter, registry } = getQueryContext();
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const chatBranchId = String(form.get("chatBranchId") ?? "");
+    const chatSessionId = String(form.get("chatSessionId") ?? "");
+    let edits: unknown;
+    try {
+      edits = JSON.parse(String(form.get("edits") ?? ""));
+    } catch {
+      return fail(400, { error: "Not saved: the change could not be read." });
+    }
+    const scope = form.get("scope");
+    const ctx: ExecutionContext = chatBranchId
+      ? { ...locals.ctx, chatBranchId, ...(chatSessionId ? { chatTaskId: chatSessionId } : {}) }
+      : locals.ctx;
+    // The op's Zod schema validates the shape; a malformed post fails there.
+    const r = await execute(registry, adapter, ctx, "page_module_content.patch_fields", {
+      pageId: String(form.get("pageId") ?? ""),
+      blockName: String(form.get("blockName") ?? ""),
+      position: Number(form.get("position")),
+      edits,
+      ...(typeof scope === "string" && scope.length > 0 ? { scope } : {}),
+    });
+    if (!r.ok && r.error.kind === "BranchNotFound") return fail(404, { error: "Branch not found" });
+    if (!r.ok) {
+      // HandlerError messages are written for the operator; other kinds
+      // (validation, lock) go through describeError.
+      const message =
+        r.error.kind === "HandlerError" && "message" in r.error
+          ? String(r.error.message)
+          : describeError(r.error);
+      return fail(r.error.kind === "HandlerError" ? 409 : 400, { error: `Not saved: ${message}` });
+    }
+    // `savedAt` makes every save a distinct result: the layout's toast
+    // effect skips a form result identical to the previous one, which would
+    // swallow the confirmation of a second edit in a row.
+    return { ok: "Saved.", savedAt: new Date().toISOString() };
+  },
+  /**
    * v0.7.0 — /edit's split-button Stage path. One click does the full
    * "show me 1:1 what production would see" loop:
    *

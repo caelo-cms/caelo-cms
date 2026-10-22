@@ -12,7 +12,12 @@
  * structured-set and module write ops and would close an import cycle.
  */
 
-import { collectUrlAnnotations, type RenderScope, resolvePageUrl } from "@caelo-cms/plugin-host";
+import {
+  collectUrlAnnotations,
+  type RenderScope,
+  resolvePageUrl,
+  type UrlCompositionView,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { type ExecutionContext, isHomeSlug } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -82,29 +87,34 @@ export interface ComposedPath {
  * @param annotationScope whose plugin state annotates the pages (main or
  *   a chat branch); independent of the tree's scope so a merge can pair
  *   the post-replay tree with the branch's plugin view.
+ * @param view which plugin contributions take part (default: all active).
  */
 export async function composePathsDetailed(
   tx: TransactionRunner,
   tree: PageTree,
   pageIds: ReadonlyArray<string>,
   annotationScope: RenderScope,
+  view?: UrlCompositionView,
 ): Promise<Map<string, ComposedPath>> {
   const out = new Map<string, ComposedPath>();
   const ids = [...new Set(pageIds)].filter((id) => tree.byId.has(id));
   if (ids.length === 0) return out;
   const designated = await loadDesignatedHomePageId(tx);
-  const annotations = await collectUrlAnnotations(ids, annotationScope);
+  const annotations = await collectUrlAnnotations(ids, annotationScope, view);
   for (const id of ids) {
     const node = tree.byId.get(id) as PageTreeNode;
     const ann = annotations.get(id) ?? {};
     const isRoot = isCompositionHome(id, node.slug, node.parentPageId !== null, designated, ann);
-    const resolved = resolvePageUrl({
-      pageId: id,
-      slug: node.slug,
-      ancestorSlugs: ancestorSlugsOf(tree, id),
-      isHomePage: isRoot,
-      annotations: ann,
-    });
+    const resolved = resolvePageUrl(
+      {
+        pageId: id,
+        slug: node.slug,
+        ancestorSlugs: ancestorSlugsOf(tree, id),
+        isHomePage: isRoot,
+        annotations: ann,
+      },
+      view,
+    );
     out.set(id, { path: resolved.path, isRoot });
   }
   return out;
@@ -116,7 +126,8 @@ export async function composePaths(
   tree: PageTree,
   pageIds: ReadonlyArray<string>,
   annotationScope: RenderScope,
+  view?: UrlCompositionView,
 ): Promise<Map<string, string>> {
-  const detailed = await composePathsDetailed(tx, tree, pageIds, annotationScope);
+  const detailed = await composePathsDetailed(tx, tree, pageIds, annotationScope, view);
   return new Map([...detailed].map(([id, c]) => [id, c.path]));
 }

@@ -32,6 +32,7 @@ import {
   createUserOp,
   deleteUserOp,
   FIRST_OWNER_KEEPS_OWNER_ROLE,
+  identityGateRefusal,
   setUserRolesOp,
 } from "./users.js";
 
@@ -67,6 +68,12 @@ export const proposeUserCreateOp = defineOperation({
         operation: "users.propose_create",
         message: `email "${input.email}" already in use`,
       });
+    }
+    // #914 — refuse before the Owner is asked to approve a user who could
+    // never get past the identity gate (users.create checks again on apply).
+    const refusal = await identityGateRefusal(tx, input.email);
+    if (refusal) {
+      return err({ kind: "HandlerError", operation: "users.propose_create", message: refusal });
     }
     const preview = {
       email: input.email,

@@ -4,7 +4,8 @@
  * #769 — the HTTP boundary of POST /api/internal/owner-reset, which hands a
  * raw reset credential back to its caller: it must refuse before reading the
  * body unless the internal token is valid for exactly `auth.owner_reset`, and
- * refuse a body that is not the CLI's `{ email?, requestedBy }`. None of these
+ * refuse a body that is not the CLI's `{ email?, requestedBy }` (Google
+ * Cloud) or `{ email?, requestedByHostUser }` (self-hosted, #770). None of these
  * paths reach the database.
  */
 
@@ -85,6 +86,11 @@ describe("POST /api/internal/owner-reset", () => {
       JSON.stringify({ requestedBy: "op\nerator@example.com" }),
       JSON.stringify({ requestedBy: "<script>@example.com" }),
       JSON.stringify({ requestedBy: `${"a".repeat(320)}@example.com` }),
+      JSON.stringify({ requestedByHostUser: "michael" }),
+      JSON.stringify({ requestedByHostUser: "mi chael@box" }),
+      JSON.stringify({ requestedByHostUser: "michael@box/evil" }),
+      JSON.stringify({ requestedByHostUser: `${"a".repeat(65)}@box` }),
+      JSON.stringify({ requestedBy: "operator@example.com", requestedByHostUser: "michael@box" }),
     ];
     for (const body of bad) {
       const res = await post(auth, body);

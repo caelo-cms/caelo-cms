@@ -116,7 +116,7 @@ export async function buildPageContext(
         "- update_pages_many({updates:[{pageId, …}]}) — the ONE tool for page metadata, for 1 page or many (single-item array for one page). Set exactly the identifier the user meant:",
         '  * `name` — internal label only. Use when the user says "rename" without mentioning URL or tab.',
         '  * `title` — HTML <title> only. Use when the user mentions "browser tab", "<title>", or "SERP".',
-        "  * `slug` — URL only. Auto-creates a 301 from the old URL and rewrites links pointing at it. Use only when the user explicitly mentions changing the URL / slug / path. `redirectFromOld:'skip'` suppresses the 301 — only on explicit request.",
+        "  * `slug` — URL only. Auto-creates a 301 from the old URL; links on the site follow the page automatically. Use only when the user explicitly mentions changing the URL / slug / path. `redirectFromOld:'skip'` suppresses the 301 — only on explicit request.",
         "- delete_pages_many({deletions:[{pageId, disposition:'404'|'redirect', redirectTo?}]}) — the ONE delete tool, for 1 page or many (single-item array for one page). ALWAYS confirm the dead-URL disposition per page; suggest a redirect target (parent section, sibling, or /) when proposing 'redirect'. 5+ pages needs one Owner click.",
         '- When a request is ambiguous (e.g. just "rename to About"), ASK: "Should I update only the internal name, the <title> tag, or the URL too?"',
         "",

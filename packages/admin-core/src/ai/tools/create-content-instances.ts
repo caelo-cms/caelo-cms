@@ -10,6 +10,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { contentInstancesCreateManySchema } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const createContentInstancesTool: ToolDefinitionWithHandler<
@@ -21,7 +22,8 @@ export const createContentInstancesTool: ToolDefinitionWithHandler<
     "Each item is the exact `create_content_instance` shape: `{moduleId, values, purpose?, slug?, displayName?}` — `purpose` required for SHARED rows (why this row exists as a reusable instance; surfaced in `## Content Library`), `values` keyed by the module's declared field names. " +
     "**When NOT to use:** if you're also creating the page and its modules, `build_page` does the whole assembly (modules + instances + placements) in one call — use that instead. For a single instance the singular tool is fine. " +
     "After minting, bind rows to placements via `set_placement_content` (or let `build_page` content.source='existing' bind them). " +
-    'Typical call: `{instances: [{moduleId: "…", purpose: "Footer CTA shared across product pages", values: {cta_label: "Start free", cta_href: "/signup"}}, {moduleId: "…", values: {…}}]}`.',
+    'Typical call: `{instances: [{moduleId: "…", purpose: "Footer CTA shared across product pages", values: {cta_label: "Start free", cta_href: "/signup"}}, {moduleId: "…", values: {…}}]}`.' +
+    INTERNAL_LINK_CONTRACT,
   schema: contentInstancesCreateManySchema,
   inputSchema: {
     type: "object",

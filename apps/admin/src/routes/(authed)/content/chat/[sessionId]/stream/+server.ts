@@ -106,7 +106,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     );
   }
   // issue #190 — Zod at the boundary for operator-attached images.
-  const { CHAT_MAX_ATTACHMENTS, chatAttachmentSchema } = await import("@caelo-cms/shared");
+  const { CHAT_MAX_ATTACHMENTS, CHAT_MAX_CHIPS, chatAttachmentSchema, chatChipSchema } =
+    await import("@caelo-cms/shared");
   const { z } = await import("zod");
   const attachmentsParse = z
     .array(chatAttachmentSchema)
@@ -115,6 +116,15 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
     .safeParse(body.attachments ?? []);
   if (!attachmentsParse.success) {
     throw error(400, `invalid attachments: ${attachmentsParse.error.message}`);
+  }
+  // #916 — element references from the composer and the live-edit preview.
+  const chipsParse = z
+    .array(chatChipSchema)
+    .max(CHAT_MAX_CHIPS)
+    .default([])
+    .safeParse(body.chips ?? []);
+  if (!chipsParse.success) {
+    throw error(400, `invalid chips: ${chipsParse.error.message}`);
   }
   const { adapter, registry } = getQueryContext();
 
@@ -249,9 +259,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
               ? { content: body.content }
               : {}),
             ...(resumeApproval ? { resumeApproval } : {}),
-            chips: Array.isArray(body.chips)
-              ? (body.chips as { moduleId: string; selector: string; label: string }[])
-              : [],
+            chips: chipsParse.data,
             attachments: attachmentsParse.data,
             ...(selection.data && !resumeApproval ? { previewSelection: selection.data } : {}),
             ...(origin ? { origin } : {}),

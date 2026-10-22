@@ -42,6 +42,9 @@ function toolCtxWith(overrides: { moduleCss?: string } = {}): ToolContext {
           return ok({ theme: { tokens: TOKENS } });
         case "modules.update":
           return ok({});
+        // #158 — a css-only edit_module reads the stored root for the scope check.
+        case "modules.get":
+          return ok({ module: { html: '<section class="hero"></section>' } });
         case "themes.update_tokens":
           return ok({
             themeId: "t1",

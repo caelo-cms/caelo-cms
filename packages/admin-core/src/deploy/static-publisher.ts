@@ -150,12 +150,32 @@ export interface StaticPublisher {
   }): Promise<PromoteSummary>;
 
   /**
-   * #650 — retire public preview artefacts of staged builds that are no
-   * longer the current one: every one except `keepRunId` (after a Stage),
-   * or all of them (`keepRunId: null`, after Publish live). Absent on
-   * publishers whose staging is not publicly reachable per run.
+   * #650 / #908 / #969 — make `servedRunId`'s public preview the one staging
+   * serves, and retire every other one. A preview is created with a short
+   * TTL, so a Stage that fails before it is selected leaves nothing that
+   * outlives it; selection extends the served preview's lifetime as far as
+   * the provider allows (Firebase: a 30-day TTL — a preview channel cannot
+   * be made permanent), and {@link refreshStagingPreview} keeps extending it
+   * so an idle staging does not expire into 404s; a retired preview gets the
+   * short TTL back before it is deleted, so one whose delete fails still
+   * expires soon. `servedRunId: null` retires them all.
+   *
+   * Throws when the served preview cannot be kept alive (including when it
+   * no longer exists) — the caller must not record it as served. Previews
+   * that could not be retired are reported in `notRetired`, not thrown:
+   * the next selection retries them. Absent on publishers whose staging is
+   * not publicly reachable per run.
    */
-  pruneStagingPreviews?(args: { keepRunId: string | null }): Promise<{ deleted: string[] }>;
+  selectStagingPreview?(args: { servedRunId: string | null }): Promise<StagingPreviewSelection>;
+
+  /**
+   * #969 — extend the served preview's lifetime again without touching any
+   * other preview: the periodic keep-alive between Stages. Throws when the
+   * preview no longer exists (Stage again) or the provider did not extend
+   * it. Present exactly on publishers that implement selectStagingPreview
+   * with a finite served lifetime.
+   */
+  refreshStagingPreview?(args: { servedRunId: string }): Promise<StagingPreviewRefresh>;
 }
 
 /**
@@ -186,4 +206,20 @@ export async function loadStaticPublisher(provider?: string): Promise<StaticPubl
         `loadStaticPublisher: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | gcp-firebase | aws | azure.`,
       );
   }
+}
+
+/** What {@link StaticPublisher.selectStagingPreview} did with the other previews. */
+export interface StagingPreviewSelection {
+  /** Previews deleted (or already gone). */
+  readonly retired: readonly string[];
+  /** Previews that are still there, each with why its retirement failed. */
+  readonly notRetired: readonly { readonly preview: string; readonly error: string }[];
+  /** When the served preview now expires (ISO 8601); null when nothing is served. */
+  readonly servedExpiresAt: string | null;
+}
+
+/** What {@link StaticPublisher.refreshStagingPreview} did. */
+export interface StagingPreviewRefresh {
+  /** When the served preview now expires (ISO 8601). */
+  readonly expiresAt: string;
 }

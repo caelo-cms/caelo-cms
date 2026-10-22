@@ -25,7 +25,12 @@ import {
   type QueryError,
   type TransactionRunner,
 } from "@caelo-cms/query-api";
-import { CAELO_VERSION, type ExecutionContext, isNewerVersion } from "@caelo-cms/shared";
+import {
+  CAELO_VERSION,
+  type ExecutionContext,
+  isNewerVersion,
+  OWNER_ACTION_MAX_CHARS,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { type ManifestReader, readReleaseFacts } from "./release-facts.js";
@@ -89,6 +94,12 @@ export const releaseCheckOutcomeSchema = z.discriminatedUnion("reached", [
        * re-decides from the signed manifest before it changes anything.
        */
       infraChange: z.boolean().nullable(),
+      /**
+       * #868 — the release manifest's `ownerAction`: what the Owner has to
+       * do for the release's breaking change, in one sentence. null = none
+       * declared, the manifest could not be read, or nothing to install.
+       */
+      ownerAction: z.string().min(1).max(OWNER_ACTION_MAX_CHARS).nullable(),
     })
     .strict(),
   checkFailedSchema,
@@ -207,7 +218,7 @@ export async function predictReleaseRoute(
   if (!outcome.reached) return outcome;
   // Not newer than what runs: there is no install to route.
   if (!isNewerVersion(outcome.latestVersion, CAELO_VERSION)) {
-    return { ...outcome, infraChange: null };
+    return { ...outcome, infraChange: null, ownerAction: null };
   }
   const facts = await readReleaseFacts(
     {
@@ -217,7 +228,13 @@ export async function predictReleaseRoute(
     },
     opts.readManifest,
   );
-  return { ...outcome, infraChange: "unavailable" in facts ? null : facts.infraChange };
+  // The reader caches manifests, so this is the one readReleaseFacts fetched.
+  const target = await opts.readManifest(outcome.latestVersion);
+  return {
+    ...outcome,
+    infraChange: "unavailable" in facts ? null : facts.infraChange,
+    ownerAction: target.ok ? (target.manifest.ownerAction ?? null) : null,
+  };
 }
 
 /**
@@ -242,6 +259,7 @@ export async function writeReleaseCheck(
         releaseNotes: null,
         publishedAt: null,
         infraChange: null,
+        ownerAction: null,
       };
   const cooldown =
     onlyIfOlderThanMs === undefined
@@ -254,6 +272,7 @@ export async function writeReleaseCheck(
            release_notes  = ${release.releaseNotes},
            published_at   = ${release.publishedAt}::timestamptz,
            latest_infra_change = ${release.infraChange}::boolean,
+           latest_owner_action = ${release.ownerAction},
            infra_change_from   = ${outcome.reached ? CAELO_VERSION : null},
            fetched_at     = now()
      WHERE id = 1 AND ${cooldown}

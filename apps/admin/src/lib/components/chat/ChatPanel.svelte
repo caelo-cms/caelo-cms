@@ -64,6 +64,7 @@
     sdkApprovalRoute,
   } from "./approval-origin.js";
   import { parseProposalContent } from "./proposal-parser.js";
+  import { measureLivePreview, resolveScreenshotViewport } from "./screenshot-viewport.js";
   import {
     collapseStatusNotes,
     contextNoteLabel,
@@ -80,6 +81,15 @@
     moduleId: string;
     selector: string;
     label: string;
+    /** Text the operator selected in the preview (right-click / selection toolbar). */
+    selectedText?: string;
+    /** Text of the block the reference sits in. */
+    context?: string;
+    /** #917 — the marked placement field the reference sits in. */
+    blockName?: string;
+    position?: number;
+    field?: string;
+    index?: number;
     /** When true the chip rides every send within this session (P6.7). */
     pinned?: boolean;
   }
@@ -979,9 +989,13 @@
    * server-side `awaitScreenshot` Promise so the AI's
    * `screenshot_page` tool returns the image bytes.
    *
-   * Iframe source: `/edit/preview-by-path/<slug>?branch=<chatBranchId>`
-   * — same URL the live-edit overlay uses. Capture is same-origin
-   * (admin-served), so html2canvas can read the contentDocument.
+   * Source: `/edit/preview/<pageId>?branch=<chatBranchId>` — the same
+   * composed page the live-edit overlay shows — fetched and rendered as
+   * srcdoc in a `sandbox="allow-same-origin"` frame WITHOUT scripts
+   * (#946): html2canvas can read the contentDocument, the page's own
+   * scripts cannot run with the operator's session. Script-built DOM is
+   * therefore not in this capture; the server-side backend (headless
+   * Chromium, opaque origin) runs scripts.
    *
    * Failure paths: if the iframe doesn't load, html2canvas throws,
    * or the operator closed the tab during capture, we POST the
@@ -993,15 +1007,17 @@
     pageId: string;
     chatBranchId?: string;
     viewport: "desktop" | "tablet" | "mobile";
+    width?: number;
     selector?: string;
     toolCallId?: string;
   }): Promise<void> {
-    const VIEWPORT_DIMS = {
-      desktop: { width: 1280, height: 800 },
-      tablet: { width: 768, height: 1024 },
-      mobile: { width: 375, height: 812 },
-    };
-    const { width, height } = VIEWPORT_DIMS[req.viewport];
+    // Desktop captures at the operator's live preview size so the AI sees
+    // the same line breaks the operator sees (see screenshot-viewport.ts).
+    const { width, height, source } = resolveScreenshotViewport({
+      viewport: req.viewport,
+      ...(req.width !== undefined ? { width: req.width } : {}),
+      livePreview: measureLivePreview(document),
+    });
 
     const iframe = document.createElement("iframe");
     iframe.style.position = "fixed";
@@ -1011,14 +1027,19 @@
     iframe.style.height = `${height}px`;
     iframe.style.border = "0";
     iframe.style.visibility = "hidden";
+    // #946 — the capture frame shares the admin origin (html2canvas must
+    // read its DOM and paint same-origin media untainted), so it must
+    // never run the page's scripts: `allow-same-origin` WITHOUT
+    // `allow-scripts`. Never add `allow-scripts` here — together they would
+    // hand the module scripts the operator's session.
+    iframe.setAttribute("sandbox", "allow-same-origin");
     // The preview path needs the slug. We don't know it from
     // the SSE event (only pageId + chatBranchId), so use the
     // pages/preview pageId-based route which the editor iframe also
     // uses. Builds the right URL server-side based on pageId.
     const params = new URLSearchParams();
     if (req.chatBranchId) params.set("branch", req.chatBranchId);
-    iframe.src = `/edit/preview/${req.pageId}${params.size > 0 ? `?${params}` : ""}`;
-    document.body.appendChild(iframe);
+    const previewSrc = `/edit/preview/${req.pageId}${params.size > 0 ? `?${params}` : ""}`;
 
     const uploadFailure = async (msg: string): Promise<void> => {
       try {
@@ -1035,6 +1056,15 @@
     };
 
     try {
+      // The preview document itself is served as an opaque-origin sandbox
+      // (CSP), which html2canvas could not read; its HTML is rendered
+      // here as srcdoc instead, under the script-less sandbox above.
+      const preview = await fetch(previewSrc);
+      if (!preview.ok) {
+        await uploadFailure(`preview render failed (HTTP ${preview.status})`);
+        return;
+      }
+      iframe.srcdoc = await preview.text();
       // Wait for iframe load (or timeout). Capture happens on the
       // load event so html2canvas sees the rendered DOM.
       await new Promise<void>((resolve, reject) => {
@@ -1043,6 +1073,7 @@
           resolve();
         };
         iframe.addEventListener("load", onLoad);
+        document.body.appendChild(iframe);
         setTimeout(() => reject(new Error("iframe load timeout (10s)")), 10_000);
       });
 
@@ -1128,12 +1159,17 @@
 
       // Capture geometry rides along so the tool result can state
       // crop-vs-full-page as a FACT (run B4: the model doubted a
-      // selector crop and nothing could confirm it after the fact).
+      // selector crop and nothing could confirm it after the fact). The
+      // viewport size + its source tell the AI whether it saw the
+      // operator's own view or a preset width.
       const meta = {
         canvasWidth: canvas.width,
         canvasHeight: canvas.height,
         pageWidth: doc.body.scrollWidth,
         pageHeight: doc.body.scrollHeight,
+        viewportWidth: width,
+        viewportHeight: height,
+        viewportSource: source,
       };
       const res = await fetch(`/content/chat/${session.id}/screenshot/${req.requestId}`, {
         method: "POST",
@@ -1487,6 +1523,8 @@
   }
 
   async function persistPinned(): Promise<void> {
+    // A pin keeps the module + element reference across messages; the
+    // selected text belongs to the message it was picked for.
     const pinned = chips
       .filter((c) => c.pinned)
       .map((c) => ({ moduleId: c.moduleId, selector: c.selector, label: c.label }));
@@ -1506,6 +1544,15 @@
    * /edit/+page.svelte's postMessage handler) appends a new chip referring
    * to the clicked module. Append-only — multiple clicks accumulate so the
    * user can select N elements then send "make them all green" in one turn.
+   *
+   * Ask AI (`ask: true`) only adds the chip and focuses the composer; the
+   * operator types the instruction here and sends it with their own
+   * Enter / Send. Why not take the instruction from the preview and send
+   * it: the event originates in the preview iframe, which runs the site's
+   * module scripts (modules keep <script>, the preview has no CSP), so any
+   * of them can post the same message. A preview message must never make
+   * the AI act — at most it points at an element. The send stays one
+   * action for the operator, in the editor's own trusted UI.
    */
   onMount(() => {
     // Hydration gate — see the composer's `disabled` binding.
@@ -1515,11 +1562,18 @@
     // (the runner just queued or executed something).
     void loadPendingProposals();
     const handler = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail as Chip | undefined;
+      const detail = (ev as CustomEvent).detail as (Chip & { ask?: boolean }) | undefined;
       if (!detail || typeof detail.moduleId !== "string") return;
+      const { ask, ...chip } = detail;
       // De-dupe: don't add a chip already present (pinned or not).
-      if (chips.some((c) => c.moduleId === detail.moduleId && c.selector === detail.selector)) return;
-      chips = [...chips, { ...detail }];
+      const present = chips.some(
+        (c) =>
+          c.moduleId === chip.moduleId &&
+          c.selector === chip.selector &&
+          c.selectedText === chip.selectedText,
+      );
+      if (!present) chips = [...chips, chip];
+      if (ask === true) composerEl?.focus();
     };
     window.addEventListener("caelo:chip", handler);
 
@@ -1917,6 +1971,7 @@
                 pageId: String(ev["pageId"] ?? ""),
                 chatBranchId: typeof ev["chatBranchId"] === "string" ? ev["chatBranchId"] : undefined,
                 viewport: (ev["viewport"] as "desktop" | "tablet" | "mobile" | undefined) ?? "desktop",
+                width: typeof ev["width"] === "number" ? ev["width"] : undefined,
                 // Forward the CSS selector so an element-scoped capture frames
                 // that element — without this it silently fell back to the full
                 // body and cropped a footer to the top viewport.
@@ -2500,7 +2555,11 @@
                   c.pinned ? "bg-amber-500/15 ring-1 ring-amber-500/40" : "bg-primary/10",
                 )}
               >
-                {c.label}
+                <span title={c.selectedText ?? c.context ?? c.selector}>
+                  {c.label}{#if c.selectedText}<span class="text-muted-foreground">
+                      · “{c.selectedText.length > 40 ? `${c.selectedText.slice(0, 39)}…` : c.selectedText}”</span
+                    >{/if}
+                </span>
                 <button
                   type="button"
                   onclick={() => void togglePin(i)}

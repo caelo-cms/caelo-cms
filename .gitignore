@@ -72,3 +72,6 @@ packages/plugins/.tier1-trust-root
 # Local debug/analysis artifacts from e2e-livedit runs (wire logs, A/B rounds,
 # dev-run logs) — session working material, never repo content.
 run-logs/
+
+# #736 — stack settings live in each install's work dir (~/.caelo-<id>/stack/), never in the package.
+packages/provisioning/stacks/*/Pulumi.*.yaml

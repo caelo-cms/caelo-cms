@@ -49,12 +49,21 @@
  * icon MIME the media library stores and `<link rel="icon" type>`
  * declares. file_server only fills Content-Type when no earlier handler
  * set it, so the `header` line wins over the host's mime.types name.
+ *
+ * #891 — every response of a public vhost is `nosniff`, and every SVG
+ * gets the sandboxing CSP (`SVG_DOCUMENT_CSP`, @caelo-cms/shared): an
+ * uploaded SVG opened directly must not run script on the site's origin,
+ * which also serves `/api/*`. Caddy's `path` matcher is case-insensitive,
+ * so `*.svg` covers `.SVG` too. `cms-provision upgrade` re-writes this file
+ * (self-hosted-upgrade.ts), so existing installs get the headers too.
  */
 
 import {
   CONTENT_HASHED_PATH_PATTERN,
   caddyRedirectsImport,
   IMMUTABLE_CACHE_CONTROL,
+  NOSNIFF,
+  SVG_DOCUMENT_CSP,
 } from "@caelo-cms/shared";
 
 export interface CaddyDomainSpec {
@@ -208,6 +217,9 @@ function vhost(d: CaddyDomainSpec, spec: CaddyfileSpec): string {
   header @content_hashed Cache-Control "${IMMUTABLE_CACHE_CONTROL}"
   @ico path *.ico
   header @ico Content-Type "image/x-icon"
+  header X-Content-Type-Options "${NOSNIFF}"
+  @svg path *.svg
+  header @svg Content-Security-Policy "${SVG_DOCUMENT_CSP}"
   handle /api/* {
     reverse_proxy ${spec.gatewayUpstream}
   }

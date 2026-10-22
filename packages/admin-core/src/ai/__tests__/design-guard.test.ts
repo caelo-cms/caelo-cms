@@ -102,7 +102,7 @@ describe("designGuardSuffix (issues #166, #430)", () => {
   it("stays silent on conformant writes", async () => {
     expect(
       await designGuardSuffix(AI, toolCtx(), {
-        css: ".p{padding:2rem}",
+        css: ".pricing{padding:2rem}",
         html: '<table class="pricing"><tr><th>{{a}}</th><td>{{b}}</td></tr></table>',
       }),
     ).toBe("");
@@ -125,5 +125,37 @@ describe("designGuardSuffix (issues #166, #430)", () => {
   it("omits roles-in-play for tokens that carry no recorded role", async () => {
     const s = await designGuardSuffix(AI, toolCtx(), { css: ".x{color:var(--color-foreground)}" });
     expect(s).toBe("");
+  });
+  it("flags module CSS that is not scoped to the module root (issue #158)", async () => {
+    const s = await designGuardSuffix(AI, toolCtx(), {
+      css: ".pricing h2{margin:0} h3{margin:0} .card{padding:1rem}",
+      html: '<section class="pricing"><h2>{{t}}</h2></section>',
+    });
+    expect(s).toContain("`h3` style EVERY matching element on the page");
+    expect(s).toContain("`.card` are not scoped to this module");
+    expect(s).toContain("`.pricing h2`");
+  });
+
+  it("checks a css-only restyle against the module's stored root (issue #158)", async () => {
+    const ctx = toolCtx();
+    const base = ctx.adapter.runOperation.bind(ctx.adapter);
+    ctx.adapter.runOperation = (async (op: { name: string }, ...rest: unknown[]) =>
+      op.name === "modules.get"
+        ? ok({ module: { html: '<section class="hero"></section>' } })
+        : (base as (...a: unknown[]) => unknown)(op, ...rest)) as typeof ctx.adapter.runOperation;
+    const s = await designGuardSuffix(AI, ctx, {
+      css: ".hero-title{} .card{}",
+      scopeModuleId: "00000000-0000-4000-8000-0000000000aa",
+    });
+    expect(s).toContain("`.card` are not scoped");
+    expect(s).not.toContain("`.hero-title`");
+  });
+
+  it("names a data-caelo-ui value outside the vetted kit (issue #160)", async () => {
+    const s = await designGuardSuffix(AI, toolCtx(), {
+      html: '<div class="gallery" data-caelo-ui="lightbox"></div>',
+    });
+    expect(s).toContain('"lightbox" are not in the vetted interaction kit');
+    expect(s).toContain('"accordion"');
   });
 });

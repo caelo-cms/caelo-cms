@@ -10,6 +10,18 @@ import {
 // The gateway runs these too, so they live in plugin-host (gateway-ops.ts, #634).
 import { commentArchiveListForPageOp } from "@caelo-cms/plugin-host";
 import type { OperationRegistry } from "@caelo-cms/query-api";
+import {
+  bugClustersToRefreshOp,
+  bugForwardingIdentityOp,
+  claimDueBugReportsOp,
+  getBugForwardingOp,
+  markBugIntakeRegisteredOp,
+  previewBugForwardingOp,
+  queueUnsentBugReportsOp,
+  recordBugClusterStatusOp,
+  recordBugForwardResultOp,
+  setBugForwardingOp,
+} from "./ops/ai/bug-forwarding.js";
 import { createBugReportOp, listBugReportsOp } from "./ops/ai/bug-reports.js";
 import { logModuleizeAttemptOp } from "./ops/ai/moduleize_log.js";
 import {
@@ -127,6 +139,8 @@ import {
   setLayoutModulesOp,
   updateLayoutOp,
 } from "./ops/content/layouts.js";
+import { canonicaliseLinkValuesOp } from "./ops/content/link-canonicalise.js";
+import { checkReferencesOp } from "./ops/content/link-integrity.js";
 import {
   createModuleOp,
   deleteModuleOp,
@@ -144,6 +158,7 @@ import {
   setPageModuleContentManyOp,
   setPageModuleContentOp,
 } from "./ops/content/page-module-content.js";
+import { patchPageModuleFieldsOp } from "./ops/content/page-module-patch.js";
 import { movePagesManyOp, planPageMovesOp } from "./ops/content/page-moves.js";
 import {
   changeTemplateOp,
@@ -189,6 +204,7 @@ import {
   listDeployRunsOp,
   listDeployTargetsOp,
   promoteDeployOp,
+  refreshStagingPreviewOp,
   rollbackDeployOp,
   triggerDeployOp,
   updateDeployProgressOp,
@@ -284,6 +300,12 @@ import {
   updatePageCaptureOp,
   writeExtractedPagesOp,
 } from "./ops/imports.js";
+import {
+  getLinkMigrationReportOp,
+  migrateLinksToReferencesOp,
+  revertLinkMigrationOp,
+} from "./ops/links.js";
+import { resolveImportLinksOp } from "./ops/links-import.js";
 import { listMcpApprovalHandoffsOp } from "./ops/mcp_approval_handoffs.js";
 import {
   executeMcpTokenProposalOp,
@@ -367,6 +389,7 @@ import {
   platformUpdatesSchedulerStatusOp,
   platformUpdatesSchedulerTickOp,
 } from "./ops/platform-update-scheduler.js";
+import { platformUpdatesSkipScheduledOp } from "./ops/platform-update-skip.js";
 import { platformUpdateStatusOp, platformUpdatesCheckNowOp } from "./ops/platform-updates.js";
 import { executePluginActivationOp, proposePluginActivationOp } from "./ops/plugins/activation.js";
 import {
@@ -477,12 +500,6 @@ import {
   setMcpRemoteConnectionCapOp,
 } from "./ops/security/mcp_remote_connections.js";
 import {
-  clearMcpRemoteOAuthClientOp,
-  getMcpRemoteOAuthClientOp,
-  mcpRemoteOAuthClientForSyncOp,
-  setMcpRemoteOAuthClientOp,
-} from "./ops/security/mcp_remote_oauth.js";
-import {
   createMcpTokenOp,
   listMcpTokensOp,
   mcpAuthorizeUploadOp,
@@ -490,9 +507,14 @@ import {
   mcpSendChatOp,
   revokeMcpTokenOp,
 } from "./ops/security/mcp_tokens.js";
+import {
+  clearOperatorOAuthClientOp,
+  getOperatorOAuthClientOp,
+  operatorOAuthClientForSyncOp,
+  setOperatorOAuthClientOp,
+} from "./ops/security/operator_oauth.js";
 import { getTelemetryOp, setTelemetryOp, testSendTelemetryOp } from "./ops/security/telemetry.js";
 import {
-  lookupLinksInModulesOp,
   pagesSeoApplyTranslationOp,
   pagesSeoAutofillOp,
   pagesSeoGetOp,
@@ -500,7 +522,6 @@ import {
   pagesSeoOptimizeManyOp,
   pagesSeoOptimizeOp,
   pagesSeoSetOp,
-  rewriteModuleLinksOp,
   siteDefaultsGetSeoOp,
   siteDefaultsSeedSiteBaseUrlOp,
   siteDefaultsSetSeoOp,
@@ -723,6 +744,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(planPageMovesOp);
   registry.register(listSharedContentOp);
   registry.register(resolvePublicUrlsOp);
+  registry.register(canonicaliseLinkValuesOp);
+  // Epic #724 (rollout F) — reference integrity read (check_links, Publish-live check).
+  registry.register(checkReferencesOp);
   registry.register(proposeUrlMigrationOp);
   registry.register(executeUrlMigrationOp);
   registry.register(listUrlMigrationPendingOp);
@@ -740,6 +764,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(getPageModuleContentOp);
   registry.register(setPageModuleContentOp);
   registry.register(setPageModuleContentManyOp);
+  registry.register(patchPageModuleFieldsOp);
   // v0.12.0 — content_instances + placement binding ops.
   registry.register(listContentInstancesOp);
   registry.register(getContentInstanceOp);
@@ -912,12 +937,13 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listMcpTokensOp);
   registry.register(createMcpTokenOp);
   registry.register(revokeMcpTokenOp);
-  // #806 — the remote-MCP Google OAuth client (ID only; the secret lives in
-  // Secret Manager) for the setup page and the operator-access sync job.
-  registry.register(getMcpRemoteOAuthClientOp);
-  registry.register(setMcpRemoteOAuthClientOp);
-  registry.register(clearMcpRemoteOAuthClientOp);
-  registry.register(mcpRemoteOAuthClientForSyncOp);
+  // #914 — the install's Google sign-in client (ID only; the secret lives in
+  // Secret Manager): IAP browser login, IAP programmatic access and the
+  // remote-MCP broker. Read by the setup pages and the operator-access sync job.
+  registry.register(getOperatorOAuthClientOp);
+  registry.register(setOperatorOAuthClientOp);
+  registry.register(clearOperatorOAuthClientOp);
+  registry.register(operatorOAuthClientForSyncOp);
   registry.register(mcpSendChatOp);
   registry.register(mcpAuthorizeUploadOp);
   registry.register(mcpGetVersionOp);
@@ -955,6 +981,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);
   registry.register(updateDeployProgressOp);
+  // #969 — the orchestrator's keep-alive for the served staging preview.
+  registry.register(refreshStagingPreviewOp);
   // v0.2.19 — propose/execute pair for promote + rollback. AI proposes
   // (human + ai + system); Owner approves at /settings/deployments/pending
   // which calls execute_proposal (human + system) → runs the underlying op.
@@ -973,6 +1001,10 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createRedirectsManyOp);
   registry.register(deleteRedirectsManyOp);
   registry.register(setStructuredSetOp);
+  // Epic #724 rollout E — literal links → references, report, revert.
+  registry.register(migrateLinksToReferencesOp);
+  registry.register(getLinkMigrationReportOp);
+  registry.register(revertLinkMigrationOp);
   registry.register(getStructuredSetOp);
   registry.register(listStructuredSetsOp);
   registry.register(deleteStructuredSetOp);
@@ -1035,6 +1067,17 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(logModuleizeAttemptOp);
   // 2026-07 — AI-filed bug reports (info source + per-run metric).
   registry.register(createBugReportOp);
+  // Epic #901 — forwarding bug reports to the Caelo team (opt-in).
+  registry.register(getBugForwardingOp);
+  registry.register(setBugForwardingOp);
+  registry.register(queueUnsentBugReportsOp);
+  registry.register(previewBugForwardingOp);
+  registry.register(claimDueBugReportsOp);
+  registry.register(recordBugForwardResultOp);
+  registry.register(bugForwardingIdentityOp);
+  registry.register(markBugIntakeRegisteredOp);
+  registry.register(bugClustersToRefreshOp);
+  registry.register(recordBugClusterStatusOp);
   registry.register(listBugReportsOp);
   // P12 review pass — email transport singleton.
   registry.register(getEmailConfigOp);
@@ -1131,6 +1174,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acceptImportedPagesOp);
   registry.register(cleanupImportRunOp);
   registry.register(composeFromImportRunOp);
+  // Epic #724 — turn an import run's links to planned pages into references.
+  registry.register(resolveImportLinksOp);
   // Explicit, URL-driven media import (replaces the scan-and-download
   // migrate_media). The AI names the exact source asset URLs to import.
   registry.register(importMediaUrlsOp);
@@ -1185,6 +1230,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(platformUpdatesNotificationClaimOp);
   registry.register(platformUpdatesNotificationFinishOp);
   registry.register(platformUpdatesSchedulerStatusOp);
+  // #868 — "Skip this time" for a scheduled automatic install (Owner, step-up).
+  registry.register(platformUpdatesSkipScheduledOp);
   // #757 — the step-up for the actions above: the Owner's password, re-entered.
   registry.register(stepUpConfirmPasswordOp);
   // v0.2.32 — cross-domain pending proposals aggregator. Used by the
@@ -1239,7 +1286,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(proposeAltOp);
   registry.register(listAltProposalsOp);
   registry.register(reviewAltProposalOp);
-  // P8 — SEO sidecar + slug-change link rewriter + site SEO defaults.
+  // P8 — SEO sidecar + site SEO defaults.
   registry.register(pagesSeoGetOp);
   registry.register(pagesSeoSetOp);
   // Bulk `_many` variant via the DRY defineBulkOp factory (CLAUDE.md §11).
@@ -1259,8 +1306,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeSiteDefaultsProposalOp);
   registry.register(rejectSiteDefaultsProposalOp);
   registry.register(listPendingSiteDefaultsProposalsOp);
-  registry.register(lookupLinksInModulesOp);
-  registry.register(rewriteModuleLinksOp);
   // P10A — skills system.
   registry.register(listSkillsOp);
   registry.register(getSkillOp);

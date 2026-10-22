@@ -8,13 +8,70 @@
  */
 
 import { z } from "zod";
+import {
+  GCLOUD_REAUTH_HINT,
+  type GcloudResult,
+  gcloudErrorLine,
+  isGcloudAuthError,
+} from "../gcloud.js";
 import type { GcloudRunner } from "../gcloud-retry.js";
+
+/**
+ * Whose gcloud credentials a lookup ran with. It decides the fix an auth
+ * failure names: the Owner logs in again; a job in the install's project
+ * cannot, so it points at the break-glass run instead (#630).
+ */
+export type GcloudCredentials = "operator" | "job";
+
+/**
+ * The outcome of finding a deployed resource by name prefix. A failed
+ * listing is NOT "not found": expired credentials used to read as
+ * "Could not find caelo-production-admin*" while the service was there (#630).
+ */
+export type GcpLookup =
+  | { readonly status: "found"; readonly name: string }
+  | { readonly status: "not-found" }
+  | { readonly status: "error"; readonly stderr: string; readonly authExpired: boolean };
+
+/** A lookup that did not find its resource. */
+export type GcpLookupMiss = Exclude<GcpLookup, { readonly status: "found" }>;
+
+/** The first name a `--format=value(name)` listing printed, as a {@link GcpLookup}. */
+export function lookupFromListing(r: GcloudResult): GcpLookup {
+  if (!r.ok) {
+    return { status: "error", stderr: r.stderr, authExpired: isGcloudAuthError(r.stderr) };
+  }
+  const name = r.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .find((s) => s.length > 0);
+  return name ? { status: "found", name } : { status: "not-found" };
+}
+
+/**
+ * The error for a lookup that found nothing, for the operator or the job
+ * that ran it.
+ *
+ * @param what the resource, as the operator knows it, e.g. "caelo-production-admin* Cloud Run service"
+ */
+export function lookupFailure(
+  lookup: GcpLookupMiss,
+  what: string,
+  credentials: GcloudCredentials,
+): string {
+  if (lookup.status === "not-found") return `Could not find the ${what}`;
+  const said = gcloudErrorLine(lookup.stderr);
+  if (!lookup.authExpired) return `Could not list the ${what}: gcloud failed (${said})`;
+  return credentials === "operator"
+    ? `Could not look up the ${what}: ${GCLOUD_REAUTH_HINT} (gcloud: ${said})`
+    : `Could not look up the ${what}: Google rejected this job's credentials (${said}). Nothing was changed. Start the update again; if it fails the same way, run the break-glass upgrade from Cloud Shell, which repairs the job's access.`;
+}
 
 /**
  * Pulumi auto-naming appends a random 7-char suffix to every resource
  * (e.g. `caelo-production-admin-3efcfea`), so lifecycle commands find the
- * deployed name by prefix. Returns the first match, or null when the listing
- * fails or finds nothing.
+ * deployed name by prefix: the first match, "not-found" when the listing is
+ * empty, "error" with gcloud's stderr when the listing itself failed.
  */
 export async function resolveGcpResourceName(
   run: GcloudRunner,
@@ -22,7 +79,7 @@ export async function resolveGcpResourceName(
   prefix: string,
   projectId: string,
   region?: string,
-): Promise<string | null> {
+): Promise<GcpLookup> {
   const args =
     kind === "run-service"
       ? [
@@ -47,14 +104,7 @@ export async function resolveGcpResourceName(
           `name~^${prefix}`,
           "--format=value(name)",
         ];
-  const r = await run(args);
-  if (!r.ok) return null;
-  return (
-    r.stdout
-      .split("\n")
-      .map((s) => s.trim())
-      .find((s) => s.length > 0) ?? null
-  );
+  return lookupFromListing(await run(args));
 }
 
 /** A Cloud Run lookup is regional; there is no default region to guess. */
