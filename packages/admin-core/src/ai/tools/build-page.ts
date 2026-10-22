@@ -24,7 +24,12 @@ import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
-import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
+import {
+  MODULE_CSS_DESCRIPTION,
+  MODULE_HTML_DESCRIPTION,
+  MODULE_JS_CONTRACT,
+} from "./_module-js-contract.js";
+import { stageReadinessSuffix } from "./_stage-readiness.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -38,14 +43,32 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
       type: "object",
       additionalProperties: false,
       description:
-        "EITHER { pageId } to build onto an existing page (modules are appended), OR { slug, title, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
+        "EITHER { pageId } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
       properties: {
         pageId: { type: "string", format: "uuid" },
-        slug: { type: "string", minLength: 1, maxLength: 120 },
+        slug: {
+          type: "string",
+          minLength: 1,
+          maxLength: 120,
+          description:
+            "Lowercase letters, digits and hyphens only — never a path or a slash. The HOMEPAGE (served at `/`) uses slug 'home'.",
+        },
         title: { type: "string", minLength: 1, maxLength: 256 },
         name: { type: "string", minLength: 1, maxLength: 256 },
         templateId: { type: "string", format: "uuid" },
-        status: { type: "string", enum: ["draft", "published"] },
+        status: {
+          type: "string",
+          enum: ["draft", "published"],
+          description:
+            "Only 'published' pages are built on staging. Omitted: published on a site with no published page yet, else draft. Pass 'published' for a page that belongs on the site now.",
+        },
+        metaDescription: {
+          type: "string",
+          minLength: 1,
+          maxLength: 320,
+          description:
+            "Create mode: the new page's meta description (150–160 characters, written from the page's content; in a migration, the source page's). A Stage refuses a published page without one — pass it here so the page is Stage-ready from this call (fill-once, same as autofill_page_seo).",
+        },
         parentPageId: {
           type: "string",
           format: "uuid",
@@ -73,17 +96,26 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
             minLength: 1,
             maxLength: 80,
             description:
-              'Template block to place into. OMIT for a DETACHED nested-only module (requires `ref`; a later entry embeds it via {"$ref": …}).',
+              "Page-TEMPLATE block to place into (usually 'content'; see `# Current page`). Never 'header' / 'footer': site chrome lives on the layout (add_module target='layout'). " +
+              'OMIT for a DETACHED nested-only module (requires `ref`; another entry embeds it via {"$ref": …}).',
+          },
+          position: {
+            description:
+              'Where in its block this entry lands: "top", "bottom" (default — entries append in array order, so a new page needs none) or a 0-based index. Same grammar as add_module. Not for detached entries.',
+            oneOf: [
+              { type: "string", enum: ["top", "bottom"] },
+              { type: "integer", minimum: 0, maximum: 1000 },
+            ],
           },
           ref: {
             type: "string",
             pattern: "^[a-z][a-z0-9_-]{0,31}$",
             description:
-              'Local handle: a LATER entry\'s module/module-list field value {"$ref": "<ref>"} resolves to this entry\'s {moduleId, contentInstanceId}. Referenced entries must come FIRST in the array.',
+              'Local handle: another entry\'s module/module-list field value (or moduleId) {"$ref": "<ref>"} resolves to this entry\'s {moduleId, contentInstanceId}. Array order does not matter — referenced entries are created first automatically.',
           },
           moduleId: {
             description:
-              'EXISTING module UUID from ## Modules — or {"$ref": "<handle>"} to RE-PLACE a module minted earlier in THIS call (e.g. one card module, three placements; each entry still gets its own content).',
+              'EXISTING module UUID from ## Modules — or {"$ref": "<handle>"} to RE-PLACE a module minted by another entry of THIS call (e.g. one card module, three placements; each entry still gets its own content).',
             oneOf: [
               { type: "string", format: "uuid" },
               {
@@ -98,8 +130,13 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           // issue #106 — shared decision-support metadata (description/
           // kind/type), spread from the single source of truth.
           ...MODULE_META_JSON_SCHEMA_PROPS,
-          html: { type: "string", minLength: 1, maxLength: 50_000 },
-          css: { type: "string", maxLength: 50_000 },
+          html: {
+            type: "string",
+            minLength: 1,
+            maxLength: 50_000,
+            description: MODULE_HTML_DESCRIPTION,
+          },
+          css: { type: "string", maxLength: 50_000, description: MODULE_CSS_DESCRIPTION },
           js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
           // issue #106 — shared field schema (single source of truth).
           fields: MODULE_FIELDS_JSON_SCHEMA,
@@ -164,12 +201,12 @@ export function buildPageValues(input: BuildPageInput): Record<string, unknown>[
 export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
   name: "build_page",
   description:
-    "Build a WHOLE page in ONE call: the page (create new via `page: {slug, title}` or target existing via `page: {pageId}`) plus the FULL ordered module list — each entry places one module into a template block, top to bottom. ONE transaction: any invalid entry aborts the whole call (the error names `modules[i]` and the failing field) and nothing is written. " +
-    "This is THE page-creation tool: `modules: []` (empty) creates an intentionally empty page shell; a populated `modules` array builds the whole page in one transaction. **Prefer it over add_module / create_content_instance chains whenever a page needs more than one module** — one build_page call replaces that whole round-trip chain (§11 bulk-first). Use add_module (target='page') only for a single incremental module on an existing page. " +
+    "Build a WHOLE page in ONE call: the page (create new via `page: {slug, title}` or target existing via `page: {pageId}`) plus the FULL ordered module list — each entry places one module into a template block, top to bottom (on an existing page entries append; an entry's optional `position` — 'top' or an index, as in add_module — inserts it instead). ONE transaction: any invalid entry aborts the whole call (the error names `modules[i]` and the failing field) and nothing is written. " +
+    "This is THE page-creation tool: when creating, pass `page.metaDescription` (and `status:'published'` for a page that belongs on the site) — a Stage refuses published pages without a description, and builds only published ones; the result says when something still blocks a Stage. `modules: []` (empty) creates an intentionally empty page shell; a populated `modules` array builds the whole page in one transaction. **Prefer it over add_module / create_content_instance chains whenever a page needs more than one module** — one build_page call replaces that whole round-trip chain (§11 bulk-first). Use add_module (target='page') only for a single incremental module on an existing page. " +
     "**Per module, two modes** (same contract as add_module): pass `moduleId` to place an EXISTING module from `## Modules` (reuse first — shared modules keep pages consistent), or `displayName` + `html` (+ required `description`, `kind`, explicit `fields[]`) to mint a new one. Field names are semantic snake_case (`hero_title`, `primary_cta_href`); repeats are LIST fields (`text-list`, `link-list`, `module-list`), never numbered scalars. " +
     "**Per module, `content` fills the placement**: `{source:'inline', values:{hero_title:'…'}}` for page-local content (the routine case); `{source:'shared', purpose:'…', values:{…}}` to mint a REUSABLE instance other pages can bind (synced by default); `{source:'existing', contentInstanceId}` to bind a row from `## Content Library`. Omit `content` for an empty private instance you fill later. " +
-    "Typical call: `{page:{slug:'pricing', title:'Pricing'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`. " +
-    "**Nested modules in the SAME call**: give the inner module `ref` and NO blockName (detached — minted + content-bound but not placed), then reference it from the outer module's `module`/`module-list` field value as `{\"$ref\": \"<ref>\"}` — the server resolves it to the real {moduleId, contentInstanceId}. Referenced entries come FIRST. Example: `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]` — the whole nested composition is ONE call, never an add_module → remove_module_from → create_content_instance chain. " +
+    "Typical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`. " +
+    "**Nested modules in the SAME call**: give the inner module `ref` and NO blockName (detached — minted + content-bound but not placed), then reference it from the outer module's `module`/`module-list` field value as `{\"$ref\": \"<ref>\"}` — the server resolves it to the real {moduleId, contentInstanceId}, in any array order. Example: `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]` — the whole nested composition is ONE call, never an add_module → remove_module_from → create_content_instance chain. " +
     "For site-wide chrome (header/footer) use add_module (target='layout') — chrome is layout-owned and never rides in a page body. " +
     // 2026-07 — STATIC on purpose (prompt-cache): the per-turn describe/
     // describeSchema hooks embedded the focused page's block names into
@@ -228,6 +265,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       detached: { ref: string; moduleId: string; contentInstanceId: string }[];
       extractedFieldsByIndex: Record<string, { name: string; kind: string }[]>;
       ignoredAuthoringByIndex: Record<string, string[]>;
+      metaDescription: "written" | "unchanged" | "kept-existing" | null;
     };
 
     const mintedCount = value.placements.filter((p) => p.minted).length;
@@ -305,11 +343,20 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     }
 
     const binding = bindingReports.length > 0 ? ` ${bindingReports.join(" ")}` : "";
+    const metaNote =
+      value.metaDescription === "kept-existing"
+        ? " ℹ️ page.metaDescription NOT applied: this page already has a meta description (fill-once — change it via optimize_page_seo only when the operator asks)."
+        : value.metaDescription === "written"
+          ? " Meta description written."
+          : "";
+    // What a Stage would refuse now, in this chat's view of the site — so
+    // the AI fixes it before stage_changes, not after a failed build.
+    const readiness = await stageReadinessSuffix(ctx, toolCtx);
     return {
       ok: true,
       content:
         `page ${value.pageId}${value.createdPage ? " created" : ""} — ${value.placements.length} module(s) placed (${mintedCount} minted, ${reusedCount} reused) in one transaction.\n` +
-        `${lines.join("\n")}${binding}${extractedHint}${missingMetaHint}${ignoredHint}${cssWarning}${guardFindings.join("")}`,
+        `${lines.join("\n")}${binding}${extractedHint}${missingMetaHint}${ignoredHint}${cssWarning}${guardFindings.join("")}${metaNote}${readiness}`,
       value,
     };
   },

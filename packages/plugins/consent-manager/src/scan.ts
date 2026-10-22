@@ -24,6 +24,8 @@ const URL_PATTERNS: ReadonlyArray<RegExp> = [
   /(?:src|href|poster|action|data-src|srcset)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'=<>`]+))/gi,
   // CSS url(...)
   /url\(\s*["']?([^"')]+)["']?\s*\)/gi,
+  // CSS @import "..." / @import '...' (without url() wrapper)
+  /@import\s+(?:url\(\s*)?["']([^"']+)["']/gi,
   // fetch / XHR / import with a literal URL.
   /(?:fetch|open|import)\s*\(\s*["']([^"']+)["']/gi,
   // A bare absolute URL anywhere. Authoring lifts an embed's address
@@ -38,18 +40,29 @@ const URL_PATTERNS: ReadonlyArray<RegExp> = [
  * they never reach another operator's server.
  */
 function isFirstParty(url: string): boolean {
-  if (url.startsWith("/") && !url.startsWith("//")) return true;
-  if (url.startsWith("#") || url.startsWith("?")) return true;
-  if (url.startsWith("data:") || url.startsWith("blob:")) return true;
-  if (url.startsWith("mailto:") || url.startsWith("tel:")) return true;
+  // Strip ASCII control characters and whitespace that browsers ignore
+  // before scheme/host resolution.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional ASCII control character stripping
+  const cleaned = url.replace(/[\u0000-\u0020]+/g, "");
+  const lower = cleaned.toLowerCase();
+  if (cleaned.startsWith("/") && !cleaned.startsWith("//")) return true;
+  if (cleaned.startsWith("#") || cleaned.startsWith("?")) return true;
+  if (lower.startsWith("data:") || lower.startsWith("blob:")) return true;
+  if (lower.startsWith("mailto:") || lower.startsWith("tel:")) return true;
   // A bare relative path (`img/x.png`) or a template placeholder that
   // has not been substituted yet.
-  if (url.startsWith("{{")) return true;
-  return !/^(?:https?:)?\/\//i.test(url) && !url.includes("://");
+  if (cleaned.startsWith("{{")) return true;
+  return (
+    !/^(?:https?:)?\/\//i.test(cleaned) &&
+    !cleaned.includes("://") &&
+    !/^[a-zA-Z][a-zA-Z0-9+.-]*:/i.test(cleaned)
+  );
 }
 
 function hostOf(url: string): string | null {
-  const withScheme = url.startsWith("//") ? `https:${url}` : url;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional ASCII control character stripping
+  const cleaned = url.replace(/[\u0000-\u0020]+/g, "");
+  const withScheme = cleaned.startsWith("//") ? `https:${cleaned}` : cleaned;
   try {
     return new URL(withScheme).hostname.toLowerCase();
   } catch {
@@ -128,6 +141,7 @@ const TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)\b((?:"[^"]*"|'[^']*'|[^>"'])*)>/g;
 const ATTR_RE = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
 const PLACEHOLDER_RE = /\{\{\{?\s*[#^/>&]?\s*([a-zA-Z_][a-zA-Z0-9_.-]*)\s*\}?\}\}/g;
 const CSS_URL_RE = /url\(\s*["']?([^"')]+)["']?\s*\)/gi;
+const CSS_IMPORT_RE = /@import\s+(?:url\(\s*)?["']([^"']+)["']/gi;
 
 /**
  * Whether an attribute makes the browser request its URL on page load.
@@ -241,6 +255,7 @@ export function moduleHosts(module: {
     }
   }
   for (const u of module.css.matchAll(CSS_URL_RE)) addValue(u[1] ?? "");
+  for (const u of module.css.matchAll(CSS_IMPORT_RE)) addValue(u[1] ?? "");
 
   const found = new Set<string>();
   for (const url of urls) {

@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -44,11 +45,7 @@
               <form
                 method="post"
                 action="?/revert"
-                onsubmit={(e) => {
-                  if (!confirm("Revert this module to that snapshot? A new snapshot is appended.")) {
-                    e.preventDefault();
-                  }
-                }}
+                use:confirmSubmit={{ title: "Revert this module to that snapshot?", description: "A new snapshot is added to the history, so you can undo this there.", confirmLabel: "Revert module" }}
               >
                 <input type="hidden" name="_csrf" value={data.csrfToken} />
                 <input type="hidden" name="snapshotId" value={s.id} />

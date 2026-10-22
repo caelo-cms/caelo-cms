@@ -27,6 +27,13 @@ describe("lockedDownContextOptions", () => {
       serviceWorkers: "block",
     });
   });
+
+  it("allows an explicit own-origin host:port bypass while keeping all other loopback ports black-holed", () => {
+    expect(lockedDownContextOptions("http://127.0.0.1:4242", "127.0.0.1:3000")).toEqual({
+      proxy: { server: "http://127.0.0.1:4242", bypass: "<-loopback>;127.0.0.1:3000" },
+      serviceWorkers: "block",
+    });
+  });
 });
 
 describe("startBlackholeProxy", () => {

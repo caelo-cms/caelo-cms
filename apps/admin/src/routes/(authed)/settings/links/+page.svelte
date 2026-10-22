@@ -10,6 +10,7 @@
    * report (get_link_migration_report) and fixes the listed links.
    */
 
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
@@ -69,7 +70,7 @@
   {#if form?.error}
     <Alert variant="destructive"><AlertDescription>{form.error}</AlertDescription></Alert>
     {#if form.conflict}
-      <form method="post" action="?/revert">
+      <form method="post" action="?/revert" use:confirmSubmit={{ title: "Revert the rest of the link conversion?", description: "Links that were not edited since go back to their old form; the edited ones stay.", confirmLabel: "Revert" }}>
         <input type="hidden" name="_csrf" value={data.csrfToken} />
         <input type="hidden" name="runId" value={form.runId} />
         <input type="hidden" name="skipConflicts" value="true" />
@@ -119,7 +120,7 @@
           <Button type="submit" size="sm">Convert now</Button>
         </form>
         {#if data.revertableRun}
-          <form method="post" action="?/revert">
+          <form method="post" action="?/revert" use:confirmSubmit={{ title: "Revert this link conversion?", description: "Every converted link on the site goes back to its old form.", confirmLabel: "Revert" }}>
             <input type="hidden" name="_csrf" value={data.csrfToken} />
             <input type="hidden" name="runId" value={data.revertableRun.runId} />
             <Button type="submit" variant="destructive" size="sm">

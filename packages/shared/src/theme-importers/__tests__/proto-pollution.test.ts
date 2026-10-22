@@ -9,7 +9,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { isUnsafeKey } from "../../safe-keys.js";
-import { applyDtcgWrites } from "../../themes.js";
+import { applyDtcgWrites, removeDtcgPath } from "../../themes.js";
 import { importTailwind } from "../tailwind.js";
 
 describe("isUnsafeKey", () => {
@@ -50,5 +50,13 @@ describe("applyDtcgWrites / setLeafAtPath path guard (S5)", () => {
   it("still applies a legitimate dotted write", () => {
     const out = applyDtcgWrites({}, { "color.primary": "#fff" }, { "color.primary": "color" });
     expect(JSON.stringify(out)).toContain("primary");
+  });
+
+  it("removeDtcgPath rejects __proto__/constructor/prototype and inherited keys", () => {
+    const doc = applyDtcgWrites({}, { "color.primary": "#fff" }, { "color.primary": "color" });
+    expect(removeDtcgPath(doc, "__proto__.toString").removed).toBe(false);
+    expect(removeDtcgPath(doc, "color.toString").removed).toBe(false);
+    expect(removeDtcgPath(doc, "constructor.prototype").removed).toBe(false);
+    expect(removeDtcgPath(doc, "color.primary").removed).toBe(true);
   });
 });

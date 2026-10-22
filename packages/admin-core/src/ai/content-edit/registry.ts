@@ -15,7 +15,10 @@
  */
 
 /** Entity kinds whose large-text columns are AI-editable as "files". */
-export type ContentEntityKind = "module" | "template";
+export const CONTENT_ENTITY_KINDS = ["module", "template", "layout"] as const;
+
+/** One of {@link CONTENT_ENTITY_KINDS}. */
+export type ContentEntityKind = (typeof CONTENT_ENTITY_KINDS)[number];
 
 export interface ContentTarget {
   readonly entityKind: ContentEntityKind;
@@ -25,8 +28,9 @@ export interface ContentTarget {
   readonly idArg: string;
   /** Read op returning the single row (branch-aware). */
   readonly getOp: string;
-  /** Extract `{field: body}` for one row from the get op's value. */
-  readonly readRow: (getValue: unknown) => Record<string, string>;
+  /** Extract `{field: body}` for one row from the get op's value; null when
+   *  the get op answered "no such row" with an empty value (layouts.get). */
+  readonly readRow: (getValue: unknown) => Record<string, string> | null;
   /** List op returning every row incl. bodies (for grep). */
   readonly listOp: string;
   /** Extract `[{id, slug, fields}]` from the list op's value. */
@@ -66,6 +70,7 @@ interface TemplateRow {
   html: string;
   css: string;
 }
+type LayoutRow = TemplateRow;
 
 export const CONTENT_TARGETS: Readonly<Record<ContentEntityKind, ContentTarget>> = {
   module: {
@@ -116,9 +121,35 @@ export const CONTENT_TARGETS: Readonly<Record<ContentEntityKind, ContentTarget>>
       queuePath: "/settings/templates/pending",
     },
   },
+  // A layout's html/css is the chrome shell every bound template renders in.
+  // Without a read surface for it the AI passed a layout id as a template to
+  // read_content ("template not found", e2e-livedit 2026-10).
+  layout: {
+    entityKind: "layout",
+    fields: ["html", "css"],
+    idArg: "layoutId",
+    getOp: "layouts.get",
+    readRow: (v) => {
+      const l = (v as { layout: LayoutRow | null }).layout;
+      return l === null ? null : { html: l.html, css: l.css };
+    },
+    listOp: "layouts.list",
+    listRows: (v) =>
+      (v as { layouts: LayoutRow[] }).layouts.map((l) => ({
+        id: l.id,
+        slug: l.slug,
+        fields: { html: l.html, css: l.css },
+      })),
+    // Layout edits are §11.A-gated (site-wide chrome on every bound page),
+    // the same way as templates.
+    write: {
+      op: "layouts.propose_update",
+      gated: true,
+      buildInput: (id, field, body) => ({ layoutId: id, [field]: body }),
+      queuePath: "/settings/layouts/pending",
+    },
+  },
 };
-
-export const CONTENT_ENTITY_KINDS = Object.keys(CONTENT_TARGETS) as ContentEntityKind[];
 
 /** Resolve a target, or null when the kind is unknown. */
 export function resolveContentTarget(kind: string): ContentTarget | null {

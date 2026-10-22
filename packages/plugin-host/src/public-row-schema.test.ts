@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, it, spyOn } from "bun:test";
+import { sameValue } from "./private-storage.js";
 import { validatePublicRows } from "./public-row-schema.js";
 
 const COLUMNS = {
@@ -53,5 +54,16 @@ describe("validatePublicRows (#635)", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe("sameValue equality filter helper", () => {
+  it("distinguishes null from 'null' and compares objects by JSON structure rather than '[object Object]'", () => {
+    expect(sameValue(null, null)).toBe(true);
+    expect(sameValue(null, "null")).toBe(false);
+    expect(sameValue("null", null)).toBe(false);
+    expect(sameValue({ a: 1 }, { b: 2 })).toBe(false);
+    expect(sameValue({ a: 1, b: 2 }, { b: 2, a: 1 })).toBe(true);
+    expect(sameValue([1, 2], [1, 3])).toBe(false);
   });
 });
