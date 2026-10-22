@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket, runBunInline } from "./helpers.js";
+import { acceptConfirm, clearLoginRateBucket, runBunInline } from "./helpers.js";
 
 const submitScript = `
   import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
@@ -54,6 +54,7 @@ test("Owner reviews exact external source; stale approval is rejected", async ({
     page.getByRole("main").getByText(`Activated ${slug}.`, { exact: true }),
   ).toBeVisible();
   await row.getByRole("button", { name: "Disable", exact: true }).click();
+  await acceptConfirm(page);
   await expect(
     page.getByRole("main").getByText(`Disabled ${slug}.`, { exact: true }),
   ).toBeVisible();

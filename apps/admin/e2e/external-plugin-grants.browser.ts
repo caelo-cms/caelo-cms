@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket } from "./helpers.js";
+import { acceptConfirm, clearLoginRateBucket } from "./helpers.js";
 
 // Every spec logs in as dev-owner from the same IP; the login limiter
 // (5 per 5 min) would otherwise reject later specs in the batch.
@@ -103,6 +103,7 @@ test("Owner uploads a package, explicitly grants each capability, and revokes pr
   await expect(page.getByText(`Guide ${slug}`, { exact: true })).toBeVisible();
   await page.goto("/settings/plugins/installations");
   await review.getByRole("button", { name: "Revoke cms_admin_schema", exact: true }).click();
+  await acceptConfirm(page);
   await expect(page.getByRole("status")).toContainText(
     "Access revoked. The plugin is disabled; its data is preserved.",
   );

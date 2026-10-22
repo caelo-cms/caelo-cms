@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { GripVertical } from "lucide-svelte";
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import PlacementSyncToggle from "#lib/components/edit/PlacementSyncToggle.svelte";
@@ -401,7 +402,7 @@
         <CardTitle class="text-base text-destructive">Danger zone</CardTitle>
       </CardHeader>
       <CardContent>
-        <form method="post" action="?/delete">
+        <form method="post" action="?/delete" use:confirmSubmit={{ title: `Delete page ${page.slug}?`, description: "The page is removed from the site.", confirmLabel: "Delete page" }}>
           <input type="hidden" name="_csrf" value={data.csrfToken} />
           <Button type="submit" variant="destructive">Soft-delete this page</Button>
         </form>
