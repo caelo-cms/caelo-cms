@@ -1248,6 +1248,7 @@ export async function generateSite(args: {
   // Best-effort old-build retention: keep the most recent 5, remove the
   // rest. Failures are swallowed because they don't affect the live
   // serving target (which is `current/`).
+  timer.lap("sync-current");
   await pruneOldBuilds(buildsDir, runId, 5);
   timer.lap("prune");
 

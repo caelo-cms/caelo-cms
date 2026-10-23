@@ -757,10 +757,10 @@ export const triggerDeployOp = defineOperation({
     const repoRoot = resolveOutputRoot(input.repoRoot);
     const cliPath = resolveGeneratorCli();
 
-    const runKind = target.env === "staging" ? "stage" : "build";
     // The trigger op needs a registry+adapter pair to land progress
     // updates on the row from inside its subprocess-watcher loop. The
     // host process sets the bridge at startup; tests do the same.
+    const runKind = target.env === "staging" ? "stage" : "build";
     const bridge = getDeployBridge();
     if (!bridge) {
       // The generator could not start: its step ends here, recorded like
