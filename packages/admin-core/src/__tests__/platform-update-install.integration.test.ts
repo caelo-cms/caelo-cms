@@ -520,7 +520,7 @@ async function needsShell(target: string, minutesAgo: number): Promise<string> {
 
 describe("superseded requests (#817)", () => {
   it("closes a Cloud Shell step for a release that runs now, keeps one still ahead", async () => {
-    const installed = await needsShell("0.0.2", 60);
+    const installed = await needsShell(CAELO_VERSION, 60);
     const ahead = await needsShell(NEWEST, 30);
     const r = await okValue<{ superseded: string[] }>(
       SYSTEM,
@@ -547,7 +547,7 @@ describe("superseded requests (#817)", () => {
   });
 
   it("audits the reason each request was closed for", async () => {
-    const installed = await needsShell("0.0.2", 90);
+    const installed = await needsShell(CAELO_VERSION, 90);
     const replaced = await needsShell(NEWEST, 60);
     const newest = await needsShell(NEWEST, 30);
     const r = await okValue<{ superseded: string[] }>(
