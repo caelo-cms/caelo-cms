@@ -48,3 +48,34 @@ export function stripCdataGuards(html: string): string {
   if (!html.includes("CDATA") && !html.includes("]]>")) return html;
   return html.replace(CDATA_GUARDS, "");
 }
+
+const CDATA_ENVELOPE = /^\s*<!\[CDATA\[([\s\S]*)\]\]>\s*$/;
+
+/**
+ * Decode a whole-value `<![CDATA[ … ]]>` envelope around an AI tool
+ * argument that carries source text (module/template/layout html, css, js).
+ *
+ * Why at the tool boundary: tool parameters reach the model through an
+ * XML-shaped encoding, and for long markup strings the model sometimes
+ * escapes the WHOLE value as a CDATA section — a transport envelope, not
+ * content. The parameter descriptions say not to (issue #993's note), yet
+ * the real-AI suite still filed it on add_module css in roughly one run in
+ * seven (e.g. 39654716622 on main, 39936064709, 39971619728). Refusing it
+ * cost a tool round-trip every time and, for template/layout css (which has
+ * no CDATA refusal), stored a stylesheet the browser cannot parse.
+ *
+ * Only an envelope spanning the entire value is decoded, and only when its
+ * body contains no further `]]>` (a single CDATA section cannot). Anything
+ * else — `/*<![CDATA[*\/` guards inside the CSS, a marker mid-value — is
+ * left untouched so the op validator still refuses it loudly (CLAUDE.md §2):
+ * this decodes a malformed encoding of a value the caller did supply; it is
+ * not a fallback for missing data.
+ *
+ * @returns the envelope's body, or the input unchanged.
+ */
+export function unwrapCdataEnvelope(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const m = CDATA_ENVELOPE.exec(value);
+  if (!m || m[1] === undefined || m[1].includes("]]>")) return value;
+  return m[1];
+}

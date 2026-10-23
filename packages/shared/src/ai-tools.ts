@@ -26,6 +26,7 @@ import {
 } from "./content.js";
 import { pluginPreviewSelectionSchema } from "./plugin-preview.js";
 import { redirectTargetPathSchema } from "./redirect-target.js";
+import { unwrapCdataEnvelope } from "./strip-cdata.js";
 
 /**
  * v0.6.2 — `position` argument shared across the three `add_module_to_*`
@@ -58,6 +59,19 @@ function stripSurroundingQuotes(v: unknown): unknown {
   const m = v.match(/^(["'])([\s\S]+)\1$/);
   return m ? m[2] : v;
 }
+/**
+ * An AI tool argument holding source text (html / css / js): the given
+ * string schema, with a whole-value `<![CDATA[ … ]]>` transport envelope
+ * decoded first (see `unwrapCdataEnvelope`). Every AI authoring surface for
+ * module, template and layout source uses it, so one encoding habit of the
+ * model is handled in one place instead of refused per tool.
+ *
+ * @param schema - the string schema (length caps, min) the decoded value must satisfy.
+ */
+export function sourceTextArg<T extends z.ZodType<string>>(schema: T) {
+  return z.preprocess(unwrapCdataEnvelope, schema);
+}
+
 export const positionInputSchema = z.preprocess(
   stripSurroundingQuotes,
   z.union([
@@ -87,9 +101,9 @@ export const editModuleToolInput = z
      * create time. Set it to make this module satisfy a parent's allowlist.
      */
     type: slugSchema.optional(),
-    html: z.string().max(MODULE_HTML_MAX).optional(),
-    css: z.string().max(MODULE_CSS_MAX).optional(),
-    js: z.string().max(MODULE_JS_MAX).optional(),
+    html: sourceTextArg(z.string().max(MODULE_HTML_MAX)).optional(),
+    css: sourceTextArg(z.string().max(MODULE_CSS_MAX)).optional(),
+    js: sourceTextArg(z.string().max(MODULE_JS_MAX)).optional(),
     /**
      * v0.4.0 — module field schema. Each field declares one substitution
      * slot referenced in the module HTML as `{{name}}`. Page placements
@@ -186,9 +200,9 @@ export const addModuleToolInput = z
     description: z.string().max(1000).optional(),
     kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
     type: slugSchema.optional(),
-    html: z.string().min(1).max(50_000).optional(),
-    css: z.string().max(50_000).optional(),
-    js: z.string().max(50_000).optional(),
+    html: sourceTextArg(z.string().min(1).max(50_000)).optional(),
+    css: sourceTextArg(z.string().max(50_000)).optional(),
+    js: sourceTextArg(z.string().max(50_000)).optional(),
     fields: z.array(moduleFieldSchema).max(64).optional(),
     bindThemeLiterals: z.boolean().optional(),
     /**
@@ -627,8 +641,8 @@ export const createTemplateToolInput = z
   .object({
     slug: slugInputSchema,
     displayName: z.string().min(1).max(256),
-    html: z.string().min(1).max(2_000_000),
-    css: z.string().max(2_000_000).default(""),
+    html: sourceTextArg(z.string().min(1).max(2_000_000)),
+    css: sourceTextArg(z.string().max(2_000_000)).default(""),
     layoutId: z.string().uuid().optional(),
     // Optional block-set metadata, symmetric with create_layout. Omit to
     // auto-derive blocks from <caelo-slot> tags; pass to set displayName /
@@ -693,8 +707,8 @@ export const createLayoutToolInput = z
   .object({
     slug: slugInputSchema,
     displayName: z.string().min(1).max(200),
-    html: z.string().min(1).max(50_000),
-    css: z.string().max(50_000).optional(),
+    html: sourceTextArg(z.string().min(1).max(50_000)),
+    css: sourceTextArg(z.string().max(50_000)).optional(),
     blocks: z
       .array(
         z

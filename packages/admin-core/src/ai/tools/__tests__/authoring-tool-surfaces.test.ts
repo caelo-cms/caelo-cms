@@ -11,15 +11,20 @@
  *    takes one; now a per-page filter.
  *  - build_page entries with `position` (carried over from add_module).
  *  - module `html` / `css` wrapped in `<![CDATA[ … ]]>`: every authoring
- *    tool now says the value is plain source text.
+ *    tool now says the value is plain source text, and decodes a whole-value
+ *    envelope instead of refusing it (add_module css, runs 39654716622,
+ *    39936064709, 39971619728).
  */
 
 import { describe, expect, it } from "bun:test";
-import { normalizeTokens } from "@caelo-cms/shared";
+import { moduleUpdateSchema, normalizeTokens } from "@caelo-cms/shared";
 import { addModuleTool } from "../add-module.js";
 import { buildPageTool } from "../build-page.js";
 import { updateModulesManyTool } from "../bulk-pages-modules.js";
+import { createLayoutTool } from "../create-layout.js";
+import { createTemplateTool } from "../create-template.js";
 import { editModuleTool } from "../edit-module.js";
+import { proposeLayoutUpdateTool, proposeTemplateUpdateTool } from "../propose-tools-batch.js";
 import { getQualityAuditTool } from "../quality-audit-tools.js";
 import { mergeTokenDocumentIntoSet, updateThemeTokensTool } from "../update-theme-tokens.js";
 
@@ -123,4 +128,105 @@ describe("module authoring tools say html/css are plain source text (no CDATA)",
       }
     });
   }
+});
+
+describe("authoring tools decode a whole-value CDATA envelope around source text", () => {
+  const css = ".consent-banner {\n  position: fixed;\n}";
+  const html = '<div class="consent-banner">{{banner_heading}}</div>';
+  const js = "(() => { document.querySelectorAll('.consent-banner'); })();";
+  const wrap = (v: string) => `<![CDATA[${v}]]>`;
+  const moduleId = "11111111-1111-4111-8111-111111111111";
+  const layoutId = "22222222-2222-4222-8222-222222222222";
+
+  type Parse = (input: unknown) => { success: boolean; data?: unknown };
+  const parsed = (parse: Parse, input: unknown) => {
+    const r = parse(input);
+    expect(r.success).toBe(true);
+    return r.data as Record<string, unknown>;
+  };
+
+  it("add_module (the filed call: html + css both wrapped)", () => {
+    const out = parsed((i) => addModuleTool.schema.safeParse(i), {
+      target: "layout",
+      targetRef: layoutId,
+      blockName: "footer",
+      position: "bottom",
+      displayName: "Cookie-Banner",
+      description: "Site-wide consent banner.",
+      kind: "utility",
+      html: wrap(html),
+      css: wrap(css),
+      js: wrap(js),
+    });
+    expect([out.html, out.css, out.js]).toEqual([html, css, js]);
+  });
+
+  it("edit_module and update_modules_many", () => {
+    const one = parsed((i) => editModuleTool.schema.safeParse(i), { moduleId, css: wrap(css) });
+    expect(one.css).toBe(css);
+    const bulk = parsed((i) => updateModulesManyTool.schema.safeParse(i), {
+      updates: [{ moduleId, html: wrap(html), css: wrap(css), js: wrap(js) }],
+    });
+    expect((bulk.updates as Record<string, unknown>[])[0]).toMatchObject({ html, css, js });
+  });
+
+  it("build_page module entries", () => {
+    const out = parsed((i) => buildPageTool.schema.safeParse(i), {
+      page: { slug: "pricing", title: "Pricing" },
+      modules: [
+        {
+          blockName: "content",
+          displayName: "Pricing Hero",
+          kind: "hero",
+          description: "Pricing page hero.",
+          html: wrap("<section>{{hero_title}}</section>"),
+          css: wrap(css),
+          fields: [{ name: "hero_title", kind: "text", label: "Hero title" }],
+          content: { source: "inline", values: { hero_title: "Fair pricing" } },
+        },
+      ],
+    });
+    expect((out.modules as Record<string, unknown>[])[0]).toMatchObject({
+      html: "<section>{{hero_title}}</section>",
+      css,
+    });
+  });
+
+  it("template and layout authoring (no CDATA refusal downstream, so decoding matters most)", () => {
+    const layoutHtml = '<body><caelo-slot name="content"></caelo-slot></body>';
+    expect(
+      parsed((i) => createLayoutTool.schema.safeParse(i), {
+        slug: "main",
+        displayName: "Main",
+        html: wrap(layoutHtml),
+        css: wrap(css),
+        blocks: [{ name: "content", displayName: "Content", position: 0 }],
+      }).css,
+    ).toBe(css);
+    expect(
+      parsed((i) => createTemplateTool.schema.safeParse(i), {
+        slug: "landing",
+        displayName: "Landing",
+        html: wrap(layoutHtml),
+        css: wrap(css),
+      }).css,
+    ).toBe(css);
+    expect(
+      parsed((i) => proposeLayoutUpdateTool.schema.safeParse(i), { layoutId, css: wrap(css) }).css,
+    ).toBe(css);
+    expect(
+      parsed((i) => proposeTemplateUpdateTool.schema.safeParse(i), {
+        templateId: layoutId,
+        css: wrap(css),
+      }).css,
+    ).toBe(css);
+  });
+
+  it("still refuses a CDATA marker that is not a whole-value envelope", () => {
+    const guarded = `/*<![CDATA[*/ ${css} /*]]>*/`;
+    expect(moduleUpdateSchema.safeParse({ moduleId, css: guarded }).success).toBe(false);
+    expect(
+      updateModulesManyTool.schema.safeParse({ updates: [{ moduleId, css: guarded }] }).success,
+    ).toBe(false);
+  });
 });

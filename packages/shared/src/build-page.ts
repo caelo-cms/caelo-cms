@@ -20,7 +20,7 @@
  */
 
 import { z } from "zod";
-import { positionInputSchema } from "./ai-tools.js";
+import { positionInputSchema, sourceTextArg } from "./ai-tools.js";
 import {
   contentInstanceCreateSchema,
   MODULE_CSS_MAX,
@@ -155,9 +155,9 @@ export const buildPageModuleSchema = z
     description: z.string().max(1000).optional(),
     kind: moduleKindSchema.optional(),
     type: slugSchema.optional(),
-    html: z.string().min(1).max(MODULE_HTML_MAX).optional(),
-    css: z.string().max(MODULE_CSS_MAX).optional(),
-    js: z.string().max(MODULE_JS_MAX).optional(),
+    html: sourceTextArg(z.string().min(1).max(MODULE_HTML_MAX)).optional(),
+    css: sourceTextArg(z.string().max(MODULE_CSS_MAX)).optional(),
+    js: sourceTextArg(z.string().max(MODULE_JS_MAX)).optional(),
     fields: z.array(moduleFieldSchema).max(64).optional(),
     /** issue #164 slice 2 — opt-in mechanical token binding (tool layer). */
     bindThemeLiterals: z.boolean().optional(),
