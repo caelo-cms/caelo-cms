@@ -84,6 +84,8 @@ class FakeFirebase {
   lifetimes = new FakeChannelLifetimes();
   live: string[] = [];
   blobs = new Map<string, Buffer>();
+  /** #1003 — runs while a Stage uploads (populateFiles), i.e. mid-run. */
+  onPopulate: (() => Promise<void>) | null = null;
   private seq = 0;
 
   body(versionName: string, path: string): string {
@@ -113,6 +115,7 @@ class FakeFirebase {
     }
     const populate = route.match(/versions\/([^/:]+):populateFiles$/);
     if (populate) {
+      await this.onPopulate?.();
       const v = this.versions.get(populate[1] ?? "");
       if (!v) throw new Error("populate on unknown version");
       v.files = parsed.files;
@@ -472,6 +475,80 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       .reduce((n, p) => n + p.ms, 0);
     expect(liveRun.took_ms).toBeGreaterThanOrEqual(liveStepsMs - 5);
     expect(liveRun.publish_summary).not.toHaveProperty("phases");
+  });
+
+  it("#1003 a running Stage is visible with its progress, also when the AI started it", async () => {
+    type RunRow = { status: string; progress: { pagesDone: number; pagesTotal: number } | null };
+    const runRows = (runId?: string) =>
+      withSql(
+        (tx) =>
+          (runId
+            ? tx`SELECT status, progress FROM deploy_runs WHERE id = ${runId}::uuid`
+            : tx`SELECT status, progress FROM deploy_runs WHERE status = 'running'`) as Promise<
+            RunRow[]
+          >,
+      );
+    let midRun: RunRow[] = [];
+    fake.onPopulate = async () => {
+      // Another connection, while the build transaction is still open.
+      midRun = await runRows();
+    };
+    try {
+      const r = await execute(registry, adapter, { ...SYSTEM, actorKind: "ai" }, "deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      expect(r.ok).toBe(true);
+      const { runId, pageCount } = (r.ok ? r.value : null) as { runId: string; pageCount: number };
+      // Before #1003 the row was invisible until commit and every progress
+      // write matched no row: the deployments page never showed a Stage.
+      expect(midRun).toEqual([
+        { status: "running", progress: { pagesDone: pageCount, pagesTotal: pageCount } },
+      ]);
+      expect(await runRows(runId)).toEqual([
+        { status: "succeeded", progress: { pagesDone: pageCount, pagesTotal: pageCount } },
+      ]);
+    } finally {
+      fake.onPopulate = null;
+    }
+  });
+
+  it("#1003 a run that died mid-build is marked failed by the next one; one still building is left alone", async () => {
+    const { ORPHANED_RUN_MESSAGE } = await import("../ops/deploy-run-lifecycle.js");
+    const [{ id: targetId } = { id: "" }] = (await withSql(
+      (tx) => tx`SELECT id::text AS id FROM deploy_targets WHERE name = 'staging'`,
+    )) as { id: string }[];
+    const orphan = crypto.randomUUID();
+    const alive = crypto.randomUUID();
+    await withSql(
+      (tx) => tx`
+        INSERT INTO deploy_runs (id, target_id, actor_id, status)
+        VALUES (${orphan}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running'),
+               (${alive}::uuid, ${targetId}::uuid, ${SYSTEM.actorId}::uuid, 'running')`,
+    );
+    // `alive` is still being built elsewhere: another transaction holds its run lock.
+    const { DEPLOY_RUN_LOCK_PREFIX } = await import("../deploy/deploy-run-lock.js");
+    const holder = new SQL(ADMIN_URL!);
+    const conn = await holder.reserve();
+    try {
+      await conn`BEGIN`;
+      await conn`SELECT pg_advisory_xact_lock(hashtext(${DEPLOY_RUN_LOCK_PREFIX} || ${alive}::text))`;
+      await ok("deploy.trigger", { targetName: "staging", repoRoot: testRoot });
+      const rows = (await withSql(
+        (tx) => tx`SELECT id::text AS id, status, error_message FROM deploy_runs
+                   WHERE id IN (${orphan}::uuid, ${alive}::uuid)`,
+      )) as { id: string; status: string; error_message: string | null }[];
+      const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+      expect(byId[orphan]).toMatchObject({ status: "failed", error_message: ORPHANED_RUN_MESSAGE });
+      expect(byId[alive]).toMatchObject({ status: "running", error_message: null });
+    } finally {
+      await conn`ROLLBACK`;
+      conn.release();
+      await holder.end();
+      await withSql(
+        (tx) => tx`DELETE FROM deploy_runs WHERE id IN (${orphan}::uuid, ${alive}::uuid)`,
+      );
+    }
   });
 
   it("#908 / #969 Publish live refreshes the served preview's TTL (one staged by an earlier version too)", async () => {
