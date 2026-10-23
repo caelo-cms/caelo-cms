@@ -22,9 +22,18 @@ describe("describeLoadError", () => {
     );
   });
 
-  it("truncates a long first line and handles non-Error values", () => {
-    expect(describeLoadError(new Error("a".repeat(200)))).toBe(`${"a".repeat(160)}…`);
+  it("keeps every other message whole, so an activation reason is never cut", () => {
+    const reason = `${"x".repeat(300)} — this slug belongs in another plugin's namespace`;
+    expect(describeLoadError(new Error(reason))).toBe(reason);
+    expect(describeLoadError(new Error("line one\nline two"))).toBe("line one\nline two");
     expect(describeLoadError("plain string")).toBe("plain string");
+  });
+
+  it("caps a runaway message and a long failing statement", () => {
+    expect(describeLoadError(new Error("a".repeat(2100)))).toBe(`${"a".repeat(2000)}…`);
+    expect(describeLoadError(new Error(`Failed query: ${"b".repeat(300)}`))).toBe(
+      `Failed query: ${"b".repeat(146)}…`,
+    );
   });
 
   it("ignores an errno that is not a SQLSTATE", () => {
