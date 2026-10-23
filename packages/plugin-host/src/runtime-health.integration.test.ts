@@ -15,6 +15,8 @@
  *     when several instances hit it at once;
  *   - an operation that throws lands in the plugin's error log;
  *   - `plugins.get` shows all of it as health;
+ *   - a plugin that never verified (no row) is listed as a discovery
+ *     failure instead of vanishing;
  *   - `failed` is no longer a status the database accepts.
  */
 
@@ -439,6 +441,56 @@ describe("#1008 — a failing load never switches a plugin off", () => {
       (got.value as { plugin: { health: { state: string; problem: { phase: string } } } }).plugin
         .health,
     ).toMatchObject({ state: "failing", problem: { phase: "verify" } });
+  });
+
+  it("a plugin that fails verification on first discovery is listed as found-but-not-verified", async () => {
+    const slug = `${PREFIX}undiscovered`;
+    // What the loader records for a disk plugin whose signature does not
+    // verify before it ever had a row: an error with no plugin behind it.
+    await recordPluginError({
+      infra,
+      systemActorId: SYSTEM_ACTOR_ID,
+      slug,
+      pluginId: null,
+      phase: "verify",
+      error: new Error("manifest signature does not verify"),
+    });
+    const listed = await execute(registry, adapter, SYSTEM, "plugins.list", {});
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const value = listed.value as {
+      plugins: { slug: string }[];
+      discoveryFailures: { slug: string; phase: string; message: string }[];
+    };
+    expect(value.plugins.map((p) => p.slug)).not.toContain(slug);
+    expect(value.discoveryFailures.find((f) => f.slug === slug)).toMatchObject({
+      phase: "verify",
+      message: expect.stringContaining("signature does not verify"),
+    });
+    // plugins.get names the failure and the fix instead of "no plugin".
+    const got = await execute(registry, adapter, SYSTEM, "plugins.get", { slug });
+    expect(got.ok).toBe(false);
+    if (got.ok) return;
+    expect("message" in got.error ? got.error.message : "").toContain("is not installed");
+
+    // Once it verifies and is installed, it is an ordinary plugin again.
+    const report = await boot({
+      slug,
+      version: "0.1.0",
+      tier: 1,
+      schema: {},
+      operations: { noop: async () => ({}) },
+    });
+    expect(report.loaded.map((l) => l.slug)).toEqual([slug]);
+    const after = await execute(registry, adapter, SYSTEM, "plugins.list", {});
+    if (!after.ok) throw new Error(JSON.stringify(after.error));
+    const afterValue = after.value as {
+      plugins: { slug: string }[];
+      discoveryFailures: { slug: string }[];
+    };
+    expect(afterValue.plugins.map((p) => p.slug)).toContain(slug);
+    expect(afterValue.discoveryFailures.map((f) => f.slug)).not.toContain(slug);
+    const gotAfter = await execute(registry, adapter, SYSTEM, "plugins.get", { slug });
+    expect(gotAfter.ok).toBe(true);
   });
 
   it("the database no longer accepts `failed` as a status", async () => {

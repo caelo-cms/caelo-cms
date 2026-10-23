@@ -13,6 +13,13 @@
  * The AI reads this through `list_plugins` / `get_plugin` and can explain a
  * failing plugin to the operator without a round trip; the Owner sees it on
  * /settings/plugins.
+ *
+ * A plugin found on disk that fails verification on its FIRST discovery
+ * (missing or invalid signature, no built bundle) never gets a `plugins`
+ * row — a row would be an installation, and the old loader's fake rows
+ * are what overwrote Owner decisions. Its problem lives only in
+ * `plugin_errors`; {@link readDiscoveryFailures} surfaces those orphan
+ * records so the plugin does not silently vanish.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
@@ -49,6 +56,10 @@ export const pluginHealth = z.object({
   recentErrors: z.array(pluginErrorSummary),
 });
 export type PluginHealth = z.infer<typeof pluginHealth>;
+
+/** A plugin found on disk that could not be verified, so it is not installed. */
+export const pluginDiscoveryFailure = pluginErrorSummary.extend({ slug: z.string() });
+type PluginDiscoveryFailure = z.infer<typeof pluginDiscoveryFailure>;
 
 /** A server whose heartbeat is older than this is gone (heartbeat: 30 s). */
 const LIVE_WINDOW = "2 minutes";
@@ -157,4 +168,45 @@ export async function readPluginHealth(
     });
   }
   return out;
+}
+
+/**
+ * The latest recent problem of every slug that has errors but no `plugins`
+ * row: plugins found on disk that never verified, newest first. Once the
+ * plugin verifies and gets its row, its old errors are its own history
+ * (`recentErrors`) instead.
+ *
+ * @param slug only this slug (plugins.get), else every slug.
+ */
+export async function readDiscoveryFailures(
+  tx: TransactionRunner,
+  slug?: string,
+): Promise<PluginDiscoveryFailure[]> {
+  const rows = (await tx.execute(sql`
+    SELECT * FROM (
+      SELECT DISTINCT ON (e.plugin_slug)
+             e.plugin_slug, e.phase, e.error_class, e.message, e.occurrences,
+             e.first_seen_at, e.last_seen_at, e.bug_report_id IS NOT NULL AS reported
+      FROM plugin_errors e
+      WHERE NOT EXISTS (SELECT 1 FROM plugins p WHERE p.slug = e.plugin_slug)
+        AND e.last_seen_at > now() - ${RECENT_WINDOW}::interval
+        ${slug === undefined ? sql`` : sql`AND e.plugin_slug = ${slug}`}
+      ORDER BY e.plugin_slug, e.last_seen_at DESC
+    ) latest
+    ORDER BY last_seen_at DESC
+  `)) as unknown as ErrorRow[];
+  return rows.map((r) => pluginDiscoveryFailure.parse({ slug: r.plugin_slug, ...summary(r) }));
+}
+
+/**
+ * What `plugins.get` answers for a slug that is not installed but was
+ * found and failed verification: says why and what fixes it.
+ */
+export function describeDiscoveryFailure(f: PluginDiscoveryFailure): string {
+  return (
+    `Plugin "${f.slug}" is not installed: Caelo found it on disk but could not verify it ` +
+    `(${f.phase}, ${f.errorClass}, ${f.occurrences}x, last ${f.lastSeenAt}): ${f.message}. ` +
+    "Nothing of it is loaded. Fix: rebuild the plugin (dist/index.js) and sign its manifest again, then redeploy or restart; " +
+    "it then appears in /settings/plugins awaiting activation."
+  );
 }

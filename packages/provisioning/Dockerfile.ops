@@ -37,7 +37,7 @@
 # .github/workflows/release-images.yml, cosign-signed, mirrored to the
 # GCP public Artifact Registry. Operators never build it.
 
-ARG BUN_VERSION=1.4.2
+ARG BUN_VERSION=1.4.4
 
 FROM node:26.11.1-bookworm-slim AS node
 

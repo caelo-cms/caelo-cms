@@ -47,6 +47,7 @@ export * from "./mcp-access.js";
 export * from "./media.js";
 export * from "./nested-module-render.js";
 export * from "./page-log.js";
+export * from "./phase-timer.js";
 export * from "./platform-updates.js";
 export * from "./plugin-preview.js";
 export * from "./preview-compose.js";

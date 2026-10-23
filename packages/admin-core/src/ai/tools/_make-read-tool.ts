@@ -251,6 +251,12 @@ export interface MakeListReadToolArgs<I extends Record<string, unknown>, R> {
    * `buildOpInput`'s fields, so `offset` reaches past any one page.
    */
   readonly serverPaging?: { readonly maxLimit: number };
+  /**
+   * Text the AI needs next to the list that is not a row of it (e.g. the
+   * plugins found on disk that could not be verified). Appended after the
+   * list, or after `emptyMessage`; null adds nothing.
+   */
+  readonly appendix?: (value: unknown) => string | null;
 }
 
 /**
@@ -290,21 +296,25 @@ export function makeListReadTool<I extends Record<string, unknown>, R>(
           : all.length > limit
         : false;
       const rows = paging && !input.full ? all.slice(0, limit) : all;
+      const appendix = args.appendix?.(r.value);
+      const withAppendix = (content: string) => (appendix ? `${content}\n${appendix}` : content);
       if (rows.length === 0) {
         return {
           ok: true,
-          content: args.emptyMessage,
+          content: withAppendix(args.emptyMessage),
           ...(args.includeValue === false ? {} : { value: r.value }),
         };
       }
       return {
         ok: true,
-        content: renderToonList(
-          args.label,
-          rows,
-          args.columns,
-          input,
-          paging ? { offset, more } : undefined,
+        content: withAppendix(
+          renderToonList(
+            args.label,
+            rows,
+            args.columns,
+            input,
+            paging ? { offset, more } : undefined,
+          ),
         ),
         ...(args.includeValue === false ? {} : { value: r.value }),
       };

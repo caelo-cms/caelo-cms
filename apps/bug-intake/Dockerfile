@@ -7,7 +7,7 @@
 # Build from the repository root:
 #   docker build -f apps/bug-intake/Dockerfile -t bug-intake .
 
-ARG BUN_VERSION=1.4.2
+ARG BUN_VERSION=1.4.4
 
 FROM oven/bun:${BUN_VERSION} AS builder
 

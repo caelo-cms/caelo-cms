@@ -72,6 +72,46 @@
 
   <a href="/settings/plugins/installations" class="inline-block underline">Install external packages and review access</a>
 
+  {#if data.discoveryFailures.length > 0}
+    <!-- #1008 — found on disk, never verified: no row, so in no list below. -->
+    <Card data-testid="plugin-discovery-failures">
+      <CardHeader>
+        <CardTitle class="text-base">
+          Found but could not be verified ({data.discoveryFailures.length})
+        </CardTitle>
+        <CardDescription>
+          These plugins are on the server but did not pass verification, so they are not installed and
+          cannot be activated. Rebuild the plugin and sign its manifest again, then redeploy or restart.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Slug</TableHead>
+              <TableHead>Problem</TableHead>
+              <TableHead>Seen</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {#each data.discoveryFailures as f (f.slug)}
+              <TableRow>
+                <TableCell class="font-mono text-xs">{f.slug}</TableCell>
+                <TableCell class="text-sm">
+                  <Badge variant="destructive">{f.phase}</Badge>
+                  {f.message}
+                </TableCell>
+                <TableCell class="text-xs text-muted-foreground">
+                  {f.occurrences}x, last {fmtTime(f.lastSeenAt)}
+                </TableCell>
+              </TableRow>
+            {/each}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  {/if}
+
   <Card>
     <CardHeader>
       <CardTitle class="text-base">Tier 1 — Core plugins ({data.tier1.length})</CardTitle>

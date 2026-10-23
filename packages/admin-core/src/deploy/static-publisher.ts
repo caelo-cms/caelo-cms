@@ -30,6 +30,7 @@
  * object storage.
  */
 
+import type { PhaseTiming } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 
 /**
@@ -60,6 +61,12 @@ export interface PublishSummary {
    * host instead. Absent on other publishers.
    */
   previewUrl?: string;
+  /**
+   * Where the publish spent its time, step by step (hashing, upload,
+   * channel …). The Stage records them with its own steps in
+   * deploy_runs.phase_timings and leaves them out of publish_summary.
+   */
+  phases?: readonly PhaseTiming[];
 }
 
 export interface PromoteSummary extends PublishSummary {

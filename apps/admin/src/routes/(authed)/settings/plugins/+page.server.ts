@@ -61,6 +61,11 @@ interface PluginErrorSummary {
   reported: boolean;
 }
 
+/** #1008 — a plugin found on disk that failed verification, so it is not installed. */
+interface DiscoveryFailure extends PluginErrorSummary {
+  slug: string;
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
   const { adapter, registry } = getQueryContext();
@@ -69,7 +74,8 @@ export const load: PageServerLoad = async ({ locals }) => {
   if (!r.ok) {
     error(500, `Could not list plugins: ${"message" in r.error ? r.error.message : r.error.kind}`);
   }
-  const plugins = (r.value as { plugins: PluginRow[] }).plugins.map((p) => ({
+  const value = r.value as { plugins: PluginRow[]; discoveryFailures: DiscoveryFailure[] };
+  const plugins = value.plugins.map((p) => ({
     ...p,
     artifactDigest:
       p.tier === 2 ? externalArtifactDigest(p.manifestJson, p.sourceCode ?? "") : undefined,
@@ -89,6 +95,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     tier2Failed,
     tier2Disabled,
     tier2Rejected,
+    discoveryFailures: value.discoveryFailures,
   };
 };
 

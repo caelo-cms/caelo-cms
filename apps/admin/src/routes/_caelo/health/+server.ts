@@ -3,8 +3,10 @@
 /**
  * Admin health endpoint.
  *
- *   GET /_caelo/health         → `{ ok, version }` once both database pools
- *                                connect as the expected roles.
+ *   GET /_caelo/health         → `{ ok, version }` when both database pools
+ *                                connect as the expected roles AND answer
+ *                                a query right now (503 `DbUnresponsive`
+ *                                when a pool's connections hang).
  *   GET /_caelo/health?deep=1  → additionally `migrations: { admin, public }`
  *                                (`{ head, pending }` each): every migration
  *                                file this image ships must be recorded as
@@ -21,7 +23,7 @@
  * secrets and no raw database errors — those go to the server log.
  */
 
-import { execute } from "@caelo-cms/query-api";
+import { DatabaseUnresponsiveError, execute } from "@caelo-cms/query-api";
 import { CAELO_VERSION, type ExecutionContext } from "@caelo-cms/shared";
 import { json } from "@sveltejs/kit";
 import {
@@ -44,6 +46,9 @@ const OPS: Record<MigrationDatabase, string> = {
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
+/** How long each pool may take to answer `SELECT 1` before the admin reports itself unhealthy. */
+const PING_DEADLINE_MS = 5000;
+
 function unhealthy(kind: string, message: string) {
   return json(
     { ok: false, version: CAELO_VERSION, error: { kind, message } },
@@ -55,11 +60,16 @@ export const GET: RequestHandler = async ({ url }) => {
   let query: ReturnType<typeof getQueryContext>;
   try {
     query = getQueryContext();
-    // The lightest check that proves a working connection AND the expected
+    // Proves, within the deadline, a working connection AND the expected
     // role on both pools (catches a swapped or misrouted database URL).
-    await query.adapter.verifyRoles();
+    // Not verifyRoles(): it remembers its first success, so this endpoint
+    // kept answering ok while every pooled connection hung.
+    await query.adapter.ping(PING_DEADLINE_MS);
   } catch (e) {
     console.error(`[health] database check failed: ${(e as Error).message}`);
+    if (e instanceof DatabaseUnresponsiveError) {
+      return unhealthy("DbUnresponsive", "a database pool does not answer queries");
+    }
     return unhealthy("DbUnreachable", "a database pool cannot connect as its expected role");
   }
   if (url.searchParams.get("deep") !== "1") {
