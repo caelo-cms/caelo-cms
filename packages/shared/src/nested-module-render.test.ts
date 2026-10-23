@@ -53,6 +53,9 @@ const PARENT_CI_ID = "00000000-0000-0000-0000-00000000bbb1";
 const CHILD_CI_ID = "00000000-0000-0000-0000-00000000bbb2";
 const GRAND_CI_ID = "00000000-0000-0000-0000-00000000bbb3";
 
+/** The id stamp every nested module root carries (#1027). */
+const tag = (moduleId: string) => `data-caelo-module-id="${moduleId}"`;
+
 describe("renderModuleWithContent — primitive substitution", () => {
   it("replaces {{name}} with values[name] and tracks the touched module", () => {
     const resolver = buildResolver(
@@ -154,7 +157,9 @@ describe("renderModuleWithContent — nested module slots", () => {
       ],
     );
     const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
-    expect(r.html).toBe("<section><div><span>deep</span></div></section>");
+    expect(r.html).toBe(
+      `<section><div ${tag(CHILD_MOD_ID)}><span ${tag(GRAND_MOD_ID)}>deep</span></div></section>`,
+    );
     expect(r.missingSlots).toEqual([]);
     // All three modules touched — caller uses this set for CSS/JS dedup.
     expect(r.touchedModuleIds.has(PARENT_MOD_ID)).toBe(true);
@@ -201,7 +206,7 @@ describe("renderModuleWithContent — nested module slots", () => {
       ],
     );
     const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
-    expect(r.html).toBe("<ul><li>A</li><li>B</li></ul>");
+    expect(r.html).toBe(`<ul><li ${tag(CHILD_MOD_ID)}>A</li><li ${tag(CHILD_MOD_ID)}>B</li></ul>`);
     expect(r.missingSlots).toEqual([]);
   });
 });
@@ -697,7 +702,7 @@ describe("renderModuleWithContent — engine-routing parity (#71)", () => {
       ],
     );
     const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
-    expect(r.html).toContain("<article>OK</article>");
+    expect(r.html).toContain(`<article ${tag(CHILD_MOD_ID)}>OK</article>`);
     expect(r.html).toContain("<!-- caelo:missing reason=module-list-malformed cards[1] -->");
     expect(r.missingSlots).toContain("module-list-malformed:cards[1]");
   });
@@ -781,7 +786,9 @@ describe("renderPlacedModule — the composer's entry point", () => {
       resolver,
       {},
     );
-    expect(r.html).toBe("<section><div>Pro<a>Buy</a></div></section>");
+    expect(r.html).toBe(
+      `<section><div ${tag(CHILD_MOD_ID)}>Pro<a ${tag(GRAND_MOD_ID)}>Buy</a></div></section>`,
+    );
     expect(r.failures).toEqual([]);
     expect([...r.touchedModuleIds].sort()).toEqual([CHILD_MOD_ID, GRAND_MOD_ID].sort());
   });
@@ -848,7 +855,7 @@ describe("renderPlacedModule — only template-referenced nested fields render",
       resolver,
       {},
     );
-    expect(r.html).toBe("<section><article>Pro</article></section>");
+    expect(r.html).toBe(`<section><article ${tag(CHILD_MOD_ID)}>Pro</article></section>`);
     expect(r.failures).toEqual([]);
     expect(r.missingSlots).toEqual([]);
     expect([...r.touchedModuleIds]).toEqual([CHILD_MOD_ID]);
@@ -883,5 +890,91 @@ describe("renderPlacedModule — only template-referenced nested fields render",
       {},
     );
     expect(r.failures).toEqual([{ field: "card", reason: `content-instance-missing:${GONE_CI}` }]);
+  });
+});
+
+describe("#1027 — nested module roots carry data-caelo-module-id", () => {
+  // The FAQ case from the searchVIU install: a module-list of FAQ items.
+  const faq: NestedModuleResource = {
+    moduleId: PARENT_MOD_ID,
+    slug: "faq",
+    html: '<div class="faq">{{#items}}{{/items}}{{>featured}}</div>',
+    css: "",
+    js: "",
+    fields: [
+      { name: "items", kind: "module-list" },
+      { name: "featured", kind: "module" },
+    ],
+  };
+  const item: NestedModuleResource = {
+    moduleId: CHILD_MOD_ID,
+    slug: "faq-entry",
+    html: "<details><summary>{{question}}</summary><p>{{answer}}</p></details>",
+    css: "",
+    js: "",
+    fields: [
+      { name: "question", kind: "text" },
+      { name: "answer", kind: "text" },
+    ],
+  };
+  const values = {
+    items: [
+      { moduleId: CHILD_MOD_ID, contentInstanceId: CHILD_CI_ID },
+      { moduleId: CHILD_MOD_ID, contentInstanceId: GRAND_CI_ID },
+    ],
+    featured: { moduleId: CHILD_MOD_ID, contentInstanceId: CHILD_CI_ID },
+  };
+  const resolver = buildResolver(
+    [faq, item],
+    [
+      { id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values, deletedAt: null },
+      {
+        id: CHILD_CI_ID,
+        moduleId: CHILD_MOD_ID,
+        values: { question: "Q1", answer: "A1" },
+        deletedAt: null,
+      },
+      {
+        id: GRAND_CI_ID,
+        moduleId: CHILD_MOD_ID,
+        values: { question: "Q2", answer: "A2" },
+        deletedAt: null,
+      },
+    ],
+  );
+  const expected =
+    `<div class="faq"><details ${tag(CHILD_MOD_ID)}><summary>Q1</summary><p>A1</p></details>` +
+    `<details ${tag(CHILD_MOD_ID)}><summary>Q2</summary><p>A2</p></details>` +
+    `<details ${tag(CHILD_MOD_ID)}><summary>Q1</summary><p>A1</p></details></div>`;
+
+  it("tags module and module-list roots in the editor preview path", () => {
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    // The placed module's own root is left to the composer (tagModuleId).
+    expect(r.html).toBe(expected);
+    expect(r.failures).toEqual([]);
+  });
+
+  it("tags them identically in the composer / static build path", () => {
+    const r = renderPlacedModule({ html: faq.html, fields: faq.fields, values }, resolver, {});
+    expect(r.html).toBe(expected);
+  });
+
+  it("leaves a failure comment untagged (no element to carry the id)", () => {
+    const r = renderPlacedModule(
+      {
+        html: faq.html,
+        fields: faq.fields,
+        values: {
+          items: [{ moduleId: CHILD_MOD_ID, contentInstanceId: "missing" }],
+          featured: values.featured,
+        },
+      },
+      resolver,
+      {},
+    );
+    expect(r.html).toBe(
+      '<div class="faq"><!-- caelo:missing reason=content-instance-missing missing -->' +
+        `<details ${tag(CHILD_MOD_ID)}><summary>Q1</summary><p>A1</p></details></div>`,
+    );
   });
 });

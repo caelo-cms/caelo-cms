@@ -167,7 +167,14 @@ export const pagesSeoAutofillOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: seoAutofillInputSchema,
-  output: z.object({}),
+  output: z.object({
+    /**
+     * True when the page was already autofilled with exactly this text: a
+     * repeated call (a retry, a duplicate in a batch) changes nothing, so
+     * it is not a refusal — fill-once forbids a DIFFERENT text only.
+     */
+    alreadyFilled: z.boolean(),
+  }),
   handler: async (ctx, input, tx) => {
     // Ensure the sidecar row exists.
     await tx.execute(sql`
@@ -175,8 +182,8 @@ export const pagesSeoAutofillOp = defineOperation({
       ON CONFLICT (page_id) DO NOTHING
     `);
     const rows = (await tx.execute(sql`
-      SELECT autofilled_at FROM pages_seo WHERE page_id = ${input.pageId}::uuid
-    `)) as unknown as { autofilled_at: Date | string | null }[];
+      SELECT autofilled_at, meta_description FROM pages_seo WHERE page_id = ${input.pageId}::uuid
+    `)) as unknown as { autofilled_at: Date | string | null; meta_description: string }[];
     const target = rows[0];
     if (!target) {
       return err({
@@ -186,12 +193,33 @@ export const pagesSeoAutofillOp = defineOperation({
       });
     }
     if (target.autofilled_at !== null) {
+      const current = target.meta_description.trim();
+      if (current === input.metaDescription) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "pages_seo.autofill",
+          input: { pageId: input.pageId, descLen: input.metaDescription.length },
+          succeeded: true,
+          entityId: input.pageId,
+          resultSummary: "unchanged (identical to the first fill)",
+        });
+        return ok({ alreadyFilled: true });
+      }
+      // Fill-once (CLAUDE.md §2): a different text is a rewrite. The
+      // message carries the stored text, so the caller sees the page is
+      // NOT missing a description (nothing blocks a Stage on it) and
+      // which tool changes it on purpose.
+      const stored =
+        current.length > 0
+          ? `its meta description is already set: "${current}" — nothing is missing for a Stage. `
+          : "its description was removed after the first fill, so set it with set_page_seo_many. ";
       return err({
         kind: "HandlerError",
         operation: "pages_seo.autofill",
         message:
-          "AlreadyAutofilled: this page's SEO was filled at " +
-          `${isoOpt(target.autofilled_at)}; use pages_seo.optimize for explicit re-optimization`,
+          `AlreadyAutofilled: this page's SEO was filled at ${isoOpt(target.autofilled_at)}; ${stored}` +
+          "To change a filled description, use optimize_page_seo (explicit re-optimization) or set_page_seo_many (an exact text the operator dictated) — never autofill again.",
       });
     }
     const og = input.ogImageAssetId ?? null;
@@ -213,7 +241,7 @@ export const pagesSeoAutofillOp = defineOperation({
       entityId: input.pageId,
       resultSummary: "first-fill",
     });
-    return ok({});
+    return ok({ alreadyFilled: false });
   },
 });
 

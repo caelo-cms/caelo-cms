@@ -218,6 +218,31 @@ describe("get_quality_audit result", () => {
     expect(formatAudit(auditValue("problems", [true]))).not.toContain(AUDIT_FIX_LOOP_NEXT_STEP);
     expect(formatAudit(auditValue("passed", []))).not.toContain(AUDIT_FIX_LOOP_NEXT_STEP);
   });
+
+  // e2e-livedit detected bug: the AI called get_quality_audit({pageId}) —
+  // its sibling list_quality_acceptances takes one — and was refused.
+  it("narrows the per-page sections to `pageId`, keeping the run summary", () => {
+    const about = {
+      ...page([]),
+      pageId: "00000000-0000-0000-0000-000000000002",
+      pageTitle: "About",
+      pagePath: "/about",
+    };
+    const v = { ...auditValue("problems", []), pages: [page([]), about] };
+    const out = formatAudit(v, { pageId: about.pageId });
+    expect(out).toContain("audit r1 (deploy run d1)");
+    expect(out).toContain("## About (/about)");
+    expect(out).not.toContain("## Home (/)");
+    expect(formatAudit(v)).toContain("## Home (/)");
+  });
+
+  it("says loudly when the audit has no result for `pageId`", () => {
+    const out = formatAudit(auditValue("passed", []), {
+      pageId: "00000000-0000-0000-0000-000000000009",
+    });
+    expect(out).toContain("has no result for page 00000000-0000-0000-0000-000000000009");
+    expect(out).toContain("/ (00000000-0000-0000-0000-000000000001)");
+  });
 });
 
 describe("readUntilSettled", () => {

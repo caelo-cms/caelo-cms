@@ -1,0 +1,103 @@
+{
+  "recordedAt": "2026-10-21T13:55:25.756973Z",
+  "source": "live, read-only probes of accounts.google.com/o/oauth2/v2/auth and oauth2.googleapis.com/token without following redirects (issue #967)",
+  "cases": {
+    "authorize_registered_iap_uri": {
+      "request": {
+        "clientId": "369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com",
+        "redirectUri": "https://iap.googleapis.com/v1/oauth/clientIds/369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com:handleRedirect"
+      },
+      "response": {
+        "status": 302,
+        "location": "https://accounts.google.com/v3/signin/identifier?opparams=%253Fhl%253Den&dsh=S741346722%3A1792590924582522&client_id=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com&hl=en&o2v=2&redirect_uri=https%3A%2F%2Fiap.googleapis.com%2Fv1%2Foauth%2FclientIds%2F369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com%3AhandleRedirect&response_type=code&scope=openid&service=lso&flowName=GeneralOAuthLite&continue=https%3A%2F%2Faccounts.google.com%2Fsignin%2Foauth%2Flegacy%2Fconsent%3Fauthuser%3Dunknown%26part%3DAJi8hAPVfw-Hpur-79sFTAmwOMMtEQJQAa1WXBBjcyUILF9v3LTgarrLgoLvnAtzEjT57o3qGkqwmUizQJlUpUkx5D89WR4hTC9Oz25peuxPbBR4f2a6WVIk7B2NyI8te90R5xwC_6tti6RioDLGaxNqvDgeRg0LaQ9keY652M0nfUyDwXd3_gnkKs5rVTO5jES1H2UekDVjZBhocbK-cWOCVGhrcEKB7fmuBqvDjiXh6Q-KJMfi_7UplePnAsOK3MsOYsieMnlgyYo5Af8s6-AjCcOUPCWcTpWAte_XmNNySVwDjkIDDR3nRm945WQ6E8cMHcg-ck_-i6CMYbLK1ZJUWas9PczLNiTCt-Fc6xAcJJ8tewk7ZmjbyqayrKDbpgB9cHFuDdwVsQDL5XQRHHsXs7SC4EpaoHYATXUWJnhxy3NusxpPEbEGzujE0Teuuzkl4l83LlGBC-JsHo1PRINDJx-puu7Ocg%26flowName%3DGeneralOAuthFlow%26hl%3Den%26as%3DS741346722%253A1792590924582522%26client_id%3D369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com%23&app_domain=https%3A%2F%2Fiap.googleapis.com&rart=ANgoxccCwP9GZma-Pvu06nTmssyfgGKVNIP1Qy4_IOHZQxd_vvIV-xspTVd987BiiggBMYD5NM2S4rT5MG0yVBSAKuzKEuaEW04J_1k4naR8vMUHBKZJhD0",
+        "body": ""
+      }
+    },
+    "authorize_unregistered_broker_uri": {
+      "request": {
+        "clientId": "369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com",
+        "redirectUri": "https://example.com/api/mcp/oauth/google-callback"
+      },
+      "response": {
+        "status": 302,
+        "location": "https://accounts.google.com/signin/oauth/error?authError=ChVyZWRpcmVjdF91cmlfbWlzbWF0Y2gSsAEKWW91IGNhbid0IHNpZ24gaW4gdG8gdGhpcyBhcHAgYmVjYXVzZSBpdCBkb2Vzbid0IGNvbXBseSB3aXRoIEdvb2dsZSdzIE9BdXRoIDIuMCBwb2xpY3kuCgpJZiB5b3UncmUgdGhlIGFwcCBkZXZlbG9wZXIsIHJlZ2lzdGVyIHRoZSByZWRpcmVjdCBVUkkgaW4gdGhlIEdvb2dsZSBDbG91ZCBDb25zb2xlLgogIBptaHR0cHM6Ly9kZXZlbG9wZXJzLmdvb2dsZS5jb20vaWRlbnRpdHkvcHJvdG9jb2xzL29hdXRoMi93ZWItc2VydmVyI2F1dGhvcml6YXRpb24tZXJyb3JzLXJlZGlyZWN0LXVyaS1taXNtYXRjaCCQAypBCgxyZWRpcmVjdF91cmkSMWh0dHBzOi8vZXhhbXBsZS5jb20vYXBpL21jcC9vYXV0aC9nb29nbGUtY2FsbGJhY2sypAIIARKwAQpZb3UgY2FuJ3Qgc2lnbiBpbiB0byB0aGlzIGFwcCBiZWNhdXNlIGl0IGRvZXNuJ3QgY29tcGx5IHdpdGggR29vZ2xlJ3MgT0F1dGggMi4wIHBvbGljeS4KCklmIHlvdSdyZSB0aGUgYXBwIGRldmVsb3BlciwgcmVnaXN0ZXIgdGhlIHJlZGlyZWN0IFVSSSBpbiB0aGUgR29vZ2xlIENsb3VkIENvbnNvbGUuCiAgGm1odHRwczovL2RldmVsb3BlcnMuZ29vZ2xlLmNvbS9pZGVudGl0eS9wcm90b2NvbHMvb2F1dGgyL3dlYi1zZXJ2ZXIjYXV0aG9yaXphdGlvbi1lcnJvcnMtcmVkaXJlY3QtdXJpLW1pc21hdGNo&flowName=GeneralOAuthFlow&client_id=369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com&as=S-1810195988%3A1792590924798622&aes=AVQXgOBPvzwyW8vrVjxwEnQ67U-i",
+        "body": ""
+      }
+    },
+    "authorize_registered_playground": {
+      "request": {
+        "clientId": "407408718192.apps.googleusercontent.com",
+        "redirectUri": "https://developers.google.com/oauthplayground"
+      },
+      "response": {
+        "status": 302,
+        "location": "https://accounts.google.com/v3/signin/identifier?opparams=%253Fhl%253Den&dsh=S-684572635%3A1792590924939001&client_id=407408718192.apps.googleusercontent.com&hl=en&o2v=2&redirect_uri=https%3A%2F%2Fdevelopers.google.com%2Foauthplayground&response_type=code&scope=openid&service=lso&flowName=GeneralOAuthLite&continue=https%3A%2F%2Faccounts.google.com%2Fsignin%2Foauth%2Flegacy%2Fconsent%3Fauthuser%3Dunknown%26part%3DAJi8hAPGqBX8RLVRrQRkBa2AfHtc0cqruKNbZntk3_BIkMe6iMBF2CX5aAb6HG_kwdXyFKrRG3bSZYXDpW6e1mC1Dv-WI4VGAQQ3ePBqDC0alTS2MyH3VHq4JN5kB329gLjk97YuFAJ_EDUTgEEsAe67t45_6LZeX-OACVErJB9z4q7OQN0CFHKORiAbbIbQBhre9yhr2j_Db45Ko_-YuAy661-_csXuGuMlVSrDUgtOtbcV_PSTJ7_oV4wu0hrA1qDaDT78CUgymBsYbVaGDdAwVo6x3u_xTsRG9K2VDlc3-ZA4iENH3U4EfiulUxU5cBAqpRCSffU-I1Wsn3qWSxHpMJhrBJz4TLiYVgJE7NcKrze7ke8s1NF_m0ySy18QFUKhaDIuakLqbmTjCfxe5m0P1Uy-pzNC0cf3PN4uU8GVp37lSoDtBYQ%26flowName%3DGeneralOAuthFlow%26hl%3Den%26as%3DS-684572635%253A1792590924939001%26client_id%3D407408718192.apps.googleusercontent.com%23&app_domain=https%3A%2F%2Fdevelopers.google.com&rart=ANgoxcfcVIcQ6tuhnHXHgkydZQH5cy6bzx_8rTCN_kZ86P7GjDCv49jxeZd9QNmKVnU1pXgpsvOsWTywGT8J5XhM7r8Tj185s3DRUANeQJi18FKEdJNBZjI",
+        "body": ""
+      }
+    },
+    "authorize_unregistered_iap_uri_playground": {
+      "request": {
+        "clientId": "407408718192.apps.googleusercontent.com",
+        "redirectUri": "https://iap.googleapis.com/v1/oauth/clientIds/407408718192.apps.googleusercontent.com:handleRedirect"
+      },
+      "response": {
+        "status": 302,
+        "location": "https://accounts.google.com/signin/oauth/error?authError=ChVyZWRpcmVjdF91cmlfbWlzbWF0Y2gSsAEKWW91IGNhbid0IHNpZ24gaW4gdG8gdGhpcyBhcHAgYmVjYXVzZSBpdCBkb2Vzbid0IGNvbXBseSB3aXRoIEdvb2dsZSdzIE9BdXRoIDIuMCBwb2xpY3kuCgpJZiB5b3UncmUgdGhlIGFwcCBkZXZlbG9wZXIsIHJlZ2lzdGVyIHRoZSByZWRpcmVjdCBVUkkgaW4gdGhlIEdvb2dsZSBDbG91ZCBDb25zb2xlLgogIBptaHR0cHM6Ly9kZXZlbG9wZXJzLmdvb2dsZS5jb20vaWRlbnRpdHkvcHJvdG9jb2xzL29hdXRoMi93ZWItc2VydmVyI2F1dGhvcml6YXRpb24tZXJyb3JzLXJlZGlyZWN0LXVyaS1taXNtYXRjaCCQAyp0CgxyZWRpcmVjdF91cmkSZGh0dHBzOi8vaWFwLmdvb2dsZWFwaXMuY29tL3YxL29hdXRoL2NsaWVudElkcy80MDc0MDg3MTgxOTIuYXBwcy5nb29nbGV1c2VyY29udGVudC5jb206aGFuZGxlUmVkaXJlY3QypAIIARKwAQpZb3UgY2FuJ3Qgc2lnbiBpbiB0byB0aGlzIGFwcCBiZWNhdXNlIGl0IGRvZXNuJ3QgY29tcGx5IHdpdGggR29vZ2xlJ3MgT0F1dGggMi4wIHBvbGljeS4KCklmIHlvdSdyZSB0aGUgYXBwIGRldmVsb3BlciwgcmVnaXN0ZXIgdGhlIHJlZGlyZWN0IFVSSSBpbiB0aGUgR29vZ2xlIENsb3VkIENvbnNvbGUuCiAgGm1odHRwczovL2RldmVsb3BlcnMuZ29vZ2xlLmNvbS9pZGVudGl0eS9wcm90b2NvbHMvb2F1dGgyL3dlYi1zZXJ2ZXIjYXV0aG9yaXphdGlvbi1lcnJvcnMtcmVkaXJlY3QtdXJpLW1pc21hdGNo&flowName=GeneralOAuthFlow&client_id=407408718192.apps.googleusercontent.com&as=S-1624110720%3A1792590925117970&aes=AVQXgOBsHbzrSMmLZ5by8Bcs8iWJ",
+        "body": ""
+      }
+    },
+    "authorize_unregistered_de_locale": {
+      "request": {
+        "clientId": "407408718192.apps.googleusercontent.com",
+        "redirectUri": "https://example.com/callback"
+      },
+      "response": {
+        "status": 302,
+        "location": "https://accounts.google.com/signin/oauth/error?authError=ChVyZWRpcmVjdF91cmlfbWlzbWF0Y2gS3AEKU2llIGvDtm5uZW4gc2ljaCBuaWNodCBpbiBkaWVzZXIgQXBwIGFubWVsZGVuLCB3ZWlsIHNpZSBuaWNodCBkZW4gR29vZ2xlLVJpY2h0bGluaWVuIGbDvHIgT0F1dGjCoDIuMCBlbnRzcHJpY2h0LgoKV2VubiBTaWUgZGVyIEFwcC1FbnR3aWNrbGVyIHNpbmQsIHJlZ2lzdHJpZXJlbiBTaWUgZGVuIFdlaXRlcmxlaXR1bmdzLVVSSSBpbiBkZXIgR29vZ2xlIENsb3VkIENvbnNvbGUuCiAgGm1odHRwczovL2RldmVsb3BlcnMuZ29vZ2xlLmNvbS9pZGVudGl0eS9wcm90b2NvbHMvb2F1dGgyL3dlYi1zZXJ2ZXIjYXV0aG9yaXphdGlvbi1lcnJvcnMtcmVkaXJlY3QtdXJpLW1pc21hdGNoIJADKiwKDHJlZGlyZWN0X3VyaRIcaHR0cHM6Ly9leGFtcGxlLmNvbS9jYWxsYmFjazLQAggBEtwBClNpZSBrw7ZubmVuIHNpY2ggbmljaHQgaW4gZGllc2VyIEFwcCBhbm1lbGRlbiwgd2VpbCBzaWUgbmljaHQgZGVuIEdvb2dsZS1SaWNodGxpbmllbiBmw7xyIE9BdXRowqAyLjAgZW50c3ByaWNodC4KCldlbm4gU2llIGRlciBBcHAtRW50d2lja2xlciBzaW5kLCByZWdpc3RyaWVyZW4gU2llIGRlbiBXZWl0ZXJsZWl0dW5ncy1VUkkgaW4gZGVyIEdvb2dsZSBDbG91ZCBDb25zb2xlLgogIBptaHR0cHM6Ly9kZXZlbG9wZXJzLmdvb2dsZS5jb20vaWRlbnRpdHkvcHJvdG9jb2xzL29hdXRoMi93ZWItc2VydmVyI2F1dGhvcml6YXRpb24tZXJyb3JzLXJlZGlyZWN0LXVyaS1taXNtYXRjaA&flowName=GeneralOAuthFlow&client_id=407408718192.apps.googleusercontent.com&as=S1580795658%3A1792590925255512&aes=AVQXgODyGguaoTtDpHejP5wCIUbv",
+        "body": ""
+      }
+    },
+    "authorize_unknown_client": {
+      "request": {
+        "clientId": "123456789012-bogusbogusbogusbogusbogus0000.apps.googleusercontent.com",
+        "redirectUri": "https://iap.googleapis.com/v1/oauth/clientIds/123456789012-bogusbogusbogusbogusbogus0000.apps.googleusercontent.com:handleRedirect"
+      },
+      "response": {
+        "status": 302,
+        "location": "https://accounts.google.com/signin/oauth/error?authError=Cg5pbnZhbGlkX2NsaWVudBIfVGhlIE9BdXRoIGNsaWVudCB3YXMgbm90IGZvdW5kLiCRAw&flowName=GeneralOAuthFlow&client_id=123456789012-bogusbogusbogusbogusbogus0000.apps.googleusercontent.com&as=S-33394073%3A1792590925413216&aes=AVQXgOCDqAOK-lIMa6kIQ4er-a3E",
+        "body": ""
+      }
+    },
+    "token_unknown_client": {
+      "request": {
+        "clientId": "123456789012-bogusbogusbogusbogusbogus0000.apps.googleusercontent.com"
+      },
+      "response": {
+        "status": 401,
+        "location": null,
+        "body": "{\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The OAuth client was not found.\"\n}"
+      }
+    },
+    "token_wrong_secret": {
+      "request": {
+        "clientId": "369001918367-t5qrahnqdaasaifvk6akpqkpjk9vli58.apps.googleusercontent.com"
+      },
+      "response": {
+        "status": 401,
+        "location": null,
+        "body": "{\n  \"error\": \"invalid_client\",\n  \"error_description\": \"The provided client secret is invalid.\"\n}"
+      }
+    },
+    "authorize_policy_rejected_uri": {
+      "request": {
+        "clientId": "407408718192.apps.googleusercontent.com",
+        "redirectUri": "https://example.invalid/not-registered"
+      },
+      "response": {
+        "status": 302,
+        "location": "https://accounts.google.com/signin/oauth/error?authError=Cg9pbnZhbGlkX3JlcXVlc3QS3gEKWW91IGNhbid0IHNpZ24gaW4gdG8gdGhpcyBhcHAgYmVjYXVzZSBpdCBkb2Vzbid0IGNvbXBseSB3aXRoIEdvb2dsZSdzIE9BdXRoIDIuMCBwb2xpY3kgZm9yIGtlZXBpbmcgYXBwcyBzZWN1cmUuCgpZb3UgY2FuIGxldCB0aGUgYXBwIGRldmVsb3BlciBrbm93IHRoYXQgdGhpcyBhcHAgZG9lc24ndCBjb21wbHkgd2l0aCBvbmUgb3IgbW9yZSBHb29nbGUgdmFsaWRhdGlvbiBydWxlcy4KICAaWWh0dHBzOi8vZGV2ZWxvcGVycy5nb29nbGUuY29tL2lkZW50aXR5L3Byb3RvY29scy9vYXV0aDIvcG9saWNpZXMjc2VjdXJlLXJlc3BvbnNlLWhhbmRsaW5nIJADKjYKDHJlZGlyZWN0X3VyaRImaHR0cHM6Ly9leGFtcGxlLmludmFsaWQvbm90LXJlZ2lzdGVyZWQ&flowName=GeneralOAuthFlow&client_id=407408718192.apps.googleusercontent.com&as=S2134082274%3A1792591259539871&aes=AVQXgOAUbQOThLqo2OYDN-6YfEnJ",
+        "body": ""
+      }
+    }
+  }
+}

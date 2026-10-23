@@ -8,7 +8,8 @@
  * The broker holds no admin credential. The client's bearer is a sealed
  * access token (access-token.ts); the proxy refuses one minted for the
  * other surface and forwards only the user's own Google ID token inside
- * it, and IAP decides: a token not issued to the
+ * it — plus the client app the token was issued to
+ * ({@link MCP_CLIENT_HEADER}, issue #968) — and IAP decides: a token not issued to the
  * allowlisted client → IAP 401 (the client signs in again); a user
  * without access → IAP 403 (told to ask the Owner). The admin then reads
  * the user from IAP's signed `x-goog-iap-jwt-assertion`.
@@ -48,6 +49,14 @@ export const FORWARDED_REQUEST_HEADERS: readonly string[] = [
   "last-event-id",
   "user-agent",
 ];
+
+/**
+ * Names the MCP client app (access-token.ts `mcpClientKey`) to the admin,
+ * URI-encoded (a DCR client name may hold any character). Set only from
+ * the sealed access token: inbound `x-caelo-*` never passes the allowlist
+ * above, so a client cannot claim another app's identity through here.
+ */
+export const MCP_CLIENT_HEADER = "x-caelo-mcp-client";
 
 /** Response headers the MCP client may see from the admin. */
 export const FORWARDED_RESPONSE_HEADERS: readonly string[] = [
@@ -178,8 +187,8 @@ export async function handleMcpProxy(
   if (bearer === undefined) return unauthorized(ctx, surface, auth !== null);
   // The surface binding is checked here, before anything goes upstream:
   // a token approved for chat never reaches the admin surface.
-  const idToken = openAccessToken(ctx, bearer, surface);
-  if (idToken === null) return unauthorized(ctx, surface, true);
+  const grant = openAccessToken(ctx, bearer, surface);
+  if (grant === null) return unauthorized(ctx, surface, true);
   const limits = ctx.proxyLimits;
   const declared = Number(req.headers.get("content-length") ?? "0");
   if (Number.isFinite(declared) && declared > limits.maxBodyBytes) {
@@ -217,7 +226,8 @@ export async function handleMcpProxy(
   // timeout does (Bun takes whole seconds, at most 255).
   hooks.setIdleTimeout(Math.min(255, Math.ceil(limits.firstResponseTimeoutMs / 1000) + 1));
   const upHeaders = upstreamRequestHeaders(req, ctx);
-  upHeaders.set("authorization", `Bearer ${idToken}`);
+  upHeaders.set("authorization", `Bearer ${grant.idToken}`);
+  upHeaders.set(MCP_CLIENT_HEADER, encodeURIComponent(grant.client));
   const target = `${ctx.config.adminUrl}/api/mcp/remote/${surface}`;
   let upstream: Response;
   try {

@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import type { ExecutionContext } from "@caelo-cms/shared";
+import { type ExecutionContext, screenshotTargetNotRendered } from "@caelo-cms/shared";
 import type { Screenshot, Screenshotter } from "@caelo-cms/site-importer";
 import {
   PREVIEW_SCREENSHOT_TOKEN_HEADER,
@@ -313,6 +313,44 @@ describe("operator-browser path (SSE) + fallback", () => {
     expect(result.ok).toBe(false);
     expect(result.content).toBe("screenshot_page failed: html2canvas exploded");
     expect(recorded).toHaveLength(0);
+  });
+});
+
+describe("script-revealed capture targets (e2e-livedit 2026-10: canvas.toBlob returned null)", () => {
+  it("renders server-side when the browser capture's target has no size", async () => {
+    // [data-consent-banner] is display:none until the consent runtime runs;
+    // the operator-browser capture runs no scripts, so the element is 0×0
+    // there. Chromium with scripts can show it.
+    const recorded: RecordedCapture[] = [];
+    installFakeScreenshotter(recorded);
+    const events: Array<{ kind: string; requestId: string }> = [];
+    const pending = screenshotPageTool.handler(
+      aiCtx,
+      { pageId: PAGE_ID, selector: "[data-consent-banner]" },
+      toolCtx({
+        pushClientEvent: (e) => events.push(e as { kind: string; requestId: string }),
+        operatorBrowserAttached: true,
+      }),
+    );
+    const notRendered = screenshotTargetNotRendered("[data-consent-banner]", {
+      width: 0,
+      height: 0,
+    });
+    expect(notRendered).not.toBeNull();
+    failScreenshot(events[0]?.requestId ?? "", notRendered ?? "");
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain("server-side renderer");
+    expect(result.content).toContain("revealed by the page's scripts");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]?.opts?.selector).toBe("[data-consent-banner]");
+  });
+
+  it("only classifies a box without area as not rendered", () => {
+    expect(screenshotTargetNotRendered("footer", { width: 1280, height: 200 })).toBeNull();
+    expect(screenshotTargetNotRendered("footer", { width: 1280, height: 0 })).toContain(
+      "footer is 1280×0px",
+    );
   });
 });
 

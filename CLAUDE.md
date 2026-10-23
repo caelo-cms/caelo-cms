@@ -173,6 +173,7 @@ This project is largely AI-authored. AI contributions are held to a *higher*, no
 - **PR description** always includes: *what changed*, *why*, *which requirements section this satisfies*, *how it was verified*, *licenses of any new dependencies*. The end-to-end verification from the phase file goes here.
 - **No `--no-verify`, no force-push to `main`, no squashing away useful history.**
 - **Reviewers check:** permission layer respected, Query API only, snapshots emitted, validation present, tests added, docs updated.
+- **Whoever opens a PR owns it until it is green — agents and worktree sessions included.** Opening the PR is not the end of the task. Right after `gh pr create`, start watching it (a Monitor / background loop on `gh pr checks` + the review comments, not foreground polling) and keep watching until **every CI check has passed AND every review finding is resolved** — Codex / AI security review / human comments alike. Fix each failing check and each valid finding on the same branch, push, and keep watching; answer a finding you judge wrong with a reply that shows why (code, test, or log), never by silently ignoring it. Only then report the PR as done. Why: PR #947 was merged with four unaddressed Codex findings, two of them real gate bypasses — a PR left to "someone will look at the comments" ships the bugs the review already found.
 
 ---
 

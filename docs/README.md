@@ -19,8 +19,9 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 - [inspect-tooling-redesign.md](./inspect-tooling-redesign.md) — gist-first inspection of external pages and on-demand HTML queries.
 - [dev/public-admin-boundary.md](./dev/public-admin-boundary.md) — the public/admin boundary: the public side is assumed compromised.
 - [dev/public-admin-read-paths.md](./dev/public-admin-read-paths.md) — every path where the admin reads `cms_public` data, and how each treats it as untrusted.
+- [dev/mcp-access.md](./dev/mcp-access.md) — MCP access as one concept: token vs remote chat vs remote admin, who may use which, per-app connections, revoke/restore/block (#968).
 - [dev/password-management.md](./dev/password-management.md) — password policy, change, reset and Owner reset in code.
-- [internal/bug-intake.md](./internal/bug-intake.md) — maintainer runbook for the Caelo-operated bug intake that files one GitHub issue per defect.
+- [internal/bug-intake.md](./internal/bug-intake.md) — how to operate a bug intake (setup, signed image, configuration) that files one GitHub issue per defect.
 
 ## AI internals
 

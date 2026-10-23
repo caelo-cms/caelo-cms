@@ -200,6 +200,7 @@ import {
   proposeUrlMigrationOp,
   rejectUrlMigrationOp,
 } from "./ops/content/url_migrations.js";
+import { issueCredentialOp, listCredentialHandoffsOp } from "./ops/credential_handoffs.js";
 import {
   listDeployRunsOp,
   listDeployTargetsOp,
@@ -271,10 +272,8 @@ import {
   acceptImportedPageOp,
   acceptImportedPagesOp,
   addImportPageNotesOp,
-  assignImportPageClusterOp,
   checkImportPageInventoryOp,
   cleanupImportRunOp,
-  composeFromImportRunOp,
   createImportRunOp,
   detectImportBoilerplateOp,
   executeImportProposalOp,
@@ -285,7 +284,6 @@ import {
   getRunCalibrationOp,
   getRunCostOp,
   getSessionBudgetStateOp,
-  listImportPageClustersOp,
   listImportPagesOp,
   listImportRunsOp,
   listPendingImportProposalsOp,
@@ -495,10 +493,12 @@ import {
   mcpOpenSessionOp,
 } from "./ops/security/mcp_power.js";
 import {
+  blockMcpRemoteUserOp,
   listMcpRemoteConnectionsOp,
   restoreMcpRemoteConnectionOp,
   revokeMcpRemoteConnectionOp,
   setMcpRemoteConnectionCapOp,
+  unblockMcpRemoteUserOp,
 } from "./ops/security/mcp_remote_connections.js";
 import {
   createMcpTokenOp,
@@ -564,6 +564,7 @@ import { revertModuleOp } from "./ops/snapshots/revert_module.js";
 import { revertPageOp } from "./ops/snapshots/revert_page.js";
 import { revertSiteOp } from "./ops/snapshots/revert_site.js";
 import { revertTemplateOp } from "./ops/snapshots/revert_template.js";
+import { stageReadinessOp } from "./ops/stage_readiness.js";
 import {
   getStagingAccessOp,
   issueStagingOpenLinkOp,
@@ -616,7 +617,12 @@ import {
   readToolApprovalForExecuteOp,
   rejectToolApprovalOp,
 } from "./ops/tool_approvals.js";
-import { operatorAccessMembersOp, recordOperatorAccessSyncOp } from "./ops/user_access.js";
+import {
+  operatorAccessMembersOp,
+  operatorAccessRunOp,
+  recordOperatorAccessRunOp,
+  recordOperatorAccessSyncOp,
+} from "./ops/user_access.js";
 import {
   executeUserProposalOp,
   listPendingUserProposalsOp,
@@ -634,6 +640,7 @@ import {
   deleteUserOp,
   isSetupCompleteOp,
   listUsersOp,
+  setUserEmailOp,
   setUserRolesOp,
 } from "./ops/users.js";
 
@@ -663,22 +670,28 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listUsersOp);
   registry.register(createUserOp);
   registry.register(setUserRolesOp);
+  registry.register(setUserEmailOp);
   registry.register(deleteUserOp);
   registry.register(changePasswordOp);
   registry.register(adminSetPasswordOp);
   // v0.2.21 — users propose/execute pairs. AI proposes via
   // users.propose_*; Owner approves at /settings/users/pending which
   // calls users.execute_proposal (human-only) → runs the underlying
-  // users.{create,set_roles,delete} op. Passwords on create are
-  // server-generated at execute time; AI never handles credentials.
+  // users.{create,set_roles,delete} op. AI never handles credentials: a
+  // created user's one-time password is issued later by the approver
+  // through a credential handoff (#971).
   registry.register(proposeUserCreateOp);
   registry.register(proposeUserSetRolesOp);
   registry.register(proposeUserDeleteOp);
   registry.register(executeUserProposalOp);
   registry.register(recordOperatorAccessSyncOp);
+  registry.register(recordOperatorAccessRunOp);
+  registry.register(operatorAccessRunOp);
   registry.register(operatorAccessMembersOp);
   registry.register(rejectUserProposalOp);
   registry.register(listPendingUserProposalsOp);
+  registry.register(listCredentialHandoffsOp);
+  registry.register(issueCredentialOp);
   registry.register(loginOp);
   registry.register(logoutOp);
   registry.register(resolveSessionOp);
@@ -964,12 +977,13 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listMcpRemoteConnectionsOp);
   registry.register(revokeMcpRemoteConnectionOp);
   registry.register(restoreMcpRemoteConnectionOp);
+  registry.register(blockMcpRemoteUserOp);
+  registry.register(unblockMcpRemoteUserOp);
   registry.register(setMcpRemoteConnectionCapOp);
   // v0.2.27 — mcp_tokens propose/execute pairs (create / revoke).
-  // AI proposes new tokens by displayName + cap; the Owner approves
-  // at /settings/mcp/pending and the plaintext token is generated
-  // server-side and shown ONCE in the response banner. Same shape
-  // as users.execute_proposal returning the temp password.
+  // AI proposes new tokens by displayName + cap; the Owner approves and
+  // collects the token from a credential handoff (#971), like the new
+  // user's password from users.execute_proposal.
   registry.register(proposeMcpTokenCreateOp);
   registry.register(proposeMcpTokenRevokeOp);
   registry.register(executeMcpTokenProposalOp);
@@ -978,6 +992,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   // P6 deploy
   registry.register(listDeployTargetsOp);
   registry.register(listDeployRunsOp);
+  registry.register(stageReadinessOp);
   registry.register(triggerDeployOp);
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);
@@ -1138,9 +1153,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createImportRunOp);
   registry.register(proposeImportRunOp);
   registry.register(listPendingImportProposalsOp);
-  // issue #194 — page-type clusters (list + bulk assign/label).
-  registry.register(listImportPageClustersOp);
-  registry.register(assignImportPageClusterOp);
   // issue #198 — per-page screenshot keys (serve route + AI tool).
   registry.register(getImportPageScreenshotKeysOp);
   registry.register(getImportPageGistOp);
@@ -1176,7 +1188,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acceptImportedPageOp);
   registry.register(acceptImportedPagesOp);
   registry.register(cleanupImportRunOp);
-  registry.register(composeFromImportRunOp);
   // Epic #724 — turn an import run's links to planned pages into references.
   registry.register(resolveImportLinksOp);
   // Explicit, URL-driven media import (replaces the scan-and-download

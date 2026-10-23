@@ -417,9 +417,37 @@ describe("P6 deploy.trigger", () => {
         .runs[0];
       expect(latest?.status).toBe("failed");
       expect(latest?.errorMessage ?? "").toContain("staging build verification failed");
+      // #1003 — the failure comes after the build and the publish: their
+      // timings are what explains the run, so they are kept.
+      const timed = await latestRunTimings();
+      expect(timed.phases).toEqual(
+        expect.arrayContaining(["prepare", "generator", "publish", "verify-served"]),
+      );
+      expect(timed.spanCoversSteps).toBe(true);
     } finally {
       delete process.env.CAELO_STAGING_BASE_URL;
       server.stop(true);
+    }
+  });
+
+  it("#1003 a run that cannot start the generator still records its timings", async () => {
+    setDeployBridge(null);
+    try {
+      const result = await execute(registry, adapter, HUMAN, "deploy.trigger", {
+        targetName: "staging",
+        repoRoot: testRoot,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect("message" in result.error ? String(result.error.message) : "").toContain(
+        "deploy-bridge not configured",
+      );
+      const timed = await latestRunTimings();
+      expect(timed.status).toBe("failed");
+      expect(timed.phases).toEqual(["prepare", "generator"]);
+      expect(timed.spanCoversSteps).toBe(true);
+    } finally {
+      setDeployBridge({ registry, adapter });
     }
   });
 
@@ -449,9 +477,10 @@ describe("P6 deploy.trigger", () => {
       expect(result.error.kind).toBe("HandlerError");
       const message = "message" in result.error ? String(result.error.message) : "";
       expect(message).toContain("no page serves the site root");
-      // The error must name the tool that actually exists. `change_page_slug`
-      // was folded into `update_pages_many` (audit #3, PR #323).
-      expect(message).toContain("update_pages_many");
+      // The next step designates the homepage; a slug rename would move
+      // another page's URL to the root.
+      expect(message).toContain("set_home_page");
+      expect(message).not.toContain("update_pages_many");
     } finally {
       // Leave the fixture consistent for any test added after this one.
       await execute(registry, adapter, HUMAN, "pages.update", {
@@ -522,6 +551,33 @@ describe("P6 deploy.trigger", () => {
     ]);
   });
 });
+
+/**
+ * The newest deploy run's status, top-level step names, and whether its
+ * stored span (`finished_at - started_at`) covers the sum of those steps.
+ */
+async function latestRunTimings(): Promise<{
+  status: string;
+  phases: string[];
+  spanCoversSteps: boolean;
+}> {
+  const [run] = await asSystemQuery(
+    (tx) => tx`SELECT status, phase_timings,
+                      (EXTRACT(EPOCH FROM finished_at - started_at) * 1000) AS took_ms
+               FROM deploy_runs ORDER BY started_at DESC LIMIT 1`,
+  );
+  if (!run) throw new Error("no deploy run recorded");
+  const steps = ((run.phase_timings ?? []) as { phase: string; ms: number }[]).filter(
+    (p) => !p.phase.includes("."),
+  );
+  const stepsMs = steps.reduce((n, p) => n + p.ms, 0);
+  return {
+    status: String(run.status),
+    phases: steps.map((p) => p.phase),
+    // Steps are rounded to whole ms each; allow that rounding.
+    spanCoversSteps: Number(run.took_ms) >= stepsMs - steps.length,
+  };
+}
 
 async function asSystemQuery<T>(query: (tx: SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL!);

@@ -44,6 +44,7 @@ import { describeOperatorAccessSync, syncOperatorAccess } from "../../ops/user_a
 import { describePersistError } from "../chat-runner/persistence.js";
 import type { FilteredTool } from "../chat-runner/tool-catalogue.js";
 import { approvedPluginInvocation } from "../plugin-invocation.js";
+import { credentialFreeResult } from "./credential-free-result.js";
 
 /**
  * What the model reads first in a gated tool's success result. The bare op
@@ -140,11 +141,15 @@ export function attachGatedExecute(
           error: `${gated.executeOp} failed: ${describePersistError(applied.error)}`,
         };
       }
+      // #971 — from here on only the AI-visible shape of the output exists:
+      // a credential the apply produced is a handoff the approver collects
+      // in the admin, never a value the model (or an MCP client) reads.
+      const appliedValue = credentialFreeResult(tool.name, applied.value);
       // 3. Post-commit step, if the domain declared one. The apply
       //    transaction is closed by now, which is the whole reason this
       //    is not folded into `execute_proposal`.
       if (gated.afterApply === "load-activated-plugin") {
-        const slug = (applied.value as { slug?: string }).slug;
+        const slug = (appliedValue as { slug?: string }).slug;
         if (slug) {
           const live = await loadActivatedPlugin(slug);
           if (!live.loaded) {
@@ -156,7 +161,7 @@ export function attachGatedExecute(
               ok: true,
               status: APPLIED_STATUS,
               value: {
-                ...(applied.value as Record<string, unknown>),
+                ...(appliedValue as Record<string, unknown>),
                 loadedIntoHost: false,
                 warning: `"${slug}" is activated but could not be loaded into the running host (${live.reason}). It will load on the next restart; do not use its tools before then.`,
               },
@@ -166,7 +171,7 @@ export function attachGatedExecute(
             ok: true,
             status: APPLIED_STATUS,
             value: {
-              ...(applied.value as Record<string, unknown>),
+              ...(appliedValue as Record<string, unknown>),
               loadedIntoHost: true,
               note: "The plugin is running. Its tools and skills become available to you on your NEXT turn — this turn's tool list was fixed before the approval.",
             },
@@ -181,11 +186,11 @@ export function attachGatedExecute(
             registry,
             adapter,
             ownerCtxLive,
-            applied.value as Record<string, unknown>,
+            appliedValue as Record<string, unknown>,
           ),
         };
       }
-      return { ok: true, status: APPLIED_STATUS, value: applied.value };
+      return { ok: true, status: APPLIED_STATUS, value: appliedValue };
     },
   };
 }
@@ -209,6 +214,16 @@ async function withOperatorAccessSync(
   const message = describeOperatorAccessSync(sync);
   if (sync.status === "failed") {
     return { ...applied, operatorAccess: sync, warning: `${message} Tell the operator this.` };
+  }
+  // #970 — users Google has no account for are applied to nobody: the
+  // change stands, but they cannot sign in until their address is a Google
+  // account. A warning, so the AI relays it instead of reporting success.
+  if (sync.status === "synced" && sync.refusedMembers?.length) {
+    return {
+      ...applied,
+      operatorAccess: sync,
+      warning: `${message} Tell the operator this. To fix it, propose_create_user with the person's Google account address and propose_delete_user for the old one, or let the Owner change the email in /settings/users.`,
+    };
   }
   return { ...applied, operatorAccess: sync, ...(message ? { note: message } : {}) };
 }

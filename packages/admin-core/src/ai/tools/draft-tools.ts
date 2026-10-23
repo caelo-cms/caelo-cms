@@ -71,6 +71,8 @@ export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInp
     "Use it when the operator's requested change is done and should be reviewed on staging — 'stage it', 'put it on staging', or as the last step of finished work so the operator can review and Publish live. " +
     "Changes another chat made to the SAME module/page ride along (the result names them — tell the operator). scope all_my_chats stages every open chat of the operator at once. " +
     "Only pages with status 'published' are built — the result lists draft pages it left out; publish them with set_pages_status_many first when they should be on staging. " +
+    "The build is REFUSED unless: (1) at least one page is published; (2) a published page serves the site root '/' (the homepage — set_home_page designates one, it keeps its slug); (3) every published page has a meta description (page.metaDescription in build_page, else ONE autofill_page_seo_many call). " +
+    "These cover pages you did not touch too (a homepage left as a draft, an older page without a description): the site-status note at the start of the turn and the results of build_page / set_pages_status_many / set_home_page / autofill_page_seo_many say 'A Stage would be refused right now' with the exact fixes — do those first, then stage once. " +
     "It does NOT publish: Publish live is the operator's click after the quality check (get_publish_gate says whether it is open; get_quality_audit reads the findings). Never tell the operator the change is live. " +
     "A failed build returns the generator's error — fix the cause and call again; the changes stay unstaged until a build succeeds.",
   schema: stageInput,

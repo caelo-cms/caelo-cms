@@ -29,6 +29,7 @@ import { BASE_TECHNICAL_CSS } from "./base-css.js";
 import type { ModuleFieldKind } from "./content.js";
 import { findInteractionIds, interactionAssets } from "./interactions.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
+import { tagModuleId } from "./module-id-tag.js";
 import {
   type NestedModuleResource,
   type NestedRenderFailure,
@@ -46,6 +47,9 @@ import { balanceTemplateCloses } from "./template-balance.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";
 import { renderThemeCss as renderThemeCssFromTokens } from "./theme-render.js";
 import type { ThemeDocument } from "./themes.js";
+
+// Re-exported so existing callers keep importing it from the composer.
+export { tagModuleId };
 
 export interface ComposeModule {
   readonly moduleId: string;
@@ -369,7 +373,10 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     html = injectBefore(html, HEAD_CLOSE_RE, styleTag);
   }
   if (allJs.length > 0) {
-    const scriptTag = `<script defer data-source="modules">\n${allJs.join("\n")}\n</script>`;
+    const joinedJs = allJs.join("\n");
+    const scriptTag = scriptNeedsEncoding(joinedJs)
+      ? `<script defer data-source="modules" src="data:text/javascript;base64,${utf8ToBase64(joinedJs)}"></script>`
+      : `<script defer data-source="modules">\n${joinedJs}\n</script>`;
     html = injectBefore(html, BODY_CLOSE_RE, scriptTag);
   }
 
@@ -381,16 +388,6 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   };
 }
 
-/**
- * Insert `data-caelo-module-id="<id>"` into the first opening tag of
- * the module's HTML. Idempotent — re-tagging an already-tagged module
- * is a no-op. Comments / DOCTYPE / leading whitespace before the first
- * tag are tolerated. Modules that have no opening tag (pure text)
- * return unchanged because there's nothing to attach to.
- *
- * Exported so callers (admin preview endpoint, static generator,
- * tests) can reuse the same logic.
- */
 /**
  * P6.7.5 — return the items for a `nav-menu/<slug>` set when a module's
  * slug starts with `nav-menu-`. Returns null when the module is not a
@@ -600,18 +597,6 @@ function recordFailures(
   for (const f of failures) {
     out.push({ blockName, moduleId: m.moduleId, moduleSlug: m.slug, ...f });
   }
-}
-
-export function tagModuleId(html: string, moduleId: string): string {
-  if (!html) return html;
-  const firstOpen = /<([a-zA-Z][a-zA-Z0-9-]*)\b([^>]*)>/;
-  const m = firstOpen.exec(html);
-  if (!m) return html;
-  // Already tagged?
-  const tagAttrs = m[2] ?? "";
-  if (/\sdata-caelo-module-id\s*=/.test(tagAttrs)) return html;
-  const replaced = `<${m[1]}${tagAttrs} data-caelo-module-id="${moduleId}">`;
-  return html.slice(0, m.index) + replaced + html.slice(m.index + m[0].length);
 }
 
 /**
@@ -958,11 +943,11 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     );
   }
   if (jsParts.length > 0) {
-    html = injectBefore(
-      html,
-      BODY_CLOSE_RE,
-      `<script defer data-source="modules">\n${jsParts.join("\n")}\n</script>`,
-    );
+    const joinedJs = jsParts.join("\n");
+    const scriptTag = scriptNeedsEncoding(joinedJs)
+      ? `<script defer data-source="modules" src="data:text/javascript;base64,${utf8ToBase64(joinedJs)}"></script>`
+      : `<script defer data-source="modules">\n${joinedJs}\n</script>`;
+    html = injectBefore(html, BODY_CLOSE_RE, scriptTag);
   }
 
   // De-duplicate slot accounting across both passes — the template's

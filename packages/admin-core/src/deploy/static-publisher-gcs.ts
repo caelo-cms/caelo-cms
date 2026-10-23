@@ -55,6 +55,7 @@ import {
   buildFilesKey,
   readStagedBuildFiles,
   type StagedBuildFiles,
+  StagedRunError,
 } from "./staged-build-files.js";
 import { contentTypeFor, gcsObjectMetadata } from "./static-file-policy.js";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
@@ -236,6 +237,19 @@ export function createGcsStaticPublisher(
       // fails here with nothing changed.
       const redirectPlan = await readStagedRedirectPlan(h.stagingBucket, sourceRunId);
       const buildFiles = await readStagedBuildFiles(h.stagingBucket, sourceRunId);
+      // PR #947 review — robots.txt advertises the build's sitemap. One the
+      // hash-skip left out of the staging prefix is served from the live
+      // copy; if that copy vanished out of band, refuse before any file
+      // moves instead of shipping a `Sitemap:` line that 404s.
+      if (
+        buildFiles.has("sitemap.xml") &&
+        !stagedFiles.some((f) => f.name === `${prefix}sitemap.xml`) &&
+        !(await h.staticBucket.file("sitemap.xml").exists())[0]
+      ) {
+        throw new StagedRunError(
+          `static-publisher-gcs: run ${sourceRunId} contains sitemap.xml, but it is neither staged nor live in gs://${h.staticBucketName}/ (deleted outside Caelo?). Run Stage again.`,
+        );
+      }
       let copied = 0;
       await runBatched(stagedFiles, PARALLEL_COPIES, async (stagedFile) => {
         const relPath = stagedFile.name.slice(prefix.length);

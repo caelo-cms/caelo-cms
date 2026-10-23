@@ -27,6 +27,7 @@ import { recordAudit } from "./audit.js";
 import { branchNotFound, firstInvisibleBranch, namedBranches } from "./branch-access.js";
 import { extractPgFields, isRlsDenial, OperationAbortError, type QueryError } from "./errors.js";
 import type { OperationDefinition, TransactionRunner } from "./operation.js";
+import { provisionPluginSchemaInTx } from "./plugin-schema-provision.js";
 import {
   collectPostCommitEffects,
   type PostCommitEffect,
@@ -304,7 +305,9 @@ export class DatabaseAdapter {
         }
 
         const out = await op.handler(ctx, validatedInput, tx);
-        if (op.database === "cms_admin") publishAfterCommit = await this.#projectionDirty(tx);
+        if (out.ok && op.database === "cms_admin") {
+          publishAfterCommit = await this.#projectionDirty(tx);
+        }
         return out;
       });
     } catch (thrown) {
@@ -512,6 +515,8 @@ export class DatabaseAdapter {
    * Used by the activate path: provision FIRST, then commit the
    * cms_admin status flip in the activate op. If provisioning fails,
    * the activate path returns the error before any cms_admin mutation.
+   * Safe to call from several instances at once — see
+   * {@link provisionPluginSchemaInTx}.
    */
   async provisionPluginPublicSchema(opts: { pluginId: string; sql: string }): Promise<void> {
     if (!/^[0-9a-f-]{36}$/i.test(opts.pluginId)) {
@@ -519,14 +524,12 @@ export class DatabaseAdapter {
     }
     if (!this.#skipVerify) await this.verifyRoles();
     await this.#public.transaction(async (tx) => {
-      await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
-      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${opts.pluginId}, true)`);
       // The emitted SQL is constructed entirely from validated identifiers
       // (slug regex `^[a-z][a-z0-9-]*$`, table names regex `^[a-z_][a-z0-9_]*$`)
       // and the plugin id is a UUID column from cms_admin.plugins, never user-provided
       // text. `quoteIdent` in plugin-sandbox/src/schema.ts throws on any
       // identifier that doesn't match the safe pattern.
-      await tx.execute(sql.raw(opts.sql));
+      await provisionPluginSchemaInTx(tx, "provisionPluginPublicSchema", opts);
     });
   }
 
@@ -557,9 +560,7 @@ export class DatabaseAdapter {
     const admin = this.#adminDb("provisionPluginAdminSchema");
     if (!this.#skipVerify) await this.verifyRoles();
     await admin.transaction(async (tx) => {
-      await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
-      await tx.execute(sql`SELECT set_config('caelo.plugin_id', ${opts.pluginId}, true)`);
-      await tx.execute(sql.raw(opts.sql));
+      await provisionPluginSchemaInTx(tx, "provisionPluginAdminSchema", opts);
     });
   }
 
@@ -578,6 +579,9 @@ export class DatabaseAdapter {
     await admin.transaction(async (tx) => {
       await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
       await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS "${opts.schemaName}" CASCADE`));
+      await tx.execute(
+        sql`DELETE FROM plugin_schema_provisions WHERE schema_name = ${opts.schemaName}`,
+      );
     });
   }
 
@@ -591,6 +595,9 @@ export class DatabaseAdapter {
     await this.#public.transaction(async (tx) => {
       await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
       await tx.execute(sql.raw(`DROP SCHEMA IF EXISTS "${opts.schemaName}" CASCADE`));
+      await tx.execute(
+        sql`DELETE FROM plugin_schema_provisions WHERE schema_name = ${opts.schemaName}`,
+      );
     });
   }
 

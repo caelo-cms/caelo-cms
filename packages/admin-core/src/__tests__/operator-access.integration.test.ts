@@ -9,7 +9,12 @@
  *     nothing else — no password hashes, no writes (migration 0239);
  *   - the admin side: an Owner-approved user or role change starts the job
  *     (a recording fake trigger here), the outcome lands on the tool result
- *     and in the audit log, and a failure is loud.
+ *     and in the audit log, and a failure is loud;
+ *   - #970: the job's per-run report (`users.record_operator_access_run`,
+ *     migration 0341) — written as the job's role, which may insert it and
+ *     nothing more; refused members make a run "synced with warnings" that
+ *     names them (panel message, AI warning); a finished run without a
+ *     report is a loud failure.
  */
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
@@ -26,8 +31,11 @@ import {
   proposeUserSetRolesTool,
 } from "../ai/tools/propose-tools-batch.js";
 import {
+  describeOperatorAccessSync,
+  latestOperatorAccessRun,
   type OperatorAccessSync,
   operatorAccessMembersOp,
+  recordOperatorAccessRunOp,
   setOperatorAccessTriggerForTests,
   syncOperatorAccess,
 } from "../ops/user_access.js";
@@ -64,24 +72,60 @@ const EMAILS = [
   "opaccess-chat@example.com",
   "opaccess-gone@example.com",
   "opaccess-customrole@example.com",
+  "opaccess-nogoogle@example.com",
 ] as const;
 const CUSTOM_ROLE = "opaccess-temp-role";
 
-/** Records every start; optionally fails or ends the run like Google would. */
-function fakeTrigger(opts: { fail?: OperatorAccessError; state?: "succeeded" | "failed" } = {}) {
+/** Execution ids this file's fake job reports under (wiped before and after). */
+const EXEC_PREFIX = "opaccess-exec-";
+
+/**
+ * Records every start; optionally fails or ends the run like Google would.
+ * A finished run records its report like the real job (#970) unless
+ * `noReport`; `refused` = the members Google said have no account.
+ */
+function fakeTrigger(
+  opts: {
+    fail?: OperatorAccessError;
+    state?: "succeeded" | "failed";
+    refused?: string[];
+    noReport?: boolean;
+  } = {},
+) {
   let starts = 0;
+  let last: string | null = null;
   const trigger: OperatorAccessTrigger = {
     label: "Google IAP (fake job)",
     async start() {
       if (opts.fail) throw opts.fail;
       starts += 1;
-      return `exec-${starts}`;
+      last = `${EXEC_PREFIX}${crypto.randomUUID().slice(0, 8)}-${starts}`;
+      return last;
     },
     async wait(execution) {
-      return { execution, state: opts.state ?? "succeeded", logsUrl: `https://logs/${execution}` };
+      const state = opts.state ?? "succeeded";
+      if (!opts.noReport) {
+        const refused = opts.refused ?? [];
+        const r = await execute(registry, adapter, SYSTEM, "users.record_operator_access_run", {
+          execution,
+          outcome:
+            state === "failed"
+              ? "failed"
+              : refused.length
+                ? "succeeded_with_warnings"
+                : "succeeded",
+          refusedMembers: refused,
+          errorCount: state === "failed" ? 1 : 0,
+          signInClientProblem: null,
+        });
+        if (!r.ok) throw new Error(`fake job report: ${JSON.stringify(r.error)}`);
+      }
+      return { execution, state, logsUrl: `https://logs/${execution}` };
     },
     async latest() {
-      return null;
+      return last
+        ? { execution: last, state: opts.state ?? "succeeded", logsUrl: `https://logs/${last}` }
+        : null;
     },
   };
   return { trigger, starts: () => starts };
@@ -110,6 +154,7 @@ async function wipe(): Promise<void> {
       await tx`DELETE FROM users WHERE email = ${email}`;
     }
     await tx`DELETE FROM role_pending_actions WHERE proposed_by = ${AI.actorId}::uuid`;
+    await tx`DELETE FROM operator_access_sync_runs WHERE execution LIKE ${`${EXEC_PREFIX}%`}`;
     await tx`DELETE FROM roles WHERE name = ${CUSTOM_ROLE}`;
   });
 }
@@ -218,18 +263,69 @@ describe("syncOperatorAccess — the admin starts the job and records the outcom
 
   it("a finished run is synced; a failed run is failed with the log link, audited as failed", async () => {
     setOperatorAccessTriggerForTests({ trigger: fakeTrigger().trigger });
-    expect(await syncOperatorAccess(registry, adapter, OWNER)).toEqual({
-      status: "synced",
-      target: "Google IAP (fake job)",
-      execution: "exec-1",
-      logsUrl: "https://logs/exec-1",
-    });
+    const synced = await syncOperatorAccess(registry, adapter, OWNER);
+    expect(synced).toMatchObject({ status: "synced", target: "Google IAP (fake job)" });
+    expect(synced.status === "synced" && synced.refusedMembers).toBeUndefined();
 
     setOperatorAccessTriggerForTests({ trigger: fakeTrigger({ state: "failed" }).trigger });
     const failed = await syncOperatorAccess(registry, adapter, OWNER);
     expect(failed.status).toBe("failed");
-    expect(failed.status === "failed" && failed.error).toContain("https://logs/exec-1");
+    expect(failed.status === "failed" && failed.error).toContain(
+      `https://logs/${failed.status === "failed" ? failed.execution : ""}`,
+    );
     expect((await lastAudit(OWNER.actorId)).succeeded).toBe(false);
+  });
+
+  it("#970: a run whose only problem is refused members is synced with warnings, naming them", async () => {
+    const refused = ["opaccess-nogoogle@example.com"];
+    setOperatorAccessTriggerForTests({ trigger: fakeTrigger({ refused }).trigger });
+    const r = await syncOperatorAccess(registry, adapter, OWNER);
+    expect(r.status).toBe("synced");
+    expect(r.status === "synced" && r.refusedMembers).toEqual(refused);
+    const message = describeOperatorAccessSync(r) ?? "";
+    expect(message).toContain(
+      "no Google account and cannot sign in: opaccess-nogoogle@example.com",
+    );
+    expect(message).toContain("change the email");
+    expect(message).not.toContain("could NOT");
+    // Audited as succeeded: everyone else was applied.
+    expect((await lastAudit(OWNER.actorId)).succeeded).toBe(true);
+
+    const latest = await latestOperatorAccessRun(registry, adapter, OWNER);
+    expect(latest?.status === "ok" && latest.report).toMatchObject({
+      outcome: "succeeded_with_warnings",
+      refusedMembers: refused,
+      errorCount: 0,
+    });
+  });
+
+  it("#970: while a newer run is still running, the newest recorded report still names the refused users", async () => {
+    const refused = ["opaccess-nogoogle@example.com"];
+    setOperatorAccessTriggerForTests({ trigger: fakeTrigger({ refused }).trigger });
+    await syncOperatorAccess(registry, adapter, OWNER);
+    // The hourly schedule (or another tab) starts a run that has not reported yet.
+    setOperatorAccessTriggerForTests({
+      trigger: {
+        label: "Google IAP (fake job)",
+        start: async () => `${EXEC_PREFIX}running`,
+        wait: async (execution) => ({ execution, state: "running", logsUrl: "l" }),
+        latest: async () => ({
+          execution: `${EXEC_PREFIX}running`,
+          state: "running",
+          logsUrl: "l",
+        }),
+      },
+    });
+    const latest = await latestOperatorAccessRun(registry, adapter, OWNER);
+    expect(latest?.status === "ok" && latest.report).toBeNull();
+    expect(latest?.status === "ok" && latest.lastReport?.refusedMembers).toEqual(refused);
+  });
+
+  it("#970: a finished run that recorded no report fails loudly", async () => {
+    setOperatorAccessTriggerForTests({ trigger: fakeTrigger({ noReport: true }).trigger });
+    const r = await syncOperatorAccess(registry, adapter, OWNER);
+    expect(r.status).toBe("failed");
+    expect(r.status === "failed" && r.error).toContain("recorded no report");
   });
 
   it("a job the admin cannot start is a loud failure with the next step", async () => {
@@ -245,6 +341,62 @@ describe("syncOperatorAccess — the admin starts the job and records the outcom
       error: "run.jobs.run denied",
       nextStep: "Run `cms-provision upgrade`.",
     });
+  });
+
+  it("#970: the job's role records a run report and can do nothing else with the table", async () => {
+    const execution = `${EXEC_PREFIX}reader`;
+    const recorded = await adapter.withAdminTransaction(SYSTEM, async (tx) => {
+      await tx.execute(sql`SET LOCAL ROLE operator_access_reader`);
+      return recordOperatorAccessRunOp.handler(
+        SYSTEM,
+        {
+          execution,
+          outcome: "succeeded_with_warnings",
+          refusedMembers: ["opaccess-nogoogle@example.com"],
+          errorCount: 0,
+          signInClientProblem: null,
+        },
+        tx,
+      );
+    });
+    expect(recorded.ok).toBe(true);
+    const read = await execute(registry, adapter, OWNER, "users.operator_access_run", {
+      execution,
+    });
+    expect(
+      read.ok && (read.value as { run: { refusedMembers: string[] } }).run.refusedMembers,
+    ).toEqual(["opaccess-nogoogle@example.com"]);
+    for (const forbidden of [
+      "SELECT refused_members FROM operator_access_sync_runs LIMIT 1",
+      "UPDATE operator_access_sync_runs SET outcome = 'succeeded' WHERE false",
+      "SELECT actor_id FROM audit_events LIMIT 1",
+    ]) {
+      const denied = await adapter
+        .withAdminTransaction(SYSTEM, async (tx) => {
+          await tx.execute(sql`SET LOCAL ROLE operator_access_reader`);
+          await tx.execute(sql.raw(forbidden));
+          return "allowed";
+        })
+        .catch((e: unknown) => String((e as { cause?: unknown }).cause ?? e));
+      expect(denied).toContain("permission denied");
+    }
+  });
+
+  it("#970: only the job records run reports; everyone may read them", async () => {
+    for (const ctx of [OWNER, AI]) {
+      const r = await execute(registry, adapter, ctx, "users.record_operator_access_run", {
+        execution: `${EXEC_PREFIX}x`,
+        outcome: "succeeded",
+        refusedMembers: [],
+        errorCount: 0,
+        signInClientProblem: null,
+      });
+      expect(r.ok === false && r.error.kind).toBe("ActorScopeRejected");
+    }
+    const r = await execute(registry, adapter, AI, "users.operator_access_run", {
+      execution: `${EXEC_PREFIX}none`,
+    });
+    expect(r.ok && r.value).toEqual({ run: null });
   });
 
   it("the AI cannot record a sync outcome itself", async () => {
@@ -311,7 +463,26 @@ describe("gated tools — afterApply sync-operator-access", () => {
     };
     expect(deleted).toMatchObject({ ok: true });
     expect(fake.starts()).toBe(2);
-    expect((await lastAudit(OWNER.actorId)).summary).toBe("synced: exec-2");
+    expect((await lastAudit(OWNER.actorId)).summary).toMatch(/^synced: opaccess-exec-.*-2$/);
+  });
+
+  it("#970: an approved create of an address without a Google account warns the AI", async () => {
+    setOperatorAccessTriggerForTests({ trigger: fakeTrigger({ refused: [EMAILS[6]] }).trigger });
+    const create = attachGatedExecute(
+      gatedTool(proposeUserCreateTool),
+      registry,
+      adapter,
+      AI,
+      OWNER,
+    );
+    const created = (await create.execute?.({
+      email: EMAILS[6],
+      displayName: "No Google",
+      roleNames: ["editor"],
+    })) as { ok: boolean; value: Record<string, unknown> };
+    expect(created.ok).toBe(true);
+    expect(created.value.warning).toContain(`no Google account and cannot sign in: ${EMAILS[6]}`);
+    expect(created.value.warning).toContain("Tell the operator");
   });
 
   it("an approved role deletion starts the job (it can strip someone's last role)", async () => {

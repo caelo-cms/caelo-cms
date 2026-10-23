@@ -13,7 +13,10 @@
  *   - the Settings → Google sign-in flows (configure.ts) with fake Google, a
  *     fake sync job and a fake IAP: the secret version comes first, a failed
  *     write changes nothing, the secret never reaches the database or the
- *     audit log, removing clears the row;
+ *     audit log, removing clears the row; #967: nothing is stored or
+ *     synced before the Owner confirmed the re-login AND the client passed
+ *     the preflight against (recorded) Google — a client missing IAP's
+ *     redirect URI or with a wrong secret changes nothing;
  *   - the identity-gate guard on user creation (users.create for the panel,
  *     users.propose_create for the AI): an address outside the project's
  *     Google organisation is refused with the next step until the sign-in
@@ -23,6 +26,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { iapRedirectUri } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { sql } from "drizzle-orm";
 import { operatorOAuthClientForSyncOp } from "../ops/security/operator_oauth.js";
@@ -31,6 +35,7 @@ import {
   removeGoogleSignInClient,
   saveGoogleSignInClient,
 } from "../security/google-sign-in/configure.js";
+import { recordedGoogleOAuthFetch } from "../security/google-sign-in/recorded-google-oauth.js";
 import { googleSignInAvailability } from "../security/google-sign-in/setup.js";
 import { setIdentityGateEnvForTests } from "../security/identity-gate.js";
 import type { GoogleDeps } from "../security/operator-access/google-iam.js";
@@ -253,17 +258,28 @@ describe("Settings → Google sign-in flows (configure.ts)", () => {
     };
     return { google, payloads };
   }
+  /** Google's OAuth endpoints as recorded (#967): CLIENT complete unless told otherwise. */
+  function oauth(opts: { missingIapUri?: boolean } = {}) {
+    return recordedGoogleOAuthFetch({
+      exists: (id) => id === CLIENT || id === OTHER,
+      registered: (id, uri) => !(opts.missingIapUri && uri === iapRedirectUri(id)),
+      secretValid: (_id, secret) => secret === SECRET,
+    });
+  }
   /** IAP in front of the admin, signing people in with whatever the last payload configured. */
   function fakeIap(payloads: string[]) {
     return {
-      fetch: (async () => {
-        const last = JSON.parse(payloads.at(-1) ?? "{}") as { client_id?: string };
-        const id = last.client_id ?? GOOGLE_MANAGED;
-        return new Response(null, {
-          status: 302,
-          headers: { location: `https://accounts.google.com/o/oauth2/v2/auth?client_id=${id}` },
-        });
-      }) as typeof fetch,
+      fetch: recordedGoogleOAuthFetch(
+        { exists: () => true, registered: () => true, secretValid: () => true },
+        (async () => {
+          const last = JSON.parse(payloads.at(-1) ?? "{}") as { client_id?: string };
+          const id = last.client_id ?? GOOGLE_MANAGED;
+          return new Response(null, {
+            status: 302,
+            headers: { location: `https://accounts.google.com/o/oauth2/v2/auth?client_id=${id}` },
+          });
+        }) as typeof fetch,
+      ),
       sleep: async () => {},
     };
   }
@@ -282,9 +298,10 @@ describe("Settings → Google sign-in flows (configure.ts)", () => {
       adapter,
       OWNER,
       available,
-      { clientId: CLIENT, clientSecret: SECRET },
+      { clientId: CLIENT, clientSecret: SECRET, consentConfirmed: true, reLoginConfirmed: true },
       {
         google,
+        preflight: { fetch: oauth() },
         check: fakeIap(payloads),
         sync: async () => {
           syncs += 1;
@@ -295,6 +312,8 @@ describe("Settings → Google sign-in flows (configure.ts)", () => {
       },
     );
     expect(r.ok && r.checks.map((c) => [c.id, c.ok])).toEqual([
+      ["redirect-uri-broker", true],
+      ["redirect-uri-iap", true],
       ["iap-sync", true],
       ["admin-sign-in", true],
     ]);
@@ -315,8 +334,8 @@ describe("Settings → Google sign-in flows (configure.ts)", () => {
       adapter,
       OWNER,
       available,
-      { clientId: CLIENT, clientSecret: SECRET },
-      { google, check: fakeIap([]), sync: synced },
+      { clientId: CLIENT, clientSecret: SECRET, consentConfirmed: true, reLoginConfirmed: true },
+      { google, preflight: { fetch: oauth() }, check: fakeIap([]), sync: synced },
     );
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -325,6 +344,75 @@ describe("Settings → Google sign-in flows (configure.ts)", () => {
       expect(r.error).not.toContain(SECRET);
     }
     expect(await get()).toBeNull();
+  });
+
+  /** A save that must change nothing: no secret version, no row, no sync. */
+  async function refusedSave(
+    input: { clientSecret?: string; reLoginConfirmed?: boolean; consentConfirmed?: boolean },
+    preflight: typeof fetch,
+  ) {
+    const { google, payloads } = fakeGoogle();
+    let syncs = 0;
+    const r = await saveGoogleSignInClient(
+      registry,
+      adapter,
+      OWNER,
+      available,
+      {
+        clientId: CLIENT,
+        clientSecret: input.clientSecret ?? SECRET,
+        consentConfirmed: input.consentConfirmed ?? true,
+        reLoginConfirmed: input.reLoginConfirmed ?? true,
+      },
+      {
+        google,
+        preflight: { fetch: preflight },
+        check: fakeIap(payloads),
+        sync: async () => {
+          syncs += 1;
+          return synced();
+        },
+      },
+    );
+    expect(payloads).toEqual([]);
+    expect(syncs).toBe(0);
+    expect(await get()).toBeNull();
+    return r;
+  }
+
+  it("#967 save: a client missing redirect URI 2 is refused before anything changes", async () => {
+    const r = await refusedSave({}, oauth({ missingIapUri: true }));
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.step).toBe("preflight");
+    expect(r.error).toContain("Nothing was stored and Google IAP was not touched.");
+    expect(r.nextStep).toContain(iapRedirectUri(CLIENT));
+    expect(r.checks?.find((c) => c.id === "redirect-uri-iap")?.ok).toBe(false);
+  });
+
+  it("#967 save: a wrong secret is refused before anything changes, and never echoed", async () => {
+    const wrong = "GOCSPX-wrong-secret-value_456";
+    const r = await refusedSave({ clientSecret: wrong }, oauth());
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.step).toBe("preflight");
+    expect(r.checks?.find((c) => c.id === "client-secret")?.ok).toBe(false);
+    expect(JSON.stringify(r)).not.toContain(wrong);
+  });
+
+  it("#967 save: without the re-login confirmation nothing is checked or stored", async () => {
+    let asked = 0;
+    const r = await refusedSave({ reLoginConfirmed: false }, (async () => {
+      asked += 1;
+      throw new Error("must not ask Google");
+    }) as unknown as typeof fetch);
+    expect(r.ok === false && r.step).toBe("confirm");
+    expect(asked).toBe(0);
+  });
+
+  it("#967 save: an unconfirmed consent screen is refused", async () => {
+    const r = await refusedSave({ consentConfirmed: false }, oauth());
+    expect(r.ok === false && r.checks?.find((c) => c.id === "consent-screen")?.ok).toBe(false);
   });
 
   it("remove: writes {}, clears the row, syncs, and IAP no longer names the client", async () => {

@@ -20,6 +20,7 @@ import type {
 } from "@caelo-cms/shared";
 import type { z } from "zod";
 
+import type { CredentialKind } from "../../ops/credential_handoffs.js";
 import type { Permission } from "../../permissions.js";
 import type { AIProvider } from "../provider.js";
 import { generateInputSchema } from "./generate-input-schema.js";
@@ -142,6 +143,14 @@ export interface ToolContext {
    * Chromium render of the branch preview.
    */
   readonly operatorBrowserAttached?: boolean;
+  /**
+   * The tools whose full definition ships in this turn's request (the core
+   * set plus the engaged skills' preload hints); every other catalogue tool
+   * may sit behind the provider's tool search. Set by the chat-runner only —
+   * surfaces that list every tool (Power-MCP) leave it undefined. load_skill
+   * reads it so it never claims a deferred tool is callable as-is.
+   */
+  readonly preloadedToolNames?: ReadonlySet<string>;
   /**
    * Issue #664 — the running turn's stop signal (the operator's Stop, a
    * lost turn lease, a closed request). A tool that runs long work of its
@@ -284,6 +293,14 @@ export interface GatedToolSpec {
    * apply transaction.
    */
   readonly afterApply?: "load-activated-plugin" | "sync-operator-access";
+  /**
+   * #971 — the apply creates a credential (a user's password, a bearer
+   * token). Its executor returns a credential handoff instead of the
+   * secret; the approver collects it in the admin. Declared so the
+   * description tells the AI it never sees it, and so the catalogue test
+   * can hold every executor that returns a handoff to this declaration.
+   */
+  readonly producesCredential?: CredentialKind;
 }
 
 export interface ToolDefinitionWithHandler<I> {

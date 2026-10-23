@@ -20,6 +20,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { z } from "zod";
+import type { CredentialKind } from "../../ops/credential_handoffs.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -52,7 +53,22 @@ export interface MakeProposeToolArgs<I> {
   readonly executeOpOverride?: string;
   /** Post-commit step for the gated tool — see FilteredTool.gated. */
   readonly afterApply?: "load-activated-plugin" | "sync-operator-access";
+  /**
+   * #971 — approving this creates a credential. The executor returns a
+   * credential handoff (never the secret) and the description gains the
+   * standard "you never see it" contract. See GatedToolSpec.producesCredential.
+   */
+  readonly producesCredential?: CredentialKind;
 }
+
+/**
+ * #971 — the contract every credential-producing gated tool states, so the
+ * model neither waits for the secret nor offers to repeat it.
+ */
+export const CREDENTIAL_CONTRACT =
+  "CREDENTIALS: the password / token this creates is never shown to you — not in this result, not later, not on request. " +
+  "Never ask for it or offer to tell it. After approval, tell the operator where the approver collects it once in the Caelo admin " +
+  "(the result's `credential` field names the place).";
 
 export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinitionWithHandler<I> {
   // Plan B (SDK approval gate) — every propose op name is `<domain>.propose_*`,
@@ -63,6 +79,7 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
   const executeOp = args.executeOpOverride ?? `${domain}.execute_proposal`;
   const description =
     `${args.when} ` +
+    (args.producesCredential ? `${CREDENTIAL_CONTRACT} ` : "") +
     `APPROVAL-GATED: calling this PAUSES for the operator's Approve/Reject right in the chat before anything changes. ` +
     `Do not claim the change is live until it is approved.`;
   return {
@@ -78,6 +95,7 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
       executeOp,
       pendingQueuePath: args.pendingQueuePath,
       ...(args.afterApply ? { afterApply: args.afterApply } : {}),
+      ...(args.producesCredential ? { producesCredential: args.producesCredential } : {}),
     },
     // Fallback handler — NOT used on the gated (SDK-executed) path, kept so the
     // registered tool stays a valid ToolDefinitionWithHandler. If ever reached

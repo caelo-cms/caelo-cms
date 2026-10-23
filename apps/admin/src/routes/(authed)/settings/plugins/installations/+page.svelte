@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { enhance } from '$app/forms';
   import { Button } from '#lib/components/ui/button/index.js';
   let { data, form } = $props();
@@ -82,7 +83,7 @@
       {/if}
       {#if item.status === 'active' || item.status === 'approved'}
         {#each item.manifest.requestedCapabilities ?? [] as capability}
-          <form method="post" action="?/revoke" use:enhance>
+          <form method="post" action="?/revoke" use:enhance use:confirmSubmit={{ title: `Revoke ${capability} from ${item.slug}?`, description: "The plugin can no longer use this capability; features that rely on it stop working.", confirmLabel: "Revoke" }}>
           <input type="hidden" name="_csrf" value={data.csrfToken} />
             <input type="hidden" name="installationId" value={item.id} /><input type="hidden" name="capability" value={capability} />
             <Button type="submit" variant="outline">Revoke {capability}</Button>

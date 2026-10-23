@@ -35,6 +35,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { findKnownBug } from "./known-bugs.js";
 import type { ScenarioSummary } from "./metrics-core.js";
 import { buildThresholdWarnings, k, parseChatLog } from "./metrics-core.js";
 
@@ -42,7 +43,8 @@ const ADMIN_LOG = "apps/admin/test-results/livedit/admin.log";
 const REPORT_JSON = "apps/admin/test-results/livedit/playwright-report.json";
 const AI_COST_JSON = "apps/admin/test-results/livedit/ai-cost.json";
 const METRICS_JSON = "apps/admin/test-results/livedit/metrics.json";
-const BUG_REPORTS_JSON = "apps/admin/test-results/livedit/bug-reports.json";
+/** Where the workflow writes the `ai_bug_reports` capture; also read by `bug-gate.ts`. */
+export const BUG_REPORTS_JSON = "apps/admin/test-results/livedit/bug-reports.json";
 
 /** 1 USD = 1e8 microcents (cost_estimate_microcents is stored in microcents). */
 const MICROCENTS_PER_USD = 100_000_000;
@@ -459,6 +461,12 @@ function fenceFor(body: string): string {
   return "`".repeat(Math.max(3, longest + 1));
 }
 
+/** Ledger issue for a report, or a loud "new" — the rows bug-gate.ts fails on. */
+function issueCell(b: BugReport): string {
+  const known = findKnownBug(b);
+  return known ? `#${known.issue}` : "**new**";
+}
+
 /**
  * Render the `### Detected bugs (N)` markdown section from the `ai_bug_reports`
  * rows filed during the run.
@@ -496,8 +504,9 @@ export function formatBugSection(reports: BugReport[] | null): string[] {
 
   lines.push(`### Detected bugs (${sorted.length})`);
   lines.push("");
-  lines.push("| Sev | Source | Title | Tool | Blocked |");
-  lines.push("| --- | --- | --- | --- | --- |");
+  // "Issue" mirrors bug-gate.ts: a row without a triaged issue fails the job.
+  lines.push("| Sev | Source | Title | Tool | Blocked | Issue |");
+  lines.push("| --- | --- | --- | --- | --- | --- |");
   for (const b of shown) {
     // `suspected_tool` is freeform text up to 200 chars — the AI sometimes
     // names several tools at once — so cap it or it stretches the table.
@@ -506,7 +515,7 @@ export function formatBugSection(reports: BugReport[] | null): string[] {
       `| ${inline(b.severity, 20) || "—"} | ${inline(b.source, 10) || "—"} | ${inline(
         b.title,
         80,
-      )} | ${tool} | ${b.blockedTask ? "yes" : "no"} |`,
+      )} | ${tool} | ${b.blockedTask ? "yes" : "no"} | ${issueCell(b)} |`,
     );
   }
   lines.push("");
@@ -605,8 +614,11 @@ export function buildReport(inputs: {
       .map(([k, v]) => `${v}× \`${k}\``)
       .join(", ") || "_no chat-runner loops recorded_";
 
+  // A skipped scenario (e.g. image-gen without its provider secret) neither
+  // passed nor failed — counting it as failed made a green run read "4 failed".
   const passed = results.filter((r) => r.ok).length;
-  const failed = results.length - passed;
+  const skipped = results.filter((r) => r.status === "skipped").length;
+  const failed = results.length - passed - skipped;
 
   const lines: string[] = [];
   // Real AI cost leads when captured — it's the headline optimization metric.
@@ -641,7 +653,7 @@ export function buildReport(inputs: {
     lines.push("| Scenario | Status | Duration | Attempt |");
     lines.push("| --- | --- | --- | --- |");
     for (const r of results) {
-      const status = r.ok ? "✓ pass" : `✘ ${r.status}`;
+      const status = r.ok ? "✓ pass" : r.status === "skipped" ? "– skipped" : `✘ ${r.status}`;
       const attempt = r.retries === 0 ? "1st" : `retry #${r.retries}`;
       // Truncate the scenario title at 80 chars so the table doesn't
       // wrap awkwardly on narrow GitHub viewports.
@@ -650,7 +662,7 @@ export function buildReport(inputs: {
     }
     lines.push("");
     lines.push(
-      `**Total:** ${passed} passed, ${failed} failed in ${fmtMs(totalDurationMs)} wall-clock.`,
+      `**Total:** ${passed} passed, ${failed} failed, ${skipped} skipped in ${fmtMs(totalDurationMs)} wall-clock.`,
     );
   }
   lines.push("");

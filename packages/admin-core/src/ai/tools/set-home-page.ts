@@ -8,6 +8,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { setHomePageToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { stageReadinessSuffix } from "./_stage-readiness.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const setHomePageTool: ToolDefinitionWithHandler<
@@ -35,7 +36,7 @@ export const setHomePageTool: ToolDefinitionWithHandler<
     const value = res.value as { pageId: string };
     return {
       ok: true,
-      content: `page ${value.pageId} is now the homepage — it serves at the site root (/).`,
+      content: `page ${value.pageId} is now the homepage — it serves at the site root (/).${await stageReadinessSuffix(ctx, toolCtx)}`,
       value,
     };
   },

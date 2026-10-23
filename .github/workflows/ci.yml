@@ -166,7 +166,9 @@ jobs:
         # (browser-egress.test.ts SSRF egress canary, hidden-elements.test.ts)
         # FAIL under CI without a browser instead of passing vacuously.
         # Same repo-pinned CLI the screenshotter's launch hint names.
-        run: bun node_modules/playwright/cli.js install chromium --with-deps
+        # #984 - the composite action serves the apt fonts from actions/cache
+        # instead of the (often 30 kB/s) Ubuntu mirror.
+        uses: ./.github/actions/playwright-chromium
 
       - name: Start Firestore emulator (bug intake store tests)
         # #980 - the emulator jar firebase-tools pins, verified by SHA-256
@@ -300,8 +302,8 @@ jobs:
         run: bun run db:migrate
 
       - name: Install Playwright chromium
-        run: bun x playwright install chromium --with-deps
-        working-directory: apps/admin
+        # #984 - apt fonts from actions/cache, not the Ubuntu mirror.
+        uses: ./.github/actions/playwright-chromium
 
       - name: Run Playwright smoke tests
         run: bun run e2e

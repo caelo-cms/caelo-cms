@@ -44,8 +44,9 @@ name: E2E Live Edit (real AI)
 # Main is covered once per release, not per push (operator direction,
 # 2026-10-09): a squash merge re-runs code its PR already ran green, and at
 # ~15 merges a day the per-push run was half of the suite's spend (~$4.50 per
-# run). release-cut dispatches this workflow on main and refuses to cut unless
-# it is green on the exact commit being released. Trade-off: a regression
+# run). release-cut dispatches this workflow on release-gate/<sha> (a branch
+# pinned to the main commit it cuts) and refuses to cut unless it is green on
+# that exact commit. Trade-off: a regression
 # that only appears when two PRs combine on main surfaces at the next release
 # cut, not at merge time.
 on:
@@ -278,8 +279,8 @@ jobs:
           bun run --filter '@caelo-cms/mcp-server' build
 
       - name: Install Playwright chromium
-        run: bun x playwright install chromium --with-deps
-        working-directory: apps/admin
+        # #984 - apt fonts from actions/cache, not the Ubuntu mirror.
+        uses: ./.github/actions/playwright-chromium
 
       # Token/loop regression guards (issue #432): the per-scenario ceilings
       # this step gates on live in `apps/admin/e2e-livedit/lib/metrics-core.ts`
@@ -366,7 +367,7 @@ jobs:
       # RLS is FORCEd behind a non-empty `caelo.actor_kind` GUC, so we SET
       # it in the same session. `-q` suppresses the SET command tag so
       # stdout is pure JSON. `if: always()` so a red suite still reports.
-      # Annotations only — this step never fails the job.
+      # This step never fails the job; the gate step below does.
       - name: Capture AI-detected bugs from ai_bug_reports
         if: always() && steps.provider-preflight.outcome == 'success'
         env:
@@ -404,6 +405,15 @@ jobs:
           if [ "${BLOCKING}" != "0" ]; then
             echo "::warning title=e2e-livedit bugs::${BLOCKING} blocking bug report(s) filed during this run — see the PR comment's Detected bugs table."
           fi
+
+      # Detected-bug gate. A tool error the AI had to recover from is our
+      # defect (CLAUDE.md §1A/§4); as warnings these piled up unowned under
+      # every PR. Any report not triaged in e2e-livedit/lib/known-bugs.ts
+      # (issue-linked) fails the job. Runs after the capture above and before
+      # the always() uploads + PR comment, which still run on failure.
+      - name: Gate on new detected bugs
+        if: always() && steps.provider-preflight.outcome == 'success'
+        run: bun run apps/admin/e2e-livedit/lib/bug-gate.ts
 
       # Durable per-run cost record — the trend metric the operator wants.
       # Separate from the failure-only artifact below: this uploads on

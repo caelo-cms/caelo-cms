@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -16,8 +16,13 @@ import {
   lastContractVersionAt,
   parseAdvisoryList,
   previousStableTag,
+  previousTag,
+  RELEASE_COMMIT_SUBJECT,
   type ReleaseMeta,
   ReleaseMetaSchema,
+  setJsonVersionField,
+  taggedAheadProblem,
+  UNRELEASED_VERSION,
   validateReleaseMetaShape,
   verifyAdvisoriesPublished,
 } from "./release-checks.ts";
@@ -36,12 +41,19 @@ const GHSA = "GHSA-2c2m-4x8q-wx9f";
 const d = (c: string) => `sha256:${c.repeat(64)}`;
 
 describe("release-meta.json", () => {
-  it("the committed declaration parses and matches the current version", () => {
+  // Main is stamped with the unreleased marker and carries no declaration;
+  // a release commit (what the release gate tests) carries its own.
+  it("main has none; a release commit's parses and matches its version", () => {
     const root = resolve(import.meta.dir, "..");
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
+    if (pkg.version === UNRELEASED_VERSION) {
+      expect(existsSync(join(root, "release-meta.json"))).toBe(false);
+      expect(existsSync(join(root, "CHANGELOG.md"))).toBe(false);
+      return;
+    }
     const meta = ReleaseMetaSchema.parse(
       JSON.parse(readFileSync(join(root, "release-meta.json"), "utf8")),
     );
-    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
     expect(meta.version).toBe(pkg.version);
   });
 });
@@ -273,11 +285,13 @@ describe("ownerAction rule (#868)", () => {
 
 describe("buildReleaseManifest / parseDigestFlags", () => {
   const digests = { admin: d("a"), gateway: d("b"), ops: d("c") };
+  const platformDigests = { admin: d("1"), gateway: d("2"), ops: d("3") };
 
   it("builds a schema-valid manifest carrying the declaration", () => {
     const m = buildReleaseManifest({
       meta: { ...META, version: "0.11.0-rc.1", security: true, advisories: [GHSA] },
       digests,
+      platformDigests,
       contractMigrations: true,
       migrationHead: "0262_x",
     });
@@ -298,6 +312,7 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
     const m = buildReleaseManifest({
       meta: { ...META, ownerAction: "Re-enter the SMTP password in Settings → Email." },
       digests,
+      platformDigests,
       contractMigrations: false,
       migrationHead: "0332_x",
     });
@@ -309,6 +324,7 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
       buildReleaseManifest({
         meta: { ...META, version: "0.11.0-nightly.1" },
         digests,
+        platformDigests,
         contractMigrations: false,
         migrationHead: "h",
       }),
@@ -317,6 +333,7 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
       buildReleaseManifest({
         meta: META,
         digests: { ...digests, ops: "latest" },
+        platformDigests,
         contractMigrations: false,
         migrationHead: "h",
       }),
@@ -329,5 +346,74 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
       ops: d("c"),
     });
     expect(() => parseDigestFlags(["--digest", `edge=${d("a")}`])).toThrow(/bad --digest/);
+  });
+
+  it("#1025: signs each index's linux/amd64 digest and parses --platform-digest", () => {
+    const m = buildReleaseManifest({
+      meta: META,
+      digests,
+      platformDigests,
+      contractMigrations: false,
+      migrationHead: "h",
+    });
+    expect(m.platformDigests).toEqual(platformDigests);
+    const argv = ["--digest", `admin=${d("a")}`, "--platform-digest", `admin=${d("1")}`];
+    expect(parseDigestFlags(argv)).toEqual({ admin: d("a") });
+    expect(parseDigestFlags(argv, "--platform-digest")).toEqual({ admin: d("1") });
+    expect(() => parseDigestFlags(["--platform-digest", "admin"], "--platform-digest")).toThrow(
+      /bad --platform-digest/,
+    );
+  });
+});
+
+describe("setJsonVersionField", () => {
+  const manifest = `{
+  "name": "caelo",
+  "version": "0.10.64",
+  "keywords": ["cms", "mcp"],
+  "author": { "name": "Caelo", "version": "keep" }
+}
+`;
+
+  it("bumps the top-level version and leaves the rest byte-identical (v0.10.65 gate lint)", () => {
+    expect(setJsonVersionField(manifest, "0.10.65")).toBe(
+      manifest.replace('"version": "0.10.64"', '"version": "0.10.65"'),
+    );
+  });
+
+  it("refuses a manifest without a version field", () => {
+    expect(() => setJsonVersionField('{ "name": "x" }\n', "1.0.0")).toThrow(/no "version" field/);
+  });
+});
+
+describe("previousTag (changelog start)", () => {
+  const tags = ["0.10.64", "0.10.65", "0.11.0-rc.1", "0.9.0"];
+  it("picks the newest tag of any kind below the release, by version", () => {
+    expect(previousTag(tags, "0.10.66")).toBe("v0.10.65");
+    expect(previousTag(tags, "0.11.0")).toBe("v0.11.0-rc.1");
+    expect(previousTag(["0.10.65"], "0.10.65")).toBeNull();
+  });
+});
+
+describe("taggedAheadProblem", () => {
+  it("passes a version above every tag", () => {
+    expect(taggedAheadProblem(["0.10.64", "0.10.65"], "0.10.66")).toBeNull();
+  });
+
+  it("refuses an explicit version at or below an existing tag", () => {
+    const problem = taggedAheadProblem(["0.10.65", "0.11.0-rc.1"], "0.10.66");
+    expect(problem).toContain("v0.11.0-rc.1 is already tagged");
+    expect(taggedAheadProblem(["0.10.66"], "0.10.66")).toContain("v0.10.66 is already tagged");
+  });
+});
+
+describe("RELEASE_COMMIT_SUBJECT", () => {
+  it("matches the release commit and its squashed copy, nothing else", () => {
+    expect(RELEASE_COMMIT_SUBJECT.test("chore(release): v0.10.65")).toBe(true);
+    expect(RELEASE_COMMIT_SUBJECT.test("chore(release): v0.10.65 (#1012)")).toBe(true);
+    expect(RELEASE_COMMIT_SUBJECT.test("chore(release): v0.11.0-rc.1")).toBe(true);
+    expect(RELEASE_COMMIT_SUBJECT.test("fix(release): bump the plugin manifest (#1013)")).toBe(
+      false,
+    );
   });
 });

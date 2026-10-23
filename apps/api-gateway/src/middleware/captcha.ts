@@ -97,45 +97,47 @@ export async function verifyPowProof(
     actorKind: "system" as const,
     requestId: "pow-verify",
   };
-  // Atomic claim — one UPDATE returns the row only if it was unused,
-  // unexpired and issued to this visitor (or to nobody). Replay → 0 rows.
-  const row = await adapter.withPublicTransaction(ctx, async (tx) => {
-    const rs = (await tx.execute(sql`
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    TEXT_ENCODER.encode(`${proof.challenge}${proof.nonce}`),
+  );
+  const hex = bufferToHex(digest);
+
+  // Verify the challenge state and SHA-256 prefix before marking used_at = now(),
+  // so a wrong nonce does not burn an otherwise valid challenge.
+  return adapter.withPublicTransaction(ctx, async (tx) => {
+    const stateRows = (await tx.execute(sql`
+      SELECT target_hex,
+             used_at IS NOT NULL AS used,
+             expires_at <= now() AS expired,
+             (visitor_id_hash <> '' AND visitor_id_hash <> ${expectedVisitorIdHash}) AS other_visitor
+        FROM gateway_pow_challenges
+       WHERE challenge = ${proof.challenge}
+    `)) as unknown as (ChallengeState & { readonly target_hex: string })[];
+    const state = stateRows[0] ?? null;
+    if (!state || state.used || state.expired || state.other_visitor) {
+      return { ok: false, reason: claimRejectionReason(state) };
+    }
+    if (!hex.startsWith(state.target_hex)) {
+      return { ok: false, reason: "proof does not satisfy target prefix" };
+    }
+    const claimed = (await tx.execute(sql`
       UPDATE gateway_pow_challenges
          SET used_at = now()
        WHERE challenge = ${proof.challenge}
          AND used_at IS NULL
          AND expires_at > now()
          AND (visitor_id_hash = '' OR visitor_id_hash = ${expectedVisitorIdHash})
-       RETURNING target_hex
-    `)) as unknown as { target_hex: string }[];
-    return rs[0] ?? null;
+       RETURNING challenge
+    `)) as unknown as { challenge: string }[];
+    if (!claimed[0]) {
+      return {
+        ok: false,
+        reason: claimRejectionReason({ used: true, expired: false, other_visitor: false }),
+      };
+    }
+    return { ok: true };
   });
-  if (!row) {
-    // Read-only diagnosis after the failed claim, so the visitor (and the
-    // form's script) learns which case it was. It decides nothing.
-    const state = await adapter.withPublicTransaction(ctx, async (tx) => {
-      const rs = (await tx.execute(sql`
-        SELECT used_at IS NOT NULL AS used,
-               expires_at <= now() AS expired,
-               (visitor_id_hash <> '' AND visitor_id_hash <> ${expectedVisitorIdHash}) AS other_visitor
-          FROM gateway_pow_challenges
-         WHERE challenge = ${proof.challenge}
-      `)) as unknown as ChallengeState[];
-      return rs[0] ?? null;
-    });
-    return { ok: false, reason: claimRejectionReason(state) };
-  }
-  // Verify the SHA-256 prefix.
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    TEXT_ENCODER.encode(`${proof.challenge}${proof.nonce}`),
-  );
-  const hex = bufferToHex(digest);
-  if (!hex.startsWith(row.target_hex)) {
-    return { ok: false, reason: "proof does not satisfy target prefix" };
-  }
-  return { ok: true };
 }
 
 function bufferToHex(buf: ArrayBuffer): string {
@@ -150,13 +152,10 @@ function randomChallenge(): string {
 }
 
 export function hashVisitorId(visitorId: string): string {
-  // Cheap deterministic hash for analytics + PoW binding without storing
-  // the raw cookie. Not cryptographic — bcrypt happens at higher layers.
-  let h = 5381;
-  for (let i = 0; i < visitorId.length; i++) {
-    h = (h * 33) ^ visitorId.charCodeAt(i);
-  }
-  return (h >>> 0).toString(16).padStart(8, "0");
+  // Deterministic 256-bit SHA-256 hex digest (64 chars) for analytics, IP
+  // rate-limit bucketing, and PoW visitor binding without storing the raw
+  // cookie or exposing a 32-bit birthday bound.
+  return new Bun.CryptoHasher("sha256").update(visitorId).digest("hex");
 }
 
 interface ChallengeState {

@@ -46,7 +46,7 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 function hexToBytes(hex: string): Uint8Array | null {
-  if (hex.length % 2 !== 0) return null;
+  if (hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(hex)) return null;
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
     const n = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);

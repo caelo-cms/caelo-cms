@@ -112,9 +112,10 @@ type RefreshPagePathInput = z.infer<typeof refreshPagePathInput>;
 export const refreshPagePathTool: ToolDefinitionWithHandler<RefreshPagePathInput> = {
   name: "refresh_page_path",
   description:
-    "Recompute ONE page's public URL from its current data and, if it moved, 301 the old URL to the new one. " +
-    "Use when a page's URL is out of date after plugin data changed its shape (e.g. a language variant was linked or unlinked) and the page still serves its old path. " +
-    "Not for renaming a page (update_pages_many with a new slug does that, with redirects) and not for site-wide URL changes (propose_url_migration).",
+    "Recompute ONE page's URL from its current data. A DRAFT page moves right away (it has no public URL yet). " +
+    "A PUBLISHED page whose URL is out of date does not move here: moving a live URL needs the Owner's approval, so the tool reports awaiting a URL migration and you call propose_url_migration (it previews the move and writes the 301s). " +
+    "Linking/unlinking language variants already refreshes the pages they touch — no follow-up call needed. " +
+    "Not for renaming a page (update_pages_many with a new slug does that, with redirects).",
   schema: refreshPagePathInput,
   inputSchema: jsonSchema(refreshPagePathInput),
   handler: async (ctx, input, toolCtx) => {
@@ -132,7 +133,7 @@ export const refreshPagePathTool: ToolDefinitionWithHandler<RefreshPagePathInput
     return {
       ok: true,
       content: v.awaitingUrlMigration
-        ? `Page URL unchanged: ${v.path}. A URL-setting change is waiting for its migration, and this page moves with it — call propose_url_migration (the Owner approves the move and its 301s); do not refresh pages one by one.`
+        ? `Page URL unchanged: ${v.path}. Its new URL waits for an approved URL migration — call propose_url_migration (the Owner approves the move and its 301s); do not refresh pages one by one.`
         : v.moved
           ? `Page URL is now ${v.path}${input.redirectFromOld === "skip" ? "" : " (the old URL 301s to it)"}.`
           : `Page URL unchanged: ${v.path}. (In a chat, a live page's URL moves only when the chat is published.)`,
