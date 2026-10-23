@@ -52,6 +52,13 @@ CREATE TABLE plugin_errors (
   last_instance   text NOT NULL CHECK (char_length(last_instance) BETWEEN 1 AND 200),
   last_revision   text NULL CHECK (last_revision IS NULL OR char_length(last_revision) <= 200),
   bug_report_id   uuid NULL REFERENCES ai_bug_reports(id) ON DELETE SET NULL,
+  -- Which occurrence files the core defect with the bug intake: claimed
+  -- atomically by the upsert, cleared when the report is linked or the
+  -- intake refused it. Without it, instances booting into the same core
+  -- failure would each file a blocking report before any was linked.
+  bug_intake_claim      uuid NULL,
+  bug_intake_claimed_at timestamptz NULL,
+  CHECK ((bug_intake_claim IS NULL) = (bug_intake_claimed_at IS NULL)),
   UNIQUE (plugin_slug, fingerprint)
 );
 CREATE INDEX plugin_errors_recent_idx ON plugin_errors (plugin_slug, last_seen_at DESC);

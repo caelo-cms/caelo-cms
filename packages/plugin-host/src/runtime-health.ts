@@ -167,6 +167,14 @@ export function hostInstanceId(): string {
 }
 
 /**
+ * How long a bug-intake claim holds before another occurrence may take it
+ * over. Filing a report takes milliseconds; a claim this old belongs to an
+ * instance that died between claiming and linking, and the defect must not
+ * stay unreported because of it.
+ */
+const BUG_INTAKE_CLAIM_LEASE = "10 minutes";
+
+/**
  * A recorded problem. `firstOccurrence` is true when its fingerprint is new;
  * `reported` once it is linked to a bug-intake report.
  */
@@ -183,7 +191,8 @@ function systemCtx(systemActorId: string, requestId: string) {
 
 /**
  * Write one problem to `plugin_errors` (folding repeats into one row) and,
- * the first time a core problem is seen, file it with the bug intake.
+ * while a core problem has no linked report, file it with the bug intake —
+ * exactly one occurrence at a time, however many instances hit it at once.
  * Always logs to the process log. Returns null when the database could not
  * take the record.
  */
@@ -201,7 +210,16 @@ export async function recordPluginError(opts: {
     `[plugin-host] ${opts.slug} ${opts.phase} failed (${errorClass}) on ${INSTANCE_ID}: ${message}`,
   );
   const fingerprint = pluginErrorFingerprint(opts.slug, opts.phase, errorClass, message);
-  let recorded: RecordedPluginError;
+  // Only a core problem goes to the bug intake, so only it claims the filing.
+  const claim = errorClass === "core" ? randomUUID() : null;
+  // The SET expressions all read the row as it was, so both columns take
+  // the claim under the same condition: nobody holds it (or the holder's
+  // lease lapsed) and no report is linked yet.
+  const takeClaim = sql`(plugin_errors.bug_report_id IS NULL
+    AND EXCLUDED.bug_intake_claim IS NOT NULL
+    AND (plugin_errors.bug_intake_claim IS NULL
+         OR plugin_errors.bug_intake_claimed_at < now() - ${BUG_INTAKE_CLAIM_LEASE}::interval))`;
+  let recorded: RecordedPluginError & { readonly claimed: boolean };
   try {
     recorded = await opts.infra.adapter.withAdminTransaction(
       systemCtx(opts.systemActorId, `plugin-error-${opts.slug}`),
@@ -212,12 +230,13 @@ export async function recordPluginError(opts: {
         const rows = (await tx.execute(sql`
           INSERT INTO plugin_errors
             (plugin_slug, plugin_id, fingerprint, phase, error_class, message,
-             last_instance, last_revision)
+             last_instance, last_revision, bug_intake_claim, bug_intake_claimed_at)
           VALUES (
             ${opts.slug},
             (SELECT id FROM plugins WHERE id = ${opts.pluginId}::uuid),
             ${fingerprint}, ${opts.phase}, ${errorClass}, ${message},
-            ${INSTANCE_ID}, ${REVISION}
+            ${INSTANCE_ID}, ${REVISION},
+            ${claim}::uuid, CASE WHEN ${claim}::uuid IS NOT NULL THEN now() END
           )
           ON CONFLICT (plugin_slug, fingerprint) DO UPDATE SET
             occurrences = plugin_errors.occurrences + 1,
@@ -225,9 +244,21 @@ export async function recordPluginError(opts: {
             last_instance = EXCLUDED.last_instance,
             last_revision = EXCLUDED.last_revision,
             message = EXCLUDED.message,
-            plugin_id = coalesce(EXCLUDED.plugin_id, plugin_errors.plugin_id)
-          RETURNING id::text AS id, occurrences, bug_report_id IS NOT NULL AS reported
-        `)) as unknown as { id: string; occurrences: number; reported: boolean }[];
+            plugin_id = coalesce(EXCLUDED.plugin_id, plugin_errors.plugin_id),
+            -- Concurrent upserts of one fingerprint serialise on this row,
+            -- so exactly one occurrence takes a free (or abandoned) claim.
+            bug_intake_claim = CASE WHEN ${takeClaim} THEN EXCLUDED.bug_intake_claim
+                                    ELSE plugin_errors.bug_intake_claim END,
+            bug_intake_claimed_at = CASE WHEN ${takeClaim} THEN EXCLUDED.bug_intake_claimed_at
+                                         ELSE plugin_errors.bug_intake_claimed_at END
+          RETURNING id::text AS id, occurrences, bug_report_id IS NOT NULL AS reported,
+                    coalesce(bug_intake_claim = ${claim}::uuid, false) AS claimed
+        `)) as unknown as {
+          id: string;
+          occurrences: number;
+          reported: boolean;
+          claimed: boolean;
+        }[];
         const row = rows[0];
         if (!row) throw new Error("plugin_errors upsert returned no row");
         return {
@@ -235,6 +266,7 @@ export async function recordPluginError(opts: {
           errorClass,
           firstOccurrence: row.occurrences === 1,
           reported: row.reported,
+          claimed: row.claimed,
         };
       },
     );
@@ -244,13 +276,16 @@ export async function recordPluginError(opts: {
     );
     return null;
   }
-  // Until a report is linked, every occurrence tries again: a bug intake
-  // that refused the first one must not drop the defect for good.
-  if (errorClass === "core" && !recorded.reported) {
-    const reported = await fileCoreBug(opts, recorded.errorId, message);
-    return { ...recorded, reported };
+  const { claimed, ...result } = recorded;
+  // Until a report is linked, every occurrence that wins the claim tries
+  // again: a bug intake that refused the first one must not drop the defect
+  // for good. An occurrence that lost the claim leaves the filing to the
+  // one that holds it.
+  if (claim !== null && claimed && !result.reported) {
+    const reported = await fileCoreBug(opts, result.errorId, claim, message);
+    return { ...result, reported };
   }
-  return recorded;
+  return result;
 }
 
 /**
@@ -262,6 +297,7 @@ export async function recordPluginError(opts: {
 async function fileCoreBug(
   opts: { infra: PluginHostInfra; systemActorId: string; slug: string; phase: PluginPhase },
   errorId: string,
+  claim: string,
   message: string,
 ): Promise<boolean> {
   const r = await execute(
@@ -286,6 +322,7 @@ async function fileCoreBug(
     console.error(
       `[plugin-host] bug report for ${opts.slug} not filed (retried on the next occurrence): ${"message" in r.error ? r.error.message : r.error.kind}`,
     );
+    await releaseBugIntakeClaim(opts, errorId, claim);
     return false;
   }
   const reportId = (r.value as { id: string }).id;
@@ -294,8 +331,11 @@ async function fileCoreBug(
       systemCtx(opts.systemActorId, `plugin-error-bug-link-${opts.slug}`),
       async (tx) => {
         await tx.execute(sql`
-          UPDATE plugin_errors SET bug_report_id = ${reportId}::uuid
-          WHERE id = ${errorId}::uuid AND bug_report_id IS NULL
+          UPDATE plugin_errors
+          SET bug_report_id = ${reportId}::uuid,
+              bug_intake_claim = NULL, bug_intake_claimed_at = NULL
+          WHERE id = ${errorId}::uuid AND bug_intake_claim = ${claim}::uuid
+            AND bug_report_id IS NULL
         `);
       },
     );
@@ -305,6 +345,33 @@ async function fileCoreBug(
       `[plugin-host] bug report link for ${opts.slug} not saved: ${describeLoadError(e)}`,
     );
     return false;
+  }
+}
+
+/**
+ * Give up this occurrence's bug-intake claim after the intake refused the
+ * report, so the next occurrence files it instead of waiting out the lease.
+ */
+async function releaseBugIntakeClaim(
+  opts: { infra: PluginHostInfra; systemActorId: string; slug: string },
+  errorId: string,
+  claim: string,
+): Promise<void> {
+  try {
+    await opts.infra.adapter.withAdminTransaction(
+      systemCtx(opts.systemActorId, `plugin-error-bug-release-${opts.slug}`),
+      async (tx) => {
+        await tx.execute(sql`
+          UPDATE plugin_errors SET bug_intake_claim = NULL, bug_intake_claimed_at = NULL
+          WHERE id = ${errorId}::uuid AND bug_intake_claim = ${claim}::uuid
+        `);
+      },
+    );
+  } catch (e) {
+    // The claim then lapses after BUG_INTAKE_CLAIM_LEASE instead.
+    console.error(
+      `[plugin-host] bug intake claim for ${opts.slug} not released: ${describeLoadError(e)}`,
+    );
   }
 }
 
