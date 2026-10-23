@@ -134,6 +134,12 @@ export {
   loadActivatedPlugin,
   resetPluginHost,
 } from "./loader.js";
+// #1008 — a plugin's skills are available where it runs: in this process.
+export {
+  pluginFailedHereReason,
+  pluginRanHereAt,
+  pluginRunsHere,
+} from "./local-availability.js";
 export type { PluginRowLocker } from "./private-storage.js";
 export {
   type PromptContextRenderer,

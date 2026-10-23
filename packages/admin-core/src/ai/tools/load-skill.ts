@@ -102,12 +102,26 @@ export const loadSkillTool: ToolDefinitionWithHandler<
     const wanted = [...new Set(input.slugs)];
     const loaded: string[] = [];
     const missing: string[] = [];
+    const notRunning: string[] = [];
     const sections: string[] = [];
 
     for (const slug of wanted) {
       const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "skills.get", { slug });
       if (!got.ok) return { ok: false, content: `skills.get failed: ${describeError(got.error)}` };
-      const skill = (got.value as { skill: SkillRow | null }).skill;
+      const value = got.value as {
+        skill: SkillRow | null;
+        notRunningHere: { pluginSlug: string; reason: string } | null;
+      };
+      // #1008 — its plugin failed to load on this server: its tools are
+      // absent here, so its instructions would send the AI to tools that
+      // do not exist. Say why and what to do instead of "unknown skill".
+      if (value.notRunningHere) {
+        notRunning.push(
+          `Skill "${slug}" is not available: its plugin "${value.notRunningHere.pluginSlug}" failed to load on this server (${value.notRunningHere.reason}). Do not follow it; tell the operator — /settings/plugins shows the problem and can reload the plugin.`,
+        );
+        continue;
+      }
+      const skill = value.skill;
       if (skill?.status !== "active") {
         missing.push(slug);
         continue;
@@ -139,12 +153,11 @@ export const loadSkillTool: ToolDefinitionWithHandler<
     // A partial load is still progress: returning the bodies that resolved
     // beats failing the whole call over one bad slug, and the note tells the
     // model exactly what to retry.
-    if (loaded.length === 0) return { ok: false, content: missingNote };
+    const notes = [...notRunning, ...(missingNote ? [missingNote] : [])].join("\n");
+    if (loaded.length === 0) return { ok: false, content: notes };
     return {
       ok: true,
-      content: missingNote
-        ? `${sections.join("\n\n---\n\n")}\n\n${missingNote}`
-        : sections.join("\n\n---\n\n"),
+      content: notes ? `${sections.join("\n\n---\n\n")}\n\n${notes}` : sections.join("\n\n---\n\n"),
     };
   },
 };

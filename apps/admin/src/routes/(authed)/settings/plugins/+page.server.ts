@@ -58,7 +58,7 @@ interface PluginErrorSummary {
   occurrences: number;
   firstSeenAt: string;
   lastSeenAt: string;
-  reported: boolean;
+  report: "none" | "local" | "queued" | "sent" | "failed";
 }
 
 /** #1008 — a plugin found on disk that failed verification, so it is not installed. */

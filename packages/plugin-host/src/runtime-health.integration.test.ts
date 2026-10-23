@@ -37,7 +37,13 @@ import {
   resetPluginHost,
   runPluginOperation,
 } from "./index.js";
-import { hostInstanceId, recordPluginError } from "./runtime-health.js";
+import {
+  hostInstanceId,
+  recordPluginError,
+  recordPluginRuntime,
+  runtimeHeartbeatOnce,
+  unsavedRuntimeSlugs,
+} from "./runtime-health.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -184,7 +190,7 @@ describe("#1008 — a failing load never switches a plugin off", () => {
     expect(health).toMatchObject({
       state: "failing",
       servers: { loaded: 0, failing: 1 },
-      problem: { phase: "activate", errorClass: "plugin", reported: false },
+      problem: { phase: "activate", errorClass: "plugin", report: "none" },
     });
   });
 
@@ -297,6 +303,14 @@ describe("#1008 — a failing load never switches a plugin off", () => {
     expect(reports).toEqual([
       { suspected_tool: "plugin-host:provision", severity: "blocking", source: "auto" },
     ]);
+    // Bug forwarding is off by default: the report stays on this site, and
+    // health says so instead of claiming the Caelo team was told.
+    const listed = await execute(registry, adapter, SYSTEM, "plugins.list", {});
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const failure = (
+      listed.value as { discoveryFailures: { slug: string; report: string }[] }
+    ).discoveryFailures.find((f) => f.slug === slug);
+    expect(failure?.report).toBe("local");
   });
 
   it("retries the bug intake on the next occurrence when the first report was refused", async () => {
@@ -491,6 +505,37 @@ describe("#1008 — a failing load never switches a plugin off", () => {
     expect(afterValue.discoveryFailures.map((f) => f.slug)).not.toContain(slug);
     const gotAfter = await execute(registry, adapter, SYSTEM, "plugins.get", { slug });
     expect(gotAfter.ok).toBe(true);
+  });
+
+  it("writes a runtime state the database refused on the next heartbeat", async () => {
+    const slug = `${PREFIX}lost-write`;
+    let failNext = true;
+    // The admin database drops the connection for exactly one transaction.
+    const flaky = new Proxy(adapter, {
+      get(target, prop) {
+        if (prop === "withAdminTransaction" && failNext) {
+          failNext = false;
+          return async () => {
+            throw Object.assign(new Error("connection lost"), { errno: "08006" });
+          };
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    await recordPluginRuntime({
+      infra: { adapter: flaky, registry },
+      systemActorId: SYSTEM_ACTOR_ID,
+      slug,
+      state: "loaded",
+      errorId: null,
+    });
+    expect(await runtimeOf(slug)).toEqual([]);
+    expect(unsavedRuntimeSlugs()).toContain(slug);
+
+    await runtimeHeartbeatOnce(infra, SYSTEM_ACTOR_ID);
+    expect((await runtimeOf(slug)).map((r) => r.state)).toEqual(["loaded"]);
+    expect(unsavedRuntimeSlugs()).not.toContain(slug);
   });
 
   it("the database no longer accepts `failed` as a status", async () => {
