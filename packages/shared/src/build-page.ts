@@ -309,6 +309,12 @@ export type BuildPageInput = z.infer<typeof buildPageInputSchema>;
 
 /** `pages.build_page` op output — one row per placed module, in input order. */
 export const buildPagePlacementResultSchema = z.object({
+  /**
+   * The entry's index in the call's `modules` array. Detached (nested-only)
+   * entries are not placed, so the row's position in `placements` is NOT
+   * the input index once one precedes it — label results with this.
+   */
+  index: z.number().int().nonnegative(),
   blockName: z.string(),
   position: z.number().int().nonnegative(),
   moduleId: z.string(),

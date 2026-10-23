@@ -13,7 +13,8 @@ import type { SQL as SQLType } from "bun";
 type SQL = SQLType;
 /** Subset of `Bun.SQL.Options` we set explicitly. `max` caps the pool size. */
 interface PoolOptions {
-  readonly max: number;
+  readonly max?: number;
+  readonly idleTimeout: number;
 }
 const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOptions) => SQLType } })
   .Bun?.SQL as unknown as new (
@@ -67,6 +68,11 @@ export interface AdapterConfig {
    */
   readonly poolMax?: number;
   /**
+   * Overrides {@link POOL_IDLE_TIMEOUT_SECONDS}. Only for the tests that
+   * prove a pool recovers from silently dropped connections in seconds.
+   */
+  readonly poolIdleTimeoutSeconds?: number;
+  /**
    * The identities {@link DatabaseAdapter.verifyRoles} accepts. Defaults to
    * the authoring roles (`admin_role` on cms_admin; `admin_role` or
    * `public_role` on cms_public). Only a process that deliberately runs with
@@ -82,6 +88,65 @@ export interface AdapterConfig {
 }
 
 const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role"] } as const;
+
+/**
+ * Seconds a pooled connection may sit unused in the pool before Bun closes it.
+ *
+ * Without it (Bun's default is no limit) a connection can idle long enough
+ * for the network to forget its flow without a reset — GCP drops idle TCP
+ * flows after about 10 minutes. The next query handed to it then waits
+ * forever. Production lost its admin that way for a day: every database
+ * request hung until Cloud Run's 3600 s request timeout while the process
+ * looked healthy. Five minutes keeps every pooled connection younger than
+ * that, so the pool never hands out a forgotten one.
+ *
+ * Safe for long transactions only from Bun 1.4.4 on: before, Bun counted
+ * silence on a checked-out connection too and killed a transaction that
+ * waited on an advisory lock while another one published the site
+ * (live-release-lock.ts, deploy.promote). {@link MIN_BUN_VERSION} guards it.
+ */
+export const POOL_IDLE_TIMEOUT_SECONDS = 300;
+
+/** Bun.SQL's error code when Postgres answered COMMIT on an aborted transaction with a rollback. */
+const COMMIT_ROLLED_BACK = "ERR_POSTGRES_COMMIT_ROLLED_BACK";
+
+/** The first Bun whose `idleTimeout` spares checked-out connections (see above). */
+export const MIN_BUN_VERSION = "1.4.4";
+
+/**
+ * Throw unless `version` is at least {@link MIN_BUN_VERSION}. An older Bun
+ * would abort legitimate transactions after {@link POOL_IDLE_TIMEOUT_SECONDS}
+ * of silence, so the adapter refuses to start instead.
+ */
+export function assertPoolSafeBun(version: string): void {
+  const parts = (v: string) => v.split("-")[0]?.split(".").map(Number) ?? [];
+  const have = parts(version);
+  const need = parts(MIN_BUN_VERSION);
+  for (let i = 0; i < need.length; i++) {
+    const h = have[i] ?? 0;
+    const n = need[i] ?? 0;
+    if (h > n) return;
+    if (h < n) {
+      throw new Error(
+        `DatabaseAdapter needs Bun >= ${MIN_BUN_VERSION} (running ${version}): older Bun closes pooled connections mid-transaction after the idle timeout. Upgrade Bun.`,
+      );
+    }
+  }
+}
+
+/**
+ * Thrown by {@link DatabaseAdapter.ping} when a pool does not answer
+ * its identity probe within the deadline: its connections hang (see
+ * {@link POOL_IDLE_TIMEOUT_SECONDS}) or the database is overloaded.
+ */
+export class DatabaseUnresponsiveError extends Error {
+  override readonly name = "DatabaseUnresponsiveError";
+  constructor(pool: "admin" | "public", deadlineMs: number) {
+    super(
+      `the ${pool} database pool did not answer within ${deadlineMs} ms; its connections hang or the database is overloaded`,
+    );
+  }
+}
 
 /**
  * Thrown when a public-side process (constructed with
@@ -100,9 +165,9 @@ export class AdminDatabaseUnavailableError extends Error {
 
 /**
  * Resolve the per-pool `max` connection cap. Returns `undefined` when neither
- * the explicit option nor `CAELO_DB_POOL_MAX` is set, so the caller keeps the
- * original 1-arg `new SQL(url)` path and inherits Bun's default of 10 — making
- * this a no-op in production where neither knob is present.
+ * the explicit option nor `CAELO_DB_POOL_MAX` is set, so the caller passes no
+ * `max` and inherits Bun's default of 10 — making this a no-op in production
+ * where neither knob is present.
  *
  * Per CLAUDE.md §2 (no silent fallbacks pre-1.0): a value that is *present* but
  * malformed or below the safe floor throws loudly rather than quietly picking a
@@ -125,6 +190,29 @@ function validatePoolMax(value: number, source: string): number {
     );
   }
   return value;
+}
+
+/** Settle with `work`, or reject with `onMissed()` once `signal` aborts first. */
+function withDeadline<T>(
+  work: PromiseLike<T>,
+  signal: AbortSignal,
+  onMissed: () => Error,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(onMissed());
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(onMissed());
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(work).then(
+      (v) => {
+        signal.removeEventListener("abort", abort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(e);
+      },
+    );
+  });
 }
 
 interface ConnectionIdentity {
@@ -159,11 +247,12 @@ export class DatabaseAdapter {
         "DatabaseAdapter: a public-only adapter (adminDatabaseUrl: null) must expect no admin role, and an adapter with an admin URL must expect one",
       );
     }
-    // When no pool cap is configured (the production case) keep the original
-    // 1-arg construction so behaviour is byte-for-byte unchanged: Bun default 10.
+    assertPoolSafeBun(globalThis.Bun?.version ?? "0");
+    // No pool cap configured (the production case) keeps Bun's default of 10.
     const poolMax = resolvePoolMax(config.poolMax);
+    const idleTimeout = config.poolIdleTimeoutSeconds ?? POOL_IDLE_TIMEOUT_SECONDS;
     const open = (url: string): SQL =>
-      poolMax === undefined ? new SQL(url) : new SQL(url, { max: poolMax });
+      new SQL(url, poolMax === undefined ? { idleTimeout } : { max: poolMax, idleTimeout });
     this.#adminRaw = config.adminDatabaseUrl === null ? null : open(config.adminDatabaseUrl);
     this.#publicRaw = open(config.publicDatabaseUrl);
     this.#admin = this.#adminRaw === null ? null : drizzle(this.#adminRaw);
@@ -242,25 +331,71 @@ export class DatabaseAdapter {
   }
 
   async #verifyRolesOnce(): Promise<void> {
-    if (this.#adminRaw !== null) {
-      const admin = await this.#identity(this.#adminRaw);
-      if (admin.user !== this.#roles.admin || admin.database !== "cms_admin") {
+    if (this.#adminRaw !== null)
+      this.#assertIdentity("admin", await this.#identity(this.#adminRaw));
+    this.#assertIdentity("public", await this.#identity(this.#publicRaw));
+  }
+
+  #assertIdentity(pool: "admin" | "public", id: ConnectionIdentity): void {
+    if (pool === "admin") {
+      if (id.user !== this.#roles.admin || id.database !== "cms_admin") {
         throw new Error(
-          `DatabaseAdapter admin pool expected (${this.#roles.admin}, cms_admin) but connected as (${admin.user}, ${admin.database}). Check ADMIN_DATABASE_URL.`,
+          `DatabaseAdapter admin pool expected (${this.#roles.admin}, cms_admin) but connected as (${id.user}, ${id.database}). Check ADMIN_DATABASE_URL.`,
         );
       }
+      return;
     }
-    const pub = await this.#identity(this.#publicRaw);
-    if (pub.database !== "cms_public") {
+    if (id.database !== "cms_public") {
       throw new Error(
-        `DatabaseAdapter public pool expected database cms_public but connected to ${pub.database}. Check PUBLIC_DATABASE_URL / PUBLIC_ADMIN_DATABASE_URL.`,
+        `DatabaseAdapter public pool expected database cms_public but connected to ${id.database}. Check PUBLIC_DATABASE_URL / PUBLIC_ADMIN_DATABASE_URL.`,
       );
     }
-    if (!this.#roles.public.includes(pub.user)) {
+    if (!this.#roles.public.includes(id.user)) {
       throw new Error(
-        `DatabaseAdapter public pool expected user ${this.#roles.public.join(" or ")}, got ${pub.user}.`,
+        `DatabaseAdapter public pool expected user ${this.#roles.public.join(" or ")}, got ${id.user}.`,
       );
     }
+  }
+
+  /**
+   * Prove that every pool answers right now as its expected role, bounded
+   * by `deadlineMs`: the identity probe of {@link verifyRoles} on a
+   * connection reserved from each pool. Unlike `verifyRoles` it is never
+   * remembered and never waits on a remembered probe, so a health check
+   * built on it notices a pool whose connections started hanging after the
+   * first success, and answers in time even when the first probe hangs.
+   *
+   * When the deadline wins, the reserved connection is closed rather than
+   * returned: an abandoned query must not keep holding a pool slot, or
+   * repeated health probes during an outage would fill the pool with them.
+   *
+   * @throws DatabaseUnresponsiveError naming a pool that missed the deadline.
+   */
+  async ping(deadlineMs: number): Promise<void> {
+    const deadline = AbortSignal.timeout(deadlineMs);
+    const pools: ["admin" | "public", SQL][] = [["public", this.#publicRaw]];
+    if (this.#adminRaw !== null) pools.unshift(["admin", this.#adminRaw]);
+    await Promise.all(
+      pools.map(async ([name, pool]) => {
+        const unresponsive = () => new DatabaseUnresponsiveError(name, deadlineMs);
+        let reserved: Awaited<ReturnType<SQL["reserve"]>>;
+        try {
+          reserved = await pool.reserve({ signal: deadline });
+        } catch (e) {
+          if (deadline.aborted) throw unresponsive();
+          throw e;
+        }
+        let identity: ConnectionIdentity;
+        try {
+          identity = await withDeadline(this.#identity(reserved), deadline, unresponsive);
+        } catch (e) {
+          await reserved.close().catch(() => undefined);
+          throw e;
+        }
+        reserved.release();
+        this.#assertIdentity(name, identity);
+      }),
+    );
   }
 
   async #identity(pool: SQL): Promise<ConnectionIdentity> {
@@ -290,6 +425,8 @@ export class DatabaseAdapter {
     let postCommit: PostCommitEffect[] = [];
 
     let result: Result<O, QueryError>;
+    // The handler's own error Result, kept for the COMMIT_ROLLED_BACK case below.
+    let handlerError: Result<O, QueryError> | null = null;
     try {
       result = await db.transaction(async (tx) => {
         postCommit = collectPostCommitEffects(tx);
@@ -305,6 +442,7 @@ export class DatabaseAdapter {
         }
 
         const out = await op.handler(ctx, validatedInput, tx);
+        if (!out.ok) handlerError = out;
         if (out.ok && op.database === "cms_admin") {
           publishAfterCommit = await this.#projectionDirty(tx);
         }
@@ -330,6 +468,15 @@ export class DatabaseAdapter {
       // constraint, detail) on `.cause`. Without this, `describeError`
       // gets only "Failed query: <sql>" and operators can't diagnose.
       const pgDetail = extractPgFields(thrown);
+      // A handler that caught a failed statement (a duplicate pending
+      // proposal's unique violation) and answered with its own error leaves
+      // an aborted transaction; Postgres turns the COMMIT into a rollback,
+      // which Bun >= 1.4.4 reports as a throw. Nothing was written, so the
+      // handler's error is the answer. A handler that answered ok on an
+      // aborted transaction gets no such pass: its writes are lost, loudly.
+      if (pgDetail?.code === COMMIT_ROLLED_BACK && handlerError !== null) {
+        return handlerError;
+      }
       return err({
         kind: "HandlerError",
         operation: op.name,

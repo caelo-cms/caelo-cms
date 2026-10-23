@@ -15,7 +15,7 @@ FROM denoland/deno:bin-2.9.7 AS deno
 
 FROM node:26.12.0-bookworm-slim AS node
 
-FROM oven/bun:1.4.3 AS builder
+FROM oven/bun:1.4.4 AS builder
 
 # Node + npm come from the official image, not Debian's apt package
 # (Node 18 on bookworm). Two consumers:
@@ -181,7 +181,7 @@ RUN cd apps/admin && bun x vite build
 # ---------------------------------------------------------------------------
 # Runtime stage
 # ---------------------------------------------------------------------------
-FROM oven/bun:1.4.3-slim AS runtime
+FROM oven/bun:1.4.4-slim AS runtime
 
 COPY --from=deno /deno /usr/local/bin/deno
 
