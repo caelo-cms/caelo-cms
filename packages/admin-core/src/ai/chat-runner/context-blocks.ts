@@ -219,6 +219,7 @@ export async function buildSystemContextBlocks(deps: {
   const skills = await buildSkillsContext(registry, adapter, humanCtx, {
     loadedSkillSlugs: deps.loadedSkillSlugs,
     chatStartedAt: deps.chatStartedAt ?? null,
+    chatSessionId: input.chatSessionId,
   });
   const installedPluginsBlock = await buildInstalledPluginsBlock(registry, adapter, humanCtx);
 

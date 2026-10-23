@@ -173,6 +173,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
 
   // ── internal: not an agent action ─────────────────────────────────────
   "chat.append_message": { kind: "internal", reason: "chat-runner transcript persistence" },
+  "chat.pin_skills_index": {
+    kind: "internal",
+    reason:
+      "chat-runner fixes which plugin skills a chat's pinned `# Skills` index left out (#1008)",
+  },
   "chat.mark_message_interrupted": { kind: "internal", reason: "chat-runner abort bookkeeping" },
   "chat.acquire_turn_lease": {
     kind: "internal",
