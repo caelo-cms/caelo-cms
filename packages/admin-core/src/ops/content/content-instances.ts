@@ -44,6 +44,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
 import { emitDomainEvent } from "../../domain-events.js";
+import { pendingSnapshotSql } from "../../draft.js";
 import { canonicaliseInstanceValues } from "../../links/canonicalise-writes.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { recordPendingImportLinks } from "../../links/import-targets.js";
@@ -833,30 +834,79 @@ async function countPlacements(
   return typeof n === "string" ? Number.parseInt(n, 10) : n;
 }
 
+/** One placement bound to a content_instance, as the caller sees it. */
+interface PlacementInView {
+  readonly pageId: string;
+  readonly path: string;
+  readonly blockName: string;
+  readonly position: number;
+}
+
 /**
- * v0.12.2 — fetch up to `limit` distinct pages that reference this
- * content_instance via a placement, so the delete-refusal error body
- * can name them inline (saves the AI a discovery round-trip per
- * CLAUDE.md §11 "failure surfaces are AI-actionable"). Deduped on
- * page_id because one page can carry multiple placements of the same
- * shared instance.
+ * The placements bound to `contentInstanceId` as `branchId` sees them:
+ * live `page_modules`, with every page the branch has a pending layout
+ * snapshot for replaced by that snapshot. PR #947 review — in a chat,
+ * `fork_placement_content` rebinds only the branch layout, so a
+ * live-only count kept refusing the delete the refusal told the AI to
+ * retry. Ordered by path so the refusal names pages deterministically.
  */
-async function listAffectedPagesForCi(
+async function listPlacementsInView(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
   contentInstanceId: string,
-  limit: number,
-): Promise<{ path: string; title: string }[]> {
-  // Deduped on the page id and labelled by its URL path: slugs repeat
-  // across parents once pages nest (epic #690).
-  const rows = (await tx.execute(sql`
-    SELECT DISTINCT p.id, p.current_path AS path, p.title
+  branchId: string | null,
+): Promise<PlacementInView[]> {
+  const live = (await tx.execute(sql`
+    SELECT pm.page_id::text AS page_id, p.current_path AS path, pm.block_name, pm.position
     FROM page_modules pm
     JOIN pages p ON p.id = pm.page_id
     WHERE pm.content_instance_id = ${contentInstanceId}::uuid
-    ORDER BY p.current_path ASC
-    LIMIT ${limit}
-  `)) as unknown as { path: string; title: string }[];
-  return rows;
+  `)) as unknown as { page_id: string; path: string; block_name: string; position: number }[];
+  const placements: PlacementInView[] = live.map((r) => ({
+    pageId: r.page_id,
+    path: r.path,
+    blockName: r.block_name,
+    position: r.position,
+  }));
+  if (branchId === null) return sortByPath(placements);
+
+  const overlaid = (await tx.execute(sql`
+    SELECT DISTINCT p.id::text AS page_id, p.current_path AS path
+    FROM page_layout_snapshots pls
+    JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
+    JOIN pages p ON p.id = pls.page_id
+    WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
+  `)) as unknown as { page_id: string; path: string }[];
+  const overlaidIds = new Set(overlaid.map((r) => r.page_id));
+  const inView = placements.filter((p) => !overlaidIds.has(p.pageId));
+  for (const page of overlaid) {
+    const layout = await loadPageLayoutStateWithBranchOverlay(tx, page.page_id, branchId);
+    for (const block of layout.blocks) {
+      if (!block.placements) {
+        throw new Error(
+          `content_instances.delete: branch layout of page ${page.page_id} block ${block.blockName} has no placements — the snapshot predates v0.12; undo that chat's layout change and redo it`,
+        );
+      }
+      block.placements.forEach((pl, position) => {
+        if (pl.contentInstanceId !== contentInstanceId) return;
+        inView.push({
+          pageId: page.page_id,
+          path: page.path,
+          blockName: block.blockName,
+          position,
+        });
+      });
+    }
+  }
+  return sortByPath(inView);
+}
+
+function sortByPath(placements: PlacementInView[]): PlacementInView[] {
+  return placements.sort(
+    (a, b) =>
+      a.path.localeCompare(b.path) ||
+      a.blockName.localeCompare(b.blockName) ||
+      a.position - b.position,
+  );
 }
 
 export const setContentInstanceValuesOp = defineOperation({
@@ -1103,10 +1153,13 @@ export const deleteContentInstanceOp = defineOperation({
       );
     }
 
-    const rows = (await tx.execute(sql`
-      SELECT deleted_at FROM content_instances WHERE id = ${input.id}::uuid
-    `)) as unknown as { deleted_at: Date | null }[];
-    const target = rows[0];
+    // A chat sees (and deletes) the instance through its branch: the live
+    // row stays untouched until the chat is staged (PR #947 review — the
+    // delete used to soft-delete the live row from inside a chat).
+    const branchId = ctx.chatBranchId ?? null;
+    const target = branchId
+      ? await loadContentInstanceStateWithBranchOverlay(tx, input.id, branchId)
+      : await loadContentInstanceState(tx, input.id);
     if (!target) {
       return err({
         kind: "HandlerError",
@@ -1114,7 +1167,7 @@ export const deleteContentInstanceOp = defineOperation({
         message: "content_instance not found",
       });
     }
-    if (target.deleted_at !== null) {
+    if (target.deletedAt !== null) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
@@ -1127,20 +1180,22 @@ export const deleteContentInstanceOp = defineOperation({
       return ok({});
     }
 
-    const placementCount = await countPlacements(tx, input.id);
-    if (placementCount > 0) {
+    const placements = await listPlacementsInView(tx, input.id, branchId);
+    if (placements.length > 0) {
       // Refuse instead of cascading: the AI detaches each placement via
       // fork_placement_content (content survives as a private copy),
       // then deletes the orphan. #63 — the message must only name tools
-      // that exist; it once pointed at a never-built propose tool.
-      //
-      // v0.12.2 — name the top-3 affected pages inline so the AI can
-      // discover the placements without a follow-up
-      // get_content_instance call (CLAUDE.md §11 "failure surfaces are
-      // AI-actionable").
-      const affectedPages = await listAffectedPagesForCi(tx, input.id, 3);
-      const samples = affectedPages.map((p) => p.path).join(", ");
-      const moreSuffix = placementCount > affectedPages.length ? `, …` : "";
+      // that exist; it once pointed at a never-built propose tool. It
+      // lists the placements themselves (fork_placement_content's exact
+      // arguments), so no discovery call is needed (CLAUDE.md §11).
+      const shown = placements.slice(0, 10);
+      const list = shown
+        .map(
+          (p) => `${p.path} (pageId ${p.pageId}, blockName ${p.blockName}, position ${p.position})`,
+        )
+        .join("; ");
+      const more =
+        placements.length > shown.length ? `; and ${placements.length - shown.length} more` : "";
       await recordAudit(tx, {
         actorId: ctx.actorId,
         requestId: ctx.requestId,
@@ -1148,12 +1203,12 @@ export const deleteContentInstanceOp = defineOperation({
         input,
         succeeded: false,
         entityId: input.id,
-        resultSummary: `blocked: placementCount=${placementCount}`,
+        resultSummary: `blocked: placementCount=${placements.length}`,
       });
       return err({
         kind: "HandlerError",
         operation: "content_instances.delete",
-        message: `cannot delete: ${placementCount} placement(s) reference this content_instance${samples ? ` (on ${samples}${moreSuffix})` : ""}. Detach each placement first: call get_content_instance to list its placements (pageId, blockName, position), then fork_placement_content for each one (the page keeps its content as a private copy), then retry the delete.`,
+        message: `cannot delete: ${placements.length} placement(s) reference this content_instance: ${list}${more}. Detach each one with fork_placement_content (those pageId/blockName/position values; the page keeps its content as a private copy), then retry the delete.`,
         nextAction: {
           tool: "fork_placement_content",
           args: {},
@@ -1163,12 +1218,14 @@ export const deleteContentInstanceOp = defineOperation({
       });
     }
 
-    await tx.execute(sql`
-      UPDATE content_instances
-      SET deleted_at = now(),
-          updated_by = ${ctx.actorId}::uuid
-      WHERE id = ${input.id}::uuid
-    `);
+    if (branchId === null) {
+      await tx.execute(sql`
+        UPDATE content_instances
+        SET deleted_at = now(),
+            updated_by = ${ctx.actorId}::uuid
+        WHERE id = ${input.id}::uuid
+      `);
+    }
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -1177,17 +1234,19 @@ export const deleteContentInstanceOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.id,
-      resultSummary: "soft-deleted",
+      resultSummary: branchId ? "soft-deleted (branch)" : "soft-deleted",
     });
 
-    const state = await loadContentInstanceState(tx, input.id);
+    const state = branchId
+      ? { ...target, deletedAt: new Date().toISOString() }
+      : await loadContentInstanceState(tx, input.id);
     if (state) {
       await emitSnapshot(tx, {
         actorId: ctx.actorId,
         opKind: "content_instances.delete",
         description: `content_instances.delete id=${input.id}`,
         chatTaskId: ctx.chatTaskId ?? null,
-        chatBranchId: ctx.chatBranchId ?? null,
+        chatBranchId: branchId,
         entities: [{ kind: "contentInstance", entityId: input.id, state }],
       });
     }

@@ -47,7 +47,11 @@ import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
-import { MODULE_JS_CONTRACT } from "./_module-js-contract.js";
+import {
+  MODULE_CSS_DESCRIPTION,
+  MODULE_HTML_DESCRIPTION,
+  MODULE_JS_CONTRACT,
+} from "./_module-js-contract.js";
 import { resolvePageRef } from "./_page-ref.js";
 import type { ToolContext, ToolDefinitionWithHandler, ToolResult } from "./dispatch.js";
 
@@ -298,8 +302,13 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
       moduleId: { type: "string", format: "uuid" },
       displayName: { type: "string", minLength: 1, maxLength: 128 },
       ...MODULE_META_JSON_SCHEMA_PROPS,
-      html: { type: "string", minLength: 1, maxLength: 50_000 },
-      css: { type: "string", maxLength: 50_000 },
+      html: {
+        type: "string",
+        minLength: 1,
+        maxLength: 50_000,
+        description: MODULE_HTML_DESCRIPTION,
+      },
+      css: { type: "string", maxLength: 50_000, description: MODULE_CSS_DESCRIPTION },
       js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
       bindThemeLiterals: {
         type: "boolean",

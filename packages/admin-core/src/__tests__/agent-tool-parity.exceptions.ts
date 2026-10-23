@@ -144,6 +144,14 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     note: "site memory is loaded into every turn's system prompt (persistence.loadMemory); changes go through site_memory_propose",
   },
   "users.list_pending": PENDING_QUEUE,
+  // #970 — the sync job's per-run report. The AI sees it where it acts: every
+  // approved user change folds the run's refused members into the tool
+  // result (`operatorAccess.refusedMembers` + a warning to relay).
+  "users.operator_access_run": {
+    kind: "covered",
+    by: ["propose_create_user", "propose_set_user_roles", "propose_delete_user"],
+    note: "the applied result of each user tool carries the run report's refused members (gated-tools withOperatorAccessSync)",
+  },
   "roles.list_pending": PENDING_QUEUE,
   "templates.list_pending": PENDING_QUEUE,
   "snapshots.list_pending": PENDING_QUEUE,
@@ -235,21 +243,6 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
   "imports.get_session_budget_state": {
     kind: "internal",
     reason: "chat-runner migration budget gate; the AI reads spend via check_run_budget",
-  },
-  "imports.list_page_clusters": {
-    kind: "internal",
-    reason:
-      "cluster-review tools were retired on purpose in #278 (homepage-first page-type mapping, see tools/index.ts); compose_from_run clusters internally",
-  },
-  "imports.assign_page_cluster": {
-    kind: "internal",
-    reason:
-      "cluster-review tools were retired on purpose in #278 (homepage-first page-type mapping, see tools/index.ts)",
-  },
-  "imports.compose_from_run": {
-    kind: "internal",
-    reason:
-      "the ramp-up wizard's one-click compose; the AI migrates through map_external_page_types → build_page per page (the migration skill), which supersedes it",
   },
   "redirects.lookup": {
     kind: "internal",

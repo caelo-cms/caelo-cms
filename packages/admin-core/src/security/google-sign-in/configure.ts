@@ -5,14 +5,22 @@
  * failure part-way reports exactly which link is missing (setup.ts explains
  * the chain):
  *
- *   save:    validate → Secret Manager version → `operator_oauth.set` →
+ *   preflight: validate → ask Google whether both redirect URIs are on the
+ *            client and the secret is the client's (#967, preflight.ts) —
+ *            nothing is stored, IAP is untouched
+ *   save:    validate → the Owner confirmed that everyone signs in once
+ *            more → the same preflight again (a stale tab, a URI removed
+ *            since) → Secret Manager version → `operator_oauth.set` →
  *            operator-access sync (IAP oauthSettings) → self-check
  *   remove:  `{}` version → `operator_oauth.clear` → sync (clears IAP's
  *            oauthSettings; IAP falls back to its Google-managed client) →
  *            self-check
  *   check:   sync again → self-check, for "Run the checks again"
  *
- * The secret version comes first: if it fails nothing else changed. The DB
+ * A failed preflight stores nothing: IAP switches clients only once Google
+ * confirmed the client is complete, because switching signs everybody out
+ * and a client without IAP's redirect URI keeps everybody out (IAP error
+ * code 9). The secret version comes next: if it fails nothing else changed. The DB
  * row comes before the sync because the sync job reads it. The client
  * secret is passed through to Secret Manager and nowhere else — not into the
  * database, the audit log or any error message.
@@ -25,6 +33,12 @@ import { z } from "zod";
 import { googleOAuthClientIdSchema } from "../../ops/security/operator_oauth.js";
 import { type OperatorAccessSync, syncOperatorAccess } from "../../ops/user_access.js";
 import { defaultGoogleDeps, type GoogleDeps } from "../operator-access/google-iam.js";
+import {
+  type PreflightDeps,
+  type PreflightLine,
+  preflightFailureSummary,
+  runClientPreflight,
+} from "./preflight.js";
 import {
   addSecretVersion,
   GOOGLE_OAUTH_CLIENT_SECRET,
@@ -45,17 +59,47 @@ export const googleSignInClientInputSchema = z.object({
       GOOGLE_OAUTH_CLIENT_SECRET,
       "paste the client secret exactly as the Google console shows it (it starts with GOCSPX-)",
     ),
+  /**
+   * The Owner confirmed the consent screen is External + In production —
+   * Google offers no way to check that from outside its console (preflight.ts).
+   */
+  consentConfirmed: z.boolean(),
+  /**
+   * The Owner confirmed "every user signs in to the admin once more" —
+   * required to store the client, not to check it.
+   */
+  reLoginConfirmed: z.boolean().default(false),
 });
 export type GoogleSignInClientInput = z.infer<typeof googleSignInClientInputSchema>;
+
+/** Why a save without the re-login confirmation changes nothing. */
+export const RE_LOGIN_NOT_CONFIRMED =
+  "Confirm the switch first: with a new Google sign-in client every user signs in to the admin once more.";
 
 export type GoogleSignInConfigureResult =
   | { readonly ok: true; readonly checks: SelfCheckLine[] }
   | {
       readonly ok: false;
-      /** Which step failed; earlier steps are done, later ones did not run. */
-      readonly step: "secret" | "database";
+      /**
+       * Which step failed; earlier steps are done, later ones did not run.
+       * `confirm` / `preflight` = nothing was stored and IAP was not touched.
+       */
+      readonly step: "confirm" | "preflight" | "secret" | "database";
       readonly error: string;
       readonly nextStep: string;
+      /** The preflight's lines when `step` is `preflight`. */
+      readonly checks?: readonly PreflightLine[];
+    };
+
+/** The preflight on its own (Settings → Google sign-in's "Check the client"). */
+export type GoogleSignInPreflightResult =
+  | { readonly ok: true; readonly checks: readonly PreflightLine[] }
+  | {
+      readonly ok: false;
+      readonly step: "preflight";
+      readonly error: string;
+      readonly nextStep: string;
+      readonly checks: readonly PreflightLine[];
     };
 
 export interface ConfigureDeps {
@@ -64,6 +108,8 @@ export interface ConfigureDeps {
   /** Swaps the sync job in tests; production starts the real one. */
   readonly sync?: () => Promise<OperatorAccessSync>;
   readonly timeoutMs?: number;
+  /** Google's public OAuth endpoints for the preflight (#967); production uses `fetch`. */
+  readonly preflight?: PreflightDeps;
 }
 
 type Available = Extract<GoogleSignInAvailability, { status: "available" }>;
@@ -95,12 +141,40 @@ async function finish(
     clientId,
     removedClientId,
     sync,
+    redirectUris: {
+      projectId: available.projectId,
+      brokerRedirectUri: available.brokerRedirectUri,
+    },
     ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
   });
   return { ok: true, checks };
 }
 
-/** Store the Owner's Google sign-in client, hand it to IAP, then self-check. */
+/**
+ * Check the client against Google without storing or applying anything
+ * (#967). Every failing line carries the exact fix.
+ */
+export async function preflightGoogleSignInClient(
+  available: Available,
+  input: GoogleSignInClientInput,
+  deps: ConfigureDeps = {},
+): Promise<GoogleSignInPreflightResult> {
+  const result = await runClientPreflight(deps.preflight ?? { fetch }, {
+    projectId: available.projectId,
+    clientId: input.clientId,
+    clientSecret: input.clientSecret,
+    brokerRedirectUri: available.brokerRedirectUri,
+    consentConfirmed: input.consentConfirmed,
+  });
+  if (result.ok) return { ok: true, checks: result.lines };
+  return { ok: false, step: "preflight", ...preflightFailureSummary(result), checks: result.lines };
+}
+
+/**
+ * Store the Owner's Google sign-in client, hand it to IAP, then self-check —
+ * only once the Owner confirmed the re-login and the client passed the
+ * preflight. Replacing or rotating a client goes through the same path.
+ */
 export async function saveGoogleSignInClient(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
@@ -109,11 +183,21 @@ export async function saveGoogleSignInClient(
   input: GoogleSignInClientInput,
   deps: ConfigureDeps = {},
 ): Promise<GoogleSignInConfigureResult> {
+  if (!input.reLoginConfirmed) {
+    return {
+      ok: false,
+      step: "confirm",
+      error: RE_LOGIN_NOT_CONFIRMED,
+      nextStep: 'Click "Check the client", read the notice, then confirm the switch.',
+    };
+  }
+  const preflight = await preflightGoogleSignInClient(available, input, deps);
+  if (!preflight.ok) return preflight;
   try {
     await addSecretVersion(
       deps.google ?? defaultGoogleDeps(),
       available.secretResource,
-      oauthClientFile(input),
+      oauthClientFile({ clientId: input.clientId, clientSecret: input.clientSecret }),
     );
   } catch (e) {
     return secretFailure(e);

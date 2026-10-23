@@ -72,14 +72,24 @@ export async function startBlackholeProxy(): Promise<BlackholeProxy> {
  * `browser.newContext` options for a context that renders untrusted
  * content: all non-routed egress goes to the black hole (loopback
  * included) and service workers, whose fetches `ctx.route` cannot see,
- * are blocked. Pure (exported for the regression test).
+ * are blocked. When `extraBypass` is passed (an own-origin preview
+ * capture's `host:port`), only that exact host:port bypasses the black
+ * hole so `route.continue()` can reach the local preview server while
+ * every other host/port is black-holed. Pure (exported for the
+ * regression test).
  */
-export function lockedDownContextOptions(proxyServer: string): {
+export function lockedDownContextOptions(
+  proxyServer: string,
+  extraBypass?: string,
+): {
   readonly proxy: { readonly server: string; readonly bypass: string };
   readonly serviceWorkers: "block";
 } {
   return {
-    proxy: { server: proxyServer, bypass: "<-loopback>" },
+    proxy: {
+      server: proxyServer,
+      bypass: extraBypass ? `<-loopback>;${extraBypass}` : "<-loopback>",
+    },
     serviceWorkers: "block",
   };
 }

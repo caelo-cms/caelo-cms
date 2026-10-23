@@ -29,6 +29,7 @@
 
 import {
   defineOperation,
+  OperationAbortError,
   type OperationDefinition,
   type OperationRegistry,
 } from "@caelo-cms/query-api";
@@ -204,7 +205,10 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
   const settle = <T>(
     operation: string,
     r: { ok: true; value: T } | { ok: false; message: string },
-  ) => (r.ok ? ok(r.value) : fail(operation, r.message));
+  ) => {
+    if (r.ok) return ok(r.value);
+    throw new OperationAbortError({ kind: "HandlerError", operation, message: r.message });
+  };
 
   const insert = defineOperation({
     name: `${family}.insert`,
@@ -265,7 +269,13 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       if (zone === "private") return ok({ rows: await privateList(tx, ctx, input, plan) });
       const wheres: ReturnType<typeof sql>[] = [];
       if (plan.since !== null) wheres.push(sql`"created_at" > ${plan.since}`);
-      for (const [k, v] of plan.equals) wheres.push(sql`${sql.raw(`"${k}"`)} = ${v}`);
+      for (const [k, v] of plan.equals) {
+        wheres.push(
+          v === null
+            ? sql`${sql.raw(`"${k}"`)} IS NULL`
+            : sql`${sql.raw(`"${k}"`)} = ${valueSql(input.columns, k, v)}`,
+        );
+      }
       const whereSql =
         wheres.length === 0 ? sql.raw("") : sql`WHERE ${sql.join(wheres, sql` AND `)}`;
       const orderSql = plan.orderBy

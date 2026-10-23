@@ -16,49 +16,103 @@
  * Side effect, intended: the bearer in the client's hands is useless
  * against IAP directly or against any other Google API; it only works
  * through this broker, under this install's seal key.
+ *
+ * Issue #968: the seal also names the MCP client the grant was issued to
+ * ({@link mcpClientKey}). The proxy forwards it to the admin, which keeps
+ * one remote connection per (user, surface, client), so revoking one app
+ * leaves the user's other apps working. A token from before #968 carries no
+ * client and fails to open: the client refreshes (its refresh token names
+ * the client) and carries on.
  */
 
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { McpSurface } from "./config.js";
 import { type McpContext, resourceUrl } from "./context.js";
 import { open, seal } from "./seal.js";
+
+/** Longest client key; a longer CIMD URL or DCR name is hashed instead. */
+export const MAX_CLIENT_KEY_LENGTH = 200;
+
+/**
+ * False when `s` holds a lone UTF-16 surrogate, which `encodeURIComponent`
+ * refuses. (`String.prototype.isWellFormed` is ES2024, past this package's lib.)
+ */
+export function isWellFormedText(s: string): boolean {
+  return !/\p{Cs}/u.test(s);
+}
 
 /** Payload of a sealed access token. */
 export const AccessSealSchema = z.strictObject({
   id_token: z.string(),
   /** The surface's resource URL, or null for a grant consented to for both surfaces. */
   resource: z.string().nullable(),
+  /** The MCP client the grant was issued to ({@link mcpClientKey}). */
+  client: z.string().min(1).max(MAX_CLIENT_KEY_LENGTH),
   exp: z.number().int(),
 });
 
-/** Seal `idToken` for `resource`, expiring with it. */
+/**
+ * The stable identity of an MCP client app, as the admin keys remote
+ * connections by it:
+ *
+ * - CIMD: the `client_id` URL itself (`https://chatgpt.com/oauth/client.json`)
+ *   — the vendor's one document for every user of that app;
+ * - DCR: `dcr:<client_name>` — a DCR `client_id` is a fresh seal per
+ *   registration, and clients such as Claude Code register again whenever
+ *   they lose their cached registration, so the id would turn every
+ *   re-registration into a new connection; the name stays the same;
+ * - DCR without a name: `dcr:` + a hash of the registration, the only
+ *   identity there is.
+ *
+ * The name is self-chosen, so the key identifies an app, not a person:
+ * it never grants anything (IAP and the user's Caelo role do), it only
+ * scopes revoke, restore and the cost cap to one app.
+ *
+ * @param clientName - the DCR registration's `client_name`, if any (unused for CIMD).
+ */
+export function mcpClientKey(clientId: string, clientName: string | null): string {
+  const hashed = (v: string) =>
+    `sha256:${createHash("sha256").update(v).digest("hex").slice(0, 32)}`;
+  if (clientId.startsWith("https://")) {
+    return clientId.length <= MAX_CLIENT_KEY_LENGTH ? clientId : hashed(clientId);
+  }
+  const name = clientName?.trim().replace(/\s+/g, " ");
+  // A name with a lone UTF-16 surrogate cannot be URI-encoded for the
+  // proxy's header; /register refuses those, older registrations get hashed.
+  if (!name || !isWellFormedText(name)) return `dcr:${hashed(clientId)}`;
+  const key = `dcr:${name}`;
+  return key.length <= MAX_CLIENT_KEY_LENGTH ? key : `dcr:${hashed(name)}`;
+}
+
+/** Seal `idToken` for `resource` and `client`, expiring with it. */
 export function sealAccessToken(
   ctx: McpContext,
-  idToken: string,
-  resource: string | null,
+  grant: { readonly idToken: string; readonly resource: string | null; readonly client: string },
   expiresIn: number,
 ): string {
   return seal(ctx.config.sealKey, "access", {
-    id_token: idToken,
-    resource,
+    id_token: grant.idToken,
+    resource: grant.resource,
+    client: grant.client,
     exp: ctx.nowSeconds() + expiresIn,
   });
 }
 
 /**
- * The Google ID token inside `bearer`, when it is a genuine, unexpired
- * access token valid for `surface`; null otherwise (the caller answers
- * 401 `invalid_token`, which makes the client sign in again for this
- * resource).
+ * The Google ID token and client key inside `bearer`, when it is a
+ * genuine, unexpired access token valid for `surface`; null otherwise (the
+ * caller answers 401 `invalid_token`, which makes the client sign in again
+ * for this resource, or refresh).
  */
 export function openAccessToken(
   ctx: McpContext,
   bearer: string,
   surface: McpSurface,
-): string | null {
+): { readonly idToken: string; readonly client: string } | null {
   const opened = open(ctx.config.openKeys, "access", bearer, AccessSealSchema, ctx.nowSeconds());
   if (!opened.ok) return null;
-  const { resource, id_token } = opened.value;
+  const { resource, id_token, client } = opened.value;
   if (resource !== null && resource !== resourceUrl(ctx.config, surface)) return null;
-  return id_token;
+  return { idToken: id_token, client };
 }

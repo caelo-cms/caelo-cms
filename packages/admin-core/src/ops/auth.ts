@@ -243,8 +243,9 @@ type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 /**
  * Store a fresh one-hour reset token for `userId` (only its SHA-256 lands in
  * `password_reset_tokens`) and return the raw token for the caller to deliver.
+ * Also the set-password link a credential handoff emails a new user (#971).
  */
-async function issueResetToken(
+export async function issueResetToken(
   tx: Tx,
   userId: string,
 ): Promise<{ token: string; expiresAt: string }> {
@@ -404,8 +405,16 @@ export const resetPasswordOp = defineOperation({
     await tx.execute(
       sql`DELETE FROM password_reset_tokens WHERE user_id = ${row.user_id}::uuid AND used_at IS NULL`,
     );
-    // A reset invalidates every existing session for the account.
+    // A reset invalidates every existing session and MCP credential for the account.
     await tx.execute(sql`DELETE FROM sessions WHERE user_id = ${row.user_id}::uuid`);
+    await tx.execute(sql`
+      UPDATE mcp_tokens SET revoked_at = now()
+      WHERE actor_id = ${row.user_id}::uuid AND revoked_at IS NULL
+    `);
+    await tx.execute(sql`
+      UPDATE mcp_remote_connections SET revoked_at = now()
+      WHERE actor_id = ${row.user_id}::uuid AND revoked_at IS NULL
+    `);
 
     await recordAudit(tx, {
       actorId: row.user_id,

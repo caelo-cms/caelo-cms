@@ -185,6 +185,10 @@ export async function resolveVisitor(args: {
 
 async function verifiedSessionToken(raw: string, secret: string): Promise<string | null> {
   if (!raw) return null;
-  const s = await verifySignedCookie({ signed: raw, secret });
+  const s = await verifySignedCookie({
+    signed: raw,
+    secret,
+    maxAgeSeconds: VISITOR_COOKIE_MAX_AGE,
+  });
   return s && /^[0-9a-fA-F]{64}$/.test(s.value) ? s.value : null;
 }

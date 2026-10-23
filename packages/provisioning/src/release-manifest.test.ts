@@ -230,6 +230,16 @@ describe("ReleaseManifestSchema", () => {
     const ghsa = { ...MANIFEST, security: true, advisories: ["GHSA-2c2m-4x8q-wx9f"] };
     expect(ReleaseManifestSchema.safeParse(ghsa).success).toBe(true);
   });
+
+  it("#1025: platformDigests is optional, and must name all three images when present", () => {
+    // The canonical fixture has none: manifests signed before the field stay valid.
+    expect("platformDigests" in MANIFEST).toBe(false);
+    const platformDigests = { admin: d("1"), gateway: d("2"), ops: d("3") };
+    const parsed = ReleaseManifestSchema.safeParse({ ...MANIFEST, platformDigests });
+    expect(parsed.success && parsed.data.platformDigests).toEqual(platformDigests);
+    const partial = { ...MANIFEST, platformDigests: { admin: d("1"), gateway: d("2") } };
+    expect(ReleaseManifestSchema.safeParse(partial).success).toBe(false);
+  });
 });
 
 describe("compareImageDigests", () => {
@@ -241,8 +251,23 @@ describe("compareImageDigests", () => {
 
   it("names each mismatching or unresolved image, ignores absent ones", () => {
     expect(compareImageDigests(MANIFEST, { admin: d("f"), gateway: null })).toEqual([
-      { image: "admin", expected: d("a"), actual: d("f") },
-      { image: "gateway", expected: d("b"), actual: null },
+      { image: "admin", form: "index", expected: d("a"), actual: d("f") },
+      { image: "gateway", form: "index", expected: d("b"), actual: null },
+    ]);
+  });
+
+  it("#1025: compares the linux/amd64 platform digests the manifest signs", () => {
+    const withPlatform = {
+      ...MANIFEST,
+      platformDigests: { admin: d("1"), gateway: d("2"), ops: d("3") },
+    };
+    expect(compareImageDigests(withPlatform, {}, { admin: d("1"), ops: d("3") })).toEqual([]);
+    expect(compareImageDigests(withPlatform, {}, { gateway: d("9") })).toEqual([
+      { image: "gateway", form: "platform", expected: d("2"), actual: d("9") },
+    ]);
+    // A manifest without the field cannot vouch for a platform digest.
+    expect(compareImageDigests(MANIFEST, {}, { admin: d("1") })).toEqual([
+      { image: "admin", form: "platform", expected: null, actual: d("1") },
     ]);
   });
 });

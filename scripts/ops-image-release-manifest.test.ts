@@ -103,4 +103,14 @@ describe("release.yml — signed release manifest", () => {
     const create = gh?.steps?.find((s) => s.name === "Create GitHub Release");
     expect(String(create?.with?.files)).toContain("release-manifest.json.sigstore.json");
   });
+
+  it("M3 (#1025): signs each image's linux/amd64 platform digest, read from the index by digest", () => {
+    const resolve = job?.steps?.find((s) => s.name === "Resolve the released image digests");
+    const run = resolve?.run ?? "";
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal shell variable in the workflow
+    expect(run).toContain('oras manifest fetch "ghcr.io/caelo-cms/${svc}@${digest}"');
+    expect(run).toContain('.platform.os == "linux" and .platform.architecture == "amd64"');
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal shell variable in the workflow
+    expect(run).toContain("--platform-digest ${svc}=${platform}");
+  });
 });

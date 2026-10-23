@@ -2,7 +2,7 @@
 
 /**
  * AI tool: read_content. The DB-content analogue of Claude Code's Read
- * tool — returns a module's or template's body field (html/css/js) with
+ * tool — returns a module's, template's or layout's body field (html/css/js) with
  * `cat -n` line numbers, windowable via offset/limit for large bodies.
  *
  * This is the explicit "Read" that a surgical `edit_content` anchors
@@ -11,20 +11,19 @@
  * body changed by another writer since the read is rejected, not clobbered.
  */
 
-import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
+import { readContentRow } from "../content-edit/read-row.js";
 import {
   CONTENT_ENTITY_KINDS,
   type ContentTarget,
   resolveContentTarget,
 } from "../content-edit/registry.js";
 import { contentSha, renderWithLineNumbers } from "../content-edit/text-ops.js";
-import { describeError } from "./_describe-error.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 const readContentInput = z
   .object({
-    entityKind: z.enum(["module", "template"]),
+    entityKind: z.enum(CONTENT_ENTITY_KINDS),
     entityId: z.string().uuid(),
     /**
      * Body field to read. Omit to read every non-empty body of the entity
@@ -54,13 +53,9 @@ async function readOne(
   toolCtx: ToolContext,
   target: ContentTarget,
 ): Promise<{ ok: boolean; content: string; value?: unknown }> {
-  const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, target.getOp, {
-    [target.idArg]: input.entityId,
-  });
-  if (!res.ok) {
-    return { ok: false, content: `${target.getOp} failed: ${describeError(res.error)}` };
-  }
-  const bodies = target.readRow(res.value);
+  const row = await readContentRow(ctx, toolCtx, target, input.entityId);
+  if (!row.ok) return { ok: false, content: row.content };
+  const bodies = row.bodies;
 
   if (input.field !== undefined) {
     if (!target.fields.includes(input.field)) {
@@ -98,8 +93,8 @@ async function readOne(
 export const readContentTool: ToolDefinitionWithHandler<ReadContentInput> = {
   name: "read_content",
   description:
-    "Read a module's or template's body (html/css/js) with line numbers — the Read step before a surgical edit_content. " +
-    "Pass `entityKind` ('module' | 'template') + `entityId`, and optionally `field` ('html'/'css'/'js'; templates have html/css). " +
+    "Read a module's, template's or layout's body (html/css/js) with line numbers — the Read step before a surgical edit_content. " +
+    "Pass `entityKind` ('module' | 'template' | 'layout' — a layout is the chrome shell its templates render in; list_templates shows each template's layoutId) + `entityId`, and optionally `field` ('html'/'css'/'js'; templates and layouts have html/css). " +
     "Omit `field` to see every body; name a `field` to window a large one via `offset` (1-based line) + `limit`. " +
     "Each block prints a `sha=` token you can hand back to edit_content as `expectedSha` to guard against a concurrent change. " +
     "Prefer this over dumping a whole module through list_modules (which returns metadata only). " +

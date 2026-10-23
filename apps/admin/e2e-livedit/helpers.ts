@@ -376,6 +376,8 @@ export async function deactivatePluginAsOwner(page: Page, slug: string): Promise
     );
   }
   await disable.click({ timeout: 30_000 });
+  // Disable is a destructive form (`use:confirmSubmit`): accept its dialog.
+  await page.getByTestId("confirm-dialog").getByTestId("confirm-accept").click();
   await expect(page.getByTestId(`reenable-${slug}`)).toHaveCount(1, { timeout: 30_000 });
 }
 

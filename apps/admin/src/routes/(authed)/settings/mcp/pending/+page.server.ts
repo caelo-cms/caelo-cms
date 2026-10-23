@@ -53,14 +53,15 @@ export const actions: Actions = {
           : "approve failed";
       return fail(400, { error: message });
     }
-    const v = r.value as { tokenId: string | null; plaintextToken: string | null };
+    const v = r.value as { tokenId: string | null; credentialHandoff: unknown };
     return {
       ok: true,
-      message: v.tokenId
-        ? `Proposal applied (tokenId=${v.tokenId.slice(0, 8)}…).`
-        : "Proposal applied.",
-      // One-time bearer; copy now or rotate via a fresh propose_create.
-      plaintextToken: v.plaintextToken,
+      // #971 — a created token is collected from "One-time credentials".
+      message: v.credentialHandoff
+        ? "Proposal applied. Collect the new token below."
+        : v.tokenId
+          ? `Proposal applied (tokenId=${v.tokenId.slice(0, 8)}…).`
+          : "Proposal applied.",
     };
   },
   reject: async ({ request, locals }) => {

@@ -1,6 +1,7 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
   import { GitPullRequestArrow } from "lucide-svelte";
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import EmptyStatePlaceholder from "#lib/components/EmptyStatePlaceholder.svelte";
   import StateDot from "#lib/components/StateDot.svelte";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
@@ -203,14 +204,10 @@
         method="post"
         action="?/discard"
         class="hidden"
-        onsubmit={(e) => {
-          if (
-            !confirm(
-              `Discard chat '${c.title}'? Its ${c.pendingCount} unstaged change(s) are thrown away and the chat is closed. This cannot be undone.`,
-            )
-          ) {
-            e.preventDefault();
-          }
+        use:confirmSubmit={{
+          title: `Discard chat '${c.title}'?`,
+          description: `Its ${c.pendingCount} unstaged change(s) are thrown away and the chat is closed. This cannot be undone.`,
+          confirmLabel: "Discard chat",
         }}
       >
         <input type="hidden" name="_csrf" value={data.csrfToken} />

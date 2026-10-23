@@ -757,17 +757,23 @@ export const triggerDeployOp = defineOperation({
     const repoRoot = resolveOutputRoot(input.repoRoot);
     const cliPath = resolveGeneratorCli();
 
+    const runKind = target.env === "staging" ? "stage" : "build";
     // The trigger op needs a registry+adapter pair to land progress
     // updates on the row from inside its subprocess-watcher loop. The
     // host process sets the bridge at startup; tests do the same.
     const bridge = getDeployBridge();
     if (!bridge) {
+      // The generator could not start: its step ends here, recorded like
+      // every other failure after the run began.
+      timer.lap("generator");
       await tx.execute(sql`
         UPDATE deploy_runs
         SET status = 'failed', finished_at = clock_timestamp(),
-            error_message = 'deploy-bridge not configured'
+            error_message = 'deploy-bridge not configured',
+            phase_timings = ${phaseTimingsParam(timer)}
         WHERE id = ${runId}::uuid
       `);
+      logRunTimings(runKind, runId, timer, { status: "failed" });
       return err({
         kind: "HandlerError",
         operation: "deploy.trigger",
@@ -785,7 +791,6 @@ export const triggerDeployOp = defineOperation({
       ...rowToTarget(target),
       outDir: effectiveOutDir(provider, target.env, target.out_dir),
     };
-    const runKind = target.env === "staging" ? "stage" : "build";
     // Loaded before the build: the publisher decides whether the build is
     // mirrored into `current/` (#1003 — only a serving layer that reads it
     // needs the copy, which was the largest step of a Stage).
@@ -1211,6 +1216,18 @@ export const promoteDeployOp = defineOperation({
         timer.include("publish", copyPhases ?? []);
         timer.lap("publish");
       }
+      // Issue #620 — a human Publish live ships the staged build, and with
+      // it exactly the AI Stages that build covered. Released before the
+      // run is marked finished (same transaction, so the order changes
+      // nothing about what is released): the stored span and steps then
+      // cover all of the run's work, like the logged total (#1003).
+      if (to.env === "production" && ctx.actorKind === "human" && fromRow) {
+        await releaseAiStageHolds(tx, {
+          holdIds: json<string[]>(fromRow.covered_ai_hold_ids),
+          productionRunId: toRunId,
+        });
+      }
+      timer.lap("finish");
       await tx.execute(sql`
         UPDATE deploy_runs
         SET status = 'succeeded', finished_at = clock_timestamp(),
@@ -1225,14 +1242,6 @@ export const promoteDeployOp = defineOperation({
             caelo_version = ${rebuilt ? CAELO_VERSION : sql`(SELECT caelo_version FROM deploy_runs WHERE id = ${fromRunId}::uuid)`}
         WHERE id = ${toRunId}::uuid
       `);
-      // Issue #620 — a human Publish live ships the staged build, and with
-      // it exactly the AI Stages that build covered.
-      if (to.env === "production" && ctx.actorKind === "human" && fromRow) {
-        await releaseAiStageHolds(tx, {
-          holdIds: json<string[]>(fromRow.covered_ai_hold_ids),
-          productionRunId: toRunId,
-        });
-      }
       // Last fallible step done: one line per run, never succeeded + failed.
       logRunTimings("publish-live", toRunId, timer, { status: "succeeded" });
       return ok({ fromRunId, toRunId, buildId: summary.destinationBuildId });
@@ -1527,7 +1536,8 @@ interface DeployBridge {
 }
 let bridge: DeployBridge | null = null;
 
-export function setDeployBridge(b: DeployBridge): void {
+/** Attach the registry + adapter the trigger op reports progress through; `null` detaches it. */
+export function setDeployBridge(b: DeployBridge | null): void {
   bridge = b;
 }
 export function getDeployBridge(): DeployBridge | null {

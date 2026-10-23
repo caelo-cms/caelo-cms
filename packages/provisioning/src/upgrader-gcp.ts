@@ -28,6 +28,7 @@ import { acquireBucketStateLock, GcsStateStore, realSyncGcloud } from "./state-s
 import type { AppRollPlan } from "./upgrade/app-roll.js";
 import { findServiceUrl } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe } from "./upgrade/health.js";
+import { createReleaseImageForms } from "./upgrade/image-forms.js";
 import { type IamTester, restIamTester } from "./upgrader-iam-preflight.js";
 import type { UpdateQueue, UpgraderJobDeps } from "./upgrader-job.js";
 import type { JobLog } from "./upgrader-reporter.js";
@@ -134,6 +135,8 @@ export function gcpUpgraderDeps(
     iam: gcloudIamTester(run, http),
     // The default deps: the fixed registry and signer, never overridden.
     fetchManifest: (version) => fetchVerifiedReleaseManifest(version),
+    // #1025 — the fixed public mirror, read by digest and content-checked.
+    imageForms: createReleaseImageForms(),
     // #815 — the lock names this execution, so a later run can break it
     // once Cloud Run says this one has ended (killed at its task timeout,
     // OOM). Outside Cloud Run there is no execution to vouch for it.

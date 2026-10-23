@@ -8,10 +8,11 @@
  *
  * Security note — AI never handles credentials. propose_create takes
  * email + displayName + roleNames only (no password). execute_proposal
- * generates a secure random temporary password server-side, calls the
- * existing users.create op with it, and returns the password ONCE in
- * the result so the Owner can share it with the new user. Subsequent
- * reads of the proposal row never see the password — it's not stored.
+ * creates the user with a random password nobody sees and records a
+ * credential handoff for the approving human (#971): its output — which
+ * the in-chat approval gate hands to the AI — carries only the handoff
+ * reference. The approver issues the one-time password (or a set-password
+ * email) from the admin via `credentials.issue`; it is never stored.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -28,6 +29,12 @@ import {
   isDuplicatePendingError,
   resolveChatSessionId,
 } from "./_propose-helpers.js";
+import {
+  type CredentialHandoffRef,
+  credentialHandoffRef,
+  recordCredentialHandoff,
+  unusablePassword,
+} from "./credential_handoffs.js";
 import {
   createUserOp,
   deleteUserOp,
@@ -224,10 +231,12 @@ const executeUserProposalOpDefinition = defineOperation({
   input: z.object({ proposalId: z.string().uuid() }).strict(),
   output: z.object({
     userId: z.string().nullable(),
-    /** Set ONCE on a successful create-proposal apply. The Owner UI
-     *  surfaces this in a one-time copy-to-clipboard banner; it's
-     *  never persisted past the response. */
-    temporaryPassword: z.string().nullable(),
+    /**
+     * Set on a create-proposal apply: where the approving human collects
+     * the new user's one-time password (#971). Never the password — this
+     * output reaches the AI as the gated tool's result.
+     */
+    credentialHandoff: credentialHandoffRef.nullable(),
   }),
   handler: async (ctx, input, tx) => {
     const rows = (await tx.execute(sql`
@@ -265,24 +274,20 @@ const executeUserProposalOpDefinition = defineOperation({
     // See withSystemRls; the Owner's approval is the authorization.
     await tx.execute(sql`SELECT set_config('caelo.actor_kind', 'system', true)`);
     let resultUserId: string | null = row.user_id;
-    let temporaryPassword: string | null = null;
+    let credentialHandoff: CredentialHandoffRef | null = null;
     if (row.kind === "create") {
-      // Server-generated one-time password — never travels through AI.
-      // 16 bytes of crypto random → base64url ≈ 22 chars; safe for
-      // copy/paste, will be rotated on first login (operator's responsibility).
-      const bytes = new Uint8Array(16);
-      crypto.getRandomValues(bytes);
-      temporaryPassword = Buffer.from(bytes).toString("base64url");
-      const r = await createUserOp.handler(
-        ctx,
-        {
-          ...(payload as { email: string; displayName: string; roleNames: string[] }),
-          password: temporaryPassword,
-        },
-        tx,
-      );
+      // #971 — the account starts with a password nobody ever sees; the
+      // approver issues the real one-time password from the admin.
+      const created = payload as { email: string; displayName: string; roleNames: string[] };
+      const r = await createUserOp.handler(ctx, { ...created, password: unusablePassword() }, tx);
       if (!r.ok) return passthroughError(r.error, "create");
       resultUserId = (r.value as { userId: string }).userId;
+      credentialHandoff = await recordCredentialHandoff(tx, ctx, {
+        kind: "user_temporary_password",
+        subjectId: resultUserId,
+        label: `One-time password for ${created.email}`,
+        proposalId: input.proposalId,
+      });
     } else if (row.kind === "set_roles") {
       const r = await setUserRolesOp.handler(
         ctx,
@@ -313,10 +318,9 @@ const executeUserProposalOpDefinition = defineOperation({
       input,
       succeeded: true,
       entityId: input.proposalId,
-      // Never log the temp password.
       resultSummary: `${row.kind} applied (userId=${resultUserId ?? "(none)"})`,
     });
-    return ok({ userId: resultUserId, temporaryPassword });
+    return ok({ userId: resultUserId, credentialHandoff });
   },
 });
 

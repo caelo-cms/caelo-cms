@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { assessStageReadiness } from "../../../deploy/stage-readiness.js";
 import { buildStatusLine } from "../context-blocks.js";
 
 const COMPLETE = {
@@ -134,5 +135,35 @@ describe("buildStatusLine", () => {
     // …and only the theme entry — everything else is complete.
     expect(line).not.toContain("Layout:");
     expect(line).not.toContain("Template:");
+  });
+
+  it("e2e-livedit refused Stages: a site a Stage would refuse gets a readiness segment naming the fixes", () => {
+    // The seeded scenario site: homepage still a draft, another page
+    // published without a description. The AI must hear this at the start
+    // of the turn, not from a refused stage_changes at its end.
+    const stageReadinessValue = assessStageReadiness([
+      { id: "h1", title: "Home", path: "/", status: "draft", hasMetaDescription: false },
+      {
+        id: "k1",
+        title: "Kontakt",
+        path: "/kontakt",
+        status: "published",
+        hasMetaDescription: false,
+      },
+    ]);
+    const line = buildStatusLine({ ...COMPLETE, stageReadinessValue });
+    expect(line).toStartWith("[Site status — Stage readiness] A Stage would be refused right now");
+    expect(line).toContain("pageId h1");
+    expect(line).toContain("set_pages_status_many");
+    expect(line).toContain("autofill_page_seo_many");
+    expect(line).toContain("before its stage_changes");
+  });
+
+  it("a Stage-ready site adds nothing, and a failed readiness read is not evidence", () => {
+    const stageReadinessValue = assessStageReadiness([
+      { id: "h1", title: "Home", path: "/", status: "published", hasMetaDescription: true },
+    ]);
+    expect(buildStatusLine({ ...COMPLETE, stageReadinessValue })).toBeUndefined();
+    expect(buildStatusLine({ ...COMPLETE, stageReadinessValue: null })).toBeUndefined();
   });
 });

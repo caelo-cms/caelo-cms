@@ -45,17 +45,47 @@ const SEAL_KEY = new Uint8Array(Buffer.from(SEAL_KEY_B64, "base64"));
 
 /**
  * A broker access token wrapping `idToken`, as /token mints it: bound to
- * `resource` (null = both surfaces), expiring `ttlSeconds` after `nowMs`.
+ * `resource` (null = both surfaces) and issued to `client`, expiring
+ * `ttlSeconds` after `nowMs`.
  */
 export function accessToken(
   idToken: string,
   resource: string | null = null,
-  { nowMs = Date.now(), ttlSeconds = 3600 }: { nowMs?: number; ttlSeconds?: number } = {},
+  {
+    nowMs = Date.now(),
+    ttlSeconds = 3600,
+    client = "dcr:Test",
+  }: { nowMs?: number; ttlSeconds?: number; client?: string } = {},
 ): string {
   return seal(SEAL_KEY, "access", {
     id_token: idToken,
     resource,
+    client,
     exp: Math.floor(nowMs / 1000) + ttlSeconds,
+  });
+}
+
+/** A sealed refresh token as /token mints it (`client_key` omitted = pre-#968). */
+export function refreshToken(payload: {
+  client_id: string;
+  client_key?: string;
+  resource?: string | null;
+  iat?: number;
+}): string {
+  return seal(SEAL_KEY, "refresh", {
+    google_refresh_token: "1//google-refresh",
+    resource: null,
+    iat: Math.floor(START_MS / 1000),
+    ...payload,
+  });
+}
+
+/** A pre-#968 access token: no client in the seal. */
+export function legacyAccessToken(idToken: string, nowMs = Date.now()): string {
+  return seal(SEAL_KEY, "access", {
+    id_token: idToken,
+    resource: null,
+    exp: Math.floor(nowMs / 1000) + 3600,
   });
 }
 
@@ -63,7 +93,7 @@ export function accessToken(
 export function openAccess(
   token: string,
   nowSeconds: number,
-): { id_token: string; resource: string | null; exp: number } {
+): { id_token: string; resource: string | null; client: string; exp: number } {
   const opened = open(SEAL_KEY, "access", token, AccessSealSchema, nowSeconds);
   if (!opened.ok) throw new Error(`not a broker access token (${opened.reason})`);
   return opened.value;

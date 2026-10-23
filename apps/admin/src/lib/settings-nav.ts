@@ -357,15 +357,17 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       {
         href: "/settings/mcp",
         label: "External AI tools (MCP)",
-        description: "Connect Claude Code or another agent to this site with a token.",
+        description:
+          "Connect ChatGPT, Claude, Cursor and other AI tools by URL or token, and see which apps are connected.",
         permission: "settings.read",
         icon: "key",
-        keywords: ["mcp", "token", "claude code", "ide", "agent"],
+        keywords: ["mcp", "token", "claude code", "chatgpt", "connector", "ide", "agent"],
         related: [
           {
             href: "/settings/mcp/remote",
-            label: "Remote MCP setup",
-            description: "Let ChatGPT, claude.ai and other clients connect through Google sign-in.",
+            label: "Connect by URL: step by step",
+            description:
+              "Setup steps for ChatGPT, claude.ai, Claude Code, Cursor and other AI tools.",
             permission: "settings.read",
           },
           {
@@ -484,7 +486,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         href: "/settings/google-sign-in",
         label: "Google sign-in",
         description:
-          "Let users outside your Google organisation (Gmail, other companies) sign in to the admin.",
+          "Only needed for remote MCP (ChatGPT, claude.ai) or users outside your Google organisation (Gmail, other companies).",
         permission: "settings.read",
         icon: "key",
         keywords: [

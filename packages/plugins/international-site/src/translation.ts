@@ -18,10 +18,13 @@
  * strict result contract survive unchanged in spirit.
  */
 
-import { z } from "@caelo-cms/plugin-sdk";
+import {
+  slotIdOf,
+  translationContractOf,
+  translationContractText,
+} from "./translation-contract.js";
 
-/** `pages_seo.meta_description` hard cap (shared/seo.ts). */
-const SEO_DESCRIPTION_HARD_MAX = 320;
+export { slotIdOf };
 
 export interface ContentSlot {
   blockName: string;
@@ -85,23 +88,6 @@ export function alignSlots(
   return out;
 }
 
-/**
- * The identifier the translator echoes back, and the ONLY one it sees.
- *
- * A slot is really (blockName, position), but asking the model to
- * reproduce two fields alongside a third it must not use (moduleSlug)
- * invites exactly one mistake: a live run returned the module slug as
- * the block name, the structural lock refused the whole translation,
- * and the AI fell back to translating by hand. An opaque positional id
- * removes the choice — there is one token, it is meaningless on its
- * own, and copying it is the only thing that can be done with it.
- *
- * Derived from the SOURCE order, so ids are stable within one call.
- */
-export function slotIdOf(index: number): string {
-  return `s${index}`;
-}
-
 /** id → (blockName, position) for the slots offered to the translator. */
 export function buildSlotIndex(
   slots: readonly ContentSlot[],
@@ -111,28 +97,24 @@ export function buildSlotIndex(
   );
 }
 
-/** The AI's response contract — strict, one entry per translated slot. */
-export const translationResultPayload = z
-  .object({
-    title: z.string().min(1).optional(),
-    /** #591 — the translated meta description (also the og:description).
-     *  Same cap as `pages_seo.meta_description`. */
-    metaDescription: z.string().min(1).max(SEO_DESCRIPTION_HARD_MAX).optional(),
-    slots: z.array(
-      z
-        .object({
-          /** The opaque slot id from the prompt, copied verbatim. */
-          slot: z.string().min(1),
-          /** Field → translated string. Only fields present here are
-           *  written; untouched fields keep their current value. */
-          values: z.record(z.string(), z.string()),
-        })
-        .strict(),
-    ),
-  })
-  .strict();
-
-export type TranslationResultPayload = z.infer<typeof translationResultPayload>;
+/**
+ * A validated translation answer as the write path applies it: field →
+ * translated string per slot; an absent `title` / `metaDescription` means
+ * "keep the current one". The wire shape the model answers in, and its
+ * per-call schema, live in ./translation-contract.ts.
+ */
+export interface TranslationResultPayload {
+  readonly title?: string;
+  /** #591 — the translated meta description (also the og:description). */
+  readonly metaDescription?: string;
+  readonly slots: ReadonlyArray<{
+    /** The opaque slot id from the prompt, copied verbatim. */
+    readonly slot: string;
+    /** Field → translated string. Only fields present here are written;
+     *  untouched fields keep their current value. */
+    readonly values: Readonly<Record<string, string>>;
+  }>;
+}
 
 export function renderGlossaryBlock(glossary: readonly GlossaryEntry[]): string {
   if (glossary.length === 0) return "";
@@ -185,11 +167,6 @@ function renderSlots(
 /** Id resolver for the source listing: plain positional order. */
 const bySourceOrder = (_s: ContentSlot, i: number): string => slotIdOf(i);
 
-const RESPONSE_CONTRACT =
-  'Respond with a JSON object matching: {"title": str (translated page title), "metaDescription": str (translated meta description — only when the page lists one; at most 320 characters, aim for 160), "slots": [{"slot": "<the slot id from the heading, copied EXACTLY — e.g. s0>", "values": {"<field>": "<translated string>", ...}}, ...]}. ' +
-  'Never invent a slot id and never substitute the module slug or block name for it — copy the "### Slot <id>" token verbatim. ' +
-  "Include ONLY string fields you translated; preserve every HTML tag, attribute, class, id, href, and inline style inside field values verbatim — only human-readable text is translated. Numbers, code samples, and untranslatable proper nouns stay as-is.";
-
 export interface FullPromptInput {
   sourceLocale: string;
   targetLocale: string;
@@ -213,9 +190,17 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
     `Source locale: ${input.sourceLocale}.`,
     `Target locale: ${input.targetLocale} (${targetLabel}).`,
     "",
-    "STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Translate ONLY the content fields of each existing module, plus the page title and, when one is listed, the meta description (write it as a search-result snippet in the target language, not a word-for-word rendering).",
+    `STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Translate ONLY the content fields of each existing module, plus the page title${input.sourceMetaDescription.length > 0 ? " and the meta description (write it as a search-result snippet in the target language, not a word-for-word rendering)" : ""}.`,
     "",
-    `${RESPONSE_CONTRACT} Return ONE entry per slot listed below.`,
+    `${translationContractText(
+      translationContractOf({
+        mode: "full",
+        sourceSlots: input.sourceSlots,
+        alignment: [],
+        sourceMetaDescription: input.sourceMetaDescription,
+        variantMetaDescription: "",
+      }),
+    )} Return ONE entry per slot listed below.`,
     renderGlossaryBlock(input.glossary),
     renderStyleGuideBlock(input.styleGuide),
   ]
@@ -252,9 +237,17 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     `Source locale: ${input.sourceLocale}.`,
     `Target locale: ${input.targetLocale} (${targetLabel}).`,
     "",
-    "STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Re-translate ONLY slots whose source content is no longer reflected by the existing translation; preserve the existing translation verbatim everywhere else by OMITTING those slots from your response. The same goes for the meta description: include metaDescription only when the existing one no longer reflects the source.",
+    `STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Re-translate ONLY slots whose source content is no longer reflected by the existing translation; preserve the existing translation verbatim everywhere else by OMITTING those slots from your response.${updateMetaRule(input)}`,
     "",
-    `${RESPONSE_CONTRACT} Return entries ONLY for slots you re-translated — do NOT include unchanged slots.`,
+    `${translationContractText(
+      translationContractOf({
+        mode: "update",
+        sourceSlots: input.sourceSlots,
+        alignment: input.alignment,
+        sourceMetaDescription: input.sourceMetaDescription,
+        variantMetaDescription: input.variantMetaDescription,
+      }),
+    )} Return entries ONLY for slots you re-translated — do NOT include unchanged slots.`,
     renderGlossaryBlock(input.glossary),
     renderStyleGuideBlock(input.styleGuide),
   ]
@@ -275,7 +268,7 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     "",
     `Title: ${input.variantTitle}`,
     ...(input.variantMetaDescription.length === 0 && input.sourceMetaDescription.length > 0
-      ? ["Meta description: (none yet — include metaDescription, translated from the source)"]
+      ? ["Meta description: (none yet — translate the source's into metaDescription)"]
       : metaDescriptionLines(input.variantMetaDescription)),
     "",
     renderSlots(input.variantSlots, (slot) => {
@@ -303,6 +296,16 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     );
   }
   return { system, user: userLines.join("\n") };
+}
+
+/** The update-mode meta description rule — nothing at all when the
+ *  source has no description (the contract has no such key then). */
+function updateMetaRule(input: UpdatePromptInput): string {
+  if (input.sourceMetaDescription.length === 0) return "";
+  if (input.variantMetaDescription.length === 0) {
+    return " The translation has no meta description yet: translate the source's.";
+  }
+  return " The same goes for the meta description: re-translate it only when the existing one no longer reflects the source, otherwise answer null for it.";
 }
 
 /** The meta description under the title, fenced like a slot field; no

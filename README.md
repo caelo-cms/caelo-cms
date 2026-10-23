@@ -82,10 +82,10 @@ No laptop needed: install into your own Google Cloud project from Cloud Shell.
 
 | | |
 |---|---|
-| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.64&cloudshell_tutorial=gcp.md) |
-| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.64&cloudshell_tutorial=gcp-firebase.md) |
+| Google Cloud, load balancer + Cloud CDN (`gcp`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=main&cloudshell_tutorial=gcp.md) |
+| Google Cloud, Firebase Hosting (`gcp-firebase`) | [![Open in Cloud Shell](https://gstatic.com/cloudssh/images/open-btn.svg)](https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=main&cloudshell_tutorial=gcp-firebase.md) |
 
-Cloud Shell opens a short tutorial: sign in, run `./run.sh`, answer a few questions, confirm the monthly cost. The install then runs as a job in your project, so closing the tab doesn't stop it, and clicking the button again picks it up. The links are pinned to this release; `run.sh` verifies the provisioner's npm provenance and the release's signed manifest before anything runs ([how](https://github.com/caelo-cms/install#what-happens-when-you-click)).
+Cloud Shell opens a short tutorial: sign in, run `./run.sh`, answer a few questions, confirm the monthly cost. The install then runs as a job in your project, so closing the tab doesn't stop it, and clicking the button again picks it up. The buttons always install the newest stable release; `run.sh` verifies the provisioner's npm provenance and the release's signed manifest before anything runs ([how](https://github.com/caelo-cms/install#what-happens-when-you-click)).
 
 ### Google Cloud, from a terminal
 
@@ -118,6 +118,24 @@ claude mcp add caelo-admin \
 ```
 
 Then ask it for an outcome, for example *"Add a pricing page in our design system and stage it for review."* Details: [MCP and Power-MCP docs](https://caelo-cms.com/docs/mcp/).
+
+Or install the Claude Code plugin, which adds the same server plus skills for connecting, safe editing and handing a site over to Caelo, and asks for the admin URL and token itself ([details](integrations/claude-code/README.md)):
+
+```bash
+claude plugin marketplace add caelo-cms/caelo-cms
+claude plugin install caelo@caelo-cms
+```
+
+**Cursor:** [![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=caelo-admin&config=eyJjb21tYW5kIjoiYnVueCIsImFyZ3MiOlsiLS1wYWNrYWdlIiwiQGNhZWxvLWNtcy9tY3Atc2VydmVyQGxhdGVzdCIsImNhZWxvLWFkbWluLW1jcCJdLCJlbnYiOnsiQ0FFTE9fQURNSU5fVVJMIjoiaHR0cHM6Ly9hZG1pbi5leGFtcGxlLmNvbSIsIkNBRUxPX01DUF9UT0tFTiI6Im1jcF95b3VyX3Rva2VuIn19), then replace the two placeholder values in Cursor's MCP settings with your admin URL and token. Cursor doesn't inherit your terminal's PATH, so if the server doesn't start, put the full path of `bunx` (`which bunx`) as the command.
+
+**Codex CLI** (`~/.codex/config.toml`):
+
+```toml
+[mcp_servers.caelo-admin]
+command = "bunx"
+args = ["--package", "@caelo-cms/mcp-server@latest", "caelo-admin-mcp"]
+env = { CAELO_ADMIN_URL = "https://admin.example.com", CAELO_MCP_TOKEN = "mcp_<token>" }
+```
 
 ## Documentation
 

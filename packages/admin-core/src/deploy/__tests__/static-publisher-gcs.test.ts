@@ -418,6 +418,37 @@ describe("gcsStaticPublisher.promoteToProduction", () => {
     );
     expect(staticBucket.files.has("sitemap.xml")).toBe(false);
   });
+
+  // PR #947 review — the staged run skipped an unchanged sitemap.xml (it
+  // is served from the live copy); if that live copy is gone, promote must
+  // refuse before any file moves rather than advertise a 404.
+  it("refuses a run whose hash-skipped sitemap vanished from the live bucket", async () => {
+    await writeGeneratorArtefacts({ env: "staging", envNoindexInHtml: false });
+    const sitemapBody = Buffer.from("<urlset></urlset>", "utf8");
+    staticBucket.files.set("_state/last-build-manifest.json", {
+      ...makeFile(staticBucket, "_state/last-build-manifest.json"),
+      body: Buffer.from(
+        JSON.stringify({
+          buildId: "prev",
+          files: { "sitemap.xml": computeCrc32cBase64(sitemapBody) },
+          cachePolicyVersion: CACHE_POLICY_VERSION,
+        }),
+      ),
+    });
+    const gcsStaticPublisher = await publisher();
+    await gcsStaticPublisher.publishStaging({ buildDir, runId: "run-gone", target: TARGET });
+    expect(stagingBucket.files.has("run-gone/sitemap.xml")).toBe(false);
+    await expect(
+      gcsStaticPublisher.promoteToProduction({
+        sourceRunId: "run-gone",
+        sourceBuildDir: buildDir,
+        fromTarget: TARGET,
+        toTarget: PROD_TARGET,
+        siteBaseUrl: "https://www.example.com",
+      }),
+    ).rejects.toThrow("neither staged nor live");
+    expect(staticBucket.files.has("en/about/index.html")).toBe(false);
+  });
 });
 
 describe("gcsStaticPublisher — Cache-Control per path class", () => {

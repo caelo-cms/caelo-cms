@@ -16,14 +16,11 @@ import {
   canonicaliseHtmlLinks,
   canonicaliseJsonLinks,
   type ExecutionContext,
-  linkCanonicaliseRun,
 } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
 import { loadModuleStateWithBranchOverlay } from "../snapshots/load.js";
 import {
   type CanonicaliseOutcome,
   canonicaliseLinksForWrite,
-  loadLinkTargetLookup,
   probeLinkLookup,
 } from "./canonicalise.js";
 
@@ -122,81 +119,6 @@ export async function canonicaliseLayoutHtml(
   return canonicaliseLinksForWrite(tx, ctx, (run) => canonicaliseHtmlLinks(html, run, "html"), {
     previous: previousHtml === undefined ? undefined : { html: previousHtml },
   });
-}
-
-/** One link an import could not turn into a reference. */
-export interface UnresolvedImportLink {
-  readonly moduleId: string;
-  readonly value: string;
-}
-
-/**
- * Canonicalise the HTML of the modules an import just composed, in
- * REPORT mode (maintainer decision 3 on #724): links that resolve to an
- * imported page (directly, through the old-URL 301 the import wrote, or
- * as an absolute URL on the migrated site's host) become references;
- * the rest stay literal and are returned — never guessed.
- *
- * Runs once after every page of the run exists, so a header composed
- * with the first page still resolves links to the last one.
- *
- * The UPDATE below rewrites module rows this same compose transaction
- * just inserted (or upserted); it is the second half of that one write,
- * not a separate edit, so it deliberately emits no snapshot and does not
- * bump `updated_at` — it inherits whatever the compose does for the row.
- */
-export async function canonicaliseImportedModules(
-  tx: TransactionRunner,
-  ctx: ExecutionContext,
-  moduleIds: readonly string[],
-  sourceUrl: string,
-): Promise<UnresolvedImportLink[]> {
-  if (moduleIds.length === 0) return [];
-  const rows = (await tx.execute(sql`
-    SELECT id::text AS id, html FROM modules
-    WHERE id IN (${sql.join(
-      moduleIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    )})
-  `)) as unknown as { id: string; html: string }[];
-  const candidates = rows.filter(
-    (r) => probeLinkLookup((run) => canonicaliseHtmlLinks(r.html, run, "html")).needsLookup,
-  );
-  if (candidates.length === 0) return [];
-  const lookup = await loadLinkTargetLookup(
-    tx,
-    ctx.chatBranchId ?? null,
-    sourceSiteHosts(sourceUrl),
-  );
-  const unresolved: UnresolvedImportLink[] = [];
-  for (const r of candidates) {
-    const run = linkCanonicaliseRun(lookup, { mode: "report" });
-    const next = canonicaliseHtmlLinks(r.html, run, "html");
-    for (const i of run.issues) unresolved.push({ moduleId: r.id, value: i.value });
-    if (next !== r.html) {
-      await tx.execute(sql`UPDATE modules SET html = ${next} WHERE id = ${r.id}::uuid`);
-    }
-  }
-  return unresolved;
-}
-
-/**
- * The migrated site's host and its www / apex twin: a site crawled at
- * `https://example.com` links itself as `https://www.example.com/...` as
- * often as not, and both mean its (now imported) pages. An unparsable
- * source URL only means its absolute links stay literal (and reported).
- */
-export function sourceSiteHosts(sourceUrl: string): string[] {
-  let u: URL;
-  try {
-    u = new URL(sourceUrl);
-  } catch {
-    return [];
-  }
-  const host = u.hostname.toLowerCase();
-  const port = u.port ? `:${u.port}` : "";
-  const twin = host.startsWith("www.") ? host.slice(4) : `www.${host}`;
-  return [`${host}${port}`, `${twin}${port}`];
 }
 
 /**

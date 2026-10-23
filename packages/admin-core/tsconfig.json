@@ -6,7 +6,11 @@
     "outDir": "./dist",
     "noEmit": false
   },
-  "include": ["src/**/*", "src/ai/model-catalog.json"],
+  "include": [
+    "src/**/*",
+    "src/ai/model-catalog.json",
+    "src/security/google-sign-in/recorded-google-oauth.json"
+  ],
   "references": [
     { "path": "../font-service" },
     { "path": "../shared" },

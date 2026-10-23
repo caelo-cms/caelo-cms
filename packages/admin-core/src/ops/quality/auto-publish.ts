@@ -92,7 +92,7 @@ async function block(
     SELECT t.id, ${ctx.actorId}::uuid, 'failed', clk.ts, clk.ts,
            ${`Automatic publish stopped by the quality gate: ${message}`}
     -- One instant for both: a stop, not a run; and the same clock as the
-    -- deploy_runs.started_at default (0340), never the transaction start.
+    -- deploy_runs.started_at default (0346), never the transaction start.
     FROM deploy_targets t, (SELECT clock_timestamp() AS ts) clk WHERE t.name = 'production'
   `);
   await recordAudit(tx, {

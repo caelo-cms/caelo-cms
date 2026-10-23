@@ -11,7 +11,12 @@
    * to /content/chat/[sessionId]/stream stays untouched.
    */
 
-  import { CHAT_IMAGE_MIMES, CHAT_MAX_ATTACHMENTS, CHAT_MAX_ATTACHMENT_BYTES } from "@caelo-cms/shared";
+  import {
+    CHAT_IMAGE_MIMES,
+    CHAT_MAX_ATTACHMENTS,
+    CHAT_MAX_ATTACHMENT_BYTES,
+    screenshotTargetNotRendered,
+  } from "@caelo-cms/shared";
   import { ArrowDown, ImagePlus, Lock, Square, Unlock } from "lucide-svelte";
   import { onMount, tick } from "svelte";
   import { page } from "$app/state";
@@ -37,6 +42,7 @@
   } from "#lib/components/agents/agent-runs-client.js";
   import DebugPanel from "./DebugPanel.svelte";
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
+  import CredentialHandoffs from "../CredentialHandoffs.svelte";
   import InlineDiff from "./InlineDiff.svelte";
   import QualityFixOfferCard from "./QualityFixOfferCard.svelte";
   import {
@@ -336,6 +342,8 @@
     requestedVia: RequestedVia;
   }
   let sdkApprovals = $state<SdkApproval[]>([]);
+  // #971 — bumped to re-read the "One-time credentials" strip.
+  let credentialRefresh = $state(0);
   // Cards whose decision is on its way from this tab: a pending-list
   // refresh racing it must not bring them back meanwhile.
   const decidedApprovalIds = new Set<string>();
@@ -395,6 +403,10 @@
   }
 
   async function loadPendingProposals(): Promise<void> {
+    // #971 — an approval may have left a one-time credential for this
+    // operator; the strip re-reads whenever the pending state does. A write
+    // that does not read the state, so an $effect calling this never loops.
+    credentialRefresh = performance.now();
     try {
       const res = await fetch(`/content/chat/${session.id}/pending`, {
         headers: { accept: "application/json" },
@@ -1099,6 +1111,17 @@
         // viewport crop.
         captureTarget.scrollIntoView?.();
       }
+      // A 0×0 target paints a 0×0 canvas, which toBlob cannot encode. Script-
+      // revealed elements (a consent banner) are 0×0 here because this frame
+      // runs no scripts; the tool hands that case to the server-side renderer.
+      const notRendered = screenshotTargetNotRendered(
+        req.selector ?? "page body",
+        captureTarget.getBoundingClientRect(),
+      );
+      if (notRendered) {
+        await uploadFailure(notRendered);
+        return;
+      }
       // html2canvas-pro: maintained fork with modern CSS color support
       // (color-mix(), oklch, color()) — the original html2canvas parser
       // threw "unsupported color function" on AI-authored module CSS and
@@ -1130,7 +1153,12 @@
         canvas.toBlob(resolve, "image/jpeg", 0.85),
       );
       if (!blob) {
-        await uploadFailure("canvas.toBlob returned null");
+        // The target had a size, so the canvas did too: what is left is a
+        // canvas the browser cannot encode (beyond its maximum canvas area).
+        await uploadFailure(
+          screenshotTargetNotRendered(req.selector ?? "page body", canvas) ??
+            `the ${canvas.width}×${canvas.height}px capture could not be encoded (beyond this browser's canvas size limit) — capture a smaller element via selector`,
+        );
         return;
       }
       const arrayBuffer = await blob.arrayBuffer();
@@ -2679,6 +2707,10 @@
             {/if}
           </div>
         {/if}
+        <!-- #971 — a credential an approval in this chat produced (a new
+             user's password, an MCP token): shown to the approver only,
+             never to the AI. -->
+        <CredentialHandoffs {csrfToken} refreshKey={credentialRefresh} />
         <!-- Plan B (SDK approval gate) — inline Approve/Reject for a gated tool
              a turn in this chat paused on. This chat's own AI resumes (or
              reacts to a denial) as soon as the operator decides; an external

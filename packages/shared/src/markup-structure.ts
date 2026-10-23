@@ -256,7 +256,15 @@ export function templateShape(templateHtml: string): SubtreeShape | null {
  * walked in step with the template tree; a rendered child that no template
  * child can account for (same tag, template's classes all present) starts
  * a free region. List sections still match, because every iteration of a
- * section renders the same template child.
+ * section renders the same template child. Nested module roots
+ * (`data-caelo-module-id`) are skipped: their own template accounts for
+ * them.
+ *
+ * Several template children can account for one rendered child — a
+ * classless `<div>` accounts for any `<div>` — so the walk picks the best
+ * one ({@link pickTemplateChild}), not the first: taking the first paired
+ * a classless left column with the classed right column and reported the
+ * right column's template markup as free (#1027).
  *
  * @returns the free region roots, or null when the rendered root does not
  * match the template root at all (a module the composer renders from
@@ -268,17 +276,103 @@ export function freeRegions(
 ): MarkupNode[] | null {
   const tRoot = templateRoots[0];
   if (!tRoot || !accounts(tRoot, rendered)) return null;
+  return [...attribute(rendered, tRoot, new Map()).free];
+}
+
+/** How one rendered subtree attributes against one template subtree. */
+interface Attribution {
+  /** The free region roots below the rendered node. */
+  readonly free: readonly MarkupNode[];
+  /** Elements inside those regions: the cost the best match minimises. */
+  readonly freeNodes: number;
+}
+
+type AttributionMemo = Map<MarkupNode, Map<MarkupNode, Attribution>>;
+
+/**
+ * Attribute the children of `r`, rendered from template node `t`.
+ * Memoised per (rendered, template) pair, because the best-match choice
+ * evaluates a rendered child against every candidate that accounts for
+ * it; each pair is computed once, so the walk stays polynomial.
+ */
+function attribute(r: MarkupNode, t: MarkupNode, memo: AttributionMemo): Attribution {
+  let byTemplate = memo.get(r);
+  const hit = byTemplate?.get(t);
+  if (hit) return hit;
   const free: MarkupNode[] = [];
-  const walk = (r: MarkupNode, t: MarkupNode) => {
-    for (const c of r.children) {
-      if (c.moduleId !== null) continue;
-      const match = t.children.find((tc) => accounts(tc, c));
-      if (match) walk(c, match);
-      else free.push(c);
+  let freeNodes = 0;
+  // Template index of the previous rendered child's match: siblings
+  // render in template order (a section repeats one child in place).
+  let cursor = 0;
+  for (const c of r.children) {
+    if (c.moduleId !== null) continue;
+    const match = pickTemplateChild(c, t.children, cursor, memo);
+    if (match) {
+      cursor = match.index;
+      for (const f of match.attribution.free) free.push(f);
+      freeNodes += match.attribution.freeNodes;
+    } else {
+      free.push(c);
+      freeNodes += countNodes(c);
     }
-  };
-  walk(rendered, tRoot);
-  return free;
+  }
+  const out: Attribution = { free, freeNodes };
+  if (!byTemplate) {
+    byTemplate = new Map();
+    memo.set(r, byTemplate);
+  }
+  byTemplate.set(t, out);
+  return out;
+}
+
+/**
+ * The template child that rendered `c`, among those that account for it:
+ *   1. the exact class set wins over a subset (`div.chat.rv` over `div.rv`),
+ *   2. then the most classes in common, so a classless template child
+ *      wins only when no classed one accounts for `c`,
+ *   3. then the one whose subtree leaves the fewest elements unaccounted,
+ *   4. then sibling order: at or after the previous match, nearest first.
+ */
+function pickTemplateChild(
+  c: MarkupNode,
+  candidates: readonly MarkupNode[],
+  cursor: number,
+  memo: AttributionMemo,
+): { readonly index: number; readonly attribution: Attribution } | null {
+  let best: {
+    readonly index: number;
+    readonly attribution: Attribution;
+    readonly rank: readonly number[];
+  } | null = null;
+  for (const [index, tc] of candidates.entries()) {
+    if (!accounts(tc, c)) continue;
+    const attribution = attribute(c, tc, memo);
+    const rank = [
+      tc.classes.length === c.classes.length ? 1 : 0,
+      tc.classes.length,
+      -attribution.freeNodes,
+      index >= cursor ? 1 : 0,
+      -Math.abs(index - cursor),
+    ];
+    if (!best || outranks(rank, best.rank)) best = { index, attribution, rank };
+  }
+  return best;
+}
+
+function outranks(a: readonly number[], b: readonly number[]): boolean {
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}
+
+/** Elements in a subtree, nested module roots excluded (they are not free). */
+function countNodes(n: MarkupNode): number {
+  let count = 1;
+  for (const c of n.children) if (c.moduleId === null) count += countNodes(c);
+  return count;
 }
 
 function accounts(template: MarkupNode, rendered: MarkupNode): boolean {

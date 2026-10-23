@@ -222,9 +222,22 @@ one `propose_<action>` tool per action that wraps the op.
 
 Three sub-patterns for how secrets travel:
 
-- **Server-generated** (`users`, `mcp_tokens`): execute_proposal
-  generates the secret server-side at approve time, returns it once
-  in the response so the Owner UI can copy it.
+- **Server-generated, collected by the approver** (`users`,
+  `mcp_tokens`; issue #971): execute_proposal creates the user / token
+  WITHOUT a usable credential and records a `credential_handoffs` row
+  for the human who approved. Its output carries only that reference
+  (`credentialHandoff`) — never the secret, because in the chat the
+  executor's output IS the AI's tool result, and over remote MCP that
+  AI is a third party's. The approver collects the credential from the
+  "One-time credentials" box (Live Edit chat, `/settings/users`,
+  `/settings/mcp`): `credentials.issue` (human-only, RLS-bound to the
+  approver) generates it then and returns it once — or, for a new user
+  on an install with email, sends a set-password link instead. Nothing
+  secret is stored. The gated tool declares `producesCredential`
+  (`makeProposeTool`), which adds the "you never see it" contract to its
+  description; `credential-free-ai-results.test.ts` fails when an
+  executor's output schema grows a secret-shaped field or a handoff
+  without that declaration.
 - **Owner-supplies-at-approve** (`email_config`, `ai_providers`):
   AI proposes config WITHOUT the secret. The Owner UI's approve
   form takes a password input; the form action calls
@@ -240,7 +253,7 @@ rejects `config.apiKey` even though the schema would tolerate it).
 
 When in doubt, copy:
 
-- `packages/admin-core/src/ops/user_pending.ts` — server-generated-secret shape.
+- `packages/admin-core/src/ops/user_pending.ts` — server-generated-secret shape (credential handoff, `ops/credential_handoffs.ts`).
 - `packages/admin-core/src/ops/email_config_pending.ts` — Owner-supplies-secret shape.
 - `packages/admin-core/src/ops/template_pending.ts` — no-secret shape with blast-radius preview.
 - `packages/admin-core/src/ai/tools/propose-tools-batch.ts` — AI tool factory usage.

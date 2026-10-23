@@ -13,6 +13,7 @@
 import { execute } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
+  flattenTokens,
   fontAxisPolicy,
   fontRef,
   listThemeCssVarNames,
@@ -45,11 +46,77 @@ const setThemeTokensToolInput = z
       .record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,79}$/), fontAxisPolicy.nullable())
       .optional(),
     set: z.record(z.string(), z.unknown()).optional(),
+    /** A (partial) DTCG document; every `{$value}` leaf joins `set` at its path. */
+    tokens: z
+      .union([z.record(z.string(), z.unknown()), z.string()])
+      .optional()
+      .describe(
+        "A (partial) DTCG token document, the same shape get_theme shows and propose_create_theme takes " +
+          "(`{color: {primary: {$value: '#4338ca', $description: '…'}}, typography: {…}}`). Every `{$value}` leaf " +
+          "is upserted at its path — use it to write a whole composed palette in one call. Loose names go in `set`.",
+      ),
     /** Canonical DTCG paths to drop. */
     remove: z.array(z.string()).optional(),
   })
   .strict();
 type SetThemeTokensToolInput = z.infer<typeof setThemeTokensToolInput>;
+
+/**
+ * e2e-livedit detected bugs — the AI composed a full DTCG document (the
+ * shape every other theme surface shows it: get_theme, propose_create_theme,
+ * the theme guidance's document skeleton) and passed it as `tokens`, which
+ * this tool did not accept. A document is a legitimate way to state many
+ * tokens at once, so it is accepted and turned into `set` entries keyed by
+ * canonical path: the op's normaliser takes a `{$value, $description}`
+ * envelope at a canonical path as-is.
+ *
+ * @returns the merged `set`, or an AI-actionable message when the document
+ *   is not JSON, holds no `{$value}` leaf, or names a path `set` also writes.
+ */
+export function mergeTokenDocumentIntoSet(
+  tokens: Record<string, unknown> | string,
+  set: Record<string, unknown> | undefined,
+): { ok: true; set: Record<string, unknown> } | { ok: false; message: string } {
+  let doc: unknown = tokens;
+  if (typeof tokens === "string") {
+    try {
+      doc = JSON.parse(tokens) as unknown;
+    } catch (e) {
+      return {
+        ok: false,
+        message: `\`tokens\` is not a JSON document (${(e as Error).message}) — pass it as an object: {color: {primary: {$value: '#…'}}, …}.`,
+      };
+    }
+  }
+  if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
+    return {
+      ok: false,
+      message: "`tokens` must be a DTCG document object: {color: {primary: {$value: '#…'}}, …}.",
+    };
+  }
+  const leaves = flattenTokens(doc as ThemeDocument);
+  if (leaves.length === 0) {
+    return {
+      ok: false,
+      message:
+        "`tokens` holds no token: every token is a leaf with a `$value` ({color: {primary: {$value: '#4338ca'}}}). " +
+        "For loose names (primaryColor: '#…') use `set` instead.",
+    };
+  }
+  const merged: Record<string, unknown> = { ...(set ?? {}) };
+  const clashes: string[] = [];
+  for (const { path, token } of leaves) {
+    if (path in merged) clashes.push(path);
+    merged[path] = token;
+  }
+  if (clashes.length > 0) {
+    return {
+      ok: false,
+      message: `${clashes.join(", ")} given in both \`tokens\` and \`set\` — state each token once.`,
+    };
+  }
+  return { ok: true, set: merged };
+}
 
 export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensToolInput> = {
   name: "set_theme_tokens",
@@ -67,7 +134,8 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
     '{opsz: "full"} when the operator wants optical sizes kept; a wght range that excludes a weight the site uses makes ' +
     "that text render at the nearest kept weight. Read the current effective policy and byte sizes first with " +
     'get_theme(as: "font-delivery"). Axis tags or values the font does not have are rejected with its real ranges. ' +
-    "Pass `set` to add/replace tokens, `remove` to drop them. Works with the active theme " +
+    "Pass `set` to add/replace tokens (loose names or canonical paths), or `tokens` with a (partial) DTCG " +
+    "document in the get_theme / propose_create_theme shape to write a whole composed palette at once; `remove` drops tokens. Works with the active theme " +
     "by default; pass `themeSlug` to target a specific theme. For a complete theme " +
     "replacement, use `set_theme_tokens` with all desired tokens (it's an upsert per token, " +
     "not per-theme). When ambiguous (a bare name with no value-shape signal) the tool " +
@@ -77,7 +145,19 @@ export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensTool
   schema: setThemeTokensToolInput,
   // issue #251 (WS5) — inputSchema derived from `schema` at registration.
   handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.update_tokens", input);
+    const { tokens, ...opInput } = input;
+    if (tokens !== undefined) {
+      const merged = mergeTokenDocumentIntoSet(tokens, opInput.set);
+      if (!merged.ok) return { ok: false, content: merged.message };
+      opInput.set = merged.set;
+    }
+    const r = await execute(
+      toolCtx.registry,
+      toolCtx.adapter,
+      ctx,
+      "themes.update_tokens",
+      opInput,
+    );
     if (!r.ok) {
       return { ok: false, content: `themes.update_tokens failed: ${describeError(r.error)}` };
     }
