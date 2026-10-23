@@ -12,6 +12,7 @@
  *     publishes nothing.
  * B2: the real-AI gate runs on a branch pinned to the cut commit, never on
  *     main (which may move during the cut).
+ * B2a: once the dispatched run finished, the verdict reads that run by id.
  * B3: the release commit is verified (release-script files only, lint,
  *     lockstep, catalogue) before the branch + tag push, and that push is
  *     atomic.
@@ -73,6 +74,15 @@ describe("release-cut — tag on the release branch, keep main open", () => {
     expect(gate).toContain('git push origin "$SHA:refs/heads/release-gate/$SHA"');
     expect(gate).toContain('gh workflow run "$WORKFLOW_FILE" --ref "release-gate/$SHA"');
     expect(gate).not.toContain("--ref main");
+  });
+
+  it("B2a: judges the awaited run by its id, not by the lagging success listing", () => {
+    const gate = cutSteps[stepIndex(cutSteps, "Gate — real-AI suite")]?.run ?? "";
+    const verdict = gate.slice(gate.indexOf("waiting for run $run"));
+    // v0.10.66: the `status=success` listing missed a run finished 2 s earlier.
+    expect(verdict).not.toContain("ai_job_ok");
+    expect(verdict).toContain('gh api "repos/$REPO/actions/runs/$run" --jq \'.conclusion // ""\'');
+    expect(verdict).toContain('if [ "$verdict" != "success/success" ]; then');
   });
 
   it("B3: verifies the release commit before an atomic branch + tag push", () => {
