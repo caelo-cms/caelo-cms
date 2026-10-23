@@ -30,6 +30,27 @@ export type ApplyEditsResult =
   | { readonly ok: true; readonly content: string; readonly replacements: number }
   | { readonly ok: false; readonly error: string };
 
+/**
+ * Where `needle` starts, as 1-based lines with that line's text — the
+ * locations a "not unique" refusal names so the model can widen its anchor
+ * without re-reading the body. Capped; the count stays exact elsewhere.
+ */
+function matchLines(haystack: string, needle: string, max = 5): string[] {
+  const out: string[] = [];
+  let from = 0;
+  while (out.length < max) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) break;
+    const lineNo = haystack.slice(0, at).split("\n").length;
+    const lineStart = haystack.lastIndexOf("\n", at - 1) + 1;
+    const lineEnd = haystack.indexOf("\n", at);
+    const text = haystack.slice(lineStart, lineEnd === -1 ? undefined : lineEnd).trim();
+    out.push(`line ${lineNo}: ${text.length > 120 ? `${text.slice(0, 120)}…` : text}`);
+    from = at + needle.length;
+  }
+  return out;
+}
+
 /** Count non-overlapping literal occurrences of `needle` in `haystack`. */
 function countOccurrences(haystack: string, needle: string): number {
   if (needle.length === 0) return 0;
@@ -96,8 +117,9 @@ export function applyStringEdits(source: string, edits: readonly ContentEdit[]):
       return {
         ok: false,
         error:
-          `oldString is not unique${where}: ${count} matches. Add surrounding context to the ` +
-          `oldString so it matches exactly once, or pass replaceAll:true to change all ${count}.`,
+          `oldString is not unique${where}: ${count} matches (${matchLines(current, edit.oldString).join("; ")}). ` +
+          `Add surrounding context from the line you mean so the oldString matches exactly once, ` +
+          `or pass replaceAll:true to change all ${count}.`,
       };
     }
     current =
