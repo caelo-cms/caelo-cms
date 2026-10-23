@@ -1,16 +1,25 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Semantic matching of AI-filed reports (epic #901, #906). The install's
- * fingerprint only merges exact repeats of an AI report's title; the AI
- * words the same defect differently from one chat to the next. When a
- * fingerprint is new, the matcher compares the report with the recent
- * clusters of the same tool and names the one it describes, if any.
+ * Semantic matching of reports (epic #901, #906, #1049). A fingerprint only
+ * merges exact repeats: an auto-captured error's normalised text, an AI
+ * report's title. The AI words the same defect differently from one chat to
+ * the next, and names the tool differently too ("stage_changes",
+ * "stage_changes (Firebase Hosting staging channel promotion)"), and an
+ * auto-captured error and the AI's own report of it never share a
+ * fingerprint. So when a fingerprint is new, the matcher compares the report
+ * with the intake's pool of recent clusters, of every tool and both sources,
+ * and names the one it describes, if any. Tool and source are shown per
+ * candidate as hints for the model, never used to pre-filter.
  *
  * Structured output through the AI SDK's `generateObject` (CLAUDE.md §12).
  * Only a `high`-confidence answer naming one of the offered candidates is
  * accepted; anything else opens a new cluster, because a wrong merge hides
  * a defect while a missed one costs a maintainer one "close as duplicate".
+ *
+ * The prompt is bounded: at most `MAX_CANDIDATES` candidates of at most
+ * `CANDIDATE_TEXT_CHARS` description each, plus one report within the
+ * contract's field limits.
  */
 
 import { createAnthropic } from "@ai-sdk/anthropic";
@@ -19,6 +28,7 @@ import { generateObject, type LanguageModel } from "ai";
 import { z } from "zod";
 import type { ClusterSummary } from "./store.js";
 
+/** Names the existing cluster a report with a new fingerprint belongs to. */
 export interface ClusterMatcher {
   /** The id of the candidate this report describes, or null. */
   match(report: BugIntakeReport, candidates: ClusterSummary[]): Promise<string | null>;
@@ -32,26 +42,35 @@ const matchAnswer = z.object({
   confidence: z.enum(["high", "medium", "low"]),
 });
 
+const SOURCE_LABEL = {
+  ai: "filed by the AI assistant",
+  auto: "captured automatically from a failing tool call",
+} as const;
+
 /** Prompt for one match; exported so a test can pin what the model is told. */
 export function matchPrompt(report: BugIntakeReport, candidates: ClusterSummary[]): string {
   const list = candidates
     .map(
       (c) =>
-        `<candidate id="${c.id}">\nTitle: ${c.title}\nWhat happened: ${c.whatHappened}\n</candidate>`,
+        `<candidate id="${c.id}">\nSource: ${SOURCE_LABEL[c.source]}\nTool: ${c.suspectedTool ?? "(none named)"}\nTitle: ${c.title}\nWhat happened: ${c.whatHappened}\n</candidate>`,
     )
     .join("\n");
   return [
-    "You triage bug reports that an AI assistant filed against the Caelo CMS while working.",
+    "You triage bug reports about the Caelo CMS. Some were filed by its AI assistant while it worked,",
+    "others were captured automatically from a failing tool call (title and error text only).",
     "Decide whether the NEW report describes the same underlying defect as one of the candidates:",
-    "the same tool misbehaving in the same way, even if worded differently.",
-    "Different symptoms of one tool are different defects. When unsure, answer null.",
+    "the same thing misbehaving in the same way, even if worded differently.",
+    "The tool is written down freely and may be named differently for the same defect;",
+    "an automatic capture and an AI report of the same error are the same defect.",
+    "Different symptoms are different defects. When unsure, answer null.",
     "",
-    `<new-report>\nTool: ${report.suspectedTool ?? "(none named)"}\nTitle: ${report.title}\nWhat happened: ${report.whatHappened}\nExpected: ${report.expected}\n</new-report>`,
+    `<new-report>\nSource: ${SOURCE_LABEL[report.source]}\nTool: ${report.suspectedTool ?? "(none named)"}\nTitle: ${report.title}\nWhat happened: ${report.whatHappened}\nExpected: ${report.expected}\n</new-report>`,
     "",
     list,
   ].join("\n");
 }
 
+/** The model-backed matcher; accepts only a high-confidence answer naming an offered candidate. */
 export class LlmClusterMatcher implements ClusterMatcher {
   constructor(readonly model: LanguageModel) {}
 

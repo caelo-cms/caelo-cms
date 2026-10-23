@@ -17,12 +17,26 @@ Endpoints: `GET /health` and `GET /healthz` (liveness), `POST /v1/installs` (reg
 
 - **Signed requests.** On opt-in an install generates an Ed25519 key pair and registers the public key. Every report and status request is signed over method, path, timestamp and body hash; the intake refuses an unknown install, a bad signature, or a timestamp more than 5 minutes off.
 - **Trust on first use.** The intake pins the first key it sees for an install id and refuses a different key for that id later (409). Registration itself is unauthenticated: anyone can register an install id and, at threshold 1, get an issue filed. Nothing proves that a registering client is a real Caelo install. Spam is therefore **bounded, not prevented**: by the daily issue cap, the kill switch, the per-address and global registration limits, and the per-install request limit.
-- **One issue per defect.** A report joins a cluster by its fingerprint (computed on the install from tool and normalised error text, independent of the Caelo version). An AI-filed report with a new fingerprint is compared with the recent clusters of the same tool by a model (`BUG_INTAKE_MATCH_MODEL`); only a high-confidence match merges. Otherwise a new cluster starts.
+- **One issue per defect.** Reports of one defect form a cluster, and a cluster gets one issue. See [How matching works](#how-matching-works).
 - **Threshold.** A cluster gets its issue once `BUG_INTAKE_ISSUE_THRESHOLD_INSTALLS` distinct installs reported it.
 - **Daily cap.** At most `BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY` new issues per UTC calendar day. The counter lives in Firestore, so restarts and scale-to-zero do not reset it. A defect due an issue over the cap is stored and counted as usual and queued; queued defects are filed oldest first, at most three per incoming request, once the next day's slots exist. Every install refreshes its cluster status at least every six hours, so a queued defect waits at most that long past 00:00 UTC. Existing issues are not capped: body refreshes, milestone comments and regression reopens continue.
 - **Kill switch.** `BUG_INTAKE_ISSUES_PAUSED=true` stops every GitHub write (no issue created, edited, reopened or commented). Reports are still accepted, counted and stored, and defects due an issue are queued.
 - **Repeat reports** update the counters only: the issue body is refreshed when a new install or Caelo version appears, and a comment is added at 10 / 100 / 1,000 / 10,000 installs.
 - **Privacy.** Reports are redacted on the install before they are queued (email addresses, links, IP addresses, phone numbers, tokens, keys) and redacted again on the intake, so a modified client cannot skip it. The issue shows the structured fields and the redacted description inside code fences (no @mentions, no cross-references). The `evidence` field is never published: it stays in the intake's Firestore database, readable only by its operator.
+
+### How matching works
+
+Installs send two kinds of report: **auto** (captured when a tool call failed: tool name plus the error text) and **ai** (written by the install's AI assistant: title, what happened, expected, and the tool it suspects, in its own words). A report finds its cluster in three steps:
+
+1. **Fingerprint.** The install computes a fingerprint from the source, the tool and the normalised error text (auto) or title (ai), without the Caelo version. A fingerprint some cluster already holds is an exact repeat and joins that cluster without a model call.
+2. **Matcher.** A new fingerprint is compared by a model (`BUG_INTAKE_MATCH_MODEL`) with the **candidate pool**: the 40 newest clusters, of every tool and both sources. For each candidate the model sees its title, the start of what happened (600 characters), the suspected tool and the source. The tool is a hint, not a filter: the AI names one tool differently from chat to chat (`stage_changes`, `stage_changes (Firebase Hosting staging channel promotion)`), so filtering by it filed one defect as several issues (#1049). AI and auto reports join each other's clusters in both directions, because an automatic capture and the AI's own report of one failure never share a fingerprint. Only an answer with high confidence that names one of the offered candidates links the report (and its fingerprint, so later repeats are step 1). Any other answer starts a new cluster, because a wrong merge hides a defect, while a missed one costs a maintainer one "close as duplicate".
+3. **New cluster.** It goes to the front of the pool; the oldest entry beyond 40 drops out. A cluster the matcher links a report to also moves to the front.
+
+Steps 2 and 3 handle one report at a time, so a report sees the cluster created by the report just before it. Two reports of one new defect that arrive a second apart end in one cluster. Exact repeats skip this queue. The prompt stays bounded (40 candidates of at most about 1 kB each, plus the report), and the model is called only for new fingerprints.
+
+The pool is one Firestore document, `candidates/pool`. It replaced per-tool lists (`candidates/t_<tool>`) that held AI clusters only. When the intake finds no pool, it deletes those old documents and builds the pool from the 40 most recently reported clusters, leaving out clusters merged into another one. No step is needed on upgrade.
+
+Clusters that already have separate issues are not merged afterwards: close the extra issues as duplicates (see [what maintainers do](#closing-the-loop-what-maintainers-do-on-an-issue)) and the intake follows the original.
 
 ## One-time setup
 
@@ -163,7 +177,7 @@ curl -sS -X POST "https://<your intake domain>/v1/clusters/status" \
 
 Expect `401` with `{"error":"Unknown install; register its key first.","retryable":true}`: the service started with a complete configuration and read the install key from Firestore. A `503` means the Firestore read failed; check the database id and the service account's `roles/datastore.user` binding and its condition. A `401` about the timestamp means the local clock is more than 5 minutes off.
 
-**One instance is load-bearing** (`--max-instances 1`). Writes to one cluster are serialised by an in-process lock, and the rate limits (registrations per address, registrations overall, requests per install) are counted in memory. A second instance would halve every limit's effect and let two processes race on the same cluster; the store's version check would turn most races into retries, but a duplicate issue or a doubled comment is still possible. One instance with concurrency 20 is far more than the traffic needs. A restart resets the in-memory windows, which is acceptable for abuse damping; the daily issue counter is in Firestore and survives restarts.
+**One instance is load-bearing** (`--max-instances 1`). Writes to one cluster, and matching plus cluster creation, are serialised by in-process locks, and the rate limits (registrations per address, registrations overall, requests per install) are counted in memory. A second instance would halve every limit's effect and let two processes race on the same cluster; the store's version check would turn most races into retries, but a duplicate issue or a doubled comment is still possible. One instance with concurrency 20 is far more than the traffic needs. A restart resets the in-memory windows, which is acceptable for abuse damping; the daily issue counter is in Firestore and survives restarts.
 
 The per-address limit reads the caller's address from the last `x-forwarded-for` hop, which is what Cloud Run appends. On another platform, make sure the proxy in front of the intake appends the client address the same way.
 
@@ -184,7 +198,7 @@ Every variable is required (`apps/bug-intake/src/config.ts`); there are no defau
 | `BUG_INTAKE_MAX_NEW_ISSUES_PER_DAY` | New issues per UTC day; the rest are queued for later days. | Integer ≥ 1. | `20`. |
 | `BUG_INTAKE_ISSUES_PAUSED` | Kill switch: `true` = no GitHub write of any kind. | Exactly `true` or `false`; anything else stops the service at boot. | `false`. |
 | `BUG_INTAKE_MAX_REGISTRATIONS_PER_HOUR` | Registrations per hour across all clients, on top of the fixed per-address limit (20 per hour). | Integer ≥ 1. | `200`. |
-| `ANTHROPIC_API_KEY` | Key for the model that matches differently worded AI reports of the same defect. From the secret manager. | Non-empty. | Your key. |
+| `ANTHROPIC_API_KEY` | Key for the model that matches differently worded reports of the same defect. From the secret manager. | Non-empty. | Your key. |
 | `BUG_INTAKE_MATCH_MODEL` | Model id used for that matching. A small, fast model is enough. | Non-empty model id. | The current small Claude model. |
 
 Fixed limits (not configurable): 120 signed requests per install per hour, 64 KB per request, 10,000 install hashes stored per cluster (beyond that the count shows as "N+").

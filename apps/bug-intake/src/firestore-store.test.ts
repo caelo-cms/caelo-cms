@@ -5,7 +5,9 @@
  * `IntakeStore` method, including the races the service relies on
  * (first key wins, first fingerprint link wins, a stale cluster version is
  * refused, a lost compare-and-set re-reads instead of overwriting, so the
- * daily issue cap cannot be exceeded).
+ * daily issue cap cannot be exceeded), and the candidate pool of #1049,
+ * including its first build from a database that holds clusters and the
+ * old per-tool candidate lists.
  *
  * Races are forced, not hoped for: `racedStore` lets another writer commit
  * between the store's read and its write, which is exactly the losing side
@@ -27,7 +29,13 @@ import type { BugIntakeReport } from "@caelo-cms/shared";
 import { type DocumentReference, Firestore } from "@google-cloud/firestore";
 import { FirestoreStore } from "./firestore-store.js";
 import { IntakeService, type IssueTracker } from "./service.js";
-import { type ClusterRecord, MAX_CANDIDATES_PER_TOOL, type StoredReport } from "./store.js";
+import {
+  type ClusterRecord,
+  type ClusterSummary,
+  clusterSummary,
+  MAX_CANDIDATES,
+  type StoredReport,
+} from "./store.js";
 
 const EMULATOR = process.env.FIRESTORE_EMULATOR_HOST;
 const REQUIRED = process.env.CAELO_FIRESTORE_EMULATOR === "required";
@@ -49,6 +57,22 @@ const store = EMULATOR
   : null;
 const s = () => store as FirestoreStore;
 
+/**
+ * An empty database of its own (a new emulator project), for tests that
+ * need to know every document in a collection, such as the pool build.
+ */
+const freshDb = () =>
+  new Firestore({
+    projectId: `bug-intake-test-${crypto.randomUUID().slice(0, 8)}`,
+    ignoreUndefinedProperties: true,
+  });
+
+const summary = (
+  id: string,
+  suspectedTool: string | null,
+  source: "ai" | "auto" = "ai",
+): ClusterSummary => ({ id, title: `title of ${id}`, whatHappened: "w", suspectedTool, source });
+
 /** Forward every other property to the real object, bound to it, so the SDK never sees a proxy. */
 function forward<T extends object>(target: T, prop: string | symbol): unknown {
   const v = Reflect.get(target, prop, target);
@@ -59,13 +83,15 @@ function forward<T extends object>(target: T, prop: string | symbol): unknown {
  * A store on the same database in which, for the next `times` reads of
  * `collection/id`, `interfere()` commits another writer's change after the
  * read and before the store writes. `raced()` reports how often it fired,
- * so a test proves the race actually happened.
+ * so a test proves the race actually happened. `base` is the database (the
+ * suite's shared one unless a test brought its own).
  */
 function racedStore(
   collection: string,
   id: string,
   interfere: () => Promise<void>,
   times = 1,
+  base: Firestore = s().db,
 ): { store: FirestoreStore; raced: () => number } {
   let fired = 0;
   const wrapRef = (ref: DocumentReference) =>
@@ -82,7 +108,7 @@ function racedStore(
         };
       },
     });
-  const db = new Proxy(s().db, {
+  const db = new Proxy(base, {
     get(target, prop) {
       if (prop !== "collection") return forward(target, prop);
       return (name: string) => {
@@ -233,32 +259,129 @@ describe("FirestoreStore against the emulator (#980)", () => {
     expect((await s().getCluster("c_race"))?.value.occurrences).toBe(1);
   });
 
-  live("keeps the newest candidates per tool, deduplicated and capped", async () => {
-    expect(await s().candidates("build_page")).toEqual([]);
-    await s().addCandidate("build_page", { id: "c_first", title: "t", whatHappened: "w" });
-    // Another writer adds a candidate between this writer's read and write:
-    // the stale write is refused and re-read, so neither entry is lost.
-    const { store: raced, raced: fired } = racedStore("candidates", "t_build_page", () =>
-      s().addCandidate("build_page", { id: "c_other", title: "t", whatHappened: "w" }),
+  live(
+    "keeps one candidate pool of every tool, newest first, deduplicated and capped",
+    async () => {
+      const db = freshDb();
+      const pool = new FirestoreStore(db);
+      expect(await pool.candidates()).toEqual([]);
+      await pool.addCandidate(summary("c_first", "build_page"));
+      // Another writer adds a candidate between this writer's read and write:
+      // the stale write is refused and re-read, so neither entry is lost.
+      const { store: raced, raced: fired } = racedStore(
+        "candidates",
+        "pool",
+        () => pool.addCandidate(summary("c_other", "stage_changes (Firebase)", "auto")),
+        1,
+        db,
+      );
+      await raced.addCandidate(summary("c_mine", "stage_changes"));
+      expect(fired()).toBe(1);
+      expect((await pool.candidates()).map((c) => c.id)).toEqual(["c_mine", "c_other", "c_first"]);
+      expect((await pool.candidates())[1]).toEqual(
+        summary("c_other", "stage_changes (Firebase)", "auto"),
+      );
+      for (let i = 0; i < MAX_CANDIDATES + 2; i++) {
+        await pool.addCandidate(summary(`c_${i}`, `tool_${i}`));
+      }
+      await pool.addCandidate({ ...summary("c_5", "tool_5"), title: "again" });
+      const list = await pool.candidates();
+      expect(list.length).toBe(MAX_CANDIDATES);
+      expect(list[0]).toEqual({ ...summary("c_5", "tool_5"), title: "again" });
+      expect(list.filter((c) => c.id === "c_5").length).toBe(1);
+    },
+  );
+
+  live(
+    "builds the pool from the clusters a database already holds and drops the per-tool lists",
+    async () => {
+      // The live database before #1049: AI candidates bucketed per tool
+      // wording, the auto cluster in no bucket at all, one cluster merged.
+      const db = freshDb();
+      const before = new FirestoreStore(db);
+      const fixtures = [
+        cluster("c_1037", {
+          source: "auto",
+          suspectedTool: "stage_changes",
+          lastSeen: "2026-10-23T08:00:00.000Z",
+        }),
+        cluster("c_1039", { suspectedTool: "stage_changes", lastSeen: "2026-10-23T09:00:00.000Z" }),
+        cluster("c_1047", {
+          suspectedTool: "stage_changes (Firebase Hosting staging channel promotion)",
+          lastSeen: "2026-10-23T11:00:00.000Z",
+        }),
+        cluster("c_1043", {
+          suspectedTool: "quality audit (Lighthouse runner)",
+          lastSeen: "2026-10-23T10:00:00.000Z",
+        }),
+        cluster("c_merged", { mergedInto: "c_1039", lastSeen: "2026-10-23T12:00:00.000Z" }),
+      ];
+      for (const c of fixtures) expect(await before.putCluster(c, null)).toBe("ok");
+      const legacy = [
+        "t_stage_changes",
+        "t_stage_changes__firebase_hosting_staging_channel_promotion_",
+        "t_quality_audit__lighthouse_runner_",
+      ];
+      for (const id of legacy) {
+        await db
+          .collection("candidates")
+          .doc(id)
+          .set({ items: [{ id: "c_1039", title: "t", whatHappened: "w" }] });
+      }
+
+      // Another process builds the pool between this one's read and create:
+      // the losing create re-reads instead of failing or overwriting.
+      let b: ClusterSummary[] = [];
+      const { store: raced, raced: fired } = racedStore(
+        "candidates",
+        "pool",
+        async () => {
+          b = await new FirestoreStore(db).candidates();
+        },
+        1,
+        db,
+      );
+      const a = await raced.candidates();
+      expect(fired()).toBe(1);
+      expect(a).toEqual(b);
+      expect(a.map((c) => c.id)).toEqual(["c_1047", "c_1043", "c_1039", "c_1037"]);
+      expect(a.find((c) => c.id === "c_1037")).toEqual(clusterSummary(fixtures[0]!));
+      const left = (await db.collection("candidates").listDocuments()).map((d) => d.id);
+      expect(left).toEqual(["pool"]);
+
+      // From now on the pool is kept, not rebuilt.
+      await before.addCandidate(summary("c_new", "build_page"));
+      expect((await before.candidates()).map((c) => c.id)).toEqual([
+        "c_new",
+        "c_1047",
+        "c_1043",
+        "c_1039",
+        "c_1037",
+      ]);
+    },
+  );
+
+  live("builds the pool on the first add, paging past merged clusters", async () => {
+    const db = freshDb();
+    const st = new FirestoreStore(db);
+    // 160 clusters, the 70 most recently reported merged: the first build
+    // page (100) holds only 30 unmerged ones, so the build reads a second.
+    await Promise.all(
+      Array.from({ length: 160 }, (_, i) =>
+        st.putCluster(
+          cluster(`c_${String(i).padStart(3, "0")}`, {
+            lastSeen: new Date(Date.UTC(2026, 9, 1) + i * 60_000).toISOString(),
+            mergedInto: i >= 90 ? "c_000" : null,
+          }),
+          null,
+        ),
+      ),
     );
-    await raced.addCandidate("build_page", { id: "c_mine", title: "t", whatHappened: "w" });
-    expect(fired()).toBe(1);
-    expect((await s().candidates("build_page")).map((c) => c.id)).toEqual([
-      "c_mine",
-      "c_other",
-      "c_first",
-    ]);
-    for (let i = 0; i < MAX_CANDIDATES_PER_TOOL + 2; i++) {
-      await s().addCandidate("edit_module", { id: `c_${i}`, title: `t${i}`, whatHappened: "w" });
-    }
-    await s().addCandidate("edit_module", { id: "c_5", title: "again", whatHappened: "w" });
-    const list = await s().candidates("edit_module");
-    expect(list.length).toBe(MAX_CANDIDATES_PER_TOOL);
-    expect(list[0]).toEqual({ id: "c_5", title: "again", whatHappened: "w" });
-    expect(list.filter((c) => c.id === "c_5").length).toBe(1);
-    // Keys Firestore would refuse as document ids still work.
-    await s().addCandidate(".", { id: "c_dot", title: "t", whatHappened: "w" });
-    expect((await s().candidates("."))[0]?.id).toBe("c_dot");
+    await st.addCandidate(summary("c_fresh", "build_page"));
+    const ids = (await st.candidates()).map((c) => c.id);
+    expect(ids.length).toBe(MAX_CANDIDATES);
+    expect(ids.slice(0, 3)).toEqual(["c_fresh", "c_089", "c_088"]);
+    expect(ids.at(-1)).toBe(`c_0${89 - MAX_CANDIDATES + 2}`);
   });
 
   live("hands out at most `limit` issue slots per day and gives them back", async () => {

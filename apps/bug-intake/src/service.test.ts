@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Epic #901 (#903, #906) — the intake's promise: one issue per defect, no
- * matter how many installs report it or how the AI words it; issue state
+ * Epic #901 (#903, #906, #1049) — the intake's promise: one issue per
+ * defect, no matter how many installs report it, how the AI words it or
+ * names the tool, or whether it was captured automatically; issue state
  * flows back to the installs; nothing private reaches the public tracker.
  */
 
 import { beforeEach, describe, expect, it } from "bun:test";
-import type { BugIntakeReport } from "@caelo-cms/shared";
+import { type BugIntakeReport, computeBugFingerprint } from "@caelo-cms/shared";
 import type { IssueState, ReleaseInfo } from "./github.js";
 import type { ClusterMatcher } from "./matcher.js";
 import { IntakeRefusal, IntakeService, type IssueTracker } from "./service.js";
-import { MemoryStore } from "./store.js";
+import { type ClusterSummary, MAX_CANDIDATES, MemoryStore } from "./store.js";
 
 class FakeTracker implements IssueTracker {
   issues = new Map<number, IssueState & { title: string; body: string; labels: string[] }>();
@@ -101,11 +102,14 @@ let store: MemoryStore;
 let tracker: FakeTracker;
 let matcher: FakeMatcher;
 let clock: Date;
-const service = (threshold = 1, opts: { cap?: number; paused?: boolean } = {}) =>
+const service = (
+  threshold = 1,
+  opts: { cap?: number; paused?: boolean; matcher?: ClusterMatcher } = {},
+) =>
   new IntakeService({
     store,
     tracker,
-    matcher,
+    matcher: opts.matcher ?? matcher,
     issueThresholdInstalls: threshold,
     maxNewIssuesPerDay: opts.cap ?? 100,
     issuesPaused: opts.paused ?? false,
@@ -152,7 +156,7 @@ describe("IntakeService", () => {
     await expect(s.ingest(INSTALL_B, r)).rejects.toBeInstanceOf(IntakeRefusal);
   });
 
-  it("merges a differently worded AI report through the matcher, and only AI reports", async () => {
+  it("merges a differently worded AI report through the matcher; exact repeats skip it", async () => {
     const s = service();
     const a = await s.ingest(
       INSTALL_A,
@@ -168,8 +172,9 @@ describe("IntakeService", () => {
     // The new wording is now a direct hit.
     expect(await store.clusterIdForFingerprint("c".repeat(64))).toBe(a.clusterId);
 
+    // A repeat of a known fingerprint never asks the model.
     const calls = matcher.seen.length;
-    await s.ingest(INSTALL_A, report({ source: "auto", fingerprint: "d".repeat(64) }));
+    await s.ingest(INSTALL_A, report({ source: "ai", fingerprint: "c".repeat(64) }));
     expect(matcher.seen.length).toBe(calls);
   });
 
@@ -364,5 +369,259 @@ describe("IntakeService", () => {
     await s.register(INSTALL_A, "key-1");
     await s.register(INSTALL_A, "key-1");
     await expect(s.register(INSTALL_A, "key-2")).rejects.toMatchObject({ status: 409 });
+  });
+});
+
+/**
+ * A stand-in for the model that recognises a defect by its error signal,
+ * whatever the wording or tool name, and answers like the real matcher
+ * would: a high-confidence id only for an offered candidate of the same
+ * defect. It takes a few milliseconds, as a model call does, so reports
+ * that are not serialised would overlap.
+ */
+class DefectMatcher implements ClusterMatcher {
+  offered: ClusterSummary[][] = [];
+  constructor(readonly signals: RegExp[]) {}
+  #defect(text: string): number {
+    return this.signals.findIndex((s) => s.test(text));
+  }
+  async match(r: BugIntakeReport, candidates: ClusterSummary[]) {
+    this.offered.push(structuredClone(candidates));
+    await new Promise((done) => setTimeout(done, 5));
+    const defect = this.#defect(`${r.title}\n${r.whatHappened}`);
+    if (defect === -1) return null;
+    return (
+      candidates.find((c) => this.#defect(`${c.title}\n${c.whatHappened}`) === defect)?.id ?? null
+    );
+  }
+}
+
+const FIREBASE_400 =
+  'Firebase Hosting API 400 INVALID_ARGUMENT: "updateMask=expireTime" is not a valid field for this channel.';
+const TBT_FLIP =
+  "Lighthouse Total Blocking Time flips between 0 ms and 400 ms on unchanged pages, so the performance score jumps by 20 points between runs.";
+
+/** A report as an install sends it, fingerprint computed the install's way. */
+async function sent(
+  over: Pick<BugIntakeReport, "source" | "suspectedTool" | "title" | "whatHappened">,
+): Promise<BugIntakeReport> {
+  return report({ ...over, fingerprint: await computeBugFingerprint(over) });
+}
+
+describe("IntakeService matching over one candidate pool (#1049)", () => {
+  const INSTALL_C = "44444444-4444-4444-8444-444444444444";
+  const INSTALL_D = "55555555-5555-4555-8555-555555555555";
+  let defects: DefectMatcher;
+  beforeEach(() => {
+    defects = new DefectMatcher([/updateMask=expireTime/, /Total Blocking Time/]);
+  });
+
+  it("files the six live reports of two defects (issue #1049's table) as two clusters", async () => {
+    const s = service(1, { matcher: defects });
+    const r1037 = await s.ingest(
+      INSTALL_A,
+      await sent({
+        source: "auto",
+        suspectedTool: "stage_changes",
+        title: "Tool stage_changes returned an error",
+        whatHappened: FIREBASE_400,
+      }),
+    );
+    const r1039 = await s.ingest(
+      INSTALL_B,
+      await sent({
+        source: "ai",
+        suspectedTool: "stage_changes",
+        title: "Staging fails: Firebase refuses the channel's expireTime update",
+        whatHappened: `stage_changes failed. ${FIREBASE_400}`,
+      }),
+    );
+    // #1047 and #1048 came from one install about a second apart.
+    const [r1047, r1048] = await Promise.all([
+      s.ingest(
+        INSTALL_C,
+        await sent({
+          source: "ai",
+          suspectedTool: "stage_changes (Firebase Hosting staging channel promotion)",
+          title: "Promoting the staging channel fails with a 400",
+          whatHappened: `The staging channel could not be promoted: ${FIREBASE_400}`,
+        }),
+      ),
+      s.ingest(
+        INSTALL_C,
+        await sent({
+          source: "ai",
+          suspectedTool: "stage_changes (static-publisher-firebase selectStagingPreview)",
+          title: "selectStagingPreview sends an invalid update mask",
+          whatHappened: `selectStagingPreview patched the channel and got: ${FIREBASE_400}`,
+        }),
+      ),
+    ]);
+    const r1043 = await s.ingest(
+      INSTALL_A,
+      await sent({
+        source: "ai",
+        suspectedTool: "quality audit (Lighthouse runner)",
+        title: "Quality audit performance score is unstable",
+        whatHappened: TBT_FLIP,
+      }),
+    );
+    const r1046 = await s.ingest(
+      INSTALL_D,
+      await sent({
+        source: "ai",
+        suspectedTool: "get_quality_audit / Lighthouse runner, site web fonts",
+        title: "Lighthouse TBT differs between identical audits (web fonts?)",
+        whatHappened: `Suspect the site web fonts. ${TBT_FLIP}`,
+      }),
+    );
+
+    const firebase = new Set([r1037, r1039, r1047, r1048].map((r) => r.clusterId));
+    const tbt = new Set([r1043, r1046].map((r) => r.clusterId));
+    expect(firebase.size).toBe(1);
+    expect(tbt.size).toBe(1);
+    expect(firebase).not.toEqual(tbt);
+    expect(store.clusters.size).toBe(2);
+    expect(tracker.calls.create).toBe(2);
+  });
+
+  it("joins an AI report to the auto cluster of the same error, and an auto capture to an AI cluster", async () => {
+    const s = service(1, { matcher: defects });
+    const auto = await s.ingest(
+      INSTALL_A,
+      await sent({
+        source: "auto",
+        suspectedTool: "stage_changes",
+        title: "Tool stage_changes returned an error",
+        whatHappened: FIREBASE_400,
+      }),
+    );
+    const followUp = await s.ingest(
+      INSTALL_A,
+      await sent({
+        source: "ai",
+        suspectedTool: "stage_changes",
+        title: "Stage fails on the expireTime update",
+        whatHappened: FIREBASE_400,
+      }),
+    );
+    expect(followUp.clusterId).toBe(auto.clusterId);
+    // The matcher was told the candidate is an automatic capture, and of which tool.
+    expect(defects.offered.at(-1)).toEqual([
+      expect.objectContaining({
+        id: auto.clusterId,
+        source: "auto",
+        suspectedTool: "stage_changes",
+      }),
+    ]);
+
+    // The other direction: the AI reported first, the auto capture of the error follows.
+    const ai = await s.ingest(
+      INSTALL_B,
+      await sent({
+        source: "ai",
+        suspectedTool: "quality audit (Lighthouse runner)",
+        title: "Performance score unstable",
+        whatHappened: TBT_FLIP,
+      }),
+    );
+    const capture = await s.ingest(
+      INSTALL_B,
+      await sent({
+        source: "auto",
+        suspectedTool: "get_quality_audit",
+        title: "Tool get_quality_audit returned an error",
+        whatHappened: TBT_FLIP,
+      }),
+    );
+    expect(capture.clusterId).toBe(ai.clusterId);
+    expect(store.clusters.size).toBe(2);
+    expect(tracker.calls.create).toBe(2);
+  });
+
+  it("ends two back-to-back reports of one new defect from one install in one cluster", async () => {
+    const s = service(1, { matcher: defects });
+    const variants = [
+      { tool: "stage_changes", title: "Stage fails with a 400" },
+      { tool: "stage_changes (Firebase)", title: "Firebase refuses the update mask" },
+    ];
+    const results = await Promise.all(
+      variants.map(async (v) =>
+        s.ingest(
+          INSTALL_C,
+          await sent({
+            source: "ai",
+            suspectedTool: v.tool,
+            title: v.title,
+            whatHappened: FIREBASE_400,
+          }),
+        ),
+      ),
+    );
+    expect(results[0]?.clusterId).toBe(results[1]!.clusterId);
+    expect(store.clusters.size).toBe(1);
+    // The second report was matched against the cluster the first one created.
+    expect(defects.offered.map((o) => o.length)).toEqual([0, 1]);
+  });
+
+  it("keeps the pool bounded and newest first, and moves a matched cluster to the front", async () => {
+    const s = service(1, { matcher: defects });
+    const ids: string[] = [];
+    for (let i = 0; i < MAX_CANDIDATES + 5; i++) {
+      const r = await s.ingest(
+        INSTALL_A,
+        await sent({
+          source: "ai",
+          suspectedTool: `tool_${i}`,
+          title: `Defect number ${i}`,
+          whatHappened: `Symptom ${i}`,
+        }),
+      );
+      ids.push(r.clusterId);
+    }
+    const pool = await store.candidates();
+    expect(pool.length).toBe(MAX_CANDIDATES);
+    expect(pool.map((c) => c.id)).toEqual(ids.slice(-MAX_CANDIDATES).reverse());
+    expect(Math.max(...defects.offered.map((o) => o.length))).toBe(MAX_CANDIDATES);
+
+    // A cluster still in the pool that gains a new wording is the newest again.
+    const old = ids[10]!;
+    const stub: ClusterMatcher = { match: async () => old };
+    const joined = await service(1, { matcher: stub }).ingest(
+      INSTALL_B,
+      await sent({ source: "ai", suspectedTool: "tool_10", title: "Reworded", whatHappened: "x" }),
+    );
+    expect(joined.clusterId).toBe(old);
+    expect((await store.candidates())[0]?.id).toBe(old);
+    expect((await store.candidates()).length).toBe(MAX_CANDIDATES);
+  });
+
+  it("offers clusters stored before the pool existed, leaving merged ones out", async () => {
+    // A store from before #1049: clusters, no pool yet.
+    const base = (await service().ingest(INSTALL_A, report())).clusterId;
+    const record = (await store.getCluster(base))!.value;
+    store.pool = null;
+    await store.putCluster(
+      {
+        ...record,
+        id: "c_auto_old",
+        source: "auto",
+        whatHappened: FIREBASE_400,
+        lastSeen: "2026-10-23T09:00:00Z",
+      },
+      null,
+    );
+    await store.putCluster({ ...record, id: "c_merged", mergedInto: base }, null);
+    const r = await service(1, { matcher: defects }).ingest(
+      INSTALL_B,
+      await sent({
+        source: "ai",
+        suspectedTool: "stage_changes (Firebase Hosting staging channel promotion)",
+        title: "Promotion fails",
+        whatHappened: FIREBASE_400,
+      }),
+    );
+    expect(r.clusterId).toBe("c_auto_old");
+    expect(defects.offered[0]?.map((c) => c.id).sort()).toEqual([base, "c_auto_old"].sort());
   });
 });

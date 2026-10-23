@@ -5,11 +5,24 @@
  * issue per cluster, whatever the number of installs reporting it.
  *
  * A report finds its cluster in three steps:
- *   1. the install's fingerprint, if a cluster already claimed it;
- *   2. for AI-filed reports, the semantic matcher over recent clusters of the
- *      same tool (auto-captured reports carry a normalised error text, so
- *      their fingerprint is already the identity);
- *   3. otherwise a new cluster.
+ *   1. the install's fingerprint, if a cluster already claimed it (an exact
+ *      repeat: the same normalised error text for auto-captured reports, the
+ *      same title for AI-filed ones);
+ *   2. otherwise the semantic matcher over the candidate pool: the
+ *      `MAX_CANDIDATES` newest clusters of every tool and both sources
+ *      (#1049). The AI writes the suspected tool freely ("stage_changes" vs
+ *      "stage_changes (Firebase Hosting staging channel promotion)"), so the
+ *      tool is a hint shown to the matcher, never a partition. AI and auto
+ *      reports may join each other's clusters in both directions: an
+ *      auto-captured error and the AI's report of the same failure are one
+ *      defect, and their fingerprints can never be equal. Only a
+ *      high-confidence answer naming an offered candidate links;
+ *   3. otherwise a new cluster, which enters the pool at the front (a match
+ *      moves the matched cluster to the front as well).
+ * Steps 2 and 3 run one report at a time in this process, so a report sees
+ * the cluster the report just before it created: two reports of one new
+ * defect sent a second apart end in one cluster, not two. Exact repeats
+ * (step 1) skip that queue.
  * Repeat reports only update the cluster's counters; the issue is created
  * once the cluster has `issueThresholdInstalls` distinct installs (1 = on
  * the first report), its body is refreshed when a new install or version
@@ -33,9 +46,10 @@
  * has the fix → reopened as a regression; closed as not planned → wontfix;
  * closed as duplicate → the cluster follows the original issue.
  *
- * Writes to one cluster are serialised in-process, and the service runs as a
- * single instance (Cloud Run max-instances=1); the store's version check
- * catches anything that still races.
+ * Writes to one cluster, and matching + cluster creation as a whole, are
+ * serialised in-process, and the service runs as a single instance (Cloud
+ * Run max-instances=1); the store's version checks and first-writer-wins
+ * links catch anything that still races.
  */
 
 import {
@@ -47,7 +61,7 @@ import {
 import type { IssueState, ReleaseInfo } from "./github.js";
 import { INSTALL_MILESTONES, issueBody, issueLabels, issueTitle } from "./issue-text.js";
 import type { ClusterMatcher } from "./matcher.js";
-import { type ClusterRecord, type IntakeStore, toolKey, type Versioned } from "./store.js";
+import { type ClusterRecord, clusterSummary, type IntakeStore, type Versioned } from "./store.js";
 
 /** The public tracker, bound to one repository. */
 export interface IssueTracker {
@@ -106,6 +120,12 @@ async function sha256Hex(text: string): Promise<string> {
 }
 
 const SEVERITY_RANK = { cosmetic: 0, degraded: 1, blocking: 2 } as const;
+
+/**
+ * Lock key that serialises matching and cluster creation. Cluster ids start
+ * with `c_`, so it never shares a queue with a cluster's writes.
+ */
+const FIND_OR_CREATE_LOCK = "find-or-create";
 
 export class IntakeService {
   readonly #d: Required<IntakeServiceDeps>;
@@ -174,18 +194,27 @@ export class IntakeService {
   }
 
   async #findOrCreateCluster(report: BugIntakeReport): Promise<string> {
+    const known = await this.#d.store.clusterIdForFingerprint(report.fingerprint);
+    if (known) return (await this.#resolve(known)).value.id;
+    return this.#withLock(FIND_OR_CREATE_LOCK, () => this.#matchOrCreate(report));
+  }
+
+  /** Steps 2 and 3 of the file header; runs under `FIND_OR_CREATE_LOCK`. */
+  async #matchOrCreate(report: BugIntakeReport): Promise<string> {
     const { store, matcher } = this.#d;
+    // The report queued behind may have carried this very fingerprint.
     const known = await store.clusterIdForFingerprint(report.fingerprint);
     if (known) return (await this.#resolve(known)).value.id;
 
-    const key = toolKey(report.suspectedTool);
-    if (report.source === "ai") {
-      const matched = await matcher.match(report, await store.candidates(key));
-      if (matched) {
-        const link = await store.linkFingerprint(report.fingerprint, matched);
-        const id =
-          link === "linked" ? matched : await store.clusterIdForFingerprint(report.fingerprint);
-        if (id) return (await this.#resolve(id)).value.id;
+    const matched = await matcher.match(report, await store.candidates());
+    if (matched) {
+      const link = await store.linkFingerprint(report.fingerprint, matched);
+      const id =
+        link === "linked" ? matched : await store.clusterIdForFingerprint(report.fingerprint);
+      if (id) {
+        const owner = await this.#resolve(id);
+        await store.addCandidate(clusterSummary(owner.value));
+        return owner.value.id;
       }
     }
 
@@ -214,20 +243,14 @@ export class IntakeService {
       lastIssueSyncAt: null,
       milestonesCommented: [],
     };
-    // A concurrent report of the same new defect may have created it already.
+    // Another intake instance (the store's backstop) may have created it already.
     await store.putCluster(cluster, null);
     const link = await store.linkFingerprint(report.fingerprint, cluster.id);
     if (link === "taken") {
       const id = await store.clusterIdForFingerprint(report.fingerprint);
       if (id) return (await this.#resolve(id)).value.id;
     }
-    if (report.source === "ai") {
-      await store.addCandidate(key, {
-        id: cluster.id,
-        title: cluster.title,
-        whatHappened: cluster.whatHappened.slice(0, 600),
-      });
-    }
+    await store.addCandidate(clusterSummary(cluster));
     return cluster.id;
   }
 
