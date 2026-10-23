@@ -271,10 +271,8 @@ import {
   acceptImportedPageOp,
   acceptImportedPagesOp,
   addImportPageNotesOp,
-  assignImportPageClusterOp,
   checkImportPageInventoryOp,
   cleanupImportRunOp,
-  composeFromImportRunOp,
   createImportRunOp,
   detectImportBoilerplateOp,
   executeImportProposalOp,
@@ -285,7 +283,6 @@ import {
   getRunCalibrationOp,
   getRunCostOp,
   getSessionBudgetStateOp,
-  listImportPageClustersOp,
   listImportPagesOp,
   listImportRunsOp,
   listPendingImportProposalsOp,
@@ -1154,9 +1151,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(createImportRunOp);
   registry.register(proposeImportRunOp);
   registry.register(listPendingImportProposalsOp);
-  // issue #194 — page-type clusters (list + bulk assign/label).
-  registry.register(listImportPageClustersOp);
-  registry.register(assignImportPageClusterOp);
   // issue #198 — per-page screenshot keys (serve route + AI tool).
   registry.register(getImportPageScreenshotKeysOp);
   registry.register(getImportPageGistOp);
@@ -1192,7 +1186,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(acceptImportedPageOp);
   registry.register(acceptImportedPagesOp);
   registry.register(cleanupImportRunOp);
-  registry.register(composeFromImportRunOp);
   // Epic #724 — turn an import run's links to planned pages into references.
   registry.register(resolveImportLinksOp);
   // Explicit, URL-driven media import (replaces the scan-and-download

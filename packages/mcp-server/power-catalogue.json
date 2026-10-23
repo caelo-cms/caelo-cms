@@ -1,5 +1,5 @@
 {
-  "version": "0.10.65",
+  "version": "0.0.0",
   "tools": [
     {
       "name": "edit_module",
@@ -1898,7 +1898,7 @@
     },
     {
       "name": "add_import_page_notes",
-      "description": "Record findings you made while rebuilding an imported page: typos (fix obvious ones in the rebuilt content and set applied: true), dead links, missing image alt texts, thin content, improvement ideas (applied: false — the operator decides). BATCH all of a page's notes in ONE call. `importPageId` accepts EITHER id: the staging import_pages id OR the composed CMS page id you just built (from accept_page / compose_from_run) — both work, no need to look one up from the other. These feed the migration report the operator receives at the end — record honestly, including what you could not fix.",
+      "description": "Record findings you made while rebuilding an imported page: typos (fix obvious ones in the rebuilt content and set applied: true), dead links, missing image alt texts, thin content, improvement ideas (applied: false — the operator decides). BATCH all of a page's notes in ONE call. `importPageId` accepts EITHER id: the staging import_pages id OR the CMS page id you just built (from build_page / accept_import_pages) — both work, no need to look one up from the other. These feed the migration report the operator receives at the end — record honestly, including what you could not fix.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1910,7 +1910,7 @@
           "importPageId": {
             "type": "string",
             "format": "uuid",
-            "description": "The page to attach notes to — pass EITHER the staging import_pages id OR the composed CMS page id (accepted_page_id). Both resolve to the same import page."
+            "description": "The page to attach notes to — pass EITHER the staging import_pages id OR the built CMS page id (accepted_page_id). Both resolve to the same import page."
           },
           "notes": {
             "type": "array",
@@ -2045,7 +2045,7 @@
     },
     {
       "name": "check_page_content_inventory",
-      "description": "Verify a rebuilt imported page lost NO content from the source. Call it right AFTER you rebuild a page's modules with `build_page`. It compares the source page's crawled content against the rebuilt modules and returns what is covered plus a LOUD list of every missing heading, paragraph, list item, image, link, or CTA (with the source context so you can find it). Content is sacred: restore anything genuinely dropped, or record WHY you dropped it (add_import_page_notes) so the operator sees it — never let content vanish silently. Chrome (header/footer) is excluded by default because it is layout-owned. `importPageId` accepts the staging import_pages id (from list_import_pages / get_import_page — this ALWAYS resolves), the composed page id, or the built CMS page id (matched by the build_page importPageId link, by slug, or — for the homepage built at a custom slug — by its locale home-page designation). If a built page can't be found (you gave it a custom/translated slug), pass the staging import_pages id instead. Import data does not expire, so a miss is an id/slug mismatch, not staleness.",
+      "description": "Verify a rebuilt imported page lost NO content from the source. Call it right AFTER you rebuild a page's modules with `build_page`. It compares the source page's crawled content against the rebuilt modules and returns what is covered plus a LOUD list of every missing heading, paragraph, list item, image, link, or CTA (with the source context so you can find it). Content is sacred: restore anything genuinely dropped, or record WHY you dropped it (add_import_page_notes) so the operator sees it — never let content vanish silently. Chrome (header/footer) is excluded by default because it is layout-owned. `importPageId` accepts the staging import_pages id (from list_import_pages / get_import_page — this ALWAYS resolves) or the built CMS page id (matched by the build_page importPageId link, by slug, or — for the homepage built at a custom slug — by its locale home-page designation). If a built page can't be found (you gave it a custom/translated slug), pass the staging import_pages id instead. Import data does not expire, so a miss is an id/slug mismatch, not staleness.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2056,7 +2056,7 @@
           "importPageId": {
             "type": "string",
             "format": "uuid",
-            "description": "The page to check — pass EITHER the staging import_pages id OR the composed CMS page id (accepted_page_id)."
+            "description": "The page to check — pass EITHER the staging import_pages id OR the built CMS page id (accepted_page_id)."
           },
           "includeChrome": {
             "type": "boolean",

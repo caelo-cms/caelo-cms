@@ -27,7 +27,13 @@ test("/edit has no AppShell sidebar/topbar; only the slim toolbar + iframe + ove
   // Sanity: the DASHBOARD does have the sidebar (Live edit link inside
   // it) — visit it explicitly; login lands in /edit now.
   await page.goto("/");
-  await expect(page.getByRole("link", { name: /^Live edit$/ })).toBeVisible();
+  // Scoped to the sidebar: the dashboard's "Recent chats" card can list a
+  // chat that is itself titled "Live edit".
+  await expect(
+    page
+      .getByRole("navigation", { name: "Main navigation" })
+      .getByRole("link", { name: /^Live edit$/ }),
+  ).toBeVisible();
 
   await page.goto("/edit");
   await expect(page).toHaveURL(/\/edit(\?|$)/, { timeout: 15_000 });

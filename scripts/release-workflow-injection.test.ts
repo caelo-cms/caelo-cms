@@ -53,8 +53,8 @@ describe("release.yml", () => {
   });
 
   it("R2: gate and verify-published run with a read-only token", () => {
-    for (const jobName of ["gate", "verify-published"]) {
-      expect(release.jobs[jobName]?.permissions).toEqual({ contents: "read" });
-    }
+    // The gate also reads the parent's ci.yml result (its scope step).
+    expect(release.jobs.gate?.permissions).toEqual({ contents: "read", actions: "read" });
+    expect(release.jobs["verify-published"]?.permissions).toEqual({ contents: "read" });
   });
 });

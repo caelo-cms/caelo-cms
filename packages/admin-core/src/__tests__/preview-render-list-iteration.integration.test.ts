@@ -317,8 +317,10 @@ describe("pages.render_preview list iteration (#71)", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const { html } = r.value as { html: string };
-    expect(html).toContain("<article>First card</article>");
-    expect(html).toContain("<article>Second card</article>");
+    // Each nested root carries the card module's id (#1027).
+    const card = `<article data-caelo-module-id="${seeded.cardModuleId}">`;
+    expect(html).toContain(`${card}First card</article>`);
+    expect(html).toContain(`${card}Second card</article>`);
     expect(html.indexOf("First card")).toBeLessThan(html.indexOf("Second card"));
     expect(html).not.toMatch(/\{\{[#/]/);
   });

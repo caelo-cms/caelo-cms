@@ -221,27 +221,40 @@ export async function fetchVerifiedReleaseManifest(
 /** One image whose resolved digest differs from the manifest's. */
 export interface DigestMismatch {
   readonly image: ReleaseImage;
-  readonly expected: string;
+  /** Which digest differs: the image index, or its linux/amd64 manifest (#1025). */
+  readonly form: "index" | "platform";
+  /** The manifest's digest; null when the manifest has no platform digests. */
+  readonly expected: string | null;
   readonly actual: string | null;
 }
 
 /**
  * Compare the digests a registry resolved for the release's tags with the
- * signed manifest. Only images present in `resolved` are compared, except
- * that an explicitly `null` entry (tag did not resolve) is a mismatch.
+ * signed manifest. Only images present in `resolved` (or `resolvedPlatform`)
+ * are compared, except that an explicitly `null` entry (tag did not
+ * resolve) is a mismatch.
  *
+ * @param resolvedPlatform - each index's linux/amd64 manifest, compared
+ *   with the manifest's `platformDigests` (#1025)
  * @returns every mismatch; empty means the registry serves the signed images.
  */
 export function compareImageDigests(
   manifest: ReleaseManifest,
   resolved: Partial<Record<ReleaseImage, string | null>>,
+  resolvedPlatform: Partial<Record<ReleaseImage, string | null>> = {},
 ): DigestMismatch[] {
   const out: DigestMismatch[] = [];
   for (const image of RELEASE_IMAGES) {
-    if (!(image in resolved)) continue;
-    const actual = resolved[image] ?? null;
-    if (actual !== manifest.digests[image]) {
-      out.push({ image, expected: manifest.digests[image], actual });
+    if (image in resolved) {
+      const actual = resolved[image] ?? null;
+      if (actual !== manifest.digests[image]) {
+        out.push({ image, form: "index", expected: manifest.digests[image], actual });
+      }
+    }
+    if (image in resolvedPlatform) {
+      const actual = resolvedPlatform[image] ?? null;
+      const expected = manifest.platformDigests?.[image] ?? null;
+      if (actual !== expected) out.push({ image, form: "platform", expected, actual });
     }
   }
   return out;
