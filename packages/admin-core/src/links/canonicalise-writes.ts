@@ -17,6 +17,7 @@ import {
   canonicaliseJsonLinks,
   type ExecutionContext,
   linkCanonicaliseRun,
+  scanContentValuesEveryReading,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { loadModuleStateWithBranchOverlay } from "../snapshots/load.js";
@@ -42,11 +43,11 @@ export async function canonicaliseInstanceValues(
   values: Readonly<Record<string, unknown>>,
   previous: unknown,
 ): Promise<CanonicaliseOutcome<Record<string, unknown>>> {
-  // Probe before loading the module's fields: with every value treated
-  // as a URL field (the widest reading), link-free values skip both the
-  // field load and the site lookup.
-  const widest = Object.keys(values).map((name) => ({ name, kind: "url" }));
-  const probe = probeLinkLookup((run) => canonicaliseContentValues(widest, values, run));
+  // Probe before loading the module's fields: under every reading a field
+  // kind can give a value (whole-value URL AND markup), so link-free
+  // values skip both the field load and the site lookup, and a link in
+  // rich text never does (#1028: the URL reading alone missed it).
+  const probe = probeLinkLookup((run) => scanContentValuesEveryReading(values, run));
   if (!probe.needsLookup) return { ok: true, value: { ...values }, issues: [], pending: null };
   const fields = await loadModuleFields(tx, moduleId, ctx.chatBranchId ?? null);
   if (fields === null) {

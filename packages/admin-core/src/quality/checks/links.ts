@@ -25,6 +25,11 @@
  * - `links/limit-reached` (info): the bounds below cut the check short;
  *   says what was not verified, never silently.
  *
+ * A same-site link that works but is STORED as a plain path instead of a
+ * page reference is not this check's: rendered, it looks exactly like a
+ * resolved reference. The `references` check reads the stored value and
+ * reports it (`references/literal-link`, nested modules included, #1028).
+ *
  * How a URL is resolved (links-analysis.ts): pages of the build first (a
  * live page beats a redirect, #575), then the redirect table, then a probe
  * of the staged origin for everything else (assets, media, generated

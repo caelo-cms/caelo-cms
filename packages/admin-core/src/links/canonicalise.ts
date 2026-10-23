@@ -11,9 +11,14 @@
  * the op's own transaction — the Validator boundary for checks that
  * need the database (a Zod schema cannot know which pages exist):
  *
- *   - content values      content_instances.create / .set_values (and
- *                         everything routed through them: create_many,
- *                         set_values_many, page_module_content.*, build_page)
+ *   - content values      content_instances.create / .set_values via
+ *                         `canonicaliseInstanceValues` (and everything routed
+ *                         through them: create_many, set_values_many,
+ *                         page_module_content.set / set_many / patch_fields,
+ *                         build_page incl. detached entries,
+ *                         imports.resolve_links). No other path writes
+ *                         authored values: the remaining INSERTs mint empty
+ *                         rows or copy stored values (see below).
  *   - module HTML + field defaults   modules.create / .update (and update_many)
  *   - layout HTML         layouts.create / .update
  *   - structured sets     structured_sets.set

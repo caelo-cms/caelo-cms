@@ -535,6 +535,30 @@ export function canonicaliseContentValues(
   return out;
 }
 
+/**
+ * Scan content values under EVERY reading a field kind can give them —
+ * each value once as a whole-value URL (`url` / `link` / `image` fields)
+ * and once as text that may carry markup (rich text, plain text, JSON
+ * keyed by link names) — for a probe that has to decide, before the
+ * module's fields are loaded, whether a write carries any link at all.
+ *
+ * Both readings are needed: the URL reading never looks inside markup,
+ * and the text reading never takes a bare `/about` as a link. A probe
+ * that used the URL reading alone skipped every write whose only links
+ * sat in rich text, which stored them as literal paths (#1028).
+ *
+ * The result is discarded; only the lookups the run made matter.
+ */
+export function scanContentValuesEveryReading(
+  values: Readonly<Record<string, unknown>>,
+  run: LinkCanonicaliseRun,
+): void {
+  for (const [k, v] of Object.entries(values)) {
+    canonicaliseJsonLinks(v, run, `values.${k}`, true);
+    canonicaliseJsonLinks(v, run, `values.${k}`, false);
+  }
+}
+
 /** Canonicalise every field's `default` (layout chrome content lives there). */
 export function canonicaliseFieldDefaults<F extends CanonicaliseField>(
   fields: readonly F[],

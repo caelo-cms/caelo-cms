@@ -17,6 +17,7 @@ import {
   describeLinkIssues,
   type LinkTargetLookup,
   linkCanonicaliseRun,
+  scanContentValuesEveryReading,
 } from "./link-canonicalise.js";
 
 const ABOUT = "11111111-1111-4111-8111-111111111111";
@@ -412,5 +413,70 @@ describe("grandfathering + messages", () => {
     expect(msg).toContain('values.cta_href: "/pricing" is not the path of any page on this site');
     expect(msg).toContain("list_pages");
     expect(msg).toContain("create it first");
+  });
+});
+
+describe("scanContentValuesEveryReading (#1028)", () => {
+  /** Which paths the scan asked the lookup for. */
+  const asked = (values: Record<string, unknown>): string[] => {
+    const paths: string[] = [];
+    const recording: LinkTargetLookup = {
+      ...lookup,
+      pageIdForPath: (p) => {
+        paths.push(p);
+        return null;
+      },
+    };
+    scanContentValuesEveryReading(values, linkCanonicaliseRun(recording, { mode: "report" }));
+    return paths;
+  };
+
+  it("asks for a link inside rich text (the URL reading alone never looks inside markup)", () => {
+    expect(asked({ inhalt_html: '<p>Der <a href="/de/ratgeber/x">Test</a></p>' })).toEqual([
+      "/de/ratgeber/x",
+    ]);
+  });
+
+  it("asks for a bare path under any field name (a `url` field need not be named *_href)", () => {
+    expect(asked({ target: "/company/about" })).toEqual(["/company/about"]);
+  });
+
+  it("asks for links in list items and nested objects", () => {
+    const paths = asked({
+      links: [{ label: "A", href: "/a" }],
+      cards: ['<a href="/b">b</a>'],
+    });
+    expect([...new Set(paths)].sort()).toEqual(["/a", "/b"]);
+  });
+
+  it("asks nothing for link-free values, so plain writes skip the lookup", () => {
+    expect(asked({ title: "Hello", count: 3, body: "<p>No links here.</p>" })).toEqual([]);
+  });
+
+  it("covers what the real field-aware run asks for, for every field kind", () => {
+    const values = {
+      body_html: '<p><a href="/company/about">About</a></p>',
+      cta: "/old-about",
+    };
+    for (const kind of ["richtext", "text", "url", "link"]) {
+      const real: string[] = [];
+      const recording: LinkTargetLookup = {
+        ...lookup,
+        pageIdForPath: (p) => {
+          real.push(p);
+          return null;
+        },
+      };
+      canonicaliseContentValues(
+        [
+          { name: "body_html", kind },
+          { name: "cta", kind },
+        ],
+        values,
+        linkCanonicaliseRun(recording, { mode: "report" }),
+      );
+      const probe = new Set(asked(values));
+      for (const p of real) expect(probe.has(p)).toBe(true);
+    }
   });
 });

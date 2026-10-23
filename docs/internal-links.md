@@ -41,7 +41,7 @@ For the AI this means: write internal links as paths, and never update or re-che
 
 ## Literal links left from before #724
 
-Content written before #724 can still hold literal internal paths. A move no longer touches them; the one-time migration converts them instead.
+Content written before #724 can still hold literal internal paths, as can content written before #1028 whose only links sat in rich text. A move no longer touches them; the boot migration converts them instead.
 
 ### The one-time migration (rollout E)
 
@@ -55,7 +55,7 @@ Content written before #724 can still hold literal internal paths. A move no lon
 
 How it runs:
 
-- **At boot, once per install.** `apps/admin/src/hooks.server.ts` calls it with `{ trigger: "boot", onlyIfNeverApplied: true }` under an advisory lock, after the plugin host has loaded. A failure is logged loudly and retried at the next start.
+- **At boot, once per install and revision.** `apps/admin/src/hooks.server.ts` calls it with `{ trigger: "boot", onlyIfDue: true }` under an advisory lock, after the plugin host has loaded. Every run records the revision of the conversion it ran (`LINK_MIGRATION_REVISION`, migration 0346); the boot run converts again while no applied run of the current revision exists, unless the Owner reverted the latest run. Revision 2 (#1028) re-converts the rich-text links that content writes stored as literal paths before write-time canonicalisation looked inside rich text when nothing else in the write was a link. A failure is logged loudly and retried at the next start.
 - **Dry run and re-run.** A dry run writes nothing and reports what would change. The op is idempotent: a second run over converted content changes nothing and writes no snapshot.
 - **One snapshot for main.** Main-line rows are rewritten in place under one site snapshot. Every live chat's pending work is converted against that chat's view of the site by appending pending snapshots owned by the same chat task, so staging an older chat after the upgrade does not bring literal links back.
 - **Per-run revert.** `links.revert_migration` restores exactly the parts one run changed (main, chat branches, plugin rows) under its own snapshot. A part edited since the run is a conflict: the revert refuses and names it, or, with `skipConflicts: true`, restores the rest and keeps the edit. `snapshots.revert_site` is not the tool for this: content that predates snapshots has no earlier snapshot state.
@@ -88,7 +88,8 @@ A literal internal link that neither the migration nor an import run could conve
 
 - `packages/shared/src/link-refs.test.ts`, `link-canonicalise.test.ts`: grammar, scanning, resolution, canonicalisation.
 - `packages/admin-core/src/__tests__/link-canonicalise-writes.integration.test.ts`: every write surface.
+- `packages/admin-core/src/__tests__/nested-link-canonicalise.integration.test.ts` (#1028): rich-text-only values (build_page detached entries, `set_page_module_content`, `set_content_instance_values(_many)` on nested instances) store references and render canonically; the references check flags a stored literal in a nested entry and its fix converts it.
 - `packages/admin-core/src/__tests__/link-refs-preview.integration.test.ts`, `apps/static-generator/src/link-refs-build.integration.test.ts`: resolution in preview and the build.
 - `apps/static-generator/src/link-refs-moves.integration.test.ts`: after a rename and a nested subtree move, the stored text is unchanged, the 301s exist, and preview and build show the new paths.
 - `packages/admin-core/src/__tests__/nested-pages.integration.test.ts`: a move leaves a legacy literal link exactly as written.
-- `packages/admin-core/src/__tests__/link-migration.integration.test.ts`, `link-migration-import.integration.test.ts`, `international-site-link-migration.integration.test.ts`: the one-time migration (dry run, every surface, branches, idempotence, report, revert) and the import flow.
+- `packages/admin-core/src/__tests__/link-migration.integration.test.ts`, `link-migration-import.integration.test.ts`, `international-site-link-migration.integration.test.ts`: the boot migration (dry run, every surface, branches, idempotence, revision re-run, report, revert) and the import flow.

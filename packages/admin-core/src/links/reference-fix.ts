@@ -47,8 +47,9 @@ export type ReferencePlace =
  * - `variant-missing`: the target has no version in the rendering page's
  *   language (rollout D's link-resolve point);
  * - `unpublished-target`: the target (or its same-language version) is a draft;
- * - `literal-link`: a literal path the link migration (rollout E) left as it
- *   is; it works, and saving it again stores the reference;
+ * - `literal-link`: a literal path to an existing page (pre-#724 content the
+ *   link migration left, or a write that skipped canonicalisation, #1028);
+ *   it renders verbatim, and saving it again stores the reference;
  * - `broken-literal`: a literal path or media URL that matches nothing (the
  *   migration report, `get_link_migration_report`, lists these too);
  * - `pending-import-link`: a link to a page an active site import has planned
@@ -106,7 +107,7 @@ function remedy(problem: ReferenceProblem, target: string, variant: string | nul
     case "unpublished-target":
       return `${target} is a draft: publish it (set_pages_status_many) or point the link at a published page`;
     case "literal-link":
-      return `the link to ${target} is still a plain path that the link migration did not convert (get_link_migration_report lists these); it works — saving the same value again stores the page reference`;
+      return `the link to ${target} is a plain path, not a page reference: it renders as written (not in the site's URL style, e.g. missing its trailing slash) and does not follow page moves. Fix: save the value again with the link unchanged — every write stores internal links as page references (edit_content needs a non-empty edit: add or drop the trailing slash)`;
     case "broken-literal":
       return `${target} is not the path of any page or media file (get_link_migration_report lists the links the migration could not convert): point it at an existing page (list_pages) or remove it`;
     case "pending-import-link":
@@ -186,7 +187,7 @@ const LABEL: Readonly<Record<ReferenceProblem, string>> = {
   "missing-target": "Link to a deleted target",
   "variant-missing": "Link without a same-language page",
   "unpublished-target": "Link to an unpublished page",
-  "literal-link": "Legacy link path",
+  "literal-link": "Link stored as a plain path",
   "broken-literal": "Broken legacy link",
   "pending-import-link": "Link to a page the import has not built yet",
 };

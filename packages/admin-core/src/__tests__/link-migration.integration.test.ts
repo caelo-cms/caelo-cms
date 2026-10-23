@@ -549,7 +549,7 @@ describe("links.migrate_to_references", () => {
     expect(again.unresolved.filter((u) => u.value === GONE)).toHaveLength(2);
     const boot = await run<MigrateOut>("links.migrate_to_references", {
       trigger: "boot",
-      onlyIfNeverApplied: true,
+      onlyIfDue: true,
     });
     expect(boot.skipped).toBe(true);
   });
@@ -671,5 +671,44 @@ describe("links.migrate_to_references", () => {
     expect((await moduleRow(ids.nav)).html).toBe(
       `<nav data-edit="1"><a href="caelo:page/${ids.about}">About</a></nav>`,
     );
+  });
+
+  it("the boot run converts again once per revision (#1028), unless the Owner reverted the latest run", async () => {
+    // An install that migrated before #1028, with a rich-text literal the
+    // skipped write-time canonicalisation stored since.
+    const literal = `<p>See <a href="${ABOUT}">about</a></p>`;
+    await asSystem(async (tx) => {
+      await tx`UPDATE link_migration_runs SET revision = 1`;
+      await tx`UPDATE content_instances
+                  SET "values" = jsonb_set("values", '{body_html}', to_jsonb(${literal}::text))
+                WHERE id = ${ids.instance}::uuid`;
+    });
+    const boot = await run<MigrateOut>("links.migrate_to_references", {
+      trigger: "boot",
+      onlyIfDue: true,
+    });
+    expect(boot.skipped).toBe(false);
+    expect((await instanceValues(ids.instance)).body_html).toBe(
+      `<p>See <a href="caelo:page/${ids.about}">about</a></p>`,
+    );
+    // Converted at the current revision: the next boot skips.
+    const next = await run<MigrateOut>("links.migrate_to_references", {
+      trigger: "boot",
+      onlyIfDue: true,
+    });
+    expect(next.skipped).toBe(true);
+
+    // An Owner's revert of the latest run stands, whatever the revision.
+    await asSystem(async (tx) => {
+      await tx`UPDATE link_migration_runs SET revision = 1`;
+      await tx`UPDATE link_migration_runs SET reverted_at = now()
+                WHERE id = (SELECT id FROM link_migration_runs WHERE mode = 'apply'
+                             ORDER BY created_at DESC LIMIT 1)`;
+    });
+    const afterRevert = await run<MigrateOut>("links.migrate_to_references", {
+      trigger: "boot",
+      onlyIfDue: true,
+    });
+    expect(afterRevert.skipped).toBe(true);
   });
 });

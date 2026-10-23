@@ -251,19 +251,21 @@ async function bootstrapPlugins(): Promise<void> {
   }
 }
 
-// Epic #724 rollout E — the one-time data migration that turns existing
-// literal internal links (`/about`) into page references. It is a Query
-// API op, not a SQL migration: the conversion needs the canonicaliser and
-// the site's page lookup. Runs once per install (the op skips when an
-// applied run exists, under an advisory lock so two booting instances do
-// not both convert); a failure is logged loudly, leaves the links as they
+// Epic #724 rollout E — the data migration that turns existing literal
+// internal links (`/about`) into page references. It is a Query API op,
+// not a SQL migration: the conversion needs the canonicaliser and the
+// site's page lookup. Runs once per install and revision of the
+// conversion (#1028: a fix that left literals behind bumps the revision;
+// the op skips when the current revision already applied or the Owner
+// reverted the latest run, under an advisory lock so two booting
+// instances do not both convert); a failure is logged loudly, leaves the links as they
 // are, and is retried at the next start. The Owner sees the report and
 // can re-run or revert it at Settings → Internal links.
 async function migrateLinksOnce(): Promise<void> {
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, SYSTEM_CTX, "links.migrate_to_references", {
     trigger: "boot",
-    onlyIfNeverApplied: true,
+    onlyIfDue: true,
   });
   if (!r.ok) {
     console.error(

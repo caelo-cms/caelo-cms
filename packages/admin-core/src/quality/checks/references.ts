@@ -18,12 +18,18 @@
  *   - `references` reads where the link is STORED and owns stored
  *     references: missing, language-less and unpublished targets. A
  *     rendered link to a draft page is skipped by `links` for that reason.
+ *     It also owns literal paths that DO resolve to a page: in the rendered
+ *     HTML such a link is indistinguishable from a resolved reference, so
+ *     only the stored value can say it is not one (#1028).
  *
  * Rules:
  *   - `references/missing-target`      (error)
  *   - `references/variant-missing`     (error)
  *   - `references/unpublished-target`  (error)
- *   - `references/literal-link`        (warning) — converted by the link migration
+ *   - `references/literal-link`        (warning) — a plain path to an existing
+ *     page in any rendered place, nested modules included; the fix saves the
+ *     value again, which stores the page reference (the boot link migration
+ *     converts what predates a conversion-rule fix, #1028)
  *   - `references/limit-reached`       (info)
  */
 

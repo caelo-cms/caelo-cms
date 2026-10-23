@@ -5,8 +5,8 @@
  *
  *   links.migrate_to_references   convert existing literal internal links
  *                                 into references (dry run or apply). The
- *                                 admin runs it once at boot after an
- *                                 upgrade; the Owner can re-run it.
+ *                                 admin runs it at boot once per revision
+ *                                 of the conversion; the Owner can re-run it.
  *   links.get_migration_report    the report: counts per surface, every
  *                                 link left literal and where it is.
  *   links.revert_migration        restore exactly what a run changed.
@@ -57,6 +57,17 @@ const runSummary = z.object({
 });
 export type LinkMigrationRunSummary = z.infer<typeof runSummary>;
 
+/**
+ * The revision of the conversion rules the migration applies. The boot run
+ * converts once per revision (`onlyIfDue`), so a fix that leaves literal
+ * links behind on installs that already migrated bumps it:
+ *
+ *   1 — epic #724 rollout E: the first conversion.
+ *   2 — #1028: content writes whose only internal links sat in rich text
+ *       skipped write-time canonicalisation and stored literal paths.
+ */
+export const LINK_MIGRATION_REVISION = 2;
+
 /** Persist one run; returns its id. */
 export async function recordLinkMigrationRun(
   tx: TransactionRunner,
@@ -70,14 +81,16 @@ export async function recordLinkMigrationRun(
   const r = input.result;
   const rows = (await tx.execute(sql`
     INSERT INTO link_migration_runs
-      (mode, trigger, actor_id, site_snapshot_id, counts, entities_changed, unresolved, changes)
+      (mode, trigger, actor_id, site_snapshot_id, counts, entities_changed, unresolved, changes,
+       revision)
     VALUES (
       ${input.mode}, ${input.trigger}, ${input.actorId}::uuid,
       ${r.siteSnapshotId},
       ${jsonbParam(r.counts)},
       ${r.entitiesChanged},
       ${jsonbParam(r.unresolved)},
-      ${jsonbParam(input.mode === "dry_run" ? [] : r.changes)}
+      ${jsonbParam(input.mode === "dry_run" ? [] : r.changes)},
+      ${LINK_MIGRATION_REVISION}
     )
     RETURNING id::text AS id
   `)) as unknown as { id: string }[];
@@ -125,7 +138,7 @@ function toSummary(r: RunRow): LinkMigrationRunSummary {
 }
 
 const migrateOutput = z.object({
-  /** True when `onlyIfNeverApplied` found an earlier applied run. */
+  /** True when `onlyIfDue` found the conversion not due (see the input). */
   skipped: z.boolean(),
   run: runSummary.nullable(),
   /** The first unresolved links (the full list: links.get_migration_report). */
@@ -145,20 +158,31 @@ export const migrateLinksToReferencesOp = defineOperation({
     .object({
       dryRun: z.boolean().default(false),
       trigger: z.enum(["boot", "manual"]).default("manual"),
-      /** Boot: do nothing when an applied run already exists (even a reverted one). */
-      onlyIfNeverApplied: z.boolean().default(false),
+      /**
+       * Boot: do nothing unless the conversion is due — no applied run of
+       * the current {@link LINK_MIGRATION_REVISION} exists, and the latest
+       * applied run was not reverted (an Owner's revert stands until they
+       * run it again by hand).
+       */
+      onlyIfDue: z.boolean().default(false),
     })
     .strict(),
   output: migrateOutput,
   handler: async (ctx, input, tx) => {
     // Two admin instances booting together must not both convert.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('links.migrate_to_references'))`);
-    if (input.onlyIfNeverApplied) {
-      const prior = (await tx.execute(sql`
+    if (input.onlyIfDue) {
+      const latest = (await tx.execute(sql`
         SELECT ${RUN_COLUMNS} FROM link_migration_runs
          WHERE mode = 'apply' ORDER BY created_at DESC LIMIT 1
       `)) as unknown as RunRow[];
-      if (prior[0]) return ok({ skipped: true, run: toSummary(prior[0]), unresolved: [] });
+      const current = (await tx.execute(sql`
+        SELECT ${RUN_COLUMNS} FROM link_migration_runs
+         WHERE mode = 'apply' AND revision >= ${LINK_MIGRATION_REVISION}
+         ORDER BY created_at DESC LIMIT 1
+      `)) as unknown as RunRow[];
+      const notDue = latest[0]?.reverted_at ? latest[0] : current[0];
+      if (notDue) return ok({ skipped: true, run: toSummary(notDue), unresolved: [] });
     }
     const result = await migrateLinksToReferences(tx, {
       apply: !input.dryRun,
