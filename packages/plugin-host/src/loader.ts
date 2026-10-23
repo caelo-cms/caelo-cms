@@ -976,8 +976,8 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
           source_path = EXCLUDED.source_path,
           manifest_signature = EXCLUDED.manifest_signature,
           updated_at = now()
-        -- #1008: only a changed release writes the row. Every write bumps
-        -- plugin_host_generation (migration 0345) and every instance's
+        -- #1008: only a changed release writes the row. Every instance
+        -- reconciles when the plugin rows change (reconcile.ts), and every
         -- load attempt runs this upsert, so an unconditional update would
         -- make instances retrying a failing plugin wake each other forever.
         WHERE (plugins.version, plugins.manifest_json, plugins.source_path, plugins.manifest_signature)

@@ -16,7 +16,7 @@
  *     plugin recovered: it was rendered without it.
  */
 
-import { pluginsNotRunningHere } from "@caelo-cms/plugin-host";
+import { pluginNotRunningReason, pluginRunsHere, syncPluginHost } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -34,11 +34,27 @@ const LIVE_WINDOW = "2 minutes";
 /**
  * The active plugins that do not run: on this server (the one that would
  * build) and, from their runtime rows, on any other live server.
+ *
+ * Derived from the plugin rows, not only from this instance's memory: the
+ * host is reconciled first (forced, past the request throttle), and every
+ * active row must then be running here — so a change another instance made
+ * a moment ago, or a host that never finished booting, cannot let a build
+ * through.
  */
 export async function activePluginProblems(tx: TransactionRunner): Promise<DeployPluginProblem[]> {
+  await syncPluginHost(true);
+  const active = (await tx.execute(sql`
+    SELECT slug FROM plugins WHERE status = 'active' ORDER BY slug
+  `)) as unknown as { slug: string }[];
   const out = new Map<string, string>();
-  for (const p of pluginsNotRunningHere())
-    out.set(p.slug, `not running on this server: ${p.reason}`);
+  for (const { slug } of active) {
+    if (!pluginRunsHere(slug)) {
+      out.set(
+        slug,
+        `not running on this server: ${pluginNotRunningReason(slug) ?? "the plugin host has not loaded it"}`,
+      );
+    }
+  }
   const elsewhere = (await tx.execute(sql`
     SELECT DISTINCT ON (r.plugin_slug) r.plugin_slug, e.message
     FROM plugin_runtime r
@@ -69,11 +85,19 @@ export function describePluginProblems(problems: ReadonlyArray<DeployPluginProbl
 
 /**
  * Why a Stage run may not be promoted: it was built while active plugins
- * were not running (recorded on the run), or null.
+ * were not running (recorded on the run), or it records nothing — a run
+ * from before plugin health was recorded (NULL) or with an unreadable
+ * value — so whether it is complete is unknown. Null when it may.
  */
 export function stagedWithoutPlugins(recorded: unknown): string | null {
   const parsed = z.array(deployPluginProblem).safeParse(recorded);
-  if (!parsed.success || parsed.data.length === 0) return null;
+  if (!parsed.success) {
+    return (
+      "This Stage was built before Caelo recorded whether every active plugin ran, so it may lack a plugin's output. " +
+      "Stage again, then publish the new Stage."
+    );
+  }
+  if (parsed.data.length === 0) return null;
   return (
     `This Stage was built while ${parsed.data.map((p) => `"${p.slug}"`).join(", ")} ${parsed.data.length === 1 ? "was" : "were"} not running, so it lacks ${parsed.data.length === 1 ? "that plugin's" : "those plugins'"} output. ` +
     "Stage again once they run (get_plugin shows their health), then publish the new Stage."

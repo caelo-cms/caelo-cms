@@ -5,9 +5,10 @@
  *
  * A plugin that failed to load stays active (the Owner's decision is never
  * undone by an error), and servers do not retry it in a loop. This op is
- * the retry: touching the plugin row bumps `plugin_host_generation`
- * (migration 0345), every admin instance reconciles on its next check, and
- * each one that does not run the plugin loads it again — recording the new
+ * the retry: touching the plugin row changes the state every admin
+ * instance fingerprints (plugin-host `reconcile.ts`), so each reconciles on
+ * its next check, and each one that does not run the plugin loads it
+ * again — recording the new
  * outcome in `plugin_runtime` / `plugin_errors`. This instance reconciles
  * right after the commit, so the caller's next read already shows its
  * result.

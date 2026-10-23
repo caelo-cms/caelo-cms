@@ -147,7 +147,9 @@ export {
 export {
   type PluginNotRunning,
   pluginNotRunningMarker,
+  pluginNotRunningReason,
   pluginNotRunningSlug,
+  pluginRunsHere,
   pluginsNotRunningHere,
   resetPluginHostSync,
   syncPluginHost,

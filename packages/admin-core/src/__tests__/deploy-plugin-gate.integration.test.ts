@@ -48,6 +48,7 @@ const HUMAN: ExecutionContext = {
   requestId: "t1008-deploy-gate",
 };
 const PLUGIN = "t1008g-links";
+const GHOST = "t1008g-ghost";
 const TPL_SLUG = "t1008g-tpl";
 const MOD_SLUG = "t1008g-mod";
 const HOME_SLUG = "home";
@@ -90,7 +91,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM audit_events WHERE actor_id IN (
       SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${PLUGIN}))`;
     await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${PLUGIN})`;
-    await tx`DELETE FROM plugins WHERE slug = ${PLUGIN}`;
+    await tx`DELETE FROM plugins WHERE slug IN (${PLUGIN}, ${GHOST})`;
   });
 }
 
@@ -274,5 +275,22 @@ describe("#1008 — Publish live never ships without an active plugin", () => {
       pageId: homeId,
     });
     expect(rendered.missingSlots).not.toContain(`plugin-not-running:${PLUGIN}`);
+  });
+
+  it("a plugin another instance activated a moment ago, that this host cannot load, blocks too", async () => {
+    // Written straight to the row (another instance's activation, from here):
+    // no reconcile has run yet, and this host has no code for the plugin.
+    await sqlSystem(async (tx) => {
+      await tx`
+        INSERT INTO plugins (slug, version, tier, status, manifest_json, manifest_signature, submitted_by, activated_at)
+        VALUES (${GHOST}, '0.1.0', 1, 'active', '{}'::jsonb, 'sig', ${SYSTEM_ACTOR_ID}::uuid, now())`;
+    });
+    const message = await refusal("deploy.trigger", {
+      targetName: "production",
+      repoRoot: testRoot,
+    });
+    expect(message).toContain(`"${GHOST}"`);
+    expect(message).toContain("not running on this server");
+    await sqlSystem(async (tx) => tx`DELETE FROM plugins WHERE slug = ${GHOST}`);
   });
 });

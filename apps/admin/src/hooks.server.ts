@@ -121,7 +121,7 @@ const SYSTEM_CTX: ExecutionContext = {
 // against that key via the `.tier1-trust-root` drop file. Production
 // images sign at image-build time (same mechanism, throwaway build key;
 // image provenance is cosign's job).
-let pluginHostBootstrapped = false;
+let pluginHostBoot: Promise<void> | null = null;
 
 /** Walk up from cwd to the directory containing `packages/plugins`.
  *  Throws (no-fallbacks) when the workspace shape isn't found. */
@@ -138,9 +138,17 @@ function findWorkspaceRoot(): string {
   );
 }
 
-async function bootstrapPlugins(): Promise<void> {
-  if (pluginHostBootstrapped) return;
-  pluginHostBootstrapped = true;
+/**
+ * The plugin host boot, started once and shared: every request waits for
+ * it (#1008) so none renders, dispatches or passes the Publish-live gate on
+ * empty registries during a cold start.
+ */
+function bootstrapPlugins(): Promise<void> {
+  if (!pluginHostBoot) pluginHostBoot = bootPluginHost();
+  return pluginHostBoot;
+}
+
+async function bootPluginHost(): Promise<void> {
   const { adapter, registry } = getQueryContext();
   // P11.5 audit fix #3 — wire emitSnapshot + aiProvider so plugins that
   // declare those capabilities get working handles. Plugin's
@@ -604,10 +612,11 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapDomainEventGc();
   bootstrapQualityAudits();
   bootstrapBugForwarding();
-  bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
-  // #1008 — follow plugin decisions made through any instance (throttled
-  // generation check; reconciles only when the plugin rows changed), so
-  // this request renders and dispatches on the database's plugin state.
+  // #1008 — wait for the shared plugin-host boot, then follow plugin
+  // decisions made through any instance (throttled state check; reconciles
+  // only when the plugin rows changed), so this request renders and
+  // dispatches on the database's plugin state.
+  await bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
   await syncPluginHost();
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   await seedSiteBaseUrl();

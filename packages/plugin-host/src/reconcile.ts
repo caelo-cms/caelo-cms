@@ -10,40 +10,48 @@
  * instance running a plugin the database no longer had active, and the
  * editor preview broke there.
  *
- * Every write to the plugin rows bumps `plugin_host_generation` (migration
- * 0345, row triggers — whoever writes). {@link syncPluginHost} compares
- * that counter with the one this instance last reconciled at; when it
- * moved, {@link reconcile} brings the host in line:
+ * {@link syncPluginHost} reads the plugin rows — with each plugin's active
+ * installation digest and unrevoked grants — in ONE statement, fingerprints
+ * them, and when the fingerprint differs from the one this instance last
+ * reconciled at, {@link reconcile} brings the host in line with exactly
+ * those rows. One statement is one snapshot: a fingerprint is never
+ * remembered without the rows that produced it (a counter bumped by a write
+ * that has not committed yet could be). Any writer counts — an op, a
+ * migration, a manual repair — and no trigger or shared counter row
+ * serialises plugin writes. The rules:
  *
  *   - active, not loaded here     → load it (recorded by `loadReported`;
  *                                    a failure stays "not running here")
  *   - active, loaded but disabled → resume it
- *   - active, loaded from another row (reinstalled) or another external
- *     version                     → unload, load the current one
+ *   - active, loaded from another row (reinstalled), or an external
+ *     plugin whose approved artifact or grants changed
+ *                                 → unload, load the current one
  *   - disabled, loaded            → stop it (tools, workers, dispatch)
  *   - anything else, or no row    → unload it completely
  *
- * The check is a single sequence read, throttled, and runs before admin
- * requests (`apps/admin` hooks) and on a timer — Cloud Run throttles CPU
- * between requests, so the request path is what makes it reliable there.
- * A failing plugin is retried only when the counter moves (an Owner's
- * "Reload on all servers" bumps it), never in a loop.
+ * The read is a handful of rows, throttled, and runs before admin requests
+ * (`apps/admin` hooks) and on a timer — Cloud Run throttles CPU between
+ * requests, so the request path is what makes it reliable there. Paths
+ * that must not act on a stale view (the Publish-live gate) force it. A
+ * failing plugin is retried only when the rows change (an Owner's "Reload
+ * on all servers" touches its row), never in a loop.
  */
 
+import { createHash } from "node:crypto";
 import { sql } from "drizzle-orm";
-import { isPluginDisabled, loadedPlugins } from "./dispatch.js";
+import { isPluginDisabled, type LoadedPlugin, loadedPlugins } from "./dispatch.js";
 import { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
 import { describeLoadError } from "./load-error.js";
 import { loadActivatedPlugin, pluginHostBootstrapped } from "./loader.js";
 import { clearPluginRuntime } from "./runtime-health.js";
 
-/** Minimum gap between two generation reads (per instance). */
+/** Minimum gap between two state reads (per instance). */
 const CHECK_INTERVAL_MS = 2_000;
 /** The background check, for instances that serve no requests for a while. */
 const TIMER_INTERVAL_MS = 30_000;
 
-/** The generation this instance reconciled at; null before the first. */
-let reconciledAt: bigint | null = null;
+/** The fingerprint this instance reconciled at; null before the first. */
+let reconciledAt: string | null = null;
 let lastCheck = 0;
 let inflight: Promise<void> | null = null;
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -82,12 +90,31 @@ export function pluginsNotRunningHere(): ReadonlyArray<PluginNotRunning> {
     .sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
+/**
+ * Whether `slug` runs on this instance: loaded and not stopped. What the
+ * Publish-live gate checks every active plugin against.
+ */
+export function pluginRunsHere(slug: string): boolean {
+  return loadedPlugins.bySlug(slug) !== undefined && !isPluginDisabled(slug);
+}
+
+/** Why `slug` does not run here, when this instance tried and failed. */
+export function pluginNotRunningReason(slug: string): string | undefined {
+  return notRunningHere.get(slug);
+}
+
 interface PluginRow {
   id: string;
   slug: string;
   status: string;
   tier: number;
   version: string;
+  manifest_signature: string | null;
+  updated_at: string;
+  /** The active installation's artifact (external plugins), else null. */
+  artifact_digest: string | null;
+  /** That artifact's unrevoked grant ids, sorted, comma-separated. */
+  grant_ids: string;
 }
 
 /**
@@ -103,25 +130,29 @@ export function syncPluginHost(force = false): Promise<void> {
   const host = pluginHostBootstrapped();
   if (!host) return Promise.resolve();
   armTimer();
-  if (inflight) return inflight;
+  // A forced call must see rows newer than any run already in flight.
+  if (inflight && !force) return inflight;
   const now = Date.now();
   if (!force && now - lastCheck < CHECK_INTERVAL_MS) return Promise.resolve();
   lastCheck = now;
-  inflight = (async () => {
+  const run = (async () => {
+    await inflight?.catch(() => undefined);
     try {
-      const generation = await readGeneration(host);
-      if (!force && generation === reconciledAt) return;
-      await reconcile(host);
-      reconciledAt = generation;
+      const rows = await readPluginRows(host);
+      const fingerprint = fingerprintOf(rows);
+      if (!force && fingerprint === reconciledAt) return;
+      await reconcile(host, rows);
+      reconciledAt = fingerprint;
     } catch (e) {
       console.error(
         `[plugin-host] reconcile failed (retried on the next check): ${describeLoadError(e)}`,
       );
     }
   })().finally(() => {
-    inflight = null;
+    if (inflight === run) inflight = null;
   });
-  return inflight;
+  inflight = run;
+  return run;
 }
 
 function armTimer(): void {
@@ -147,27 +178,45 @@ function systemCtx(host: Host, requestId: string) {
   return { actorId: host.systemActorId, actorKind: "system" as const, requestId };
 }
 
-async function readGeneration(host: Host): Promise<bigint> {
-  const rows = await host.infra.adapter.withAdminTransaction(
-    systemCtx(host, "plugin-host-generation"),
-    async (tx) =>
-      (await tx.execute(sql`
-        SELECT last_value::text AS value, is_called FROM plugin_host_generation
-      `)) as unknown as { value: string; is_called: boolean }[],
-  );
-  const row = rows[0];
-  if (!row) throw new Error("plugin_host_generation returned no row (migration 0345 missing?)");
-  return row.is_called ? BigInt(row.value) : 0n;
+function fingerprintOf(rows: ReadonlyArray<PluginRow>): string {
+  return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
 }
 
+/** Every plugin row with what decides how it runs — one statement, one snapshot. */
 async function readPluginRows(host: Host): Promise<PluginRow[]> {
   return host.infra.adapter.withAdminTransaction(
     systemCtx(host, "plugin-host-reconcile"),
     async (tx) =>
       (await tx.execute(sql`
-        SELECT id::text AS id, slug, status, tier, version FROM plugins ORDER BY slug
+        SELECT p.id::text AS id, p.slug, p.status, p.tier, p.version, p.manifest_signature,
+               p.updated_at::text AS updated_at, v.artifact_digest,
+               coalesce((
+                 SELECT string_agg(g.id::text, ',' ORDER BY g.id::text)
+                 FROM plugin_capability_grants g
+                 WHERE g.plugin_id = p.id AND g.artifact_digest = v.artifact_digest
+                   AND g.revoked_at IS NULL
+               ), '') AS grant_ids
+        FROM plugins p
+        LEFT JOIN plugin_installation_versions v ON v.plugin_id = p.id AND v.status = 'active'
+        ORDER BY p.slug
       `)) as unknown as PluginRow[],
   );
+}
+
+/**
+ * Whether a loaded external plugin no longer runs the approved artifact
+ * with its grants — a newly approved artifact can keep the version string,
+ * and re-enabling issues new grant ids. Exported for its unit test.
+ */
+export function externalIdentityChanged(
+  lp: Pick<LoadedPlugin, "externalApproval">,
+  row: Pick<PluginRow, "artifact_digest" | "grant_ids">,
+): boolean {
+  const approval = lp.externalApproval;
+  if (!approval) return false;
+  if (approval.artifactDigest !== row.artifact_digest) return true;
+  const loaded = [...approval.grantIds].sort().join(",");
+  return approval.grantIds.length > 0 && loaded !== row.grant_ids;
 }
 
 async function unload(host: Host, slug: string): Promise<void> {
@@ -177,9 +226,14 @@ async function unload(host: Host, slug: string): Promise<void> {
 }
 
 /** One pass over every plugin row (see the module docblock for the rules). */
-async function reconcile(host: Host): Promise<void> {
-  const rows = await readPluginRows(host);
+async function reconcile(host: Host, rows: ReadonlyArray<PluginRow>): Promise<void> {
   const bySlug = new Map(rows.map((r) => [r.slug, r]));
+
+  // A plugin that failed to load and was then uninstalled (or is no longer
+  // active) is not "not running here" any more — it is gone.
+  for (const slug of [...notRunningHere.keys()]) {
+    if (bySlug.get(slug)?.status !== "active") notRunningHere.delete(slug);
+  }
 
   for (const lp of loadedPlugins.all()) {
     const row = bySlug.get(lp.slug);
@@ -206,7 +260,11 @@ async function reconcile(host: Host): Promise<void> {
       continue;
     }
     let lp = loadedPlugins.bySlug(row.slug);
-    if (lp && (lp.pluginId !== row.id || (row.tier === 2 && lp.version !== row.version))) {
+    if (
+      lp &&
+      (lp.pluginId !== row.id ||
+        (row.tier === 2 && (lp.version !== row.version || externalIdentityChanged(lp, row))))
+    ) {
       console.log(`[plugin-host] reconcile: ${row.slug} changed underneath — reloading`);
       await unload(host, row.slug);
       lp = undefined;

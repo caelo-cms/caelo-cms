@@ -10,7 +10,7 @@
  * view — and checks that `syncPluginHost` brings the host in line, that it
  * only reconciles when the rows changed, that a failing plugin is reported
  * as not running here and comes up after `plugins.reload`, and that an
- * unchanged boot does not bump the generation (no instance ping-pong).
+ * unchanged boot does not write the plugin row (no instance ping-pong).
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
@@ -67,15 +67,13 @@ async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   }
 }
 
-async function generation(): Promise<bigint> {
+/** The row version of a plugin row — changes on every UPDATE. */
+async function rowVersion(slug: string): Promise<string | undefined> {
   const rows = await sqlSystem(
     async (tx) =>
-      (await tx`SELECT last_value::text AS v, is_called FROM plugin_host_generation`) as {
-        v: string;
-        is_called: boolean;
-      }[],
+      (await tx`SELECT xmin::text AS v FROM plugins WHERE slug = ${slug}`) as { v: string }[],
   );
-  return rows[0]?.is_called ? BigInt(rows[0].v) : 0n;
+  return rows[0]?.v;
 }
 
 async function wipe(): Promise<void> {
@@ -161,11 +159,11 @@ describe("#1008 — syncPluginHost follows the plugin rows", () => {
     expect(loadedPlugins.bySlug(STEADY)).toBeUndefined();
   });
 
-  it("reconciles only when the generation moved", async () => {
+  it("reconciles only when the plugin rows changed", async () => {
     await boot([steady]);
     await syncPluginHost(true);
-    // Disable it locally behind the database's back: an unchanged
-    // generation must not touch the host (no per-request reconcile work).
+    // Unload it locally behind the database's back: unchanged rows must
+    // not touch the host (no per-request reconcile work).
     const lp = loadedPlugins.bySlug(STEADY);
     expect(lp).toBeDefined();
     loadedPlugins.unload(STEADY);
@@ -202,6 +200,40 @@ describe("#1008 — syncPluginHost follows the plugin rows", () => {
     );
   });
 
+  it("a write not yet committed at the first read is still picked up after it commits", async () => {
+    await boot([steady]);
+    await syncPluginHost(true);
+    const writer = new SQL(ADMIN_URL as string);
+    try {
+      await writer.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`UPDATE plugins SET status = 'disabled' WHERE slug = ${STEADY}`;
+        // Read while the change is uncommitted: nothing to do yet.
+        await syncPluginHost(true);
+        expect(isPluginDisabled(STEADY)).toBe(false);
+      });
+    } finally {
+      await writer.end();
+    }
+    // Committed now: an ordinary (unforced) check must see it.
+    await Bun.sleep(2_100);
+    await syncPluginHost();
+    expect(isPluginDisabled(STEADY)).toBe(true);
+  });
+
+  it("forgets a failing plugin once it is uninstalled", async () => {
+    await boot();
+    await syncPluginHost(true);
+    expect(pluginsNotRunningHere().map((p) => p.slug)).toEqual([FLAKY]);
+    await sqlSystem(async (tx) => {
+      await tx`DELETE FROM plugin_runtime WHERE plugin_slug = ${FLAKY}`;
+      await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${FLAKY})`;
+      await tx`DELETE FROM plugins WHERE slug = ${FLAKY}`;
+    });
+    await syncPluginHost(true);
+    expect(pluginsNotRunningHere()).toEqual([]);
+  });
+
   it("plugins.reload refuses a plugin that is not active, naming the next step", async () => {
     await boot([steady]);
     await sqlSystem(
@@ -217,7 +249,7 @@ describe("#1008 — syncPluginHost follows the plugin rows", () => {
     if (!missing.ok) expect(JSON.stringify(missing.error)).toContain("list_plugins");
   });
 
-  it("a boot with an unchanged release does not bump the generation", async () => {
+  it("a boot with an unchanged release does not write the plugin row", async () => {
     // A disk plugin, signed once with a test key: what production boots.
     // (In-memory test plugins are re-signed with a fresh key per boot, so
     // their row really changes every time.)
@@ -244,11 +276,11 @@ describe("#1008 — syncPluginHost follows the plugin rows", () => {
       resetPluginHost();
       const first = await bootstrap(opts);
       expect(first.loaded.map((l) => l.slug)).toContain(DISK);
-      const before = await generation();
+      const before = await rowVersion(DISK);
       resetPluginHost();
       const second = await bootstrap(opts);
       expect(second.loaded.map((l) => l.slug)).toContain(DISK);
-      expect(await generation()).toBe(before);
+      expect(await rowVersion(DISK)).toBe(before);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
