@@ -29,7 +29,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { loadSkillToolInput } from "@caelo-cms/shared";
+import { LOAD_SKILL_MAX_SLUGS, loadSkillToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -91,7 +91,7 @@ export const loadSkillTool: ToolDefinitionWithHandler<
       slugs: {
         type: "array",
         minItems: 1,
-        maxItems: 5,
+        maxItems: LOAD_SKILL_MAX_SLUGS,
         items: { type: "string", pattern: "^[a-z0-9-]+$", minLength: 1, maxLength: 120 },
       },
     },

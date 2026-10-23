@@ -152,10 +152,16 @@ export const siteMemoryProposeToolInput = z
  * smallest case rather than a separate singular tool. Loading three skills was
  * three provider round-trips whose only output was one tool call each.
  *
- * Capped at 5: skills are task-scoped, and a model that wants more than a
- * handful at once has almost certainly matched the index too loosely — each
- * body is a sizeable injection into history.
+ * Capped at LOAD_SKILL_MAX_SLUGS as a bound on garbage input, not on
+ * judgement. It used to be 5 on the theory that wanting more meant matching
+ * the index too loosely; building a site from nothing legitimately engages
+ * six (bootstrap-site, compose-page, design-quality, brand-voice-guard,
+ * theme-branding, templates-layouts — e2e-livedit runs 39924624682 and
+ * 40018333047), and the description tells the model to pass EVERY skill it
+ * needs in one call, so the cap split one correct call into a refusal and a
+ * retry.
  */
+export const LOAD_SKILL_MAX_SLUGS = 20;
 export const loadSkillToolInput = z
   .object({
     slugs: z
@@ -167,7 +173,7 @@ export const loadSkillToolInput = z
           .regex(/^[a-z0-9-]+$/, "lowercase letters/digits/hyphens"),
       )
       .min(1)
-      .max(5),
+      .max(LOAD_SKILL_MAX_SLUGS),
   })
   .strict();
 export type LoadSkillToolInput = z.infer<typeof loadSkillToolInput>;
