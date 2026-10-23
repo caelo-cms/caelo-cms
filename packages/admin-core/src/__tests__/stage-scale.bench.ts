@@ -144,6 +144,8 @@ const moduleIds: Record<"header" | "hero" | "body" | "cta" | "footer", string> =
 let headerContentId = "";
 let footerContentId = "";
 let seeded = 0;
+/** site_defaults survives the test preload's reset: put back what the bench pinned. */
+const restore: (() => Promise<void>)[] = [];
 
 async function ok<T>(op: string, input: unknown): Promise<T> {
   const r = await execute(registry, adapter, SYSTEM, op, input);
@@ -242,8 +244,8 @@ beforeAll(async () => {
     CAELO_SKIP_STAGING_SERVE_CHECK: "1",
   });
   globalThis.fetch = fake.fetch as typeof fetch;
-  await pinSiteBaseUrl(ADMIN_URL!, "https://example.com");
-  await pinSiteLanguage(ADMIN_URL!, "en");
+  restore.push(await pinSiteBaseUrl(ADMIN_URL!, "https://example.com"));
+  restore.push(await pinSiteLanguage(ADMIN_URL!, "en"));
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
   registerAdminOps(registry);
@@ -332,6 +334,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   globalThis.fetch = realFetch;
+  for (const undo of restore.reverse()) await undo();
   await rm(root, { recursive: true, force: true });
   await adapter.close();
 });
