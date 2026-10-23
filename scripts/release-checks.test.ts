@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -22,6 +22,7 @@ import {
   ReleaseMetaSchema,
   setJsonVersionField,
   taggedAheadProblem,
+  UNRELEASED_VERSION,
   validateReleaseMetaShape,
   verifyAdvisoriesPublished,
 } from "./release-checks.ts";
@@ -40,12 +41,19 @@ const GHSA = "GHSA-2c2m-4x8q-wx9f";
 const d = (c: string) => `sha256:${c.repeat(64)}`;
 
 describe("release-meta.json", () => {
-  it("the committed declaration parses and matches the current version", () => {
+  // Main is stamped with the unreleased marker and carries no declaration;
+  // a release commit (what the release gate tests) carries its own.
+  it("main has none; a release commit's parses and matches its version", () => {
     const root = resolve(import.meta.dir, "..");
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
+    if (pkg.version === UNRELEASED_VERSION) {
+      expect(existsSync(join(root, "release-meta.json"))).toBe(false);
+      expect(existsSync(join(root, "CHANGELOG.md"))).toBe(false);
+      return;
+    }
     const meta = ReleaseMetaSchema.parse(
       JSON.parse(readFileSync(join(root, "release-meta.json"), "utf8")),
     );
-    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string };
     expect(meta.version).toBe(pkg.version);
   });
 });
@@ -392,11 +400,10 @@ describe("taggedAheadProblem", () => {
     expect(taggedAheadProblem(["0.10.64", "0.10.65"], "0.10.66")).toBeNull();
   });
 
-  it("refuses a bump that collides with a tag main has not merged back", () => {
-    // main still says 0.10.65 while v0.10.66 is tagged: patch → 0.10.66.
-    const problem = taggedAheadProblem(["0.10.65", "0.10.66"], "0.10.66");
-    expect(problem).toContain("v0.10.66 is already tagged");
-    expect(problem).toContain("release/v0.10.66");
+  it("refuses an explicit version at or below an existing tag", () => {
+    const problem = taggedAheadProblem(["0.10.65", "0.11.0-rc.1"], "0.10.66");
+    expect(problem).toContain("v0.11.0-rc.1 is already tagged");
+    expect(taggedAheadProblem(["0.10.66"], "0.10.66")).toContain("v0.10.66 is already tagged");
   });
 });
 

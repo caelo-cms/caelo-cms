@@ -6,12 +6,16 @@
  *     and the mcp-server release its .mcp.json starts are the package's
  *     version, pinned exactly (Anthropic's plugin directory blocks `@latest`
  *     and ranges on a package launcher), and release.ts bumps both before
- *     the release commit.
+ *     the release commit. On main both carry the unreleased marker; users
+ *     never get main's copy (P3).
  * P2: the server gets exactly the variables the MCP Registry entry
  *     advertises, each from a declared userConfig option, the token one
  *     marked sensitive (keychain, never settings.json) and none hardcoded.
  * P3: the marketplace entry at the repo root installs this plugin by the
- *     same name the manifest declares.
+ *     same name the manifest declares, from the `release-latest` branch —
+ *     the newest published release commit, which release.yml moves after
+ *     publishing — so main's marketplace.json never changes per release and
+ *     users get the exact pin of the newest release.
  */
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -79,10 +83,15 @@ describe("Claude Code plugin", () => {
   });
 
   it("P3: the root marketplace installs the plugin under its manifest name", () => {
-    const marketplace = readJson<{ plugins: Array<{ name: string; source: string }> }>(
+    const marketplace = readJson<{ plugins: Array<{ name: string; source: unknown }> }>(
       resolve(REPO_ROOT, ".claude-plugin/marketplace.json"),
     );
     const entry = marketplace.plugins.find((p) => p.name === plugin.name);
-    expect(entry?.source).toBe("./integrations/claude-code");
+    expect(entry?.source).toEqual({
+      source: "git-subdir",
+      url: "https://github.com/caelo-cms/caelo-cms.git",
+      path: "integrations/claude-code",
+      ref: "release-latest",
+    });
   });
 });
