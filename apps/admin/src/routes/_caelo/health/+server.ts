@@ -3,8 +3,10 @@
 /**
  * Admin health endpoint.
  *
- *   GET /_caelo/health         → `{ ok, version }` once both database pools
- *                                connect as the expected roles.
+ *   GET /_caelo/health         → `{ ok, version }` when both database pools
+ *                                connect as the expected roles AND answer
+ *                                a query right now (503 `DbUnresponsive`
+ *                                when a pool's connections hang).
  *   GET /_caelo/health?deep=1  → additionally `migrations: { admin, public }`
  *                                (`{ head, pending }` each): every migration
  *                                file this image ships must be recorded as
@@ -44,6 +46,9 @@ const OPS: Record<MigrationDatabase, string> = {
 
 const NO_STORE = { "Cache-Control": "no-store" };
 
+/** How long each pool may take to answer `SELECT 1` before the admin reports itself unhealthy. */
+const PING_DEADLINE_MS = 5000;
+
 function unhealthy(kind: string, message: string) {
   return json(
     { ok: false, version: CAELO_VERSION, error: { kind, message } },
@@ -61,6 +66,14 @@ export const GET: RequestHandler = async ({ url }) => {
   } catch (e) {
     console.error(`[health] database check failed: ${(e as Error).message}`);
     return unhealthy("DbUnreachable", "a database pool cannot connect as its expected role");
+  }
+  try {
+    // verifyRoles remembers its first success, so on its own this endpoint
+    // kept answering ok while every pooled connection hung.
+    await query.adapter.ping(PING_DEADLINE_MS);
+  } catch (e) {
+    console.error(`[health] ${(e as Error).message}`);
+    return unhealthy("DbUnresponsive", "a database pool does not answer queries");
   }
   if (url.searchParams.get("deep") !== "1") {
     return json({ ok: true, version: CAELO_VERSION }, { headers: NO_STORE });

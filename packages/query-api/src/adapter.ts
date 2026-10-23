@@ -13,7 +13,8 @@ import type { SQL as SQLType } from "bun";
 type SQL = SQLType;
 /** Subset of `Bun.SQL.Options` we set explicitly. `max` caps the pool size. */
 interface PoolOptions {
-  readonly max: number;
+  readonly max?: number;
+  readonly idleTimeout: number;
 }
 const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOptions) => SQLType } })
   .Bun?.SQL as unknown as new (
@@ -67,6 +68,11 @@ export interface AdapterConfig {
    */
   readonly poolMax?: number;
   /**
+   * Overrides {@link POOL_IDLE_TIMEOUT_SECONDS}. Only for the tests that
+   * prove a pool recovers from silently dropped connections in seconds.
+   */
+  readonly poolIdleTimeoutSeconds?: number;
+  /**
    * The identities {@link DatabaseAdapter.verifyRoles} accepts. Defaults to
    * the authoring roles (`admin_role` on cms_admin; `admin_role` or
    * `public_role` on cms_public). Only a process that deliberately runs with
@@ -82,6 +88,38 @@ export interface AdapterConfig {
 }
 
 const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role"] } as const;
+
+/**
+ * Seconds a pooled connection may carry no traffic before Bun closes it.
+ *
+ * Without it (Bun's default is no limit) a connection whose network flow
+ * was dropped without a reset — the database restarting, a VPC path
+ * forgetting an idle flow — stays in the pool forever, and every query
+ * handed to it waits forever too. Production lost its admin that way for
+ * a day: every database request hung until Cloud Run's 3600 s request
+ * timeout while the process looked healthy.
+ *
+ * Bun measures silence per socket, also while a query or a transaction is
+ * running, so the value must exceed the longest legitimate silence: a
+ * transaction waiting on an advisory lock while another one publishes the
+ * site (live-release-lock.ts, staging-publication-lock.ts). 15 minutes
+ * covers that with room and still bounds a wedge to minutes, not a day.
+ */
+export const POOL_IDLE_TIMEOUT_SECONDS = 900;
+
+/**
+ * Thrown by {@link DatabaseAdapter.ping} when a pool does not answer
+ * `SELECT 1` within the deadline: its connections hang (see
+ * {@link POOL_IDLE_TIMEOUT_SECONDS}) or the database is overloaded.
+ */
+export class DatabaseUnresponsiveError extends Error {
+  override readonly name = "DatabaseUnresponsiveError";
+  constructor(pool: "admin" | "public", deadlineMs: number) {
+    super(
+      `the ${pool} database pool did not answer SELECT 1 within ${deadlineMs} ms; its connections hang or the database is overloaded`,
+    );
+  }
+}
 
 /**
  * Thrown when a public-side process (constructed with
@@ -100,9 +138,9 @@ export class AdminDatabaseUnavailableError extends Error {
 
 /**
  * Resolve the per-pool `max` connection cap. Returns `undefined` when neither
- * the explicit option nor `CAELO_DB_POOL_MAX` is set, so the caller keeps the
- * original 1-arg `new SQL(url)` path and inherits Bun's default of 10 — making
- * this a no-op in production where neither knob is present.
+ * the explicit option nor `CAELO_DB_POOL_MAX` is set, so the caller passes no
+ * `max` and inherits Bun's default of 10 — making this a no-op in production
+ * where neither knob is present.
  *
  * Per CLAUDE.md §2 (no silent fallbacks pre-1.0): a value that is *present* but
  * malformed or below the safe floor throws loudly rather than quietly picking a
@@ -159,11 +197,11 @@ export class DatabaseAdapter {
         "DatabaseAdapter: a public-only adapter (adminDatabaseUrl: null) must expect no admin role, and an adapter with an admin URL must expect one",
       );
     }
-    // When no pool cap is configured (the production case) keep the original
-    // 1-arg construction so behaviour is byte-for-byte unchanged: Bun default 10.
+    // No pool cap configured (the production case) keeps Bun's default of 10.
     const poolMax = resolvePoolMax(config.poolMax);
+    const idleTimeout = config.poolIdleTimeoutSeconds ?? POOL_IDLE_TIMEOUT_SECONDS;
     const open = (url: string): SQL =>
-      poolMax === undefined ? new SQL(url) : new SQL(url, { max: poolMax });
+      new SQL(url, poolMax === undefined ? { idleTimeout } : { max: poolMax, idleTimeout });
     this.#adminRaw = config.adminDatabaseUrl === null ? null : open(config.adminDatabaseUrl);
     this.#publicRaw = open(config.publicDatabaseUrl);
     this.#admin = this.#adminRaw === null ? null : drizzle(this.#adminRaw);
@@ -261,6 +299,35 @@ export class DatabaseAdapter {
         `DatabaseAdapter public pool expected user ${this.#roles.public.join(" or ")}, got ${pub.user}.`,
       );
     }
+  }
+
+  /**
+   * Prove that every pool answers right now: `SELECT 1` through each one,
+   * bounded by `deadlineMs`. Unlike {@link verifyRoles} it is never
+   * remembered, so a health check built on it notices a pool whose
+   * connections started hanging after the first success.
+   *
+   * @throws DatabaseUnresponsiveError naming the first pool that missed the deadline.
+   */
+  async ping(deadlineMs: number): Promise<void> {
+    const pools: ["admin" | "public", SQL][] = [["public", this.#publicRaw]];
+    if (this.#adminRaw !== null) pools.unshift(["admin", this.#adminRaw]);
+    await Promise.all(
+      pools.map(async ([name, pool]) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new DatabaseUnresponsiveError(name, deadlineMs)),
+            deadlineMs,
+          );
+        });
+        try {
+          await Promise.race([pool`SELECT 1`, deadline]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }),
+    );
   }
 
   async #identity(pool: SQL): Promise<ConnectionIdentity> {
