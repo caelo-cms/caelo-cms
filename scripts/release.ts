@@ -66,6 +66,7 @@ import {
   type ReleaseMeta,
   readReleaseMeta,
   runReleaseChecks,
+  setJsonVersionField,
   writeReleaseMeta,
 } from "./release-checks.ts";
 
@@ -224,15 +225,14 @@ function bumpMcpServerJson(newVersion: string, dryRun: boolean): void {
 }
 
 function bumpClaudePlugin(newVersion: string, dryRun: boolean): void {
-  const manifest = JSON.parse(readFileSync(CLAUDE_PLUGIN_JSON, "utf8")) as { version: string };
-  manifest.version = newVersion;
+  const manifest = setJsonVersionField(readFileSync(CLAUDE_PLUGIN_JSON, "utf8"), newVersion);
   const mcp = readFileSync(CLAUDE_PLUGIN_MCP_JSON, "utf8");
   const nextMcp = mcp.replace(PLUGIN_MCP_PIN, `@caelo-cms/mcp-server@${newVersion}"`);
   if (nextMcp === mcp && !mcp.includes(`@caelo-cms/mcp-server@${newVersion}"`)) {
     throw new Error("integrations/claude-code/.mcp.json has no @caelo-cms/mcp-server pin to bump");
   }
   if (dryRun) return;
-  writeFileSync(CLAUDE_PLUGIN_JSON, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(CLAUDE_PLUGIN_JSON, manifest);
   writeFileSync(CLAUDE_PLUGIN_MCP_JSON, nextMcp);
 }
 
