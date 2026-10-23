@@ -40,6 +40,16 @@ permissions:
   contents: write    # Needed to create GitHub Releases.
   id-token: write    # Required for npm provenance.
 
+# One publication at a time, in order. Every stable run moves npm `latest`,
+# which the versionless install (caelo-cms/install run.sh) follows, and
+# `release-latest`: two releases publishing at once could let the older,
+# slower one finish last and move `latest` backwards. release-cut also
+# refuses to cut while a run is queued or running, so this group never
+# holds more than one waiting run (GitHub would cancel an older pending one).
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -722,14 +732,28 @@ jobs:
 
       - name: Move release-latest to the tag
         env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
           REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           V="${REF#v}"
-          current=$(gh api "repos/${REPO}/contents/package.json?ref=release-latest" --jq '.content' 2>/dev/null \
-            | base64 -d | jq -r .version) || current=""
+          # Only a branch that does not exist yet counts as "nothing there":
+          # ls-remote exits 2 for no match. Any other failure (network, a
+          # package.json that will not parse) stops here, so a read error can
+          # never let an older release rewind the branch.
+          set +e
+          git ls-remote --exit-code --heads origin release-latest >/dev/null
+          code=$?
+          set -e
+          current=""
+          if [ "${code}" = 0 ]; then
+            git fetch --quiet --depth=1 origin release-latest
+            current=$(git show FETCH_HEAD:package.json | jq -er .version)
+            [[ "${current}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+              || { echo "::error::release-latest carries version '${current}', not a stable release"; exit 1; }
+          elif [ "${code}" != 2 ]; then
+            echo "::error::could not read release-latest (git ls-remote exit ${code}); nothing was moved."
+            exit 1
+          fi
           if [ -n "${current}" ] && [ "$(printf '%s\n%s\n' "${current}" "${V}" | sort -V | tail -n1)" != "${V}" ]; then
             echo "::notice::release-latest is at v${current}, newer than v${V}; left alone."
             exit 0

@@ -21,7 +21,12 @@
  *     the tag is a pure release commit on a parent ci.yml passed; the
  *     checks that cover the release commit itself always run.
  * B5: release.yml opens no PR into main; after the GitHub Release it moves
- *     release-latest to the tag, for stable releases only, never backwards.
+ *     release-latest to the tag, for stable releases only, never backwards,
+ *     and a failed read of release-latest stops it (never "not there").
+ * B6: releases publish one at a time: release.yml shares one non-cancelling
+ *     concurrency group, and release-cut refuses while a run is queued or
+ *     running (npm `latest`, which the versionless install follows, must
+ *     never move backwards).
  */
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -43,6 +48,7 @@ interface Job {
 }
 interface Workflow {
   readonly on: Record<string, unknown>;
+  readonly concurrency?: { group?: string; "cancel-in-progress"?: boolean };
   readonly jobs: Record<string, Job>;
 }
 
@@ -157,5 +163,21 @@ describe("release.yml — gate scope and release-latest", () => {
     expect(run).toContain('git push --force origin "HEAD:refs/heads/release-latest"');
     // Never backwards: an older tag re-run leaves a newer release-latest alone.
     expect(run).toMatch(/sort -V[\s\S]*left alone[\s\S]*git push/);
+    // Only ls-remote's "no match" (exit 2) means a fresh branch.
+    expect(run).toContain("git ls-remote --exit-code --heads origin release-latest");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal shell variable
+    expect(run).toContain('elif [ "${code}" != 2 ]; then');
+    expect(run).not.toContain('|| current=""');
+  });
+
+  it("B6: publishes one release at a time", () => {
+    expect(release.concurrency).toEqual({ group: "release-publish", "cancel-in-progress": false });
+    const guard = stepIndex(cutSteps, "Guard — no release is still publishing");
+    expect(guard).toBeGreaterThan(0);
+    expect(guard).toBeLessThan(stepIndex(cutSteps, "Gate — real-AI suite"));
+    const run = cutSteps[guard]?.run ?? "";
+    expect(run).toContain("actions/workflows/release.yml/runs?status=$status");
+    expect(run).toMatch(/for status in queued in_progress waiting/);
+    expect(run).toMatch(/still publishing[\s\S]*exit 1/);
   });
 });

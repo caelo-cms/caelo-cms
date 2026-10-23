@@ -125,6 +125,28 @@ jobs:
           fi
           echo "flags=${flags}" >> "$GITHUB_OUTPUT"
 
+      - name: Guard — no release is still publishing
+        # The bump starts from the newest tag, so a cut no longer waits for
+        # the previous release to land anywhere. Releases must still publish
+        # one after the other (release.yml's concurrency group explains why);
+        # refusing here keeps that group to one run and fails fast, before
+        # the paid real-AI gate.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          busy=""
+          for status in queued in_progress waiting pending requested; do
+            ids=$(gh api "repos/$REPO/actions/workflows/release.yml/runs?status=$status&per_page=20" --jq '.workflow_runs[].id')
+            busy="${busy} ${ids}"
+          done
+          busy=$(echo "${busy}" | xargs)
+          if [ -n "${busy}" ]; then
+            echo "::error::release.yml is still publishing (run(s): ${busy}). Wait for it to finish, then run release-cut again."
+            exit 1
+          fi
+
       - name: Validate the release declaration (before the paid real-AI gate)
         # security=true is refused unless every advisory is a PUBLISHED
         # GitHub Security Advisory of this repo; contract migrations and
