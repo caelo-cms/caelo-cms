@@ -54,6 +54,9 @@ test("Owner sees AppShell with sidebar nav, can navigate, dark mode persists", a
   const liveEdit = page.getByTestId("nav-live-edit");
   await expect(liveEdit).toBeVisible();
   await expect(liveEdit).toHaveAttribute("href", "/edit");
+  // Its accessible name is just "Live edit"; the subtitle is the description.
+  await expect(page.getByRole("link", { name: "Live edit", exact: true })).toBeVisible();
+  await expect(liveEdit).toHaveAccessibleDescription("See your site and change it by chat");
 
   // The dashboard leads into Live edit, not into list views.
   await expect(page.getByTestId("dashboard-live-edit")).toBeVisible();

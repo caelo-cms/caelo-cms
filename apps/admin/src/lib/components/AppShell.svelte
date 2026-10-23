@@ -161,6 +161,8 @@
         href={nav.liveEdit.href}
         aria-current={activeHref === nav.liveEdit.href ? "page" : undefined}
         data-testid="nav-live-edit"
+        aria-label={nav.liveEdit.label}
+        aria-describedby="nav-live-edit-description"
         class={cn(
           "mx-2 mt-4 flex flex-col gap-0.5 rounded-md bg-primary px-3 py-2.5 text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 motion-reduce:transition-none",
           activeHref === nav.liveEdit.href && "ring-2 ring-ring ring-offset-2 ring-offset-card",
@@ -170,7 +172,10 @@
           {@render navIcon(nav.liveEdit.icon)}
           {nav.liveEdit.label}
         </span>
-        <span class="pl-7 text-xs text-primary-foreground/80">{nav.liveEdit.description}</span>
+        <!-- The subtitle describes the link; the accessible name stays "Live edit". -->
+        <span id="nav-live-edit-description" class="pl-7 text-xs text-primary-foreground/80"
+          >{nav.liveEdit.description}</span
+        >
       </a>
     {/if}
     <nav aria-label="Main navigation" class="flex-1 space-y-1 overflow-y-auto px-2 py-4">
