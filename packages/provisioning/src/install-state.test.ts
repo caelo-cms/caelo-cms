@@ -131,6 +131,38 @@ describe("recordImageDigests and the release version (#696)", () => {
       rmSync(home, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("#1025: records the platform forms, keeps them for unchanged digests, drops them for new ones", () => {
+    const home = mkdtempSync(join(tmpdir(), "caelo-install-state-"));
+    try {
+      const dir = join(home, `.caelo-${meta.installId}`);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "install.json"), JSON.stringify(meta));
+      const module = resolve(import.meta.dir, "install-state.ts");
+      const C = `sha256:${"c".repeat(64)}`;
+      const P = { admin: `sha256:${"1".repeat(64)}`, gateway: `sha256:${"2".repeat(64)}` };
+      const ab = `{ admin: ${JSON.stringify(A)}, gateway: ${JSON.stringify(B)} }`;
+      const script = `
+        const m = await import(${JSON.stringify(module)});
+        const id = ${JSON.stringify(meta.installId)};
+        const out = [];
+        m.recordImageDigests(id, ${ab}, "0.11.0", ${JSON.stringify(P)});
+        out.push(m.readMetadata(id).platformDigests ?? null);
+        m.recordImageDigests(id, ${ab});
+        out.push(m.readMetadata(id).platformDigests ?? null);
+        m.recordImageDigests(id, { admin: ${JSON.stringify(C)}, gateway: ${JSON.stringify(B)} });
+        out.push(m.readMetadata(id).platformDigests ?? null);
+        console.log(JSON.stringify(out));`;
+      const child = Bun.spawnSync([process.execPath, "-e", script], {
+        env: { ...process.env, HOME: home },
+        stderr: "pipe",
+      });
+      expect(new TextDecoder().decode(child.stderr)).toBe("");
+      expect(JSON.parse(new TextDecoder().decode(child.stdout))).toEqual([P, P, null]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
 
 describe("selectInstall", () => {

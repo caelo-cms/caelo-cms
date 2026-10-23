@@ -244,21 +244,6 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     kind: "internal",
     reason: "chat-runner migration budget gate; the AI reads spend via check_run_budget",
   },
-  "imports.list_page_clusters": {
-    kind: "internal",
-    reason:
-      "cluster-review tools were retired on purpose in #278 (homepage-first page-type mapping, see tools/index.ts); compose_from_run clusters internally",
-  },
-  "imports.assign_page_cluster": {
-    kind: "internal",
-    reason:
-      "cluster-review tools were retired on purpose in #278 (homepage-first page-type mapping, see tools/index.ts)",
-  },
-  "imports.compose_from_run": {
-    kind: "internal",
-    reason:
-      "the ramp-up wizard's one-click compose; the AI migrates through map_external_page_types → build_page per page (the migration skill), which supersedes it",
-  },
   "redirects.lookup": {
     kind: "internal",
     reason: "visitor request-path redirect resolution (hooks.server); the AI uses find_redirects",

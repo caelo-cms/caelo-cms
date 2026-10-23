@@ -7,9 +7,12 @@
  *
  *   bun scripts/release-manifest.ts generate --version 0.11.0 \
  *     --digest admin=sha256:… --digest gateway=sha256:… --digest ops=sha256:… \
- *     --out release-manifest.json
+ *     --platform-digest admin=sha256:… --platform-digest gateway=sha256:… \
+ *     --platform-digest ops=sha256:… --out release-manifest.json
  *       Re-runs the release-cut checks against `release-meta.json` and
- *       writes the manifest. Signing happens in the workflow (cosign).
+ *       writes the manifest. `--platform-digest` names each index's
+ *       linux/amd64 manifest (#1025). Signing happens in the workflow
+ *       (cosign).
  *
  *   bun scripts/release-manifest.ts verify --version 0.11.0 \
  *     [--registry <host> --repository <path>] [--digest admin=sha256:… …]
@@ -43,6 +46,8 @@ import { type ReleaseMeta, readReleaseMeta, runReleaseChecks } from "./release-c
 export function buildReleaseManifest(input: {
   meta: ReleaseMeta;
   digests: Record<ReleaseImage, string>;
+  /** #1025 — each index's linux/amd64 platform manifest. */
+  platformDigests: Record<ReleaseImage, string>;
   contractMigrations: boolean;
   migrationHead: string;
 }): ReleaseManifest {
@@ -57,6 +62,7 @@ export function buildReleaseManifest(input: {
     version: input.meta.version,
     channel,
     digests: input.digests,
+    platformDigests: input.platformDigests,
     minFromVersion: RELEASE_MIN_FROM_VERSION,
     infraContractVersion: INFRA_CONTRACT_VERSION,
     migrations: {
@@ -70,15 +76,21 @@ export function buildReleaseManifest(input: {
   });
 }
 
-/** Parse repeated `--digest image=sha256:…` flags. */
-export function parseDigestFlags(argv: readonly string[]): Partial<Record<ReleaseImage, string>> {
+/**
+ * Parse repeated `--digest image=sha256:…` flags (or another flag of the
+ * same shape, e.g. `--platform-digest`).
+ */
+export function parseDigestFlags(
+  argv: readonly string[],
+  flagName = "--digest",
+): Partial<Record<ReleaseImage, string>> {
   const out: Partial<Record<ReleaseImage, string>> = {};
   argv.forEach((a, i) => {
-    if (a !== "--digest") return;
+    if (a !== flagName) return;
     const [image, digest] = (argv[i + 1] ?? "").split("=");
     if (!image || !digest || !(RELEASE_IMAGES as readonly string[]).includes(image)) {
       throw new Error(
-        `bad --digest "${argv[i + 1] ?? ""}" — expected <admin|gateway|ops>=sha256:…`,
+        `bad ${flagName} "${argv[i + 1] ?? ""}" — expected <admin|gateway|ops>=sha256:…`,
       );
     }
     out[image as ReleaseImage] = digest;
@@ -104,6 +116,11 @@ async function generate(argv: readonly string[], repoRoot: string): Promise<void
   const digests = parseDigestFlags(argv);
   const missing = RELEASE_IMAGES.filter((i) => !digests[i]);
   if (missing.length > 0) throw new Error(`missing --digest for: ${missing.join(", ")}`);
+  const platformDigests = parseDigestFlags(argv, "--platform-digest");
+  const missingPlatform = RELEASE_IMAGES.filter((i) => !platformDigests[i]);
+  if (missingPlatform.length > 0) {
+    throw new Error(`missing --platform-digest for: ${missingPlatform.join(", ")}`);
+  }
 
   const checks = await runReleaseChecks(meta, {
     repoRoot,
@@ -124,6 +141,7 @@ async function generate(argv: readonly string[], repoRoot: string): Promise<void
   const manifest = buildReleaseManifest({
     meta,
     digests: digests as Record<ReleaseImage, string>,
+    platformDigests: platformDigests as Record<ReleaseImage, string>,
     contractMigrations: checks.contractMigrations,
     migrationHead: migrationHead(readdirSync(resolve(repoRoot, MIGRATIONS_DIR, "cms_admin"))),
   });
@@ -150,11 +168,15 @@ async function verify(argv: readonly string[]): Promise<void> {
     console.error(`::error::[${r.error.code}] ${r.error.message}`);
     process.exit(1);
   }
-  const mismatches = compareImageDigests(r.manifest, parseDigestFlags(argv));
+  const mismatches = compareImageDigests(
+    r.manifest,
+    parseDigestFlags(argv),
+    parseDigestFlags(argv, "--platform-digest"),
+  );
   if (mismatches.length > 0) {
     for (const m of mismatches) {
       console.error(
-        `::error::${m.image}: manifest ${m.expected}, registry ${m.actual ?? "(none)"}`,
+        `::error::${m.image}${m.form === "platform" ? " (linux/amd64)" : ""}: manifest ${m.expected ?? "(none)"}, registry ${m.actual ?? "(none)"}`,
       );
     }
     process.exit(1);

@@ -14,6 +14,7 @@ import {
   stripMustache,
   templateShape,
 } from "./markup-structure.js";
+import { tagModuleId } from "./module-id-tag.js";
 
 const chain = (steps: string[]) =>
   `<div class="chain">${steps
@@ -161,6 +162,90 @@ describe("templates and free regions", () => {
       '<div class="chain">{{#steps}}<div class="step"><span class="n">{{n}}</span><p>{{t}}</p></div><span class="arrow"></span>{{/steps}}</div>',
     );
     expect(t?.signature).toBe(shapeOf(chain(["a", "b", "c"])).signature);
+  });
+});
+
+describe("#1027 — template children are matched by best fit, not first fit", () => {
+  // The three templates from the searchVIU audit: a classless (or less
+  // specific) left column before a classed right column. First-fit paired
+  // the left column's template node with the right column and reported
+  // the right column's own template markup as free HTML.
+  const DEMO_FORM =
+    '<div class="wrapc ctaform"><div><h2>{{title}}</h2><p>{{intro}}</p></div>' +
+    '<div class="box steps" data-steps data-topic="{{preselected_topic}}">' +
+    '<ol class="sbar"><li class="on">Thema</li><li>Kontakt</li><li>Termin</li></ol>' +
+    '<div class="step"><label>Thema</label><select name="topic"><option>SEO</option></select></div>' +
+    '<div class="step"><label>E-Mail</label><input type="email" name="email"></div>' +
+    '<div class="step"><button type="submit">Demo anfragen</button></div></div></div>';
+  const SPLIT_CHAT =
+    '<section class="split"><div class="rv"><h2>{{title}}</h2><p>{{lead}}</p></div>' +
+    '<div class="chat rv"><div class="q"><p>Wie steht meine Seite?</p></div>' +
+    '<div class="a"><p>Drei Seiten haben neue 404-Fehler.</p><ul><li>/a</li></ul></div></div></section>';
+  const HERO_WINDOW =
+    '<section class="hero"><div><h1>{{title}}</h1><p>{{lead}}</p><a class="btn" href="{{cta_href}}">{{cta}}</a></div>' +
+    '<div class="win"><div class="bar"><span></span><span></span></div>' +
+    '<div class="bd"><img src="{{image}}" alt=""><p class="cap">Monitoring</p></div></div></section>';
+
+  /** The rendered module: placeholders filled, root tagged as the composer does. */
+  const render = (template: string, fill = "x") =>
+    tagModuleId(template.replace(/\{\{\{?\w+\}?\}\}/g, fill), "m1");
+  const free = (template: string, rendered: string) => {
+    const root = moduleRoots(parseMarkup(rendered))[0];
+    if (!root) throw new Error("no module root");
+    return freeRegions(root, parseMarkup(stripMustache(template)));
+  };
+
+  for (const [name, template] of [
+    ["Demo-Formular in drei Schritten (div before div.box.steps)", DEMO_FORM],
+    ["Split mit KI-Chat (div.rv before div.chat.rv)", SPLIT_CHAT],
+    ["Hero Produktseite mit Fenster (div before div.win)", HERO_WINDOW],
+  ] as const) {
+    it(`${name}: its own rendered output has no free regions`, () => {
+      expect(free(template, render(template))).toEqual([]);
+    });
+  }
+
+  it("a classless div before a div.card sibling: no free regions", () => {
+    const template =
+      '<div class="pair"><div><p>{{a}}</p></div><div class="card"><h3>{{t}}</h3><ul class="pts"><li>{{p}}</li></ul></div></div>';
+    expect(free(template, render(template))).toEqual([]);
+  });
+
+  it("two classless siblings with different insides: the one that accounts wins", () => {
+    const template =
+      '<div class="two"><div><h2>{{t}}</h2><p>{{p}}</p></div><div><ul class="x"><li>{{i}}</li></ul></div></div>';
+    expect(free(template, render(template))).toEqual([]);
+  });
+
+  it("a section repeating a classed child still matches every iteration", () => {
+    const template =
+      '<div class="grid"><div><h2>{{title}}</h2></div>{{#cards}}<div class="card"><p>{{.}}</p></div>{{/cards}}</div>';
+    const rendered = tagModuleId(
+      '<div class="grid"><div><h2>T</h2></div><div class="card"><p>a</p></div><div class="card"><p>b</p></div></div>',
+      "m1",
+    );
+    expect(free(template, rendered)).toEqual([]);
+  });
+
+  it("stays fast when many rendered children each fit several template children", () => {
+    // Every rendered <div> fits all eight classless template <div>s, so the
+    // best-fit choice weighs each candidate; the per-pair memo keeps that
+    // linear in the rendered size.
+    const template = `<div class="wide">${"<div><div><p>{{t}}</p></div></div>".repeat(8)}</div>`;
+    const rendered = tagModuleId(
+      `<div class="wide">${"<div><div><p>x</p><span>y</span></div></div>".repeat(5000)}</div>`,
+      "m1",
+    );
+    const started = performance.now();
+    expect(free(template, rendered)?.length).toBe(5000);
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
+  it("markup pasted into a field value of such a template is still free (#820)", () => {
+    const pasted = chain(["a", "b"]);
+    const rendered = render(HERO_WINDOW).replace("<p>x</p>", `<p>x</p>${pasted}`);
+    const regions = free(HERO_WINDOW, rendered) ?? [];
+    expect(outermostPatterns(regions).map((f) => f.node.classes[0])).toEqual(["chain"]);
   });
 });
 

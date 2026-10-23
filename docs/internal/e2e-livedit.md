@@ -455,7 +455,8 @@ secondary guard — local pass is the primary one.
   gate; close and reopen the PR to force a fresh run).
 - **`main`:** not on every push (a squash merge re-runs code its PR
   already ran green). Instead `release-cut` runs it once on the exact
-  `main` commit it releases and refuses to cut unless it is green.
+  `main` commit it releases (dispatched on `release-gate/<sha>`, a branch
+  pinned to that commit) and refuses to cut unless it is green.
 - **Manual:** `gh workflow run e2e-livedit.yml --ref main` always runs.
 
 ### CI secret gate

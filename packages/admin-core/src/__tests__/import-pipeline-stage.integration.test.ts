@@ -4,19 +4,17 @@
  * Stage harness for the migration pipeline (speed-up plan, 2026-07-12).
  *
  * Every blocker the live searchviu mission hit past the crawl was a
- * DETERMINISTIC op bug (theme-merge junk vars, cluster mechanics,
- * compose) — none needed an AI or a live site to reproduce. This
- * harness replays a recorded slice of the real searchviu crawl
+ * DETERMINISTIC op bug — none needed an AI or a live site to reproduce.
+ * This harness replays a recorded slice of the real searchviu crawl
  * (fixtures/searchviu-import-pages.json.gz — home + blog pages, WP
  * preset junk vars included) through the real ops in seconds:
  *
- *   propose_run → update_run_status → write_extracted_pages
- *     → list_page_clusters → assign_page_cluster → compose_from_run
+ *   propose_run → write_extracted_pages → update_run_status
+ *     → get_import_page / build_page({ importPageId }) → list_pages / get_run_report
  *
- * Shared-state note: compose_from_run merges crawled tokens into the
- * ACTIVE theme. The CI database is per-job disposable and test files
- * run isolated (`bun test --isolate`); entities created here carry a
- * `svfx-` slug prefix and are deleted in afterAll.
+ * The CI database is per-job disposable and test files run isolated
+ * (`bun test --isolate`); entities created here carry a `svfx-` slug
+ * prefix and are deleted in afterAll.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -64,12 +62,14 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx`DELETE FROM redirects WHERE to_path LIKE ${`/${PREFIX}%`}`;
+      const built = (await tx`
+        SELECT pm.module_id::text AS id FROM page_modules pm
+        JOIN pages p ON p.id = pm.page_id WHERE p.slug LIKE ${`${PREFIX}%`}
+      `) as unknown as { id: string }[];
+      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PREFIX}%`})`;
       await tx`DELETE FROM pages WHERE slug LIKE ${`${PREFIX}%`}`;
-      // issue #253 — compose binds imported chrome into the shared
-      // layout; unbind before deleting the modules themselves.
-      await tx`DELETE FROM layout_modules WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE ${"imported-%"})`;
-      await tx`DELETE FROM modules WHERE slug LIKE ${"imported-%"} AND slug NOT IN (SELECT m.slug FROM modules m JOIN page_modules pm ON pm.module_id = m.id)`;
+      for (const m of built) await tx`DELETE FROM modules WHERE id = ${m.id}::uuid`;
+      await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE ${`${PREFIX}%`})`;
       await tx`DELETE FROM templates WHERE slug LIKE ${`${PREFIX}%`}`;
       await tx`DELETE FROM import_runs WHERE source_url = ${"https://svfx-harness.searchviu.example"}`;
       await tx`DELETE FROM user_roles WHERE user_id IN (SELECT id FROM users WHERE email = ${ACTOR_EMAIL})`;
@@ -142,168 +142,6 @@ afterAll(async () => {
   await adapter.close();
 });
 
-describe("import pipeline stages (recorded searchviu crawl)", () => {
-  it("clusters the recorded pages by structural shape", async () => {
-    const r = await execute(registry, adapter, ctx, "imports.list_page_clusters", { runId });
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const clusters = (r.value as { clusters: { clusterKey: string; count: number }[] }).clusters;
-    expect(clusters.length).toBeGreaterThanOrEqual(1);
-    expect(clusters.reduce((n, c) => n + c.count, 0)).toBe(FIXTURE.length);
-  });
-
-  it("labels a cluster", async () => {
-    const list = await execute(registry, adapter, ctx, "imports.list_page_clusters", { runId });
-    expect(list.ok).toBe(true);
-    if (!list.ok) return;
-    const first = (list.value as { clusters: { clusterKey: string }[] }).clusters[0];
-    expect(first).toBeDefined();
-    if (!first) return;
-    const r = await execute(registry, adapter, ctx, "imports.assign_page_cluster", {
-      runId,
-      clusterKey: first.clusterKey,
-      label: "Blog article",
-    });
-    expect(r.ok).toBe(true);
-  });
-
-  it("compose_from_run materialises pages despite WP preset junk tokens", async () => {
-    // The fixture's proposed_theme_tokens carry the real site's
-    // `--wp--preset--shadow--natural` (a CSS shadow string) — the
-    // exact value that aborted the live run before the junk-var fix.
-    expect(
-      FIXTURE.some((p) =>
-        Object.keys(p.proposed_theme_tokens).some((k) => k.includes("wp--preset")),
-      ),
-    ).toBe(true);
-
-    // issue #247 (WS1) — seed a sampled site-level token aggregate the
-    // way the ground-truth capture pass would. compose must prefer
-    // these computed-style values over the fixture's extractor tokens.
-    const sampled = await execute(registry, adapter, ctx, "imports.set_run_design_tokens", {
-      runId,
-      siteDesignTokens: {
-        palette: [{ value: "#111111", count: 12 }],
-        backgrounds: [{ value: "#ffffff", count: 4 }],
-        fontFamilies: [{ value: "Inter, sans-serif", count: 8 }],
-        fontSizes: [{ value: "16px", count: 8 }],
-        fontWeights: [{ value: "400", count: 8 }],
-        radii: [{ value: "8px", count: 2 }],
-        shadows: [],
-        // issue #32 — spacing became a required token category (loud schema);
-        // the recorded fixture predates it, so supply a minimal measured scale.
-        spacing: { "section-py": "64px", "container-px": "24px", "card-p": "16px" },
-        roles: {
-          body: { color: "#111111", backgroundColor: "#ffffff", fontFamily: "Inter, sans-serif" },
-          button: { color: "#ffffff", backgroundColor: "#dc2626", borderRadius: "8px" },
-        },
-        pageCount: FIXTURE.length,
-      },
-    });
-    expect(sampled.ok).toBe(true);
-
-    const r = await execute(registry, adapter, ctx, "imports.compose_from_run", {
-      runId,
-      templateSlug: `${PREFIX}imported-page`,
-    });
-    expect(r.ok).toBe(true);
-    if (!r.ok) return;
-    const v = r.value as {
-      pageIds: string[];
-      templatesByCluster: Record<string, string>;
-      themeTokensApplied: number;
-      designTokenSource: string;
-      layoutId: string;
-      chromeBound: string[];
-      chromeNotes: string[];
-    };
-    expect(v.pageIds.length).toBe(FIXTURE.length);
-    expect(Object.keys(v.templatesByCluster).length).toBeGreaterThanOrEqual(1);
-    // issue #247 — computed-style ground truth won over the extractor.
-    expect(v.designTokenSource).toBe("sampled");
-
-    // issue #253 (WS0) — chrome binds ONCE at the layout; page bodies
-    // are content-only. Pre-#253, compose duplicated the crawled
-    // header/footer into per-page template blocks while the layout's
-    // chrome slots rendered the loud-raw `_` on every page.
-    expect([...v.chromeBound].sort()).toEqual(["footer", "header"]);
-    expect(v.chromeNotes).toEqual([]);
-
-    // Raw reads need the RLS actor GUC — every table forces RLS.
-    const db = new SQL(ADMIN_URL!);
-    try {
-      const rows = await db.begin(async (tx) => {
-        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-        const layoutBinds = (await tx`
-          SELECT block_name, module_id::text AS module_id FROM layout_modules
-          WHERE layout_id = ${v.layoutId}::uuid AND block_name IN ('header', 'footer')
-        `) as { block_name: string; module_id: string }[];
-        const chromeKinds = (await tx`
-          SELECT kind FROM modules WHERE id IN (SELECT module_id FROM layout_modules WHERE layout_id = ${v.layoutId}::uuid AND block_name IN ('header', 'footer'))
-        `) as { kind: string }[];
-        const pageChrome = (await tx`
-          SELECT count(*)::int AS n FROM page_modules
-          WHERE page_id = ANY(string_to_array(${v.pageIds.join(",")}, ',')::uuid[]) AND block_name IN ('header', 'footer')
-        `) as { n: number }[];
-        const tpls = (await tx`
-          SELECT id::text AS id, html FROM templates WHERE id = ANY(string_to_array(${Object.values(v.templatesByCluster).join(",")}, ',')::uuid[])
-        `) as { id: string; html: string }[];
-        const tplChromeBlocks = (await tx`
-          SELECT count(*)::int AS n FROM template_blocks
-          WHERE template_id = ANY(string_to_array(${Object.values(v.templatesByCluster).join(",")}, ',')::uuid[]) AND name IN ('header', 'footer')
-        `) as { n: number }[];
-        return { layoutBinds, chromeKinds, pageChrome, tpls, tplChromeBlocks };
-      });
-      const { layoutBinds } = rows;
-      expect(layoutBinds.map((b) => b.block_name).sort()).toEqual(["footer", "header"]);
-      for (const m of rows.chromeKinds) expect(m.kind).toBe("chrome");
-
-      // No composed page carries a per-page chrome placement.
-      expect(rows.pageChrome[0]?.n).toBe(0);
-
-      // Imported templates are content-only: no chrome slots in the
-      // html, no chrome template_blocks.
-      expect(rows.tpls.length).toBe(Object.values(v.templatesByCluster).length);
-      for (const tpl of rows.tpls) {
-        expect(tpl.html).not.toContain('caelo-slot name="header"');
-        expect(tpl.html).not.toContain('caelo-slot name="footer"');
-        expect(tpl.html).toContain('caelo-slot name="content"');
-      }
-      expect(rows.tplChromeBlocks[0]?.n).toBe(0);
-    } finally {
-      await db.end();
-    }
-  });
-
-  it("re-compose keeps chrome bound exactly once at the layout", async () => {
-    // All pages are accepted after the previous test, so compose
-    // refuses to re-run (idempotency contract) — and the layout
-    // binding from the first compose stays single.
-    const r = await execute(registry, adapter, ctx, "imports.compose_from_run", {
-      runId,
-      templateSlug: `${PREFIX}imported-page`,
-    });
-    expect(r.ok).toBe(false);
-
-    const db = new SQL(ADMIN_URL!);
-    try {
-      const binds = await db.begin(async (tx) => {
-        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-        return (await tx`
-          SELECT block_name, count(*)::int AS n FROM layout_modules
-          WHERE block_name IN ('header', 'footer')
-            AND module_id IN (SELECT id FROM modules WHERE slug LIKE ${"imported-%"})
-          GROUP BY block_name
-        `) as { block_name: string; n: number }[];
-      });
-      expect(binds.length).toBe(2);
-      for (const b of binds) expect(b.n).toBe(1);
-    } finally {
-      await db.end();
-    }
-  });
-});
-
 // issue #424 — content-only read against the RECORDED crawl: the real
 // searchviu pages carry the exact ballast the 2026-08-04 dogfood measured
 // (110KB Elementor header per page, the Complianz modal INSIDE the stored
@@ -372,10 +210,57 @@ describe("get_import_page content-only on the recorded crawl (issue #424)", () =
   });
 });
 
-// issue #422 — the id-bearing list surface. Runs AFTER compose, so every
-// fixture page is accepted and linked; the pending-state + build_page-link
-// paths live in import-id-chain.integration.test.ts.
-describe("imports.list_pages (recorded searchviu crawl, post-compose)", () => {
+// issue #422 — the id-bearing list surface, after every fixture page was
+// accepted and linked; the pending-state + build_page-link paths live in
+// import-id-chain.integration.test.ts.
+describe("imports.list_pages (recorded searchviu crawl, all pages accepted)", () => {
+  beforeAll(async () => {
+    const tpl = await execute(registry, adapter, ctx, "templates.create", {
+      slug: `${PREFIX}tpl`,
+      displayName: "Pipeline harness template",
+      html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
+    });
+    if (!tpl.ok) throw new Error(`templates.create failed: ${JSON.stringify(tpl.error)}`);
+    const templateId = (tpl.value as { templateId: string }).templateId;
+    const blocks = await execute(registry, adapter, ctx, "template_blocks.set", {
+      templateId,
+      blocks: [{ name: "content", displayName: "Content", position: 0 }],
+    });
+    if (!blocks.ok) throw new Error(`template_blocks.set failed: ${JSON.stringify(blocks.error)}`);
+
+    // Link every staged page the way the migration does since #278: the AI
+    // rebuilds each one with build_page({ importPageId }), which stamps
+    // accepted_page_id. The rebuilt body is a stand-in; these cases read the
+    // linkage, not the content. (The recorded crawl's own markup links to
+    // pages this harness never builds, which the publish link check rejects.)
+    const listed = await execute(registry, adapter, ctx, "imports.list_pages", { runId });
+    if (!listed.ok) throw new Error(`imports.list_pages failed: ${listed.error.kind}`);
+    const staged = (
+      listed.value as { pages: { id: string; proposedSlug: string; proposedTitle: string }[] }
+    ).pages;
+    // The crawl stages two pages as `home`; the built pages get distinct
+    // slugs (never the magic home slug) so each import page links to its
+    // own page.
+    for (const [i, p] of staged.entries()) {
+      const slug = `${PREFIX}built-${i}`;
+      const built = await execute(registry, adapter, ctx, "pages.build_page", {
+        page: { slug, title: p.proposedTitle, templateId, importPageId: p.id },
+        modules: [
+          {
+            blockName: "content",
+            displayName: `Rebuilt ${slug}`,
+            description: "Stand-in rebuild of a recorded crawl page",
+            kind: "content",
+            html: "<section><h2>{{heading}}</h2></section>",
+            fields: [{ name: "heading", kind: "text", label: "Heading" }],
+            content: { source: "inline", values: { heading: p.proposedTitle } },
+          },
+        ],
+      });
+      if (!built.ok) throw new Error(`build_page ${slug}: ${JSON.stringify(built.error)}`);
+    }
+  });
+
   it("lists every page with its staging id, rebuild status, and built-page link", async () => {
     const r = await execute(registry, adapter, ctx, "imports.list_pages", { runId });
     expect(r.ok).toBe(true);
@@ -439,7 +324,7 @@ describe("imports.list_pages (recorded searchviu crawl, post-compose)", () => {
 
   it("run report's rebuilt counter reflects the linked pages", async () => {
     // The same accepted_page_id linkage list_pages surfaces is what the
-    // report counts — post-compose all fixture pages are rebuilt/linked.
+    // report counts — every fixture page is accepted/linked.
     const r = await execute(registry, adapter, ctx, "imports.get_run_report", { runId });
     expect(r.ok).toBe(true);
     if (!r.ok) return;

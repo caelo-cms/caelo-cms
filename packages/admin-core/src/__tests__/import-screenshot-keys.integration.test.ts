@@ -3,10 +3,10 @@
 /**
  * Regression: `imports.get_page_screenshot_keys` (behind the AI's
  * `get_import_page_screenshot` tool) must resolve a page id given as the
- * staging `import_pages.id`, the composed CMS page id (`accepted_page_id`), OR
+ * staging `import_pages.id`, the built CMS page id (`accepted_page_id`), OR
  * — for a directly-built #278 page — a built page whose slug matches the crawled
  * `proposed_slug`. Before the fix it matched only the raw `import_pages.id`, so
- * the migrate flow surfaced a red "import page not found" for every composed /
+ * the migrate flow surfaced a red "import page not found" for every built /
  * directly-built page the AI asked for a screenshot of.
  */
 
@@ -54,6 +54,23 @@ async function wipe(): Promise<void> {
   });
 }
 
+/** A template with the one `content` block the crawled page fills. */
+async function seedContentTemplate(): Promise<string> {
+  const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
+    slug: TPL,
+    displayName: "Import test template",
+    html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
+  });
+  if (!tpl.ok) throw new Error(`templates.create: ${JSON.stringify(tpl.error)}`);
+  const templateId = (tpl.value as { templateId: string }).templateId;
+  const blocks = await execute(registry, adapter, SYSTEM, "template_blocks.set", {
+    templateId,
+    blocks: [{ name: "content", displayName: "Content", position: 0 }],
+  });
+  if (!blocks.ok) throw new Error(`template_blocks.set: ${JSON.stringify(blocks.error)}`);
+  return templateId;
+}
+
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
@@ -72,7 +89,7 @@ afterAll(async () => {
 });
 
 describe("imports.get_page_screenshot_keys — id resolution (#278)", () => {
-  it("resolves the staging id, the composed page id, AND a slug-matched built page", async () => {
+  it("resolves the staging id, the accepted page id, AND a slug-matched built page", async () => {
     const run = await execute(registry, adapter, SYSTEM, "imports.create_run", {
       sourceUrl: "http://127.0.0.1/sskeys?run",
       depth: 1,
@@ -102,14 +119,19 @@ describe("imports.get_page_screenshot_keys — id resolution (#278)", () => {
       pagesSeen: 1,
       pagesExtracted: 1,
     });
-    const composed = await execute(registry, adapter, SYSTEM, "imports.compose_from_run", {
-      runId,
-      templateSlug: TPL,
+    const templateId = await seedContentTemplate();
+    const pending = await execute(registry, adapter, SYSTEM, "imports.list_pages", { runId });
+    if (!pending.ok) throw new Error(JSON.stringify(pending.error));
+    const stagingId = (pending.value as { pages: { id: string }[] }).pages[0]?.id;
+    if (!stagingId) throw new Error("write_extracted_pages left no import page");
+    const accepted = await execute(registry, adapter, SYSTEM, "imports.accept_page", {
+      importPageId: stagingId,
+      templateId,
     });
-    if (!composed.ok) throw new Error(JSON.stringify(composed.error));
+    if (!accepted.ok) throw new Error(JSON.stringify(accepted.error));
 
     let importPageId = "";
-    let composedPageId = "";
+    let builtPageId = "";
     await sqlc.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const rows = (await tx`
@@ -117,17 +139,17 @@ describe("imports.get_page_screenshot_keys — id resolution (#278)", () => {
         FROM import_pages WHERE proposed_slug = ${SLUG} LIMIT 1
       `) as unknown as { id: string; pid: string | null }[];
       importPageId = rows[0]?.id ?? "";
-      composedPageId = rows[0]?.pid ?? "";
+      builtPageId = rows[0]?.pid ?? "";
     });
     expect(importPageId).not.toBe("");
-    expect(composedPageId).not.toBe("");
+    expect(builtPageId).not.toBe("");
 
     const call = (id: string) =>
       execute(registry, adapter, AI, "imports.get_page_screenshot_keys", { importPageId: id });
 
-    // Staging id (always worked) + composed CMS page id (failed before the fix).
+    // Staging id (always worked) + accepted CMS page id (failed before the fix).
     expect((await call(importPageId)).ok).toBe(true);
-    expect((await call(composedPageId)).ok).toBe(true);
+    expect((await call(builtPageId)).ok).toBe(true);
     // A bogus id still fails loudly.
     expect((await call("00000000-0000-0000-0000-0000000000aa")).ok).toBe(false);
 
@@ -137,6 +159,6 @@ describe("imports.get_page_screenshot_keys — id resolution (#278)", () => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`UPDATE import_pages SET accepted_page_id = NULL WHERE proposed_slug = ${SLUG}`;
     });
-    expect((await call(composedPageId)).ok).toBe(true);
+    expect((await call(builtPageId)).ok).toBe(true);
   });
 });

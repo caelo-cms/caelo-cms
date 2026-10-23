@@ -6,12 +6,15 @@
  *
  *   bun run scripts/release.ts <new-version> [--dry-run]
  *
+ * Release stamps exist only on the release commit. Main carries the
+ * unreleased marker (version 0.0.0, no CHANGELOG.md, no release-meta.json)
+ * and never receives the release commit back: the current version is the
+ * newest stable tag, and install surfaces name no version at all.
+ *
  * What it does:
- *   1. Validates the new version is SemVer + strictly greater than current.
- *   2. Updates packages/shared/src/version.ts CALEO_VERSION constant and
- *      pins the README's Cloud Shell install links to the new stable
- *      release (repo files only; the docs pages on caelo-cms.com are CMS
- *      content, moved by the release's docs-sync draft, RELEASING.md).
+ *   1. Validates the new version is SemVer + strictly greater than the
+ *      newest stable tag (and above every existing tag).
+ *   2. Updates packages/shared/src/version.ts CAELO_VERSION.
  *   3. Updates root package.json + every workspace package.json `version`,
  *      bun.lock, which records those versions, the MCP Registry entry
  *      (packages/mcp-server/server.json) and the Power-MCP catalogue
@@ -21,8 +24,9 @@
  *   4. Re-signs every Tier-1 plugin manifest under packages/plugins/<slug>/
  *      via apps/admin/scripts/sign-tier1-manifest.ts (the same script
  *      `bun run plugins:sign` uses).
- *   5. Generates the CHANGELOG.md entry from conventional commits since
- *      the last `vX.Y.Z` git tag (delegates to scripts/release-notes.ts).
+ *   5. Generates the changelog stanza from conventional commits since the
+ *      previous tag and prepends it to that tag's CHANGELOG.md, so the file
+ *      on each tag is the full history.
  *   6. Commits the changes (`chore(release): vX.Y.Z`).
  *   7. Tags `vX.Y.Z`.
  *
@@ -58,15 +62,20 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { CLOUD_SHELL_LINK_FILES, pinCloudShellLinks } from "./cloud-shell-links.ts";
 import { writePowerCatalogue } from "./power-catalogue.ts";
 import {
   parseAdvisoryList,
+  previousStableTag,
+  previousTag,
+  RELEASE_COMMIT_SUBJECT,
   RELEASE_META_PATH,
   type ReleaseMeta,
   readReleaseMeta,
+  readTags,
   runReleaseChecks,
   setJsonVersionField,
+  taggedAheadProblem,
+  UNRELEASED_VERSION,
   writeReleaseMeta,
 } from "./release-checks.ts";
 
@@ -145,11 +154,26 @@ async function declareRelease(newVersion: string): Promise<ReleaseMeta> {
   return { ...meta, lastContractVersion: checks.lastContractVersion };
 }
 
-function getCurrent(): string {
+/** The version stamped into this checkout (0.0.0 on main, vX.Y.Z on a release commit). */
+function getStamped(): string {
   const src = readFileSync(VERSION_FILE, "utf8");
   const m = /CAELO_VERSION = "([^"]+)"/.exec(src);
   if (!m) throw new Error("CAELO_VERSION not found in version.ts");
   return m[1] as string;
+}
+
+/**
+ * The version a bump starts from: the newest stable tag. Main never learns
+ * the released version (no merge-back), so its stamp cannot be the base.
+ */
+function getCurrent(tags: readonly string[]): string {
+  const prev = previousStableTag(tags, null);
+  if (!prev) {
+    throw new Error(
+      "no stable vX.Y.Z tag found — fetch the tags (git fetch --tags, or fetch-depth: 0 in CI) or cut an explicit version",
+    );
+  }
+  return prev.slice(1);
 }
 
 function semverGt(a: string, b: string): boolean {
@@ -258,24 +282,6 @@ function bumpVersionFile(newVersion: string, dryRun: boolean): void {
   if (!dryRun) writeFileSync(VERSION_FILE, next);
 }
 
-/**
- * #696 — move the "Open in Cloud Shell" install links in the README to
- * the new release (scripts/cloud-shell-links.ts; a pre-release keeps the
- * last stable links). Returns how many files changed.
- */
-function bumpCloudShellLinks(newVersion: string, dryRun: boolean): number {
-  let changed = 0;
-  for (const file of CLOUD_SHELL_LINK_FILES) {
-    const path = resolve(REPO_ROOT, file);
-    const src = readFileSync(path, "utf8");
-    const next = pinCloudShellLinks(src, newVersion);
-    if (next === src) continue;
-    changed++;
-    if (!dryRun) writeFileSync(path, next);
-  }
-  return changed;
-}
-
 async function resignManifests(dryRun: boolean): Promise<number> {
   const signScript = resolve(REPO_ROOT, "apps/admin/scripts/sign-tier1-manifest.ts");
   if (!existsSync(signScript)) {
@@ -344,9 +350,8 @@ function maybeGitCommitTag(newVersion: string, dryRun: boolean): void {
     return;
   }
   Bun.spawnSync(["git", "add", "-u"], { cwd: REPO_ROOT, stdout: "inherit", stderr: "inherit" });
-  // release-meta.json is tracked, but add it by name too so the very
-  // first declaration (or a restored deletion) lands in the commit.
-  Bun.spawnSync(["git", "add", RELEASE_META_PATH], {
+  // Main carries neither file; the release commit adds both.
+  Bun.spawnSync(["git", "add", RELEASE_META_PATH, "CHANGELOG.md"], {
     cwd: REPO_ROOT,
     stdout: "inherit",
     stderr: "inherit",
@@ -417,16 +422,6 @@ function checkLockstep(target: string): { ok: boolean; mismatches: { file: strin
   return { ok: mismatches.length === 0, mismatches };
 }
 
-function lastReleaseTag(): string | null {
-  const proc = Bun.spawnSync(["git", "describe", "--tags", "--abbrev=0", "--match", "v*"], {
-    cwd: REPO_ROOT,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (proc.exitCode !== 0) return null;
-  return new TextDecoder().decode(proc.stdout).trim() || null;
-}
-
 function generateChangelog(prevTag: string | null, newVersion: string): string {
   const range = prevTag ? `${prevTag}..HEAD` : "HEAD";
   const proc = Bun.spawnSync(["git", "log", range, "--pretty=format:%h %s", "--no-merges"], {
@@ -445,6 +440,7 @@ function generateChangelog(prevTag: string | null, newVersion: string): string {
     other: [],
   };
   for (const line of log.split("\n")) {
+    if (RELEASE_COMMIT_SUBJECT.test(line.slice(line.indexOf(" ") + 1))) continue;
     const m = line.match(/^([0-9a-f]+)\s+(\w+)(?:\([^)]+\))?(!)?:\s*(.+)$/);
     if (m) {
       const kind = m[2] in groups ? (m[2] as keyof typeof groups) : "other";
@@ -486,15 +482,17 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   if (arg0 === "--check") {
-    const target = getCurrent();
+    const target = getStamped();
     const result = checkLockstep(target);
     // The tag pipeline signs release-meta.json's declaration; one left
     // over from another version means the commit did not come from this
-    // script.
-    const metaVersion = readReleaseMeta(REPO_ROOT).version;
-    if (metaVersion !== target) {
-      console.error(`✗ ${RELEASE_META_PATH} declares v${metaVersion}, expected v${target}`);
-      process.exit(1);
+    // script. Main (the unreleased marker) carries none.
+    if (target !== UNRELEASED_VERSION) {
+      const metaVersion = readReleaseMeta(REPO_ROOT).version;
+      if (metaVersion !== target) {
+        console.error(`✗ ${RELEASE_META_PATH} declares v${metaVersion}, expected v${target}`);
+        process.exit(1);
+      }
     }
     if (result.ok) {
       console.log(`✓ all packages at v${target}`);
@@ -505,7 +503,18 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const dryRun = arg("dry-run");
-  const current = getCurrent();
+  // Release commits are cut from main's unreleased stamps; a checkout that
+  // already carries a release (a release branch, an old main) would stack
+  // a second release commit on top of the first.
+  const stamped = getStamped();
+  if (stamped !== UNRELEASED_VERSION) {
+    console.error(
+      `release refused: this checkout is stamped v${stamped}, not the unreleased marker v${UNRELEASED_VERSION}. Cut from main.`,
+    );
+    process.exit(2);
+  }
+  const tags = readTags(REPO_ROOT);
+  const current = getCurrent(tags);
   const newVersion = ["patch", "minor", "major"].includes(arg0)
     ? bumpKind(current, arg0 as "patch" | "minor" | "major")
     : arg0;
@@ -514,6 +523,11 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   console.log(`Caelo release: ${current} → ${newVersion}${dryRun ? " (dry-run)" : ""}`);
+  const ahead = taggedAheadProblem(tags, newVersion);
+  if (ahead) {
+    console.error(`release refused: ${ahead}`);
+    process.exit(2);
+  }
 
   const meta = await declareRelease(newVersion);
   // release-cut.yml validates the declaration before its (slow, paid)
@@ -524,9 +538,6 @@ async function main(): Promise<void> {
 
   bumpVersionFile(newVersion, dryRun);
   console.log(`✓ packages/shared/src/version.ts updated`);
-
-  const pinned = bumpCloudShellLinks(newVersion, dryRun);
-  console.log(`✓ Cloud Shell install links pinned in ${pinned} file(s)`);
 
   const changed = bumpJsonVersions(newVersion, dryRun);
   console.log(`✓ ${changed.length} package.json files updated`);
@@ -547,21 +558,15 @@ async function main(): Promise<void> {
   console.log(`✓ Tier-1 manifests resigned`);
 
   // Generate the changelog stanza from conventional commits since the
-  // last v* tag. Prepended to CHANGELOG.md (top-level) so the most
-  // recent release is at the top.
-  const prevTag = lastReleaseTag();
+  // previous tag and prepend it to THAT tag's CHANGELOG.md: the file lives
+  // on release commits only (main has none), so each tag carries the whole
+  // history and the previous one is the base.
+  const prevTag = previousTag(tags, newVersion);
   const stanza = generateChangelog(prevTag, newVersion);
   const changelogPath = resolve(REPO_ROOT, "CHANGELOG.md");
   const HEADER = "# Changelog\n\n";
   if (!dryRun) {
-    // Read-or-default instead of existsSync-then-read (TOCTOU race, CodeQL
-    // js/file-system-race): a missing CHANGELOG.md starts from the header.
-    let prior: string;
-    try {
-      prior = readFileSync(changelogPath, "utf8");
-    } catch {
-      prior = HEADER;
-    }
+    const prior = (prevTag ? gitShow(`${prevTag}:CHANGELOG.md`) : null) ?? HEADER;
     const body = prior.startsWith(HEADER) ? prior.slice(HEADER.length) : prior;
     writeFileSync(changelogPath, `${HEADER}${stanza}\n${body}`);
     console.log(`✓ CHANGELOG.md ${prevTag ? `appended commits since ${prevTag}` : "initialised"}`);
@@ -570,8 +575,18 @@ async function main(): Promise<void> {
   }
 
   maybeGitCommitTag(newVersion, dryRun);
-  console.log(`\nNext: git push --follow-tags`);
-  console.log(`Then GitHub Actions builds + publishes the release artifact.`);
+  console.log(`\nNext: git push origin v${newVersion}`);
+  console.log(`Then release.yml gates and publishes the release (RELEASING.md).`);
+}
+
+/** `git show <ref:path>`, or null when the file is not there. */
+function gitShow(spec: string): string | null {
+  const proc = Bun.spawnSync(["git", "show", spec], {
+    cwd: REPO_ROOT,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  return proc.exitCode === 0 ? new TextDecoder().decode(proc.stdout) : null;
 }
 
 await main();

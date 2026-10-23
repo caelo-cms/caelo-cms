@@ -2,36 +2,29 @@
 #
 # Caelo CMS — one-button release from the GitHub Actions UI.
 #
-# The local flow (`bun scripts/release.ts patch && git push
-# --follow-tags`) requires a clean checkout sitting on main. This
-# workflow removes that dependency: Actions → release-cut →
-# Run workflow → pick the bump. Same script, same artifacts.
+# Actions → release-cut → Run workflow → pick the bump. The release is cut
+# from the main commit as it is at that moment and lives on its tag only;
+# main stays open for merges the whole time and never receives the release
+# commit back:
 #
-# Two phases, because main-protection forbids direct pushes (the
-# release commit must land via PR; the admin bypass is
-# pull_request-mode only):
+#   1. Gate: the real-AI suite must be green on that main commit X (main
+#      gets no real-AI run per push; a green run on X is reused).
+#   2. scripts/release.ts writes the release commit R on top of X (version
+#      stamps, changelog, catalogue, release declaration; main itself is
+#      stamped with the unreleased marker 0.0.0) and tags it vX.Y.Z. The
+#      version it bumps from is the newest stable tag.
+#   3. R is checked before anything is pushed: it may touch only what the
+#      release script writes (scripts/release-commit.ts), and lint, the
+#      lockstep check and the catalogue check must pass on it, so a broken
+#      release commit never gets its tag.
+#   4. The tag is pushed and release.yml is dispatched on it (a tag pushed
+#      with GITHUB_TOKEN never triggers other workflows, a dispatch does).
+#      After publishing, release.yml moves `release-latest` (the branch the
+#      Claude Code plugin is served from) to the tag.
 #
-#   1. `cut` (workflow_dispatch): runs scripts/release.ts on a fresh
-#      main checkout in CI — version bump, changelog stanza, Tier-1
-#      manifest re-sign, release commit — then opens the release PR.
-#      The tag the script creates locally is deleted here: the tag
-#      must point at the MERGED commit on main, which doesn't exist
-#      yet at cut time.
-#   2. `tag-and-publish` (push to main touching version.ts — only
-#      release commits do): tags the merge commit `vX.Y.Z` and
-#      dispatches release.yml with that tag. The dispatch is explicit
-#      because a tag pushed with GITHUB_TOKEN never triggers other
-#      workflows. release.yml re-runs the full lint+typecheck+test
-#      gate on the tagged commit, so a broken release commit still
-#      cannot ship artifacts.
-#
-# Merging the release PR: PRs opened with the repo GITHUB_TOKEN get no
-# workflow runs, so the PR's required checks sit pending. Either merge
-# with `gh pr merge --squash --admin` (safe — release.yml's gate is
-# the real artifact gate), or configure a `RELEASE_PAT` repo secret
-# (fine-grained PAT, contents:write + pull-requests:write on this
-# repo) and the PR behaves like any other: checks run, normal merge.
-# See RELEASING.md ("One-button release").
+# Nothing points at a version that has to move: install links open the
+# install repository's main (newest release), the plugin follows
+# release-latest. See RELEASING.md ("One-button release").
 
 name: release-cut
 
@@ -70,16 +63,10 @@ on:
         required: false
         default: ""
         type: string
-  push:
-    branches: [main]
-    # Only release commits touch the version constant — this keeps the
-    # tag-and-publish job off every routine merge.
-    paths: ["packages/shared/src/version.ts"]
 
 permissions:
   contents: write
-  pull-requests: write
-  # tag-and-publish dispatches release.yml.
+  # Dispatches e2e-livedit.yml and release.yml.
   actions: write
 
 concurrency:
@@ -91,7 +78,7 @@ env:
 
 jobs:
   cut:
-    name: cut release PR
+    name: cut, tag and dispatch the release
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
@@ -138,6 +125,28 @@ jobs:
           fi
           echo "flags=${flags}" >> "$GITHUB_OUTPUT"
 
+      - name: Guard — no release is still publishing
+        # The bump starts from the newest tag, so a cut no longer waits for
+        # the previous release to land anywhere. Releases must still publish
+        # one after the other (release.yml's concurrency group explains why);
+        # refusing here keeps that group to one run and fails fast, before
+        # the paid real-AI gate.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          busy=""
+          for status in queued in_progress waiting pending requested; do
+            ids=$(gh api "repos/$REPO/actions/workflows/release.yml/runs?status=$status&per_page=20" --jq '.workflow_runs[].id')
+            busy="${busy} ${ids}"
+          done
+          busy=$(echo "${busy}" | xargs)
+          if [ -n "${busy}" ]; then
+            echo "::error::release.yml is still publishing (run(s): ${busy}). Wait for it to finish, then run release-cut again."
+            exit 1
+          fi
+
       - name: Validate the release declaration (before the paid real-AI gate)
         # security=true is refused unless every advisory is a PUBLISHED
         # GitHub Security Advisory of this repo; contract migrations and
@@ -155,14 +164,20 @@ jobs:
           # shellcheck disable=SC2086 # FLAGS is a validated word list.
           bun run scripts/release.ts "${VERSION_INPUT}" ${FLAGS} "${owner[@]}" --checks-only
 
+      - name: Record the cut base
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Gate — real-AI suite green on this main commit
         # Main is not covered per push (e2e-livedit.yml runs on PRs only),
         # so this is where main gets its real-AI run: once per release, on
         # the exact commit being released. A green run on this SHA from an
-        # earlier attempt of this cut is reused instead of paid for twice;
-        # otherwise dispatch one on main and wait for it. A workflow_dispatch made with GITHUB_TOKEN
-        # does trigger the target workflow (the same path tag-and-publish
-        # uses for release.yml).
+        # earlier attempt of this cut is reused instead of paid for twice.
+        # Otherwise one is dispatched on release-gate/<sha>, a branch pinned
+        # to this commit: main stays open during the cut, so a dispatch on
+        # main could run a newer commit than the one being released. A
+        # workflow_dispatch made with GITHUB_TOKEN does trigger the target
+        # workflow.
         timeout-minutes: 75
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -188,8 +203,9 @@ jobs:
             exit 0
           fi
           since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          gh workflow run "$WORKFLOW_FILE" --ref main
-          echo "dispatched $WORKFLOW_FILE on main for $SHA; waiting for the run to appear"
+          git push origin "$SHA:refs/heads/release-gate/$SHA"
+          gh workflow run "$WORKFLOW_FILE" --ref "release-gate/$SHA"
+          echo "dispatched $WORKFLOW_FILE on release-gate/$SHA; waiting for the run to appear"
           run=""
           for _ in $(seq 1 20); do
             run=$(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?event=workflow_dispatch&head_sha=$SHA&per_page=20" \
@@ -198,7 +214,7 @@ jobs:
             sleep 15
           done
           if [ -z "$run" ]; then
-            echo "::error::no e2e-livedit run appeared for $SHA within 5 minutes. If main moved after this cut started, re-run release-cut."
+            echo "::error::no e2e-livedit run appeared for $SHA within 5 minutes. Check Actions → E2E Live Edit, then re-run release-cut."
             exit 1
           fi
           echo "waiting for run $run: ${GITHUB_SERVER_URL}/${REPO}/actions/runs/$run"
@@ -221,8 +237,20 @@ jobs:
             fi
             sleep 60
           done
-          if ! ai_job_ok >/dev/null; then
-            echo "::error::the real-AI live-edit suite did not pass on $SHA (run ${GITHUB_SERVER_URL}/${REPO}/actions/runs/$run). Fix main, then re-run release-cut."
+          # The verdict reads THIS run by id. The `status=success` run
+          # listing the reuse check above uses lags a finished run by seconds, and
+          # the v0.10.66 cut read it 2 s after a green run completed and
+          # refused it. A missing value (API error) is no verdict: re-read.
+          verdict=""
+          for _ in 1 2 3 4 5; do
+            conclusion=$(gh api "repos/$REPO/actions/runs/$run" --jq '.conclusion // ""' 2>/dev/null) || conclusion=""
+            job=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" \
+              --jq "[.jobs[] | select(.name == \"$JOB_NAME\") | .conclusion // \"\"] | first // \"\"" 2>/dev/null) || job=""
+            if [ -n "$conclusion" ] && [ -n "$job" ]; then verdict="$conclusion/$job"; break; fi
+            sleep 10
+          done
+          if [ "$verdict" != "success/success" ]; then
+            echo "::error::the real-AI live-edit suite did not pass on $SHA (run: ${verdict:-unknown}) — ${GITHUB_SERVER_URL}/${REPO}/actions/runs/$run. Fix main, then re-run release-cut."
             exit 1
           fi
           echo "::notice::real-AI suite green on $SHA (run $run)."
@@ -270,100 +298,35 @@ jobs:
         id: ver
         run: echo "version=$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
 
-      - name: Drop the local tag
-        # The script tags its own commit, but the version that ships is
-        # the MERGED commit on main — phase 2 tags that one instead.
-        run: git tag -d "v${{ steps.ver.outputs.version }}"
+      - name: Check the release commit before anything is pushed
+        # Nobody reviews the release commit, and the tag it gets is what
+        # ships. Everything the release script wrote is checked here, in
+        # seconds: a broken stamp (v0.10.65: a plugin manifest Biome
+        # refused) fails the cut instead of failing release.yml after the
+        # tag exists.
+        run: |
+          set -euo pipefail
+          bun scripts/release-commit.ts verify
+          bun run --filter=@caelo-cms/admin sync
+          bun run lint
+          bun scripts/release.ts --check
+          bun scripts/power-catalogue.ts --check
+          git diff --exit-code
 
-      - name: Push release branch + open PR
+      - name: Push the tag, dispatch the release pipeline
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           V: ${{ steps.ver.outputs.version }}
         run: |
-          # --force: release/v* branches are ephemeral; a leftover from
-          # an aborted run must not block the re-cut.
-          git push --force origin "HEAD:release/v${V}"
-          gh pr create \
-            --base main \
-            --head "release/v${V}" \
-            --title "chore(release): v${V}" \
-            --body "$(printf '%s\n' \
-              "Cut by the release-cut workflow (run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})." \
-              "" \
-              "**Merging this PR ships v${V}**: the merge commit is tagged automatically and release.yml publishes npm + GHCR + AR + the GitHub Release after its own quality gate passes." \
-              "" \
-              "**Release declaration** (signed into the release manifest): \`$(jq -c . release-meta.json)\`" \
-              "" \
-              "If the required checks below stay pending (PR was opened with the repo GITHUB_TOKEN), merge with \`gh pr merge --squash --admin\` — release.yml re-runs the full gate on the tagged commit before anything publishes." \
-              "" \
-              "**Before merging:**" \
-              "- [ ] Region catalogues (\`packages/provisioning/src/region-data.ts\`) still match the providers' per-service region docs cited there. Refresh them if a provider added or removed a needed service in a region (#607)." \
-            )" \
-          || { echo "PR already exists:"; gh pr view "release/v${V}" --json url --jq .url; }
+          set -euo pipefail
+          # A tag that already exists remotely is refused (plain push), so
+          # a published release is never overwritten.
+          git push origin "refs/tags/v${V}"
+          gh workflow run release.yml --ref "v${V}" -f tag="v${V}"
+          echo "::notice::v${V} is tagged. release.yml publishes it, then moves release-latest to it."
 
-  tag-and-publish:
-    name: tag merged release + dispatch pipeline
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Resolve version + guard against re-tagging
-        id: ver
-        run: |
-          V=$(jq -r .version package.json)
-          echo "version=${V}" >> "$GITHUB_OUTPUT"
-          if git ls-remote --exit-code --tags origin "refs/tags/v${V}" >/dev/null 2>&1; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag v${V} already exists — nothing to do."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Guard — main must not have moved between the cut and the merge
-        # The cut generates files from main as it was (version stamps, the
-        # Power-MCP catalogue, ...). A PR merged onto main while the release
-        # PR was open lands under the release commit without them, and
-        # release.yml's gate then fails AFTER the release PR merged (the
-        # v0.10.54 class). So tag only when the release PR's own parent is
-        # exactly the commit it was squashed onto; otherwise tag nothing
-        # and say to re-cut. scripts/release-cut-race.test.ts pins this.
-        if: steps.ver.outputs.exists == 'false'
+      - name: Delete the real-AI gate branch (best-effort)
+        if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: |
-          merged_onto=$(gh api "repos/$REPO/commits/$SHA" --jq '.parents[0].sha')
-          pr_head=$(gh api "repos/$REPO/commits/$SHA/pulls" \
-            --jq '[.[] | select(.head.ref | startswith("release/v"))][0].head.sha // empty')
-          if [ -z "$pr_head" ]; then
-            echo "::error::$SHA is not the merge of a release/v* PR, so its cut base is unknown. Nothing was tagged. Cut releases with release-cut (Actions -> release-cut -> Run workflow)."
-            exit 1
-          fi
-          cut_from=$(gh api "repos/$REPO/commits/$pr_head" --jq '.parents[0].sha')
-          if [ "$cut_from" != "$merged_onto" ]; then
-            echo "::error::main moved after this release was cut (cut from $cut_from, merged onto $merged_onto). Nothing was tagged or published. Re-cut from the current main: gh workflow run release-cut.yml -f version=patch"
-            exit 1
-          fi
-          echo "::notice::release PR was merged onto the commit it was cut from ($cut_from)."
-
-      - name: Tag the release commit
-        if: steps.ver.outputs.exists == 'false'
-        run: |
-          git tag "v${{ steps.ver.outputs.version }}" "${{ github.sha }}"
-          git push origin "v${{ steps.ver.outputs.version }}"
-
-      - name: Dispatch the release pipeline
-        if: steps.ver.outputs.exists == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh workflow run release.yml \
-            --ref "v${{ steps.ver.outputs.version }}" \
-            -f tag="v${{ steps.ver.outputs.version }}"
-
-      - name: Delete the release branch (best-effort)
-        if: steps.ver.outputs.exists == 'false'
-        run: git push origin --delete "release/v${{ steps.ver.outputs.version }}" || true
+          BASE: ${{ steps.base.outputs.sha }}
+        run: git push origin --delete "release-gate/${BASE}" 2>/dev/null || true

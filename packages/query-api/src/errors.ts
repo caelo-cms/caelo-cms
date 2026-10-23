@@ -134,7 +134,7 @@ export type QueryError =
  * `runOperation` runs each handler inside ONE transaction, but drizzle
  * only rolls back on a THROW — a handler that `return err(...)` after
  * partial writes COMMITS those writes (run #9: a failed
- * `imports.compose_from_run` left 23 mangled pages behind). Handlers
+ * import compose op, since removed, left 23 mangled pages behind). Handlers
  * that detect a failure AFTER their first write must `throw new
  * OperationAbortError(queryError)` instead of returning the err: the
  * adapter catches the sentinel, lets the transaction roll back, and

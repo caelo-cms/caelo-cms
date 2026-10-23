@@ -2,8 +2,7 @@
   // SPDX-License-Identifier: MPL-2.0
   import { page } from "$app/state";
   import {
-    Bug,
-    Gauge,
+    ChevronDown,
     FileText,
     GitPullRequestArrow,
     Image as ImageIcon,
@@ -11,17 +10,16 @@
     Layout,
     LayoutDashboard,
     LogOut,
-    MessageSquare,
     Moon,
     Package,
     Palette,
-    Rocket,
-    Sailboat,
     Settings,
     Sun,
+    Type,
     UserCog,
     Wand2,
   } from "lucide-svelte";
+  import { onMount } from "svelte";
   import { CAELO_VERSION } from "@caelo-cms/shared";
   import { mode, toggleMode } from "mode-watcher";
   const isDark = $derived(mode.current === "dark");
@@ -30,6 +28,13 @@
   import RunningAgentsIndicator from "#lib/components/agents/RunningAgentsIndicator.svelte";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Separator } from "#lib/components/ui/separator/index.js";
+  import {
+    activeNavHref,
+    CONTENT_GROUP_ID,
+    CONTENT_GROUP_LABEL,
+    type MainNavIcon,
+    visibleMainNav,
+  } from "#lib/main-nav.js";
   import { hasAnySettingsAccess, settingsCrumbLabel } from "#lib/settings-nav.js";
   import { cn } from "#lib/utils.js";
 
@@ -49,93 +54,65 @@
     children,
   }: Props = $props();
 
-  const has = (p: string) => permissions.includes(p);
-  const navItems = $derived(
-    [
-      { href: "/", label: "Dashboard", icon: LayoutDashboard, show: true },
-      { href: "/ramp-up", label: "Ramp up", icon: Sailboat, show: has("settings.write") },
-      { href: "/edit", label: "Live edit", icon: Wand2, show: has("content.write") },
-      { href: "/content/pages", label: "Pages", icon: FileText, show: has("content.read") },
-      { href: "/content/modules", label: "Modules", icon: Layers, show: has("content.read") },
-      {
-        href: "/content/library",
-        label: "Content library",
-        icon: Package,
-        show: has("content.read"),
-      },
-      { href: "/content/media", label: "Media", icon: ImageIcon, show: has("content.read") },
-      {
-        href: "/content/templates",
-        label: "Templates",
-        icon: Layout,
-        show: has("content.read"),
-      },
-      { href: "/content/chat", label: "Chats", icon: MessageSquare, show: has("content.write") },
-      // issue #620 — unstaged work across chats: Stage all / selected, Discard.
-      {
-        href: "/content/changes",
-        label: "Open changes",
-        icon: GitPullRequestArrow,
-        show: has("content.write"),
-      },
-      // v0.11.1 (issue #76) — operator-facing theme editor. roles.manage
-      // matches the existing /settings/themes/pending permission: theme
-      // edits affect every page on the site.
-      {
-        href: "/design/fonts",
-        label: "Fonts",
-        icon: Palette,
-        show: has("roles.manage"),
-      },
-      {
-        href: "/design/themes",
-        label: "Themes",
-        icon: Palette,
-        show: has("roles.manage"),
-      },
-      {
-        href: "/settings/deployments",
-        label: "Deployments",
-        icon: Rocket,
-        show: has("ops.view"),
-      },
-      {
-        href: "/settings/quality",
-        label: "Quality",
-        icon: Gauge,
-        show: has("ops.view"),
-      },
-      {
-        href: "/settings/bugs",
-        label: "Detected bugs",
-        icon: Bug,
-        show: has("settings.read"),
-      },
-      {
-        href: "/settings",
-        label: "Settings",
-        icon: Settings,
-        show: hasAnySettingsAccess(permissions),
-      },
-      // Personal account (change your own password) — every signed-in user.
-      { href: "/account", label: "Account", icon: UserCog, show: true },
-    ].filter((i) => i.show),
+  const ICONS: Record<MainNavIcon, typeof LayoutDashboard> = {
+    dashboard: LayoutDashboard,
+    wand: Wand2,
+    settings: Settings,
+    content: Package,
+    changes: GitPullRequestArrow,
+    file: FileText,
+    layers: Layers,
+    package: Package,
+    image: ImageIcon,
+    layout: Layout,
+    palette: Palette,
+    type: Type,
+  };
+
+  const nav = $derived(visibleMainNav(permissions, hasAnySettingsAccess(permissions)));
+  const activeHref = $derived(
+    activeNavHref(page.url.pathname, [
+      ...(nav.liveEdit ? [nav.liveEdit.href] : []),
+      nav.dashboard.href,
+      ...nav.content.map((l) => l.href),
+      ...(nav.settings ? [nav.settings.href] : []),
+      "/account",
+    ]),
   );
 
-  /**
-   * The nav item to highlight: the longest href that matches the URL, so
-   * /settings/deployments lights up "Deployments", not also "Settings".
-   */
-  const activeHref = $derived(
-    navItems
-      .map((i) => i.href)
-      .filter(
-        (href) =>
-          page.url.pathname === href ||
-          (href !== "/" && page.url.pathname.startsWith(`${href}/`)),
-      )
-      .sort((a, b) => b.length - a.length)[0] ?? null,
+  // The Content group starts open (server render and first paint agree);
+  // a viewer who collapses it keeps it collapsed. Storage can be missing
+  // or throw (private windows), so the toggle still works without it.
+  const CONTENT_GROUP_STORAGE_KEY = `caelo:nav-group:${CONTENT_GROUP_ID}`;
+  let contentOpen = $state(true);
+  onMount(() => {
+    try {
+      if (localStorage.getItem(CONTENT_GROUP_STORAGE_KEY) === "closed") contentOpen = false;
+    } catch {
+      // Storage unavailable: keep the default.
+    }
+  });
+  function toggleContent() {
+    contentOpen = !contentOpen;
+    try {
+      localStorage.setItem(CONTENT_GROUP_STORAGE_KEY, contentOpen ? "open" : "closed");
+    } catch {
+      // Storage unavailable: the choice lasts for this page view only.
+    }
+  }
+  // A collapsed group still opens when the viewer is on one of its pages,
+  // so the highlighted entry is never hidden.
+  const contentExpanded = $derived(
+    contentOpen || nav.content.some((l) => l.href === activeHref),
   );
+
+  const linkClass = (active: boolean) =>
+    cn(
+      "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors motion-reduce:transition-none",
+      active
+        ? "bg-accent text-accent-foreground"
+        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+    );
 
   /**
    * Breadcrumb trail derived from the URL. Each segment is a `(href,
@@ -166,6 +143,11 @@
   );
 </script>
 
+{#snippet navIcon(key: MainNavIcon)}
+  {@const Icon = ICONS[key]}
+  <Icon class="size-4" />
+{/snippet}
+
 <div class="flex min-h-screen w-full">
   <aside class="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r bg-card md:flex">
     <div class="flex h-14 items-center border-b px-4">
@@ -174,22 +156,80 @@
         <span class="text-base tracking-tight">Caelo</span>
       </a>
     </div>
-    <nav aria-label="Main navigation" class="flex-1 space-y-1 px-2 py-4">
-      {#each navItems as item (item.href)}
-        {@const Active = item.href === activeHref}
-        <a
-          href={item.href}
+    <nav aria-label="Main navigation" class="flex-1 space-y-1 overflow-y-auto px-2 py-4">
+      {#if nav.liveEdit}
+        <!-- Stretched link: the whole button is clickable, but the link's
+             accessible name is only "Live edit" (axe
+             label-content-name-mismatch); the subtitle describes it. -->
+        <div
           class={cn(
-            "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors motion-reduce:transition-none",
-            Active
-              ? "bg-accent text-accent-foreground"
-              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+            "relative mb-3 flex flex-col gap-0.5 rounded-md bg-primary px-3 py-2.5 text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 has-[a:focus-visible]:ring-2 has-[a:focus-visible]:ring-ring motion-reduce:transition-none",
+            activeHref === nav.liveEdit.href && "ring-2 ring-ring ring-offset-2 ring-offset-card",
           )}
         >
-          <item.icon class="size-4" />
-          {item.label}
+          <a
+            href={nav.liveEdit.href}
+            aria-current={activeHref === nav.liveEdit.href ? "page" : undefined}
+            aria-describedby="nav-live-edit-description"
+            data-testid="nav-live-edit"
+            class="flex items-center gap-3 text-sm font-semibold outline-none after:absolute after:inset-0 after:rounded-md"
+          >
+            {@render navIcon(nav.liveEdit.icon)}
+            {nav.liveEdit.label}
+          </a>
+          <span id="nav-live-edit-description" class="pl-7 text-xs text-primary-foreground/80"
+            >{nav.liveEdit.description}</span
+          >
+        </div>
+      {/if}
+      <a
+        href={nav.dashboard.href}
+        aria-current={activeHref === nav.dashboard.href ? "page" : undefined}
+        class={linkClass(activeHref === nav.dashboard.href)}
+      >
+        {@render navIcon(nav.dashboard.icon)}
+        {nav.dashboard.label}
+      </a>
+      {#if nav.content.length > 0}
+        <button
+          type="button"
+          class="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground motion-reduce:transition-none"
+          aria-expanded={contentExpanded}
+          aria-controls="nav-group-{CONTENT_GROUP_ID}"
+          onclick={toggleContent}
+        >
+          {@render navIcon("content")}
+          {CONTENT_GROUP_LABEL}
+          <ChevronDown
+            class={cn(
+              "ml-auto size-4 transition-transform motion-reduce:transition-none",
+              !contentExpanded && "-rotate-90",
+            )}
+          />
+        </button>
+        <div id="nav-group-{CONTENT_GROUP_ID}" class="space-y-1 pl-4" hidden={!contentExpanded}>
+          {#each nav.content as item (item.href)}
+            <a
+              href={item.href}
+              aria-current={activeHref === item.href ? "page" : undefined}
+              class={linkClass(activeHref === item.href)}
+            >
+              {@render navIcon(item.icon)}
+              {item.label}
+            </a>
+          {/each}
+        </div>
+      {/if}
+      {#if nav.settings}
+        <a
+          href={nav.settings.href}
+          aria-current={activeHref === nav.settings.href ? "page" : undefined}
+          class={linkClass(activeHref === nav.settings.href)}
+        >
+          {@render navIcon(nav.settings.icon)}
+          {nav.settings.label}
         </a>
-      {/each}
+      {/if}
     </nav>
     <Separator />
     <div class="flex flex-col gap-1 p-2 text-sm">
@@ -201,6 +241,14 @@
       <p class="px-3 py-1 text-[10px] text-muted-foreground" title="Caelo CMS version">
         v{CAELO_VERSION}
       </p>
+      <!-- Personal account (change your own password) — every signed-in user. -->
+      <a
+        href="/account"
+        aria-current={activeHref === "/account" ? "page" : undefined}
+        class={linkClass(activeHref === "/account")}
+      >
+        <UserCog class="size-4" /> Account
+      </a>
       <form method="post" action="/logout">
         <input type="hidden" name="_csrf" value={csrfToken} />
         <Button variant="ghost" size="sm" type="submit" class="w-full justify-start gap-3">

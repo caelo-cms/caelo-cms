@@ -15,7 +15,19 @@ import type { GcloudRunner } from "./gcloud-retry.js";
 import type { InstallMetadata } from "./install-state.js";
 import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
 import { StateLockHeldError } from "./state-store.js";
+import {
+  ADMIN_AMD64,
+  ADMIN_INDEX,
+  fakeRegistryFetch,
+  GATEWAY_AMD64,
+  GATEWAY_INDEX,
+} from "./upgrade/__tests__/live-indexes.js";
 import type { HealthOutcome, HealthProbe } from "./upgrade/health.js";
+import {
+  createReleaseImageForms,
+  type ImageFormsResult,
+  type ReleaseImageForms,
+} from "./upgrade/image-forms.js";
 import { type IamTester, resourceName } from "./upgrader-iam-preflight.js";
 import {
   type ClaimedUpdate,
@@ -212,6 +224,11 @@ function setup(
     lockDenied?: boolean;
     /** The lock broke a dead run's lock on the way, with this message. */
     brokeStaleLock?: string;
+    /**
+     * The release mirror (#1025): by default index `D(c)` lists platform
+     * manifest `P(c)`; `down` makes every index read fail as an outage.
+     */
+    imageForms?: ReleaseImageForms | "down";
     /** IAM's answer: permissions withheld per resource name. */
     iamWithheld?: Record<string, readonly string[]>;
     /** A resource IAM cannot be asked about. */
@@ -246,6 +263,10 @@ function setup(
       }
       return opts.manifest ?? { ok: true, manifest: MANIFEST };
     },
+    imageForms:
+      typeof opts.imageForms === "object"
+        ? opts.imageForms
+        : fakeImageForms(order, opts.imageForms === "down"),
     lockState: (onBreak) => {
       order.push("lock");
       if (opts.locked) throw new StateLockHeldError("held by caelo installer");
@@ -269,6 +290,28 @@ function setup(
     log: () => {},
   };
   return { deps, order, q, written };
+}
+
+/**
+ * The release mirror's indexes as {@link ReleaseImageForms}: index `D(c)`
+ * lists platform manifest `P(c)` (#1025). Signed platform digests win, as
+ * in createReleaseImageForms.
+ */
+function fakeImageForms(order: string[], down: boolean): ReleaseImageForms {
+  const ofIndex = async (slug: string, index: string): Promise<ImageFormsResult> => {
+    order.push(`index ${slug}@${index}`);
+    if (down) return { ok: false, transient: true, message: "the mirror answered HTTP 503" };
+    const platform = P(index.slice(-1));
+    return { ok: true, digests: [index, platform], amd64: platform };
+  };
+  return {
+    ofIndex,
+    of: async (m, slug) => {
+      const signed = m.platformDigests?.[slug];
+      if (signed) return { ok: true, digests: [m.digests[slug], signed], amd64: signed };
+      return ofIndex(slug, m.digests[slug]);
+    },
+  };
 }
 
 /** IAM granting everything asked except `withheld` per resource; `error` names a resource it cannot be asked about. */
@@ -763,6 +806,116 @@ describe("runUpgraderJob", () => {
     expect(written).toEqual([]);
     expect(order.some((l) => /backups create|services update|^migrate/.test(l))).toBe(false);
     expect(order).not.toContain("manifest 0.11.0");
+  });
+
+  describe("regression #1025: Cloud Run's revision spec names the platform manifest", () => {
+    /** Serving revisions whose spec AND status name only the platform digests (the live shape). */
+    const servingPlatform = (admin: string, gateway: string): [RegExp, Answer] => [
+      /^run revisions describe (\S+)/,
+      (l) => {
+        const d = l.includes("-admin-") ? admin : gateway;
+        return ok(revisionJson(d, d));
+      },
+    ];
+
+    it("the live v0.10.64 shapes: identified by the signed indexes, records both forms, installs", async () => {
+      const calls: string[] = [];
+      const v064 = {
+        ...MANIFEST,
+        version: "0.10.64",
+        digests: { admin: ADMIN_INDEX, gateway: GATEWAY_INDEX, ops: D("c") },
+      };
+      const { deps, q, written } = setup({
+        meta: {
+          ...META,
+          imageDigests: { admin: ADMIN_INDEX, gateway: GATEWAY_INDEX },
+          releaseVersion: "0.10.64",
+        },
+        manifests: { "0.10.64": { ok: true, manifest: v064 } },
+        gcloud: [servingPlatform(ADMIN_AMD64, GATEWAY_AMD64)],
+        imageForms: createReleaseImageForms(fakeRegistryFetch(calls)),
+      });
+      expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+      expect(written[0]).toMatchObject({
+        releaseVersion: "0.10.64",
+        imageDigests: { admin: ADMIN_INDEX, gateway: GATEWAY_INDEX },
+        platformDigests: { admin: ADMIN_AMD64, gateway: GATEWAY_AMD64 },
+      });
+      expect(q.events.some((e) => e.message.startsWith("0.10.64 → 0.11.0"))).toBe(true);
+      // Each index read once, by digest, from the fixed mirror.
+      expect(calls.filter((c) => c.endsWith(`/admin/manifests/${ADMIN_INDEX}`))).toHaveLength(1);
+      expect(calls.filter((c) => c.endsWith(`/gateway/manifests/${GATEWAY_INDEX}`))).toHaveLength(
+        1,
+      );
+    });
+
+    it("install.json with both forms matches directly: no drift, no lookup", async () => {
+      const { deps, order, q } = setup({
+        meta: { ...META, platformDigests: { admin: P("1"), gateway: P("2") } },
+        gcloud: [servingPlatform(P("1"), P("2"))],
+      });
+      expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+      expect(order.filter((l) => l.startsWith("manifest"))).toEqual(["manifest 0.11.0"]);
+      // Only the target's index is read (to record its platform forms), never the serving one's.
+      expect(order.filter((l) => l.startsWith("index "))).toEqual([
+        `index admin@${D("a")}`,
+        `index gateway@${D("b")}`,
+      ]);
+      expect(q.events.some((e) => e.message.includes("refreshed its install records"))).toBe(false);
+    });
+
+    it("the roll records the new release's platform forms, signed ones first", async () => {
+      const signed = {
+        ...MANIFEST,
+        platformDigests: { admin: P("x"), gateway: P("y"), ops: P("z") },
+      };
+      const { deps, order, written } = setup({ manifest: { ok: true, manifest: signed } });
+      expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+      expect(written.at(-1)).toMatchObject({
+        releaseVersion: "0.11.0",
+        imageDigests: { admin: D("a"), gateway: D("b") },
+        platformDigests: { admin: P("x"), gateway: P("y") },
+      });
+      expect(order.some((l) => l.startsWith("index "))).toBe(false);
+    });
+
+    it("a stale platform record is dropped when the platform forms cannot be read", async () => {
+      const { deps, q, written } = setup({
+        meta: { ...META, platformDigests: { admin: P("1"), gateway: P("2") } },
+        imageForms: "down",
+      });
+      expect((await runUpgraderJob(deps)).status).toBe("succeeded");
+      expect(written.at(-1)?.imageDigests).toEqual({ admin: D("a"), gateway: D("b") });
+      expect(written.at(-1)?.platformDigests).toBeUndefined();
+      expect(q.events.some((e) => e.level === "warn" && e.message.includes("linux/amd64"))).toBe(
+        true,
+      );
+    });
+
+    it("a platform digest in no signed index is still refused with the current message", async () => {
+      const { deps, q, written } = setup({
+        gcloud: [servingPlatform(P("7"), P("6"))],
+        manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+      });
+      expect((await runUpgraderJob(deps)).status).toBe("needs_cloud_shell");
+      const end = q.end();
+      expect(end?.codes).toEqual(["install-state-drift"]);
+      expect(end?.reason).toContain("do not belong to one signed Caelo release");
+      expect(end?.reason).toContain(`admin ${P("7")}`);
+      expect(written).toEqual([]);
+    });
+
+    it("an index the mirror cannot serve fails retryably, never as drift", async () => {
+      const { deps, q, written } = setup({
+        gcloud: [servingPlatform(P("1"), P("2"))],
+        manifests: { "0.10.45": manifestOf("0.10.45", D("1"), D("2")) },
+        imageForms: "down",
+      });
+      expect((await runUpgraderJob(deps)).status).toBe("failed");
+      expect(q.end()?.codes).toEqual(["registry"]);
+      expect(q.end()?.reason).toContain("HTTP 503");
+      expect(written).toEqual([]);
+    });
   });
 
   it("regression #865: drift whose release manifest the registry cannot serve fails retryably, not install-state-drift", async () => {
