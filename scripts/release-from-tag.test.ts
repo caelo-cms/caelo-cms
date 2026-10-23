@@ -1,25 +1,32 @@
 // SPDX-License-Identifier: MPL-2.0
 /**
- * Contract for releasing from a release branch. Before it, the
- * release commit had to be squash-merged onto exactly the main commit it
- * was cut from, so every merge during a cut (~25 min real-AI gate + the PR
- * click) cost the release (v0.10.63 never shipped), and a broken stamp
- * only surfaced in release.yml after main already had the release commit
- * (v0.10.65). Now the cut tags its own commit on release/vX.Y.Z and main
- * stays open; release.yml brings the release back to main at the end.
+ * Contract for releasing from a tag. The release commit once had to be
+ * squash-merged onto exactly the main commit it was cut from, so every
+ * merge during a cut cost the release (v0.10.63 never shipped), and a
+ * broken stamp only surfaced after main already had the release commit
+ * (v0.10.65). Then it was merged back after publishing, which kept a PR
+ * per release and a stale version on main. Now the release commit lives on
+ * its tag only: main carries the unreleased marker and nothing is merged
+ * back; the Claude Code plugin follows the `release-latest` branch.
  *
- * B1: release-cut has no push trigger — merging the release PR into main
- *     publishes nothing.
+ * B1: release-cut has no push trigger — merging into main publishes
+ *     nothing.
  * B2: the real-AI gate runs on a branch pinned to the cut commit, never on
  *     main (which may move during the cut).
  * B2a: once the dispatched run finished, the verdict reads that run by id.
  * B3: the release commit is verified (release-script files only, lint,
- *     lockstep, catalogue) before the branch + tag push, and that push is
- *     atomic.
+ *     lockstep, catalogue) before the tag push; only the tag is pushed,
+ *     never with --force.
  * B4: release.yml's gate runs the test suite unless the scope step proves
  *     the tag is a pure release commit on a parent ci.yml passed; the
  *     checks that cover the release commit itself always run.
- * B5: release.yml opens the release PR only after the GitHub Release.
+ * B5: release.yml opens no PR into main; after the GitHub Release it moves
+ *     release-latest to the tag, for stable releases only, never backwards,
+ *     and a failed read of release-latest stops it (never "not there").
+ * B6: releases publish one at a time: release.yml shares one non-cancelling
+ *     concurrency group, and release-cut refuses while a run is queued or
+ *     running (npm `latest`, which the versionless install follows, must
+ *     never move backwards).
  */
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -41,6 +48,7 @@ interface Job {
 }
 interface Workflow {
   readonly on: Record<string, unknown>;
+  readonly concurrency?: { group?: string; "cancel-in-progress"?: boolean };
   readonly jobs: Record<string, Job>;
 }
 
@@ -85,9 +93,9 @@ describe("release-cut — tag on the release branch, keep main open", () => {
     expect(verdict).toContain('if [ "$verdict" != "success/success" ]; then');
   });
 
-  it("B3: verifies the release commit before an atomic branch + tag push", () => {
+  it("B3: verifies the release commit before pushing only its tag", () => {
     const check = stepIndex(cutSteps, "Check the release commit");
-    const push = stepIndex(cutSteps, "Push the release branch + tag");
+    const push = stepIndex(cutSteps, "Push the tag");
     const script = stepIndex(cutSteps, "Run the release script");
     expect(script).toBeGreaterThan(0);
     expect(check).toBeGreaterThan(script);
@@ -102,7 +110,8 @@ describe("release-cut — tag on the release branch, keep main open", () => {
       expect(run).toContain(cmd);
     }
     const pushRun = cutSteps[push]?.run ?? "";
-    expect(pushRun).toContain("git push --atomic");
+    expect(pushRun).not.toContain("--force");
+    expect(pushRun).not.toContain("refs/heads/");
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal shell variable
     expect(pushRun).toContain('"refs/tags/v${V}"');
     // biome-ignore lint/suspicious/noTemplateCurlyInString: literal shell variable
@@ -112,7 +121,7 @@ describe("release-cut — tag on the release branch, keep main open", () => {
   });
 });
 
-describe("release.yml — gate scope and merge-back", () => {
+describe("release.yml — gate scope and release-latest", () => {
   const conditional = ["Bootstrap databases", "Run migrations", "Test"];
   const always = [
     "Lint",
@@ -140,13 +149,35 @@ describe("release.yml — gate scope and merge-back", () => {
     }
   });
 
-  it("B5: opens the release PR only after the GitHub Release", () => {
-    const job = release.jobs["merge-back"];
+  it("B5: merges nothing back; moves release-latest after the GitHub Release", () => {
+    expect(release.jobs["merge-back"]).toBeUndefined();
+    const all = JSON.stringify(release.jobs);
+    expect(all).not.toContain("gh pr create");
+    const job = release.jobs["release-latest"] as Job & { if?: string };
     expect(job?.needs).toBe("github-release");
-    expect(job?.permissions).toEqual({ contents: "read", "pull-requests": "write" });
-    expect(job?.steps?.[0]?.run ?? "").toContain(
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal shell variables
-      'gh pr create -R "${REPO}" --base main --head "${branch}"',
-    );
+    expect(job?.permissions).toEqual({ contents: "write" });
+    // Stable releases only: a pre-release must not become what plugin users get.
+    expect(job?.if).toContain("'-'");
+    const run =
+      job?.steps?.find((s) => (s.name ?? "").startsWith("Move release-latest"))?.run ?? "";
+    expect(run).toContain('git push --force origin "HEAD:refs/heads/release-latest"');
+    // Never backwards: an older tag re-run leaves a newer release-latest alone.
+    expect(run).toMatch(/sort -V[\s\S]*left alone[\s\S]*git push/);
+    // Only ls-remote's "no match" (exit 2) means a fresh branch.
+    expect(run).toContain("git ls-remote --exit-code --heads origin release-latest");
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal shell variable
+    expect(run).toContain('elif [ "${code}" != 2 ]; then');
+    expect(run).not.toContain('|| current=""');
+  });
+
+  it("B6: publishes one release at a time", () => {
+    expect(release.concurrency).toEqual({ group: "release-publish", "cancel-in-progress": false });
+    const guard = stepIndex(cutSteps, "Guard — no release is still publishing");
+    expect(guard).toBeGreaterThan(0);
+    expect(guard).toBeLessThan(stepIndex(cutSteps, "Gate — real-AI suite"));
+    const run = cutSteps[guard]?.run ?? "";
+    expect(run).toContain("actions/workflows/release.yml/runs?status=$status");
+    expect(run).toMatch(/for status in queued in_progress waiting/);
+    expect(run).toMatch(/still publishing[\s\S]*exit 1/);
   });
 });

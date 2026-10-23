@@ -20,12 +20,14 @@
  */
 
 import { resolve } from "node:path";
-import { CLOUD_SHELL_LINK_FILES, pinCloudShellLinks } from "./cloud-shell-links.ts";
+import { UNRELEASED_VERSION } from "./release-checks.ts";
 
 /**
  * Files release.ts regenerates wholesale. Their content is data that the
  * gate checks on its own (the catalogue against the code, the declaration
- * when the release manifest is generated), so any change is accepted.
+ * when the release manifest is generated), so any change is accepted. Main
+ * carries no CHANGELOG.md or release-meta.json, so the release commit adds
+ * them; adding is accepted for these files only.
  */
 const REGENERATED = new Set([
   "CHANGELOG.md",
@@ -80,17 +82,14 @@ function sameJsonButVersions(base: string, head: string): boolean {
   }
 }
 
-/**
- * Why `file` is not a release-commit change, or null when it is.
- *
- * @param version - the version the release commit moves to
- */
-export function releaseFileProblem(file: ReleaseCommitFile, version: string): string | null {
+/** Why `file` is not a release-commit change, or null when it is. */
+export function releaseFileProblem(file: ReleaseCommitFile): string | null {
   const { path, base, head } = file;
-  if (base === null || head === null) {
-    return `${path}: ${base === null ? "added" : "deleted"} (a release commit only modifies files)`;
-  }
+  if (head === null) return `${path}: deleted (a release commit never deletes a file)`;
   if (REGENERATED.has(path)) return null;
+  if (base === null) {
+    return `${path}: added (a release commit adds only the changelog and the release declaration)`;
+  }
   if (VERSIONED_JSON.has(path) || path === "package.json" || path.endsWith("/package.json")) {
     return sameJsonButVersions(base, head) ? null : `${path}: changes more than its version`;
   }
@@ -100,21 +99,24 @@ export function releaseFileProblem(file: ReleaseCommitFile, version: string): st
       ? null
       : `${path}: changes more than its version stamp`;
   }
-  if (CLOUD_SHELL_LINK_FILES.includes(path)) {
-    return pinCloudShellLinks(base, version) === head
-      ? null
-      : `${path}: changes more than its Cloud Shell install links`;
-  }
   return `${path}: not a file the release script writes`;
 }
 
-/** Every problem across the commit's files; empty when it is a pure release commit. */
+/**
+ * Every problem across the commit's files; empty when it is a pure release
+ * commit.
+ *
+ * @param version - the version the commit is stamped with (its package.json)
+ */
 export function releaseCommitProblems(
   files: readonly ReleaseCommitFile[],
   version: string,
 ): string[] {
+  if (version === UNRELEASED_VERSION) {
+    return [`the commit is stamped v${UNRELEASED_VERSION}, the unreleased marker, not a release`];
+  }
   if (files.length === 0) return ["the commit changes nothing"];
-  return files.flatMap((f) => releaseFileProblem(f, version) ?? []);
+  return files.flatMap((f) => releaseFileProblem(f) ?? []);
 }
 
 function git(args: readonly string[], cwd: string): string | null {

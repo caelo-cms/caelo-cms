@@ -16,7 +16,8 @@ at the bottom instead.
 **One-button (preferred — no local checkout needed):** GitHub →
 Actions → **release-cut** → *Run workflow* → pick `patch` / `minor` /
 `major` (or an explicit `x.y.z`). The release is cut from `main` as it
-is at that moment, and **main stays open for merges the whole time**:
+is at that moment, **main stays open for merges the whole time**, and
+**nothing is merged back** afterwards:
 
 1. The real-AI live-edit suite (`e2e-livedit.yml`) must be green on that
    main commit. Main gets no real-AI run per push, so the cut dispatches
@@ -25,22 +26,46 @@ is at that moment, and **main stays open for merges the whole time**:
    a green run from an earlier attempt on the same commit is reused. A
    red run stops the cut; fix main and re-run release-cut.
 2. `scripts/release.ts` writes the release commit on top of it and tags
-   it `vX.Y.Z`.
+   it `vX.Y.Z`. The version it bumps from is the newest stable tag.
 3. Before anything is pushed, the cut checks that commit: it may change
    only what the release script writes, and only version stamps in it
    (`scripts/release-commit.ts verify`), and lint, the lockstep check
    and the Power-MCP catalogue check must pass. A broken stamp fails the
    cut, not the published pipeline.
-4. `release/vX.Y.Z` and the tag are pushed together and `release.yml`
-   is dispatched on the tag.
-5. When everything is published, `release.yml` opens the release PR
-   `release/vX.Y.Z` → main (see
-   ["Merging the release back"](#merging-the-release-back)).
+4. The tag is pushed and `release.yml` is dispatched on it.
+5. When everything is published, `release.yml` moves the
+   `release-latest` branch to the tag (stable releases only, never
+   backwards). The Claude Code plugin is served from that branch.
 
-The tag is not on main's history: main requires linear history, so the
-release commit arrives there as a squashed copy. The changelog and the
-release checks therefore find the previous release by version, not by
-ancestry.
+### Release stamps live on the tag, never on main
+
+Main is stamped with the **unreleased marker `0.0.0`** (`CAELO_VERSION`,
+every `package.json`, `server.json`, the Claude Code plugin) and carries
+no `CHANGELOG.md` and no `release-meta.json`. A release commit sets the
+real version everywhere, adds the declaration and a `CHANGELOG.md` that
+continues the previous tag's, and exists only on its tag. So:
+
+- **Nothing on main names a version that must move per release.** The
+  install buttons (README, docs, `cloudShellInstallUrl`) open the
+  install repository's `main`, whose `run.sh` installs the newest stable
+  release itself (npm `latest`, verified before it runs). The Claude
+  Code marketplace (`.claude-plugin/marketplace.json`) serves the plugin
+  from `release-latest`, so users get the newest release's exact
+  mcp-server pin, which Anthropic's plugin directory requires (no
+  `@latest`). If the plugin is listed in the directory, its tracked
+  branch is `release-latest`.
+- **The changelog and the release checks find the previous release by
+  version** (`previousTag`, `previousStableTag`), never by ancestry: a
+  tag is not on main's history.
+- **Code built from main reports `0.0.0`** (dev images, local runs). That
+  is the honest answer for unreleased code; every published artifact is
+  built from a tag and carries its version.
+- **Release notes** are the GitHub Releases (and `CHANGELOG.md` on each
+  tag).
+- Links that need ONE release keep naming it, because the target is the
+  point: Settings → Updates' break-glass upgrade opens
+  `release-v<target>` in the install repository (`cloudShellUpgradeUrl`),
+  and `run.sh` there takes the version from the branch name.
 
 `release.yml`'s gate runs the full test suite only when it has to. When
 the tag is a pure release commit (step 3's check) on a main commit whose
@@ -77,32 +102,12 @@ jq -r .publicKeyHex  .caelo-dev-key | gh variable set CAELO_TIER1_PUBLIC_KEY
 To rotate: generate a fresh pair, update the secret + variable, and
 ship a release so the manifests re-sign with the new key.
 
-### Merging the release back
-
-The release PR (`chore(release): vX.Y.Z`, opened by `release.yml`
-after the GitHub Release) moves main to the new version. Nothing that
-ships waits on it, but the **next cut refuses** until it is merged: a
-cut on a main that still carries the old version would bump to a
-version that is already tagged.
-
-PRs opened with the repo `GITHUB_TOKEN` get no workflow runs, so its
-required checks sit pending. Squash-merge with
-`gh pr merge --squash --admin` — the code was gated on the tag before
-anything published. To make the PR's checks run like on any other PR
-(and allow plain merging), add a `RELEASE_PAT` repo secret: a
-fine-grained PAT with contents:write + pull-requests:write on this repo.
-
-A conflict means a PR merged during the release touched a file the
-release commit stamps (usually `bun.lock`). Merge main into the release
-branch, keep main's content with the new version stamps, run
-`bun install --lockfile-only`, push, then merge the PR.
-
 ### A release that failed after the cut
 
 The tag exists, but nothing was published when `release.yml` fails
-before `publish-npm`. Delete the tag and the release branch
-(`git push origin --delete vX.Y.Z release/vX.Y.Z`), fix main, and cut
-again: the same version is cut fresh from the fixed main. Never move a
+before `publish-npm`. Delete the tag (`git push origin --delete vX.Y.Z`),
+fix main, and cut again: the same version is cut fresh from the fixed
+main. Never move a
 tag by hand: a moved tag publishes a commit that the real-AI gate never
 saw. Once npm or GHCR carry the version, it is spent; fix forward with
 the next patch.
@@ -110,8 +115,9 @@ the next patch.
 **Local flow (still works):**
 
 ```
-bun scripts/release.ts patch                                   # 0.2.0 → 0.2.1 (or minor / major / x.y.z)
-git push --atomic origin HEAD:refs/heads/release/v0.2.1 v0.2.1  # fires release.yml (images, npm, Release, release PR)
+git switch --detach origin/main     # main, stamped 0.0.0; tags fetched
+bun scripts/release.ts patch        # bumps from the newest tag (or minor / major / x.y.z)
+git push origin v0.2.1              # fires release.yml (images, npm, Release, release-latest)
 ```
 
 The local flow skips the real-AI gate, and the tag push runs the full
@@ -233,21 +239,21 @@ Caelo follows SemVer 2.0:
 - **minor**: new features, additive schema migrations (auto-applied
   by the migration runner), no breaking API changes.
 - **major** (or pre-1.0 minor): breaking changes. Document the
-  migration path in `CHANGELOG.md`.
+  migration path in the release notes.
 
 Before cutting, check that the region catalogues
 (`packages/provisioning/src/region-data.ts`) still match the providers'
 per-service region docs cited there, and refresh them if a provider
-added or removed a needed service in a region (#607). The release PR
-used to carry this checklist; it now opens after the release is
-published, too late for it.
+added or removed a needed service in a region (#607). The release has
+no PR of its own to carry this checklist, so it is done before the cut.
 
 ### 2. Run the release script
 
 ```bash
-bun scripts/release.ts patch       # 0.2.0 → 0.2.1
-bun scripts/release.ts minor       # 0.2.0 → 0.3.0
-bun scripts/release.ts major       # 0.2.0 → 1.0.0
+# From main (stamped 0.0.0); the base is the newest stable tag, here v0.2.0:
+bun scripts/release.ts patch       # → 0.2.1
+bun scripts/release.ts minor       # → 0.3.0
+bun scripts/release.ts major       # → 1.0.0
 bun scripts/release.ts 0.5.3       # explicit version
 bun scripts/release.ts 0.6.0-rc.1  # pre-release
 bun scripts/release.ts patch --dry-run   # preview without writing
@@ -261,32 +267,35 @@ bun scripts/release.ts patch --checks-only   # run the release checks, change no
 ```
 
 What the script does, in order:
-1. Validates the new version is strictly greater than the current
-   `CAELO_VERSION` (from `packages/shared/src/version.ts`), then runs
+1. Refuses a checkout that is not stamped with the unreleased marker
+   `0.0.0` (a release commit is never stacked on another), validates
+   the new version is strictly greater than the newest stable tag and
+   above every existing tag, then runs
    the release-cut checks (security advisories, migration lint, infra
    contract — see ["Release manifest"](#release-manifest)) and writes
    the declaration to `release-meta.json`. A failed check stops here,
    before anything is bumped.
-2. Updates the `CAELO_VERSION` constant and, for a stable release,
-   moves the README's "Open in Cloud Shell" install links to
-   `release-v<X.Y.Z>` (`scripts/cloud-shell-links.ts`; repo files only,
-   see ["End-user docs"](#5-end-user-docs)).
-3. Walks every workspace `package.json` and bumps `"version"` to match.
+2. Updates the `CAELO_VERSION` constant.
+3. Walks every workspace `package.json` and bumps `"version"` to match,
+   plus `server.json`, the Claude Code plugin (`plugin.json` and the
+   exact mcp-server pin in `.mcp.json`), the Power-MCP catalogue and
+   `bun.lock`.
 4. Re-signs every shipped plugin manifest under
    `packages/plugins/<slug>/` with the dev key (or
    `CAELO_TIER1_PRIVATE_KEY` if set).
 5. Generates a `## v<X.Y.Z>` changelog stanza from conventional
    commits since the previous tag (groups `feat:` / `fix:` /
    `refactor:` / `docs:` / `chore:` / `test:` / `other`; flags
-   `feat!:` / `fix!:` as ⚠ BREAKING) and prepends it to
-   `CHANGELOG.md`.
+   `feat!:` / `fix!:` as ⚠ BREAKING) and prepends it to the previous
+   tag's `CHANGELOG.md` (main has none), so each tag carries the whole
+   history.
 6. `git add` the bumped files + `git commit -m "chore(release): vX.Y.Z"`.
 7. `git tag -a vX.Y.Z -m "Caelo vX.Y.Z"`.
 
 ### 3. Push the tag
 
 ```bash
-git push --atomic origin HEAD:refs/heads/release/vX.Y.Z vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 (release-cut does this for you.) This fires two parallel workflows:
@@ -294,7 +303,7 @@ git push --atomic origin HEAD:refs/heads/release/vX.Y.Z vX.Y.Z
   test suite unless the parent's CI already ran it, see
   ["At a glance"](#at-a-glance)); npm-publishes every non-private
   `@caelo-cms/*` package with provenance; creates the GitHub Release
-  with the changelog stanza; opens the release PR into main.
+  with the changelog stanza; moves `release-latest` to the tag.
 - **`release-images.yml`** — builds the admin, gateway and ops images,
   tags them, signs with cosign, mirrors GHCR → GCP Artifact Registry.
 - **`release-manifest`** (job in `release.yml`) — builds, signs and
@@ -360,15 +369,11 @@ Maintainer setup for the send step (once #827's IAP access exists):
 3. Revoke and re-mint the token at `/settings/mcp` if it ever leaks; the
    audit trail of every docs turn is at `/settings/audit/<requestId>`.
 
-The docs update must also move the "Open in Cloud Shell" links on the
-docs pages (`/docs/`, `/docs/quickstart/`, `/docs/install/google-cloud/`)
-to `release-v<X.Y.Z>`. `scripts/release.ts` pins only the copies in this
-repo (`CLOUD_SHELL_LINK_FILES`, the README) on purpose: it cannot edit
-CMS content, and writing to the live site from the release commit would
-bypass the Owner's publish click. The `release-v<X.Y.Z>` branch of
-`caelo-cms/install` appears within about 30 minutes of the GitHub
-Release, so publish the docs after it exists. Until sending is wired,
-move the links by hand in the CMS.
+The "Open in Cloud Shell" links on the docs pages (`/docs/`,
+`/docs/quickstart/`, `/docs/install/google-cloud/`) name no version:
+they open the install repository's `main` (`cloudShellInstallUrl`),
+which installs the newest stable release, so a release never has to move
+them.
 
 ---
 
