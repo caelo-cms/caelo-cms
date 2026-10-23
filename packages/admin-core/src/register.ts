@@ -84,6 +84,7 @@ import {
   setChatExtendedThinkingOp,
   setPinnedElementsOp,
 } from "./ops/chat/sessions.js";
+import { pinSkillsIndexOp } from "./ops/chat/skills-index-pin.js";
 import {
   listPendingChangesOp,
   stageChatChangesOp,
@@ -857,6 +858,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listChatSessionsOp);
   registry.register(createChatSessionOp);
   registry.register(getChatSessionOp);
+  registry.register(pinSkillsIndexOp);
   registry.register(getChatBranchIdOp);
   registry.register(renameChatSessionOp);
   registry.register(archiveChatSessionOp);

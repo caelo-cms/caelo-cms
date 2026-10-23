@@ -8,6 +8,7 @@
    * live on rows.
    */
 
+  import PluginHealth from "#lib/components/PluginHealth.svelte";
   import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Puzzle } from "lucide-svelte";
   import { enhance } from "$app/forms";
@@ -71,6 +72,46 @@
 
   <a href="/settings/plugins/installations" class="inline-block underline">Install external packages and review access</a>
 
+  {#if data.discoveryFailures.length > 0}
+    <!-- #1008 — found on disk, never verified: no row, so in no list below. -->
+    <Card data-testid="plugin-discovery-failures">
+      <CardHeader>
+        <CardTitle class="text-base">
+          Found but could not be verified ({data.discoveryFailures.length})
+        </CardTitle>
+        <CardDescription>
+          These plugins are on the server but did not pass verification, so they are not installed and
+          cannot be activated. Rebuild the plugin and sign its manifest again, then redeploy or restart.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Slug</TableHead>
+              <TableHead>Problem</TableHead>
+              <TableHead>Seen</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {#each data.discoveryFailures as f (f.slug)}
+              <TableRow>
+                <TableCell class="font-mono text-xs">{f.slug}</TableCell>
+                <TableCell class="text-sm">
+                  <Badge variant="destructive">{f.phase}</Badge>
+                  {f.message}
+                </TableCell>
+                <TableCell class="text-xs text-muted-foreground">
+                  {f.occurrences}x, last {fmtTime(f.lastSeenAt)}
+                </TableCell>
+              </TableRow>
+            {/each}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  {/if}
+
   <Card>
     <CardHeader>
       <CardTitle class="text-base">Tier 1 — Core plugins ({data.tier1.length})</CardTitle>
@@ -91,6 +132,7 @@
               <TableHead>Slug</TableHead>
               <TableHead>Version</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Health</TableHead>
               <TableHead>Capabilities</TableHead>
               <TableHead>Source</TableHead>
               <TableHead>Action</TableHead>
@@ -105,6 +147,9 @@
                   <Badge variant={p.status === "active" ? "default" : "secondary"}>
                     {p.status}
                   </Badge>
+                </TableCell>
+                <TableCell>
+                  <PluginHealth slug={p.slug} health={p.health} />
                 </TableCell>
                 <TableCell>
                   {#if capabilitiesOf(p.manifestJson).length === 0}
@@ -229,6 +274,7 @@
               <TableHead>Slug</TableHead>
               <TableHead>Version</TableHead>
               <TableHead>Activated</TableHead>
+              <TableHead>Health</TableHead>
               <TableHead>Action</TableHead>
             </TableRow>
           </TableHeader>
@@ -238,6 +284,9 @@
                 <TableCell class="font-mono text-xs">{p.slug}</TableCell>
                 <TableCell class="text-xs">{p.version}</TableCell>
                 <TableCell class="text-xs text-muted-foreground">{fmtTime(p.activatedAt)}</TableCell>
+                <TableCell>
+                  <PluginHealth slug={p.slug} health={p.health} />
+                </TableCell>
                 <TableCell>
                   <form method="post" action="?/disable" use:enhance use:confirmSubmit={{ title: `Disable ${p.slug}?`, description: "Everything this plugin adds to the site stops working until you re-enable it.", confirmLabel: "Disable plugin" }}>
                     <input type="hidden" name="slug" value={p.slug} />

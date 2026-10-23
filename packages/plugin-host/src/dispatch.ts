@@ -35,6 +35,7 @@ import {
   isPublicSideHost,
   unpublishedRegistryError,
 } from "./published-state.js";
+import { recordPluginError } from "./runtime-health.js";
 import { consumeExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
 
@@ -635,6 +636,24 @@ export async function runPluginOperation(
         ok: false,
         error: { kind: "ProjectionNotPublished", message: (e as Error).message },
       };
+    }
+    // #1008 — every throw lands in the plugin's error log, so the Owner
+    // and the AI see it under the plugin, not only in this caller's
+    // result. The public side has no cms_admin login and only logs.
+    if (!isPublicSideHost(cachedInfra)) {
+      await recordPluginError({
+        infra: cachedInfra,
+        systemActorId: hostSystemActorId(),
+        slug: plugin.slug,
+        pluginId: plugin.pluginId,
+        phase:
+          opts.invocation.origin === "render"
+            ? "render"
+            : opts.invocation.origin === "worker"
+              ? "worker"
+              : "operation",
+        error: new Error(`operation "${opts.operationName}" threw`, { cause: e }),
+      });
     }
     return {
       ok: false,

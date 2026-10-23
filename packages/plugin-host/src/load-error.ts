@@ -60,6 +60,12 @@ export function describeLoadError(error: unknown): string {
       break;
     }
     const e = current as ErrorLike;
+    // A phase tag (runtime-health.ts `PluginLoadError`) repeats its cause's
+    // message; describe the cause once instead.
+    if ((e as { name?: unknown }).name === "PluginLoadError" && e.cause !== undefined) {
+      current = e.cause;
+      continue;
+    }
     const message = typeof e.message === "string" ? readable(e.message) : readable(String(e));
     const state = sqlState(e);
     const detail = typeof e.detail === "string" && e.detail !== "" ? ` (${e.detail})` : "";

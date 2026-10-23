@@ -203,6 +203,20 @@ describe("get_plugin", () => {
     validationErrors: [],
     manifestSignature: "sig",
     rejectionReason: null,
+    health: {
+      state: "failing",
+      servers: { loaded: 1, failing: 1 },
+      problem: {
+        phase: "activate",
+        errorClass: "plugin",
+        message: "SMTP host refused",
+        occurrences: 2,
+        firstSeenAt: "2026-10-23T08:00:00.000Z",
+        lastSeenAt: "2026-10-23T08:05:00.000Z",
+        report: "none",
+      },
+      recentErrors: [],
+    },
   };
 
   it("renders detail + AI spend and never returns the source", async () => {
@@ -222,6 +236,10 @@ describe("get_plugin", () => {
     expect(r.content).toContain("list_form_submissions");
     expect(r.content).toContain("email.send");
     expect(r.content).toContain("CAP REACHED");
+    // #1008 — health and why it is failing, so the AI can explain it.
+    expect(r.content).toContain("health: failing (servers: 1 loaded, 1 failing)");
+    expect(r.content).toContain("problem: [activate, plugin] 2x");
+    expect(r.content).toContain("SMTP host refused");
     expect(JSON.stringify(r)).not.toContain("SECRET_SOURCE_MARKER");
     expect(h.calls[1]?.input).toEqual({ pluginId: U1 });
   });

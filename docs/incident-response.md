@@ -94,12 +94,22 @@ If text + image are both healthy but specific calls fail → check `/settings/ai
 
 ## §D — Plugin sandbox crashed the host
 
+A plugin that fails to load is never switched off automatically: its `status`
+stays what the Owner decided, and the failure is recorded instead (#1008).
+`/settings/plugins` shows it as "Not loading" with the reason; the same data:
+
 ```sql
-SELECT slug, tier, status, validation_errors
-FROM plugins WHERE status IN ('failed', 'disabled') ORDER BY updated_at DESC;
+-- What each running server makes of each plugin (heartbeat within 2 min = live).
+SELECT plugin_slug, instance_id, state, heartbeat_at
+FROM plugin_runtime WHERE heartbeat_at > now() - interval '2 minutes' ORDER BY plugin_slug;
+
+-- Every recorded problem: phase, whose fault (transient / plugin / core), how often.
+SELECT plugin_slug, phase, error_class, occurrences, last_seen_at, message
+FROM plugin_errors ORDER BY last_seen_at DESC LIMIT 20;
 ```
 
-Disable the offending plugin via UI or:
+A `core` error is Caelo's (it went to the bug intake when forwarding is on).
+To stop a plugin that misbehaves, disable it via the UI or:
 ```sql
 UPDATE plugins SET status='disabled' WHERE slug='<slug>';
 ```

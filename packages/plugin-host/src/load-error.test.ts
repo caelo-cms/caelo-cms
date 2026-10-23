@@ -36,6 +36,14 @@ describe("describeLoadError", () => {
     );
   });
 
+  it("describes a phase-tagged failure once, not twice", () => {
+    const tagged = Object.assign(new Error("boom"), {
+      name: "PluginLoadError",
+      cause: new Error("boom"),
+    });
+    expect(describeLoadError(tagged)).toBe("boom");
+  });
+
   it("ignores an errno that is not a SQLSTATE", () => {
     expect(describeLoadError(Object.assign(new Error("boom"), { errno: -2 }))).toBe("boom");
   });

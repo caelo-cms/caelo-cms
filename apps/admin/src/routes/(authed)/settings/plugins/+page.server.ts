@@ -10,7 +10,7 @@
 
 import { externalArtifactDigest, loadActivatedPlugin } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
-import { fail } from "@sveltejs/kit";
+import { error, fail } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
@@ -20,7 +20,7 @@ interface PluginRow {
   slug: string;
   version: string;
   tier: 1 | 2;
-  status: "draft" | "awaiting_activation" | "active" | "disabled" | "rejected" | "failed";
+  status: "draft" | "awaiting_activation" | "active" | "disabled" | "rejected";
   manifestJson: unknown;
   sourceCode: string | null;
   sourcePath: string | null;
@@ -42,13 +42,40 @@ interface PluginRow {
   rejectionReason: string | null;
   createdAt: string;
   updatedAt: string;
+  /** #1008 — what the running servers make of `status` (admin-core ops/plugins/health.ts). */
+  health: {
+    state: "running" | "failing" | "unreported" | "not_running";
+    servers: { loaded: number; failing: number };
+    problem: PluginErrorSummary | null;
+    recentErrors: PluginErrorSummary[];
+  };
+}
+
+interface PluginErrorSummary {
+  phase: string;
+  errorClass: "transient" | "plugin" | "core";
+  message: string;
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  report: "none" | "local" | "queued" | "sent" | "failed";
+}
+
+/** #1008 — a plugin found on disk that failed verification, so it is not installed. */
+interface DiscoveryFailure extends PluginErrorSummary {
+  slug: string;
 }
 
 export const load: PageServerLoad = async ({ locals }) => {
   requirePermission(locals, "settings.write");
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, locals.ctx, "plugins.list", {});
-  const plugins = (r.ok ? (r.value as { plugins: PluginRow[] }).plugins : []).map((p) => ({
+  // An empty list here would read as "no plugins installed" (CLAUDE.md §2).
+  if (!r.ok) {
+    error(500, `Could not list plugins: ${"message" in r.error ? r.error.message : r.error.kind}`);
+  }
+  const value = r.value as { plugins: PluginRow[]; discoveryFailures: DiscoveryFailure[] };
+  const plugins = value.plugins.map((p) => ({
     ...p,
     artifactDigest:
       p.tier === 2 ? externalArtifactDigest(p.manifestJson, p.sourceCode ?? "") : undefined,
@@ -58,9 +85,7 @@ export const load: PageServerLoad = async ({ locals }) => {
   const tier2AwaitingActivation = plugins.filter(
     (p) => p.tier === 2 && p.status === "awaiting_activation",
   );
-  const tier2Failed = plugins.filter(
-    (p) => p.tier === 2 && (p.status === "draft" || p.status === "failed"),
-  );
+  const tier2Failed = plugins.filter((p) => p.tier === 2 && p.status === "draft");
   const tier2Disabled = plugins.filter((p) => p.tier === 2 && p.status === "disabled");
   const tier2Rejected = plugins.filter((p) => p.tier === 2 && p.status === "rejected");
   return {
@@ -70,6 +95,7 @@ export const load: PageServerLoad = async ({ locals }) => {
     tier2Failed,
     tier2Disabled,
     tier2Rejected,
+    discoveryFailures: value.discoveryFailures,
   };
 };
 
