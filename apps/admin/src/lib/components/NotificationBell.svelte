@@ -159,7 +159,7 @@
                 onclick={() => (open = false)}
               >
                 <Badge variant="destructive">{counts.failedDeploys}</Badge>
-                <span>Failed deploys in the last 7 days</span>
+                <span>Latest deploy failed and not yet fixed</span>
               </a>
             {/if}
             {#if counts.staleBranches > 0}
