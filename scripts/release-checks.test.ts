@@ -18,6 +18,7 @@ import {
   previousStableTag,
   type ReleaseMeta,
   ReleaseMetaSchema,
+  setJsonVersionField,
   validateReleaseMetaShape,
   verifyAdvisoriesPublished,
 } from "./release-checks.ts";
@@ -329,5 +330,25 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
       ops: d("c"),
     });
     expect(() => parseDigestFlags(["--digest", `edge=${d("a")}`])).toThrow(/bad --digest/);
+  });
+});
+
+describe("setJsonVersionField", () => {
+  const manifest = `{
+  "name": "caelo",
+  "version": "0.10.64",
+  "keywords": ["cms", "mcp"],
+  "author": { "name": "Caelo", "version": "keep" }
+}
+`;
+
+  it("bumps the top-level version and leaves the rest byte-identical (v0.10.65 gate lint)", () => {
+    expect(setJsonVersionField(manifest, "0.10.65")).toBe(
+      manifest.replace('"version": "0.10.64"', '"version": "0.10.65"'),
+    );
+  });
+
+  it("refuses a manifest without a version field", () => {
+    expect(() => setJsonVersionField('{ "name": "x" }\n', "1.0.0")).toThrow(/no "version" field/);
   });
 });

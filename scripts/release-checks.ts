@@ -427,3 +427,18 @@ export async function runReleaseChecks(
   });
   return { errors, warnings, previousTag, contractMigrations, lastContractVersion };
 }
+
+/**
+ * Sets the top-level `"version"` of a JSON manifest by editing the text, so
+ * the file keeps the layout the repo's formatter gave it. Re-serialising with
+ * `JSON.stringify(…, null, 2)` breaks short arrays onto one line per item,
+ * which Biome rejects; that failed the v0.10.65 release gate's lint on the
+ * Claude Code plugin manifest.
+ *
+ * @throws when the text has no `"version"` field to replace.
+ */
+export function setJsonVersionField(text: string, version: string): string {
+  const pattern = /^(\s*"version":\s*)"[^"]*"/m;
+  if (!pattern.test(text)) throw new Error('manifest has no "version" field to bump');
+  return text.replace(pattern, `$1"${version}"`);
+}

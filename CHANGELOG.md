@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.10.65
+
+### Features
+- ff3f4121 Claude Code plugin "caelo" (MCP server + skills) and marketplace (#975)
+- 1e926def verify the Google sign-in client before IAP switches; name users without a Google account (#967, #970) (#979)
+- e21021b5 MCP access as one concept — per-app connections, state-aware Settings → MCP (#968) (#977)
+
+### Fixes
+- 106903e1 renumber 0335 and 0337 above the shipped 0338 (#1007)
+- 29a36f23 PR #947 review follow-ups + set_locales guard; CLAUDE.md PR-ownership rule (#990)
+- 7f12b7fc credentials never reach the AI or an MCP client (#971) (#978)
+- cd080786 harden rate-limit refill, PoW verification, and signed cookies (#985)
+- 8f059816 harden MCP RBAC, cost caps, turn approvals, and credential revocation (#996)
+- 8d78607f confirm every destructive action before it runs (#974)
+- 60a8afc0 root-cause every e2e-livedit detected bug and gate on new ones (#993)
+- 946dcd72 outline the right-clicked text, not the whole module (#1002)
+- c48b3eaf lock down egress on own-origin preview screenshots (#973)
+- af4e5fd4 harden script/CSS/SEO composition and SVG link sanitization (#976)
+- 8be71c3e harden tx rollback, RLS drift audit, and storage filters (#987)
+- d17dd29d harden AST validation, consent host scanner, and built-in plugins (#997)
+
+### Docs
+- 895edf4c generic bug-intake operator guide; /health for Cloud Run (#983, #1000) (#998)
+
+### Other
+- a95ef034 install Playwright system packages from actions/cache, not the apt mirror (#1006)
+
 ## v0.10.64
 
 ### Features
