@@ -10,14 +10,7 @@
   "homepage": "https://caelo-cms.com/docs/mcp/",
   "repository": "https://github.com/caelo-cms/caelo-cms",
   "license": "MPL-2.0",
-  "keywords": [
-    "cms",
-    "website",
-    "mcp",
-    "caelo",
-    "static-site",
-    "self-hosted"
-  ],
+  "keywords": ["cms", "website", "mcp", "caelo", "static-site", "self-hosted"],
   "icon": "./.claude-plugin/icon.png",
   "documentationUrl": "https://caelo-cms.com/docs/mcp/",
   "supportUrl": "https://github.com/caelo-cms/caelo-cms/issues",
