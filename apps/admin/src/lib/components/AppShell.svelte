@@ -156,29 +156,32 @@
         <span class="text-base tracking-tight">Caelo</span>
       </a>
     </div>
-    {#if nav.liveEdit}
-      <a
-        href={nav.liveEdit.href}
-        aria-current={activeHref === nav.liveEdit.href ? "page" : undefined}
-        data-testid="nav-live-edit"
-        aria-label={nav.liveEdit.label}
-        aria-describedby="nav-live-edit-description"
-        class={cn(
-          "mx-2 mt-4 flex flex-col gap-0.5 rounded-md bg-primary px-3 py-2.5 text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 motion-reduce:transition-none",
-          activeHref === nav.liveEdit.href && "ring-2 ring-ring ring-offset-2 ring-offset-card",
-        )}
-      >
-        <span class="flex items-center gap-3 text-sm font-semibold">
-          {@render navIcon(nav.liveEdit.icon)}
-          {nav.liveEdit.label}
-        </span>
-        <!-- The subtitle describes the link; the accessible name stays "Live edit". -->
-        <span id="nav-live-edit-description" class="pl-7 text-xs text-primary-foreground/80"
-          >{nav.liveEdit.description}</span
-        >
-      </a>
-    {/if}
     <nav aria-label="Main navigation" class="flex-1 space-y-1 overflow-y-auto px-2 py-4">
+      {#if nav.liveEdit}
+        <!-- Stretched link: the whole button is clickable, but the link's
+             accessible name is only "Live edit" (axe
+             label-content-name-mismatch); the subtitle describes it. -->
+        <div
+          class={cn(
+            "relative mb-3 flex flex-col gap-0.5 rounded-md bg-primary px-3 py-2.5 text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 has-[a:focus-visible]:ring-2 has-[a:focus-visible]:ring-ring motion-reduce:transition-none",
+            activeHref === nav.liveEdit.href && "ring-2 ring-ring ring-offset-2 ring-offset-card",
+          )}
+        >
+          <a
+            href={nav.liveEdit.href}
+            aria-current={activeHref === nav.liveEdit.href ? "page" : undefined}
+            aria-describedby="nav-live-edit-description"
+            data-testid="nav-live-edit"
+            class="flex items-center gap-3 text-sm font-semibold outline-none after:absolute after:inset-0 after:rounded-md"
+          >
+            {@render navIcon(nav.liveEdit.icon)}
+            {nav.liveEdit.label}
+          </a>
+          <span id="nav-live-edit-description" class="pl-7 text-xs text-primary-foreground/80"
+            >{nav.liveEdit.description}</span
+          >
+        </div>
+      {/if}
       <a
         href={nav.dashboard.href}
         aria-current={activeHref === nav.dashboard.href ? "page" : undefined}

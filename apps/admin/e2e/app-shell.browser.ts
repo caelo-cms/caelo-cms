@@ -50,12 +50,12 @@ test("Owner sees AppShell with sidebar nav, can navigate, dark mode persists", a
     await expect(stateMark.locator('[aria-hidden="true"]')).toHaveCount(1);
   }
 
-  // Live edit is the one prominent entry, above the list.
-  const liveEdit = page.getByTestId("nav-live-edit");
+  // Live edit is the one prominent entry, at the top of the sidebar. Its
+  // accessible name is just "Live edit"; the subtitle is the description.
+  const sidebar = page.getByRole("navigation", { name: "Main navigation" });
+  const liveEdit = sidebar.getByRole("link", { name: "Live edit", exact: true });
   await expect(liveEdit).toBeVisible();
   await expect(liveEdit).toHaveAttribute("href", "/edit");
-  // Its accessible name is just "Live edit"; the subtitle is the description.
-  await expect(page.getByRole("link", { name: "Live edit", exact: true })).toBeVisible();
   await expect(liveEdit).toHaveAccessibleDescription("See your site and change it by chat");
 
   // The dashboard leads into Live edit, not into list views.
@@ -64,7 +64,6 @@ test("Owner sees AppShell with sidebar nav, can navigate, dark mode persists", a
   // Sidebar: Dashboard, a collapsible Content group, Settings. No ramp-up
   // wizard (setup and migration run in Live edit) and no list views or
   // Ops pages at the top level.
-  const sidebar = page.getByRole("navigation", { name: "Main navigation" });
   await expect(sidebar.getByRole("link", { name: /^Dashboard$/ })).toBeVisible();
   await expect(sidebar.getByRole("link", { name: /^Settings$/ })).toBeVisible();
   for (const gone of [/^Ramp up$/, /^Chats$/, /^Deployments$/, /^Quality$/, /^Detected bugs$/]) {
