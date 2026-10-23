@@ -53,14 +53,7 @@ FROM deploy_runs ORDER BY started_at DESC LIMIT 5;
 
 If `status='failed'`: read `error_message`, fix root cause, then `deploy.trigger` again (admin UI or `bunx cms-provision deploy`).
 
-If `status='running'` and `started_at < now() - interval '15 minutes'`: the static-gen subprocess died. Check stderr of the orchestrator. Manual recovery:
-
-```sql
-UPDATE deploy_runs SET status='failed', error_message='manual reset',
-  finished_at=now() WHERE id='<stuck-id>';
-```
-
-Then trigger a fresh deploy.
+A Stage or Publish live shows as `status='running'` while it builds (its row is committed when it starts, with `progress` updated about once a second). A run whose process died (crash, restarted instance) stays `running` until the next Stage or Publish live: that one marks it `failed` with "This build stopped without finishing …" — a run still building on another instance holds an advisory lock on its id and is left alone. Nothing a stopped run built was published; start it again. Check the admin's stderr for why it stopped.
 
 ### Stage / Publish live slow
 
