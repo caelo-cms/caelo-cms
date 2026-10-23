@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * One readable line for a plugin load failure (issue #1008).
+ * A readable description of a plugin load failure (issue #1008).
  *
  * A failed DDL statement surfaces as drizzle's `DrizzleQueryError`, whose
  * message is "Failed query: <the whole emitted schema SQL>" and whose
@@ -44,7 +44,7 @@ function sqlState(e: ErrorLike): string | null {
 }
 
 /**
- * Describe `error` and its causes in one line, outermost first.
+ * Describe `error` and its causes, outermost first, joined by " ← ".
  *
  * @example
  *   describeLoadError(drizzleError)
