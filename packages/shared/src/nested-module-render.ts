@@ -51,6 +51,10 @@
  *     comment + missingSlots entry. Same channel; the operator sees the
  *     gap in the preview, and the static generator refuses the build.
  *
+ * Module ids: the root element of every nested module render carries
+ * `data-caelo-module-id` (#1027), the same stamp the composer puts on a
+ * page placement's root, in the preview and the static build alike.
+ *
  * CSS + JS dedup: every unique module touched during recursion
  * contributes its CSS + JS once. The caller collects the seen-set out
  * of band so the page's <head>/<style> + footer scripts are stable.
@@ -58,6 +62,7 @@
 
 import type { ModuleFieldKind } from "./content.js";
 import { isLinkFailureMarker, type LinkResolver } from "./link-refs.js";
+import { tagModuleId } from "./module-id-tag.js";
 import { caeloMissingComment, renderTemplate, type TemplateField } from "./template-engine.js";
 
 const MAX_RECURSION_DEPTH = 8;
@@ -343,7 +348,15 @@ function renderPartial(
 ): string | undefined {
   const hit = nestedRefForPartial(key, fieldByName, values);
   if (!hit) return undefined;
-  return renderInner(hit.ref.moduleId, hit.ref.contentInstanceId, descend(ctx, hit.step));
+  // #1027 — a nested module's root carries its own id, exactly like a
+  // page placement's (the composer tags those), so the live-edit overlay
+  // and the quality checks attribute its markup to the nested module
+  // instead of reading it as free HTML of the parent. A failure comment
+  // has no element and stays as it is.
+  return tagModuleId(
+    renderInner(hit.ref.moduleId, hit.ref.contentInstanceId, descend(ctx, hit.step)),
+    hit.ref.moduleId,
+  );
 }
 
 /**

@@ -305,7 +305,7 @@ describe("build_page authors a module-list card grid (the path issue #417's dogf
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const html = await renderPage(AI, (r.value as { pageId: string }).pageId);
-    expect(html).toContain("<article>AI-authored</article>");
+    expect(html).toMatch(/<article data-caelo-module-id="[0-9a-f-]{36}">AI-authored<\/article>/);
     expect(html).not.toContain("needs recursive renderer");
   });
 
