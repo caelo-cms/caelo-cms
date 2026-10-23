@@ -16,9 +16,12 @@ import {
   lastContractVersionAt,
   parseAdvisoryList,
   previousStableTag,
+  previousTag,
+  RELEASE_COMMIT_SUBJECT,
   type ReleaseMeta,
   ReleaseMetaSchema,
   setJsonVersionField,
+  taggedAheadProblem,
   validateReleaseMetaShape,
   verifyAdvisoriesPublished,
 } from "./release-checks.ts";
@@ -372,5 +375,38 @@ describe("setJsonVersionField", () => {
 
   it("refuses a manifest without a version field", () => {
     expect(() => setJsonVersionField('{ "name": "x" }\n', "1.0.0")).toThrow(/no "version" field/);
+  });
+});
+
+describe("previousTag (changelog start)", () => {
+  const tags = ["0.10.64", "0.10.65", "0.11.0-rc.1", "0.9.0"];
+  it("picks the newest tag of any kind below the release, by version", () => {
+    expect(previousTag(tags, "0.10.66")).toBe("v0.10.65");
+    expect(previousTag(tags, "0.11.0")).toBe("v0.11.0-rc.1");
+    expect(previousTag(["0.10.65"], "0.10.65")).toBeNull();
+  });
+});
+
+describe("taggedAheadProblem", () => {
+  it("passes a version above every tag", () => {
+    expect(taggedAheadProblem(["0.10.64", "0.10.65"], "0.10.66")).toBeNull();
+  });
+
+  it("refuses a bump that collides with a tag main has not merged back", () => {
+    // main still says 0.10.65 while v0.10.66 is tagged: patch → 0.10.66.
+    const problem = taggedAheadProblem(["0.10.65", "0.10.66"], "0.10.66");
+    expect(problem).toContain("v0.10.66 is already tagged");
+    expect(problem).toContain("release/v0.10.66");
+  });
+});
+
+describe("RELEASE_COMMIT_SUBJECT", () => {
+  it("matches the release commit and its squashed copy, nothing else", () => {
+    expect(RELEASE_COMMIT_SUBJECT.test("chore(release): v0.10.65")).toBe(true);
+    expect(RELEASE_COMMIT_SUBJECT.test("chore(release): v0.10.65 (#1012)")).toBe(true);
+    expect(RELEASE_COMMIT_SUBJECT.test("chore(release): v0.11.0-rc.1")).toBe(true);
+    expect(RELEASE_COMMIT_SUBJECT.test("fix(release): bump the plugin manifest (#1013)")).toBe(
+      false,
+    );
   });
 });

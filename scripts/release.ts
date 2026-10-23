@@ -62,11 +62,15 @@ import { CLOUD_SHELL_LINK_FILES, pinCloudShellLinks } from "./cloud-shell-links.
 import { writePowerCatalogue } from "./power-catalogue.ts";
 import {
   parseAdvisoryList,
+  previousTag,
+  RELEASE_COMMIT_SUBJECT,
   RELEASE_META_PATH,
   type ReleaseMeta,
   readReleaseMeta,
+  readTags,
   runReleaseChecks,
   setJsonVersionField,
+  taggedAheadProblem,
   writeReleaseMeta,
 } from "./release-checks.ts";
 
@@ -417,16 +421,6 @@ function checkLockstep(target: string): { ok: boolean; mismatches: { file: strin
   return { ok: mismatches.length === 0, mismatches };
 }
 
-function lastReleaseTag(): string | null {
-  const proc = Bun.spawnSync(["git", "describe", "--tags", "--abbrev=0", "--match", "v*"], {
-    cwd: REPO_ROOT,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  if (proc.exitCode !== 0) return null;
-  return new TextDecoder().decode(proc.stdout).trim() || null;
-}
-
 function generateChangelog(prevTag: string | null, newVersion: string): string {
   const range = prevTag ? `${prevTag}..HEAD` : "HEAD";
   const proc = Bun.spawnSync(["git", "log", range, "--pretty=format:%h %s", "--no-merges"], {
@@ -445,6 +439,7 @@ function generateChangelog(prevTag: string | null, newVersion: string): string {
     other: [],
   };
   for (const line of log.split("\n")) {
+    if (RELEASE_COMMIT_SUBJECT.test(line.slice(line.indexOf(" ") + 1))) continue;
     const m = line.match(/^([0-9a-f]+)\s+(\w+)(?:\([^)]+\))?(!)?:\s*(.+)$/);
     if (m) {
       const kind = m[2] in groups ? (m[2] as keyof typeof groups) : "other";
@@ -514,6 +509,12 @@ async function main(): Promise<void> {
     process.exit(2);
   }
   console.log(`Caelo release: ${current} → ${newVersion}${dryRun ? " (dry-run)" : ""}`);
+  const tags = readTags(REPO_ROOT);
+  const ahead = taggedAheadProblem(tags, newVersion);
+  if (ahead) {
+    console.error(`release refused: ${ahead}`);
+    process.exit(2);
+  }
 
   const meta = await declareRelease(newVersion);
   // release-cut.yml validates the declaration before its (slow, paid)
@@ -549,7 +550,7 @@ async function main(): Promise<void> {
   // Generate the changelog stanza from conventional commits since the
   // last v* tag. Prepended to CHANGELOG.md (top-level) so the most
   // recent release is at the top.
-  const prevTag = lastReleaseTag();
+  const prevTag = previousTag(tags, newVersion);
   const stanza = generateChangelog(prevTag, newVersion);
   const changelogPath = resolve(REPO_ROOT, "CHANGELOG.md");
   const HEADER = "# Changelog\n\n";

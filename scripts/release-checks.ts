@@ -232,6 +232,46 @@ export function previousStableTag(
   return last ? `v${last}` : null;
 }
 
+/**
+ * The newest tag of any kind strictly older than `version`, as `vX.Y.Z[-pre]`
+ * — the changelog's starting point. Found by version, not by walking HEAD's
+ * history: a release is tagged on its release branch and reaches main as a
+ * squashed copy, so the tag is never an ancestor of main.
+ */
+export function previousTag(versions: readonly string[], version: string): string | null {
+  const last = versions
+    .filter((v) => compareSemver(v, version) < 0)
+    .sort(compareSemver)
+    .at(-1);
+  return last ? `v${last}` : null;
+}
+
+/**
+ * Why `version` cannot be cut, or null. A tag at or above it means an
+ * earlier release has not been merged back into main yet (main still
+ * carries the old version), so the bump would collide with a shipped tag.
+ */
+export function taggedAheadProblem(versions: readonly string[], version: string): string | null {
+  const ahead = versions
+    .filter((v) => compareSemver(v, version) >= 0)
+    .sort(compareSemver)
+    .at(-1);
+  if (!ahead) return null;
+  return (
+    `v${ahead} is already tagged, but main is not past it. Merge its release PR ` +
+    `(release/v${ahead} → main) first, then cut again. If v${ahead} never published, ` +
+    `delete the tag and its branch instead (RELEASING.md, "A release that failed after the cut").`
+  );
+}
+
+/**
+ * A release commit's own subject. The changelog leaves these out: since
+ * releases are tagged off main, the squashed copy of the previous release
+ * commit sits in the next release's range.
+ */
+export const RELEASE_COMMIT_SUBJECT =
+  /^chore\(release\): v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?( \(#\d+\))?$/;
+
 /** Where INFRA_CONTRACT_VERSION lives (shared with the upgrade split's `needsConverge`). */
 export const INFRA_CONTRACT_FILE = "packages/provisioning/src/infra-contract.ts";
 

@@ -15,17 +15,40 @@ at the bottom instead.
 
 **One-button (preferred — no local checkout needed):** GitHub →
 Actions → **release-cut** → *Run workflow* → pick `patch` / `minor` /
-`major` (or an explicit `x.y.z`). CI runs the same
-`scripts/release.ts`, opens a `chore(release): vX.Y.Z` PR, and once
-that PR merges the workflow tags the merge commit and dispatches
-`release.yml` automatically — identical artifacts to the local flow.
+`major` (or an explicit `x.y.z`). The release is cut from `main` as it
+is at that moment, and **main stays open for merges the whole time**:
 
-Before it bumps anything, release-cut requires the real-AI live-edit
-suite (`e2e-livedit.yml`) to be green on the exact `main` commit being
-released. Main gets no real-AI run per push, so the cut dispatches one
-on that commit and waits for it (about 15 minutes, ~$4.50 of API spend);
-a green run from an earlier attempt on the same commit is reused. A red
-run stops the cut; fix main and re-run release-cut.
+1. The real-AI live-edit suite (`e2e-livedit.yml`) must be green on that
+   main commit. Main gets no real-AI run per push, so the cut dispatches
+   one on `release-gate/<sha>` (a branch pinned to the commit, deleted
+   afterwards) and waits for it (about 20 minutes, ~$4.50 of API spend);
+   a green run from an earlier attempt on the same commit is reused. A
+   red run stops the cut; fix main and re-run release-cut.
+2. `scripts/release.ts` writes the release commit on top of it and tags
+   it `vX.Y.Z`.
+3. Before anything is pushed, the cut checks that commit: it may change
+   only what the release script writes, and only version stamps in it
+   (`scripts/release-commit.ts verify`), and lint, the lockstep check
+   and the Power-MCP catalogue check must pass. A broken stamp fails the
+   cut, not the published pipeline.
+4. `release/vX.Y.Z` and the tag are pushed together and `release.yml`
+   is dispatched on the tag.
+5. When everything is published, `release.yml` opens the release PR
+   `release/vX.Y.Z` → main (see
+   ["Merging the release back"](#merging-the-release-back)).
+
+The tag is not on main's history: main requires linear history, so the
+release commit arrives there as a squashed copy. The changelog and the
+release checks therefore find the previous release by version, not by
+ancestry.
+
+`release.yml`'s gate runs the full test suite only when it has to. When
+the tag is a pure release commit (step 3's check) on a main commit whose
+`ci.yml` push run passed, the suite already ran on exactly this code, so
+the gate runs lint, typecheck, the lockstep and catalogue checks and
+skips the database bootstrap, migrations and tests (about 12 minutes).
+Any other tag runs everything; a parent whose CI failed refuses the
+release.
 
 The same form carries the **release declaration** that gets signed into
 the release manifest (see ["Release manifest"](#release-manifest)):
@@ -54,20 +77,46 @@ jq -r .publicKeyHex  .caelo-dev-key | gh variable set CAELO_TIER1_PUBLIC_KEY
 To rotate: generate a fresh pair, update the secret + variable, and
 ship a release so the manifests re-sign with the new key.
 
-Merging the release PR: PRs opened with the repo `GITHUB_TOKEN` get no
-workflow runs, so its required checks sit pending. Merge with
-`gh pr merge --squash --admin` — safe, because `release.yml` re-runs
-the full lint+typecheck+test gate on the tagged commit before anything
-publishes. To make the PR's checks run like on any other PR (and allow
-plain merging), add a `RELEASE_PAT` repo secret: a fine-grained PAT
-with contents:write + pull-requests:write on this repo.
+### Merging the release back
+
+The release PR (`chore(release): vX.Y.Z`, opened by `release.yml`
+after the GitHub Release) moves main to the new version. Nothing that
+ships waits on it, but the **next cut refuses** until it is merged: a
+cut on a main that still carries the old version would bump to a
+version that is already tagged.
+
+PRs opened with the repo `GITHUB_TOKEN` get no workflow runs, so its
+required checks sit pending. Squash-merge with
+`gh pr merge --squash --admin` — the code was gated on the tag before
+anything published. To make the PR's checks run like on any other PR
+(and allow plain merging), add a `RELEASE_PAT` repo secret: a
+fine-grained PAT with contents:write + pull-requests:write on this repo.
+
+A conflict means a PR merged during the release touched a file the
+release commit stamps (usually `bun.lock`). Merge main into the release
+branch, keep main's content with the new version stamps, run
+`bun install --lockfile-only`, push, then merge the PR.
+
+### A release that failed after the cut
+
+The tag exists, but nothing was published when `release.yml` fails
+before `publish-npm`. Delete the tag and the release branch
+(`git push origin --delete vX.Y.Z release/vX.Y.Z`), fix main, and cut
+again: the same version is cut fresh from the fixed main. Never move a
+tag by hand: a moved tag publishes a commit that the real-AI gate never
+saw. Once npm or GHCR carry the version, it is spent; fix forward with
+the next patch.
 
 **Local flow (still works):**
 
 ```
-bun scripts/release.ts patch        # 0.2.0 → 0.2.1 (or minor / major / x.y.z)
-git push origin main --follow-tags  # fires release.yml + release-images.yml
+bun scripts/release.ts patch                                   # 0.2.0 → 0.2.1 (or minor / major / x.y.z)
+git push --atomic origin HEAD:refs/heads/release/v0.2.1 v0.2.1  # fires release.yml (images, npm, Release, release PR)
 ```
+
+The local flow skips the real-AI gate, and the tag push runs the full
+`release.yml` gate when the release commit's parent has no green
+`ci.yml` push run on main.
 
 That's it. Everything below is the *why* + the one-time setup needed
 before the first tag.
@@ -186,6 +235,13 @@ Caelo follows SemVer 2.0:
 - **major** (or pre-1.0 minor): breaking changes. Document the
   migration path in `CHANGELOG.md`.
 
+Before cutting, check that the region catalogues
+(`packages/provisioning/src/region-data.ts`) still match the providers'
+per-service region docs cited there, and refresh them if a provider
+added or removed a needed service in a region (#607). The release PR
+used to carry this checklist; it now opens after the release is
+published, too late for it.
+
 ### 2. Run the release script
 
 ```bash
@@ -230,13 +286,15 @@ What the script does, in order:
 ### 3. Push the tag
 
 ```bash
-git push origin main --follow-tags
+git push --atomic origin HEAD:refs/heads/release/vX.Y.Z vX.Y.Z
 ```
 
-This fires two parallel workflows:
-- **`release.yml`** — re-runs lint + typecheck + test + lockstep
-  check; npm-publishes every non-private `@caelo-cms/*` package with
-  provenance; creates the GitHub Release with the changelog stanza.
+(release-cut does this for you.) This fires two parallel workflows:
+- **`release.yml`** — the gate (lint + typecheck + lockstep, plus the
+  test suite unless the parent's CI already ran it, see
+  ["At a glance"](#at-a-glance)); npm-publishes every non-private
+  `@caelo-cms/*` package with provenance; creates the GitHub Release
+  with the changelog stanza; opens the release PR into main.
 - **`release-images.yml`** — builds the admin, gateway and ops images,
   tags them, signs with cosign, mirrors GHCR → GCP Artifact Registry.
 - **`release-manifest`** (job in `release.yml`) — builds, signs and
