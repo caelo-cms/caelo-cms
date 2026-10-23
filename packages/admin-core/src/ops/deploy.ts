@@ -69,6 +69,12 @@ import {
   describeMissingMetaDescriptions,
   pagesMissingMetaDescription,
 } from "../deploy/missing-seo.js";
+import {
+  activePluginProblems,
+  deployPluginProblem,
+  describePluginProblems,
+  stagedWithoutPlugins,
+} from "../deploy/plugin-problems.js";
 import { stagingSiteUrl } from "../deploy/staging-domain.js";
 import { lockStagingPublication } from "../deploy/staging-publication-lock.js";
 import {
@@ -546,6 +552,12 @@ export const triggerDeployOp = defineOperation({
      * A Stage warning; Publish live blocks on them (rollout F).
      */
     unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
+    /**
+     * #1008 — active plugins that were not running when this build ran,
+     * so it lacks their output. A Stage warning; such a Stage is never
+     * published, and a production build refuses instead.
+     */
+    pluginProblems: z.array(deployPluginProblem),
   }),
   handler: async (ctx, input, tx) => {
     const targetRows = (await tx.execute(
@@ -648,6 +660,20 @@ export const triggerDeployOp = defineOperation({
         return err({ kind: "HandlerError", operation: "deploy.trigger", message: missingSeo });
       }
     }
+    // #1008 — a site built without an active plugin lacks what it adds. A
+    // Stage records and reports it; production refuses (no override: the
+    // fix is to get the plugin running, not to ship without it).
+    const pluginProblems =
+      target.env === "staging" || target.env === "production" ? await activePluginProblems(tx) : [];
+    if (target.env === "production" && pluginProblems.length > 0) {
+      const message = describePluginProblems(pluginProblems);
+      await tx.execute(sql`
+        INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message, plugin_problems)
+        VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', now(),
+                ${`Blocked, plugins not running: ${message}`}, ${jsonbParam(pluginProblems)})
+      `);
+      return err({ kind: "HandlerError", operation: "deploy.trigger", message });
+    }
     if (target.env === "production") {
       const gate = await checkProductionBuildGate(tx, ctx, input.publishAnyway);
       if (gate.ok) override = gate.override;
@@ -693,9 +719,10 @@ export const triggerDeployOp = defineOperation({
     // guard names an upgrade between Stage and Publish live as the cause.
     const runIdRows = (await tx.execute(sql`
       INSERT INTO deploy_runs (target_id, actor_id, status, render_fingerprint, covered_ai_hold_ids,
-                               caelo_version)
+                               caelo_version, plugin_problems)
       VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${fingerprint},
-              ${uuidList(coveredHolds)}, ${CAELO_VERSION})
+              ${uuidList(coveredHolds)}, ${CAELO_VERSION},
+              ${target.env === "dev" ? sql`NULL` : jsonbParam(pluginProblems)})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const runId = runIdRows[0]?.id;
@@ -916,6 +943,7 @@ export const triggerDeployOp = defineOperation({
       ...(previewUrl ? { previewUrl } : {}),
       draftPages: await mainDraftPages(tx),
       unpublishedLinkTargets: subprocess.result.unpublishedLinkTargets,
+      pluginProblems,
     });
   },
 });
@@ -984,7 +1012,8 @@ export const promoteDeployOp = defineOperation({
     }
     const fromRunRows = (await tx.execute(sql`
       SELECT id::text AS id, build_id, site_url,
-             COALESCE(to_jsonb(covered_ai_hold_ids), '[]'::jsonb) AS covered_ai_hold_ids
+             COALESCE(to_jsonb(covered_ai_hold_ids), '[]'::jsonb) AS covered_ai_hold_ids,
+             plugin_problems
       FROM deploy_runs
       WHERE target_id = ${from.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
       ORDER BY started_at DESC LIMIT 1
@@ -993,6 +1022,7 @@ export const promoteDeployOp = defineOperation({
       build_id: string | null;
       site_url: string | null;
       covered_ai_hold_ids: unknown;
+      plugin_problems: unknown;
     }[];
     const fromRow = fromRunRows[0];
     const fromRunId = fromRow?.id;
@@ -1022,6 +1052,22 @@ export const promoteDeployOp = defineOperation({
       const held = await aiStageHoldRefusal(tx);
       if (held) {
         return err({ kind: "HandlerError", operation: "deploy.promote", message: held });
+      }
+    }
+
+    // #1008 — never publish a site without an active plugin: not while one
+    // is not running, and not a Stage that was built while one was not
+    // (it lacks that plugin's output even after the plugin recovered).
+    if (to.env === "production") {
+      const stale = stagedWithoutPlugins(fromRow?.plugin_problems);
+      if (stale) return err({ kind: "HandlerError", operation: "deploy.promote", message: stale });
+      const problems = await activePluginProblems(tx);
+      if (problems.length > 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.promote",
+          message: describePluginProblems(problems),
+        });
       }
     }
 

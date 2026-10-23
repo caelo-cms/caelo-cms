@@ -32,6 +32,7 @@
  * 80% CSS-debug case until then.
  */
 
+import { pluginNotRunningSlug, pluginsNotRunningHere } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
@@ -404,12 +405,28 @@ function missingVariantLinkNextStep(marker: string): string | undefined {
   );
 }
 
+/** #1008 — what to do about an active plugin this server could not load. */
+function pluginNotRunningNextStep(marker: string): string | undefined {
+  const slug = pluginNotRunningSlug(marker);
+  if (!slug) return undefined;
+  const reason = pluginsNotRunningHere().find((p) => p.slug === slug)?.reason;
+  return (
+    `The plugin "${slug}" is active but could not be loaded on this server${reason ? ` (${reason})` : ""}, ` +
+    "so this preview shows the page WITHOUT its contribution. It is not switched off. Tell the operator; " +
+    "get_plugin shows its health and errors, and reload_plugin retries it on every server once the cause is addressed. " +
+    "Publish live is refused while it is not running."
+  );
+}
+
 /** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
 function siteSettingNextSteps(missing: readonly string[]): { nextSteps?: Record<string, string> } {
   const steps = Object.fromEntries(
     missing.flatMap((m) => {
       const step =
-        SITE_SETTING_NEXT_STEPS[m] ?? brokenLinkNextStep(m) ?? missingVariantLinkNextStep(m);
+        SITE_SETTING_NEXT_STEPS[m] ??
+        brokenLinkNextStep(m) ??
+        missingVariantLinkNextStep(m) ??
+        pluginNotRunningNextStep(m);
       return step ? [[m, step]] : [];
     }),
   );

@@ -59,6 +59,7 @@ import {
   loadedPlugins,
   type AIProvider as PluginHostAIProvider,
   type SnapshotEmitter,
+  syncPluginHost,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
@@ -604,6 +605,10 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapQualityAudits();
   bootstrapBugForwarding();
   bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
+  // #1008 — follow plugin decisions made through any instance (throttled
+  // generation check; reconciles only when the plugin rows changed), so
+  // this request renders and dispatches on the database's plugin state.
+  await syncPluginHost();
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   await seedSiteBaseUrl();
   await seedStagingHost();

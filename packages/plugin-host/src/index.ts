@@ -145,6 +145,14 @@ export {
   resolvePublicPageUrls,
 } from "./public-urls.js";
 export {
+  type PluginNotRunning,
+  pluginNotRunningMarker,
+  pluginNotRunningSlug,
+  pluginsNotRunningHere,
+  resetPluginHostSync,
+  syncPluginHost,
+} from "./reconcile.js";
+export {
   applyPluginRowState,
   discardBranchPluginRows,
   insertPluginRowSnapshot,

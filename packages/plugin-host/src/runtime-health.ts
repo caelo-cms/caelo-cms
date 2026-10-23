@@ -337,6 +337,28 @@ export async function recordPluginRuntime(opts: {
   }
 }
 
+/** Forget this instance's row for `slug` (the plugin stopped running here). */
+export async function clearPluginRuntime(opts: {
+  infra: PluginHostInfra;
+  systemActorId: string;
+  slug: string;
+}): Promise<void> {
+  try {
+    await opts.infra.adapter.withAdminTransaction(
+      systemCtx(opts.systemActorId, `plugin-runtime-clear-${opts.slug}`),
+      async (tx) => {
+        await tx.execute(sql`
+          DELETE FROM plugin_runtime WHERE instance_id = ${INSTANCE_ID} AND plugin_slug = ${opts.slug}
+        `);
+      },
+    );
+  } catch (e) {
+    console.error(
+      `[plugin-host] could not clear the runtime state of ${opts.slug}: ${describeLoadError(e)}`,
+    );
+  }
+}
+
 /** How often an instance confirms its rows are still current. */
 export const HEARTBEAT_MS = 30_000;
 /** Rows older than this belong to stopped instances and are deleted. */

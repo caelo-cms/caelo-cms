@@ -23,11 +23,13 @@
  * not see answers 404.
  */
 
+import { pluginsNotRunningHere } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { error } from "@sveltejs/kit";
 import { injectEditOverlay } from "#lib/server/edit-overlay.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { withPluginProblemsBanner } from "#lib/server/plugin-problems-banner.js";
 import { previewDocumentResponse } from "#lib/server/preview-sandbox.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
@@ -107,7 +109,7 @@ export const GET: RequestHandler = async ({ params, url, locals, cookies }) => {
   // The inject-script needs to know its own pageId/slug so it can
   // post `caelo:navigated` to the parent on every iframe load. We thread
   // those through `window.__caelo` before the runtime executes.
-  const html = injectEditOverlay(out.html, {
+  const html = injectEditOverlay(withPluginProblemsBanner(out.html, pluginsNotRunningHere()), {
     pageId: page.id,
     slug: page.slug,
     path: page.currentPath,

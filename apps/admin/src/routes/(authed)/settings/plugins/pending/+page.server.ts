@@ -71,7 +71,7 @@ export const actions: Actions = {
       if (!live.loaded) {
         return {
           ok: true,
-          message: `"${v.slug}" is activated but could not load yet (${live.reason}); it loads on the next restart.`,
+          message: `"${v.slug}" is activated but could not load on this server (${live.reason}). It stays active; Settings → Plugins shows the error and "Reload on all servers".`,
         };
       }
       return { ok: true, message: `"${v.slug}" is activated and running.` };

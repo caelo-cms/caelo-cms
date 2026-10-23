@@ -13,6 +13,8 @@
  * - `reject_plugin`, `revalidate_plugin` (routine) — both act only on a
  *   Tier 2 submission that is not running, and each undoes the other in one
  *   call. See the actorScope notes on `plugins.reject` / `plugins.revalidate`.
+ * - `reload_plugin` (routine, #1008) — retries loading an active plugin on
+ *   every server; it changes no decision (see `plugins.reload`).
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -133,7 +135,7 @@ export const revalidatePluginTool: ToolDefinitionWithHandler<z.infer<typeof reva
   name: "revalidate_plugin",
   description:
     "Re-run the plugin validator over a submitted plugin that is NOT running (draft, awaiting activation or rejected) — after a Caelo upgrade, or to re-file a rejected submission. " +
-    "Passing moves it to awaiting activation (activate_plugin then proposes turning it on); failing returns the validator errors to fix. Refused for running, disabled or failed plugins — those are the Owner's call.",
+    "Passing moves it to awaiting activation (activate_plugin then proposes turning it on); failing returns the validator errors to fix. Refused for running or disabled plugins — those are the Owner's call; for an active plugin that fails to load use reload_plugin.",
   schema: revalidateInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.revalidate", input);
@@ -149,6 +151,46 @@ export const revalidatePluginTool: ToolDefinitionWithHandler<z.infer<typeof reva
               .map((e) => e.kind)
               .join(", ")}); status ${v.status}.`,
       value: v,
+    };
+  },
+};
+
+const reloadInput = z
+  .object({ slug: z.string().min(1).max(120).describe("Plugin slug as list_plugins shows it.") })
+  .strict();
+
+/** Health fields `plugins.get` returns that this tool reports. */
+interface ReloadedHealth {
+  state: string;
+  servers: { loaded: number; failing: number };
+  problem: { message: string } | null;
+}
+
+export const reloadPluginTool: ToolDefinitionWithHandler<z.infer<typeof reloadInput>> = {
+  name: "reload_plugin",
+  description:
+    "Retry loading an ACTIVE plugin on every server — the fix for a plugin whose health is `failing` (it stays active; servers do not retry on their own). " +
+    "Use after the cause was addressed, or when the problem looks transient, and when the operator asks to reload it. " +
+    "Returns this server's result right away; other servers follow within seconds — check get_plugin for their state. " +
+    "Not for a plugin that is awaiting activation or disabled (activating is the Owner's decision: activate_plugin).",
+  schema: reloadInput,
+  handler: async (ctx, input, toolCtx) => {
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.reload", input);
+    if (!r.ok) return { ok: false, content: `reload_plugin failed: ${describeError(r.error)}` };
+    const got = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.get", input);
+    if (!got.ok) {
+      return {
+        ok: true,
+        content: `Reload of "${input.slug}" requested on every server; reading its health failed: ${describeError(got.error)}.`,
+      };
+    }
+    const h = (got.value as { plugin: { health: ReloadedHealth } | null }).plugin?.health;
+    const now = h
+      ? `${h.state} (servers: ${h.servers.loaded} loaded, ${h.servers.failing} failing)${h.problem ? ` — ${h.problem.message}` : ""}`
+      : "unknown";
+    return {
+      ok: true,
+      content: `Reload of "${input.slug}" requested on every server. Health now: ${now}. Other servers follow within seconds; get_plugin shows their state.`,
     };
   },
 };

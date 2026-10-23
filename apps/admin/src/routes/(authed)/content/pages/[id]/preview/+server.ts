@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { pluginsNotRunningHere } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
+import { withPluginProblemsBanner } from "#lib/server/plugin-problems-banner.js";
 import { previewDocumentResponse } from "#lib/server/preview-sandbox.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
@@ -23,7 +25,16 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
   const result = await execute(registry, adapter, locals.ctx, "pages.render_preview", {
     pageId: params.id,
   });
-  if (!result.ok) throw error(404, "Page not found");
+  if (!result.ok) {
+    // Only a missing page is a 404 — a render failure reported as "not
+    // found" hides its cause (same rule as edit/preview/[pageId]).
+    const message = "message" in result.error ? String(result.error.message) : result.error.kind;
+    if (message === "page not found") throw error(404, "Page not found");
+    throw error(500, `Preview render failed: ${message}`);
+  }
   const { html } = result.value as { html: string };
-  return previewDocumentResponse(html, { cookies, userId: user.id });
+  return previewDocumentResponse(withPluginProblemsBanner(html, pluginsNotRunningHere()), {
+    cookies,
+    userId: user.id,
+  });
 };
