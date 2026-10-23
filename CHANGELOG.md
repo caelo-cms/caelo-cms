@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.10.66
+
+### Features
+- 5b03256b Live edit first — drop the ramp-up wizard, group content, status dashboard (#1026)
+
+### Fixes
+- 75d0c064 stop the structure check reading sub-modules and classless template markup as free HTML (#1031)
+- 74f3f86b match serving platform digests to a release by its signed index (#1025) (#1030)
+- 74ed3c2a serialise plugin schema provisioning across instances (#1008) (#1009)
+
+### Other
+- 57137c9a release from the release branch, keep main open, check the release commit before tagging (#1032)
+
 ## v0.10.65
 
 ### Features
