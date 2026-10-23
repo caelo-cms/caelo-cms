@@ -7,7 +7,9 @@
  * a build made without it lacks its output. End to end on the self-hosted
  * publisher (real generator, real Postgres, real plugin host):
  *   - a Stage with an active plugin not running succeeds, reports it, and
- *     records it on the run;
+ *     records it on the run; the operator's Stage (stageChatSessions, the
+ *     result behind the Stage button, Open changes and stage_changes)
+ *     carries the problems and their warning;
  *   - Publish live is refused while the plugin is not running;
  *   - after the plugin recovered (plugins.reload), Publish live of THAT
  *     Stage is still refused — it was built without the plugin — with a
@@ -32,8 +34,10 @@ import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { describeStagedPluginProblems } from "../deploy/plugin-problems.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { registerAdminOps } from "../register.js";
+import { stageChatSessions } from "../stage/stage-chats.js";
 import { pinSiteBaseUrl } from "./fixtures/site-base-url.js";
 import { pinSiteLanguage } from "./fixtures/site-language.js";
 
@@ -52,6 +56,8 @@ const GHOST = "t1008g-ghost";
 const TPL_SLUG = "t1008g-tpl";
 const MOD_SLUG = "t1008g-mod";
 const HOME_SLUG = "home";
+const OWNER_ID = crypto.randomUUID();
+const OWNER: ExecutionContext = { actorId: OWNER_ID, actorKind: "human", requestId: "t1008-gate" };
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
@@ -59,6 +65,7 @@ let testRoot: string;
 let homeId = "";
 let pluginHealthy = false;
 let prevSkipServeCheck: string | undefined;
+let prevOutputRoot: string | undefined;
 let restoreSiteBaseUrl: (() => Promise<void>) | null = null;
 let restoreSiteLanguage: (() => Promise<void>) | null = null;
 
@@ -158,6 +165,14 @@ beforeAll(async () => {
   testRoot = await mkdtemp(join(tmpdir(), "caelo-t1008-gate-"));
   prevSkipServeCheck = process.env.CAELO_SKIP_STAGING_SERVE_CHECK;
   process.env.CAELO_SKIP_STAGING_SERVE_CHECK = "1";
+  // stageChatSessions builds without a per-call repoRoot.
+  prevOutputRoot = process.env.CAELO_OUTPUT_ROOT;
+  process.env.CAELO_OUTPUT_ROOT = testRoot;
+  await sqlSystem(async (tx) => {
+    await tx`INSERT INTO actors (id, kind, display_name) VALUES (${OWNER_ID}::uuid, 'human', 't1008 owner')`;
+    await tx`INSERT INTO users (id, email, password_hash) VALUES (${OWNER_ID}::uuid, ${`${OWNER_ID}@example.test`}, 'test-only')`;
+    await tx`INSERT INTO user_roles (user_id, role_id) SELECT ${OWNER_ID}::uuid, id FROM roles WHERE name = 'owner'`;
+  });
   await seedSite();
   // An active plugin whose onActivate fails until the test says otherwise.
   const report = await bootstrap({
@@ -186,6 +201,8 @@ beforeAll(async () => {
 afterAll(async () => {
   if (prevSkipServeCheck === undefined) delete process.env.CAELO_SKIP_STAGING_SERVE_CHECK;
   else process.env.CAELO_SKIP_STAGING_SERVE_CHECK = prevSkipServeCheck;
+  if (prevOutputRoot === undefined) delete process.env.CAELO_OUTPUT_ROOT;
+  else process.env.CAELO_OUTPUT_ROOT = prevOutputRoot;
   await wipe();
   await restoreSiteBaseUrl?.();
   await restoreSiteLanguage?.();
@@ -218,6 +235,23 @@ describe("#1008 — Publish live never ships without an active plugin", () => {
         }[],
     );
     expect(recorded[0]?.plugin_problems.map((p) => p.slug)).toEqual([PLUGIN]);
+  });
+
+  it("the operator's Stage carries the problems and says Publish live will refuse it", async () => {
+    const chat = await execute(registry, adapter, OWNER, "chat.create_session", {
+      title: "t1008 stage",
+    });
+    if (!chat.ok) throw new Error(JSON.stringify(chat.error));
+    const { chatSessionId } = chat.value as { chatSessionId: string };
+    const staged = await stageChatSessions({ registry, adapter }, OWNER, [chatSessionId]);
+    if (!staged.ok) throw new Error(staged.error.message);
+    expect(staged.value.pluginProblems.map((p) => p.slug)).toEqual([PLUGIN]);
+    const warning = describeStagedPluginProblems(staged.value.pluginProblems);
+    expect(warning).toContain(`"${PLUGIN}"`);
+    expect(warning).toContain("Publish live will refuse this Stage");
+    // It is now the latest Stage; the next tests promote it.
+    staleStageRunId = staged.value.runId;
+    await markAudited(staged.value.runId);
   });
 
   it("Publish live is refused while the plugin is not running", async () => {

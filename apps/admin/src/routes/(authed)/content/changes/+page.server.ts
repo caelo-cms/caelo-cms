@@ -116,8 +116,14 @@ export const actions: Actions = {
         error: chat ? `${staged.error.message} (chat '${chat.title}')` : staged.error.message,
       });
     }
-    const { previewUrl, previewLabel, draftPageCount, draftPageTitles, unpublishedLinkWarning } =
-      await describeStagedBuild(locals.ctx, staged.value, null);
+    const {
+      previewUrl,
+      previewLabel,
+      draftPageCount,
+      draftPageTitles,
+      unpublishedLinkWarning,
+      pluginProblemWarning,
+    } = await describeStagedBuild(locals.ctx, staged.value, null);
     return {
       staged: {
         chatCount: requested.length,
@@ -132,6 +138,7 @@ export const actions: Actions = {
         draftPageCount,
         draftPageTitles,
         unpublishedLinkWarning,
+        pluginProblemWarning,
       },
     };
   },

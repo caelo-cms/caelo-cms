@@ -84,6 +84,25 @@ export function describePluginProblems(problems: ReadonlyArray<DeployPluginProbl
 }
 
 /**
+ * The Stage warning for a build that ran while active plugins did not:
+ * the staging site lacks what they add, and this Stage can never be
+ * published. Null when every active plugin ran. Shown with the Stage
+ * result (toast, Open changes, the stage_changes tool), not only on the
+ * editor preview, so a successful Stage never hides it.
+ */
+export function describeStagedPluginProblems(
+  problems: ReadonlyArray<DeployPluginProblem>,
+): string | null {
+  if (problems.length === 0) return null;
+  const list = problems.map((p) => `"${p.slug}" (${p.reason})`).join("; ");
+  return (
+    `This Stage was built without ${problems.length === 1 ? "an active plugin" : `${problems.length} active plugins`}: ${list}. ` +
+    "The staging site lacks what they add, and Publish live will refuse this Stage. " +
+    "Fix the cause, reload the plugin (reload_plugin, or Settings → Plugins → Reload on all servers), then Stage again."
+  );
+}
+
+/**
  * Why a Stage run may not be promoted: it was built while active plugins
  * were not running (recorded on the run), or it records nothing — a run
  * from before plugin health was recorded (NULL) or with an unreadable
