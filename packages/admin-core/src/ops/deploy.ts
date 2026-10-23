@@ -401,7 +401,10 @@ async function runGenerator(
     changedPageIds?: ReadonlyArray<string>;
     /** #650 — render this origin instead of the stored site URL. */
     siteBaseUrlOverride?: string;
-    /** #650 — false: leave `<outDir>/current/` alone (Publish live rebuild). */
+    /**
+     * false: leave `<outDir>/current/` alone — #650 Publish live's rebuild,
+     * and #1003 every build on a publisher that does not serve `current/`.
+     */
     syncCurrent?: boolean;
   },
 ): Promise<{ ok: true; result: SubprocessDone } | { ok: false; message: string; stderr: string }> {
@@ -788,6 +791,23 @@ export const triggerDeployOp = defineOperation({
       ...rowToTarget(target),
       outDir: effectiveOutDir(provider, target.env, target.out_dir),
     };
+    // Loaded before the build: the publisher decides whether the build is
+    // mirrored into `current/` (#1003 — only a serving layer that reads it
+    // needs the copy, which was the largest step of a Stage).
+    let publisher: StaticPublisher;
+    try {
+      publisher = await loadStaticPublisher(provider);
+    } catch (e) {
+      const message = `publish failed: ${e instanceof Error ? e.message : String(e)}`;
+      await tx.execute(sql`
+        UPDATE deploy_runs
+        SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
+            phase_timings = ${phaseTimingsParam(timer)}
+        WHERE id = ${runId}::uuid
+      `);
+      logRunTimings(runKind, runId, timer, { status: "failed" });
+      return err({ kind: "HandlerError", operation: "deploy.trigger", message });
+    }
     const subprocess = await runGenerator(bridge.registry, bridge.adapter, ctx, {
       cliPath,
       runId,
@@ -795,6 +815,7 @@ export const triggerDeployOp = defineOperation({
       repoRoot,
       changedPageIds: input.changedPageIds,
       ...(stagingOrigin ? { siteBaseUrlOverride: stagingOrigin } : {}),
+      syncCurrent: publisher.servesCurrentDir,
     });
     if (subprocess.ok) timer.include("generator", subprocess.result.phases);
     timer.lap("generator");
@@ -830,7 +851,6 @@ export const triggerDeployOp = defineOperation({
     let publishSummary: Awaited<
       ReturnType<Awaited<ReturnType<typeof loadStaticPublisher>>["publishStaging"]>
     >;
-    let publisher: StaticPublisher;
     try {
       // #650 — publishing a preview, recording it as the staging origin and
       // pruning the others is one ordered step per Stage: a concurrent Stage
@@ -839,7 +859,6 @@ export const triggerDeployOp = defineOperation({
         await lockStagingPublication(tx);
         timer.lap("lock-wait");
       }
-      publisher = await loadStaticPublisher(provider);
       const { phases: publishPhases, ...summary } = await publisher.publishStaging({
         buildDir: subprocess.result.buildDir,
         runId,

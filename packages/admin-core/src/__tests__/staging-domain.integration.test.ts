@@ -21,6 +21,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -435,6 +436,11 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
     expect(stageRun.took_ms).toBeGreaterThanOrEqual(stepsMs - 5);
     // Timings live in their own column, not in the publisher's summary.
     expect(stageRun.publish_summary).not.toHaveProperty("phases");
+    // Nothing on Firebase serves `<outDir>/current/`, so the build is not
+    // mirrored into it (the largest step of a Stage before #1003).
+    expect(names(stageRun)).not.toContain("generator.sync-current");
+    expect(existsSync(join(testRoot, "output", "staging", "current"))).toBe(false);
+    expect(existsSync(join(testRoot, "output", "staging", "builds", staged.runId))).toBe(true);
 
     await markAudited(staged.runId);
     const promoted = await ok<{ toRunId: string }>("deploy.promote", {

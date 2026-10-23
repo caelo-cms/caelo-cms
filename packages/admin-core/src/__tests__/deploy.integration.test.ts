@@ -197,7 +197,10 @@ describe("P6 deploy.trigger", () => {
       fileCount: number;
       runId: string;
       buildId: string;
+      phases: { phase: string; ms: number }[];
     };
+    // #1003 — self-hosted serves `current/`, so the build is mirrored into it.
+    expect(out.phases.map((p) => p.phase)).toContain("generator.sync-current");
     // P6.7.4 — the dev-owner seed now creates a `home` page, and other
     // tests / manual sessions can leave their own published pages
     // around. Assert that at least the test's page was emitted, not an
