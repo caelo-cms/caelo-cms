@@ -242,8 +242,23 @@ jobs:
           flags=""
           for svc in admin gateway ops; do
             digest="$(oras resolve "ghcr.io/caelo-cms/${svc}:${V}")"
-            echo "${svc}: ${digest}"
-            flags="${flags} --digest ${svc}=${digest}"
+            # #1025: Cloud Run records the linux/amd64 platform manifest it
+            # resolved, not the index a deploy pins, so the manifest signs
+            # both forms. Read from the index fetched BY DIGEST (content-
+            # addressed); a plain image manifest is its own platform form.
+            index="$(oras manifest fetch "ghcr.io/caelo-cms/${svc}@${digest}")"
+            case "$(jq -r '.mediaType // ""' <<<"${index}")" in
+              application/vnd.oci.image.index.v1+json | application/vnd.docker.distribution.manifest.list.v2+json)
+                platform="$(jq -r '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest] | if length == 1 then .[0] else "" end' <<<"${index}")"
+                ;;
+              *) platform="${digest}" ;;
+            esac
+            if [ -z "${platform}" ]; then
+              echo "::error::${svc}@${digest} lists no single linux/amd64 manifest"
+              exit 1
+            fi
+            echo "${svc}: ${digest} (linux/amd64 ${platform})"
+            flags="${flags} --digest ${svc}=${digest} --platform-digest ${svc}=${platform}"
           done
           echo "flags=${flags}" >> "${GITHUB_OUTPUT}"
 

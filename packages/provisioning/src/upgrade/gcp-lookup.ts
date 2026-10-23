@@ -157,28 +157,30 @@ export async function findCurrentRevision(
  * by (not the service template's: after a rollback the template names the
  * failed image while traffic stays on the previous revision).
  *
- * Why two digests (#860): Caelo's release images are OCI image *indexes*
- * (buildx adds a provenance/SBOM attestation manifest even to a
- * single-platform build), and the signed release manifest, install.json
- * and every deploy pin the index digest. Cloud Run's `status.imageDigest`
- * names what it resolved and pulled, the linux/amd64 *platform manifest*
- * inside that index, so comparing it with a recorded index digest never
- * matches. The digest the revision was deployed with
- * (`spec.containers[0].image`, `…@sha256:<index>`) is the form everything
- * else records; it is content-addressed, so the revision necessarily runs
- * that index's image.
+ * Which form these digests take (#860, corrected by #1025): Caelo's release
+ * images are OCI image *indexes* (buildx adds a provenance/SBOM attestation
+ * manifest even to a single-platform build), and the signed release
+ * manifest, install.json and every deploy pin the index digest. Cloud Run
+ * resolves that index to its linux/amd64 *platform manifest* and records
+ * the platform digest — in `status.imageDigest` AND, contrary to what #860
+ * assumed, in the revision's `spec.containers[0].image` too: a revision
+ * deployed as `admin@sha256:bcda…` (the v0.10.64 index) reads back as
+ * `admin@sha256:2e75…` in both fields (live installs, 2026-10-23). Only the
+ * service template keeps the index. So these digests are matched against a
+ * release's index AND the platform manifests inside it
+ * (upgrade/image-forms.ts), never against the index alone.
  */
 export interface ServingImage {
-  /** The digest the revision was deployed with; null when deployed by tag. */
-  readonly deployedDigest: string | null;
+  /** The digest the revision's `spec.containers[0].image` names; null when it names a tag. */
+  readonly specDigest: string | null;
   /** The digest Cloud Run resolved and runs (`status.imageDigest`); null when not reported. */
   readonly resolvedDigest: string | null;
 }
 
-/** Every digest `image` is known by, deployed form first. */
+/** Every digest `image` is known by, spec form first. */
 export function servingImageDigests(image: ServingImage): string[] {
   const out: string[] = [];
-  for (const d of [image.deployedDigest, image.resolvedDigest]) {
+  for (const d of [image.specDigest, image.resolvedDigest]) {
     if (d && !out.includes(d)) out.push(d);
   }
   return out;
@@ -231,10 +233,53 @@ export async function findServingImage(
   const digestOf = (ref: string | undefined): string | null =>
     ref === undefined ? null : (PINNED_DIGEST.exec(ref.trim())?.[1] ?? null);
   const image: ServingImage = {
-    deployedDigest: digestOf(parsed.data.spec?.containers?.[0]?.image),
+    specDigest: digestOf(parsed.data.spec?.containers?.[0]?.image),
     resolvedDigest: digestOf(parsed.data.status?.imageDigest),
   };
   return servingImageDigests(image).length > 0 ? image : null;
+}
+
+/** The fields of `gcloud run services describe --format=json` {@link findTemplateImageDigest} reads. */
+const ServiceJsonSchema = z.object({
+  spec: z
+    .object({
+      template: z
+        .object({
+          spec: z
+            .object({
+              containers: z.array(z.object({ image: z.string().optional() })).optional(),
+            })
+            .optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+
+/**
+ * The digest the service's template pins (the index a deploy named, #1025),
+ * or null when it cannot be read or names a tag. NOT what serves — after a
+ * rollback the template names the failed image — so only a hint for which
+ * release to check (upgrader-records.ts).
+ */
+export async function findTemplateImageDigest(
+  run: GcloudRunner,
+  projectId: string,
+  region: string,
+  serviceName: string,
+): Promise<string | null> {
+  const stdout = await describeServiceJson(run, projectId, region, serviceName);
+  if (stdout === null) return null;
+  let json: unknown;
+  try {
+    json = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const parsed = ServiceJsonSchema.safeParse(json);
+  if (!parsed.success) return null;
+  const ref = parsed.data.spec?.template?.spec?.containers?.[0]?.image;
+  return ref === undefined ? null : (PINNED_DIGEST.exec(ref.trim())?.[1] ?? null);
 }
 
 /** The service's own `run.app` URL. */

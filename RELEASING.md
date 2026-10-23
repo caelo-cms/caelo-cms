@@ -324,6 +324,7 @@ Every release ships one signed `release-manifest.json` (epic #696):
   "version": "0.11.0",
   "channel": "stable",
   "digests": { "admin": "sha256:…", "gateway": "sha256:…", "ops": "sha256:…" },
+  "platformDigests": { "admin": "sha256:…", "gateway": "sha256:…", "ops": "sha256:…" },
   "minFromVersion": "0.10.0",
   "infraContractVersion": 1,
   "migrations": { "contract": false, "head": "0262_tool_approval_branch", "lastContractVersion": "0.10.42" },
@@ -336,6 +337,12 @@ Every release ships one signed `release-manifest.json` (epic #696):
 `ownerAction` is present only on a release with a breaking commit (see
 ["Owner action"](#owner-action)); it is optional in the schema, so
 `manifestVersion` stays 1 and older readers ignore it.
+
+`platformDigests` (#1025) names the linux/amd64 platform manifest inside
+each image index of `digests` — the form Cloud Run records for a serving
+revision. The job reads it from each index fetched by digest. It is
+optional in the schema too: manifests signed before it stay valid, and an
+upgrader reading one of those lists the index itself from the mirror.
 
 `release.yml`'s `release-manifest` job builds it after the images are
 pushed (digests resolved from the version tags), re-runs every
