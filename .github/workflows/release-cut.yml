@@ -217,8 +217,20 @@ jobs:
             fi
             sleep 60
           done
-          if ! ai_job_ok >/dev/null; then
-            echo "::error::the real-AI live-edit suite did not pass on $SHA (run ${GITHUB_SERVER_URL}/${REPO}/actions/runs/$run). Fix main, then re-run release-cut."
+          # The verdict reads THIS run by id. The `status=success` run
+          # listing the reuse check above uses lags a finished run by seconds, and
+          # the v0.10.66 cut read it 2 s after a green run completed and
+          # refused it. A missing value (API error) is no verdict: re-read.
+          verdict=""
+          for _ in 1 2 3 4 5; do
+            conclusion=$(gh api "repos/$REPO/actions/runs/$run" --jq '.conclusion // ""' 2>/dev/null) || conclusion=""
+            job=$(gh api "repos/$REPO/actions/runs/$run/jobs?per_page=100" \
+              --jq "[.jobs[] | select(.name == \"$JOB_NAME\") | .conclusion // \"\"] | first // \"\"" 2>/dev/null) || job=""
+            if [ -n "$conclusion" ] && [ -n "$job" ]; then verdict="$conclusion/$job"; break; fi
+            sleep 10
+          done
+          if [ "$verdict" != "success/success" ]; then
+            echo "::error::the real-AI live-edit suite did not pass on $SHA (run: ${verdict:-unknown}) — ${GITHUB_SERVER_URL}/${REPO}/actions/runs/$run. Fix main, then re-run release-cut."
             exit 1
           fi
           echo "::notice::real-AI suite green on $SHA (run $run)."
