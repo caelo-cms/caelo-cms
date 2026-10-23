@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0335 — issue #970: what each run of the operator-access sync job reported.
+-- 0341 — issue #970: what each run of the operator-access sync job reported.
 --
 -- A Caelo user whose email has no Google account can never pass Google IAP,
 -- and Google refuses to grant them (#955). The job applies everyone else and

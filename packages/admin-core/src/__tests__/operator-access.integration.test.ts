@@ -11,7 +11,7 @@
  *     (a recording fake trigger here), the outcome lands on the tool result
  *     and in the audit log, and a failure is loud;
  *   - #970: the job's per-run report (`users.record_operator_access_run`,
- *     migration 0335) — written as the job's role, which may insert it and
+ *     migration 0341) — written as the job's role, which may insert it and
  *     nothing more; refused members make a run "synced with warnings" that
  *     names them (panel message, AI warning); a finished run without a
  *     report is a loud failure.

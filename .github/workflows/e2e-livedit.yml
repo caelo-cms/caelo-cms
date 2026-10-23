@@ -278,8 +278,8 @@ jobs:
           bun run --filter '@caelo-cms/mcp-server' build
 
       - name: Install Playwright chromium
-        run: bun x playwright install chromium --with-deps
-        working-directory: apps/admin
+        # #984 - apt fonts from actions/cache, not the Ubuntu mirror.
+        uses: ./.github/actions/playwright-chromium
 
       # Token/loop regression guards (issue #432): the per-scenario ceilings
       # this step gates on live in `apps/admin/e2e-livedit/lib/metrics-core.ts`

@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 --
--- 0337 — issue #971: a credential an approved proposal produces never
+-- 0342 — issue #971: a credential an approved proposal produces never
 -- reaches the AI.
 --
 -- Before, `users.execute_proposal` returned the new user's temporary
