@@ -18,6 +18,45 @@ import {
 } from "../text-ops.js";
 
 describe("applyStringEdits", () => {
+  // e2e-livedit run 39924464490: the AI filled a module's empty `js` with
+  // oldString "" and was refused by the schema, then re-sent the module
+  // through edit_module. An empty field has nothing to anchor on.
+  it("fills an empty body from an empty oldString", () => {
+    const r = applyStringEdits("", [{ oldString: "", newString: "console.log(1);" }]);
+    expect(r).toEqual({ ok: true, content: "console.log(1);", replacements: 1 });
+  });
+
+  it("chains after filling an empty body", () => {
+    const r = applyStringEdits("", [
+      { oldString: "", newString: "a = 1;" },
+      { oldString: "1", newString: "2" },
+    ]);
+    expect(r).toEqual({ ok: true, content: "a = 2;", replacements: 2 });
+  });
+
+  // e2e-livedit run 39928246316: a blind CSS edit anchored on a selector
+  // that also appears in a media query. The refusal names both lines so one
+  // widened retry succeeds without a read_content round trip.
+  it("names each match's line when an oldString is not unique", () => {
+    const css =
+      ".a{\n  color: red;\n}\n@media (max-width: 40em) {\n  .a{\n    color: blue;\n  }\n}";
+    const r = applyStringEdits(css, [{ oldString: ".a{", newString: ".b{" }]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("2 matches (line 1: .a{; line 5: .a{)");
+      expect(r.error).toContain("replaceAll:true");
+    }
+  });
+
+  it("refuses an empty oldString against a body with content", () => {
+    const r = applyStringEdits("body { }", [{ oldString: "", newString: "x" }]);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("only fills an empty body");
+      expect(r.error).toContain("edit_module");
+    }
+  });
+
   it("applies a single unique replacement", () => {
     const r = applyStringEdits("<h1>Hello</h1>", [{ oldString: "Hello", newString: "Hi" }]);
     expect(r.ok).toBe(true);

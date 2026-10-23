@@ -133,6 +133,41 @@ describe("read_content + edit_content tools", () => {
     expect(html).toContain("<p>Hello world</p>");
   });
 
+  it("fills an empty field from an empty oldString (e2e-livedit run 39924464490)", async () => {
+    const moduleId = await seedModule();
+    const js = "document.querySelectorAll('.box').forEach(function (el) { el.hidden = false; });";
+    const r = await tools.dispatch(
+      "edit_content",
+      {
+        entityKind: "module",
+        entityId: moduleId,
+        field: "js",
+        edits: [{ oldString: "", newString: js }],
+      },
+      aiCtx,
+      toolCtx,
+    );
+    expect(r.ok).toBe(true);
+    const got = await execute(ops, adapter, systemCtx, "modules.get", { moduleId });
+    if (!got.ok) throw new Error(JSON.stringify(got.error));
+    expect((got.value as { module: { js: string | null } }).module.js).toBe(js);
+
+    // The same call against a field with content is refused, loudly.
+    const refused = await tools.dispatch(
+      "edit_content",
+      {
+        entityKind: "module",
+        entityId: moduleId,
+        field: "css",
+        edits: [{ oldString: "", newString: ".x{}" }],
+      },
+      aiCtx,
+      toolCtx,
+    );
+    expect(refused.ok).toBe(false);
+    expect(refused.content).toContain("only fills an empty body");
+  });
+
   it("rejects a non-unique oldString unless replaceAll", async () => {
     const moduleId = await seedModule();
     // "Hello" appears in both the <h1> and the <p>.
