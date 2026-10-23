@@ -28,6 +28,15 @@ const FAKE_INFRA = {
       provider: "anthropic",
       model: "test-model",
     }),
+    generateObject: async () => ({
+      object: undefined,
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedTokens: 0,
+      cacheCreationTokens: 0,
+      provider: "anthropic",
+      model: "test-model",
+    }),
   },
   emitSnapshot: (async () => ({ siteSnapshotId: "s" })) as never,
 } satisfies PluginHostInfra;

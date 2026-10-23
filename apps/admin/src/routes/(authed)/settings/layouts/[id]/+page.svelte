@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { GripVertical, Trash2 } from "lucide-svelte";
   import { dndzone, type DndEvent } from "svelte-dnd-action";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
@@ -202,7 +203,7 @@
       <CardTitle class="text-base text-destructive">Danger zone</CardTitle>
     </CardHeader>
     <CardContent>
-      <form method="post" action="?/delete">
+      <form method="post" action="?/delete" use:confirmSubmit={{ title: `Delete layout ${data.layout.displayName}?`, confirmLabel: "Delete layout" }}>
         <input type="hidden" name="_csrf" value={data.csrfToken} />
         <Button type="submit" variant="destructive">Delete layout</Button>
         <p class="mt-2 text-xs text-muted-foreground">

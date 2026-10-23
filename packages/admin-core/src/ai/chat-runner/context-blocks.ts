@@ -20,6 +20,7 @@ import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ChatEngagement, ChatSendMessageInput, ExecutionContext } from "@caelo-cms/shared";
 
+import { describeStageReadiness, type StageReadiness } from "../../deploy/stage-readiness.js";
 import { buildPageContext } from "./context/page.js";
 import { buildSkillsContext } from "./context/skills.js";
 
@@ -78,6 +79,8 @@ export function buildStatusLine(args: {
   /** `site_defaults.get_seo` result; null when the read failed. */
   seoValue?: unknown;
   activeTheme: { origin?: string | null; description?: string | null } | null;
+  /** `deploy.stage_readiness` result; null when the read failed. */
+  stageReadinessValue?: unknown;
 }): string | undefined {
   const missing: string[] = [];
   const layouts = (args.layoutsValue as { layouts?: unknown[] } | null)?.layouts ?? [];
@@ -138,6 +141,19 @@ export function buildStatusLine(args: {
   const segments: string[] = [];
   if (missing.length > 0)
     segments.push(`[Site status — base setup still missing] ${missing.join(" | ")}`);
+  // What a staging build would refuse right now — mostly state this chat
+  // did not create (a homepage left as a draft, an older page without a
+  // description). Every turn that changes the site ends with stage_changes,
+  // so the AI must clear it first; told here, at the start of the turn,
+  // instead of by a refused Stage at its end (e2e-livedit: ~100 refused
+  // Stages in 14 runs, deploy/stage-readiness.ts).
+  const readiness = args.stageReadinessValue
+    ? describeStageReadiness(args.stageReadinessValue as StageReadiness)
+    : null;
+  if (readiness !== null)
+    segments.push(
+      `[Site status — Stage readiness] ${readiness} Do this as part of the turn's work, before its stage_changes; if this turn changes nothing on the site, leave it.`,
+    );
   if (offers.length > 0)
     segments.push(
       `[Site status — worth offering, NOT part of this request] ${offers.join(" | ")}. Do not do this work in the current turn unless the operator asked for it; finish what they asked, then offer it in one sentence of your closing summary.`,
@@ -208,18 +224,20 @@ export async function buildSystemContextBlocks(deps: {
   // what base setup is still missing (cheap counts; the line is undefined — no
   // reads matter — once the foundation exists). Fetched here rather than dumped
   // as prompt blocks; the line itself rides on the user message.
-  const [layoutsR, templatesR, defaultsR, themeR, seoR] = await Promise.all([
+  const [layoutsR, templatesR, defaultsR, themeR, seoR, readinessR] = await Promise.all([
     execute(registry, adapter, humanCtxWithBranch, "layouts.list", { includeDeleted: false }),
     execute(registry, adapter, humanCtxWithBranch, "templates.list", { includeDeleted: false }),
     execute(registry, adapter, humanCtxWithBranch, "site_defaults.get", {}),
     execute(registry, adapter, humanCtxWithBranch, "themes.get_active", {}),
     execute(registry, adapter, humanCtxWithBranch, "site_defaults.get_seo", {}),
+    execute(registry, adapter, humanCtxWithBranch, "deploy.stage_readiness", {}),
   ]);
   const statusLine = buildStatusLine({
     layoutsValue: layoutsR.ok ? layoutsR.value : null,
     templatesValue: templatesR.ok ? templatesR.value : null,
     siteDefaultsValue: defaultsR.ok ? defaultsR.value : null,
     seoValue: seoR.ok ? seoR.value : null,
+    stageReadinessValue: readinessR.ok ? readinessR.value : null,
     activeTheme: themeR.ok
       ? (themeR.value as { theme: { origin?: string | null } | null }).theme
       : null,

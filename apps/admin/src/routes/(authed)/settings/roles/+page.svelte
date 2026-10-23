@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -40,7 +41,7 @@
               {#if role.isBuiltin}<Badge variant="outline">built-in</Badge>{/if}
               <span class="text-muted-foreground">— {role.description}</span>
               {#if !role.isBuiltin}
-                <form method="post" action="?/delete" class="ml-auto">
+                <form method="post" action="?/delete" class="ml-auto" use:confirmSubmit={{ title: `Delete role ${role.name}?`, description: "Users who have this role lose its permissions.", confirmLabel: "Delete role" }}>
                   <input type="hidden" name="_csrf" value={data.csrfToken} />
                   <input type="hidden" name="roleId" value={role.id} />
                   <Button type="submit" size="sm" variant="destructive">Delete</Button>

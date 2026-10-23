@@ -15,7 +15,6 @@ import {
   buildUpdateTranslationPrompt,
   type ContentSlot,
   stripJsonFence,
-  translationResultPayload,
   validateMetaDescription,
   validateStructuralLock,
 } from "./translation.js";
@@ -106,15 +105,6 @@ describe("prompt construction", () => {
 });
 
 describe("result contract", () => {
-  it("rejects extra keys and non-string values", () => {
-    expect(() => translationResultPayload.parse({ slots: [], extra: true })).toThrow();
-    expect(() =>
-      translationResultPayload.parse({
-        slots: [{ blockName: "main", position: 0, values: { h: 1 } }],
-      }),
-    ).toThrow();
-  });
-
   it("stripJsonFence tolerates a fenced payload", () => {
     const fenced = '```json\n{"slots": []}\n```';
     expect(JSON.parse(stripJsonFence(fenced))).toEqual({ slots: [] });
@@ -213,7 +203,7 @@ describe("#591 — meta description", () => {
     expect(buildFullTranslationPrompt(base).user).toContain(
       "Meta description:\n```\nFair prices for every team.\n```",
     );
-    expect(buildFullTranslationPrompt(base).system).toContain('"metaDescription": str');
+    expect(buildFullTranslationPrompt(base).system).toContain('"metaDescription": "<translated');
     expect(buildFullTranslationPrompt({ ...base, sourceMetaDescription: "" }).user).not.toContain(
       "Meta description",
     );
@@ -229,14 +219,8 @@ describe("#591 — meta description", () => {
         variantSlots,
         alignment: alignSlots(base.sourceSlots, variantSlots),
       }).user;
-    expect(update("")).toContain("Meta description: (none yet — include metaDescription");
+    expect(update("")).toContain("Meta description: (none yet — translate the source's");
     expect(update("Faire Preise.")).toContain("Meta description:\n```\nFaire Preise.\n```");
-  });
-
-  it("the contract caps the description at the pages_seo limit", () => {
-    expect(() =>
-      translationResultPayload.parse({ metaDescription: "x".repeat(321), slots: [] }),
-    ).toThrow();
   });
 
   it("validateMetaDescription: required in full mode and for a variant without one; refused when the source has none", () => {

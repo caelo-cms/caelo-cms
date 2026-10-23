@@ -48,6 +48,13 @@ const getAuditInput = z
       .uuid()
       .optional()
       .describe("The newest audit of this staging deploy run."),
+    pageId: z
+      .string()
+      .uuid()
+      .optional()
+      .describe(
+        "Only this page's section (scores, metrics, problems); the run summary and site-wide checks stay.",
+      ),
   })
   .strict();
 
@@ -208,8 +215,19 @@ export function formatPage(p: AuditPage): string[] {
  * The get_quality_audit result: run status, why Lighthouse ran, the page
  * checks, every page, and — while a problem is open — the fix loop.
  */
-export function formatAudit(value: unknown): string {
-  const v = value as AuditValue;
+export function formatAudit(value: unknown, input: { pageId?: string } = {}): string {
+  const all = value as AuditValue;
+  // A page filter narrows the per-page sections only: the run, its
+  // status and the site-wide checks describe the whole Stage. A page the
+  // audit does not cover is said so, never answered with an empty list.
+  const v =
+    input.pageId === undefined || !all.run
+      ? all
+      : { ...all, pages: all.pages.filter((p) => p.pageId === input.pageId) };
+  if (input.pageId !== undefined && all.run && v.pages.length === 0) {
+    const covered = all.pages.map((p) => `${p.pagePath} (${p.pageId})`).join(", ") || "(none)";
+    return `audit ${all.run.id} has no result for page ${input.pageId}. Pages it covers: ${covered}. Call again without pageId for the whole audit.`;
+  }
   if (!v.run) {
     return "No quality audit exists yet for this chat — every Stage is checked (plugin page checks, when any is active, on every page; Lighthouse when module code, layouts, templates, the theme, new pages or plugin config changed).";
   }
@@ -239,10 +257,11 @@ const readQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
     "To make a page faster, read its metrics here and fix the worst one in the module that renders the named element, then Stage again and re-read — repeat until Performance is 100. Use this instead of running Lighthouse yourself: the audit runs against the real staged build, which no other URL serves. Only what truly cannot be fixed goes to the operator, as one decision per group (accept_quality_findings with groups), with the reason why. " +
     "A finding marked CAELO PLATFORM (back/forward cache, caching of Caelo's own files, server response, compression, redirects) is decided by Caelo's hosting/build setup, not by the site: report it with bug_report and never edit the site for it; it blocks until Caelo fixes it or the operator decides to accept it. " +
     "Without an open operator chat (Power-MCP) a call on a queued or running audit waits for its result (up to ~50 s; call again if it is still running). " +
-    "Typical input: {} or { auditRunId }.",
+    "Typical input: {}, { auditRunId }, or { pageId } to read only one page's section (from list_pages).",
   opName: "quality_audits.get",
   input: getAuditInput,
-  buildOpInput: (input, _ctx, toolCtx) =>
+  // `pageId` filters the formatted result; the op reads whole audits.
+  buildOpInput: ({ pageId: _pageId, ...input }, _ctx, toolCtx) =>
     input.auditRunId || input.deployRunId
       ? input
       : toolCtx.chatSessionId

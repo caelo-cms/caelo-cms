@@ -138,32 +138,35 @@ describe("mcpConfigJson", () => {
 
 describe("remote MCP snippets (#806)", () => {
   const url = "https://caelo-production-gateway-bbb-xyz.a.run.app/api/mcp/admin";
-  const admin = remoteMcpServer("admin", url);
+  const admin = remoteMcpServer("admin", url, "viu.one");
 
-  it("names the surfaces like the local servers", () => {
-    expect(admin).toEqual({ name: "caelo-admin", url });
-    expect(remoteMcpServer("chat", "u").name).toBe("caelo");
+  it("names each surface after the site, so two sites stay apart in one client (#968)", () => {
+    expect(admin).toEqual({ name: "caelo-viu-one-admin", url });
+    expect(remoteMcpServer("chat", "u", "viu.one").name).toBe("caelo-viu-one");
+    expect(remoteMcpServer("chat", "u", "Shop.Example.COM:8443").name).toBe(
+      "caelo-shop-example-com-8443",
+    );
   });
 
   it("registers by URL in Claude Code (--transport http) and Codex (--url, then login)", () => {
     expect(remoteMcpAddCommand("claude", admin)).toBe(
-      `claude mcp add --transport http caelo-admin ${url}`,
+      `claude mcp add --transport http caelo-viu-one-admin ${url}`,
     );
     expect(remoteMcpAddCommand("codex", admin)).toBe(
-      `codex mcp add caelo-admin --url ${url}\ncodex mcp login caelo-admin`,
+      `codex mcp add caelo-viu-one-admin --url ${url}\ncodex mcp login caelo-viu-one-admin`,
     );
   });
 
   it("renders each file-configured client's remote key: url, type http + url, httpUrl", () => {
     expect(JSON.parse(remoteMcpConfigJson("cursor", admin))).toEqual({
-      mcpServers: { "caelo-admin": { url } },
+      mcpServers: { "caelo-viu-one-admin": { url } },
     });
     expect(JSON.parse(remoteMcpConfigJson("vscode", admin))).toEqual({
-      servers: { "caelo-admin": { type: "http", url } },
+      servers: { "caelo-viu-one-admin": { type: "http", url } },
     });
     // Gemini CLI's `url` means SSE; Streamable HTTP is `httpUrl`.
     expect(JSON.parse(remoteMcpConfigJson("gemini", admin))).toEqual({
-      mcpServers: { "caelo-admin": { httpUrl: url } },
+      mcpServers: { "caelo-viu-one-admin": { httpUrl: url } },
     });
   });
 

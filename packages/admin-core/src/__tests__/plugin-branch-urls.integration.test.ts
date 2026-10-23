@@ -97,6 +97,12 @@ const plugin = definePlugin({
         ),
       };
     },
+    /** Data change WITHOUT the refresh a well-behaved caller runs. */
+    tag_page_quietly: async (ctx, args) => {
+      const a = args as { pageId: string; prefix: string };
+      await handles(ctx).q.insert("tags", { page_id: a.pageId, prefix: a.prefix });
+      return {};
+    },
     set_site_prefix: async (ctx, args) => {
       const { q } = handles(ctx);
       await q.insert("site_prefix", { prefix: (args as { prefix: string }).prefix });
@@ -408,5 +414,25 @@ describe("plugin URL annotations on a chat branch", () => {
         }[],
     );
     expect(redirects.map((r) => r.to_path)).toEqual([`/en/${PFX}live`]);
+
+    // PR #947 review — drift confined to ONE page (nothing else moves) is
+    // still migration territory for a caller that changed no data.
+    const quiet = await runPluginOperation({
+      pluginSlug: SLUG,
+      operationName: "tag_page_quietly",
+      args: { pageId: liveId, prefix: "pt" },
+      invocation: ownerApproved,
+    });
+    if (!quiet.ok) throw new Error(quiet.error.message);
+    const confined = await execute(registry, adapter, humanCtx, "pages.refresh_current_path", {
+      pageId: liveId,
+    });
+    if (!confined.ok) throw new Error(JSON.stringify(confined.error));
+    expect(confined.value).toEqual({
+      path: `/en/${PFX}live`,
+      moved: false,
+      awaitingUrlMigration: true,
+    });
+    expect(await livePath(liveId)).toBe(`/en/${PFX}live`);
   });
 });

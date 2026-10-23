@@ -46,23 +46,41 @@ const RUN_MARK = "http://127.0.0.1/invhome?run";
 let originalHomePageId: string | null = null;
 let runId = "";
 let importPageId = "";
-let composedPageId = "";
+let builtPageId = "";
 
 async function wipe(): Promise<void> {
   await sqlc.begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
     // Restore the seed home designation we borrowed.
     await tx`UPDATE site_defaults SET home_page_id = ${originalHomePageId} WHERE id = 1`;
-    if (composedPageId) {
-      await tx`DELETE FROM page_modules WHERE page_id = ${composedPageId}::uuid`;
-      await tx`DELETE FROM pages WHERE id = ${composedPageId}::uuid`;
+    if (builtPageId) {
+      await tx`DELETE FROM page_modules WHERE page_id = ${builtPageId}::uuid`;
+      await tx`DELETE FROM pages WHERE id = ${builtPageId}::uuid`;
     }
     if (runId) {
       await tx`DELETE FROM import_pages WHERE run_id = ${runId}::uuid`;
       await tx`DELETE FROM import_runs WHERE id = ${runId}::uuid`;
     }
+    await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL})`;
     await tx`DELETE FROM templates WHERE slug = ${TPL}`;
   });
+}
+
+/** A template with the one `content` block the crawled page fills. */
+async function seedContentTemplate(): Promise<string> {
+  const tpl = await execute(registry, adapter, SYSTEM, "templates.create", {
+    slug: TPL,
+    displayName: "Import test template",
+    html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
+  });
+  if (!tpl.ok) throw new Error(`templates.create: ${JSON.stringify(tpl.error)}`);
+  const templateId = (tpl.value as { templateId: string }).templateId;
+  const blocks = await execute(registry, adapter, SYSTEM, "template_blocks.set", {
+    templateId,
+    blocks: [{ name: "content", displayName: "Content", position: 0 }],
+  });
+  if (!blocks.ok) throw new Error(`template_blocks.set: ${JSON.stringify(blocks.error)}`);
+  return templateId;
 }
 
 beforeAll(async () => {
@@ -124,12 +142,17 @@ describe("import page reads — directly-built homepage-not-at-root (#278)", () 
       ],
     });
     if (!wrote.ok) throw new Error(`write_extracted_pages: ${JSON.stringify(wrote.error)}`);
-    // compose builds the page + modules and links accepted_page_id.
-    const composed = await execute(registry, adapter, SYSTEM, "imports.compose_from_run", {
-      runId,
-      templateSlug: TPL,
+    // accept_page builds the page + modules and links accepted_page_id.
+    const templateId = await seedContentTemplate();
+    const pending = await execute(registry, adapter, SYSTEM, "imports.list_pages", { runId });
+    if (!pending.ok) throw new Error(JSON.stringify(pending.error));
+    const stagingId = (pending.value as { pages: { id: string }[] }).pages[0]?.id;
+    if (!stagingId) throw new Error("write_extracted_pages left no import page");
+    const accepted = await execute(registry, adapter, SYSTEM, "imports.accept_page", {
+      importPageId: stagingId,
+      templateId,
     });
-    if (!composed.ok) throw new Error(JSON.stringify(composed.error));
+    if (!accepted.ok) throw new Error(JSON.stringify(accepted.error));
 
     let idRows: { id: string; pid: string | null }[] = [];
     await sqlc.begin(async (tx) => {
@@ -140,21 +163,21 @@ describe("import page reads — directly-built homepage-not-at-root (#278)", () 
       `) as unknown as { id: string; pid: string | null }[];
     });
     importPageId = idRows[0]?.id ?? "";
-    composedPageId = idRows[0]?.pid ?? "";
+    builtPageId = idRows[0]?.pid ?? "";
     expect(importPageId).not.toBe("");
-    expect(composedPageId).not.toBe("");
+    expect(builtPageId).not.toBe("");
 
     // 2. Turn it into the #278 homepage-not-at-root shape:
-    //    - drop the compose link (a directly-built page has none),
+    //    - drop the accept link (a directly-built page has none),
     //    - give the built page a CUSTOM slug (not the crawler's 'home'),
     //    - designate it as the site root via the home-page pointer.
     await sqlc.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`UPDATE import_pages SET accepted_page_id = NULL WHERE run_id = ${runId}::uuid`;
-      await tx`UPDATE pages SET slug = ${CUSTOM_SLUG} WHERE id = ${composedPageId}::uuid`;
+      await tx`UPDATE pages SET slug = ${CUSTOM_SLUG} WHERE id = ${builtPageId}::uuid`;
     });
     const setHome = await execute(registry, adapter, AI, "pages.set_home_page", {
-      pageId: composedPageId,
+      pageId: builtPageId,
     });
     expect(setHome.ok).toBe(true);
 
@@ -162,13 +185,13 @@ describe("import page reads — directly-built homepage-not-at-root (#278)", () 
     //    Old code matched proposed_slug=='home' against slug=='invhome-startseite'
     //    → "import page not found". Now it resolves via home_page_id.
     const inv = await execute(registry, adapter, AI, "imports.check_page_inventory", {
-      importPageId: composedPageId,
+      importPageId: builtPageId,
     });
     expect(inv.ok).toBe(true);
 
     // The screenshot-keys sibling resolves the same way.
     const keys = await execute(registry, adapter, AI, "imports.get_page_screenshot_keys", {
-      importPageId: composedPageId,
+      importPageId: builtPageId,
     });
     expect(keys.ok).toBe(true);
 

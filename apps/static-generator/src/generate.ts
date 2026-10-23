@@ -335,8 +335,8 @@ export function missingRootPageError(args: {
   return (
     `static-generator: no page serves the site root '/' for env='${args.env}' — ` +
     `none of the ${args.outputPaths.length} published page(s) maps to index.html, so visitors hitting the bare domain get a 404. ` +
-    "The homepage must use the slug 'home' (or 'index') to ship at '/'. " +
-    "Rename the intended homepage's slug (AI: `update_pages_many` with slug 'home'; UI: the page's settings) and re-run the deploy. " +
+    "Designate the intended homepage and make sure it is published (AI: `set_home_page`, then `set_pages_status_many` if it is a draft; UI: the page's settings), then re-run the deploy. " +
+    "Do not rename another page's slug to 'home' — that moves its URL. " +
     `Root-eligible slugs in this build: ${sample}${args.rootEligibleSlugs.length > 10 ? ", …" : ""}`
   );
 }

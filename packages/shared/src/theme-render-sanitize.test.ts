@@ -82,4 +82,13 @@ describe("renderThemeCss CSS-token sanitization (S6)", () => {
     } as unknown as ThemeDocument;
     expect(renderThemeCss(doc)).toContain("--color-grün:#0a0;");
   });
+
+  it("scrubs CSS declaration/block delimiters (; { }) from fontFamily and shadow strings", () => {
+    const css = renderThemeCss(
+      fontDoc("Inter; } body { background: url(https://evil.example/x) } :root { --x: 1"),
+    );
+    expect(css).toBe(
+      ":root{--font-body:Inter  body  background: url(https://evil.example/x)  :root  --x: 1;}",
+    );
+  });
 });

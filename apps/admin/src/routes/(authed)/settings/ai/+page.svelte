@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Badge } from "#lib/components/ui/badge/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
@@ -230,7 +231,7 @@
           </form>
         {/if}
         {#if p.apiKeySource === "db"}
-          <form method="post" action="?/clear_key" class="mt-3">
+          <form method="post" action="?/clear_key" class="mt-3" use:confirmSubmit={{ title: `Clear the stored ${p.displayName} key?`, description: "AI features that use this provider stop working until a new key is entered.", confirmLabel: "Clear key" }}>
             <input type="hidden" name="_csrf" value={data.csrfToken} />
             <input type="hidden" name="name" value={p.name} />
             <Button type="submit" variant="outline" size="sm">Clear stored key</Button>

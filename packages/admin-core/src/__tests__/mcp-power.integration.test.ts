@@ -689,7 +689,8 @@ describe("Power-MCP surface (admin token)", () => {
     // #413 — the playbook variant names the visual-inspection tools that
     // work here; since #412 that includes screenshot_page itself (the
     // server-side backend renders the session branch's preview).
-    expect(v.systemContext).toContain("`inspect_built_page`");
+    // inspect_built_page is named only on GCP installs; the test stack is not one.
+    expect(v.systemContext).not.toContain("inspect_built_page");
     expect(v.systemContext).toContain("`screenshot_page`");
     expect(v.systemContext).toContain("rendered server-side");
     for (const s of v.skills) expect(s.body).toBeUndefined();

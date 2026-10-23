@@ -215,7 +215,7 @@ The metric surfaces the same three ways as cost:
 
 1. **Sticky PR comment** — a `### Detected bugs (N)` section after the
    per-scenario results (it qualifies that verdict), with a
-   `Sev | Source | Title | Tool | Blocked` table sorted blocking-first then
+   `Sev | Source | Title | Tool | Blocked | Issue` table sorted blocking-first then
    by source, plus a collapsed `Bug details` block carrying
    what-happened / expected / evidence per row. Capped at 50 rows to stay
    under GitHub's 65k comment limit; when it caps it says so and points at
@@ -229,10 +229,20 @@ The metric surfaces the same three ways as cost:
    `e2e-livedit-cost-<run_id>` so that artifact name stays stable for
    anything already scraping it.
 
-**Informational, not gating.** No count fails the job today — the suite's
-pass/fail stays driven purely by the Playwright assertions. Making
-`blocking` rows (or `blocked_task = true`) fail the run is the intended
-follow-up once the signal has stayed clean across a few runs.
+**Gating.** Every report is either *known* or *new*. Known means it matches
+an entry in `apps/admin/e2e-livedit/lib/known-bugs.ts`, which names the GitHub
+issue tracking its root-cause fix; the table's `Issue` column shows that issue
+or **new**. The `Gate on new detected bugs` step (`lib/bug-gate.ts`) fails the
+job on any new report, and also when the capture failed (it cannot tell
+"nothing found" from "could not check"). The reasoning: a tool error the AI
+recovered from is still our defect (CLAUDE.md §1A, §4), and while these were
+warnings they piled up under every PR without an owner.
+
+When the gate fails on your PR: fix the root cause in our layer (tool
+description, Zod schema, op, an earlier result that states the requirement).
+Only if the fix is genuinely out of scope, open an issue and add a ledger
+entry with the narrowest `match` that identifies it. Remove the entry in the
+PR that fixes the issue.
 
 `{}` vs `[]` is load-bearing: the workflow writes the `{}` sentinel when
 the psql capture fails, which `parseBugReports` reads as "no data" and
@@ -445,7 +455,8 @@ secondary guard — local pass is the primary one.
   gate; close and reopen the PR to force a fresh run).
 - **`main`:** not on every push (a squash merge re-runs code its PR
   already ran green). Instead `release-cut` runs it once on the exact
-  `main` commit it releases and refuses to cut unless it is green.
+  `main` commit it releases (dispatched on `release-gate/<sha>`, a branch
+  pinned to that commit) and refuses to cut unless it is green.
 - **Manual:** `gh workflow run e2e-livedit.yml --ref main` always runs.
 
 ### CI secret gate

@@ -54,7 +54,9 @@ describe("consent page", () => {
     expect(html).toContain(CHATGPT_CALLBACK);
     expect(html).toContain("Totally Claude");
     expect(html).toContain("name not verified");
-    expect(html).toContain("admin tools");
+    // The surface in plain words, and which role it needs (#968).
+    expect(html).toContain("Full admin access");
+    expect(html).toContain("settings.write");
     expect(html).not.toContain("accounts.google.com/o/oauth2");
     // Nothing left the gateway: no Google, no CIMD for a DCR client.
     expect(h.calls).toHaveLength(0);

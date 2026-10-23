@@ -120,6 +120,7 @@ import {
 } from "../state-backend.js";
 import { acquireStateLock, GcsStateStore } from "../state-store.js";
 import { lookupFailure, resolveGcpResourceName } from "../upgrade/gcp-lookup.js";
+import { createReleaseImageForms, platformDigestsOf } from "../upgrade/image-forms.js";
 import {
   releaseVersionForDigest,
   resolveOpsImageRef,
@@ -500,7 +501,22 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // the admin can install the next update itself.
   if (upgraderReady && convergeReady && remoteMcpReady) {
     const version = releaseVersion;
-    recordImageDigests(installId, imageDigests, version);
+    // #1025 — the linux/amd64 forms Cloud Run reports, next to the indexes,
+    // so the upgrader recognises what serves without a registry lookup.
+    const platform = await platformDigestsOf(imageDigests, createReleaseImageForms());
+    if (!platform.ok) {
+      log.warn(
+        yellow(
+          `install.json records the release by its image indexes only; their linux/amd64 forms could not be read (${platform.message}). The first in-product update reads them from the release registry.`,
+        ),
+      );
+    }
+    recordImageDigests(
+      installId,
+      imageDigests,
+      version,
+      platform.ok ? platform.platformDigests : null,
+    );
     recordInfraContractVersion(installId, INFRA_CONTRACT_VERSION);
     if (!version) {
       log.warn(

@@ -35,25 +35,37 @@ const SYS_CTX: ExecutionContext = {
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 
-/** Scripted provider: each queued responder handles ONE complete()
- *  call; prompts are recorded for fixture assertions. */
-const aiCalls: Array<{ system: string; user: string; purpose?: string }> = [];
-const aiScript: Array<() => string> = [];
+/** Scripted provider: each queued responder answers ONE structured
+ *  (`generateObject`) call — the page translation's install-side path
+ *  (CLAUDE.md §12); prompts + the schema sent are recorded for fixture
+ *  assertions. The text path is not used by page translation. */
+const aiCalls: Array<{
+  system: string;
+  user: string;
+  purpose?: string;
+  jsonSchema: { properties: Record<string, unknown>; required: string[] };
+}> = [];
+const aiScript: Array<() => unknown> = [];
 const scriptedProvider = {
-  complete: async (opts: {
+  complete: async () => {
+    throw new Error("scripted provider: page translation must use generateObject");
+  },
+  generateObject: async (opts: {
     system: string;
     messages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>;
+    jsonSchema: Record<string, unknown>;
     purpose?: string;
   }) => {
     aiCalls.push({
       system: opts.system,
       user: opts.messages[0]?.content ?? "",
+      jsonSchema: opts.jsonSchema as { properties: Record<string, unknown>; required: string[] },
       ...(opts.purpose ? { purpose: opts.purpose } : {}),
     });
     const next = aiScript.shift();
     if (!next) throw new Error("scripted provider: no responder queued");
     return {
-      text: next(),
+      object: next(),
       inputTokens: 10,
       outputTokens: 10,
       cachedTokens: 0,
@@ -63,6 +75,10 @@ const scriptedProvider = {
     };
   },
 };
+
+/** One slot's translated fields in the contract's `[{field, value}]` shape. */
+const fields = (values: Record<string, string>) =>
+  Object.entries(values).map(([field, value]) => ({ field, value }));
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL);
@@ -204,17 +220,16 @@ describe("#397 — context-aware translation", () => {
     });
 
     // --- Structural-lock refusal: a response inventing a slot never lands.
-    aiScript.push(() =>
-      JSON.stringify({
-        title: "Preise",
-        slots: [
-          { slot: "s0", values: { headline: "Willkommen" } },
-          // An id that was never offered — the module slug is what a
-          // live run actually returned here.
-          { slot: "t397-hero", values: { headline: "X" } },
-        ],
-      }),
-    );
+    aiScript.push(() => ({
+      title: "Preise",
+      slots: [
+        { slot: "s0", values: fields({ headline: "Willkommen" }) },
+        // An id that was never offered — the module slug is what a
+        // live run actually returned here. (The real decoder is held to
+        // the schema's slot enum; the lock is the defense in depth.)
+        { slot: "t397-hero", values: fields({ headline: "X" }) },
+      ],
+    }));
     const refused = await runPluginOperation({
       invocation: { origin: "system", actorId: "00000000-0000-0000-0000-000000000000" },
       pluginSlug: "international-site",
@@ -224,21 +239,16 @@ describe("#397 — context-aware translation", () => {
     expect(refused.ok).toBe(false);
     if (!refused.ok) expect(refused.error.message).toContain("structural lock");
 
-    // --- Full-mode translation (fenced response exercises stripJsonFence).
-    aiScript.push(
-      () =>
-        "```json\n" +
-        JSON.stringify({
-          title: "Preise",
-          slots: [
-            {
-              slot: "s0",
-              values: { headline: "Willkommen", body_html: "<p>Hallo <b>Welt</b></p>" },
-            },
-          ],
-        }) +
-        "\n```",
-    );
+    // --- Full-mode translation.
+    aiScript.push(() => ({
+      title: "Preise",
+      slots: [
+        {
+          slot: "s0",
+          values: fields({ headline: "Willkommen", body_html: "<p>Hallo <b>Welt</b></p>" }),
+        },
+      ],
+    }));
     const result = await op<{ mode: string; slotsApplied: number; titleApplied: boolean }>(
       "translate_variant",
       { variantPageId: variant.pageId },
@@ -254,6 +264,12 @@ describe("#397 — context-aware translation", () => {
     expect(prompt?.system).toContain("Use informal du.");
     expect(prompt?.user).toContain("Title: Pricing");
     expect(prompt?.user).toContain("<p>Hello <b>world</b></p>");
+    // The source has no meta description, so the request neither asks
+    // for one nor lets the model return one — the live failures were the
+    // model answering an invented description, or "" for "none".
+    expect(Object.keys(prompt?.jsonSchema.properties ?? {})).toEqual(["title", "slots"]);
+    expect(prompt?.system).not.toMatch(/meta ?description/i);
+    expect(prompt?.user).not.toMatch(/meta ?description/i);
     // #593 — declared as a translation call, so the host can route it to
     // the Owner's translation model; the call is billed to the plugin on
     // the model it actually ran on.
@@ -326,12 +342,10 @@ describe("#397 — context-aware translation", () => {
     expect(stale[0]?.translation_status).toBe("needs_update");
 
     // --- Bulk pass in UPDATE mode (variant already differs from source).
-    aiScript.push(() =>
-      JSON.stringify({
-        title: "Preise v2",
-        slots: [{ slot: "s0", values: { headline: "Willkommen v2" } }],
-      }),
-    );
+    aiScript.push(() => ({
+      title: "Preise v2",
+      slots: [{ slot: "s0", values: fields({ headline: "Willkommen v2" }) }],
+    }));
     const bulk = await op<{ translated: number; paused: boolean; remaining: number }>(
       "translate_all_stale",
       {},
@@ -402,12 +416,13 @@ describe("#397 — context-aware translation", () => {
         }
       ).seo;
     };
-    const translation = (meta: string) => () =>
-      JSON.stringify({
-        title: "Preise",
-        metaDescription: meta,
-        slots: [{ slot: "s0", values: { headline: "Willkommen", body_html: "<p>Hallo</p>" } }],
-      });
+    const translation = (meta: string) => () => ({
+      title: "Preise",
+      metaDescription: meta,
+      slots: [
+        { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo</p>" }) },
+      ],
+    });
 
     // --- First translation of a new variant: the German description lands.
     aiScript.push(translation("Faire Preise für jedes Team."));
@@ -415,6 +430,8 @@ describe("#397 — context-aware translation", () => {
       variantPageId: variant.pageId,
     });
     expect(first.seo).toBe("filled");
+    // The source has one, so the contract requires a translated one.
+    expect(aiCalls.at(-1)?.jsonSchema.required).toContain("metaDescription");
     expect(aiCalls.at(-1)?.user).toContain(
       "Meta description:\n```\nFair prices for every team.\n```",
     );
@@ -536,12 +553,12 @@ describe("#397 — context-aware translation", () => {
     }
 
     // The correctly named call translates the variant.
-    aiScript.push(() =>
-      JSON.stringify({
-        title: "Preise",
-        slots: [{ slot: "s0", values: { headline: "Willkommen", body_html: "<p>Hallo Welt</p>" } }],
-      }),
-    );
+    aiScript.push(() => ({
+      title: "Preise",
+      slots: [
+        { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo Welt</p>" }) },
+      ],
+    }));
     const translated = await asToolCall({ variantPageId: variant.pageId });
     if (!translated.ok) throw new Error(translated.error.message);
     expect((translated.value as { slotsApplied: number }).slotsApplied).toBe(1);

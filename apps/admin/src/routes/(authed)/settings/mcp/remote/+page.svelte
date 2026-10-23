@@ -148,7 +148,14 @@
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <RemoteMcpClientSetup urls={a.urls} />
+        {#if data.siteHost && (data.mayUse.chat || data.mayUse.admin)}
+          <RemoteMcpClientSetup urls={a.urls} siteHost={data.siteHost} mayUse={data.mayUse} />
+        {:else}
+          <p class="text-sm" data-testid="remote-mcp-no-surface">
+            Your role may not use remote MCP. Chatting with the site's AI needs content.write; ask an
+            Owner under Settings → Users.
+          </p>
+        {/if}
       </CardContent>
     </Card>
   {/if}

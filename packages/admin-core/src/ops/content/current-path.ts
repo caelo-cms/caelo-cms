@@ -206,8 +206,9 @@ export async function resolveCurrentPathsDryRun(
  */
 export const refreshCurrentPathOp = defineOperation({
   name: "pages.refresh_current_path",
-  // Plugins call this after writing variant rows; the AI/system may
-  // call it when repairing drift. Never destructive: recompute + 301.
+  // Plugins call this after writing variant rows. For any other caller a
+  // published page's move is held for the URL migration (#586); drafts
+  // still refresh. Never destructive: recompute + 301.
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z
@@ -245,29 +246,37 @@ export const refreshCurrentPathOp = defineOperation({
       const path = preview.get(input.pageId) ?? oldPath;
       return ok({ path, moved: false, awaitingUrlMigration: false });
     }
-    // #586 — while a URL-setting change waits for its migration, pages
-    // outside this subtree drift too: the move is the setting's, not this
-    // page's data, and only the approved migration may apply it (with
-    // its 301s). The migration diff includes this page, so nothing is
-    // lost by waiting. A page whose drift is confined to its own subtree
-    // is the page-local case this op exists for (a variant link). Only a
-    // published page has a public URL to protect; a draft (a fresh
-    // variant) moves freely, without composing the whole site.
+    // #586 — a published page's public URL moves only for a reason the
+    // gate allows. Only a published page has a public URL to protect; a
+    // draft (a fresh variant) moves freely, without composing the site.
+    //
+    // - A plugin caller has just changed THIS page's data (a variant link):
+    //   the move is page-local and proceeds with its 301 — unless pages
+    //   outside the subtree drift too, which means a URL-setting change is
+    //   waiting for its migration and the move is (also) the setting's.
+    // - Any other caller (the AI's refresh_page_path, a human, a system
+    //   job) changed no data: any drift it would apply IS migration
+    //   territory, even when it is confined to this subtree (PR #947
+    //   review — a one-page site or a setting that only moves this
+    //   subtree), so it always waits for the approved migration.
     const tree = await loadPageTree(tx, null);
     const subtree = [input.pageId, ...descendantIdsOf(tree, [input.pageId])];
-    const movesPublished = await movesPublishedPage(tx, tree, subtree);
-    const pending = movesPublished ? await pendingMigrationPageIds(tx, tree) : new Set<string>();
-    if ([...pending].some((id) => !subtree.includes(id))) {
-      await recordAudit(tx, {
-        actorId: ctx.actorId,
-        requestId: ctx.requestId,
-        operation: "pages.refresh_current_path",
-        input,
-        succeeded: true,
-        entityId: input.pageId,
-        resultSummary: `unchanged: URL migration pending (${pending.size} pages)`,
-      });
-      return ok({ path: oldPath, moved: false, awaitingUrlMigration: true });
+    if (await movesPublishedPage(tx, tree, subtree)) {
+      const held =
+        ctx.actorKind !== "plugin" ||
+        [...(await pendingMigrationPageIds(tx, tree))].some((id) => !subtree.includes(id));
+      if (held) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "pages.refresh_current_path",
+          input,
+          succeeded: true,
+          entityId: input.pageId,
+          resultSummary: "unchanged: the move waits for an approved URL migration",
+        });
+        return ok({ path: oldPath, moved: false, awaitingUrlMigration: true });
+      }
     }
     const recomputed = await recomputeCurrentPathsWithMoves(tx, [input.pageId], scope);
     const newPath = recomputed.paths.get(input.pageId);

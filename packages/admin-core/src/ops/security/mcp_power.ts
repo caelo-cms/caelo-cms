@@ -54,6 +54,7 @@ import { queuePluginToolApproval } from "../../ai/queued-tool-approval.js";
 import { composeSystemPromptChunks } from "../../ai/system-prompt.js";
 import type { ToolRegistry, ToolResult } from "../../ai/tools/dispatch.js";
 import { createDefaultToolRegistry } from "../../ai/tools/index.js";
+import { installUnavailableToolNames } from "../../ai/tools/install-availability.js";
 import { mcpAgentOpFields } from "../chat/mcp-agent.js";
 import {
   approvalOutcome,
@@ -131,7 +132,12 @@ const toolCatalogueEntry = z.object({
  */
 export function powerToolCatalogue(
   tools: ToolRegistry,
-  opts: { readonly aiDelegated?: boolean } = {},
+  opts: {
+    readonly aiDelegated?: boolean;
+    /** Tools this install cannot run (`installUnavailableToolNames`); left
+     *  out of the list. The release snapshot omits it and lists every tool. */
+    readonly unavailable?: ReadonlySet<string>;
+  } = {},
 ): z.infer<typeof toolCatalogueEntry>[] {
   // #741 — on a token whose AI work stays with the agent, every tool that
   // would spend the install's AI says what it does here instead.
@@ -141,7 +147,7 @@ export function powerToolCatalogue(
       : description;
   const core = tools
     .catalogue()
-    .filter((t) => !POWER_MCP_EXCLUDED_TOOLS.has(t.name))
+    .filter((t) => !POWER_MCP_EXCLUDED_TOOLS.has(t.name) && !opts.unavailable?.has(t.name))
     .map((t) => {
       const conditional = !t.gated && tools.get(t.name)?.needsApproval !== undefined;
       const description = withAiNote(
@@ -270,7 +276,10 @@ export const mcpListToolsOp = defineOperation({
       return err({ kind: "HandlerError", operation: "mcp.list_tools", message: auth.message });
     }
     return ok({
-      tools: powerToolCatalogue(createDefaultToolRegistry(), { aiDelegated: !auth.allowCaeloAi }),
+      tools: powerToolCatalogue(createDefaultToolRegistry(), {
+        aiDelegated: !auth.allowCaeloAi,
+        unavailable: installUnavailableToolNames(process.env),
+      }),
     });
   },
 });
@@ -570,10 +579,18 @@ export const mcpExecuteToolOp = defineOperation({
       auth.aiCostCapMicrocents !== null &&
       toolUsesInstallAi(createDefaultToolRegistry(), input.toolName)
     ) {
+      const credentialCreatedAt =
+        auth.via.kind === "token"
+          ? sql`(SELECT created_at FROM mcp_tokens WHERE id = ${auth.via.tokenId}::uuid)`
+          : sql`(SELECT created_at FROM mcp_remote_connections WHERE id = ${auth.via.connectionId}::uuid)`;
       const spendRows = (await tx.execute(sql`
         SELECT COALESCE(SUM(cost_estimate_microcents), 0)::bigint AS spent
         FROM ai_calls
         WHERE chat_session_id = ${input.chatSessionId}::uuid
+           OR (
+             actor_id = ${auth.actorId}::uuid
+             AND created_at >= ${credentialCreatedAt}
+           )
       `)) as unknown as Array<{ spent: bigint | string | number }>;
       const raw = spendRows[0]?.spent ?? 0;
       // Compare as bigint — a Number round-trip could lose precision past

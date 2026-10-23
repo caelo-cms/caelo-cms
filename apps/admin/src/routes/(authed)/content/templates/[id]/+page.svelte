@@ -1,5 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
+  import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Alert, AlertDescription } from "#lib/components/ui/alert/index.js";
   import { Button } from "#lib/components/ui/button/index.js";
   import {
@@ -118,7 +119,7 @@
         <CardTitle class="text-base text-destructive">Danger zone</CardTitle>
       </CardHeader>
       <CardContent>
-        <form method="post" action="?/delete">
+        <form method="post" action="?/delete" use:confirmSubmit={{ title: `Delete template ${template.slug}?`, description: "Pages using this template can no longer be built from it.", confirmLabel: "Delete template" }}>
           <input type="hidden" name="_csrf" value={data.csrfToken} />
           <Button type="submit" variant="destructive">Soft-delete this template</Button>
         </form>

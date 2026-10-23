@@ -274,7 +274,7 @@ async function accessNextStep(tx: Tx): Promise<string> {
   const needed = stageNeededFor(host, await readStagedBuildHost(tx), row.origin_run_id !== null);
   const stage = describeStageNeeded(needed, host);
   return (
-    "The gate applies the change within seconds. A new basic-auth password / header value is shown with get_staging_access({includeCredentials: true}) (Owner only, when the operator asks) and under Settings → Staging access." +
+    "The gate applies the change within seconds. A new basic-auth password / header value is never shown to the AI: the operator copies it from Settings → Staging access (/settings/staging)." +
     (stage ? ` ${stage}` : "")
   );
 }

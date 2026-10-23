@@ -25,3 +25,13 @@ export const GOOGLE_OAUTH_CLIENT_ID = /^[0-9]+-[a-z0-9]+\.apps\.googleuserconten
 export function iapRedirectUri(clientId: string): string {
   return `https://iap.googleapis.com/v1/oauth/clientIds/${clientId}:handleRedirect`;
 }
+
+/**
+ * #967 — the Google console page of one OAuth client, where its authorized
+ * redirect URIs and client secrets are edited. Shared so the setup page can
+ * link it as the Owner types the client ID, and the preflight can name it
+ * in every fix.
+ */
+export function oauthClientConsoleUrl(projectId: string, clientId: string): string {
+  return `https://console.cloud.google.com/auth/clients/${encodeURIComponent(clientId)}?project=${encodeURIComponent(projectId)}`;
+}

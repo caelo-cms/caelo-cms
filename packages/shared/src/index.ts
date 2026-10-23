@@ -43,6 +43,7 @@ export {
   type StructuredLogEntry,
 } from "./logger.js";
 export * from "./markup-structure.js";
+export * from "./mcp-access.js";
 export * from "./media.js";
 export * from "./nested-module-render.js";
 export * from "./page-log.js";
@@ -65,6 +66,7 @@ export * from "./release-manifest.js";
 export * from "./responsive-images.js";
 export * from "./result.js";
 export * from "./safe-keys.js";
+export * from "./screenshot-capture.js";
 export * from "./seo.js";
 export * from "./skills.js";
 export * from "./snapshots.js";

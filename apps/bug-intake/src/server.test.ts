@@ -133,6 +133,24 @@ beforeEach(() => {
 });
 
 describe("bug intake HTTP", () => {
+  it("answers liveness on /health (external checks) and /healthz (container probes)", async () => {
+    for (const path of ["/health", "/healthz"]) {
+      const res = await handler(new Request(`https://bugs.test${path}`));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("ok");
+    }
+  });
+
+  it("answers the post-deploy smoke check: a never-registered install gets a retryable 401", async () => {
+    const res = await handler(
+      await signed("/v1/clusters/status", JSON.stringify({ clusterIds: [] })),
+    );
+    expect(res.status).toBe(401);
+    const err = await errorOf(res);
+    expect(err.error).toStartWith("Unknown install");
+    expect(err.retryable).toBe(true);
+  });
+
   it("accepts a signed report from a registered install and answers with its cluster", async () => {
     expect((await register(keys.publicKey)).status).toBe(204);
     const res = await handler(await signed("/v1/reports", JSON.stringify(report)));

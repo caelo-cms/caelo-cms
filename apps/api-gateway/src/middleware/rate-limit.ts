@@ -159,15 +159,24 @@ export async function consumeRateLimit(
         last_refill_at: string | Date;
       }>;
       const now = Date.now();
+      const nowIso = new Date(now).toISOString();
       const e = existing[0];
       let newCount: number;
+      let newWindowStartIso: string;
       let newExpiresAtMs: number;
       let newTokens: number;
+      let newLastRefillIso: string;
       if (!e) {
         newCount = 1;
+        newWindowStartIso = nowIso;
         newExpiresAtMs = now + windowMs;
         newTokens = BURST_TOKENS - 1;
+        newLastRefillIso = nowIso;
       } else {
+        const windowStartMs =
+          e.window_start instanceof Date
+            ? e.window_start.getTime()
+            : Date.parse(String(e.window_start));
         const expiresMs =
           e.expires_at instanceof Date ? e.expires_at.getTime() : Date.parse(String(e.expires_at));
         const lastRefillMs =
@@ -176,23 +185,27 @@ export async function consumeRateLimit(
             : Date.parse(String(e.last_refill_at));
         if (expiresMs < now) {
           newCount = 1;
+          newWindowStartIso = nowIso;
           newExpiresAtMs = now + windowMs;
         } else {
           newCount = e.count + 1;
+          newWindowStartIso = new Date(windowStartMs).toISOString();
           newExpiresAtMs = expiresMs;
         }
         const refillSec = Math.max(0, Math.floor((now - lastRefillMs) / 1000));
         const refilled = Math.min(
-          BURST_TOKENS - 1,
-          e.tokens_remaining + refillSec * BURST_REFILL_PER_SEC,
+          BURST_TOKENS,
+          Math.max(0, e.tokens_remaining) + refillSec * BURST_REFILL_PER_SEC,
         );
-        newTokens = refilled - 1;
+        newTokens = Math.max(-1, refilled - 1);
+        newLastRefillIso = new Date(
+          refillSec > 0 ? lastRefillMs + refillSec * 1000 : lastRefillMs,
+        ).toISOString();
       }
       const newExpiresIso = new Date(newExpiresAtMs).toISOString();
-      const nowIso = new Date(now).toISOString();
       const rs = (await tx.execute(sql`
         INSERT INTO gateway_rate_limit_buckets (key, window_start, count, expires_at, tokens_remaining, last_refill_at)
-        VALUES (${key}, ${nowIso}, ${newCount}, ${newExpiresIso}, ${newTokens}, ${nowIso})
+        VALUES (${key}, ${newWindowStartIso}, ${newCount}, ${newExpiresIso}, ${newTokens}, ${newLastRefillIso})
         ON CONFLICT (key) DO UPDATE SET
           window_start    = EXCLUDED.window_start,
           count           = EXCLUDED.count,
