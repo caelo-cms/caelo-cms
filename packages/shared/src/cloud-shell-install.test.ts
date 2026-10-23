@@ -9,18 +9,13 @@ import {
 } from "./cloud-shell-install.js";
 
 describe("cloudShellInstallUrl", () => {
-  it("pins the release branch of the install repo and the provider's tutorial", () => {
-    expect(cloudShellInstallUrl("0.10.47", "gcp")).toBe(
-      "https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=release-v0.10.47&cloudshell_tutorial=gcp.md",
+  it("names no version: the install repo's main installs the newest release", () => {
+    expect(cloudShellInstallUrl("gcp")).toBe(
+      "https://shell.cloud.google.com/cloudshell/editor?cloudshell_git_repo=https://github.com/caelo-cms/install&cloudshell_git_branch=main&cloudshell_tutorial=gcp.md",
     );
-    expect(cloudShellInstallUrl("v1.2.3", "gcp-firebase")).toContain(
-      "cloudshell_git_branch=release-v1.2.3&cloudshell_tutorial=gcp-firebase.md",
+    expect(cloudShellInstallUrl("gcp-firebase")).toContain(
+      "cloudshell_git_branch=main&cloudshell_tutorial=gcp-firebase.md",
     );
-  });
-
-  it("refuses pre-releases and garbage: they have no pinned branch", () => {
-    expect(() => cloudShellInstallUrl("0.11.0-rc.1", "gcp")).toThrow(/only stable releases/);
-    expect(() => cloudShellInstallUrl("latest", "gcp")).toThrow();
   });
 });
 

@@ -8,6 +8,12 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import {
+  type NestedModuleResource,
+  type NestedRenderResolver,
+  renderPlacedModule,
+  tagModuleId,
+} from "@caelo-cms/shared";
 import type { StagedPage } from "../check.js";
 import { findingSchema } from "../findings.js";
 import { runFindingChecks } from "../runner.js";
@@ -127,6 +133,165 @@ describe("structure/repeated-markup", () => {
     expect(structureFindings([page(1, "/a", nav), page(2, "/b", nav)], MODULES, noLayouts)).toEqual(
       [],
     );
+  });
+});
+
+describe("#1027 — nested modules are module output, not free markup", () => {
+  // The searchVIU cases: FAQ items (`module-list` of "FAQ-Eintrag") on 24
+  // pages and tool cards (`module-list` "karten" of "Tool-Karte") on 9.
+  // Rendered through the real nested renderer and the composer's root
+  // tag, so the test fails if either stops stamping module roots.
+  const FAQ_ENTRY: NestedModuleResource = {
+    moduleId: id(201),
+    slug: "faq-entry",
+    html: "<details><summary>{{question}}</summary><p>{{answer}}</p></details>",
+    css: "",
+    js: "",
+    fields: [
+      { name: "question", kind: "text" },
+      { name: "answer", kind: "text" },
+    ],
+  };
+  const FAQ = {
+    id: id(202),
+    slug: "faq",
+    displayName: "FAQ",
+    html: '<section class="faq-wrap"><h2>{{title}}</h2><div class="faq">{{#items}}{{/items}}</div>{{>featured}}</section>',
+    fields: [
+      { name: "title", kind: "text" as const },
+      { name: "items", kind: "module-list" as const },
+      { name: "featured", kind: "module" as const },
+    ],
+  };
+  const TOOL_CARD: NestedModuleResource = {
+    moduleId: id(203),
+    slug: "tool-card",
+    html:
+      '<article class="tc" id="{{anchor}}"><div class="tc-head"><span class="ico"></span><h3>{{title}}</h3></div>' +
+      '<p>{{text}}</p><ul class="tc-pts">{{#points}}<li>{{.}}</li>{{/points}}</ul><a class="more" href="{{href}}">Mehr</a></article>',
+    css: "",
+    js: "",
+    fields: [
+      { name: "anchor", kind: "text" },
+      { name: "title", kind: "text" },
+      { name: "text", kind: "text" },
+      { name: "points", kind: "text-list" },
+      { name: "href", kind: "text" },
+    ],
+  };
+  const TOOL_LIST = {
+    id: id(204),
+    slug: "tool-card-list",
+    displayName: "Tool-Karten-Liste",
+    html: '<section class="tcl"><h2>{{title}}</h2><div class="tcg">{{#karten}}{{/karten}}</div></section>',
+    fields: [
+      { name: "title", kind: "text" as const },
+      { name: "karten", kind: "module-list" as const },
+    ],
+  };
+  const asStructure = (m: NestedModuleResource): StructureModule => ({
+    id: m.moduleId,
+    slug: m.slug,
+    displayName: m.slug,
+    html: m.html,
+  });
+  const nestedModules = [asStructure(FAQ_ENTRY), asStructure(TOOL_CARD)];
+
+  /** One instance per (page, item), so every page has its own copy. */
+  function resolverFor(pages: number): NestedRenderResolver {
+    const instances = new Map<string, { moduleId: string; values: Record<string, unknown> }>();
+    for (let p = 1; p <= pages; p++) {
+      for (let i = 0; i < 3; i++) {
+        instances.set(`faq-${p}-${i}`, {
+          moduleId: FAQ_ENTRY.moduleId,
+          values: { question: `Q${p}.${i}?`, answer: `A${p}.${i}` },
+        });
+        instances.set(`card-${p}-${i}`, {
+          moduleId: TOOL_CARD.moduleId,
+          values: {
+            anchor: `t${i}`,
+            title: `Tool ${i}`,
+            text: "x",
+            points: ["a", "b"],
+            href: "/t",
+          },
+        });
+      }
+    }
+    return {
+      getModule: (mid) => [FAQ_ENTRY, TOOL_CARD].find((m) => m.moduleId === mid) ?? null,
+      getContentInstance: (cid) => {
+        const ci = instances.get(cid);
+        return ci ? { id: cid, ...ci, deletedAt: null } : null;
+      },
+    };
+  }
+
+  function renderPage(n: number, resolver: NestedRenderResolver): StagedPage {
+    const ref = (kind: string, moduleId: string, i: number) => ({
+      moduleId,
+      contentInstanceId: `${kind}-${n}-${i}`,
+    });
+    const faq = renderPlacedModule(
+      {
+        html: FAQ.html,
+        fields: FAQ.fields,
+        values: {
+          title: "FAQ",
+          items: [0, 1, 2].map((i) => ref("faq", FAQ_ENTRY.moduleId, i)),
+          featured: ref("faq", FAQ_ENTRY.moduleId, 0),
+        },
+      },
+      resolver,
+      {},
+    );
+    const tools = renderPlacedModule(
+      {
+        html: TOOL_LIST.html,
+        fields: TOOL_LIST.fields,
+        values: {
+          title: "Tools",
+          karten: [0, 1, 2].map((i) => ref("card", TOOL_CARD.moduleId, i)),
+        },
+      },
+      resolver,
+      {},
+    );
+    expect([...faq.failures, ...tools.failures]).toEqual([]);
+    return page(n, `/p${n}`, tagModuleId(faq.html, FAQ.id), tagModuleId(tools.html, TOOL_LIST.id));
+  }
+
+  it("module and module-list sub-modules on many pages produce no findings", () => {
+    const resolver = resolverFor(4);
+    const pages = [1, 2, 3, 4].map((n) => renderPage(n, resolver));
+    expect(pages[0]?.html).toContain(`<details data-caelo-module-id="${FAQ_ENTRY.moduleId}">`);
+    expect(pages[0]?.html).toContain(
+      `<article class="tc" id="t0" data-caelo-module-id="${TOOL_CARD.moduleId}">`,
+    );
+    const findings = structureFindings(
+      pages,
+      [...MODULES, FAQ, TOOL_LIST, ...nestedModules],
+      noLayouts,
+    );
+    expect(findings).toEqual([]);
+  });
+
+  it("markup pasted into a richtext value next to nested modules is still an error (#820)", () => {
+    const resolver = resolverFor(2);
+    const pages = [1, 2].map((n) => {
+      const p = renderPage(n, resolver);
+      return { ...p, html: p.html.replace("<main>", `<main>${text(chain(3))}`) };
+    });
+    const findings = structureFindings(
+      pages,
+      [...MODULES, FAQ, TOOL_LIST, ...nestedModules],
+      noLayouts,
+    );
+    expect(findings.map((f) => [f.ruleId, f.pageId])).toEqual([
+      ["structure/repeated-markup", id(1)],
+      ["structure/repeated-markup", id(2)],
+    ]);
+    expect(findings[0]?.message).toStartWith("Repeated free markup: `div.chain`");
   });
 });
 

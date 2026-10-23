@@ -65,6 +65,7 @@ import {
 } from "./dispatch.js";
 import { readExternalApproval } from "./external-authorization.js";
 import { externalPluginDefinition } from "./external-plugin.js";
+import { describeLoadError } from "./load-error.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { runSandbox } from "./sandbox-runtime.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
@@ -236,7 +237,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
           });
         }
       } catch (e) {
-        failed.push({ slug: tp.definition.slug, reason: (e as Error).message });
+        failed.push({ slug: tp.definition.slug, reason: describeLoadError(e) });
       }
     }
     return { loaded, inactive, failed };
@@ -248,7 +249,7 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   } catch (e) {
     // No plugins directory at all — fine on a fresh dev install.
     entries = [];
-    failed.push({ slug: "<root>", reason: (e as Error).message });
+    failed.push({ slug: "<root>", reason: describeLoadError(e) });
   }
 
   const publicKeyHex = resolveTrustRoot(opts);
@@ -303,12 +304,12 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
         });
       }
     } catch (e) {
-      failed.push({ slug: slugStr, reason: (e as Error).message });
+      failed.push({ slug: slugStr, reason: describeLoadError(e) });
       // Best-effort: write a `failed` row so /settings/plugins shows the error.
       await markPluginFailed({
         infra: opts.infra,
         slug: slugStr,
-        reason: (e as Error).message,
+        reason: describeLoadError(e),
         systemActorId: opts.systemActorId,
       }).catch(() => undefined);
     }
@@ -364,7 +365,7 @@ async function loadActiveTier2Plugins(
     // Don't block Tier-1 boot if the DB query fails — log + continue.
     return {
       loaded,
-      failed: [{ slug: "<tier2-bootstrap>", reason: (e as Error).message }],
+      failed: [{ slug: "<tier2-bootstrap>", reason: describeLoadError(e) }],
     };
   }
 
@@ -450,7 +451,7 @@ async function loadActiveTier2Plugins(
       for (const tool of definition.tools ?? []) pluginToolsRegistry.register(row.slug, tool);
       loaded.push({ slug: row.slug, version: row.version });
     } catch (e) {
-      failed.push({ slug: row.slug, reason: (e as Error).message });
+      failed.push({ slug: row.slug, reason: describeLoadError(e) });
     }
   }
   return { loaded, failed };
@@ -594,7 +595,7 @@ export async function loadActivatedPlugin(
         ? { loaded: true }
         : { loaded: false, reason: `plugin is ${outcome.status}, not active` };
     } catch (e) {
-      return { loaded: false, reason: (e as Error).message };
+      return { loaded: false, reason: describeLoadError(e) };
     }
   }
   const pluginDir = resolvePath(bootOpts.pluginsRoot, slug);
@@ -617,7 +618,7 @@ export async function loadActivatedPlugin(
       ? { loaded: true }
       : { loaded: false, reason: `plugin is ${outcome.status}, not active` };
   } catch (e) {
-    return { loaded: false, reason: (e as Error).message };
+    return { loaded: false, reason: describeLoadError(e) };
   }
 }
 
@@ -748,7 +749,7 @@ export async function activateApprovedExternalPlugin(
     if (live.loaded) setPluginDisabled(manifest.slug, false);
     return live;
   } catch (error) {
-    return { loaded: false, reason: (error as Error).message };
+    return { loaded: false, reason: describeLoadError(error) };
   }
 }
 
@@ -1035,7 +1036,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
       await def.onActivate(ctx);
     } catch (e) {
       loadedPlugins.unload(def.slug);
-      throw new Error(`plugin "${def.slug}" onActivate failed: ${(e as Error).message}`);
+      throw new Error(`plugin "${def.slug}" onActivate failed: ${describeLoadError(e)}`);
     }
   }
 

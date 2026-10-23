@@ -44,8 +44,9 @@ name: E2E Live Edit (real AI)
 # Main is covered once per release, not per push (operator direction,
 # 2026-10-09): a squash merge re-runs code its PR already ran green, and at
 # ~15 merges a day the per-push run was half of the suite's spend (~$4.50 per
-# run). release-cut dispatches this workflow on main and refuses to cut unless
-# it is green on the exact commit being released. Trade-off: a regression
+# run). release-cut dispatches this workflow on release-gate/<sha> (a branch
+# pinned to the main commit it cuts) and refuses to cut unless it is green on
+# that exact commit. Trade-off: a regression
 # that only appears when two PRs combine on main surfaces at the next release
 # cut, not at merge time.
 on:

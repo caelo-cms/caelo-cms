@@ -1,9 +1,0 @@
-{
-  "version": "0.10.65",
-  "security": false,
-  "advisories": [],
-  "acknowledgeContractMigrations": true,
-  "acknowledgeInfraNeutral": false,
-  "lastContractVersion": "0.10.65",
-  "ownerAction": null
-}

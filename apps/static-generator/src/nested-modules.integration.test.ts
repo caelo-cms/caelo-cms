@@ -233,9 +233,13 @@ describe("static build renders nested modules", () => {
     const { run, buildDir } = build(page.pageId, `${PFX}-ok`);
     await run;
     const html = await readFile(await pageFile(page.pageId, buildDir), "utf8");
-    expect(html).toContain('<p class="badge">Most popular</p>');
+    // Each nested root carries its own module id (#1027).
+    const id = (m: { moduleId: string }) => `data-caelo-module-id="${m.moduleId}"`;
+    expect(html).toContain(`<p class="badge" ${id(page.featured)}>Most popular</p>`);
+    const [starter, business] = page.cards;
+    if (!starter || !business) throw new Error("fixture has two cards");
     expect(html).toContain(
-      '<div class="ps__grid"><article class="plan">Starter</article><article class="plan">Business</article></div>',
+      `<div class="ps__grid"><article class="plan" ${id(starter)}>Starter</article><article class="plan" ${id(business)}>Business</article></div>`,
     );
     expect(html).toContain(".plan{border:1px solid}");
     expect(html).not.toContain("needs recursive renderer");
@@ -287,7 +291,9 @@ describe("static build renders nested modules", () => {
     const after = build(page.pageId, `${PFX}-post-merge`);
     await after.run;
     const html = await readFile(await pageFile(page.pageId, after.buildDir), "utf8");
-    expect(html).toContain('<article class="plan">Enterprise</article>');
+    expect(html).toContain(
+      `<article class="plan" data-caelo-module-id="${card.moduleId}">Enterprise</article>`,
+    );
     expect(html).not.toContain("Business");
   });
 

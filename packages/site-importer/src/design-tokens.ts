@@ -12,10 +12,7 @@
  *     raw records — no classification in the page),
  *   - the PURE derivation from raw samples to a compact, deterministic
  *     design-token JSON (a few KB max),
- *   - the PURE site-level aggregation across pages,
- *   - the PURE flattening into `{token, value, scope}` tuples that
- *     `imports.compose_from_run` merges over the extractor's
- *     inline-CSS-derived tokens.
+ *   - the PURE site-level aggregation across pages.
  *
  * Deliberately NOT here: any parsing/purging of source stylesheets.
  * Raw CSS is bloat we never replay (epic #252 non-goal); computed
@@ -458,91 +455,4 @@ export function aggregateSiteDesignTokens(pages: readonly PageDesignTokens[]): S
     roles,
     pageCount: pages.length,
   };
-}
-
-/** A computed length/number the DTCG dimension schema accepts as-is
- *  (`16px`, `1.5rem`, unitless `1.5`, bare `0`). Excludes `normal`,
- *  `auto`, etc. so a non-length never reaches the theme validator. */
-const DIMENSION_VALUE_RE = /^-?\d+(\.\d+)?(px|rem|em|%|vh|vw|vmin|vmax|pt|pc|ch|ex)?$/;
-
-/**
- * issue #32 — build a DTCG typography composite from a role's sampled
- * props. fontFamily passes through; fontSize / lineHeight are kept only
- * when they are real CSS lengths (computed `line-height` is often
- * `normal`, which the theme's `dimension` schema rejects — skip it
- * loudly rather than feed junk that aborts the whole compose);
- * fontWeight is coerced to the number the composite schema wants
- * (getComputedStyle yields `"700"`, but `fontWeightValue` accepts a
- * number or a keyword, never a numeric string). Returns null when no
- * sub-field qualified, so an unsampled role emits no token.
- */
-function typographyComposite(
-  props: Readonly<Record<string, string>>,
-): Record<string, string | number> | null {
-  const composite: Record<string, string | number> = {};
-  const family = (props.fontFamily ?? "").trim();
-  if (family) composite.fontFamily = family;
-  const size = (props.fontSize ?? "").trim();
-  if (size && DIMENSION_VALUE_RE.test(size)) composite.fontSize = size;
-  const lineHeight = (props.lineHeight ?? "").trim();
-  if (lineHeight && DIMENSION_VALUE_RE.test(lineHeight)) composite.lineHeight = lineHeight;
-  const weight = (props.fontWeight ?? "").trim();
-  if (/^\d+$/.test(weight)) composite.fontWeight = Number(weight);
-  else if (weight === "normal" || weight === "bold") composite.fontWeight = weight;
-  return Object.keys(composite).length > 0 ? composite : null;
-}
-
-/**
- * PURE: site-level summary → flat `{token, value, scope}` tuples in the
- * shape `imports.compose_from_run` aggregates (and
- * `prepareLegacyAggregatedToken` canonicalises). Only emits tokens the
- * theme layer can actually store; sampled values overwrite same-named
- * extractor tokens at the compose merge because computed styles are
- * ground truth.
- *
- * Typography lands as DTCG composites (`typography.body` /
- * `typography.heading`) carrying the measured type scale — family +
- * size + weight + line-height — so the rebuild uses the source's actual
- * scale instead of the AI eyeballing it. These are the roles the theme
- * renderer + editors already expect (`--font-body`, `--text-heading`,
- * `--font-weight-heading`, `--leading-*`); the body font moves from the
- * old `typography.family` slot onto `typography.body` where the renderer
- * reads it. `space-*` tuples carry the measured spacing rhythm.
- */
-export function flattenSiteDesignTokens(
-  site: SiteDesignTokens,
-): Array<{ token: string; value: string; scope: string }> {
-  const out: Array<{ token: string; value: string; scope: string }> = [];
-  const role = (name: string): Readonly<Record<string, string>> => site.roles[name] ?? {};
-  const push = (token: string, scope: string, value: string | undefined): void => {
-    if (value) out.push({ token, value, scope });
-  };
-  push("color-background", "color", role("body").backgroundColor);
-  push("color-text", "color", role("body").color);
-  push("color-heading", "color", role("h1").color);
-  push("color-link", "color", role("a").color);
-  push("color-primary", "color", role("button").backgroundColor);
-  push("color-primary-contrast", "color", role("button").color);
-
-  // Type scale — one composite per role. Body family comes from `body`,
-  // its size/line-height from the representative paragraph.
-  const body = typographyComposite({
-    fontFamily: role("body").fontFamily ?? "",
-    fontSize: role("p").fontSize ?? "",
-    lineHeight: role("p").lineHeight ?? "",
-  });
-  if (body)
-    out.push({ token: "typography-body", value: JSON.stringify(body), scope: "typography" });
-  const heading = typographyComposite(role("h1"));
-  if (heading)
-    out.push({ token: "typography-heading", value: JSON.stringify(heading), scope: "typography" });
-
-  push("radius-base", "radius", role("button").borderRadius);
-
-  // Spacing scale — measured rhythm. Emitted after type so the ordering
-  // stays stable + easy to assert.
-  for (const metric of ["section", "container", "card", "button"]) {
-    push(`space-${metric}`, "space", site.spacing[metric]);
-  }
-  return out;
 }

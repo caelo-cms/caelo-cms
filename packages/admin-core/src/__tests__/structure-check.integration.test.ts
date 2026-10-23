@@ -13,10 +13,15 @@
  *
  * The test also pins what the check relies on: the static build keeps the
  * `data-caelo-module-id` every module root carries.
+ *
+ * #1027 — sub-modules in `module-list` / `module` fields are module
+ * output, not free markup: the same FAQ entry module on several pages
+ * keeps the gate open, because the static build stamps each nested root
+ * with its own module id.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -213,6 +218,78 @@ async function buildPage(slug: string, body: string): Promise<string> {
   return value.pageId;
 }
 
+/** The FAQ entry the #1027 test nests: classed, big enough to be a pattern. */
+const FAQ_ENTRY_HTML =
+  '<details class="faq-item"><summary class="q">{{question}}</summary><div class="a"><p>{{answer}}</p></div></details>';
+const nested = { faqModuleId: "", entryModuleId: "" };
+
+/**
+ * A page whose only placement is an FAQ module: a `module-list` of three
+ * FAQ entry sub-modules plus one more in a `module` field. The first call
+ * mints both modules; later calls reuse them by id with their own entries.
+ */
+async function buildFaqPage(slug: string): Promise<string> {
+  const entries = [0, 1, 2, 3].map((i) => ({
+    ref: `e${i}`,
+    ...(nested.entryModuleId
+      ? { moduleId: nested.entryModuleId }
+      : i === 0
+        ? {
+            displayName: `${PFX}faq-entry`,
+            description: "One FAQ question with its answer.",
+            kind: "content",
+            html: FAQ_ENTRY_HTML,
+            fields: [
+              { name: "question", kind: "text", label: "Question" },
+              { name: "answer", kind: "text", label: "Answer" },
+            ],
+          }
+        : { moduleId: { $ref: "e0" } }),
+    content: {
+      source: "inline",
+      values: { question: `${slug} question ${i}?`, answer: `${slug} answer ${i}.` },
+    },
+  }));
+  const values = {
+    items: [{ $ref: "e0" }, { $ref: "e1" }, { $ref: "e2" }],
+    featured: { $ref: "e3" },
+  };
+  const faq = nested.faqModuleId
+    ? { blockName: "content", moduleId: nested.faqModuleId, content: { source: "inline", values } }
+    : {
+        blockName: "content",
+        displayName: `${PFX}faq`,
+        description: "FAQ section: a list of FAQ entries plus one featured entry.",
+        kind: "content",
+        html: '<section class="faq"><div class="faq-list">{{#items}}{{/items}}</div><aside class="faq-top">{{>featured}}</aside></section>',
+        fields: [
+          { name: "items", kind: "module-list", label: "Entries" },
+          { name: "featured", kind: "module", label: "Featured entry" },
+        ],
+        content: { source: "inline", values },
+      };
+  const value = await op<{
+    pageId: string;
+    placements: { moduleId: string }[];
+    detached: { moduleId: string }[];
+  }>(HUMAN, "pages.build_page", {
+    page: { slug, title: slug, templateId },
+    modules: [...entries, faq],
+  });
+  nested.faqModuleId ||= value.placements[0]?.moduleId ?? "";
+  nested.entryModuleId ||= value.detached[0]?.moduleId ?? "";
+  await op(HUMAN, "pages.update", { pageId: value.pageId, status: "published" });
+  await op(HUMAN, "pages_seo.set", { pageId: value.pageId, metaDescription: `About ${slug}.` });
+  return value.pageId;
+}
+
+/** Every HTML file of a staged build, concatenated. */
+async function builtHtml(runId: string): Promise<string> {
+  const dir = join(testRoot, "output", "staging", "builds", runId);
+  const files = (await readdir(dir, { recursive: true })).filter((f) => f.endsWith(".html"));
+  return (await Promise.all(files.map((f) => readFile(join(dir, f), "utf8")))).join("\n");
+}
+
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
@@ -323,5 +400,24 @@ describe("the core structure check (#820)", () => {
       got.pages.flatMap((p) => p.checkFindings).filter((f) => f.ruleId.startsWith("structure/")),
     ).toEqual([]);
     expect(await gate()).toMatchObject({ open: true, state: "clean" });
+  });
+
+  it("sub-modules (module-list + module) on several pages are not free markup (#1027)", async () => {
+    await buildFaqPage(`${PFX}faq-a`);
+    await buildFaqPage(`${PFX}faq-b`);
+    await buildFaqPage(`${PFX}faq-c`);
+    const runId = await stageAndAudit("nested");
+    const got = await op<AuditRead>(AI, "quality_audits.get", { deployRunId: runId });
+    expect(
+      got.pages
+        .flatMap((p) => p.checkFindings)
+        .filter((f) => f.ruleId.startsWith("structure/"))
+        .map((f) => f.message),
+    ).toEqual([]);
+    expect(await gate()).toMatchObject({ open: true, state: "clean" });
+    // What the check relies on: every nested root carries its own id in
+    // the static build (4 entries x 3 pages).
+    const tagged = `<details class="faq-item" data-caelo-module-id="${nested.entryModuleId}">`;
+    expect((await builtHtml(runId)).split(tagged).length - 1).toBe(12);
   });
 });

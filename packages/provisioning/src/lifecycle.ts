@@ -48,6 +48,7 @@ import {
   provisionerServiceAccountEmail,
 } from "./provisioner-identity.js";
 import { assertRegionUnchanged } from "./regions.js";
+import type { ReleaseManifest } from "./release-manifest.js";
 import {
   type HttpFetch,
   ROTATABLE_SECRETS,
@@ -76,6 +77,7 @@ import {
 import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
 import { findServiceUrl, lookupFailure, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 import { createIapHealthProbe, type HealthProbe } from "./upgrade/health.js";
+import { createReleaseImageForms, platformDigestsOf } from "./upgrade/image-forms.js";
 import { recordRolledDigests } from "./upgrade/record-rolled.js";
 import {
   canonicalReleaseTag,
@@ -729,20 +731,35 @@ async function gcpHealthProbe(
  * install's install.json and Pulumi stack. The converge job (#819,
  * converge-job-gcp.ts) records through the same function as the terminal.
  *
+ * @param manifest - the verified manifest of the rolled release, when the
+ *   caller holds it: its signed platform digests save the index lookup
  * @returns whether every record was written; false fails the upgrade.
  */
-export function recordRolledRelease(
+export async function recordRolledRelease(
   installId: string,
   provider: "gcp" | "gcp-firebase",
   digests: ImageDigests,
   releaseVersion: string | null,
+  manifest?: ReleaseManifest | null,
 ): Promise<boolean> {
   // The local copy always names where the state lives (install-state.ts
   // stateStoreFor), and reading it cannot fail on bucket access.
   const local = readLocalMetadata(installId);
   const bucket = local?.stateBackend?.kind === "gcs" ? local.stateBackend.bucket : null;
+  // #1025 — record the linux/amd64 forms Cloud Run reports next to the
+  // indexes. Not knowing them is no failed upgrade: the upgrader job then
+  // reads the index from the release registry itself.
+  const platform = await platformDigestsOf(digests, createReleaseImageForms(), manifest);
+  if (!platform.ok) {
+    log.warn(
+      yellow(
+        `install.json records the release by its image indexes only; their linux/amd64 forms could not be read (${platform.message}).`,
+      ),
+    );
+  }
   return recordRolledDigests(digests, releaseVersion, {
-    recordInstall: (d, v) => recordImageDigests(installId, d, v),
+    recordInstall: (d, v) =>
+      recordImageDigests(installId, d, v, platform.ok ? platform.platformDigests : null),
     pinStack: async (d) => {
       const meta = readMetadata(installId);
       if (!meta) throw new Error(`no install.json for '${installId}'`);

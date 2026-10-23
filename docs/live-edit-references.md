@@ -90,7 +90,7 @@ site's fixed navigation cannot hide them.
 
 ```ts
 {
-  moduleId: string;      // full uuid of the module root (data-caelo-module-id)
+  moduleId: string;      // full uuid of the nearest module root (data-caelo-module-id); inside a sub-module of a module / module-list field that is the sub-module (#1027)
   selector: string;      // element path from the module root, e.g. "section.hero > h1"; "" for dropdown picks
   label: string;         // module root + its first heading, for the chip
   selectedText?: string; // what the operator selected (≤ 2000 chars)

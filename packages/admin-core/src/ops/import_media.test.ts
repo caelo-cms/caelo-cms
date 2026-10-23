@@ -26,7 +26,7 @@ const SOURCE = "https://searchviu.com/";
 const BRANCH = "11111111-1111-4111-8111-111111111111";
 
 describe("assembleDirectBuildUnits (direct-build media fallback)", () => {
-  it("collects the layout-bound header (logo) module the compose path misses", () => {
+  it("collects the layout-bound header (logo) module the accepted-page path misses", () => {
     const units = assembleDirectBuildUnits(
       {
         pageModules: [

@@ -9,8 +9,11 @@
  * The staged HTML is the truth (it is what Publish live ships); the module
  * templates only say which parts of a module's output are the template's
  * own and which came in through a field value. Every module root carries
- * `data-caelo-module-id` (preview-compose.ts tagModuleId), so the walk
- * needs no other mapping.
+ * `data-caelo-module-id` (module-id-tag.ts tagModuleId) — page placements
+ * via the composer, sub-modules in `module` / `module-list` fields via the
+ * nested renderer (#1027) — so the walk needs no other mapping: each root,
+ * nested ones included, is checked against its own template, and a parent
+ * skips its nested roots.
  */
 
 import {
