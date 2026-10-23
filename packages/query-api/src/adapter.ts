@@ -90,33 +90,57 @@ export interface AdapterConfig {
 const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role"] } as const;
 
 /**
- * Seconds a pooled connection may carry no traffic before Bun closes it.
+ * Seconds a pooled connection may sit unused in the pool before Bun closes it.
  *
- * Without it (Bun's default is no limit) a connection whose network flow
- * was dropped without a reset — the database restarting, a VPC path
- * forgetting an idle flow — stays in the pool forever, and every query
- * handed to it waits forever too. Production lost its admin that way for
- * a day: every database request hung until Cloud Run's 3600 s request
- * timeout while the process looked healthy.
+ * Without it (Bun's default is no limit) a connection can idle long enough
+ * for the network to forget its flow without a reset — GCP drops idle TCP
+ * flows after about 10 minutes. The next query handed to it then waits
+ * forever. Production lost its admin that way for a day: every database
+ * request hung until Cloud Run's 3600 s request timeout while the process
+ * looked healthy. Five minutes keeps every pooled connection younger than
+ * that, so the pool never hands out a forgotten one.
  *
- * Bun measures silence per socket, also while a query or a transaction is
- * running, so the value must exceed the longest legitimate silence: a
- * transaction waiting on an advisory lock while another one publishes the
- * site (live-release-lock.ts, staging-publication-lock.ts). 15 minutes
- * covers that with room and still bounds a wedge to minutes, not a day.
+ * Safe for long transactions only from Bun 1.4.4 on: before, Bun counted
+ * silence on a checked-out connection too and killed a transaction that
+ * waited on an advisory lock while another one published the site
+ * (live-release-lock.ts, deploy.promote). {@link MIN_BUN_VERSION} guards it.
  */
-export const POOL_IDLE_TIMEOUT_SECONDS = 900;
+export const POOL_IDLE_TIMEOUT_SECONDS = 300;
+
+/** The first Bun whose `idleTimeout` spares checked-out connections (see above). */
+export const MIN_BUN_VERSION = "1.4.4";
+
+/**
+ * Throw unless `version` is at least {@link MIN_BUN_VERSION}. An older Bun
+ * would abort legitimate transactions after {@link POOL_IDLE_TIMEOUT_SECONDS}
+ * of silence, so the adapter refuses to start instead.
+ */
+export function assertPoolSafeBun(version: string): void {
+  const parts = (v: string) => v.split("-")[0]?.split(".").map(Number) ?? [];
+  const have = parts(version);
+  const need = parts(MIN_BUN_VERSION);
+  for (let i = 0; i < need.length; i++) {
+    const h = have[i] ?? 0;
+    const n = need[i] ?? 0;
+    if (h > n) return;
+    if (h < n) {
+      throw new Error(
+        `DatabaseAdapter needs Bun >= ${MIN_BUN_VERSION} (running ${version}): older Bun closes pooled connections mid-transaction after the idle timeout. Upgrade Bun.`,
+      );
+    }
+  }
+}
 
 /**
  * Thrown by {@link DatabaseAdapter.ping} when a pool does not answer
- * `SELECT 1` within the deadline: its connections hang (see
+ * its identity probe within the deadline: its connections hang (see
  * {@link POOL_IDLE_TIMEOUT_SECONDS}) or the database is overloaded.
  */
 export class DatabaseUnresponsiveError extends Error {
   override readonly name = "DatabaseUnresponsiveError";
   constructor(pool: "admin" | "public", deadlineMs: number) {
     super(
-      `the ${pool} database pool did not answer SELECT 1 within ${deadlineMs} ms; its connections hang or the database is overloaded`,
+      `the ${pool} database pool did not answer within ${deadlineMs} ms; its connections hang or the database is overloaded`,
     );
   }
 }
@@ -165,6 +189,29 @@ function validatePoolMax(value: number, source: string): number {
   return value;
 }
 
+/** Settle with `work`, or reject with `onMissed()` once `signal` aborts first. */
+function withDeadline<T>(
+  work: PromiseLike<T>,
+  signal: AbortSignal,
+  onMissed: () => Error,
+): Promise<T> {
+  if (signal.aborted) return Promise.reject(onMissed());
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(onMissed());
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(work).then(
+      (v) => {
+        signal.removeEventListener("abort", abort);
+        resolve(v);
+      },
+      (e: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(e);
+      },
+    );
+  });
+}
+
 interface ConnectionIdentity {
   readonly user: string;
   readonly database: string;
@@ -197,6 +244,7 @@ export class DatabaseAdapter {
         "DatabaseAdapter: a public-only adapter (adminDatabaseUrl: null) must expect no admin role, and an adapter with an admin URL must expect one",
       );
     }
+    assertPoolSafeBun(globalThis.Bun?.version ?? "0");
     // No pool cap configured (the production case) keeps Bun's default of 10.
     const poolMax = resolvePoolMax(config.poolMax);
     const idleTimeout = config.poolIdleTimeoutSeconds ?? POOL_IDLE_TIMEOUT_SECONDS;
@@ -280,52 +328,69 @@ export class DatabaseAdapter {
   }
 
   async #verifyRolesOnce(): Promise<void> {
-    if (this.#adminRaw !== null) {
-      const admin = await this.#identity(this.#adminRaw);
-      if (admin.user !== this.#roles.admin || admin.database !== "cms_admin") {
+    if (this.#adminRaw !== null)
+      this.#assertIdentity("admin", await this.#identity(this.#adminRaw));
+    this.#assertIdentity("public", await this.#identity(this.#publicRaw));
+  }
+
+  #assertIdentity(pool: "admin" | "public", id: ConnectionIdentity): void {
+    if (pool === "admin") {
+      if (id.user !== this.#roles.admin || id.database !== "cms_admin") {
         throw new Error(
-          `DatabaseAdapter admin pool expected (${this.#roles.admin}, cms_admin) but connected as (${admin.user}, ${admin.database}). Check ADMIN_DATABASE_URL.`,
+          `DatabaseAdapter admin pool expected (${this.#roles.admin}, cms_admin) but connected as (${id.user}, ${id.database}). Check ADMIN_DATABASE_URL.`,
         );
       }
+      return;
     }
-    const pub = await this.#identity(this.#publicRaw);
-    if (pub.database !== "cms_public") {
+    if (id.database !== "cms_public") {
       throw new Error(
-        `DatabaseAdapter public pool expected database cms_public but connected to ${pub.database}. Check PUBLIC_DATABASE_URL / PUBLIC_ADMIN_DATABASE_URL.`,
+        `DatabaseAdapter public pool expected database cms_public but connected to ${id.database}. Check PUBLIC_DATABASE_URL / PUBLIC_ADMIN_DATABASE_URL.`,
       );
     }
-    if (!this.#roles.public.includes(pub.user)) {
+    if (!this.#roles.public.includes(id.user)) {
       throw new Error(
-        `DatabaseAdapter public pool expected user ${this.#roles.public.join(" or ")}, got ${pub.user}.`,
+        `DatabaseAdapter public pool expected user ${this.#roles.public.join(" or ")}, got ${id.user}.`,
       );
     }
   }
 
   /**
-   * Prove that every pool answers right now: `SELECT 1` through each one,
-   * bounded by `deadlineMs`. Unlike {@link verifyRoles} it is never
-   * remembered, so a health check built on it notices a pool whose
-   * connections started hanging after the first success.
+   * Prove that every pool answers right now as its expected role, bounded
+   * by `deadlineMs`: the identity probe of {@link verifyRoles} on a
+   * connection reserved from each pool. Unlike `verifyRoles` it is never
+   * remembered and never waits on a remembered probe, so a health check
+   * built on it notices a pool whose connections started hanging after the
+   * first success, and answers in time even when the first probe hangs.
    *
-   * @throws DatabaseUnresponsiveError naming the first pool that missed the deadline.
+   * When the deadline wins, the reserved connection is closed rather than
+   * returned: an abandoned query must not keep holding a pool slot, or
+   * repeated health probes during an outage would fill the pool with them.
+   *
+   * @throws DatabaseUnresponsiveError naming a pool that missed the deadline.
    */
   async ping(deadlineMs: number): Promise<void> {
+    const deadline = AbortSignal.timeout(deadlineMs);
     const pools: ["admin" | "public", SQL][] = [["public", this.#publicRaw]];
     if (this.#adminRaw !== null) pools.unshift(["admin", this.#adminRaw]);
     await Promise.all(
       pools.map(async ([name, pool]) => {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const deadline = new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new DatabaseUnresponsiveError(name, deadlineMs)),
-            deadlineMs,
-          );
-        });
+        const unresponsive = () => new DatabaseUnresponsiveError(name, deadlineMs);
+        let reserved: Awaited<ReturnType<SQL["reserve"]>>;
         try {
-          await Promise.race([pool`SELECT 1`, deadline]);
-        } finally {
-          clearTimeout(timer);
+          reserved = await pool.reserve({ signal: deadline });
+        } catch (e) {
+          if (deadline.aborted) throw unresponsive();
+          throw e;
         }
+        let identity: ConnectionIdentity;
+        try {
+          identity = await withDeadline(this.#identity(reserved), deadline, unresponsive);
+        } catch (e) {
+          await reserved.close().catch(() => undefined);
+          throw e;
+        }
+        reserved.release();
+        this.#assertIdentity(name, identity);
       }),
     );
   }

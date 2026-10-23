@@ -23,7 +23,7 @@
  * secrets and no raw database errors — those go to the server log.
  */
 
-import { execute } from "@caelo-cms/query-api";
+import { DatabaseUnresponsiveError, execute } from "@caelo-cms/query-api";
 import { CAELO_VERSION, type ExecutionContext } from "@caelo-cms/shared";
 import { json } from "@sveltejs/kit";
 import {
@@ -60,20 +60,17 @@ export const GET: RequestHandler = async ({ url }) => {
   let query: ReturnType<typeof getQueryContext>;
   try {
     query = getQueryContext();
-    // The lightest check that proves a working connection AND the expected
+    // Proves, within the deadline, a working connection AND the expected
     // role on both pools (catches a swapped or misrouted database URL).
-    await query.adapter.verifyRoles();
-  } catch (e) {
-    console.error(`[health] database check failed: ${(e as Error).message}`);
-    return unhealthy("DbUnreachable", "a database pool cannot connect as its expected role");
-  }
-  try {
-    // verifyRoles remembers its first success, so on its own this endpoint
+    // Not verifyRoles(): it remembers its first success, so this endpoint
     // kept answering ok while every pooled connection hung.
     await query.adapter.ping(PING_DEADLINE_MS);
   } catch (e) {
-    console.error(`[health] ${(e as Error).message}`);
-    return unhealthy("DbUnresponsive", "a database pool does not answer queries");
+    console.error(`[health] database check failed: ${(e as Error).message}`);
+    if (e instanceof DatabaseUnresponsiveError) {
+      return unhealthy("DbUnresponsive", "a database pool does not answer queries");
+    }
+    return unhealthy("DbUnreachable", "a database pool cannot connect as its expected role");
   }
   if (url.searchParams.get("deep") !== "1") {
     return json({ ok: true, version: CAELO_VERSION }, { headers: NO_STORE });

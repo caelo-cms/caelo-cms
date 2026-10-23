@@ -9,7 +9,8 @@
  *
  * A TCP proxy between the adapter and Postgres reproduces it: after
  * `silenceExisting()` it forwards nothing on the connections it already
- * holds, yet still serves new ones — exactly what the pool saw.
+ * holds, yet still serves new ones — exactly what the pool saw. Needs
+ * Bun >= 1.4.4, whose idle timeout spares checked-out connections.
  */
 
 import { afterEach, describe, expect, it } from "bun:test";
@@ -121,37 +122,60 @@ describe("pooled connections whose network flow went silent", () => {
     return { adapter, admin, pub };
   }
 
-  it("the pool recovers on its own once the idle timeout closes the dead connections", async () => {
+  it("closes idle pooled connections before the network can forget them", async () => {
     const { adapter, admin } = setup(1);
     const raw = adapter.rawAdmin();
     await Promise.all([raw`SELECT 1`, raw`SELECT 1`]);
     admin.silenceExisting();
-
-    // The query on a dead connection fails loudly instead of waiting forever…
-    expect(await outcome(raw`SELECT 1`, 5000)).toMatch(/^error: .*[Ii]dle timeout/);
-    // …and the pool then opens a working connection.
-    await Bun.sleep(1200);
+    // Without the idle timeout this query lands on a forgotten connection
+    // and never returns; with it, those connections are gone by now.
+    await Bun.sleep(1500);
     expect(await outcome(raw`SELECT 1`, 5000)).toBe("ok");
   });
 
-  it("ping() reports a pool whose connections hang, where verifyRoles still passes", async () => {
-    const { adapter, pub } = setup();
-    await adapter.verifyRoles();
-    await adapter.ping(2000);
-    pub.silenceExisting();
+  it("keeps a transaction that is silent for longer than the idle timeout", async () => {
+    // A Stage / Publish live waits on an advisory lock without traffic for
+    // as long as the other one publishes; the timeout must not end it.
+    const { adapter } = setup(1);
+    const result = adapter.rawAdmin().begin(async (tx) => {
+      await tx`SELECT 1`;
+      await Bun.sleep(2500);
+      await tx`SELECT 2`;
+    });
+    expect(await outcome(result, 8000)).toBe("ok");
+  });
 
-    await adapter.verifyRoles(); // remembered — this is why health needed ping()
+  it("ping() reports a hanging pool in time, even while the remembered role check hangs", async () => {
+    const { adapter, pub } = setup();
+    const raw = adapter.rawPublic();
+    await Promise.all([raw`SELECT 1`, raw`SELECT 1`]);
+    pub.silenceExisting();
+    void adapter.verifyRoles().catch(() => undefined); // hangs on a dead connection
+
+    const started = performance.now();
     const err = await adapter.ping(300).then(
       () => null,
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(DatabaseUnresponsiveError);
     expect((err as Error).message).toContain("public database pool");
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
-  it("the production idle timeout outlasts the advisory-lock waits during a site publish", () => {
-    // Bun counts silence while a transaction waits on a lock too; a short
-    // value would abort legitimate Stage / Publish live waits.
-    expect(POOL_IDLE_TIMEOUT_SECONDS).toBeGreaterThanOrEqual(600);
+  it("ping() gives back the slots of timed-out probes, so the pool recovers", async () => {
+    const { adapter, admin } = setup();
+    const raw = adapter.rawAdmin();
+    await Promise.all([raw`SELECT 1`, raw`SELECT 1`]);
+    admin.silenceExisting();
+    // Two dead connections in a pool of two: each failed probe must close
+    // its connection instead of leaving it checked out.
+    for (let i = 0; i < 4; i++) await adapter.ping(300).catch(() => undefined);
+    await adapter.ping(3000);
+    expect(await outcome(raw`SELECT 1`, 3000)).toBe("ok");
+  });
+
+  it("the production idle timeout stays below GCP's idle-flow timeout", () => {
+    // GCP forgets an idle TCP flow after about 10 minutes.
+    expect(POOL_IDLE_TIMEOUT_SECONDS).toBeLessThan(600);
   });
 });
