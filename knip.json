@@ -43,7 +43,8 @@
         "src/healthcheck.ts",
         "src/security/operator-access/sync-job.ts",
         "src/quality/lighthouse-child.ts",
-        "scripts/lighthouse-smoke.ts"
+        "scripts/lighthouse-smoke.ts",
+        "src/__tests__/*.bench.ts"
       ]
     },
     "packages/migrations": {
