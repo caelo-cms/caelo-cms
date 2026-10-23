@@ -46,8 +46,8 @@ async function wipe(): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug = ${PAGE_SLUG})`;
-      await tx`DELETE FROM pages WHERE slug = ${PAGE_SLUG}`;
+      await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PAGE_SLUG}%`})`;
+      await tx`DELETE FROM pages WHERE slug LIKE ${`${PAGE_SLUG}%`}`;
       await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE display_name LIKE ${"BPLabel %"})`;
       await tx`DELETE FROM modules WHERE display_name LIKE ${"BPLabel %"}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
@@ -116,7 +116,7 @@ describe("build_page result labels", () => {
       },
       { adapter, registry } as ToolContext,
     );
-    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error(r.content);
     const value = r.value as {
       placements: { index: number; moduleId: string }[];
       detached: { index: number; ref: string; moduleId: string }[];
@@ -138,5 +138,70 @@ describe("build_page result labels", () => {
     expect(lines.filter((l) => l.startsWith("modules[1]")).join("\n")).not.toContain(
       "--bplabel-unknown-ink",
     );
+  });
+
+  it("a custom property one module defines is known to the others in the call", async () => {
+    const r = await buildPageTool.handler(
+      SYSTEM,
+      {
+        page: { slug: `${PAGE_SLUG}-vars`, title: "BPLabel Vars", templateId },
+        modules: [
+          {
+            blockName: "content",
+            displayName: "BPLabel Gutter Root",
+            description: "Defines the shared gutter.",
+            kind: "utility",
+            html: '<div class="gutter-root"></div>',
+            css: ":root { --bplabel-gutter: 24px; }",
+          },
+          {
+            blockName: "content",
+            displayName: "BPLabel Gutter User",
+            description: "Uses the shared gutter.",
+            kind: "content",
+            html: '<div class="gutter-user"></div>',
+            css: ".gutter-user { padding: var(--bplabel-gutter); }",
+          },
+        ],
+      },
+      { adapter, registry } as ToolContext,
+    );
+    if (!r.ok) throw new Error(r.content);
+    expect(r.content).not.toContain("--bplabel-gutter` ");
+    expect(r.content).not.toContain("Unknown CSS vars");
+  });
+
+  it("a placement-only entry is labelled by index, not by authoring fields the op ignores", async () => {
+    const r = await buildPageTool.handler(
+      SYSTEM,
+      {
+        page: { slug: `${PAGE_SLUG}-reuse`, title: "BPLabel Reuse", templateId },
+        modules: [
+          {
+            ref: "card",
+            blockName: "content",
+            displayName: "BPLabel Card",
+            description: "A card.",
+            kind: "content",
+            html: "<article>{{title}}</article>",
+            fields: [{ kind: "text", name: "title", label: "Title" }],
+            content: { source: "inline", values: { title: "One" } },
+          },
+          {
+            blockName: "content",
+            moduleId: { $ref: "card" },
+            displayName: "Not the card's name",
+            content: { source: "inline", values: { title: "Two" } },
+          },
+        ],
+      },
+      { adapter, registry } as ToolContext,
+    );
+    if (!r.ok) throw new Error(r.content);
+    const lines = r.content.split("\n");
+    expect(lines[1]).toStartWith("modules[0] (BPLabel Card) → content#");
+    expect(lines[2]).toStartWith("modules[1] → content#");
+    expect(r.content).not.toContain("[object Object]");
+    expect(r.content).not.toContain("Not the card's name");
   });
 });

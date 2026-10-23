@@ -14,6 +14,7 @@
 import { execute } from "@caelo-cms/query-api";
 import {
   type ExecutionContext,
+  extractCssVarDefinitions,
   formatUnknownCssVarWarning,
   listThemeCssVarNames,
   scanCssVars,
@@ -40,6 +41,10 @@ export async function cssVarWarningSuffix(
  * The same scan for several CSS sources at once (one theme read), so a
  * multi-module tool can attribute each warning to the module whose CSS
  * caused it. Returns one entry per input: the warning, or "".
+ *
+ * A custom property one source defines (`:root { --gutter: … }` in one
+ * module) is known to every source in the call — the modules ship together,
+ * so another module using it is not drift.
  */
 export async function cssVarWarnings(
   ctx: ExecutionContext,
@@ -52,7 +57,10 @@ export async function cssVarWarnings(
   if (!res.ok) return empty;
   const theme = (res.value as { theme: { tokens: ThemeDocument } | null }).theme;
   if (theme === null) return empty;
-  const knownVars = listThemeCssVarNames(theme.tokens);
+  const knownVars = [
+    ...listThemeCssVarNames(theme.tokens),
+    ...cssList.flatMap((css) => (css ? [...extractCssVarDefinitions(css)] : [])),
+  ];
   return cssList.map((css) =>
     css === undefined || css.trim().length === 0
       ? ""

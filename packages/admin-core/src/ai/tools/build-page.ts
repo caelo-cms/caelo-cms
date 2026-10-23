@@ -282,9 +282,16 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     // One line per input entry, in input order, labelled with the entry's
     // own index — a detached (nested-only) entry has no placement, so the
     // placements array alone would shift every later index.
+    // Named by what the call authored. A placement-only entry (`moduleId`,
+    // possibly a `{"$ref"}`) gets no name: the op ignores its authoring
+    // fields, so a name it carried may not be the module's — its line shows
+    // the resolved module id instead.
     const label = (i: number) => {
       const m = input.modules[i];
-      const name = m?.displayName ?? m?.type ?? m?.moduleId;
+      const name =
+        m === undefined || m.moduleId !== undefined
+          ? undefined
+          : [m.displayName, m.type].find((v): v is string => typeof v === "string" && v.length > 0);
       return name ? `modules[${i}] (${name})` : `modules[${i}]`;
     };
     const resultLines = [
