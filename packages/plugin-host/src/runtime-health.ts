@@ -375,10 +375,29 @@ async function releaseBugIntakeClaim(
   }
 }
 
+/** What this instance runs for one plugin, as `plugin_runtime` records it. */
+interface RuntimeOutcome {
+  readonly state: "loaded" | "error";
+  readonly errorId: string | null;
+}
+
+/**
+ * Outcomes this instance decided but could not write (the database refused
+ * the transaction). The heartbeat only refreshes rows that exist, so a lost
+ * write would leave the plugin "unreported" here for the whole process
+ * lifetime; each beat writes these again until they land. A newer write
+ * for the same plugin replaces the entry.
+ */
+/** "This instance runs nothing of the plugin": its row is deleted. */
+const CLEARED = Symbol("cleared");
+
+const unsavedOutcomes = new Map<string, RuntimeOutcome | typeof CLEARED>();
+
 /**
  * Say what this instance runs for `slug`: loaded, or failed to load with
- * `errorId`. Logged and swallowed when the database refuses — the load
- * outcome itself is already decided and logged.
+ * `errorId`. When the database refuses, the outcome is kept and the next
+ * heartbeat writes it again — the load outcome itself is already decided
+ * and logged.
  */
 export async function recordPluginRuntime(opts: {
   infra: PluginHostInfra;
@@ -387,13 +406,37 @@ export async function recordPluginRuntime(opts: {
   state: "loaded" | "error";
   errorId: string | null;
 }): Promise<void> {
+  const outcome: RuntimeOutcome = { state: opts.state, errorId: opts.errorId };
+  unsavedOutcomes.set(opts.slug, outcome);
+  await writeOutcome(opts.infra, opts.systemActorId, opts.slug, outcome);
+}
+
+/**
+ * Write one outcome; forget it once written (unless a newer one replaced it
+ * meanwhile). An error row that is gone (its plugin was uninstalled) has
+ * nothing left to report, so that outcome is dropped instead of retried.
+ */
+async function writeOutcome(
+  infra: PluginHostInfra,
+  systemActorId: string,
+  slug: string,
+  outcome: RuntimeOutcome | typeof CLEARED,
+): Promise<void> {
   try {
-    await opts.infra.adapter.withAdminTransaction(
-      systemCtx(opts.systemActorId, `plugin-runtime-${opts.slug}`),
+    await infra.adapter.withAdminTransaction(
+      systemCtx(systemActorId, `plugin-runtime-${slug}`),
       async (tx) => {
+        if (outcome === CLEARED) {
+          await tx.execute(sql`
+            DELETE FROM plugin_runtime WHERE instance_id = ${INSTANCE_ID} AND plugin_slug = ${slug}
+          `);
+          return;
+        }
         await tx.execute(sql`
           INSERT INTO plugin_runtime (instance_id, plugin_slug, revision, state, error_id)
-          VALUES (${INSTANCE_ID}, ${opts.slug}, ${REVISION}, ${opts.state}, ${opts.errorId}::uuid)
+          SELECT ${INSTANCE_ID}, ${slug}, ${REVISION}, ${outcome.state}, ${outcome.errorId}::uuid
+          WHERE ${outcome.errorId}::uuid IS NULL
+             OR EXISTS (SELECT 1 FROM plugin_errors WHERE id = ${outcome.errorId}::uuid)
           ON CONFLICT (instance_id, plugin_slug) DO UPDATE SET
             state = EXCLUDED.state,
             error_id = EXCLUDED.error_id,
@@ -402,33 +445,31 @@ export async function recordPluginRuntime(opts: {
         `);
       },
     );
+    if (unsavedOutcomes.get(slug) === outcome) unsavedOutcomes.delete(slug);
   } catch (e) {
     console.error(
-      `[plugin-host] could not record the runtime state of ${opts.slug}: ${describeLoadError(e)}`,
+      `[plugin-host] could not record the runtime state of ${slug} (retried on the next heartbeat): ${describeLoadError(e)}`,
     );
   }
 }
 
-/** Forget this instance's row for `slug` (the plugin stopped running here). */
+/**
+ * Forget this instance's row for `slug` (the plugin stopped running here).
+ * Retried on the heartbeat like a refused outcome, so a stopped plugin
+ * never keeps counting as loaded on this server.
+ */
 export async function clearPluginRuntime(opts: {
   infra: PluginHostInfra;
   systemActorId: string;
   slug: string;
 }): Promise<void> {
-  try {
-    await opts.infra.adapter.withAdminTransaction(
-      systemCtx(opts.systemActorId, `plugin-runtime-clear-${opts.slug}`),
-      async (tx) => {
-        await tx.execute(sql`
-          DELETE FROM plugin_runtime WHERE instance_id = ${INSTANCE_ID} AND plugin_slug = ${opts.slug}
-        `);
-      },
-    );
-  } catch (e) {
-    console.error(
-      `[plugin-host] could not clear the runtime state of ${opts.slug}: ${describeLoadError(e)}`,
-    );
-  }
+  unsavedOutcomes.set(opts.slug, CLEARED);
+  await writeOutcome(opts.infra, opts.systemActorId, opts.slug, CLEARED);
+}
+
+/** The plugins whose runtime state is still waiting to be written (tests). */
+export function unsavedRuntimeSlugs(): string[] {
+  return [...unsavedOutcomes.keys()];
 }
 
 /** How often an instance confirms its rows are still current. */
@@ -439,24 +480,33 @@ const STALE_ROW_RETENTION = "1 day";
 let heartbeat: ReturnType<typeof setInterval> | null = null;
 
 /**
- * Start this instance's heartbeat (idempotent). Each beat refreshes this
- * instance's rows and deletes rows of instances that stopped long ago.
+ * Start this instance's heartbeat (idempotent). Each beat writes the
+ * outcomes the database refused earlier, refreshes this instance's rows and
+ * deletes rows of instances that stopped long ago.
  */
 export function startRuntimeHeartbeat(infra: PluginHostInfra, systemActorId: string): void {
   if (heartbeat) return;
   heartbeat = setInterval(() => {
-    void beat(infra, systemActorId);
+    void runtimeHeartbeatOnce(infra, systemActorId);
   }, HEARTBEAT_MS);
   heartbeat.unref?.();
 }
 
-/** Stop the heartbeat (tests, shutdown). */
+/** Stop the heartbeat and forget unwritten outcomes (tests, shutdown). */
 export function stopRuntimeHeartbeat(): void {
   if (heartbeat) clearInterval(heartbeat);
   heartbeat = null;
+  unsavedOutcomes.clear();
 }
 
-async function beat(infra: PluginHostInfra, systemActorId: string): Promise<void> {
+/** One heartbeat; exported so tests need not wait {@link HEARTBEAT_MS}. */
+export async function runtimeHeartbeatOnce(
+  infra: PluginHostInfra,
+  systemActorId: string,
+): Promise<void> {
+  for (const [slug, outcome] of [...unsavedOutcomes]) {
+    await writeOutcome(infra, systemActorId, slug, outcome);
+  }
   try {
     await infra.adapter.withAdminTransaction(
       systemCtx(systemActorId, "plugin-runtime-heartbeat"),

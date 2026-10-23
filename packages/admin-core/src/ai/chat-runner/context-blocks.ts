@@ -22,7 +22,7 @@ import type { ChatEngagement, ChatSendMessageInput, ExecutionContext } from "@ca
 
 import { describeStageReadiness, type StageReadiness } from "../../deploy/stage-readiness.js";
 import { buildPageContext } from "./context/page.js";
-import { buildSkillsContext } from "./context/skills.js";
+import { buildSkillsContext, type UnavailableSkill } from "./context/skills.js";
 
 /** The (static) blocks passed to composeSystemPromptChunks. */
 export interface PreCatalogueBlocks {
@@ -56,6 +56,8 @@ export interface SystemContextResult {
    * pinned index; announced once on the USER message instead.
    */
   newlyActivatedSkills: ReadonlyArray<{ slug: string; description: string }>;
+  /** #1008 — skills of the pinned index whose plugin does not run here now. */
+  unavailableSkills: readonly UnavailableSkill[];
   /**
    * Cold-start status ("Theme: needs setup", …), each entry naming the tool
    * that fixes it, plus follow-ups the AI should offer rather than do (the
@@ -249,6 +251,7 @@ export async function buildSystemContextBlocks(deps: {
     engagedSkills: skills.engagedSkills,
     allowedToolNames: skills.allowedToolNames,
     newlyActivatedSkills: skills.newlyActivated,
+    unavailableSkills: skills.notRunningHere,
     statusLine,
   };
 }

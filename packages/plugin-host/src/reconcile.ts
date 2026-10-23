@@ -90,14 +90,6 @@ export function pluginsNotRunningHere(): ReadonlyArray<PluginNotRunning> {
     .sort((a, b) => a.slug.localeCompare(b.slug));
 }
 
-/**
- * Whether `slug` runs on this instance: loaded and not stopped. What the
- * Publish-live gate checks every active plugin against.
- */
-export function pluginRunsHere(slug: string): boolean {
-  return loadedPlugins.bySlug(slug) !== undefined && !isPluginDisabled(slug);
-}
-
 /** Why `slug` does not run here, when this instance tried and failed. */
 export function pluginNotRunningReason(slug: string): string | undefined {
   return notRunningHere.get(slug);

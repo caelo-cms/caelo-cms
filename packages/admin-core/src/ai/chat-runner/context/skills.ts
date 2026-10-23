@@ -17,6 +17,7 @@
  * skills already loaded this chat.
  */
 
+import { pluginRanHereAt } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ChatEngagement, ExecutionContext } from "@caelo-cms/shared";
@@ -40,6 +41,17 @@ interface ActiveSkillRow {
   /** When the skill became available (migration 0213). Null on rows
    *  predating an activation stamp — treated as "always been here". */
   activatedAt: string | null;
+  /** The owning plugin, null for a standalone skill (#1008). */
+  pluginSlug?: string | null;
+  /** Why the owning plugin does not run in this process, null when it does (#1008). */
+  notRunningHere?: string | null;
+}
+
+/** A skill of the pinned index whose plugin stopped running here (#1008). */
+export interface UnavailableSkill {
+  readonly slug: string;
+  readonly pluginSlug: string;
+  readonly reason: string;
 }
 
 export interface SkillsContext {
@@ -65,6 +77,13 @@ export interface SkillsContext {
    * already covers everything.
    */
   newlyActivated: ReadonlyArray<{ slug: string; description: string }>;
+  /**
+   * #1008 — skills in the pinned index whose plugin failed to load in this
+   * process since the chat started: their tools are absent here. The index
+   * keeps them (it is never rewritten mid-chat); the chat-runner tells the
+   * chat in its history — see `formatUnavailableSkillsNotice`.
+   */
+  notRunningHere: readonly UnavailableSkill[];
 }
 
 /**
@@ -84,6 +103,21 @@ export function formatNewSkillsNotice(
   const lines = skills.map((s) => `- ${s.slug}: ${s.description}`);
   return [
     "New skills became available since this chat started. They are not in the `# Skills` index above — load them by slug with load_skill({slugs}) when a task matches:",
+    ...lines,
+  ].join("\n");
+}
+
+/**
+ * The note a chat gets when skills of its pinned index became unavailable
+ * on this server: their plugin failed to load here, so their tools are
+ * absent. Rides the history for the same reason as the new-skills notice.
+ */
+export function formatUnavailableSkillsNotice(skills: readonly UnavailableSkill[]): string {
+  const lines = skills.map(
+    (s) => `- ${s.slug} (plugin "${s.pluginSlug}" failed to load on this server: ${s.reason})`,
+  );
+  return [
+    "These skills from the `# Skills` index are NOT available right now — their plugin failed to load on this server, so their tools are missing. Do not load or follow them; tell the operator, /settings/plugins shows the problem (load_skill says when one is back):",
     ...lines,
   ].join("\n");
 }
@@ -143,9 +177,13 @@ export async function buildSkillsContext(
     allowedToolNames: null,
     engagedSkills: [],
     newlyActivated: [],
+    notRunningHere: [],
   };
+  // #1008 — also the skills whose plugin does not run here: the pinned
+  // index may have to keep listing them.
   const skillsListResult = await execute(registry, adapter, humanCtx, "skills.list", {
     status: "active",
+    includeNotRunningHere: true,
   });
   if (!skillsListResult.ok) return empty;
   const allActive = (skillsListResult.value as { skills: ActiveSkillRow[] }).skills;
@@ -164,10 +202,27 @@ export async function buildSkillsContext(
     const at = Date.parse(s.activatedAt);
     return Number.isNaN(at) || at <= startedAt;
   };
-  const activeSkills = allActive.filter(pinnable);
+  // #1008 — a plugin's skills are available where its tools are: in a
+  // process that runs it. The index shows a plugin skill when its plugin
+  // ran here when the chat began; a later failure or recovery reaches the
+  // chat through its history, like an activation does.
+  const availableNow = (s: ActiveSkillRow): boolean => !s.notRunningHere;
+  const ranAtStart = (s: ActiveSkillRow): boolean =>
+    !s.pluginSlug || Number.isNaN(startedAt)
+      ? availableNow(s)
+      : pluginRanHereAt(s.pluginSlug, startedAt);
+  const inIndex = (s: ActiveSkillRow): boolean => pinnable(s) && ranAtStart(s);
+  const activeSkills = allActive.filter(inIndex);
   const newlyActivated = allActive
-    .filter((s) => !pinnable(s))
+    .filter((s) => availableNow(s) && !inIndex(s))
     .map((s) => ({ slug: s.slug, description: s.description }));
+  const notRunningHere: UnavailableSkill[] = allActive
+    .filter((s) => inIndex(s) && !availableNow(s))
+    .map((s) => ({
+      slug: s.slug,
+      pluginSlug: s.pluginSlug ?? "",
+      reason: s.notRunningHere ?? "",
+    }));
 
   // The index is the ONLY skill content in the system prompt (never a body).
   // Sort by slug so the block is byte-stable across turns (a stable cached
@@ -209,7 +264,7 @@ export async function buildSkillsContext(
   // pinned ones — a newly activated skill the model loads must get its
   // tools preloaded like any other. The pin governs the prefix only.
   const loadedSet = new Set(args.loadedSkillSlugs);
-  const loaded = allActive.filter((s) => loadedSet.has(s.slug));
+  const loaded = allActive.filter((s) => loadedSet.has(s.slug) && availableNow(s));
   const engagedSkills: ChatEngagement[] = loaded.map((s) => ({
     skillId: s.id,
     slug: s.slug,
@@ -225,5 +280,6 @@ export async function buildSkillsContext(
     allowedToolNames: preload.size > 0 ? preload : null,
     engagedSkills,
     newlyActivated,
+    notRunningHere,
   };
 }

@@ -16,7 +16,8 @@
     message: string;
     occurrences: number;
     lastSeenAt: string;
-    reported: boolean;
+    /** What became of the bug report (admin-core ops/plugins/health.ts). */
+    report: "none" | "local" | "queued" | "sent" | "failed";
   }
 
   interface Props {
@@ -43,7 +44,20 @@
   /** Who has to act, in the Owner's words. */
   function owner(e: PluginErrorSummary): string {
     if (e.errorClass === "core") {
-      return e.reported ? "Caelo problem, reported to the Caelo team" : "Caelo problem";
+      // Only `sent` means the Caelo team has it; with bug forwarding off
+      // (the default) the report stays on this site.
+      switch (e.report) {
+        case "sent":
+          return "Caelo problem, sent to the Caelo team";
+        case "queued":
+          return "Caelo problem, recorded on this site and about to be sent to the Caelo team";
+        case "failed":
+          return "Caelo problem, recorded on this site (sending it to the Caelo team failed)";
+        case "local":
+          return "Caelo problem, recorded on this site (not sent: bug forwarding is off)";
+        case "none":
+          return "Caelo problem";
+      }
     }
     if (e.errorClass === "plugin") return "Problem in the plugin's code";
     return "Temporary problem, retried";

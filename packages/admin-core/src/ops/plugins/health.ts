@@ -23,7 +23,7 @@
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 
 /**
@@ -35,6 +35,8 @@ import { z } from "zod";
  */
 export const pluginHealthState = z.enum(["running", "failing", "unreported", "not_running"]);
 
+const pluginErrorReport = z.enum(["none", "local", "queued", "sent", "failed"]);
+
 const pluginErrorSummary = z.object({
   phase: z.string(),
   /** transient (retried), plugin (the plugin's own code), core (Caelo; reported). */
@@ -43,8 +45,14 @@ const pluginErrorSummary = z.object({
   occurrences: z.number().int(),
   firstSeenAt: z.string(),
   lastSeenAt: z.string(),
-  /** True once the problem went to the bug intake. */
-  reported: z.boolean(),
+  /**
+   * What became of the bug report of a `core` problem: `none` (not filed),
+   * `local` (recorded on this site only — bug forwarding is off), `queued`
+   * (waiting to be sent to the Caelo team), `sent` (the Caelo team has it),
+   * `failed` (sending failed; it stays recorded here). Only `sent` means
+   * the team was told.
+   */
+  report: pluginErrorReport,
 });
 
 export const pluginHealth = z.object({
@@ -74,7 +82,19 @@ interface ErrorRow {
   occurrences: number;
   first_seen_at: string | Date;
   last_seen_at: string | Date;
-  reported: boolean;
+  report: z.infer<typeof pluginErrorReport>;
+}
+
+/**
+ * The `report` column for `plugin_errors` rows aliased `e`: read from the
+ * linked bug report's forwarding state (migration 0329), so "reported"
+ * never claims the Caelo team was told when the report stayed on this site.
+ */
+function reportState(errors: SQL): SQL {
+  return sql`coalesce((
+    SELECT CASE b.forwarding_state WHEN 'local_only' THEN 'local' ELSE b.forwarding_state END
+    FROM ai_bug_reports b WHERE b.id = ${errors}.bug_report_id
+  ), 'none')`;
 }
 
 function iso(v: string | Date): string {
@@ -89,7 +109,7 @@ function summary(r: ErrorRow): z.infer<typeof pluginErrorSummary> {
     occurrences: r.occurrences,
     firstSeenAt: iso(r.first_seen_at),
     lastSeenAt: iso(r.last_seen_at),
-    reported: r.reported,
+    report: r.report,
   };
 }
 
@@ -123,7 +143,7 @@ export async function readPluginHealth(
   const problems = (await tx.execute(sql`
     SELECT DISTINCT ON (r.plugin_slug)
            r.plugin_slug, e.phase, e.error_class, e.message, e.occurrences,
-           e.first_seen_at, e.last_seen_at, e.bug_report_id IS NOT NULL AS reported
+           e.first_seen_at, e.last_seen_at, ${reportState(sql`e`)} AS report
     FROM plugin_runtime r
     JOIN plugin_errors e ON e.id = r.error_id
     WHERE r.plugin_slug = ANY(${slugArray})
@@ -134,10 +154,10 @@ export async function readPluginHealth(
 
   const recent = (await tx.execute(sql`
     SELECT plugin_slug, phase, error_class, message, occurrences,
-           first_seen_at, last_seen_at, reported
+           first_seen_at, last_seen_at, report
     FROM (
       SELECT plugin_slug, phase, error_class, message, occurrences,
-             first_seen_at, last_seen_at, bug_report_id IS NOT NULL AS reported,
+             first_seen_at, last_seen_at, ${reportState(sql`plugin_errors`)} AS report,
              row_number() OVER (PARTITION BY plugin_slug ORDER BY last_seen_at DESC) AS n
       FROM plugin_errors
       WHERE plugin_slug = ANY(${slugArray})
@@ -186,7 +206,7 @@ export async function readDiscoveryFailures(
     SELECT * FROM (
       SELECT DISTINCT ON (e.plugin_slug)
              e.plugin_slug, e.phase, e.error_class, e.message, e.occurrences,
-             e.first_seen_at, e.last_seen_at, e.bug_report_id IS NOT NULL AS reported
+             e.first_seen_at, e.last_seen_at, ${reportState(sql`e`)} AS report
       FROM plugin_errors e
       WHERE NOT EXISTS (SELECT 1 FROM plugins p WHERE p.slug = e.plugin_slug)
         AND e.last_seen_at > now() - ${RECENT_WINDOW}::interval

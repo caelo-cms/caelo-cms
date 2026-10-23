@@ -388,7 +388,7 @@ describe("#393 — lifecycle completion", () => {
       for (const slug of ["t393-skill", "t393-archived-skill"]) {
         const read = await execute(registry, adapter, ctx, "skills.get", { slug });
         expect(read.ok).toBe(true);
-        expect(read.value).toEqual({ skill: null });
+        expect(read.value).toEqual({ skill: null, notRunningHere: null });
       }
       const listed = await execute(registry, adapter, ctx, "skills.list", { status: "any" });
       expect(listed.ok).toBe(true);

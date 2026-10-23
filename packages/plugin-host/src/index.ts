@@ -134,6 +134,13 @@ export {
   loadActivatedPlugin,
   resetPluginHost,
 } from "./loader.js";
+// #1008 — whether a plugin runs in this process: where its skills are
+// available, and what the Publish-live gate checks every active plugin against.
+export {
+  pluginFailedHereReason,
+  pluginRanHereAt,
+  pluginRunsHere,
+} from "./local-availability.js";
 export type { PluginRowLocker } from "./private-storage.js";
 export {
   type PromptContextRenderer,
@@ -149,7 +156,6 @@ export {
   pluginNotRunningMarker,
   pluginNotRunningReason,
   pluginNotRunningSlug,
-  pluginRunsHere,
   pluginsNotRunningHere,
   resetPluginHostSync,
   syncPluginHost,

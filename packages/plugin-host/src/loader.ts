@@ -71,6 +71,7 @@ import { readExternalApproval } from "./external-authorization.js";
 import { externalPluginDefinition } from "./external-plugin.js";
 import { describeLoadError } from "./load-error.js";
 import { loadReported, reportLoadFailure } from "./load-outcome.js";
+import { resetLocalLoadOutcomes } from "./local-availability.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import {
   inPhase,
@@ -1235,6 +1236,7 @@ export function resetPluginHost(): void {
   // Audit fix #2: also clear the disabled-flags set so a previous test's
   // disable() doesn't leak into the next fixture.
   resetDisabledSet();
+  resetLocalLoadOutcomes();
   stopRuntimeHeartbeat();
 }
 

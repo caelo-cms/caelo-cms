@@ -213,7 +213,7 @@ describe("get_plugin", () => {
         occurrences: 2,
         firstSeenAt: "2026-10-23T08:00:00.000Z",
         lastSeenAt: "2026-10-23T08:05:00.000Z",
-        reported: false,
+        report: "none",
       },
       recentErrors: [],
     },

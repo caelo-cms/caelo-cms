@@ -53,7 +53,7 @@ const FAILURE = {
   occurrences: 3,
   firstSeenAt: "2026-10-23T08:00:00.000Z",
   lastSeenAt: "2026-10-23T09:00:00.000Z",
-  reported: true,
+  report: "sent",
 };
 
 describe("list_plugins — plugins found but not verified", () => {

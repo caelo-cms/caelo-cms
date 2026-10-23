@@ -24,6 +24,8 @@
 import { sql } from "drizzle-orm";
 import type { PluginHostInfra } from "./dispatch.js";
 import { deregisterPlugin } from "./lifecycle.js";
+import { describeLoadError } from "./load-error.js";
+import { noteLocalLoadOutcome } from "./local-availability.js";
 import {
   classifyPluginError,
   phaseOf,
@@ -57,6 +59,7 @@ export async function loadReported<T>(
     try {
       const outcome = await load();
       if (isLoaded(outcome)) {
+        noteLocalLoadOutcome(subject.slug, true, null);
         await recordPluginRuntime({ ...subject, state: "loaded", errorId: null });
       }
       return outcome;
@@ -84,6 +87,8 @@ export async function loadReported<T>(
  * unreadable manifest).
  */
 export async function reportLoadFailure(subject: LoadSubject, error: unknown): Promise<void> {
+  // Its tools are gone from this process, so are its skills (local-availability.ts).
+  noteLocalLoadOutcome(subject.slug, false, describeLoadError(error));
   let row: { id: string; status: string } | undefined;
   try {
     row = await subject.infra.adapter.withAdminTransaction(

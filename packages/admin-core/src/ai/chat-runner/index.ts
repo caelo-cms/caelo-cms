@@ -39,7 +39,11 @@ import {
   resolveProactiveCompaction,
 } from "./compaction.js";
 import { lastNoteSignature, noteSignature } from "./context/page.js";
-import { extractLoadedSkillSlugs, formatNewSkillsNotice } from "./context/skills.js";
+import {
+  extractLoadedSkillSlugs,
+  formatNewSkillsNotice,
+  formatUnavailableSkillsNotice,
+} from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
 import { buildContextSplitEstimate } from "./context-split.js";
 import {
@@ -478,6 +482,17 @@ async function* runSerializedChatTurn(
         "newskills",
         slugs.join(","),
         formatNewSkillsNotice(ctx.newlyActivatedSkills),
+      );
+    }
+    // #1008 — skills of the pinned index whose plugin failed to load on
+    // this server: the index keeps them, the chat hears it here. Seeded on
+    // the slug set, so it fires once per set.
+    if (ctx.unavailableSkills.length > 0) {
+      const slugs = ctx.unavailableSkills.map((s) => s.slug).sort();
+      await injectNote(
+        "skillsdown",
+        slugs.join(","),
+        formatUnavailableSkillsNotice(ctx.unavailableSkills),
       );
     }
   }
