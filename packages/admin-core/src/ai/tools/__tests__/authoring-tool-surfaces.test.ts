@@ -24,6 +24,7 @@ import { updateModulesManyTool } from "../bulk-pages-modules.js";
 import { createLayoutTool } from "../create-layout.js";
 import { createTemplateTool } from "../create-template.js";
 import { editModuleTool } from "../edit-module.js";
+import { loadSkillTool } from "../load-skill.js";
 import { proposeLayoutUpdateTool, proposeTemplateUpdateTool } from "../propose-tools-batch.js";
 import { getQualityAuditTool } from "../quality-audit-tools.js";
 import { mergeTokenDocumentIntoSet, updateThemeTokensTool } from "../update-theme-tokens.js";
@@ -228,5 +229,21 @@ describe("authoring tools decode a whole-value CDATA envelope around source text
     expect(
       updateModulesManyTool.schema.safeParse({ updates: [{ moduleId, css: guarded }] }).success,
     ).toBe(false);
+  });
+});
+
+describe("load_skill takes every skill a site build engages in one call", () => {
+  it("accepts the six-skill load the real-AI suite filed (runs 39924624682, 40018333047)", () => {
+    const slugs = [
+      "bootstrap-site",
+      "compose-page",
+      "design-quality",
+      "brand-voice-guard",
+      "theme-branding",
+      "templates-layouts",
+    ];
+    expect(loadSkillTool.schema.safeParse({ slugs }).success).toBe(true);
+    const props = loadSkillTool.inputSchema.properties as Props;
+    expect(Number(props.slugs?.maxItems)).toBeGreaterThanOrEqual(slugs.length);
   });
 });

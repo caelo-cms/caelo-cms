@@ -43,7 +43,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
       type: "object",
       additionalProperties: false,
       description:
-        "EITHER { pageId } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
+        "EITHER { pageId, metaDescription? } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
       properties: {
         pageId: { type: "string", format: "uuid" },
         slug: {
@@ -67,7 +67,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           minLength: 1,
           maxLength: 320,
           description:
-            "Create mode: the new page's meta description (150–160 characters, written from the page's content; in a migration, the source page's). A Stage refuses a published page without one — pass it here so the page is Stage-ready from this call (fill-once, same as autofill_page_seo).",
+            "The page's meta description (150–160 characters, written from the page's content; in a migration, the source page's). A Stage refuses a published page without one — pass it here so the page is Stage-ready from this call. Fill-once, same as autofill_page_seo: with pageId it is written only when the page has no description yet; an existing one is kept and the result says so.",
         },
         parentPageId: {
           type: "string",
