@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Installs the repo-pinned Playwright Chromium and its system packages with
+# the apt packages served from an actions/cache entry instead of the Ubuntu
+# mirror (issue #984). See install.sh for the full rationale. Requires
+# `bun install` to have run (it uses node_modules/playwright/cli.js).
+name: Install Playwright Chromium
+description: Playwright Chromium plus its fonts and libraries, apt packages cached
+
+runs:
+  using: composite
+  steps:
+    - name: Plan Playwright system packages
+      id: plan
+      shell: bash
+      env:
+        DEB_DIR: ${{ runner.temp }}/playwright-apt-debs
+        PLAYWRIGHT_CLI: ${{ github.workspace }}/node_modules/playwright/cli.js
+      run: ${{ github.action_path }}/install.sh plan
+
+    - name: Restore cached Playwright apt packages
+      id: restore
+      if: steps.plan.outputs.needed == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/playwright-apt-debs
+        key: ${{ steps.plan.outputs.key }}
+
+    - name: Install Playwright Chromium and system packages
+      id: install
+      shell: bash
+      env:
+        DEB_DIR: ${{ runner.temp }}/playwright-apt-debs
+        PLAYWRIGHT_CLI: ${{ github.workspace }}/node_modules/playwright/cli.js
+        NEEDED: ${{ steps.plan.outputs.needed }}
+        CACHE_HIT: ${{ steps.restore.outputs.cache-hit }}
+      run: ${{ github.action_path }}/install.sh install
+
+    # Saved right away rather than in a post step, so a later test failure in
+    # the job does not prevent the cache from being filled.
+    - name: Save Playwright apt packages to the cache
+      if: steps.install.outputs.populated == 'true' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/playwright-apt-debs
+        key: ${{ steps.plan.outputs.key }}
