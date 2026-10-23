@@ -36,6 +36,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
+import { type PluginHealth, pluginHealth, readPluginHealth } from "./health.js";
 import { afterPluginCommit } from "./host-sync.js";
 
 // ---------------------------------------------------------------------------
@@ -50,14 +51,7 @@ const validationFailureRow = z.object({
   hint: z.string(),
 });
 
-const pluginStatus = z.enum([
-  "draft",
-  "awaiting_activation",
-  "active",
-  "disabled",
-  "rejected",
-  "failed",
-]);
+const pluginStatus = z.enum(["draft", "awaiting_activation", "active", "disabled", "rejected"]);
 
 const pluginRow = z.object({
   id: z.string(),
@@ -80,6 +74,8 @@ const pluginRow = z.object({
   rejectionReason: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** What the running servers make of `status` (#1008) — see health.ts. */
+  health: pluginHealth,
 });
 
 interface PluginDb {
@@ -105,7 +101,9 @@ interface PluginDb {
   updated_at: string | Date;
 }
 
-function rowToOut(r: PluginDb): z.infer<typeof pluginRow> {
+function rowToOut(r: PluginDb, health: Map<string, PluginHealth>): z.infer<typeof pluginRow> {
+  const h = health.get(r.slug);
+  if (!h) throw new Error(`plugins: no health computed for "${r.slug}"`);
   return mapRowToOutput(r, pluginRow, (row) => ({
     id: row.id,
     slug: row.slug,
@@ -128,6 +126,7 @@ function rowToOut(r: PluginDb): z.infer<typeof pluginRow> {
     rejectionReason: row.rejection_reason,
     createdAt: toIsoRequired(row.created_at, "plugins.created_at"),
     updatedAt: toIsoRequired(row.updated_at, "plugins.updated_at"),
+    health: h,
   }));
 }
 
@@ -177,7 +176,8 @@ export const listPluginsOp = defineOperation({
       ${where}
       ORDER BY tier ASC, slug ASC
     `)) as unknown as PluginDb[];
-    return ok({ plugins: rows.map(rowToOut) });
+    const health = await readPluginHealth(tx, rows);
+    return ok({ plugins: rows.map((r) => rowToOut(r, health)) });
   },
 });
 
@@ -200,7 +200,8 @@ export const getPluginOp = defineOperation({
       FROM plugins WHERE slug = ${input.slug} LIMIT 1
     `)) as unknown as PluginDb[];
     const r = rows[0];
-    return ok({ plugin: r ? rowToOut(r) : null });
+    if (!r) return ok({ plugin: null });
+    return ok({ plugin: rowToOut(r, await readPluginHealth(tx, [r])) });
   },
 });
 

@@ -138,12 +138,25 @@ function names(list: unknown): string[] {
     : [];
 }
 
+/** One plugin error as one line: phase, class, count, when, message. */
+function formatPluginError(e: {
+  phase: string;
+  errorClass: string;
+  message: string;
+  occurrences: number;
+  lastSeenAt: string;
+  reported: boolean;
+}): string {
+  return `[${e.phase}, ${e.errorClass}${e.reported ? ", reported" : ""}] ${e.occurrences}x, last ${e.lastSeenAt}: ${e.message}`;
+}
+
 /** One plugin's detail + its last-24h AI spend against its cap. */
 export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
   name: "get_plugin",
   description:
-    "Read one plugin in detail: version, tier, status, signature, the validator's findings, the tools / skills / capabilities its manifest declares, and its AI spend over the last 24h against its AI cost cap. " +
-    "Use when list_plugins' one-line summary is not enough — e.g. why a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. " +
+    "Read one plugin in detail: version, tier, status, signature, health (whether the running servers have it loaded, and why not), its recent errors, the validator's findings, the tools / skills / capabilities its manifest declares, and its AI spend over the last 24h against its AI cost cap. " +
+    "Use when list_plugins' one-line summary is not enough — e.g. why a plugin is failing or a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. " +
+    "A `core` error is Caelo's fault and already went to the bug intake when reported=yes; a `plugin` error comes from the plugin's own code; `transient` ones were retried. Errors never switch a plugin off. " +
     "Never returns the plugin's source.",
   schema: getPluginInput,
   inputSchema: z.toJSONSchema(getPluginInput) as Record<string, unknown>,
@@ -164,6 +177,12 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
       `skills: ${names(m.skills).join(", ") || "(none)"}`,
       `requested capabilities: ${Array.isArray(m.requestedCapabilities) ? m.requestedCapabilities.join(", ") || "(none)" : "(none)"}`,
     ];
+    const h = plugin.health;
+    lines.push(
+      `health: ${h.state} (servers: ${h.servers.loaded} loaded, ${h.servers.failing} failing)`,
+    );
+    if (h.problem) lines.push(`problem: ${formatPluginError(h.problem)}`);
+    for (const e of h.recentErrors) lines.push(`recent error: ${formatPluginError(e)}`);
     if (plugin.rejectionReason) lines.push(`rejected: ${plugin.rejectionReason}`);
     for (const f of plugin.validationErrors) lines.push(`validator: ${JSON.stringify(f)}`);
     const spend = await execute(

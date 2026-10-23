@@ -28,6 +28,7 @@ interface PluginListRow {
   version: string;
   status: string;
   tier: 1 | 2;
+  health: { state: string; problem: { message: string } | null };
 }
 
 export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>, PluginListRow>({
@@ -36,6 +37,7 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
     "List the plugins installed on this site with their activation status. " +
     "`active` means the plugin is running and its tools and skills are available to you right now; " +
     "`awaiting_activation` means it is installed and verified but NOTHING of it is loaded — you cannot call its tools and its skills are not in your skills index. " +
+    "`health` says what the running servers make of that: `running`; `failing` (an active plugin failed to load on a server — the `problem` column says why; tell the operator, get_plugin has the details; the plugin is NOT switched off, its status stays active); `unreported` (just activated, no server has reported it yet); `not_running` (not active). " +
     "Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. " +
     "Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
   opName: "plugins.list",
@@ -46,6 +48,8 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
     { key: "slug", value: (p) => p.slug },
     { key: "status", value: (p) => p.status },
     { key: "version", value: (p) => p.version },
+    { key: "health", value: (p) => p.health.state },
+    { key: "problem", value: (p) => p.health.problem?.message ?? "" },
   ],
   emptyMessage: "No plugins installed on this site.",
 });

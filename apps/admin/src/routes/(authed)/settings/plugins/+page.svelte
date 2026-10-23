@@ -8,6 +8,7 @@
    * live on rows.
    */
 
+  import PluginHealth from "#lib/components/PluginHealth.svelte";
   import { confirmSubmit } from "#lib/confirm.svelte.js";
   import { Puzzle } from "lucide-svelte";
   import { enhance } from "$app/forms";
@@ -91,6 +92,7 @@
               <TableHead>Slug</TableHead>
               <TableHead>Version</TableHead>
               <TableHead>Status</TableHead>
+              <TableHead>Health</TableHead>
               <TableHead>Capabilities</TableHead>
               <TableHead>Source</TableHead>
               <TableHead>Action</TableHead>
@@ -105,6 +107,9 @@
                   <Badge variant={p.status === "active" ? "default" : "secondary"}>
                     {p.status}
                   </Badge>
+                </TableCell>
+                <TableCell>
+                  <PluginHealth slug={p.slug} health={p.health} />
                 </TableCell>
                 <TableCell>
                   {#if capabilitiesOf(p.manifestJson).length === 0}
@@ -229,6 +234,7 @@
               <TableHead>Slug</TableHead>
               <TableHead>Version</TableHead>
               <TableHead>Activated</TableHead>
+              <TableHead>Health</TableHead>
               <TableHead>Action</TableHead>
             </TableRow>
           </TableHeader>
@@ -238,6 +244,9 @@
                 <TableCell class="font-mono text-xs">{p.slug}</TableCell>
                 <TableCell class="text-xs">{p.version}</TableCell>
                 <TableCell class="text-xs text-muted-foreground">{fmtTime(p.activatedAt)}</TableCell>
+                <TableCell>
+                  <PluginHealth slug={p.slug} health={p.health} />
+                </TableCell>
                 <TableCell>
                   <form method="post" action="?/disable" use:enhance use:confirmSubmit={{ title: `Disable ${p.slug}?`, description: "Everything this plugin adds to the site stops working until you re-enable it.", confirmLabel: "Disable plugin" }}>
                     <input type="hidden" name="slug" value={p.slug} />

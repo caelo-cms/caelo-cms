@@ -96,8 +96,9 @@ function asArrayBuffer(u8: Uint8Array): ArrayBuffer {
  * verify; `{ ok: false, reason }` on mismatch / malformed input.
  *
  * The host loader treats `ok: false` as fatal for that plugin — it
- * refuses to load the plugin and inserts a `plugins` row with
- * status='failed' so the Owner sees the error in /settings/plugins.
+ * refuses to load the plugin and records the error in `plugin_errors`
+ * (and reports it to the bug intake), so the Owner sees it in
+ * /settings/plugins. The plugin's status is left alone (#1008).
  */
 export async function verifyManifestSignature(opts: {
   manifest: PluginManifest;
