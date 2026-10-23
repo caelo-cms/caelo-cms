@@ -22,6 +22,36 @@ import { makeListReadTool } from "./_make-read-tool.js";
 
 const listPluginsInput = z.object({}).strict();
 
+/** A plugin found on disk that failed verification before it was installed. */
+interface DiscoveryFailureRow {
+  slug: string;
+  phase: string;
+  errorClass: string;
+  message: string;
+  occurrences: number;
+  lastSeenAt: string;
+}
+
+/**
+ * The plugins found on disk that could not be verified, for the AI to
+ * explain: they are not installed, have no status and appear nowhere else.
+ * Null when there are none. Exported for its unit test.
+ */
+export function describeDiscoveryFailures(
+  failures: ReadonlyArray<DiscoveryFailureRow>,
+): string | null {
+  if (failures.length === 0) return null;
+  const lines = failures.map(
+    (f) =>
+      `- ${f.slug}: ${f.phase}, ${f.errorClass}, ${f.occurrences}x, last ${f.lastSeenAt}: ${f.message}`,
+  );
+  return (
+    `Found on disk but could not be verified, so NOT installed (${failures.length}) — nothing of them is loaded and the Owner cannot activate them until they verify. ` +
+    "Tell the operator: the plugin must be rebuilt (dist/index.js) and its manifest signed again, then the site redeployed or restarted.\n" +
+    lines.join("\n")
+  );
+}
+
 /** What `plugins.list` hands back, narrowed to the fields worth spending tokens on. */
 interface PluginListRow {
   slug: string;
@@ -38,6 +68,7 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
     "`status`: `active` = the Owner wants it running; `awaiting_activation` = installed and verified, but nothing of it is loaded; `disabled` = the Owner stopped it. " +
     "Availability comes from `health`, not from `status`: only `health = running` means its tools and skills are usable right now. `failing` = an active plugin failed to load on a server (`problem` says why) — it is NOT switched off, tell the operator, get_plugin has the details; `unreported` = active, but no server has reported it yet (just activated or starting); `not_running` = not active. Never tell the operator a capability works while its plugin is failing. " +
     "Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. " +
+    "Plugins found on disk that failed verification are listed after the table: they are NOT installed — explain why and the fix. " +
     "Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
   opName: "plugins.list",
   input: listPluginsInput,
@@ -51,4 +82,8 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
     { key: "problem", value: (p) => p.health.problem?.message ?? "" },
   ],
   emptyMessage: "No plugins installed on this site.",
+  appendix: (value) =>
+    describeDiscoveryFailures(
+      (value as { discoveryFailures: DiscoveryFailureRow[] }).discoveryFailures,
+    ),
 });

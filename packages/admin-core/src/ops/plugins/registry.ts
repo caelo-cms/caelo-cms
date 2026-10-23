@@ -36,7 +36,14 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "../_helpers.js";
-import { type PluginHealth, pluginHealth, readPluginHealth } from "./health.js";
+import {
+  describeDiscoveryFailure,
+  type PluginHealth,
+  pluginDiscoveryFailure,
+  pluginHealth,
+  readDiscoveryFailures,
+  readPluginHealth,
+} from "./health.js";
 import { afterPluginCommit } from "./host-sync.js";
 
 // ---------------------------------------------------------------------------
@@ -154,7 +161,15 @@ export const listPluginsOp = defineOperation({
     })
     .strict()
     .default({}),
-  output: z.object({ plugins: z.array(pluginRow) }),
+  output: z.object({
+    plugins: z.array(pluginRow),
+    /**
+     * #1008 — plugins found on disk in the last 7 days that failed
+     * verification before they were ever installed (no row, so not in
+     * `plugins`). Independent of the tier/status filters.
+     */
+    discoveryFailures: z.array(pluginDiscoveryFailure),
+  }),
   handler: async (_ctx, input, tx) => {
     const filters = [];
     if (input.tier !== undefined) filters.push(sql`tier = ${input.tier}`);
@@ -177,7 +192,10 @@ export const listPluginsOp = defineOperation({
       ORDER BY tier ASC, slug ASC
     `)) as unknown as PluginDb[];
     const health = await readPluginHealth(tx, rows);
-    return ok({ plugins: rows.map((r) => rowToOut(r, health)) });
+    return ok({
+      plugins: rows.map((r) => rowToOut(r, health)),
+      discoveryFailures: await readDiscoveryFailures(tx),
+    });
   },
 });
 
@@ -200,7 +218,19 @@ export const getPluginOp = defineOperation({
       FROM plugins WHERE slug = ${input.slug} LIMIT 1
     `)) as unknown as PluginDb[];
     const r = rows[0];
-    if (!r) return ok({ plugin: null });
+    if (!r) {
+      // A plugin that was found but never verified has no row; say so
+      // (and how to fix it) instead of "no such plugin".
+      const [failure] = await readDiscoveryFailures(tx, input.slug);
+      if (failure) {
+        return err({
+          kind: "HandlerError",
+          operation: "plugins.get",
+          message: describeDiscoveryFailure(failure),
+        });
+      }
+      return ok({ plugin: null });
+    }
     return ok({ plugin: rowToOut(r, await readPluginHealth(tx, [r])) });
   },
 });
