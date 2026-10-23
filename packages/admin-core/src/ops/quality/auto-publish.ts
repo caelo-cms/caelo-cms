@@ -88,10 +88,12 @@ async function block(
      WHERE id = ${auditRunId}::uuid
   `);
   await tx.execute(sql`
-    INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
-    SELECT t.id, ${ctx.actorId}::uuid, 'failed', now(),
+    INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
+    SELECT t.id, ${ctx.actorId}::uuid, 'failed', clk.ts, clk.ts,
            ${`Automatic publish stopped by the quality gate: ${message}`}
-    FROM deploy_targets t WHERE t.name = 'production'
+    -- One instant for both: a stop, not a run; and the same clock as the
+    -- deploy_runs.started_at default (0346), never the transaction start.
+    FROM deploy_targets t, (SELECT clock_timestamp() AS ts) clk WHERE t.name = 'production'
   `);
   await recordAudit(tx, {
     actorId: ctx.actorId,

@@ -180,13 +180,20 @@ async function buildProduction(
   return { ok: r.ok, message: r.ok ? "" : JSON.stringify(r.error) };
 }
 
-async function lastProductionRun(): Promise<{ status: string; error_message: string | null }> {
+async function lastProductionRun(): Promise<{
+  status: string;
+  error_message: string | null;
+  /** #1003 — finished_at is never before started_at (one clock for both). */
+  span_ok: boolean;
+}> {
   return withSql(async (tx) => {
     const rows = (await tx`
-      SELECT r.status, r.error_message FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+      SELECT r.status, r.error_message, r.finished_at >= r.started_at AS span_ok
+      FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
       WHERE t.name = 'production' ORDER BY r.started_at DESC LIMIT 1`) as unknown as {
       status: string;
       error_message: string | null;
+      span_ok: boolean;
     }[];
     const row = rows[0];
     if (!row) throw new Error("no production run");
@@ -279,6 +286,7 @@ describe("direct production builds obey the quality gate", () => {
     expect(r.message).toContain("Stage first");
     const run = await lastProductionRun();
     expect(run.status).toBe("failed");
+    expect(run.span_ok).toBe(true);
     expect(run.error_message).toContain("Blocked by the quality gate");
   });
 
@@ -438,7 +446,7 @@ describe("the automatic redeploy publishes only through the gate", () => {
     expect(runs.runs[0]?.autoPublish?.outcome).toBe("blocked");
     expect(runs.runs[0]?.autoPublish?.message).toContain("image-alt");
     const run = await lastProductionRun();
-    expect(run).toMatchObject({ status: "failed" });
+    expect(run).toMatchObject({ status: "failed", span_ok: true });
     expect(run.error_message).toContain("Automatic publish stopped by the quality gate");
   });
 

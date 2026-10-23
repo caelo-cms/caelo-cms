@@ -432,6 +432,43 @@ describe("firebaseHostingPublisher — protected staging domain (#650)", () => {
     expect(fake.channels.size).toBe(0);
   });
 
+  it("#1003 publishStaging and publishLiveBuild report their steps in order", async () => {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    const staged = await firebaseHostingPublisher.publishStaging({
+      buildDir,
+      runId: "run-timed",
+      target: STAGING,
+    });
+    expect(staged.phases?.map((p) => p.phase)).toEqual([
+      "auth",
+      "hash",
+      "create-version",
+      "populate",
+      "upload",
+      "finalize",
+      "channel",
+      "release",
+    ]);
+    const live = await firebaseHostingPublisher.publishLiveBuild!({
+      buildDir,
+      runId: "run-timed-live",
+      target: PRODUCTION,
+      sourceRunId: "run-timed",
+    });
+    expect(live.phases?.map((p) => p.phase)).toEqual([
+      "auth",
+      "hash",
+      "create-version",
+      "populate",
+      "upload",
+      "finalize",
+      "release",
+    ]);
+    for (const p of [...(staged.phases ?? []), ...(live.phases ?? [])]) {
+      expect(p.ms).toBeGreaterThanOrEqual(0);
+    }
+  });
+
   it("selectStagingPreview deletes every other run channel, keeps the served one and never touches live", async () => {
     const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
     for (const runId of ["run-old-1", "run-old-2", "run-new"]) {
