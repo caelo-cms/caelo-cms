@@ -7,6 +7,7 @@ import {
   imageReserveMicrocents,
   settleImageCostMicrocents,
 } from "../image-models.js";
+import { chatImageSize } from "../image-service.js";
 
 const ref = (bytes = 1000, mediaType = "image/png") => ({ bytes, mediaType });
 
@@ -59,4 +60,17 @@ test("settled cost follows the model's pricing; unknown usage keeps the reservat
     imageReserveMicrocents("gemini-3.1-flash-image") as number,
   );
   expect(settleImageCostMicrocents("fake-image", {})).toBe(0);
+});
+
+test("a chat request for 1K on a fixed-resolution model is already met and not sent (run 40021968702)", () => {
+  const legacy = imageCapabilities("gemini-2.5-flash-image")!;
+  const gemini = imageCapabilities("gemini-3.1-flash-image")!;
+  const dalle = imageCapabilities("dall-e-3")!;
+  expect(chatImageSize(legacy, "1K")).toBeUndefined();
+  expect(chatImageSize(dalle, "1K")).toBeUndefined();
+  // Still refused: a resolution the model cannot produce.
+  expect(chatImageSize(legacy, "4K")).toBe("4K");
+  // A model that offers the choice gets exactly what was asked.
+  expect(chatImageSize(gemini, "1K")).toBe("1K");
+  expect(chatImageSize(gemini, undefined)).toBeUndefined();
 });

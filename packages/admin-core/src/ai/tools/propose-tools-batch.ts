@@ -26,6 +26,7 @@
  *   ai_memory.set                    — site-memory-propose.ts
  */
 
+import { sourceTextArg } from "@caelo-cms/shared";
 import { z } from "zod";
 import { boundedThemeDocument } from "../../theme-document-input.js";
 import {
@@ -62,8 +63,8 @@ export const proposeLayoutUpdateTool = makeProposeTool({
     .object({
       layoutId: uuid,
       displayName: z.string().min(1).max(200).optional(),
-      html: z.string().max(50_000).optional(),
-      css: z.string().max(50_000).optional(),
+      html: sourceTextArg(z.string().max(50_000)).optional(),
+      css: sourceTextArg(z.string().max(50_000)).optional(),
       blocks: z
         .array(
           z.object({
@@ -565,8 +566,8 @@ export const proposeTemplateUpdateTool = makeProposeTool({
     .object({
       templateId: uuid,
       displayName: z.string().min(1).max(200).optional(),
-      html: z.string().optional(),
-      css: z.string().optional(),
+      html: sourceTextArg(z.string()).optional(),
+      css: sourceTextArg(z.string()).optional(),
       layoutId: uuid.optional(),
       blocks: z
         .array(

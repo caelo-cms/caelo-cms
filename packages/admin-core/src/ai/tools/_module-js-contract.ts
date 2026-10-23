@@ -25,8 +25,10 @@ import { INTERACTION_MARKUP_CONTRACT } from "@caelo-cms/shared";
  * in `<![CDATA[ … ]]>` (a habit of XML-shaped tool-call encodings: a
  * long markup string looks like XML text that needs escaping). No prompt
  * surface showed CDATA; the parameters simply never said they are plain
- * strings. CSS / JS with the wrapper are refused (shared `content.ts`),
- * so the authoring tools state the shape up front.
+ * strings, so the authoring tools state the shape up front. The note alone
+ * did not stop it, so a whole-value envelope is also decoded at the tool
+ * boundary (`sourceTextArg` in shared `ai-tools.ts`); any other CDATA marker
+ * in CSS / JS is still refused by the op (shared `content.ts`).
  */
 export const MODULE_SOURCE_VALUE_NOTE =
   "Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping).";
