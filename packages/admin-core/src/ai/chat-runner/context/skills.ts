@@ -78,10 +78,11 @@ export interface SkillsContext {
    */
   newlyActivated: ReadonlyArray<{ slug: string; description: string }>;
   /**
-   * #1008 — skills in the pinned index whose plugin failed to load in this
-   * process since the chat started: their tools are absent here. The index
-   * keeps them (it is never rewritten mid-chat); the chat-runner tells the
-   * chat in its history — see `formatUnavailableSkillsNotice`.
+   * #1008 — active skills whose plugin does not run in this process: their
+   * tools are absent here. Every one of them, not only those in the pinned
+   * index: the chat may know a skill from a later announcement or have
+   * loaded it, and the pinned index is never rewritten mid-chat, so the
+   * history note (`formatUnavailableSkillsNotice`) is the only correction.
    */
   notRunningHere: readonly UnavailableSkill[];
 }
@@ -117,14 +118,13 @@ function formatUnavailableSkillsNotice(skills: readonly UnavailableSkill[]): str
     (s) => `- ${s.slug} (plugin "${s.pluginSlug}" failed to load on this server: ${s.reason})`,
   );
   return [
-    "These skills from the `# Skills` index are NOT available right now — their plugin failed to load on this server, so their tools are missing. Do not load or follow them; tell the operator, /settings/plugins shows the problem (load_skill says when one is back):",
+    "These skills are NOT available right now — their plugin failed to load on this server, so their tools are missing. Do not load or follow them; tell the operator, /settings/plugins shows the problem (load_skill says when one is back):",
     ...lines,
   ].join("\n");
 }
 
 /**
- * The history note about skills of the pinned index whose plugin does not
- * run here, given the signature of the last such note (null: none yet).
+ * The history note about active skills whose plugin does not run here, given the signature of the last such note (null: none yet).
  * Unavailable skills get the "not available" note whenever their set
  * changes; once none is left after a note said otherwise, one "available
  * again" note follows. Null when there is nothing new to say.
@@ -145,7 +145,7 @@ export function skillAvailabilityNote(
   if (lastSignature === null || lastSignature === noteSignature("")) return null;
   return {
     seed: "",
-    body: "The skills this chat was told are unavailable run on this server again: their plugin loaded. load_skill works for them as listed in the `# Skills` index.",
+    body: "The skills this chat was told are unavailable run on this server again: their plugin loaded. load_skill works for them again.",
   };
 }
 
@@ -265,8 +265,11 @@ export async function buildSkillsContext(
   const newlyActivated = allActive
     .filter((s) => availableNow(s) && !inIndex(s))
     .map((s) => ({ slug: s.slug, description: s.description }));
+  // Every unavailable skill, also those outside the pinned index: one the
+  // chat heard about later (announced on a recovery) or already loaded must
+  // be withdrawn too, and the index cannot carry that.
   const notRunningHere: UnavailableSkill[] = allActive
-    .filter((s) => inIndex(s) && !availableNow(s))
+    .filter((s) => !availableNow(s))
     .map((s) => ({
       slug: s.slug,
       pluginSlug: s.pluginSlug ?? "",

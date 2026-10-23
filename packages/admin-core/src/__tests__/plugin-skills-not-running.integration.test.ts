@@ -259,5 +259,14 @@ describe("#1008 — a failed plugin's skills are not offered where it does not r
     expect(later.skillsIndexBlock).toBe(first.skillsIndexBlock);
     // Announced through the history instead, like a newly activated skill.
     expect(later.newlyActivated.map((s) => s.slug)).toContain(SKILL);
+
+    // It fails again: the chat knows the skill from that announcement, not
+    // from its index, and must still be told it is gone.
+    healthy = false;
+    await boot();
+    const again = await turn();
+    expect(again.skillsIndexBlock).toBe(first.skillsIndexBlock);
+    expect(again.notRunningHere.map((s) => s.slug)).toEqual([SKILL]);
+    expect(skillAvailabilityNote(again.notRunningHere, null)?.body).toContain("NOT available");
   });
 });
