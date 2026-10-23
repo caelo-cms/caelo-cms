@@ -458,7 +458,7 @@ function writeOutcome(
   infra: PluginHostInfra,
   systemActorId: string,
   slug: string,
-  outcome: RuntimeOutcome,
+  outcome: RuntimeOutcome | typeof CLEARED,
 ): Promise<void> {
   return serialized(slug, async () => {
     if (unsavedOutcomes.get(slug) !== outcome) return;
