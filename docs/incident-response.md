@@ -69,6 +69,20 @@ ORDER BY started_at DESC LIMIT 5;
 
 Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.hash` / `publish.upload` the provider upload. A long `lock-wait` means another Stage or Publish live held the staging lock.
 
+### Stage / Publish live slow
+
+Every Stage and Publish live records where its time went (`deploy_runs.phase_timings`, since 0346) and logs one line per run: `[deploy] stage succeeded in <ms> ms {…}`. The Stage button's whole wait, chat merges included, is logged as `[stage] staged <n> pages in <ms> ms {…}`.
+
+```sql
+SELECT id, status, page_count, file_count,
+       (EXTRACT(EPOCH FROM finished_at - started_at) * 1000)::int AS took_ms,
+       phase_timings
+FROM deploy_runs WHERE phase_timings IS NOT NULL
+ORDER BY started_at DESC LIMIT 5;
+```
+
+Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.hash` / `publish.upload` the provider upload. A long `lock-wait` means another Stage or Publish live held the staging lock.
+
 ## §C — AI calls failing or budget hit
 
 `/settings/costs` shows live status per (scope × operation_type). If a row is **blocked**:
