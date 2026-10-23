@@ -136,16 +136,21 @@ export function pluginErrorFingerprint(
   message: string,
 ): string {
   // A SQLSTATE (`[23505]`) is the defect's identity, not an incidental
-  // number — kept verbatim while every other digit run is blanked.
-  const states: string[] = [];
+  // number: the message is split around them, and only the text between
+  // them is normalized.
   const normalized = message
-    .replace(/\[([0-9A-Z]{5})\]/g, (_m, code: string) => `\u0001${states.push(code) - 1}\u0001`)
-    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<id>")
-    .replace(/\b[0-9a-f]{32,}\b/gi, "<hex>")
-    .replace(/\d+/g, "#")
-    .replace(/\u0001#\u0001/g, () => `[${states.shift()}]`);
+    .split(/(\[[0-9A-Z]{5}\])/)
+    .map((part, i) =>
+      i % 2 === 1
+        ? part
+        : part
+            .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<id>")
+            .replace(/\b[0-9a-f]{32,}\b/gi, "<hex>")
+            .replace(/\d+/g, "#"),
+    )
+    .join("");
   return createHash("sha256")
-    .update(`${slug}\u0000${phase}\u0000${errorClass}\u0000${normalized}`)
+    .update(JSON.stringify([slug, phase, errorClass, normalized]))
     .digest("hex");
 }
 
