@@ -10,7 +10,7 @@
  * preset junk vars included) through the real ops in seconds:
  *
  *   propose_run → write_extracted_pages → update_run_status
- *     → get_import_page / accept_pages → list_pages / get_run_report
+ *     → get_import_page / build_page({ importPageId }) → list_pages / get_run_report
  *
  * The CI database is per-job disposable and test files run isolated
  * (`bun test --isolate`); entities created here carry a `svfx-` slug
@@ -222,21 +222,43 @@ describe("imports.list_pages (recorded searchviu crawl, all pages accepted)", ()
     });
     if (!tpl.ok) throw new Error(`templates.create failed: ${JSON.stringify(tpl.error)}`);
     const templateId = (tpl.value as { templateId: string }).templateId;
-    // Header/footer are layout-owned and skipped by accept; only `content` lands.
     const blocks = await execute(registry, adapter, ctx, "template_blocks.set", {
       templateId,
       blocks: [{ name: "content", displayName: "Content", position: 0 }],
     });
     if (!blocks.ok) throw new Error(`template_blocks.set failed: ${JSON.stringify(blocks.error)}`);
 
+    // Link every staged page the way the migration does since #278: the AI
+    // rebuilds each one with build_page({ importPageId }), which stamps
+    // accepted_page_id. The rebuilt body is a stand-in; these cases read the
+    // linkage, not the content. (The recorded crawl's own markup links to
+    // pages this harness never builds, which the publish link check rejects.)
     const listed = await execute(registry, adapter, ctx, "imports.list_pages", { runId });
     if (!listed.ok) throw new Error(`imports.list_pages failed: ${listed.error.kind}`);
-    const importPageIds = (listed.value as { pages: { id: string }[] }).pages.map((p) => p.id);
-    const accepted = await execute(registry, adapter, ctx, "imports.accept_pages", {
-      importPageIds,
-      templateId,
-    });
-    if (!accepted.ok) throw new Error(`accept_pages failed: ${JSON.stringify(accepted.error)}`);
+    const staged = (
+      listed.value as { pages: { id: string; proposedSlug: string; proposedTitle: string }[] }
+    ).pages;
+    // The crawl stages two pages as `home`; the built pages get distinct
+    // slugs (never the magic home slug) so each import page links to its
+    // own page.
+    for (const [i, p] of staged.entries()) {
+      const slug = `${PREFIX}built-${i}`;
+      const built = await execute(registry, adapter, ctx, "pages.build_page", {
+        page: { slug, title: p.proposedTitle, templateId, importPageId: p.id },
+        modules: [
+          {
+            blockName: "content",
+            displayName: `Rebuilt ${slug}`,
+            description: "Stand-in rebuild of a recorded crawl page",
+            kind: "content",
+            html: "<section><h2>{{heading}}</h2></section>",
+            fields: [{ name: "heading", kind: "text", label: "Heading" }],
+            content: { source: "inline", values: { heading: p.proposedTitle } },
+          },
+        ],
+      });
+      if (!built.ok) throw new Error(`build_page ${slug}: ${JSON.stringify(built.error)}`);
+    }
   });
 
   it("lists every page with its staging id, rebuild status, and built-page link", async () => {
