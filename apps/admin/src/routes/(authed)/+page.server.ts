@@ -6,6 +6,16 @@ import { getQueryContext } from "#lib/server/query.js";
 import { type DeployRunSummary, type SiteState, siteStateFrom } from "#lib/site-state.js";
 import type { PageServerLoad } from "./$types";
 
+/** How many chats the "Recent chats" card lists. */
+const RECENT_CHAT_COUNT = 3;
+
+/** The `chat.list_sessions` fields the dashboard shows. */
+interface DashboardChat {
+  id: string;
+  title: string;
+  lastActiveAt: string;
+}
+
 export const load: PageServerLoad = async ({ locals }) => {
   const { adapter, registry } = getQueryContext();
   // Route to /setup when there are no users yet; otherwise require login.
@@ -15,10 +25,10 @@ export const load: PageServerLoad = async ({ locals }) => {
   if (!(setup.value as { complete: boolean }).complete) throw redirect(303, "/setup");
   if (!locals.user) throw redirect(303, "/login");
 
-  // P19 — surface "Ramp up your site" hero card while the install has
-  // zero published pages. pages.list returns the full set; we just
-  // filter client-side. Tiny lists at ramp-up time so this is cheap;
-  // dedicated filter param is a P19 polish concern.
+  const perms = locals.user.permissions;
+
+  // Zero published pages = a fresh install: the dashboard's first card then
+  // invites the operator to set the site up in Live edit.
   let publishedPageCount = 0;
   let pages: { status: string }[] = [];
   const pagesR = await execute(registry, adapter, locals.ctx, "pages.list", {});
@@ -36,6 +46,53 @@ export const load: PageServerLoad = async ({ locals }) => {
     siteState = siteStateFrom(pages, (runsR.value as { runs: DeployRunSummary[] }).runs);
   }
 
+  // Status cards. Each read is gated by the permission of the page its card
+  // links to, and a card whose read failed is left out (null) rather than
+  // showing a made-up zero — same rule as the site state above.
+  const [chatsR, changesR, pendingR, bugsR] = await Promise.all([
+    perms.has("content.write")
+      ? execute(registry, adapter, locals.ctx, "chat.list_sessions", { includeArchived: false })
+      : null,
+    perms.has("content.write")
+      ? execute(registry, adapter, locals.ctx, "chat.list_open_changes", {})
+      : null,
+    perms.has("settings.read")
+      ? execute(registry, adapter, locals.ctx, "pending_proposals.list", { limit: 1 })
+      : null,
+    perms.has("settings.read")
+      ? execute(registry, adapter, locals.ctx, "ai_bug_reports.list", { status: "new", limit: 1 })
+      : null,
+  ]);
+  for (const [op, r] of [
+    ["chat.list_sessions", chatsR],
+    ["chat.list_open_changes", changesR],
+    ["pending_proposals.list", pendingR],
+    ["ai_bug_reports.list", bugsR],
+  ] as const) {
+    if (r && !r.ok) console.error(`[dashboard] ${op} failed`, { kind: r.error.kind });
+  }
+
+  const recentChats: DashboardChat[] | null = chatsR?.ok
+    ? (chatsR.value as { sessions: DashboardChat[] }).sessions
+        .slice(0, RECENT_CHAT_COUNT)
+        .map(({ id, title, lastActiveAt }) => ({ id, title, lastActiveAt }))
+    : null;
+  const openChanges: { changeCount: number; chatCount: number } | null = changesR?.ok
+    ? (() => {
+        const chats = (changesR.value as { chats: { pendingCount: number }[] }).chats.filter(
+          (c) => c.pendingCount > 0,
+        );
+        return {
+          changeCount: chats.reduce((sum, c) => sum + c.pendingCount, 0),
+          chatCount: chats.length,
+        };
+      })()
+    : null;
+  const pendingApprovals: number | null = pendingR?.ok
+    ? (pendingR.value as { total: number }).total
+    : null;
+  const newBugReports: number | null = bugsR?.ok ? (bugsR.value as { total: number }).total : null;
+
   return {
     siteState,
     user: {
@@ -44,5 +101,9 @@ export const load: PageServerLoad = async ({ locals }) => {
       permissions: [...locals.user.permissions].sort(),
     },
     publishedPageCount,
+    recentChats,
+    openChanges,
+    pendingApprovals,
+    newBugReports,
   };
 };

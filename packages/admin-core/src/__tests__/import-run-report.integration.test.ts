@@ -2,9 +2,8 @@
 
 /**
  * issue #197 — notes append across passes, categories are typed at
- * the boundary, and the run report rolls up clusters, redirects
- * (same rule as the #196 compose tx), crawl errors, and the
- * applied/suggested note split.
+ * the boundary, and the run report rolls up clusters, crawl errors,
+ * and the applied/suggested note split.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -155,7 +154,7 @@ describe("migration report (#197)", () => {
     expect(bad.ok).toBe(false);
   });
 
-  it("accepts the composed CMS page id (accepted_page_id), not only the staging id (#263)", async () => {
+  it("accepts the built CMS page id (accepted_page_id), not only the staging id (#263)", async () => {
     // The AI naturally passes the CMS page id it just composed. Resolve
     // it to the owning import_pages row and append onto the SAME notes
     // array the staging-id calls above wrote (3 so far → 4).
@@ -185,20 +184,17 @@ describe("migration report (#197)", () => {
     expect(message).toContain("list_import_pages");
   });
 
-  it("report rolls up clusters, redirects, crawl errors, and the applied/suggested split", async () => {
+  it("report rolls up clusters, crawl errors, and the applied/suggested split", async () => {
     const r = await execute(registry, adapter, AI, "imports.get_run_report", { runId });
     expect(r.ok).toBe(true);
     const v = r.value as {
       acceptedPages: number;
       clusters: { label: string | null; count: number }[];
-      redirectsCreated: number;
       crawlErrors: { url: string; reason: string }[];
       notes: { category: string; applied: number; suggested: number }[];
     };
     expect(v.acceptedPages).toBe(2);
     expect(v.clusters).toEqual([{ clusterKey: "/x/*|s1", label: "Inhalt", count: 2 }]);
-    // Only alte-seite.html differs from its Caelo path.
-    expect(v.redirectsCreated).toBe(1);
     expect(v.crawlErrors).toEqual([
       { url: "https://issue197.example/kaputt", reason: "non-OK status" },
     ]);

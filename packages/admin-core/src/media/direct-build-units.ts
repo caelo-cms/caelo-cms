@@ -154,17 +154,17 @@ export function resolveDirectBuildModuleRows(args: {
  * Assemble rewritable text units for the DIRECT-BUILD migration flow
  * (issue #278 homepage-first), where pages are created straight through
  * `pages.create` and never get an `import_pages.accepted_page_id`
- * linkage — so the compose-keyed collection in the handler finds nothing.
+ * linkage — so the accepted-page collection in the handler finds nothing.
  *
  * Every unit resolves relative asset refs against `sourceUrl` (the run's
  * origin): a migration runs on a fresh site, so the run origin is the
- * correct base for all of them — mirroring how the compose path already
+ * correct base for all of them — mirroring how the accepted-page path already
  * bases its chrome + template units on `run.source_url`.
  *
  * Modules are deduped by id (a module placed on several pages, or bound
  * as chrome AND also present as a page module, is rewritten and
  * usage-counted exactly once). Page modules are inserted first so their
- * row wins the dedup, matching the compose path's ordering.
+ * row wins the dedup, matching the accepted-page path's ordering.
  *
  * Pure (no I/O) so the handler's fallback collection is unit-testable
  * without Postgres.

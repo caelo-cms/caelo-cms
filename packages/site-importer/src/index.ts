@@ -70,7 +70,6 @@ export {
   COLLECT_STYLE_SAMPLES_SCRIPT,
   deriveDesignTokens,
   type ElementStyleSample,
-  flattenSiteDesignTokens,
   normalizeColor,
   type PageDesignTokens,
   SAMPLE_ROLES,

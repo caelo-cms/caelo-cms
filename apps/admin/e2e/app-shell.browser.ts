@@ -2,7 +2,8 @@
 
 /**
  * P6.5 — pins the AppShell as a first-class surface:
- *   - Sidebar nav items present (gated by Owner perms).
+ *   - Live edit as the prominent entry; Dashboard, the Content group and
+ *     Settings below it (gated by Owner perms); Account in the footer.
  *   - Clicking a nav item navigates and the URL updates.
  *   - Dark-mode toggle persists across reload.
  *
@@ -49,19 +50,49 @@ test("Owner sees AppShell with sidebar nav, can navigate, dark mode persists", a
     await expect(stateMark.locator('[aria-hidden="true"]')).toHaveCount(1);
   }
 
-  // Sidebar nav contains the expected items for an Owner.
+  // Live edit is the one prominent entry, above the list.
+  const liveEdit = page.getByTestId("nav-live-edit");
+  await expect(liveEdit).toBeVisible();
+  await expect(liveEdit).toHaveAttribute("href", "/edit");
+
+  // The dashboard leads into Live edit, not into list views.
+  await expect(page.getByTestId("dashboard-live-edit")).toBeVisible();
+
+  // Sidebar: Dashboard, a collapsible Content group, Settings. No ramp-up
+  // wizard (setup and migration run in Live edit) and no list views or
+  // Ops pages at the top level.
   const sidebar = page.getByRole("navigation", { name: "Main navigation" });
   await expect(sidebar.getByRole("link", { name: /^Dashboard$/ })).toBeVisible();
-  await expect(sidebar.getByRole("link", { name: /^Pages$/ })).toBeVisible();
-  await expect(sidebar.getByRole("link", { name: /^Modules$/ })).toBeVisible();
-  await expect(sidebar.getByRole("link", { name: /^Templates$/ })).toBeVisible();
-  await expect(sidebar.getByRole("link", { name: /^Chats$/ })).toBeVisible();
-  await expect(sidebar.getByRole("link", { name: /^Deployments$/ })).toBeVisible();
   await expect(sidebar.getByRole("link", { name: /^Settings$/ })).toBeVisible();
+  for (const gone of [/^Ramp up$/, /^Chats$/, /^Deployments$/, /^Quality$/, /^Detected bugs$/]) {
+    await expect(sidebar.getByRole("link", { name: gone })).toHaveCount(0);
+  }
+  const contentToggle = sidebar.getByRole("button", { name: /^Content$/ });
+  await expect(contentToggle).toHaveAttribute("aria-expanded", "true");
+  for (const name of [/^Pages$/, /^Modules$/, /^Content library$/, /^Media$/, /^Templates$/]) {
+    await expect(sidebar.getByRole("link", { name })).toBeVisible();
+  }
+
+  // Collapsing the group hides its links and survives a reload.
+  await contentToggle.click();
+  await expect(contentToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(sidebar.getByRole("link", { name: /^Pages$/ })).toBeHidden();
+  await page.reload();
+  await expect(contentToggle).toHaveAttribute("aria-expanded", "false");
+  await contentToggle.click();
+  await expect(contentToggle).toHaveAttribute("aria-expanded", "true");
+
+  // Account sits in the sidebar footer, outside the main list.
+  await expect(page.getByRole("link", { name: /^Account$/ })).toBeVisible();
+  await expect(sidebar.getByRole("link", { name: /^Account$/ })).toHaveCount(0);
 
   // Click Pages → URL updates.
   await sidebar.getByRole("link", { name: /^Pages$/ }).click();
   await expect(page).toHaveURL("/content/pages", { timeout: 5_000 });
+
+  // The old wizard route is gone.
+  const rampUp = await page.request.get("/ramp-up", { maxRedirects: 0 });
+  expect(rampUp.status()).toBe(404);
 
   // Toggle dark mode → reload → still dark.
   await page.getByRole("button", { name: /toggle theme/i }).click();
