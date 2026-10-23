@@ -26,6 +26,7 @@ const REPO_ROOT = resolve(import.meta.dir, "..");
 interface Step {
   readonly name?: string;
   readonly run?: string;
+  readonly uses?: string;
   readonly env?: Record<string, unknown>;
 }
 interface Job {
@@ -65,10 +66,15 @@ describe("release gate env", () => {
   });
 
   it("R3: installs every browser ci.yml's check job installs, before Test", () => {
+    // A browser install is either a `playwright install` command or the
+    // shared composite action that wraps it (#984).
     const installs = (steps: readonly Step[] | undefined) =>
-      (steps ?? []).flatMap((s) =>
-        typeof s.run === "string" && /playwright\S* install/.test(s.run) ? [s.run.trim()] : [],
-      );
+      (steps ?? []).flatMap((s) => {
+        if (s.uses === "./.github/actions/playwright-chromium") return [s.uses];
+        return typeof s.run === "string" && /playwright\S* install/.test(s.run)
+          ? [s.run.trim()]
+          : [];
+      });
     const ciInstalls = installs(workflow("ci.yml").jobs.check?.steps);
     expect(ciInstalls.length).toBeGreaterThan(0);
     const steps = gate?.steps ?? [];

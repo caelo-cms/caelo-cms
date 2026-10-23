@@ -16,7 +16,7 @@
  *     still listed;
  *   - nothing                     → `succeeded`.
  *
- * The job writes the report to `operator_access_sync_runs` (migration 0335)
+ * The job writes the report to `operator_access_sync_runs` (migration 0341)
  * through `users.record_operator_access_run`, keyed by its Cloud Run
  * execution, and the admin reads it for the execution it started or the
  * latest one.
