@@ -15,7 +15,10 @@
 
 /** One surgical string replacement, mirroring Claude Code's Edit tool. */
 export interface ContentEdit {
-  /** Exact text to find. Must be UNIQUE in the body unless `replaceAll`. */
+  /**
+   * Exact text to find. Must be UNIQUE in the body unless `replaceAll`.
+   * Empty only to fill an empty body (there is nothing to anchor on).
+   */
   readonly oldString: string;
   /** Replacement text. Must differ from `oldString`. */
   readonly newString: string;
@@ -26,6 +29,27 @@ export interface ContentEdit {
 export type ApplyEditsResult =
   | { readonly ok: true; readonly content: string; readonly replacements: number }
   | { readonly ok: false; readonly error: string };
+
+/**
+ * Where `needle` starts, as 1-based lines with that line's text — the
+ * locations a "not unique" refusal names so the model can widen its anchor
+ * without re-reading the body. Capped; the count stays exact elsewhere.
+ */
+function matchLines(haystack: string, needle: string, max = 5): string[] {
+  const out: string[] = [];
+  let from = 0;
+  while (out.length < max) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) break;
+    const lineNo = haystack.slice(0, at).split("\n").length;
+    const lineStart = haystack.lastIndexOf("\n", at - 1) + 1;
+    const lineEnd = haystack.indexOf("\n", at);
+    const text = haystack.slice(lineStart, lineEnd === -1 ? undefined : lineEnd).trim();
+    out.push(`line ${lineNo}: ${text.length > 120 ? `${text.slice(0, 120)}…` : text}`);
+    from = at + needle.length;
+  }
+  return out;
+}
 
 /** Count non-overlapping literal occurrences of `needle` in `haystack`. */
 function countOccurrences(haystack: string, needle: string): number {
@@ -44,6 +68,11 @@ function countOccurrences(haystack: string, needle: string): number {
  *  - `oldString` occurs at least once (else "not found — re-read"),
  *  - `oldString` is unique unless `replaceAll` (else "N matches — add
  *    surrounding context or pass replaceAll").
+ *
+ * An empty `oldString` fills an EMPTY body with `newString` — an empty
+ * field has no text to anchor an edit on, and refusing it left the model
+ * re-sending the whole module through edit_module. Against a body with
+ * content it is refused: an empty anchor would match everywhere.
  */
 export function applyStringEdits(source: string, edits: readonly ContentEdit[]): ApplyEditsResult {
   if (edits.length === 0) {
@@ -61,6 +90,20 @@ export function applyStringEdits(source: string, edits: readonly ContentEdit[]):
         error: `oldString equals newString${where} — nothing to change. Make the two differ, or drop this edit.`,
       };
     }
+    if (edit.oldString === "") {
+      if (current !== "") {
+        return {
+          ok: false,
+          error:
+            `oldString is empty${where}, but the body already has content (${current.length} characters). ` +
+            "An empty oldString only fills an empty body. Anchor on existing text from read_content, " +
+            "or use edit_module to replace the whole field.",
+        };
+      }
+      current = edit.newString;
+      replacements += 1;
+      continue;
+    }
     const count = countOccurrences(current, edit.oldString);
     if (count === 0) {
       return {
@@ -74,8 +117,9 @@ export function applyStringEdits(source: string, edits: readonly ContentEdit[]):
       return {
         ok: false,
         error:
-          `oldString is not unique${where}: ${count} matches. Add surrounding context to the ` +
-          `oldString so it matches exactly once, or pass replaceAll:true to change all ${count}.`,
+          `oldString is not unique${where}: ${count} matches (${matchLines(current, edit.oldString).join("; ")}). ` +
+          `Add surrounding context from the line you mean so the oldString matches exactly once, ` +
+          `or pass replaceAll:true to change all ${count}.`,
       };
     }
     current =

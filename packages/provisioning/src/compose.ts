@@ -343,7 +343,7 @@ function serviceRuntime(
     return [
       "    # DEV MODE (cms-provision init --dev): runs the Caelo checkout this",
       "    # .caelo/ dir lives in. Contributors only — never an end-user install.",
-      "    image: oven/bun:1.4.2",
+      "    image: oven/bun:1.4.4",
       "    working_dir: /app",
       `    command: ${devCommand}`,
       ...volumes(["../..:/app", ...mounts]),

@@ -15,7 +15,7 @@ This document just covers the contribution mechanics.
 
 ## Local development loop
 
-You need: [Bun](https://bun.sh) ≥1.4.2 (pinned in `packageManager` and CI; 1.3.x breaks the plugin-sandbox bundling the tests rely on) + Docker (for Postgres) + the [Anthropic API key](https://console.anthropic.com) (for AI features) + [Deno](https://deno.com) ≥2 (for the plugin sandbox).
+You need: [Bun](https://bun.sh) ≥1.4.4 (pinned in `packageManager` and CI; 1.3.x breaks the plugin-sandbox bundling the tests rely on) + Docker (for Postgres) + the [Anthropic API key](https://console.anthropic.com) (for AI features) + [Deno](https://deno.com) ≥2 (for the plugin sandbox).
 
 ```bash
 git clone https://github.com/caelo-cms/caelo-cms.git

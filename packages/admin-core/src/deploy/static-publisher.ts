@@ -30,6 +30,7 @@
  * object storage.
  */
 
+import type { PhaseTiming } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
 
 /**
@@ -60,6 +61,12 @@ export interface PublishSummary {
    * host instead. Absent on other publishers.
    */
   previewUrl?: string;
+  /**
+   * Where the publish spent its time, step by step (hashing, upload,
+   * channel …). The Stage records them with its own steps in
+   * deploy_runs.phase_timings and leaves them out of publish_summary.
+   */
+  phases?: readonly PhaseTiming[];
 }
 
 export interface PromoteSummary extends PublishSummary {
@@ -74,6 +81,15 @@ export interface PromoteSummary extends PublishSummary {
  * dependency graphs pulling in @google-cloud/storage on self-hosted.
  */
 export interface StaticPublisher {
+  /**
+   * True when this provider's serving layer reads `<outDir>/current/`
+   * (self-hosted Caddy bind-mounts it): the generator then mirrors every
+   * build into it. Cloud publishers upload the build directory itself and
+   * nothing reads `current/`, so the mirror is skipped (#1003 — it was the
+   * largest step of a Stage, and on Cloud Run `/tmp` is memory).
+   */
+  readonly servesCurrentDir: boolean;
+
   /**
    * Publish the build at `buildDir` so the staged version becomes
    * reachable. For self-hosted this is the generator's own

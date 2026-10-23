@@ -43,6 +43,7 @@ import {
   isContentHashedPath,
   parseRedirectsFile,
   type RedirectPlan,
+  runBatched,
 } from "@caelo-cms/shared";
 import type { Bucket, Storage as StorageType } from "@google-cloud/storage";
 import {
@@ -140,6 +141,7 @@ export function createGcsStaticPublisher(
   deps: GcsPublisherDeps = { computeApi: adcComputeApi },
 ): StaticPublisher {
   return {
+    servesCurrentDir: false,
     async publishStaging({ buildDir, runId, target }) {
       const h = await bucketHandles();
       const files = await walkBuildDir(buildDir);
@@ -628,23 +630,4 @@ function cacheControlFor(key: string): string {
     return "public, max-age=300";
   }
   return "public, max-age=3600";
-}
-
-async function runBatched<T>(
-  items: ReadonlyArray<T>,
-  parallelism: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  let cursor = 0;
-  const next = async (): Promise<void> => {
-    while (cursor < items.length) {
-      const i = cursor++;
-      // biome-ignore lint/style/noNonNullAssertion: cursor < length checked
-      await worker(items[i]!);
-    }
-  };
-  const workers: Promise<void>[] = [];
-  const n = Math.min(parallelism, items.length);
-  for (let i = 0; i < n; i++) workers.push(next());
-  await Promise.all(workers);
 }
