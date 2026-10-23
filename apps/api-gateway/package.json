@@ -15,7 +15,7 @@
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/query-api": "workspace:*",
     "@caelo-cms/shared": "workspace:*",
-    "zod": "4.6.5"
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "@caelo-cms/admin-core": "workspace:*",
