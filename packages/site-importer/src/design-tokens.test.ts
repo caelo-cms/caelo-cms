@@ -3,7 +3,7 @@
 /**
  * issue #247 (WS1) — unit coverage for the pure computed-style →
  * design-token pipeline: color normalisation, frequency ordering,
- * determinism, caps, site aggregation, and the compose flattening.
+ * determinism, caps, and site aggregation.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -11,7 +11,6 @@ import {
   aggregateSiteDesignTokens,
   deriveDesignTokens,
   type ElementStyleSample,
-  flattenSiteDesignTokens,
   normalizeColor,
 } from "./design-tokens.js";
 
@@ -154,132 +153,5 @@ describe("aggregateSiteDesignTokens", () => {
     const x = aggregateSiteDesignTokens([pageA, pageB, pageC]);
     const y = aggregateSiteDesignTokens([pageC, pageB, pageA]);
     expect(JSON.stringify(x)).toBe(JSON.stringify(y));
-  });
-});
-
-describe("flattenSiteDesignTokens", () => {
-  it("maps role properties to the compose token names with scopes", () => {
-    const site = aggregateSiteDesignTokens([
-      deriveDesignTokens([
-        sample("body", {
-          color: "rgb(17, 17, 17)",
-          backgroundColor: "rgb(255, 255, 255)",
-          fontFamily: "Inter, sans-serif",
-        }),
-        sample("h1", { color: "rgb(0, 0, 0)", fontFamily: "Sora, sans-serif" }),
-        sample("a", { color: "rgb(0, 102, 204)" }),
-        sample("button", {
-          color: "rgb(255, 255, 255)",
-          backgroundColor: "rgb(220, 38, 38)",
-          borderRadius: "8px",
-        }),
-      ]),
-    ]);
-    expect(flattenSiteDesignTokens(site)).toEqual([
-      { token: "color-background", value: "#ffffff", scope: "color" },
-      { token: "color-text", value: "#111111", scope: "color" },
-      { token: "color-heading", value: "#000000", scope: "color" },
-      { token: "color-link", value: "#0066cc", scope: "color" },
-      { token: "color-primary", value: "#dc2626", scope: "color" },
-      { token: "color-primary-contrast", value: "#ffffff", scope: "color" },
-      {
-        token: "typography-body",
-        value: JSON.stringify({ fontFamily: "Inter, sans-serif" }),
-        scope: "typography",
-      },
-      {
-        token: "typography-heading",
-        value: JSON.stringify({ fontFamily: "Sora, sans-serif" }),
-        scope: "typography",
-      },
-      { token: "radius-base", value: "8px", scope: "radius" },
-    ]);
-  });
-
-  it("folds the measured type scale into typography composites", () => {
-    const site = aggregateSiteDesignTokens([
-      deriveDesignTokens([
-        sample("body", { fontFamily: "Inter, sans-serif" }),
-        sample("p", { fontSize: "16px", lineHeight: "24px" }),
-        sample("h1", {
-          fontFamily: "Sora, sans-serif",
-          fontSize: "40px",
-          fontWeight: "700",
-          lineHeight: "1.1",
-        }),
-      ]),
-    ]);
-    const flat = flattenSiteDesignTokens(site);
-    // Body composite carries family (from body) + size/line-height (from p).
-    expect(flat).toContainEqual({
-      token: "typography-body",
-      value: JSON.stringify({
-        fontFamily: "Inter, sans-serif",
-        fontSize: "16px",
-        lineHeight: "24px",
-      }),
-      scope: "typography",
-    });
-    // Heading composite carries the full scale; weight coerced to a number.
-    expect(flat).toContainEqual({
-      token: "typography-heading",
-      value: JSON.stringify({
-        fontFamily: "Sora, sans-serif",
-        fontSize: "40px",
-        lineHeight: "1.1",
-        fontWeight: 700,
-      }),
-      scope: "typography",
-    });
-  });
-
-  it("skips line-height:normal (not a CSS length the theme accepts)", () => {
-    const site = aggregateSiteDesignTokens([
-      deriveDesignTokens([
-        sample("body", { fontFamily: "Inter" }),
-        sample("p", { fontSize: "16px", lineHeight: "normal" }),
-      ]),
-    ]);
-    const flat = flattenSiteDesignTokens(site);
-    const bodyTok = flat.find((t) => t.token === "typography-body");
-    expect(bodyTok).toBeDefined();
-    const composite = JSON.parse(bodyTok!.value) as Record<string, unknown>;
-    expect(composite.fontSize).toBe("16px");
-    expect("lineHeight" in composite).toBe(false);
-  });
-
-  it("emits the measured spacing scale as space-* tokens", () => {
-    const site = aggregateSiteDesignTokens([
-      deriveDesignTokens([
-        sample("section", { paddingTop: "64px" }),
-        sample("container", { paddingLeft: "24px", paddingRight: "24px" }),
-        sample("card", { paddingTop: "16px", paddingLeft: "20px" }),
-        sample("button", { paddingTop: "12px", paddingLeft: "20px" }),
-      ]),
-    ]);
-    const flat = flattenSiteDesignTokens(site);
-    expect(flat).toContainEqual({ token: "space-section", value: "64px", scope: "space" });
-    expect(flat).toContainEqual({ token: "space-container", value: "24px", scope: "space" });
-    expect(flat).toContainEqual({ token: "space-card", value: "16px", scope: "space" });
-    expect(flat).toContainEqual({ token: "space-button", value: "12px", scope: "space" });
-  });
-
-  it("skips zero and non-length spacing (no default invented)", () => {
-    const site = aggregateSiteDesignTokens([
-      deriveDesignTokens([
-        // Section with only zero padding + a real gap fallback.
-        sample("section", { paddingTop: "0px", paddingBottom: "0px", gap: "48px" }),
-        // Card with no non-zero spacing at all → no space-card token.
-        sample("card", { paddingTop: "0px", paddingLeft: "0px" }),
-      ]),
-    ]);
-    const flat = flattenSiteDesignTokens(site);
-    expect(flat).toContainEqual({ token: "space-section", value: "48px", scope: "space" });
-    expect(flat.some((t) => t.token === "space-card")).toBe(false);
-  });
-
-  it("emits nothing for roles that were never sampled", () => {
-    const site = aggregateSiteDesignTokens([]);
-    expect(flattenSiteDesignTokens(site)).toEqual([]);
   });
 });

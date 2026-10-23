@@ -227,7 +227,7 @@ describe("P14 imports happy path (propose → execute → write → accept)", ()
           ORDER BY block_name, position
         `) as unknown as Array<{ block_name: string; position: number }>;
         // issue #253 (WS0) — accept_page never mints per-page chrome;
-        // header/footer are layout-owned (compose_from_run binds them).
+        // header/footer are layout-owned (bound once at the layout).
         expect(pms).toHaveLength(1);
         expect(pms.map((p) => p.block_name)).toEqual(["content"]);
       });
