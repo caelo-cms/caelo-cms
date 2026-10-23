@@ -64,7 +64,7 @@ Then trigger a fresh deploy.
 
 ### Stage / Publish live slow
 
-Every Stage and Publish live records where its time went (`deploy_runs.phase_timings`, since 0340) and logs one line per run: `[deploy] stage succeeded in <ms> ms {…}`. The Stage button's whole wait, chat merges included, is logged as `[stage] staged <n> pages in <ms> ms {…}`.
+Every Stage and Publish live records where its time went (`deploy_runs.phase_timings`, since 0346) and logs one line per run: `[deploy] stage succeeded in <ms> ms {…}`. The Stage button's whole wait, chat merges included, is logged as `[stage] staged <n> pages in <ms> ms {…}`.
 
 ```sql
 SELECT id, status, page_count, file_count,

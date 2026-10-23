@@ -450,6 +450,8 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       "generator",
       "parity",
       "publish",
+      // Hold release and the completion write: inside the stored span (#1003).
+      "finish",
     ]);
     expect(names(liveRun)).toEqual(
       expect.arrayContaining([
