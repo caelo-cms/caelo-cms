@@ -107,6 +107,9 @@ const DEFAULT_ROLES = { admin: "admin_role", public: ["admin_role", "public_role
  */
 export const POOL_IDLE_TIMEOUT_SECONDS = 300;
 
+/** Bun.SQL's error code when Postgres answered COMMIT on an aborted transaction with a rollback. */
+const COMMIT_ROLLED_BACK = "ERR_POSTGRES_COMMIT_ROLLED_BACK";
+
 /** The first Bun whose `idleTimeout` spares checked-out connections (see above). */
 export const MIN_BUN_VERSION = "1.4.4";
 
@@ -422,6 +425,8 @@ export class DatabaseAdapter {
     let postCommit: PostCommitEffect[] = [];
 
     let result: Result<O, QueryError>;
+    // The handler's own error Result, kept for the COMMIT_ROLLED_BACK case below.
+    let handlerError: Result<O, QueryError> | null = null;
     try {
       result = await db.transaction(async (tx) => {
         postCommit = collectPostCommitEffects(tx);
@@ -437,6 +442,7 @@ export class DatabaseAdapter {
         }
 
         const out = await op.handler(ctx, validatedInput, tx);
+        if (!out.ok) handlerError = out;
         if (out.ok && op.database === "cms_admin") {
           publishAfterCommit = await this.#projectionDirty(tx);
         }
@@ -462,6 +468,15 @@ export class DatabaseAdapter {
       // constraint, detail) on `.cause`. Without this, `describeError`
       // gets only "Failed query: <sql>" and operators can't diagnose.
       const pgDetail = extractPgFields(thrown);
+      // A handler that caught a failed statement (a duplicate pending
+      // proposal's unique violation) and answered with its own error leaves
+      // an aborted transaction; Postgres turns the COMMIT into a rollback,
+      // which Bun >= 1.4.4 reports as a throw. Nothing was written, so the
+      // handler's error is the answer. A handler that answered ok on an
+      // aborted transaction gets no such pass: its writes are lost, loudly.
+      if (pgDetail?.code === COMMIT_ROLLED_BACK && handlerError !== null) {
+        return handlerError;
+      }
       return err({
         kind: "HandlerError",
         operation: op.name,

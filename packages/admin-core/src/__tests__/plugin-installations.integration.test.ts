@@ -201,7 +201,10 @@ it("allows Owner approval but denies AI, editor and moderation-only reviewer", a
       sql`SELECT approved_by::text AS approved_by, capability FROM plugin_capability_grants WHERE plugin_id=${item.pluginId}::uuid`,
     ),
   );
-  expect(receipts).toMatchObject([{ approved_by: owner.actorId, capability: "cms_admin_schema" }]);
+  // Spread: Bun >= 1.4.4 compares the result array's count/command props too.
+  expect([...receipts]).toMatchObject([
+    { approved_by: owner.actorId, capability: "cms_admin_schema" },
+  ]);
 });
 
 it("rejects omitted capabilities, changed artifacts and stale review state without granting access", async () => {

@@ -227,7 +227,10 @@ it("checks live receipts even without a lifecycle notification and does not elev
       plugin_skill_available(NULL,${item.artifactDigest},${slug}) AS detached_available
   `),
   );
-  expect(rows).toMatchObject([{ available: false, actor_kind: "ai", detached_available: false }]);
+  // Spread: Bun >= 1.4.4 compares the result array's count/command props too.
+  expect([...rows]).toMatchObject([
+    { available: false, actor_kind: "ai", detached_available: false },
+  ]);
   await expect(
     adapter.withAdminTransaction(ai, (tx) =>
       tx.execute(sql`
