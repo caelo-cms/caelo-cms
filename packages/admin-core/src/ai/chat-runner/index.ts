@@ -484,8 +484,8 @@ async function* runSerializedChatTurn(
         formatNewSkillsNotice(ctx.newlyActivatedSkills),
       );
     }
-    // #1008 — skills of the pinned index whose plugin failed to load on
-    // this server: the index keeps them, the chat hears it here. Seeded on
+    // #1008 — active skills whose plugin failed to load on this server: the
+    // pinned index keeps them, the chat hears it here. Seeded on
     // the slug set, so it fires once per set.
     // A later recovery gets one "available again" note.
     const availability = skillAvailabilityNote(
