@@ -45,20 +45,27 @@ env:
 
 jobs:
   # ──────────────────────────────────────────────────────────────────
-  # Quality gate — re-run lint + typecheck + test on the tagged commit
-  # so a release never ships against a broken HEAD. The standard ci.yml
-  # workflow ALSO triggers on tag push (per its `tags: ['v*']` config),
-  # but a release shouldn't ship if its own gate goes red — so we
-  # re-run the gate here too for atomicity.
+  # Quality gate — a release never ships against a broken commit.
+  #
+  # A tag cut by release-cut is the release commit on top of a main
+  # commit. When scripts/release-commit.ts proves the tagged commit only
+  # changes what the release script writes AND ci.yml passed on its
+  # parent, the test suite already ran on exactly this code, so the gate
+  # re-checks only what the release commit changed (lint, typecheck,
+  # lockstep, catalogue) instead of running the same 12-minute suite a
+  # second time. Any other tag (a local cut, a hand-made commit, a parent
+  # whose CI never finished) runs the full gate. A parent whose CI FAILED
+  # refuses the release: nothing ships from a commit main's CI rejected.
   # ──────────────────────────────────────────────────────────────────
   gate:
     name: gate (lint + typecheck + test)
     runs-on: ubuntu-latest
     # Runs the whole dependency tree's code (install scripts, tests); it
-    # needs to read the repo and nothing else — not the root's
-    # `contents: write` + `id-token: write` the publish jobs use.
+    # reads the repo and the parent's CI result, nothing else — not the
+    # root's `contents: write` + `id-token: write` the publish jobs use.
     permissions:
       contents: read
+      actions: read
 
     services:
       postgres:
@@ -89,6 +96,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The parent too: the gate scope compares the tag with it.
+          fetch-depth: 2
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
@@ -105,7 +115,43 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Decide the gate scope
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          full() { echo "::notice::full gate: $1"; echo "full=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          base=$(git rev-parse --verify --quiet HEAD^) || full "the tagged commit has no parent in this checkout"
+          bun scripts/release-commit.ts verify || full "the tagged commit is not a pure release commit"
+          # ci.yml's push run on main for the parent. It has usually
+          # finished long before (the cut's real-AI gate outlasts CI); one
+          # still running is waited for rather than redone here.
+          deadline=$(( $(date +%s) + 45 * 60 ))
+          while :; do
+            runs=$(gh api "repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$base&event=push&branch=main&per_page=20" \
+              --jq '[.workflow_runs[] | .status + ":" + (.conclusion // "")]') || runs="api-error"
+            if [ "$runs" != "api-error" ]; then
+              if jq -e 'any(. == "completed:success")' <<<"$runs" >/dev/null; then
+                echo "::notice::slim gate: ci.yml passed on $base and the tag adds only the release commit."
+                echo "full=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              if ! jq -e 'any(startswith("completed:") | not)' <<<"$runs" >/dev/null; then
+                if jq -e 'any(. == "completed:failure")' <<<"$runs" >/dev/null; then
+                  echo "::error::ci.yml failed on $base, the commit this release was cut from. Fix main, then cut again."
+                  exit 1
+                fi
+                full "no successful ci.yml push run on main for $base"
+              fi
+            fi
+            [ "$(date +%s)" -lt "$deadline" ] || full "ci.yml on $base did not finish within 45 minutes"
+            sleep 60
+          done
+
       - name: Bootstrap databases
+        if: steps.scope.outputs.full == 'true'
         # bootstrap.sh requires POSTGRES_USER + POSTGRES_DB (passed
         # through to `psql --username --dbname`). PGHOST/PGPORT/PGPASSWORD
         # via libpq env. Match ci.yml's pattern exactly.
@@ -128,6 +174,7 @@ jobs:
         run: bun run typecheck
 
       - name: Run migrations
+        if: steps.scope.outputs.full == 'true'
         run: bun run db:migrate
 
       - name: Install Playwright chromium (live screenshotter tests)
@@ -136,9 +183,11 @@ jobs:
         # Chromium suites FAIL under CI without a browser, which failed the
         # v0.10.54 publish after its release PR had merged. #984 - apt fonts
         # from actions/cache, not the Ubuntu mirror.
+        if: steps.scope.outputs.full == 'true'
         uses: ./.github/actions/playwright-chromium
 
       - name: Test
+        if: steps.scope.outputs.full == 'true'
         run: bun run test
 
       - name: Lockstep version check
@@ -650,6 +699,52 @@ jobs:
             release-manifest.json
             release-manifest.json.sigstore.json
           fail_on_unmatched_files: true
+
+  # ──────────────────────────────────────────────────────────────────
+  # Bring the release back to main. release-cut tags the release commit
+  # on release/vX.Y.Z, so main stays open during a release and learns the
+  # new version only now, once everything is published. The next cut
+  # refuses until this PR is merged (scripts/release-checks.ts
+  # taggedAheadProblem), so a version can never be cut twice. A tag pushed
+  # by the local flow without a release branch has nothing to merge back.
+  # ──────────────────────────────────────────────────────────────────
+  merge-back:
+    name: open the release PR into main
+    needs: github-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Open release/vX.Y.Z → main
+        env:
+          # RELEASE_PAT (when configured) makes the PR's checks run like on
+          # any other PR; GITHUB_TOKEN-opened PRs get no workflow runs.
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          V="${REF#v}"
+          branch="release/v${V}"
+          if ! gh api "repos/${REPO}/branches/${branch}" --silent 2>/dev/null; then
+            echo "::notice::no ${branch} branch (tag pushed by the local flow) — nothing to merge back."
+            exit 0
+          fi
+          open=$(gh pr list -R "${REPO}" --head "${branch}" --state open --json url --jq '.[0].url // empty')
+          if [ -n "${open}" ]; then
+            echo "::notice::release PR already open: ${open}"
+            exit 0
+          fi
+          gh pr create -R "${REPO}" --base main --head "${branch}" \
+            --title "chore(release): v${V}" \
+            --body "$(printf '%s\n' \
+              "v${V} is published (run: ${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}). Merging this PR moves main to v${V}; until then the next release-cut refuses." \
+              "" \
+              "The code was gated on the tag, so merge with \`gh pr merge --squash --admin\` when the checks below stay pending (a PR opened with GITHUB_TOKEN gets no workflow runs)." \
+              "" \
+              "On a conflict (a PR merged during the release touched a file the release commit stamps, usually bun.lock): merge main into ${branch}, keep main's content with the new version stamps, run \`bun install --lockfile-only\` and push. RELEASING.md, \"Merging the release back\"." \
+            )"
 
   # ──────────────────────────────────────────────────────────────────
   # Official MCP Registry entry (#841): packages/mcp-server/server.json,
