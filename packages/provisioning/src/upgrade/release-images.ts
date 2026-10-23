@@ -167,6 +167,55 @@ export async function resolveRegistryDigest(
   }
 }
 
+/** What {@link fetchRegistryManifest} read. */
+export type RegistryManifestResult =
+  | { readonly ok: true; readonly bytes: Uint8Array<ArrayBuffer> }
+  | {
+      readonly ok: false;
+      /**
+       * True when a retry may cure it: the registry could not be reached,
+       * timed out, rate-limited (429/408), failed (5xx) or would not hand
+       * out a pull token. False when it answered that the manifest does not
+       * exist (404 and other 4xx).
+       */
+      readonly transient: boolean;
+      readonly reason: string;
+    };
+
+/**
+ * GET the manifest (or index) `<registryHost>/<repository>@<reference>`
+ * anonymously, through the same Bearer-challenge handling as
+ * {@link resolveRegistryDigest}. Returns the raw bytes: a caller that asked
+ * by digest checks them against it (content addressing is the trust here).
+ *
+ * @example fetchRegistryManifest("europe-west1-docker.pkg.dev", "caelo-website/caelo-cms-images/admin", "sha256:…")
+ */
+export async function fetchRegistryManifest(
+  registryHost: string,
+  repository: string,
+  reference: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<RegistryManifestResult> {
+  const url = `https://${registryHost}/v2/${repository}/manifests/${reference}`;
+  try {
+    let res = await fetchImpl(url, { headers: { Accept: MANIFEST_ACCEPT } });
+    if (res.status === 401) {
+      const token = await anonymousPullToken(res.headers.get("www-authenticate"), fetchImpl);
+      if (!token.ok) return { ok: false, transient: true, reason: token.reason };
+      res = await fetchImpl(url, {
+        headers: { Accept: MANIFEST_ACCEPT, Authorization: `Bearer ${token.token}` },
+      });
+    }
+    if (!res.ok) {
+      const transient = res.status >= 500 || res.status === 429 || res.status === 408;
+      return { ok: false, transient, reason: `${url}: HTTP ${res.status} ${res.statusText}` };
+    }
+    return { ok: true, bytes: new Uint8Array(await res.arrayBuffer()) };
+  } catch (e) {
+    return { ok: false, transient: true, reason: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /** Follow a registry's Bearer challenge to an anonymous pull token. */
 async function anonymousPullToken(
   challenge: string | null,

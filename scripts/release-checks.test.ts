@@ -274,11 +274,13 @@ describe("ownerAction rule (#868)", () => {
 
 describe("buildReleaseManifest / parseDigestFlags", () => {
   const digests = { admin: d("a"), gateway: d("b"), ops: d("c") };
+  const platformDigests = { admin: d("1"), gateway: d("2"), ops: d("3") };
 
   it("builds a schema-valid manifest carrying the declaration", () => {
     const m = buildReleaseManifest({
       meta: { ...META, version: "0.11.0-rc.1", security: true, advisories: [GHSA] },
       digests,
+      platformDigests,
       contractMigrations: true,
       migrationHead: "0262_x",
     });
@@ -299,6 +301,7 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
     const m = buildReleaseManifest({
       meta: { ...META, ownerAction: "Re-enter the SMTP password in Settings → Email." },
       digests,
+      platformDigests,
       contractMigrations: false,
       migrationHead: "0332_x",
     });
@@ -310,6 +313,7 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
       buildReleaseManifest({
         meta: { ...META, version: "0.11.0-nightly.1" },
         digests,
+        platformDigests,
         contractMigrations: false,
         migrationHead: "h",
       }),
@@ -318,6 +322,7 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
       buildReleaseManifest({
         meta: META,
         digests: { ...digests, ops: "latest" },
+        platformDigests,
         contractMigrations: false,
         migrationHead: "h",
       }),
@@ -330,6 +335,23 @@ describe("buildReleaseManifest / parseDigestFlags", () => {
       ops: d("c"),
     });
     expect(() => parseDigestFlags(["--digest", `edge=${d("a")}`])).toThrow(/bad --digest/);
+  });
+
+  it("#1025: signs each index's linux/amd64 digest and parses --platform-digest", () => {
+    const m = buildReleaseManifest({
+      meta: META,
+      digests,
+      platformDigests,
+      contractMigrations: false,
+      migrationHead: "h",
+    });
+    expect(m.platformDigests).toEqual(platformDigests);
+    const argv = ["--digest", `admin=${d("a")}`, "--platform-digest", `admin=${d("1")}`];
+    expect(parseDigestFlags(argv)).toEqual({ admin: d("a") });
+    expect(parseDigestFlags(argv, "--platform-digest")).toEqual({ admin: d("1") });
+    expect(() => parseDigestFlags(["--platform-digest", "admin"], "--platform-digest")).toThrow(
+      /bad --platform-digest/,
+    );
   });
 });
 

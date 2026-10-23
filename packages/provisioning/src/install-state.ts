@@ -79,6 +79,16 @@ export interface InstallMetadata {
    */
   imageDigests?: ImageDigests;
   /**
+   * #1025 — the linux/amd64 platform manifest inside each index of
+   * `imageDigests`: the form Cloud Run records for a serving revision
+   * (upgrade/image-forms.ts). Recorded next to the index digests from the
+   * signed release manifest or the content-checked index, so the upgrader
+   * matches the serving images without a registry lookup. Belongs to
+   * `imageDigests`: dropped whenever those change without it. Absent on
+   * installs recorded before it; the upgrader then reads the index.
+   */
+  platformDigests?: ImageDigests;
+  /**
    * #696 — the Caelo release (`0.11.0`) those digests belong to, recorded
    * next to them by `upgrade` and the upgrader job. The upgrader job reads
    * the installed version from here, not from the running admin: a
@@ -182,11 +192,17 @@ export function resumedMetadata(
   };
 }
 
-/** Record the image digests an install now runs (see {@link InstallMetadata.imageDigests}). */
+/**
+ * Record the image digests an install now runs (see
+ * {@link InstallMetadata.imageDigests}).
+ *
+ * @param platformDigests - their linux/amd64 forms (#1025), when known
+ */
 export function recordImageDigests(
   installId: string,
   digests: ImageDigests,
   releaseVersion?: string | null,
+  platformDigests?: ImageDigests | null,
 ): void {
   const meta = readMetadata(installId);
   if (!meta) throw new Error(`No install.json for install '${installId}'.`);
@@ -196,11 +212,14 @@ export function recordImageDigests(
   // refuses on none and judges downgrades by it).
   const same =
     meta.imageDigests?.admin === digests.admin && meta.imageDigests?.gateway === digests.gateway;
-  const { releaseVersion: previous, ...rest } = meta;
+  const { releaseVersion: previous, platformDigests: previousPlatform, ...rest } = meta;
   const version = releaseVersion ?? (same ? previous : undefined);
+  // The platform forms belong to their indexes just as the version does.
+  const platform = platformDigests ?? (same ? previousPlatform : undefined);
   writeMetadata(installId, {
     ...rest,
     imageDigests: { admin: digests.admin, gateway: digests.gateway },
+    ...(platform ? { platformDigests: { admin: platform.admin, gateway: platform.gateway } } : {}),
     ...(version ? { releaseVersion: version } : {}),
   });
 }

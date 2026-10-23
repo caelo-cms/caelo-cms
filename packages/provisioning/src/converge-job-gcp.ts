@@ -337,6 +337,7 @@ export function gcpConvergeDeps(
             meta.provider as "gcp" | "gcp-firebase",
             digests,
             m.version,
+            m,
           );
         },
         resolveOpsImage: async () => releaseImageRef("ops", m.digests.ops),
