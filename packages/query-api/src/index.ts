@@ -4,6 +4,8 @@ export {
   type AdapterConfig,
   AdminDatabaseUnavailableError,
   DatabaseAdapter,
+  DatabaseUnresponsiveError,
+  POOL_IDLE_TIMEOUT_SECONDS,
 } from "./adapter.js";
 export { recordAudit, recordAuditFromCtx, SYSTEM_ACTOR_ID } from "./audit.js";
 export {
