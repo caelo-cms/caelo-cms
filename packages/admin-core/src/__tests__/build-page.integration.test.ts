@@ -718,6 +718,61 @@ describe("pages.build_page — detached entries + {$ref} nested composition (one
     expect(new Set(v.placements.map((p) => p.contentInstanceId)).size).toBe(3);
   });
 
+  it("an entry repeating an earlier mint's html (fields on the first only) places that module again (run 40025014982)", async () => {
+    const html = '<article class="feat"><span>{{icon}}</span><h3>{{title}}</h3></article>';
+    const card = (title: string, first: boolean) => ({
+      ref: `feat-${title}`,
+      blockName: "content",
+      displayName: "Feature Card",
+      type: "feature-card",
+      html,
+      ...(first
+        ? {
+            css: ".feat{padding:1rem}",
+            fields: [
+              { name: "icon", kind: "text", label: "Icon" },
+              { name: "title", kind: "text", label: "Title" },
+            ],
+          }
+        : {}),
+      content: { source: "inline", values: { icon: "*", title } },
+    });
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { slug: `i299-twin-${TS}`, title: "Twin", templateId },
+      modules: [card("a", true), card("b", false), card("c", false)],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as {
+      placements: { moduleId: string; contentInstanceId: string; minted: boolean }[];
+      reusedMintByIndex: Record<string, number>;
+    };
+    expect(new Set(v.placements.map((p) => p.moduleId)).size).toBe(1);
+    expect(new Set(v.placements.map((p) => p.contentInstanceId)).size).toBe(3);
+    expect(v.placements.map((p) => p.minted)).toEqual([true, false, false]);
+    expect(v.reusedMintByIndex).toEqual({ "1": 0, "2": 0 });
+  });
+
+  it("an entry with the same html but different css is still its own mint", async () => {
+    const entry = (css: string, title: string) => ({
+      blockName: "content",
+      displayName: "Plain Card",
+      html: "<div>{{title}}</div>",
+      css,
+      fields: [{ name: "title", kind: "text", label: "Title" }],
+      content: { source: "inline", values: { title } },
+    });
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { slug: `i299-notwin-${TS}`, title: "Not Twin", templateId },
+      modules: [entry("div{color:red}", "a"), entry("div{color:blue}", "b")],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const v = r.value as { placements: { moduleId: string }[]; reusedMintByIndex: object };
+    expect(new Set(v.placements.map((p) => p.moduleId)).size).toBe(2);
+    expect(v.reusedMintByIndex).toEqual({});
+  });
+
   it("a detached entry without ref is rejected at the schema boundary", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
       page: { slug: `i299-refnob-${TS}`, title: "Ref NoB", templateId },
