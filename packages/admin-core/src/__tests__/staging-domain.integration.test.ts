@@ -21,6 +21,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, mock } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -377,6 +378,100 @@ describe("Stage → Publish live with a protected staging domain (gcp-firebase)"
       { origin_url: stagedRun!.preview_url, origin_run_id: staged.runId },
     ]);
     expect([...fake.channels.keys()]).toEqual([`runid-${staged.runId}`]);
+  });
+
+  it("#1003 a Stage and a Publish live record where their time went, step by step", async () => {
+    type TimedRun = {
+      phase_timings: { phase: string; ms: number }[];
+      publish_summary: Record<string, unknown>;
+      took_ms: number;
+    };
+    const timedRun = async (runId: string): Promise<TimedRun> => {
+      const [run] = (await withSql(
+        (tx) => tx`SELECT phase_timings, publish_summary,
+                          (EXTRACT(EPOCH FROM finished_at - started_at) * 1000)::int AS took_ms
+                   FROM deploy_runs WHERE id = ${runId}::uuid`,
+      )) as TimedRun[];
+      if (!run) throw new Error(`no deploy run ${runId}`);
+      return run;
+    };
+    const topLevel = (r: TimedRun) =>
+      r.phase_timings.map((p) => p.phase).filter((p) => !p.includes("."));
+    const names = (r: TimedRun) => r.phase_timings.map((p) => p.phase);
+
+    const staged = await ok<{ runId: string; phases: { phase: string; ms: number }[] }>(
+      "deploy.trigger",
+      { targetName: "staging", repoRoot: testRoot },
+    );
+    const stageRun = await timedRun(staged.runId);
+    expect(staged.phases).toEqual(stageRun.phase_timings);
+    expect(topLevel(stageRun)).toEqual([
+      "prepare",
+      "generator",
+      "lock-wait",
+      "publish",
+      "parity",
+      "select-preview",
+      "finish",
+    ]);
+    // The generator's passes and the upload's steps come along as breakdowns.
+    expect(names(stageRun)).toEqual(
+      expect.arrayContaining([
+        "generator.load-pages",
+        "generator.compose",
+        "generator.media",
+        "generator.write",
+        "publish.hash",
+        "publish.populate",
+        "publish.upload",
+        "publish.channel",
+      ]),
+    );
+    // started_at / finished_at are real clock times, not the transaction
+    // start twice: the run's span covers its steps.
+    const stepsMs = stageRun.phase_timings
+      .filter((p) => !p.phase.includes("."))
+      .reduce((n, p) => n + p.ms, 0);
+    expect(stageRun.took_ms).toBeGreaterThan(0);
+    expect(stageRun.took_ms).toBeGreaterThanOrEqual(stepsMs - 5);
+    // Timings live in their own column, not in the publisher's summary.
+    expect(stageRun.publish_summary).not.toHaveProperty("phases");
+    // Nothing on Firebase serves `<outDir>/current/`, so the build is not
+    // mirrored into it (the largest step of a Stage before #1003).
+    expect(names(stageRun)).not.toContain("generator.sync-current");
+    expect(existsSync(join(testRoot, "output", "staging", "current"))).toBe(false);
+    expect(existsSync(join(testRoot, "output", "staging", "builds", staged.runId))).toBe(true);
+
+    await markAudited(staged.runId);
+    const promoted = await ok<{ toRunId: string }>("deploy.promote", {
+      fromTarget: "staging",
+      toTarget: "production",
+      repoRoot: testRoot,
+    });
+    const liveRun = await timedRun(promoted.toRunId);
+    expect(topLevel(liveRun)).toEqual([
+      "prepare",
+      "lock-wait",
+      "select-preview",
+      "generator",
+      "parity",
+      "publish",
+      // Hold release and the completion write: inside the stored span (#1003).
+      "finish",
+    ]);
+    expect(names(liveRun)).toEqual(
+      expect.arrayContaining([
+        "generator.compose",
+        "publish.hash",
+        "publish.upload",
+        "publish.release",
+      ]),
+    );
+    const liveStepsMs = liveRun.phase_timings
+      .filter((p) => !p.phase.includes("."))
+      .reduce((n, p) => n + p.ms, 0);
+    expect(liveRun.took_ms).toBeGreaterThanOrEqual(liveStepsMs - 5);
+    expect(liveRun.publish_summary).not.toHaveProperty("phases");
   });
 
   it("#908 / #969 Publish live refreshes the served preview's TTL (one staged by an earlier version too)", async () => {

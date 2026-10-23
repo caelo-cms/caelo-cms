@@ -48,6 +48,8 @@ import {
   HTML_CACHE_CONTROL,
   IMMUTABLE_CACHE_CONTROL,
   NOSNIFF,
+  PhaseTimer,
+  runBatched,
   SVG_DOCUMENT_CSP,
   SVG_PATH_PATTERN,
 } from "@caelo-cms/shared";
@@ -333,30 +335,6 @@ async function gzipAndHashBytes(input: Buffer): Promise<{ body: Buffer; sha256: 
   });
 }
 
-/**
- * Run `worker` over `items` with at most `parallelism` in flight.
- * Local copy of static-publisher-gcs's runBatched (kept independent
- * so changing one publisher doesn't ripple through the other).
- */
-async function runBatched<T>(
-  items: ReadonlyArray<T>,
-  parallelism: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  let cursor = 0;
-  const next = async (): Promise<void> => {
-    while (cursor < items.length) {
-      const i = cursor++;
-      // biome-ignore lint/style/noNonNullAssertion: cursor < length checked
-      await worker(items[i]!);
-    }
-  };
-  const workers: Promise<void>[] = [];
-  const n = Math.min(parallelism, items.length);
-  for (let i = 0; i < n; i++) workers.push(next());
-  await Promise.all(workers);
-}
-
 interface CreateVersionResponse {
   name: string; // "sites/<site>/versions/<versionId>"
 }
@@ -581,8 +559,10 @@ async function createVersionFromBuild(args: {
   token: string;
   buildDir: string;
   target: DeployTarget;
+  /** Laps `hash`, `create-version`, `populate`, `upload`, `finalize`. */
+  timer: PhaseTimer;
 }): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
-  const { site, token, buildDir, target } = args;
+  const { site, token, buildDir, target, timer } = args;
   // 1. Walk + gzip + hash every file in the build dir.
   const walked = await walkBuildDir(buildDir);
   const fileEntries = await Promise.all(
@@ -595,6 +575,7 @@ async function createVersionFromBuild(args: {
       };
     }),
   );
+  timer.lap("hash");
 
   // 2. Create a new version with site config — rewrites for the
   //    gateway + per-extension caching headers. The rewrites send
@@ -651,6 +632,7 @@ async function createVersionFromBuild(args: {
   });
   const versionName = created.name; // "sites/<site>/versions/<versionId>"
   const versionId = versionName.split("/").pop() ?? "";
+  timer.lap("create-version");
 
   // 3. populateFiles — tell Firebase which files this version has.
   //    Firebase returns which hashes still need upload.
@@ -668,12 +650,14 @@ async function createVersionFromBuild(args: {
     },
   );
   const required = new Set(populate.uploadRequiredHashes ?? []);
+  timer.lap("populate");
 
   // 4. Upload only the required hashes (Firebase already has the rest).
   const toUpload = fileEntries.filter((f) => required.has(f.sha256));
   await runBatched(toUpload, PARALLEL_UPLOADS, async (f) => {
     await uploadGzippedFile(populate.uploadUrl, f.sha256, f.gzipped, token);
   });
+  timer.lap("upload");
 
   // 5. Finalize the version.
   await firebaseFetch(`sites/${site}/versions/${versionId}?updateMask=status`, {
@@ -681,6 +665,7 @@ async function createVersionFromBuild(args: {
     body: JSON.stringify({ status: "FINALIZED" }),
     token,
   });
+  timer.lap("finalize");
   return {
     versionName,
     uploadedCount: toUpload.length,
@@ -805,10 +790,13 @@ async function retirePreviewChannel(
 }
 
 export const firebaseHostingPublisher: StaticPublisher = {
+  servesCurrentDir: false,
   async publishStaging({ buildDir, runId, target }) {
+    const timer = new PhaseTimer();
     const site = siteName();
     const token = await googleAuthToken();
-    const version = await createVersionFromBuild({ site, token, buildDir, target });
+    timer.lap("auth");
+    const version = await createVersionFromBuild({ site, token, buildDir, target, timer });
     const versionName = version.versionName;
 
     // 6. Create a per-runId preview channel with a 7-day TTL.
@@ -834,6 +822,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
         token,
       },
     );
+    timer.lap("channel");
 
     // 7. Release the version to the preview channel.
     await firebaseFetch(`sites/${site}/channels/${channelId}/releases?versionName=${versionName}`, {
@@ -841,6 +830,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
       body: JSON.stringify({}),
       token,
     });
+    timer.lap("release");
 
     const summary: PublishSummary = {
       provider: "gcp-firebase",
@@ -848,19 +838,23 @@ export const firebaseHostingPublisher: StaticPublisher = {
       skippedUnchangedCount: version.skippedUnchangedCount,
       location: versionName,
       previewUrl: channel.url,
+      phases: timer.phases(),
     };
     return summary;
   },
 
   async publishLiveBuild({ buildDir, target, sourceRunId }) {
+    const timer = new PhaseTimer();
     const site = siteName();
     const token = await googleAuthToken();
-    const version = await createVersionFromBuild({ site, token, buildDir, target });
+    timer.lap("auth");
+    const version = await createVersionFromBuild({ site, token, buildDir, target, timer });
     await firebaseFetch(`sites/${site}/releases?versionName=${version.versionName}`, {
       method: "POST",
       body: JSON.stringify({}),
       token,
     });
+    timer.lap("release");
     const summary: PromoteSummary = {
       provider: "gcp-firebase",
       uploadedCount: version.uploadedCount,
@@ -869,6 +863,7 @@ export const firebaseHostingPublisher: StaticPublisher = {
       // The staged run this live build was checked against — the same id a
       // copy-promote records, so "live matches staging" keeps working.
       destinationBuildId: sourceRunId,
+      phases: timer.phases(),
     };
     return summary;
   },

@@ -4,10 +4,10 @@
  * Unit tests for `resolvePoolMax` (adapter.ts).
  *
  * This is the regression guard for the production no-op contract: the
- * `DatabaseAdapter` constructor only passes a pool `{ max }` when this resolver
+ * `DatabaseAdapter` constructor only passes a pool `max` when this resolver
  * returns a number. When neither the explicit `poolMax` option nor the
  * `CAELO_DB_POOL_MAX` env is set — the production case — it must return
- * `undefined` so the constructor keeps the original 1-arg `new SQL(url)` path
+ * `undefined` so the constructor passes no `max`
  * (Bun default 10). A present-but-malformed value fails loud (CLAUDE.md §2)
  * rather than silently re-pooling.
  */

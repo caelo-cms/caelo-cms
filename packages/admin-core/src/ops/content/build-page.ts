@@ -119,6 +119,8 @@ export const buildPageOp = defineOperation({
     /** Detached (nested-only) entries: minted + content-bound, not placed. */
     detached: z.array(
       z.object({
+        /** The entry's index in the call's `modules` array. */
+        index: z.number().int().nonnegative(),
         ref: z.string(),
         moduleId: z.string(),
         contentInstanceId: z.string(),
@@ -334,7 +336,8 @@ export const buildPageOp = defineOperation({
     // whatever their array position), which keeps resolution single-pass
     // and deterministic.
     const localRefs = new Map<string, { moduleId: string; contentInstanceId: string }>();
-    const detached: { ref: string; moduleId: string; contentInstanceId: string }[] = [];
+    const detached: { index: number; ref: string; moduleId: string; contentInstanceId: string }[] =
+      [];
     const resolveLocalRefs = (value: unknown, entryIndex: number): unknown => {
       if (Array.isArray(value)) return value.map((v) => resolveLocalRefs(v, entryIndex));
       if (value !== null && typeof value === "object") {
@@ -570,7 +573,7 @@ export const buildPageOp = defineOperation({
       if (entry.blockName === undefined) {
         // Detached (nested-only) entry: minted + content-bound, no
         // placement. The schema guarantees `ref` is set here.
-        detached.push({ ref: entry.ref as string, moduleId, contentInstanceId });
+        detached.push({ index: i, ref: entry.ref as string, moduleId, contentInstanceId });
         continue;
       }
       additionByIndex.set(i, {
@@ -694,6 +697,7 @@ export const buildPageOp = defineOperation({
       pageId,
       createdPage,
       placements: plan.appended.map((p, i) => ({
+        index: placedIndices[i] as number,
         blockName: p.blockName,
         position: p.position,
         moduleId: p.moduleId,

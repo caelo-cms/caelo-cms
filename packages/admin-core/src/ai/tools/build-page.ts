@@ -16,7 +16,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { type BuildPageInput, buildPageInputSchema } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
-import { cssVarWarningSuffix } from "./_css-var-warnings.js";
+import { cssVarWarnings } from "./_css-var-warnings.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
@@ -228,13 +228,21 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     // issue #164 slice 2 — mechanical token binding, applied at the tool
     // layer (same as add_module_to_page) so the op receives the bound CSS.
     // issue #430 — on by default; pass `false` per module to keep a literal.
-    const bindingReports: string[] = [];
+    // Per-module notes, keyed by the entry's index in `input.modules` —
+    // every note names the module it is about, so the AI never has to
+    // guess which entry a warning belongs to.
+    const notesByIndex = new Map<number, string[]>();
+    const note = (i: number, text: string) => {
+      const t = text.trim();
+      if (t.length === 0) return;
+      notesByIndex.set(i, [...(notesByIndex.get(i) ?? []), t]);
+    };
     const modules = [...input.modules];
     for (const [i, m] of modules.entries()) {
       if (m.bindThemeLiterals !== false && m.css !== undefined && m.css.length > 0) {
         const bound = await bindCssToTheme(ctx, toolCtx, m.css);
         modules[i] = { ...m, css: bound.css };
-        if (bound.report.length > 0) bindingReports.push(`modules[${i}]:${bound.report}`);
+        note(i, bound.report);
       }
     }
 
@@ -255,6 +263,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       pageId: string;
       createdPage: boolean;
       placements: {
+        index: number;
         blockName: string;
         position: number;
         moduleId: string;
@@ -262,7 +271,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
         syncMode: "synced" | "unsynced";
         minted: boolean;
       }[];
-      detached: { ref: string; moduleId: string; contentInstanceId: string }[];
+      detached: { index: number; ref: string; moduleId: string; contentInstanceId: string }[];
       extractedFieldsByIndex: Record<string, { name: string; kind: string }[]>;
       ignoredAuthoringByIndex: Record<string, string[]>;
       reusedMintByIndex: Record<string, number>;
@@ -271,15 +280,32 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
 
     const mintedCount = value.placements.filter((p) => p.minted).length;
     const reusedCount = value.placements.length - mintedCount;
-    const lines = value.placements.map(
-      (p, i) =>
-        `modules[${i}] → ${p.blockName}#${p.position} module=${p.moduleId} content=${p.contentInstanceId} (${p.syncMode}${p.minted ? ", minted" : ", reused"})`,
-    );
-    for (const d of value.detached) {
-      lines.push(
-        `ref='${d.ref}' → DETACHED (nested-only) module=${d.moduleId} content=${d.contentInstanceId}`,
-      );
-    }
+    // One line per input entry, in input order, labelled with the entry's
+    // own index — a detached (nested-only) entry has no placement, so the
+    // placements array alone would shift every later index.
+    // Named by what the call authored. A placement-only entry (`moduleId`,
+    // possibly a `{"$ref"}`) gets no name: the op ignores its authoring
+    // fields, so a name it carried may not be the module's — its line shows
+    // the resolved module id instead.
+    const label = (i: number) => {
+      const m = input.modules[i];
+      const name =
+        m === undefined || m.moduleId !== undefined
+          ? undefined
+          : [m.displayName, m.type].find((v): v is string => typeof v === "string" && v.length > 0);
+      return name ? `modules[${i}] (${name})` : `modules[${i}]`;
+    };
+    const resultLines = [
+      ...value.placements.map((p) => ({
+        index: p.index,
+        text: `${label(p.index)} → ${p.blockName}#${p.position} module=${p.moduleId} content=${p.contentInstanceId} (${p.syncMode}${p.minted ? ", minted" : ", reused"})`,
+      })),
+      ...value.detached.map((d) => ({
+        index: d.index,
+        text: `${label(d.index)} ref='${d.ref}' → DETACHED (nested-only) module=${d.moduleId} content=${d.contentInstanceId}`,
+      })),
+    ].sort((a, b) => a.index - b.index);
+    const lines = resultLines.map((l) => l.text);
 
     // Extractor-fallback hint — same steering as add_module_to_page.
     const extractedEntries = Object.entries(value.extractedFieldsByIndex);
@@ -330,16 +356,15 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
             )} — placed that one module again with its own content instead of minting copies. To say so directly, pass moduleId: {"$ref": "<the first entry's ref>"}.`
         : "";
 
-    // css-var scan once over ALL freshly-authored CSS; design-guard per
-    // minted module (pattern-reuse compares its html). Reuses the
-    // exact helpers add_module_to_page applies — no forks.
-    const allCss = modules
-      .filter((m) => m.moduleId === undefined)
-      .map((m) => m.css ?? "")
-      .filter((c) => c.length > 0)
-      .join("\n");
-    const cssWarning = await cssVarWarningSuffix(ctx, toolCtx, allCss);
-    const guardFindings: string[] = [];
+    // css-var scan per freshly-authored module (one theme read) and
+    // design-guard per minted module (pattern-reuse compares its html).
+    // Reuses the exact helpers add_module_to_page applies — no forks.
+    const cssWarnings = await cssVarWarnings(
+      ctx,
+      toolCtx,
+      modules.map((m) => (m.moduleId === undefined ? m.css : undefined)),
+    );
+    for (const [i, w] of cssWarnings.entries()) note(i, w);
     // Every module this call minted is in the catalog now; none may
     // match itself (or a sibling minted from the same markup — `$ref`
     // re-placement is the same-call reuse path, the check catches the rest).
@@ -354,10 +379,12 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
         html: m.html,
         excludeModuleIds: mintedIds,
       });
-      if (suffix.length > 0) guardFindings.push(`modules[${i}]:${suffix}`);
+      note(i, suffix);
     }
-
-    const binding = bindingReports.length > 0 ? ` ${bindingReports.join(" ")}` : "";
+    const moduleNotes = [...notesByIndex.entries()]
+      .sort(([a], [b]) => a - b)
+      .flatMap(([i, texts]) => texts.map((t) => `\n${label(i)}: ${t}`))
+      .join("");
     const metaNote =
       value.metaDescription === "kept-existing"
         ? " ℹ️ page.metaDescription NOT applied: this page already has a meta description (fill-once — change it via optimize_page_seo only when the operator asks)."
@@ -371,7 +398,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       ok: true,
       content:
         `page ${value.pageId}${value.createdPage ? " created" : ""} — ${value.placements.length} module(s) placed (${mintedCount} minted, ${reusedCount} reused) in one transaction.\n` +
-        `${lines.join("\n")}${binding}${extractedHint}${missingMetaHint}${ignoredHint}${reusedHint}${cssWarning}${guardFindings.join("")}${metaNote}${readiness}`,
+        `${lines.join("\n")}${moduleNotes}${extractedHint}${missingMetaHint}${ignoredHint}${reusedHint}${metaNote}${readiness}`,
       value,
     };
   },

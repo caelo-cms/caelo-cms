@@ -53,6 +53,8 @@ import {
   type ExecutionContext,
   err,
   ok,
+  PhaseTimer,
+  phaseTimingSchema,
 } from "@caelo-cms/shared";
 import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
@@ -325,10 +327,47 @@ const subprocessDoneSchema = z.object({
   pageCount: z.number().int(),
   fileCount: z.number().int(),
   durationMs: z.number(),
+  phases: z.array(phaseTimingSchema),
   buildDir: z.string(),
   unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
 });
 type SubprocessDone = z.infer<typeof subprocessDoneSchema>;
+
+/**
+ * A run's step timings as stored in deploy_runs.phase_timings, so "why was
+ * this Stage slow" has an answer per step.
+ */
+function phaseTimingsParam(timer: PhaseTimer) {
+  return jsonbParam(timer.phases());
+}
+
+/**
+ * The database clock now, as a run's `started_at`. Read before the run's
+ * PhaseTimer starts, so `finished_at - started_at` always covers the
+ * timed steps — the row itself is inserted only after preparation, and
+ * the column default would start the run there (#1003).
+ */
+async function runStartedAt(tx: TransactionRunner): Promise<string> {
+  const rows = (await tx.execute(sql`SELECT clock_timestamp()::text AS at`)) as unknown as {
+    at: string;
+  }[];
+  const at = rows[0]?.at;
+  if (!at) throw new Error("clock_timestamp() returned no row");
+  return at;
+}
+
+/** One log line per finished run with its step timings (Cloud Logging / docker logs). */
+function logRunTimings(
+  kind: "stage" | "build" | "publish-live",
+  runId: string,
+  timer: PhaseTimer,
+  extra: { status: "succeeded" | "failed"; pageCount?: number; fileCount?: number },
+): void {
+  console.info(
+    `[deploy] ${kind} ${extra.status} in ${timer.totalMs()} ms`,
+    JSON.stringify({ runId, ...extra, totalMs: timer.totalMs(), phases: timer.phases() }),
+  );
+}
 interface SubprocessError {
   kind: "error";
   message: string;
@@ -362,7 +401,10 @@ async function runGenerator(
     changedPageIds?: ReadonlyArray<string>;
     /** #650 — render this origin instead of the stored site URL. */
     siteBaseUrlOverride?: string;
-    /** #650 — false: leave `<outDir>/current/` alone (Publish live rebuild). */
+    /**
+     * false: leave `<outDir>/current/` alone — #650 Publish live's rebuild,
+     * and #1003 every build on a publisher that does not serve `current/`.
+     */
     syncCurrent?: boolean;
   },
 ): Promise<{ ok: true; result: SubprocessDone } | { ok: false; message: string; stderr: string }> {
@@ -527,6 +569,8 @@ export const triggerDeployOp = defineOperation({
     pageCount: z.number().int(),
     fileCount: z.number().int(),
     durationMs: z.number().int(),
+    /** Where the run spent its time, step by step (also in deploy_runs.phase_timings). */
+    phases: z.array(phaseTimingSchema),
     buildId: z.string(),
     /**
      * Where the staged build can be looked at. #650 — on a provider whose
@@ -548,6 +592,8 @@ export const triggerDeployOp = defineOperation({
     unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
   }),
   handler: async (ctx, input, tx) => {
+    const startedAt = await runStartedAt(tx);
+    const timer = new PhaseTimer();
     const targetRows = (await tx.execute(
       input.targetName
         ? sql`
@@ -600,8 +646,8 @@ export const triggerDeployOp = defineOperation({
         const message =
           fav.error.kind === "HandlerError" ? fav.error.message : JSON.stringify(fav.error);
         await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', now(),
+          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
                   ${`Blocked, favicon: ${message}`})
         `);
         return err({ kind: "HandlerError", operation: "deploy.trigger", message });
@@ -623,8 +669,8 @@ export const triggerDeployOp = defineOperation({
       const held = await aiStageHoldRefusal(tx);
       if (held) {
         await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', now(),
+          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
                   ${`Automatic publish stopped: ${held}`})
         `);
         return err({ kind: "HandlerError", operation: "deploy.trigger", message: held });
@@ -641,8 +687,8 @@ export const triggerDeployOp = defineOperation({
       const missingSeo = describeMissingMetaDescriptions(await pagesMissingMetaDescription(tx));
       if (missingSeo) {
         await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', now(),
+          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
                   ${`Blocked, missing SEO: ${missingSeo}`})
         `);
         return err({ kind: "HandlerError", operation: "deploy.trigger", message: missingSeo });
@@ -653,8 +699,8 @@ export const triggerDeployOp = defineOperation({
       if (gate.ok) override = gate.override;
       if (!gate.ok) {
         await tx.execute(sql`
-          INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, error_message)
-          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', now(),
+          INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
+          VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
                   ${`Blocked by the quality gate: ${gate.message}`})
         `);
         return err({ kind: "HandlerError", operation: "deploy.trigger", message: gate.message });
@@ -692,10 +738,10 @@ export const triggerDeployOp = defineOperation({
     // #834 — the Caelo version rendering this build: Publish live's parity
     // guard names an upgrade between Stage and Publish live as the cause.
     const runIdRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status, render_fingerprint, covered_ai_hold_ids,
-                               caelo_version)
-      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${fingerprint},
-              ${uuidList(coveredHolds)}, ${CAELO_VERSION})
+      INSERT INTO deploy_runs (target_id, actor_id, status, started_at, render_fingerprint,
+                               covered_ai_hold_ids, caelo_version)
+      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${startedAt}::timestamptz,
+              ${fingerprint}, ${uuidList(coveredHolds)}, ${CAELO_VERSION})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const runId = runIdRows[0]?.id;
@@ -706,6 +752,7 @@ export const triggerDeployOp = defineOperation({
         message: "could not create deploy_runs row",
       });
     }
+    timer.lap("prepare");
 
     const repoRoot = resolveOutputRoot(input.repoRoot);
     const cliPath = resolveGeneratorCli();
@@ -713,14 +760,20 @@ export const triggerDeployOp = defineOperation({
     // The trigger op needs a registry+adapter pair to land progress
     // updates on the row from inside its subprocess-watcher loop. The
     // host process sets the bridge at startup; tests do the same.
+    const runKind = target.env === "staging" ? "stage" : "build";
     const bridge = getDeployBridge();
     if (!bridge) {
+      // The generator could not start: its step ends here, recorded like
+      // every other failure after the run began.
+      timer.lap("generator");
       await tx.execute(sql`
         UPDATE deploy_runs
-        SET status = 'failed', finished_at = now(),
-            error_message = 'deploy-bridge not configured'
+        SET status = 'failed', finished_at = clock_timestamp(),
+            error_message = 'deploy-bridge not configured',
+            phase_timings = ${phaseTimingsParam(timer)}
         WHERE id = ${runId}::uuid
       `);
+      logRunTimings(runKind, runId, timer, { status: "failed" });
       return err({
         kind: "HandlerError",
         operation: "deploy.trigger",
@@ -738,6 +791,23 @@ export const triggerDeployOp = defineOperation({
       ...rowToTarget(target),
       outDir: effectiveOutDir(provider, target.env, target.out_dir),
     };
+    // Loaded before the build: the publisher decides whether the build is
+    // mirrored into `current/` (#1003 — only a serving layer that reads it
+    // needs the copy, which was the largest step of a Stage).
+    let publisher: StaticPublisher;
+    try {
+      publisher = await loadStaticPublisher(provider);
+    } catch (e) {
+      const message = `publish failed: ${e instanceof Error ? e.message : String(e)}`;
+      await tx.execute(sql`
+        UPDATE deploy_runs
+        SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
+            phase_timings = ${phaseTimingsParam(timer)}
+        WHERE id = ${runId}::uuid
+      `);
+      logRunTimings(runKind, runId, timer, { status: "failed" });
+      return err({ kind: "HandlerError", operation: "deploy.trigger", message });
+    }
     const subprocess = await runGenerator(bridge.registry, bridge.adapter, ctx, {
       cliPath,
       runId,
@@ -745,15 +815,20 @@ export const triggerDeployOp = defineOperation({
       repoRoot,
       changedPageIds: input.changedPageIds,
       ...(stagingOrigin ? { siteBaseUrlOverride: stagingOrigin } : {}),
+      syncCurrent: publisher.servesCurrentDir,
     });
+    if (subprocess.ok) timer.include("generator", subprocess.result.phases);
+    timer.lap("generator");
     if (!subprocess.ok) {
       const tail = subprocess.stderr ? `\n${subprocess.stderr.slice(-500)}` : "";
       await tx.execute(sql`
         UPDATE deploy_runs
-        SET status = 'failed', finished_at = now(),
-            error_message = ${subprocess.message + tail}
+        SET status = 'failed', finished_at = clock_timestamp(),
+            error_message = ${subprocess.message + tail},
+            phase_timings = ${phaseTimingsParam(timer)}
         WHERE id = ${runId}::uuid
       `);
+      logRunTimings(runKind, runId, timer, { status: "failed" });
       // v0.2.77 — include the stderr tail in the HandlerError message
       // so SvelteKit form actions surfacing the error to the operator
       // (e.g. /edit?/stage's toast) carry the real reason. Without
@@ -776,26 +851,33 @@ export const triggerDeployOp = defineOperation({
     let publishSummary: Awaited<
       ReturnType<Awaited<ReturnType<typeof loadStaticPublisher>>["publishStaging"]>
     >;
-    let publisher: StaticPublisher;
     try {
       // #650 — publishing a preview, recording it as the staging origin and
       // pruning the others is one ordered step per Stage: a concurrent Stage
       // must not prune this channel between its creation and our record.
-      if (stagingOrigin) await lockStagingPublication(tx);
-      publisher = await loadStaticPublisher(provider);
-      publishSummary = await publisher.publishStaging({
+      if (stagingOrigin) {
+        await lockStagingPublication(tx);
+        timer.lap("lock-wait");
+      }
+      const { phases: publishPhases, ...summary } = await publisher.publishStaging({
         buildDir: subprocess.result.buildDir,
         runId,
         target: effectiveTarget,
       });
+      publishSummary = summary;
+      timer.include("publish", publishPhases ?? []);
+      timer.lap("publish");
     } catch (e) {
+      timer.lap("publish");
       const message = e instanceof Error ? e.message : String(e);
       await tx.execute(sql`
         UPDATE deploy_runs
-        SET status = 'failed', finished_at = now(),
-            error_message = ${`publish failed: ${message}`}
+        SET status = 'failed', finished_at = clock_timestamp(),
+            error_message = ${`publish failed: ${message}`},
+            phase_timings = ${phaseTimingsParam(timer)}
         WHERE id = ${runId}::uuid
       `);
+      logRunTimings(runKind, runId, timer, { status: "failed" });
       return err({
         kind: "HandlerError",
         operation: "deploy.trigger",
@@ -821,6 +903,7 @@ export const triggerDeployOp = defineOperation({
     ) {
       const stagingBaseUrl = process.env.CAELO_STAGING_BASE_URL ?? "http://localhost:8081";
       const check = await verifyStagedBuildServed({ stagingBaseUrl, runId });
+      timer.lap("verify-served");
       if (!check.served) {
         const outputRoot = resolve(repoRoot, effectiveTarget.outDir);
         const message =
@@ -829,10 +912,12 @@ export const triggerDeployOp = defineOperation({
           "set CAELO_OUTPUT_ROOT to the directory the serving layer mounts (dev compose: <checkout>/apps/admin) and re-run the Stage.";
         await tx.execute(sql`
           UPDATE deploy_runs
-          SET status = 'failed', finished_at = now(),
-              error_message = ${message}
+          SET status = 'failed', finished_at = clock_timestamp(),
+              error_message = ${message},
+              phase_timings = ${phaseTimingsParam(timer)}
           WHERE id = ${runId}::uuid
         `);
+        logRunTimings(runKind, runId, timer, { status: "failed" });
         return err({
           kind: "HandlerError",
           operation: "deploy.trigger",
@@ -854,13 +939,17 @@ export const triggerDeployOp = defineOperation({
         );
       } catch (e) {
         const message = `staging build ${runId} could not be fingerprinted for Publish live's parity check: ${e instanceof Error ? e.message : String(e)}`;
+        timer.lap("parity");
         await tx.execute(sql`
           UPDATE deploy_runs
-          SET status = 'failed', finished_at = now(), error_message = ${message}
+          SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
+              phase_timings = ${phaseTimingsParam(timer)}
           WHERE id = ${runId}::uuid
         `);
+        logRunTimings(runKind, runId, timer, { status: "failed" });
         return err({ kind: "HandlerError", operation: "deploy.trigger", message });
       }
+      timer.lap("parity");
 
       // #650 / #908 — staging.<domain> now serves this build: the one place
       // its preview becomes the served one (kept alive, every other preview
@@ -869,17 +958,21 @@ export const triggerDeployOp = defineOperation({
         await selectServedStagingPreview(publisher, runId);
       } catch (e) {
         const message = `staging build ${runId} was published but could not be made the build staging serves: ${e instanceof Error ? e.message : String(e)}. Staging still serves the previous build; Stage again.`;
+        timer.lap("select-preview");
         await tx.execute(sql`
           UPDATE deploy_runs
-          SET status = 'failed', finished_at = now(), error_message = ${message}
+          SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
+              phase_timings = ${phaseTimingsParam(timer)}
           WHERE id = ${runId}::uuid
         `);
+        logRunTimings(runKind, runId, timer, { status: "failed" });
         return err({ kind: "HandlerError", operation: "deploy.trigger", message });
       }
       await setStagingOrigin(tx, {
         originUrl: publishSummary.previewUrl ?? null,
         runId,
       });
+      timer.lap("select-preview");
     }
 
     // The publish-anyway decision is recorded only now that the build it
@@ -891,9 +984,11 @@ export const triggerDeployOp = defineOperation({
       await releaseAiStageHolds(tx, { holdIds: coveredHolds, productionRunId: runId });
     }
 
+    timer.lap("finish");
     await tx.execute(sql`
       UPDATE deploy_runs
-      SET status = 'succeeded', finished_at = now(),
+      SET status = 'succeeded', finished_at = clock_timestamp(),
+          phase_timings = ${phaseTimingsParam(timer)},
           page_count = ${subprocess.result.pageCount},
           file_count = ${subprocess.result.fileCount},
           build_id = ${runId},
@@ -902,6 +997,11 @@ export const triggerDeployOp = defineOperation({
           parity_manifest = ${parityManifest === null ? null : jsonbParam(parityManifest)}
       WHERE id = ${runId}::uuid
     `);
+    logRunTimings(runKind, runId, timer, {
+      status: "succeeded",
+      pageCount: subprocess.result.pageCount,
+      fileCount: subprocess.result.fileCount,
+    });
 
     // #650 — where staging has its own host, that host is the only staging
     // URL anyone is shown; the provider's preview origin stays internal.
@@ -912,6 +1012,7 @@ export const triggerDeployOp = defineOperation({
       pageCount: subprocess.result.pageCount,
       fileCount: subprocess.result.fileCount,
       durationMs: subprocess.result.durationMs,
+      phases: timer.phases(),
       buildId: runId,
       ...(previewUrl ? { previewUrl } : {}),
       draftPages: await mainDraftPages(tx),
@@ -961,6 +1062,8 @@ export const promoteDeployOp = defineOperation({
     buildId: z.string(),
   }),
   handler: async (ctx, input, tx) => {
+    const startedAt = await runStartedAt(tx);
+    const timer = new PhaseTimer();
     if (input.fromTarget === input.toTarget) {
       return err({
         kind: "HandlerError",
@@ -1046,8 +1149,8 @@ export const promoteDeployOp = defineOperation({
     const toTarget = rowToTarget(to);
 
     const toRunIdRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status)
-      VALUES (${to.id}::uuid, ${ctx.actorId}::uuid, 'running')
+      INSERT INTO deploy_runs (target_id, actor_id, status, started_at)
+      VALUES (${to.id}::uuid, ${ctx.actorId}::uuid, 'running', ${startedAt}::timestamptz)
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const toRunId = toRunIdRows[0]?.id;
@@ -1058,6 +1161,7 @@ export const promoteDeployOp = defineOperation({
         message: "could not create deploy_runs row for promotion target",
       });
     }
+    timer.lap("prepare");
     try {
       // v0.2.78 — delegate to the per-provider StaticPublisher.
       // Self-hosted does the existing copyTreeExcept + syncContents
@@ -1068,6 +1172,7 @@ export const promoteDeployOp = defineOperation({
       // publish has decided what staging serves next (lock order: live
       // release first, see staging-publication-lock.ts).
       if (fromRow?.site_url) await lockStagingPublication(tx);
+      timer.lap("lock-wait");
       const provider = process.env.CAELO_PROVIDER;
       const publisher = await loadStaticPublisher(provider);
       if (fromRow?.site_url) {
@@ -1078,6 +1183,7 @@ export const promoteDeployOp = defineOperation({
         // stopped expiring, and sweeps up previews a failed retirement left.
         // Done before the release, so a failure publishes nothing.
         await selectServedStagingPreview(publisher, await servedStagingRun(tx));
+        timer.lap("select-preview");
       }
       const { siteBaseUrl } = await readSeoSettings(tx);
       // #650 — a build staged with its own staging host cannot be copied
@@ -1094,9 +1200,10 @@ export const promoteDeployOp = defineOperation({
             toRunId,
             toTarget: to,
             repoRoot: root,
+            timer,
           })
         : null;
-      const summary =
+      const { phases: copyPhases, ...summary } =
         rebuilt?.summary ??
         (await publisher.promoteToProduction({
           sourceRunId: buildId,
@@ -1105,9 +1212,26 @@ export const promoteDeployOp = defineOperation({
           toTarget,
           siteBaseUrl,
         }));
+      if (!rebuilt) {
+        timer.include("publish", copyPhases ?? []);
+        timer.lap("publish");
+      }
+      // Issue #620 — a human Publish live ships the staged build, and with
+      // it exactly the AI Stages that build covered. Released before the
+      // run is marked finished (same transaction, so the order changes
+      // nothing about what is released): the stored span and steps then
+      // cover all of the run's work, like the logged total (#1003).
+      if (to.env === "production" && ctx.actorKind === "human" && fromRow) {
+        await releaseAiStageHolds(tx, {
+          holdIds: json<string[]>(fromRow.covered_ai_hold_ids),
+          productionRunId: toRunId,
+        });
+      }
+      timer.lap("finish");
       await tx.execute(sql`
         UPDATE deploy_runs
-        SET status = 'succeeded', finished_at = now(),
+        SET status = 'succeeded', finished_at = clock_timestamp(),
+            phase_timings = ${phaseTimingsParam(timer)},
             page_count = ${rebuilt ? rebuilt.pageCount : sql`(SELECT page_count FROM deploy_runs WHERE id = ${fromRunId}::uuid)`},
             file_count = ${rebuilt ? rebuilt.fileCount : sql`(SELECT file_count FROM deploy_runs WHERE id = ${fromRunId}::uuid)`},
             build_id = ${summary.destinationBuildId},
@@ -1118,22 +1242,19 @@ export const promoteDeployOp = defineOperation({
             caelo_version = ${rebuilt ? CAELO_VERSION : sql`(SELECT caelo_version FROM deploy_runs WHERE id = ${fromRunId}::uuid)`}
         WHERE id = ${toRunId}::uuid
       `);
-      // Issue #620 — a human Publish live ships the staged build, and with
-      // it exactly the AI Stages that build covered.
-      if (to.env === "production" && ctx.actorKind === "human" && fromRow) {
-        await releaseAiStageHolds(tx, {
-          holdIds: json<string[]>(fromRow.covered_ai_hold_ids),
-          productionRunId: toRunId,
-        });
-      }
+      // Last fallible step done: one line per run, never succeeded + failed.
+      logRunTimings("publish-live", toRunId, timer, { status: "succeeded" });
       return ok({ fromRunId, toRunId, buildId: summary.destinationBuildId });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
+      timer.lap("failed-step");
       await tx.execute(sql`
         UPDATE deploy_runs
-        SET status = 'failed', finished_at = now(), error_message = ${message}
+        SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
+            phase_timings = ${phaseTimingsParam(timer)}
         WHERE id = ${toRunId}::uuid
       `);
+      logRunTimings("publish-live", toRunId, timer, { status: "failed" });
       return err({
         kind: "HandlerError",
         operation: "deploy.promote",
@@ -1168,6 +1289,8 @@ async function rebuildAndPublishLive(
     toRunId: string;
     toTarget: TargetDbRow;
     repoRoot: string;
+    /** Laps `generator`, `parity` and `publish` (with their own steps). */
+    timer: PhaseTimer;
   },
 ): Promise<{
   summary: Awaited<ReturnType<NonNullable<StaticPublisher["publishLiveBuild"]>>>;
@@ -1210,6 +1333,8 @@ async function rebuildAndPublishLive(
     // Nothing may serve this build before the parity guard passed.
     syncCurrent: false,
   });
+  if (built.ok) args.timer.include("generator", built.result.phases);
+  args.timer.lap("generator");
   if (!built.ok) {
     const tail = built.stderr ? ` — ${built.stderr.slice(-300).trim()}` : "";
     throw new Error(`the live rebuild failed: ${built.message}${tail}`);
@@ -1220,6 +1345,7 @@ async function rebuildAndPublishLive(
     stagedCaeloVersion,
     runningCaeloVersion: CAELO_VERSION,
   });
+  args.timer.lap("parity");
   if (refusal) throw new ParityRefusalError(refusal);
 
   const summary = await publishLiveBuild({
@@ -1228,6 +1354,8 @@ async function rebuildAndPublishLive(
     target,
     sourceRunId: args.stagingRunId,
   });
+  args.timer.include("publish", summary.phases ?? []);
+  args.timer.lap("publish");
   return { summary, pageCount: built.result.pageCount, fileCount: built.result.fileCount };
 }
 
@@ -1324,6 +1452,7 @@ export const rollbackDeployOp = defineOperation({
     .strict(),
   output: z.object({ buildId: z.string(), newRunId: z.string() }),
   handler: async (ctx, input, tx) => {
+    const startedAt = await runStartedAt(tx);
     const targetRows = (await tx.execute(sql`
       SELECT id::text AS id, name, env, out_dir, base_url, robots_default, is_default, page_url_style
       FROM deploy_targets WHERE name = ${input.targetName} LIMIT 1
@@ -1383,9 +1512,10 @@ export const rollbackDeployOp = defineOperation({
     // run itself a valid rollback source later — without it the Firebase
     // publisher refuses a run with no `publish_summary.location`.
     const newRunRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status, finished_at, build_id, publish_summary)
-      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'succeeded', now(), ${buildId},
-              ${jsonbParam(summary)})
+      INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id,
+                               publish_summary)
+      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'succeeded', ${startedAt}::timestamptz,
+              clock_timestamp(), ${buildId}, ${jsonbParam(summary)})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const newRunId = newRunRows[0]?.id ?? "";
@@ -1406,7 +1536,8 @@ interface DeployBridge {
 }
 let bridge: DeployBridge | null = null;
 
-export function setDeployBridge(b: DeployBridge): void {
+/** Attach the registry + adapter the trigger op reports progress through; `null` detaches it. */
+export function setDeployBridge(b: DeployBridge | null): void {
   bridge = b;
 }
 export function getDeployBridge(): DeployBridge | null {
