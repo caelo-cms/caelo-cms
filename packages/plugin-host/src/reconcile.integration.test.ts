@@ -76,6 +76,17 @@ async function rowVersion(slug: string): Promise<string | undefined> {
   return rows[0]?.v;
 }
 
+/** This instance's runtime-health states for a plugin. */
+async function runtimeStates(slug: string): Promise<string[]> {
+  const rows = await sqlSystem(
+    async (tx) =>
+      (await tx`SELECT state FROM plugin_runtime WHERE plugin_slug = ${slug}`) as {
+        state: string;
+      }[],
+  );
+  return rows.map((r) => r.state);
+}
+
 async function wipe(): Promise<void> {
   resetPluginHost();
   resetPluginHostSync();
@@ -141,15 +152,20 @@ describe("#1008 — syncPluginHost follows the plugin rows", () => {
     expect(loadedPlugins.bySlug(STEADY)).toBeDefined();
     expect(isPluginDisabled(STEADY)).toBe(false);
 
+    expect(await runtimeStates(STEADY)).toEqual(["loaded"]);
+
     await sqlSystem(
       async (tx) => tx`UPDATE plugins SET status = 'disabled' WHERE slug = ${STEADY}`,
     );
     await syncPluginHost(true);
     expect(isPluginDisabled(STEADY)).toBe(true);
+    expect(await runtimeStates(STEADY)).toEqual([]);
 
     await sqlSystem(async (tx) => tx`UPDATE plugins SET status = 'active' WHERE slug = ${STEADY}`);
     await syncPluginHost(true);
     expect(isPluginDisabled(STEADY)).toBe(false);
+    // Resumed here, so this server counts in the plugin's health again.
+    expect(await runtimeStates(STEADY)).toEqual(["loaded"]);
 
     await sqlSystem(async (tx) => {
       await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${STEADY})`;

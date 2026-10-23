@@ -43,7 +43,7 @@ import { isPluginDisabled, type LoadedPlugin, loadedPlugins } from "./dispatch.j
 import { applyPluginLifecycle, deregisterPlugin } from "./lifecycle.js";
 import { describeLoadError } from "./load-error.js";
 import { loadActivatedPlugin, pluginHostBootstrapped } from "./loader.js";
-import { clearPluginRuntime } from "./runtime-health.js";
+import { clearPluginRuntime, recordPluginRuntime } from "./runtime-health.js";
 
 /** Minimum gap between two state reads (per instance). */
 const CHECK_INTERVAL_MS = 2_000;
@@ -283,6 +283,10 @@ async function reconcile(host: Host, rows: ReadonlyArray<PluginRow>): Promise<vo
     if (isPluginDisabled(row.slug)) {
       console.log(`[plugin-host] reconcile: ${row.slug} was re-enabled — resuming it here`);
       applyPluginLifecycle(row.slug, "enable");
+      // The disable above cleared this instance's runtime row, and the
+      // heartbeat only refreshes rows that exist: without this the plugin's
+      // health would never count this server again until a restart.
+      await recordPluginRuntime({ ...host, slug: row.slug, state: "loaded", errorId: null });
     }
   }
 }
