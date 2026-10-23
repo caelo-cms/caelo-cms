@@ -34,10 +34,9 @@ interface PluginListRow {
 export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>, PluginListRow>({
   name: "list_plugins",
   description:
-    "List the plugins installed on this site with their activation status. " +
-    "`active` means the plugin is running and its tools and skills are available to you right now; " +
-    "`awaiting_activation` means it is installed and verified but NOTHING of it is loaded — you cannot call its tools and its skills are not in your skills index. " +
-    "`health` says what the running servers make of that: `running`; `failing` (an active plugin failed to load on a server — the `problem` column says why; tell the operator, get_plugin has the details; the plugin is NOT switched off, its status stays active); `unreported` (just activated, no server has reported it yet); `not_running` (not active). " +
+    "List the plugins installed on this site: their status (the Owner's decision) and their health (what the running servers make of it). " +
+    "`status`: `active` = the Owner wants it running; `awaiting_activation` = installed and verified, but nothing of it is loaded; `disabled` = the Owner stopped it. " +
+    "Availability comes from `health`, not from `status`: only `health = running` means its tools and skills are usable right now. `failing` = an active plugin failed to load on a server (`problem` says why) — it is NOT switched off, tell the operator, get_plugin has the details; `unreported` = active, but no server has reported it yet (just activated or starting); `not_running` = not active. Never tell the operator a capability works while its plugin is failing. " +
     "Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. " +
     "Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
   opName: "plugins.list",

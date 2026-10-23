@@ -70,12 +70,11 @@ import {
 import { readExternalApproval } from "./external-authorization.js";
 import { externalPluginDefinition } from "./external-plugin.js";
 import { describeLoadError } from "./load-error.js";
-import { loadReported } from "./load-outcome.js";
+import { loadReported, reportLoadFailure } from "./load-outcome.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import {
   inPhase,
   PluginLoadError,
-  recordPluginError,
   startRuntimeHeartbeat,
   stopRuntimeHeartbeat,
 } from "./runtime-health.js";
@@ -292,14 +291,10 @@ export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
       rawManifest = JSON.parse(manifestText);
     } catch (e) {
       failed.push({ slug: entry, reason: `manifest JSON parse: ${(e as Error).message}` });
-      await recordPluginError({
-        infra: opts.infra,
-        systemActorId: opts.systemActorId,
-        slug: entry,
-        pluginId: null,
-        phase: "verify",
-        error: new Error(`manifest JSON parse: ${(e as Error).message}`, { cause: e }),
-      });
+      await reportLoadFailure(
+        { infra: opts.infra, systemActorId: opts.systemActorId, slug: entry },
+        new PluginLoadError("verify", new Error(`manifest JSON parse: ${(e as Error).message}`)),
+      );
       continue;
     }
     const slug = (rawManifest as { slug?: unknown }).slug;
@@ -655,14 +650,10 @@ export async function loadActivatedPlugin(
     rawManifest = JSON.parse(readFileSync(resolvePath(pluginDir, "manifest.json"), "utf8"));
   } catch (e) {
     const unreadable = new Error(`manifest unreadable: ${(e as Error).message}`, { cause: e });
-    await recordPluginError({
-      infra: bootOpts.infra,
-      systemActorId: bootOpts.systemActorId,
-      slug,
-      pluginId: null,
-      phase: "verify",
-      error: unreadable,
-    });
+    await reportLoadFailure(
+      { infra: bootOpts.infra, systemActorId: bootOpts.systemActorId, slug },
+      new PluginLoadError("verify", unreadable),
+    );
     return { loaded: false, reason: unreadable.message };
   }
   const host = bootOpts;

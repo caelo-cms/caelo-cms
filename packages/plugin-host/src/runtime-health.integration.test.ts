@@ -18,6 +18,9 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { registerAdminOps } from "@caelo-cms/admin-core";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -293,9 +296,94 @@ describe("#1008 — a failing load never switches a plugin off", () => {
     ]);
   });
 
+  it("retries the bug intake on the next occurrence when the first report was refused", async () => {
+    const slug = `${PREFIX}core-retry`;
+    const error = () =>
+      Object.assign(new Error("syntax error at or near TABLE"), { errno: "42601" });
+    // A registry without the bug-report op: the intake refuses the report.
+    const refused = await recordPluginError({
+      infra: { adapter, registry: new OperationRegistry() },
+      systemActorId: SYSTEM_ACTOR_ID,
+      slug,
+      pluginId: null,
+      phase: "provision",
+      error: error(),
+    });
+    expect(refused).toMatchObject({ firstOccurrence: true, reported: false });
+    const retried = await recordPluginError({
+      infra,
+      systemActorId: SYSTEM_ACTOR_ID,
+      slug,
+      pluginId: null,
+      phase: "provision",
+      error: error(),
+    });
+    expect(retried).toMatchObject({ firstOccurrence: false, reported: true });
+    expect((await errorsOf(slug))[0]?.bug_report_id).not.toBeNull();
+  });
+
+  it("uninstalling a plugin that is failing to load removes its runtime and error rows", async () => {
+    const slug = `${PREFIX}uninstall`;
+    await boot({
+      slug,
+      version: "0.1.0",
+      tier: 1,
+      schema: {},
+      operations: { noop: async () => ({}) },
+      onActivate: async () => {
+        throw new Error("never comes up");
+      },
+    });
+    expect((await runtimeOf(slug)).map((r) => r.state)).toEqual(["error"]);
+    // The uninstall op ends in this DELETE; the error row cascades and must
+    // take the runtime row with it instead of breaking its CHECK.
+    await withSystemSql(async (tx) => {
+      await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${slug})`;
+      await tx`DELETE FROM plugins WHERE slug = ${slug}`;
+    });
+    expect(await errorsOf(slug)).toEqual([]);
+    expect(await runtimeOf(slug)).toEqual([]);
+  });
+
+  it("an unreadable manifest of an active plugin counts as failing here", async () => {
+    const slug = `${PREFIX}badmanifest`;
+    await boot({
+      slug,
+      version: "0.1.0",
+      tier: 1,
+      schema: {},
+      operations: { noop: async () => ({}) },
+    });
+    expect(await statusOf(slug)).toBe("active");
+    const root = mkdtempSync(join(tmpdir(), "t1008-"));
+    try {
+      mkdirSync(join(root, slug));
+      writeFileSync(join(root, slug, "manifest.json"), "{ not json");
+      resetPluginHost();
+      const report = await bootstrap({ infra, pluginsRoot: root, systemActorId: SYSTEM_ACTOR_ID });
+      expect(report.failed.map((f) => f.slug)).toContain(slug);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    expect(await statusOf(slug)).toBe("active");
+    expect((await runtimeOf(slug)).map((r) => r.state)).toEqual(["error"]);
+    const got = await execute(registry, adapter, SYSTEM, "plugins.get", { slug });
+    if (!got.ok) throw new Error(JSON.stringify(got.error));
+    expect(
+      (got.value as { plugin: { health: { state: string; problem: { phase: string } } } }).plugin
+        .health,
+    ).toMatchObject({ state: "failing", problem: { phase: "verify" } });
+  });
+
   it("the database no longer accepts `failed` as a status", async () => {
     const slug = `${PREFIX}check`;
-    await boot({ slug, version: "0.1.0", tier: 1, schema: {}, operations: { noop: async () => ({}) } });
+    await boot({
+      slug,
+      version: "0.1.0",
+      tier: 1,
+      schema: {},
+      operations: { noop: async () => ({}) },
+    });
     const refused = await withSystemSql(
       async (tx) => tx`UPDATE plugins SET status = 'failed' WHERE slug = ${slug}`,
     ).catch((e: Error) => e);

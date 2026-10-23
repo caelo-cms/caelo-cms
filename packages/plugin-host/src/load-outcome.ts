@@ -77,7 +77,13 @@ export async function loadReported<T>(
   }
 }
 
-async function reportLoadFailure(subject: LoadSubject, error: unknown): Promise<void> {
+/**
+ * Record a final load failure: `plugin_errors` always; this instance's
+ * `plugin_runtime` row too when the Owner wants the plugin running. Also
+ * used directly for failures that happen before a load can start (an
+ * unreadable manifest).
+ */
+export async function reportLoadFailure(subject: LoadSubject, error: unknown): Promise<void> {
   let row: { id: string; status: string } | undefined;
   try {
     row = await subject.infra.adapter.withAdminTransaction(

@@ -53,22 +53,31 @@ describe("pluginErrorFingerprint", () => {
     const a = pluginErrorFingerprint(
       "forms",
       "operation",
+      "plugin",
       "row 3f2b1c4d-1111-4222-8333-444455556666 not found after 12 ms",
     );
     const b = pluginErrorFingerprint(
       "forms",
       "operation",
+      "plugin",
       "row 9e8d7c6b-aaaa-4bbb-8ccc-ddddeeeeffff not found after 340 ms",
     );
     expect(a).toBe(b);
     expect(a).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("separates plugins, phases and different messages", () => {
-    const base = pluginErrorFingerprint("forms", "operation", "boom");
-    expect(pluginErrorFingerprint("ratings", "operation", "boom")).not.toBe(base);
-    expect(pluginErrorFingerprint("forms", "render", "boom")).not.toBe(base);
-    expect(pluginErrorFingerprint("forms", "operation", "bang")).not.toBe(base);
+  it("separates plugins, phases, classes and different messages", () => {
+    const base = pluginErrorFingerprint("forms", "operation", "plugin", "boom");
+    expect(pluginErrorFingerprint("ratings", "operation", "plugin", "boom")).not.toBe(base);
+    expect(pluginErrorFingerprint("forms", "render", "plugin", "boom")).not.toBe(base);
+    expect(pluginErrorFingerprint("forms", "operation", "transient", "boom")).not.toBe(base);
+    expect(pluginErrorFingerprint("forms", "operation", "plugin", "bang")).not.toBe(base);
+  });
+
+  it("keeps the SQLSTATE as part of the identity", () => {
+    const dup = pluginErrorFingerprint("x", "provision", "core", "[23505] duplicate key");
+    const syntax = pluginErrorFingerprint("x", "provision", "core", "[42601] duplicate key");
+    expect(dup).not.toBe(syntax);
   });
 });
 

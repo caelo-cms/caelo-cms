@@ -10,9 +10,9 @@
 -- `failed` had no way back (activation accepts only awaiting/disabled).
 -- Decision (2026-10-23): a plugin is never switched off automatically.
 --
--- 1. Existing `failed` rows go back to the decision they overwrote: a plugin
---    that was activated and never disabled is `active` again; anything else
---    is `awaiting_activation`. The stored load error moves to
+-- 1. Existing `failed` rows go back to the decision they overwrote, read from
+--    the markers that decision left: rejected -> `rejected`, disabled ->
+--    `disabled`, activated -> `active`, otherwise `awaiting_activation`. The stored load error moves to
 --    `plugin_errors`. `failed` leaves the status CHECK. Not a contract
 --    migration: the previous image never reads `failed`, and its one write
 --    of it (`markPluginFailed`) is already wrapped in a catch, so that write
@@ -61,7 +61,9 @@ CREATE TABLE plugin_runtime (
   plugin_slug   text NOT NULL CHECK (plugin_slug ~ '^[a-z][a-z0-9-]*$'),
   revision      text NULL CHECK (revision IS NULL OR char_length(revision) <= 200),
   state         text NOT NULL CHECK (state IN ('loaded', 'error')),
-  error_id      uuid NULL REFERENCES plugin_errors(id) ON DELETE SET NULL,
+  -- CASCADE, not SET NULL: an `error` row without its error would break
+  -- the CHECK below, and the error only goes when its plugin is uninstalled.
+  error_id      uuid NULL REFERENCES plugin_errors(id) ON DELETE CASCADE,
   updated_at    timestamptz NOT NULL DEFAULT now(),
   heartbeat_at  timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (instance_id, plugin_slug),
@@ -99,7 +101,9 @@ WHERE p.status = 'failed';
 
 UPDATE plugins
 SET status = CASE
-      WHEN activated_at IS NOT NULL AND disabled_at IS NULL THEN 'active'
+      WHEN rejected_at IS NOT NULL THEN 'rejected'
+      WHEN disabled_at IS NOT NULL THEN 'disabled'
+      WHEN activated_at IS NOT NULL THEN 'active'
       ELSE 'awaiting_activation'
     END,
     validation_errors = '[]'::jsonb,

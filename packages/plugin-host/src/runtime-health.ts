@@ -129,12 +129,24 @@ export function classifyPluginError(phase: PluginPhase, error: unknown): PluginE
  * instance or with another row id must fold into one row. Ids, digests and
  * numbers vary per occurrence, so they are blanked before hashing.
  */
-export function pluginErrorFingerprint(slug: string, phase: PluginPhase, message: string): string {
+export function pluginErrorFingerprint(
+  slug: string,
+  phase: PluginPhase,
+  errorClass: PluginErrorClass,
+  message: string,
+): string {
+  // A SQLSTATE (`[23505]`) is the defect's identity, not an incidental
+  // number — kept verbatim while every other digit run is blanked.
+  const states: string[] = [];
   const normalized = message
+    .replace(/\[([0-9A-Z]{5})\]/g, (_m, code: string) => `\u0001${states.push(code) - 1}\u0001`)
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<id>")
     .replace(/\b[0-9a-f]{32,}\b/gi, "<hex>")
-    .replace(/\d+/g, "#");
-  return createHash("sha256").update(`${slug}\u0000${phase}\u0000${normalized}`).digest("hex");
+    .replace(/\d+/g, "#")
+    .replace(/\u0001#\u0001/g, () => `[${states.shift()}]`);
+  return createHash("sha256")
+    .update(`${slug}\u0000${phase}\u0000${errorClass}\u0000${normalized}`)
+    .digest("hex");
 }
 
 /**
@@ -149,11 +161,15 @@ export function hostInstanceId(): string {
   return INSTANCE_ID;
 }
 
-/** A recorded problem. `firstOccurrence` is true when its fingerprint is new. */
+/**
+ * A recorded problem. `firstOccurrence` is true when its fingerprint is new;
+ * `reported` once it is linked to a bug-intake report.
+ */
 export interface RecordedPluginError {
   readonly errorId: string;
   readonly errorClass: PluginErrorClass;
   readonly firstOccurrence: boolean;
+  readonly reported: boolean;
 }
 
 function systemCtx(systemActorId: string, requestId: string) {
@@ -179,7 +195,7 @@ export async function recordPluginError(opts: {
   console.error(
     `[plugin-host] ${opts.slug} ${opts.phase} failed (${errorClass}) on ${INSTANCE_ID}: ${message}`,
   );
-  const fingerprint = pluginErrorFingerprint(opts.slug, opts.phase, message);
+  const fingerprint = pluginErrorFingerprint(opts.slug, opts.phase, errorClass, message);
   let recorded: RecordedPluginError;
   try {
     recorded = await opts.infra.adapter.withAdminTransaction(
@@ -205,11 +221,16 @@ export async function recordPluginError(opts: {
             last_revision = EXCLUDED.last_revision,
             message = EXCLUDED.message,
             plugin_id = coalesce(EXCLUDED.plugin_id, plugin_errors.plugin_id)
-          RETURNING id::text AS id, occurrences
-        `)) as unknown as { id: string; occurrences: number }[];
+          RETURNING id::text AS id, occurrences, bug_report_id IS NOT NULL AS reported
+        `)) as unknown as { id: string; occurrences: number; reported: boolean }[];
         const row = rows[0];
         if (!row) throw new Error("plugin_errors upsert returned no row");
-        return { errorId: row.id, errorClass, firstOccurrence: row.occurrences === 1 };
+        return {
+          errorId: row.id,
+          errorClass,
+          firstOccurrence: row.occurrences === 1,
+          reported: row.reported,
+        };
       },
     );
   } catch (e) {
@@ -218,21 +239,26 @@ export async function recordPluginError(opts: {
     );
     return null;
   }
-  if (recorded.firstOccurrence && errorClass === "core") {
-    await fileCoreBug(opts, recorded.errorId, message);
+  // Until a report is linked, every occurrence tries again: a bug intake
+  // that refused the first one must not drop the defect for good.
+  if (errorClass === "core" && !recorded.reported) {
+    const reported = await fileCoreBug(opts, recorded.errorId, message);
+    return { ...recorded, reported };
   }
   return recorded;
 }
 
 /**
  * File a core plugin-host problem with the bug intake (`ai_bug_reports`,
- * forwarded when the Owner opted in), once per fingerprint.
+ * forwarded when the Owner opted in) and link it to the error row.
+ *
+ * @returns whether the report is now linked.
  */
 async function fileCoreBug(
   opts: { infra: PluginHostInfra; systemActorId: string; slug: string; phase: PluginPhase },
   errorId: string,
   message: string,
-): Promise<void> {
+): Promise<boolean> {
   const r = await execute(
     opts.infra.registry,
     opts.infra.adapter,
@@ -253,9 +279,9 @@ async function fileCoreBug(
   );
   if (!r.ok) {
     console.error(
-      `[plugin-host] bug report for ${opts.slug} not filed: ${"message" in r.error ? r.error.message : r.error.kind}`,
+      `[plugin-host] bug report for ${opts.slug} not filed (retried on the next occurrence): ${"message" in r.error ? r.error.message : r.error.kind}`,
     );
-    return;
+    return false;
   }
   const reportId = (r.value as { id: string }).id;
   try {
@@ -263,14 +289,17 @@ async function fileCoreBug(
       systemCtx(opts.systemActorId, `plugin-error-bug-link-${opts.slug}`),
       async (tx) => {
         await tx.execute(sql`
-          UPDATE plugin_errors SET bug_report_id = ${reportId}::uuid WHERE id = ${errorId}::uuid
+          UPDATE plugin_errors SET bug_report_id = ${reportId}::uuid
+          WHERE id = ${errorId}::uuid AND bug_report_id IS NULL
         `);
       },
     );
+    return true;
   } catch (e) {
     console.error(
       `[plugin-host] bug report link for ${opts.slug} not saved: ${describeLoadError(e)}`,
     );
+    return false;
   }
 }
 
