@@ -147,7 +147,7 @@ const RUN_REPORT_RETENTION_DAYS = 30;
  * `users.record_operator_access_run` (#970): the sync job's report of one
  * run (which members Google refused, other errors, a sign-in client
  * problem). Written with the job's database role, which may insert here
- * and prune old reports, nothing else (migration 0335).
+ * and prune old reports, nothing else (migration 0341).
  */
 export const recordOperatorAccessRunOp = defineOperation({
   name: "users.record_operator_access_run",

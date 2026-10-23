@@ -39,7 +39,7 @@
  *      ("done with warnings", run-report.ts).
  *
  * Writing the report is the one write the job's database role may make
- * (migration 0335: INSERT on `operator_access_sync_runs` and its audit
+ * (migration 0341: INSERT on `operator_access_sync_runs` and its audit
  * rows, nothing else).
  *
  *
