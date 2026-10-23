@@ -11,7 +11,8 @@
  *     the problem in `plugin_errors` and this instance's `plugin_runtime`
  *     row, and leaves nothing of the plugin registered;
  *   - a transient failure is retried and the plugin comes up;
- *   - a core problem goes to the bug intake once per fingerprint;
+ *   - a core problem goes to the bug intake once per fingerprint, also
+ *     when several instances hit it at once;
  *   - an operation that throws lands in the plugin's error log;
  *   - `plugins.get` shows all of it as health;
  *   - `failed` is no longer a status the database accepts.
@@ -319,6 +320,71 @@ describe("#1008 — a failing load never switches a plugin off", () => {
       error: error(),
     });
     expect(retried).toMatchObject({ firstOccurrence: false, reported: true });
+    expect((await errorsOf(slug))[0]?.bug_report_id).not.toBeNull();
+  });
+
+  it("files one report when several instances hit the same core problem at once", async () => {
+    const slug = `${PREFIX}core-race`;
+    const occur = () =>
+      recordPluginError({
+        infra,
+        systemActorId: SYSTEM_ACTOR_ID,
+        slug,
+        pluginId: null,
+        phase: "provision",
+        error: Object.assign(new Error("syntax error at or near INDEX"), { errno: "42601" }),
+      });
+    const results = await Promise.all([occur(), occur(), occur(), occur(), occur()]);
+    expect(results.every((r) => r !== null)).toBe(true);
+    const reports = await withSystemSql(
+      async (tx) =>
+        (await tx`
+          SELECT id::text AS id FROM ai_bug_reports
+          WHERE title = ${`Plugin host: ${slug} failed in provision`}
+        `) as { id: string }[],
+    );
+    expect(reports).toHaveLength(1);
+    const errors = await errorsOf(slug);
+    expect(errors[0]).toMatchObject({ occurrences: 5, bug_report_id: reports[0]?.id });
+  });
+
+  it("takes over a bug-intake claim its holder abandoned", async () => {
+    const slug = `${PREFIX}core-stale`;
+    const occur = () =>
+      recordPluginError({
+        infra: { adapter, registry: new OperationRegistry() },
+        systemActorId: SYSTEM_ACTOR_ID,
+        slug,
+        pluginId: null,
+        phase: "provision",
+        error: Object.assign(new Error("syntax error at or near VIEW"), { errno: "42601" }),
+      });
+    await occur();
+    // An instance that claimed the filing and died before linking or
+    // releasing it: a fresh claim blocks, a lapsed one does not.
+    const hold = (age: string) =>
+      withSystemSql(async (tx) => {
+        await tx`
+          UPDATE plugin_errors
+          SET bug_intake_claim = gen_random_uuid(),
+              bug_intake_claimed_at = now() - ${age}::interval
+          WHERE plugin_slug = ${slug}
+        `;
+      });
+    const withIntake = () =>
+      recordPluginError({
+        infra,
+        systemActorId: SYSTEM_ACTOR_ID,
+        slug,
+        pluginId: null,
+        phase: "provision",
+        error: Object.assign(new Error("syntax error at or near VIEW"), { errno: "42601" }),
+      });
+    await hold("1 minute");
+    expect(await withIntake()).toMatchObject({ reported: false });
+    expect((await errorsOf(slug))[0]?.bug_report_id).toBeNull();
+    await hold("11 minutes");
+    expect(await withIntake()).toMatchObject({ reported: true });
     expect((await errorsOf(slug))[0]?.bug_report_id).not.toBeNull();
   });
 
