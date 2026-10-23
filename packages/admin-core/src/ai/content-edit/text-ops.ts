@@ -15,7 +15,10 @@
 
 /** One surgical string replacement, mirroring Claude Code's Edit tool. */
 export interface ContentEdit {
-  /** Exact text to find. Must be UNIQUE in the body unless `replaceAll`. */
+  /**
+   * Exact text to find. Must be UNIQUE in the body unless `replaceAll`.
+   * Empty only to fill an empty body (there is nothing to anchor on).
+   */
   readonly oldString: string;
   /** Replacement text. Must differ from `oldString`. */
   readonly newString: string;
@@ -44,6 +47,11 @@ function countOccurrences(haystack: string, needle: string): number {
  *  - `oldString` occurs at least once (else "not found — re-read"),
  *  - `oldString` is unique unless `replaceAll` (else "N matches — add
  *    surrounding context or pass replaceAll").
+ *
+ * An empty `oldString` fills an EMPTY body with `newString` — an empty
+ * field has no text to anchor an edit on, and refusing it left the model
+ * re-sending the whole module through edit_module. Against a body with
+ * content it is refused: an empty anchor would match everywhere.
  */
 export function applyStringEdits(source: string, edits: readonly ContentEdit[]): ApplyEditsResult {
   if (edits.length === 0) {
@@ -60,6 +68,20 @@ export function applyStringEdits(source: string, edits: readonly ContentEdit[]):
         ok: false,
         error: `oldString equals newString${where} — nothing to change. Make the two differ, or drop this edit.`,
       };
+    }
+    if (edit.oldString === "") {
+      if (current !== "") {
+        return {
+          ok: false,
+          error:
+            `oldString is empty${where}, but the body already has content (${current.length} characters). ` +
+            "An empty oldString only fills an empty body. Anchor on existing text from read_content, " +
+            "or use edit_module to replace the whole field.",
+        };
+      }
+      current = edit.newString;
+      replacements += 1;
+      continue;
     }
     const count = countOccurrences(current, edit.oldString);
     if (count === 0) {

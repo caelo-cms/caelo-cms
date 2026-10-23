@@ -34,7 +34,8 @@ const editContentInput = z
       .array(
         z
           .object({
-            oldString: z.string().min(1),
+            // Empty only to fill an empty field (text-ops.ts applyStringEdits).
+            oldString: z.string(),
             newString: z.string(),
             replaceAll: z.boolean().optional(),
           })
@@ -58,6 +59,7 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
     "Surgically edit a module's, template's or layout's body (html/css/js) by string replacement — the cheap, minimal-diff way to change existing code. " +
     "Pass `entityKind` + `entityId` + `field` + an `edits` array of {oldString, newString, replaceAll?}. Each `oldString` must be UNIQUE in the body (add surrounding context if not) unless `replaceAll:true`; edits apply in order, atomically (all-or-nothing). " +
     "Read the body first with read_content and copy exact text (incl. whitespace) into `oldString`; optionally pass its `sha=` as `expectedSha` to guard against a concurrent change. " +
+    'To fill an EMPTY field (e.g. a module with no js yet), pass one edit with `oldString: ""` and the new content as `newString`; an empty oldString on a field that has content is refused. ' +
     "On success it returns the NEW `sha=` plus a line-numbered snippet of each changed region — chain another edit_content in the same turn using that sha and the fresh line numbers, WITHOUT re-reading. " +
     "PREFER this over edit_module for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. " +
     "Use edit_module instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. " +
