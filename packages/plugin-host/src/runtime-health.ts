@@ -379,6 +379,39 @@ async function releaseBugIntakeClaim(
 interface RuntimeOutcome {
   readonly state: "loaded" | "error";
   readonly errorId: string | null;
+  /** Its place among this instance's outcomes (see {@link nextOutcomeSeq}). */
+  readonly seq: bigint;
+}
+
+/**
+ * Outcomes are numbered from the process's boot time (ms * 10^6) plus a
+ * counter, so every outcome of this process is newer than every earlier one
+ * and than any row an earlier process with the same id could have left.
+ */
+const OUTCOME_SEQ_BASE = BigInt(Date.now()) * 1_000_000n;
+let outcomeCounter = 0n;
+function nextOutcomeSeq(): bigint {
+  outcomeCounter += 1n;
+  return OUTCOME_SEQ_BASE + outcomeCounter;
+}
+
+/**
+ * The last write queued per plugin. Writes for one plugin run one after
+ * another, so a heartbeat retry and a new outcome never race each other;
+ * the upsert's `outcome_seq` guard additionally refuses any older outcome.
+ */
+const writeChains = new Map<string, Promise<void>>();
+
+function serialized(slug: string, write: () => Promise<void>): Promise<void> {
+  // A failed write never blocks the ones queued behind it.
+  const next = (writeChains.get(slug) ?? Promise.resolve()).catch(() => undefined).then(write);
+  writeChains.set(slug, next);
+  next
+    .catch(() => undefined)
+    .then(() => {
+      if (writeChains.get(slug) === next) writeChains.delete(slug);
+    });
+  return next;
 }
 
 /**
@@ -406,17 +439,34 @@ export async function recordPluginRuntime(opts: {
   state: "loaded" | "error";
   errorId: string | null;
 }): Promise<void> {
-  const outcome: RuntimeOutcome = { state: opts.state, errorId: opts.errorId };
+  const outcome: RuntimeOutcome = {
+    state: opts.state,
+    errorId: opts.errorId,
+    seq: nextOutcomeSeq(),
+  };
   unsavedOutcomes.set(opts.slug, outcome);
   await writeOutcome(opts.infra, opts.systemActorId, opts.slug, outcome);
 }
 
 /**
- * Write one outcome; forget it once written (unless a newer one replaced it
- * meanwhile). An error row that is gone (its plugin was uninstalled) has
- * nothing left to report, so that outcome is dropped instead of retried.
+ * Write one outcome, after any write for the same plugin still running;
+ * forget it once written. An outcome a newer one replaced before its turn
+ * came is skipped. An error row that is gone (its plugin was uninstalled)
+ * has nothing left to report, so that outcome is dropped instead of retried.
  */
-async function writeOutcome(
+function writeOutcome(
+  infra: PluginHostInfra,
+  systemActorId: string,
+  slug: string,
+  outcome: RuntimeOutcome,
+): Promise<void> {
+  return serialized(slug, async () => {
+    if (unsavedOutcomes.get(slug) !== outcome) return;
+    await upsertOutcome(infra, systemActorId, slug, outcome);
+  });
+}
+
+async function upsertOutcome(
   infra: PluginHostInfra,
   systemActorId: string,
   slug: string,
@@ -433,15 +483,19 @@ async function writeOutcome(
           return;
         }
         await tx.execute(sql`
-          INSERT INTO plugin_runtime (instance_id, plugin_slug, revision, state, error_id)
-          SELECT ${INSTANCE_ID}, ${slug}, ${REVISION}, ${outcome.state}, ${outcome.errorId}::uuid
+          INSERT INTO plugin_runtime
+            (instance_id, plugin_slug, revision, state, error_id, outcome_seq)
+          SELECT ${INSTANCE_ID}, ${slug}, ${REVISION}, ${outcome.state}, ${outcome.errorId}::uuid,
+                 ${outcome.seq.toString()}::bigint
           WHERE ${outcome.errorId}::uuid IS NULL
              OR EXISTS (SELECT 1 FROM plugin_errors WHERE id = ${outcome.errorId}::uuid)
           ON CONFLICT (instance_id, plugin_slug) DO UPDATE SET
             state = EXCLUDED.state,
             error_id = EXCLUDED.error_id,
+            outcome_seq = EXCLUDED.outcome_seq,
             updated_at = now(),
             heartbeat_at = now()
+          WHERE plugin_runtime.outcome_seq < EXCLUDED.outcome_seq
         `);
       },
     );

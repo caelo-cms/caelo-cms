@@ -138,7 +138,6 @@ export {
 // available, and what the Publish-live gate checks every active plugin against.
 export {
   pluginFailedHereReason,
-  pluginRanHereAt,
   pluginRunsHere,
 } from "./local-availability.js";
 export type { PluginRowLocker } from "./private-storage.js";

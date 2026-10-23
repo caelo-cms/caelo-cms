@@ -17,10 +17,10 @@
  * skills already loaded this chat.
  */
 
-import { pluginRanHereAt } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { execute } from "@caelo-cms/query-api";
 import type { ChatEngagement, ExecutionContext } from "@caelo-cms/shared";
+import { noteSignature } from "./page.js";
 
 interface ActiveSkillRow {
   id: string;
@@ -112,7 +112,7 @@ export function formatNewSkillsNotice(
  * on this server: their plugin failed to load here, so their tools are
  * absent. Rides the history for the same reason as the new-skills notice.
  */
-export function formatUnavailableSkillsNotice(skills: readonly UnavailableSkill[]): string {
+function formatUnavailableSkillsNotice(skills: readonly UnavailableSkill[]): string {
   const lines = skills.map(
     (s) => `- ${s.slug} (plugin "${s.pluginSlug}" failed to load on this server: ${s.reason})`,
   );
@@ -120,6 +120,33 @@ export function formatUnavailableSkillsNotice(skills: readonly UnavailableSkill[
     "These skills from the `# Skills` index are NOT available right now — their plugin failed to load on this server, so their tools are missing. Do not load or follow them; tell the operator, /settings/plugins shows the problem (load_skill says when one is back):",
     ...lines,
   ].join("\n");
+}
+
+/**
+ * The history note about skills of the pinned index whose plugin does not
+ * run here, given the signature of the last such note (null: none yet).
+ * Unavailable skills get the "not available" note whenever their set
+ * changes; once none is left after a note said otherwise, one "available
+ * again" note follows. Null when there is nothing new to say.
+ */
+export function skillAvailabilityNote(
+  unavailable: readonly UnavailableSkill[],
+  lastSignature: string | null,
+): { readonly seed: string; readonly body: string } | null {
+  if (unavailable.length > 0) {
+    return {
+      seed: unavailable
+        .map((s) => s.slug)
+        .sort()
+        .join(","),
+      body: formatUnavailableSkillsNotice(unavailable),
+    };
+  }
+  if (lastSignature === null || lastSignature === noteSignature("")) return null;
+  return {
+    seed: "",
+    body: "The skills this chat was told are unavailable run on this server again: their plugin loaded. load_skill works for them as listed in the `# Skills` index.",
+  };
 }
 
 /**
@@ -170,7 +197,16 @@ export async function buildSkillsContext(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   humanCtx: ExecutionContext,
-  args: { loadedSkillSlugs: readonly string[]; chatStartedAt?: string | null },
+  args: {
+    loadedSkillSlugs: readonly string[];
+    chatStartedAt?: string | null;
+    /**
+     * #1008 — the chat whose index this is. Its first build fixes which
+     * plugin skills the index leaves out (`chat.pin_skills_index`); without
+     * a chat (Power-MCP context) the current state decides.
+     */
+    chatSessionId?: string;
+  },
 ): Promise<SkillsContext> {
   const empty: SkillsContext = {
     skillsIndexBlock: undefined,
@@ -203,15 +239,28 @@ export async function buildSkillsContext(
     return Number.isNaN(at) || at <= startedAt;
   };
   // #1008 — a plugin's skills are available where its tools are: in a
-  // process that runs it. The index shows a plugin skill when its plugin
-  // ran here when the chat began; a later failure or recovery reaches the
-  // chat through its history, like an activation does.
+  // process that runs it. Which of them the index leaves out is fixed when
+  // the chat's index is first built and read back on every later turn, so
+  // a plugin failing or recovering mid-chat never edits the cached prefix;
+  // the chat hears about it in its history instead.
   const availableNow = (s: ActiveSkillRow): boolean => !s.notRunningHere;
-  const ranAtStart = (s: ActiveSkillRow): boolean =>
-    !s.pluginSlug || Number.isNaN(startedAt)
-      ? availableNow(s)
-      : pluginRanHereAt(s.pluginSlug, startedAt);
-  const inIndex = (s: ActiveSkillRow): boolean => pinnable(s) && ranAtStart(s);
+  const wouldLeaveOut = allActive.filter((s) => pinnable(s) && !availableNow(s)).map((s) => s.slug);
+  let leftOut: ReadonlySet<string> = new Set(wouldLeaveOut);
+  if (args.chatSessionId) {
+    const pinned = await execute(registry, adapter, humanCtx, "chat.pin_skills_index", {
+      chatSessionId: args.chatSessionId,
+      unavailableSkillSlugs: wouldLeaveOut,
+    });
+    if (!pinned.ok) {
+      // No silent fallback: an index built from the current state would
+      // rewrite the pinned prefix whenever a plugin's state changed.
+      throw new Error(
+        `buildSkillsContext: could not read the chat's pinned skills index: ${JSON.stringify(pinned.error)}`,
+      );
+    }
+    leftOut = new Set((pinned.value as { unavailableSkillSlugs: string[] }).unavailableSkillSlugs);
+  }
+  const inIndex = (s: ActiveSkillRow): boolean => pinnable(s) && !leftOut.has(s.slug);
   const activeSkills = allActive.filter(inIndex);
   const newlyActivated = allActive
     .filter((s) => availableNow(s) && !inIndex(s))

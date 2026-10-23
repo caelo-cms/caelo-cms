@@ -42,7 +42,7 @@ import { lastNoteSignature, noteSignature } from "./context/page.js";
 import {
   extractLoadedSkillSlugs,
   formatNewSkillsNotice,
-  formatUnavailableSkillsNotice,
+  skillAvailabilityNote,
 } from "./context/skills.js";
 import { buildSystemContextBlocks } from "./context-blocks.js";
 import { buildContextSplitEstimate } from "./context-split.js";
@@ -487,14 +487,12 @@ async function* runSerializedChatTurn(
     // #1008 — skills of the pinned index whose plugin failed to load on
     // this server: the index keeps them, the chat hears it here. Seeded on
     // the slug set, so it fires once per set.
-    if (ctx.unavailableSkills.length > 0) {
-      const slugs = ctx.unavailableSkills.map((s) => s.slug).sort();
-      await injectNote(
-        "skillsdown",
-        slugs.join(","),
-        formatUnavailableSkillsNotice(ctx.unavailableSkills),
-      );
-    }
+    // A later recovery gets one "available again" note.
+    const availability = skillAvailabilityNote(
+      ctx.unavailableSkills,
+      lastNoteSignature(session.messages, "skillsdown"),
+    );
+    if (availability) await injectNote("skillsdown", availability.seed, availability.body);
   }
 
   // P10A skill allowlist intersection ∪ P10.5 subagent exclusion

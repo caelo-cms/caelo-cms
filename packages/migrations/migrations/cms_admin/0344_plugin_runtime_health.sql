@@ -71,6 +71,10 @@ CREATE TABLE plugin_runtime (
   -- CASCADE, not SET NULL: an `error` row without its error would break
   -- the CHECK below, and the error only goes when its plugin is uninstalled.
   error_id      uuid NULL REFERENCES plugin_errors(id) ON DELETE CASCADE,
+  -- Order of this instance's outcomes for the plugin (boot epoch * 10^6 +
+  -- a per-process counter): the upsert only replaces an older outcome, so a
+  -- retried write that commits late never overwrites a newer one.
+  outcome_seq   bigint NOT NULL DEFAULT 0,
   updated_at    timestamptz NOT NULL DEFAULT now(),
   heartbeat_at  timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (instance_id, plugin_slug),

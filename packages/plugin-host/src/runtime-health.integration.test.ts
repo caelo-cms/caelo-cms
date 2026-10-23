@@ -551,6 +551,68 @@ describe("#1008 — a failing load never switches a plugin off", () => {
     expect(unsavedRuntimeSlugs()).not.toContain(slug);
   });
 
+  it("a heartbeat retry of an older outcome never overwrites a newer one", async () => {
+    const slug = `${PREFIX}retry-race`;
+    // An `error` outcome needs its error row.
+    const recorded = await recordPluginError({
+      infra,
+      systemActorId: SYSTEM_ACTOR_ID,
+      slug,
+      pluginId: null,
+      phase: "activate",
+      error: new Error("still starting"),
+    });
+    if (!recorded) throw new Error("plugin error not recorded");
+    // 1. The `error` outcome's write is refused once and stays pending.
+    let refuse = true;
+    const refusing = new Proxy(adapter, {
+      get(target, prop) {
+        if (prop === "withAdminTransaction" && refuse) {
+          refuse = false;
+          return async () => {
+            throw Object.assign(new Error("connection lost"), { errno: "08006" });
+          };
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    await recordPluginRuntime({
+      infra: { adapter: refusing, registry },
+      systemActorId: SYSTEM_ACTOR_ID,
+      slug,
+      state: "error",
+      errorId: recorded.errorId,
+    });
+    expect(unsavedRuntimeSlugs()).toContain(slug);
+    // 2. The heartbeat retries it on a slow connection: its transaction
+    //    commits only after the next outcome was recorded.
+    const slow = new Proxy(adapter, {
+      get(target, prop) {
+        const v = Reflect.get(target, prop, target);
+        if (prop === "withAdminTransaction") {
+          return async (...args: unknown[]) => {
+            await Bun.sleep(300);
+            return (v as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        return typeof v === "function" ? v.bind(target) : v;
+      },
+    });
+    const retry = runtimeHeartbeatOnce({ adapter: slow, registry }, SYSTEM_ACTOR_ID);
+    // 3. The plugin loads meanwhile.
+    await recordPluginRuntime({
+      infra,
+      systemActorId: SYSTEM_ACTOR_ID,
+      slug,
+      state: "loaded",
+      errorId: null,
+    });
+    await retry;
+    expect((await runtimeOf(slug)).map((r) => r.state)).toEqual(["loaded"]);
+    expect(unsavedRuntimeSlugs()).not.toContain(slug);
+  });
+
   it("the database no longer accepts `failed` as a status", async () => {
     const slug = `${PREFIX}check`;
     await boot({
