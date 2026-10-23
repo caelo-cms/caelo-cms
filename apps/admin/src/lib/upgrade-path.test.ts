@@ -96,7 +96,7 @@ describe("cloudShellUpgrade (#816)", () => {
   it("never links the install walkthrough and never pastes an unverified installer", () => {
     const c = cloudShellUpgrade(withJob, CLOUD_SHELL_UPGRADE_FIRST_VERSION);
     expect(c?.consoleUrl).toContain("cloudshell_tutorial=upgrade-gcp.md");
-    expect(c?.consoleUrl).not.toBe(cloudShellInstallUrl(CLOUD_SHELL_UPGRADE_FIRST_VERSION, "gcp"));
+    expect(c?.consoleUrl).not.toBe(cloudShellInstallUrl("gcp"));
     expect(c?.command).not.toContain("curl");
     expect(c?.command).not.toContain("bun.sh");
     expect(c?.command).not.toContain("skip-verify");

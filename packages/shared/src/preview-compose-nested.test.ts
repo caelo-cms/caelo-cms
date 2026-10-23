@@ -30,6 +30,9 @@ const CARD_A = "00000000-0000-0000-0000-0000000ca001";
 const CARD_B = "00000000-0000-0000-0000-0000000ca002";
 const GONE = "00000000-0000-0000-0000-00000000dead";
 
+/** The id stamp every nested module root carries (#1027). */
+const tag = (moduleId: string) => `data-caelo-module-id="${moduleId}"`;
+
 const card: NestedModuleResource = {
   moduleId: CARD_MOD,
   slug: "card",
@@ -89,7 +92,9 @@ describe("composePageWithLayout — nested modules", () => {
 
   it("renders every module-list element with the nested resolver", () => {
     const out = compose(grid(refs), resolver([card], instances));
-    expect(out.html).toContain("<article>Starter</article><article>Pro</article>");
+    expect(out.html).toContain(
+      `<article ${tag(CARD_MOD)}>Starter</article><article ${tag(CARD_MOD)}>Pro</article>`,
+    );
     expect(out.html).not.toContain("needs recursive renderer");
     expect(out.moduleFailures).toEqual([]);
   });
@@ -104,7 +109,7 @@ describe("composePageWithLayout — nested modules", () => {
       grid([refs[0], { moduleId: CARD_MOD, contentInstanceId: GONE }, "not-a-ref"]),
       resolver([card], instances),
     );
-    expect(out.html).toContain("<article>Starter</article>");
+    expect(out.html).toContain(`<article ${tag(CARD_MOD)}>Starter</article>`);
     expect(out.moduleFailures).toEqual([
       {
         blockName: "content",

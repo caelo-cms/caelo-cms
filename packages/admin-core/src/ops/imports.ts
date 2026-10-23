@@ -19,21 +19,12 @@
  */
 
 import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
-import {
-  deriveModuleType,
-  type ExecutionContext,
-  err,
-  formatGenesisInventory,
-  inventoryGenesisDraft,
-  ok,
-  redirectTargetIssue,
-} from "@caelo-cms/shared";
+import { type ExecutionContext, err, ok } from "@caelo-cms/shared";
 import {
   type BoilerplatePageInput,
   checkInventoryCoverage,
   detectBoilerplate,
   extractContentInventory,
-  flattenSiteDesignTokens,
   type PageDesignTokens,
   type SiteDesignTokens,
 } from "@caelo-cms/site-importer";
@@ -42,7 +33,6 @@ import { z } from "zod";
 import { deriveRunCalibration } from "../ai/import-cost-model.js";
 import { recordAudit } from "../audit.js";
 import { loadChatBinding } from "../draft.js";
-import { canonicaliseImportedModules } from "../links/canonicalise-writes.js";
 import { humaniseForRead } from "../links/humanise.js";
 import {
   loadContentInstanceStateWithBranchOverlay,
@@ -54,11 +44,6 @@ import { requiresApproverPermission } from "./_approver-permission.js";
 import { mapRowToOutput, toIso, toIsoRequired } from "./_helpers.js";
 import { resolveChatSessionId } from "./_propose-helpers.js";
 import { isolateDraftChat } from "./chat/draft-ops.js";
-import {
-  buildZeroPagesAbortMessage,
-  type ComposeSkip,
-  classifyComposeRunStatus,
-} from "./compose-eligibility.js";
 import { buildPageOp } from "./content/build-page.js";
 import {
   computeRunCost,
@@ -76,7 +61,6 @@ import {
   ImportLinkFinalisationError,
   UNRESOLVED_IMPORT_LINK_NEXT_STEP,
 } from "./links-import.js";
-import { updateThemeTokensOp } from "./themes.js";
 
 const runStatus = z.enum(["proposed", "crawling", "ready_for_review", "completed", "failed"]);
 
@@ -905,13 +889,13 @@ export const importRunEventInput = z
     runId: z.string().uuid(),
     severity: z.enum(["warning", "error", "info"]),
     /** Migration stage that emitted the event (crawl | media | fidelity |
-     *  inventory | compose | …). Free text so a new stage needs no schema
+     *  inventory | theme | …). Free text so a new stage needs no schema
      *  change; capped to keep the ledger legible. */
     phase: z.string().min(1).max(60).optional(),
     message: z.string().min(1).max(2000),
     /** Structured payload for the report surface. */
     detail: z.unknown().optional(),
-    /** Optional import_pages id (or composed page id) the event concerns. */
+    /** Optional import_pages id (or built page id) the event concerns. */
     pageId: z.string().uuid().optional(),
   })
   .strict();
@@ -1113,9 +1097,9 @@ export const setPageCapturesByUrlOp = defineOperation({
 
 /**
  * issue #247 — worker writes the run-level design-token aggregate after
- * the per-page ground-truth captures. `imports.compose_from_run`
- * prefers this over the extractor's inline-CSS-derived tokens because
- * computed styles are what the browser actually rendered.
+ * the per-page ground-truth captures. The AI reads it (get_run_report)
+ * in preference to the extractor's inline-CSS-derived
+ * tokens because computed styles are what the browser actually rendered.
  */
 export const setRunDesignTokensOp = defineOperation({
   name: "imports.set_run_design_tokens",
@@ -1160,9 +1144,10 @@ const IMPORT_PAGE_NOT_FOUND_MSG =
 
 /**
  * Resolve whatever id the AI holds for a crawled page to its owning
- * `import_pages.id` + the composed/built CMS page id, in BOTH directions:
+ * `import_pages.id` + the built CMS page id, in BOTH directions:
  *   1. the staging `import_pages.id`,
- *   2. the composed page id (`accepted_page_id`, set by compose_from_run),
+ *   2. the accepted page id (`accepted_page_id`, set by accept_page /
+ *      build_page with `importPageId`),
  *   3. a directly-built (#278) page whose slug equals the crawled
  *      `proposed_slug`,
  *   4. a directly-built (#278) HOMEPAGE — issue 0184 lets ANY page be the site
@@ -1179,7 +1164,7 @@ async function resolveImportPageRef(
   tx: TransactionRunner,
   inputId: string,
 ): Promise<{ importPageId: string; composedPageId: string | null } | null> {
-  // (1)+(2): input is a staging import_pages.id OR a composed page id.
+  // (1)+(2): input is a staging import_pages.id OR an accepted page id.
   const direct = (await tx.execute(sql`
     SELECT id::text AS id, accepted_page_id::text AS composed
     FROM import_pages
@@ -1189,7 +1174,7 @@ async function resolveImportPageRef(
   `)) as unknown as Array<{ id: string; composed: string | null }>;
   if (direct[0]) {
     let composedPageId = direct[0].composed;
-    // Staging id for a #278 page: no compose link — recover the built page by
+    // Staging id for a #278 page: no accept link — recover the built page by
     // slug or the home-page designation so callers needing it (inventory diff)
     // still resolve.
     if (!composedPageId) {
@@ -1654,152 +1639,6 @@ export const acceptImportedPagesOp = defineOperation({
   },
 });
 
-/**
- * issue #194 — page-type clusters over a crawled run. The crawler
- * computed deterministic structural signatures; this read groups the
- * run's pages by their CURRENT cluster_key so the AI can present
- * "45 pages look like blog posts" and the operator confirms in chat.
- * Open to all actor kinds per §11 (broad read plans good writes).
- */
-export const listImportPageClustersOp = defineOperation({
-  name: "imports.list_page_clusters",
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z.object({ runId: z.string().uuid() }).strict(),
-  output: z.object({
-    clusters: z.array(
-      z.object({
-        clusterKey: z.string(),
-        label: z.string().nullable(),
-        count: z.number(),
-        samples: z.array(
-          z.object({
-            importPageId: z.string(),
-            sourceUrl: z.string(),
-            proposedTitle: z.string(),
-            proposedSlug: z.string(),
-          }),
-        ),
-      }),
-    ),
-  }),
-  handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
-      SELECT id::text AS id, source_url, proposed_title, proposed_slug,
-             COALESCE(cluster_key, structural_signature, 'unclustered') AS cluster_key,
-             cluster_label
-      FROM import_pages
-      WHERE run_id = ${input.runId}::uuid
-      ORDER BY created_at ASC
-    `)) as unknown as Array<{
-      id: string;
-      source_url: string;
-      proposed_title: string;
-      proposed_slug: string;
-      cluster_key: string;
-      cluster_label: string | null;
-    }>;
-    const byKey = new Map<string, typeof rows>();
-    for (const r of rows) {
-      const list = byKey.get(r.cluster_key) ?? [];
-      list.push(r);
-      byKey.set(r.cluster_key, list);
-    }
-    const clusters = [...byKey.entries()]
-      .map(([clusterKey, members]) => ({
-        clusterKey,
-        label: members.find((m) => m.cluster_label)?.cluster_label ?? null,
-        count: members.length,
-        samples: members.slice(0, 5).map((m) => ({
-          importPageId: m.id,
-          sourceUrl: m.source_url,
-          proposedTitle: m.proposed_title,
-          proposedSlug: m.proposed_slug,
-        })),
-      }))
-      // Largest first; "home" pinned to the front — it is the design
-      // contract and the AI presents it first.
-      .sort((a, b) =>
-        a.clusterKey === "home" ? -1 : b.clusterKey === "home" ? 1 : b.count - a.count,
-      );
-    return ok({ clusters });
-  },
-});
-
-/**
- * issue #194 — bulk cluster re-assignment + labelling in ONE tx (§11:
- * the AI posts a multi-row change as one call). Two shapes, both
- * optional but at least one required:
- *   - importPageIds → move those pages into clusterKey;
- *   - label → set the human name on every page currently in clusterKey.
- */
-export const assignImportPageClusterOp = defineOperation({
-  name: "imports.assign_page_cluster",
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      runId: z.string().uuid(),
-      clusterKey: z.string().min(1).max(200),
-      importPageIds: z.array(z.string().uuid()).max(2000).optional(),
-      label: z.string().min(1).max(120).optional(),
-    })
-    .strict()
-    .refine((v) => (v.importPageIds && v.importPageIds.length > 0) || v.label !== undefined, {
-      message: "pass importPageIds (re-assign), label (name the cluster), or both",
-    }),
-  output: z.object({ reassigned: z.number(), labelled: z.number() }),
-  handler: async (ctx, input, tx) => {
-    let reassigned = 0;
-    if (input.importPageIds && input.importPageIds.length > 0) {
-      // Zod validated each id as a UUID, so the raw ARRAY literal is
-      // injection-safe (same pattern as pages.delete_many).
-      const idArray = `ARRAY[${input.importPageIds.map((id) => `'${id}'::uuid`).join(",")}]`;
-      const moved = (await tx.execute(sql`
-        UPDATE import_pages
-        SET cluster_key = ${input.clusterKey}
-        WHERE run_id = ${input.runId}::uuid
-          AND id = ANY(${sql.raw(idArray)})
-        RETURNING id
-      `)) as unknown as Array<{ id: string }>;
-      reassigned = moved.length;
-      if (reassigned !== input.importPageIds.length) {
-        return err({
-          kind: "HandlerError",
-          operation: "imports.assign_page_cluster",
-          message: `only ${reassigned}/${input.importPageIds.length} pages matched this run — re-list with list_page_clusters and retry with valid importPageIds`,
-        });
-      }
-    }
-    let labelled = 0;
-    if (input.label !== undefined) {
-      const named = (await tx.execute(sql`
-        UPDATE import_pages
-        SET cluster_label = ${input.label}
-        WHERE run_id = ${input.runId}::uuid AND cluster_key = ${input.clusterKey}
-        RETURNING id
-      `)) as unknown as Array<{ id: string }>;
-      labelled = named.length;
-      if (labelled === 0) {
-        return err({
-          kind: "HandlerError",
-          operation: "imports.assign_page_cluster",
-          message: `no pages in cluster '${input.clusterKey}' for this run — check list_page_clusters for valid keys`,
-        });
-      }
-    }
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "imports.assign_page_cluster",
-      input,
-      succeeded: true,
-      resultSummary: `cluster ${input.clusterKey}: reassigned=${reassigned} labelled=${labelled}`,
-    });
-    return ok({ reassigned, labelled });
-  },
-});
-
 // issue #247 — `screenshot_missing` / `design_tokens_missing` are
 // SYSTEM-written by the orchestrator's ground-truth capture pass (a
 // page without a source screenshot is UNVERIFIED, loudly — CLAUDE.md §2
@@ -1956,7 +1795,7 @@ function collectStringValues(value: unknown, depth = 0, out: string[] = []): str
  * When anything is missing the op records a LOUD `content_missing`
  * per-page note so the closing run report surfaces the gap even if the
  * AI forgets to relay it (CLAUDE.md 2 no silent drops). `importPageId`
- * accepts either the staging import_pages id OR the composed CMS page id
+ * accepts either the staging import_pages id OR the built CMS page id
  * (accepted_page_id), same as add_page_notes (#263).
  */
 export const checkImportPageInventoryOp = defineOperation({
@@ -2019,7 +1858,7 @@ export const checkImportPageInventoryOp = defineOperation({
         kind: "HandlerError",
         operation: "imports.check_page_inventory",
         message:
-          "this page has not been composed yet — run imports.compose_from_run (or accept_page) first, or build it with build_page, then check the rebuild against the source",
+          "this page has not been built yet — build it with build_page (or accept it with accept_import_pages) first, then check the rebuild against the source",
       });
     }
 
@@ -2031,7 +1870,7 @@ export const checkImportPageInventoryOp = defineOperation({
     const sourceHtml = sourceModules.map((m) => m.html).join("\n");
     const sourceInventory = extractContentInventory(sourceHtml);
 
-    // Rebuilt content = the composed page's modules + any field-carried
+    // Rebuilt content = the built page's modules + any field-carried
     // content on their content_instances — read through the BRANCH OVERLAY,
     // never the live tables alone. build_page inside a chat records its
     // placements/content only as branch snapshots until publish (see the
@@ -2266,7 +2105,6 @@ export const getImportRunReportOp = defineOperation({
     clusters: z.array(
       z.object({ clusterKey: z.string(), label: z.string().nullable(), count: z.number() }),
     ),
-    redirectsCreated: z.number(),
     crawlErrors: z.array(z.object({ url: z.string(), reason: z.string() })),
     /** issue #425 — the language/section scope the crawl ran under
      *  ({pathPrefix?, locale?}); null = unscoped. Stated in every report
@@ -2337,7 +2175,7 @@ export const getImportRunReportOp = defineOperation({
      * Epic #724 — the run's internal links: written to a planned page
      * before it was built (`pending` until resolve_import_links), stored
      * as page references (`resolved`), or matching no page (`unresolved`,
-     * from the rebuild or from compose_from_run) — each unresolved one is
+     * from the rebuild) — each unresolved one is
      * a finding with where it is. Never guessed.
      */
     internalLinks: z.object({
@@ -2378,14 +2216,13 @@ export const getImportRunReportOp = defineOperation({
       });
     }
     const pages = (await tx.execute(sql`
-      SELECT source_url, proposed_slug, accepted_page_id, screenshot_object_key,
+      SELECT source_url, accepted_page_id, screenshot_object_key,
              COALESCE(cluster_key, structural_signature, 'content') AS cluster_key,
              cluster_label, notes
       FROM import_pages WHERE run_id = ${input.runId}::uuid
       ORDER BY created_at ASC
     `)) as unknown as Array<{
       source_url: string;
-      proposed_slug: string;
       accepted_page_id: string | null;
       screenshot_object_key: string | null;
       cluster_key: string;
@@ -2400,19 +2237,6 @@ export const getImportRunReportOp = defineOperation({
       entry.count += 1;
       if (!entry.label && p.cluster_label) entry.label = p.cluster_label;
       clusterMap.set(p.cluster_key, entry);
-    }
-
-    // Redirects: same rule the compose tx applies (#196) — accepted
-    // pages whose old path differs from the Caelo path, root excluded.
-    let redirectsCreated = 0;
-    for (const p of pages) {
-      if (!p.accepted_page_id) continue;
-      try {
-        const path = new URL(p.source_url).pathname.replace(/\/$/, "") || "/";
-        if (path !== "/" && path !== `/${p.proposed_slug}`) redirectsCreated += 1;
-      } catch {
-        // unparseable source_url — no redirect was created for it
-      }
     }
 
     // Crawl errors + skipped from the #192/#425 checkpoint slice.
@@ -2530,7 +2354,6 @@ export const getImportRunReportOp = defineOperation({
         label: v.label,
         count: v.count,
       })),
-      redirectsCreated,
       crawlErrors,
       crawlScope: normalizeStoredCrawlScope(run.crawl_scope),
       skippedOutOfScope,
@@ -3215,930 +3038,3 @@ export const cleanupImportRunOp = defineOperation({
     return ok({ droppedPages: dropped.length, droppedScreenshotKeys });
   },
 });
-
-/**
- * P19 — `imports.compose_from_run` synthesises a Caelo-shaped site from
- * a `ready_for_review` import run in one transaction:
- *
- *   1. Aggregates `proposed_theme_tokens` across all pages (majority
- *      value per key) → writes/updates `structured_sets kind=theme
- *      slug=site` so the next render emits the imported site's CSS
- *      vars.
- *   2. Reuses the seeded `site-default` layout (or `defaults.default_layout_id`
- *      when set) as the chrome — a v1 simplification; the Owner can
- *      later add header/footer modules via `add_module_to_layout` from
- *      chat. Building a fresh layout from imported chrome is a P19
- *      polish concern.
- *   3. Creates a single template (slug from input, default
- *      `imported-page`) bound to that layout. HTML carries one
- *      `<caelo-slot name="content">` so the per-page modules render
- *      inside it.
- *   4. For each `import_pages` row not yet accepted: inserts a page row
- *      bound to the new template, materialises each `proposed_modules`
- *      entry into a real `modules` row + `page_modules` mapping, marks
- *      `accepted_page_id`.
- *
- * Idempotency: skips pages that already have `accepted_page_id`. If
- * the run has no unaccepted pages left, returns the prior synthesis.
- *
- * Per CLAUDE.md §11: open to ai because the user's "compose from this
- * crawl" intent is content-shaped — no hard-to-revert chrome change.
- * The Owner reviews the resulting drafts via the standard publish flow.
- */
-export const composeFromImportRunOp = defineOperation({
-  name: "imports.compose_from_run",
-  actorScope: ["human", "ai", "system"],
-  database: "cms_admin",
-  input: z
-    .object({
-      runId: z.string().uuid(),
-      /** Slug for the new template that the imported pages bind to. */
-      templateSlug: z
-        .string()
-        .min(1)
-        .max(120)
-        .regex(/^[a-z0-9][a-z0-9-]*$/)
-        .default("imported-page"),
-      /** Subset of import_pages to materialise; omitted = all not-yet-accepted. */
-      includeImportPageIds: z.array(z.string().uuid()).optional(),
-    })
-    .strict(),
-  // Discriminated on `status` so "the crawl is still running" is a
-  // structured, non-error outcome the runner can poll on — not a red
-  // error card. `composed` carries the full synthesis result; `crawling`
-  // carries only the retry hint. A genuinely FAILED/absent run still
-  // returns `err(...)` (loud red), never `crawling`.
-  output: z.discriminatedUnion("status", [
-    z.object({
-      status: z.literal("crawling"),
-      /** Which not-ready state the run is in (crawling vs not-yet-started). */
-      runStatus: z.enum(["crawling", "proposed"]),
-      /** Suggested wait before the AI re-checks `list_import_pages`. */
-      retryAfterMs: z.number().int(),
-    }),
-    z.object({
-      status: z.literal("composed"),
-      themeTokensApplied: z.number().int(),
-      /** Run #8 — crawled vars the theme layer refused, loud + verbatim
-       *  (`theme-token-skipped-nonfont-typography:<token>=<value>`). */
-      tokenNotes: z.array(z.string()),
-      /** issue #247 — where the applied theme values came from:
-       *  'sampled' = computed-style ground truth (extractor as extras),
-       *  'extractor' = inline-CSS fallback only, 'none' = no tokens. */
-      designTokenSource: z.enum(["sampled", "extractor", "none"]),
-      layoutId: z.string(),
-      /** The homepage cluster's template (first template when no home). */
-      templateId: z.string(),
-      /** issue #195 — one template per confirmed page-type cluster. */
-      templatesByCluster: z.record(z.string(), z.string()),
-      pageIds: z.array(z.string()),
-      homepageId: z.string().nullable(),
-      skippedAlreadyAccepted: z.number().int(),
-      /** Pages that were eligible but held back by a per-page gate
-       *  (unacknowledged screenshot-diff fail). Surfaced loudly so the
-       *  operator sees WHICH pages need attention — never a silent drop. */
-      skippedPages: z.array(
-        z.object({ slug: z.string(), sourceUrl: z.string(), reason: z.string() }),
-      ),
-      /** issue #195 — formatted genesis-inventory over the homepage. */
-      designInventory: z.string().nullable(),
-      /** issue #196 — 301s written from old URLs to new Caelo paths. */
-      redirectsCreated: z.number().int(),
-      /** issue #253 — chrome blocks bound at the layout ("header"/"footer"). */
-      chromeBound: z.array(z.string()),
-      /** issue #253 — loud chrome notes (missing layout block, slot already bound). */
-      chromeNotes: z.array(z.string()),
-      /**
-       * Epic #724 — internal-looking links in the imported markup that
-       * match no imported page or media asset; kept literal (never
-       * guessed). Fix them (set the link to an existing page's path) or
-       * import the missing pages; the publish link check flags them.
-       */
-      unresolvedInternalLinks: z.array(z.string()),
-    }),
-  ]),
-  handler: async (ctx, input, tx) => {
-    // 1. Run must exist + be reviewable.
-    const runRows = (await tx.execute(sql`
-      SELECT id::text AS id, source_url, status, site_design_tokens
-      FROM import_runs WHERE id = ${input.runId}::uuid LIMIT 1
-    `)) as unknown as {
-      id: string;
-      source_url: string;
-      status: string;
-      site_design_tokens: unknown;
-    }[];
-    const run = runRows[0];
-    if (!run) {
-      return err({
-        kind: "HandlerError",
-        operation: "imports.compose_from_run",
-        message: "import run not found",
-      });
-    }
-    // The background crawl flips the run to `ready_for_review` when done.
-    // Being called mid-crawl is EXPECTED timing (the AI/flow polls), not
-    // a failure: return a structured "not ready, keep polling" outcome as
-    // `ok` so it does not surface as a red error card. Only a genuinely
-    // FAILED (or unknown) run is a hard, loud error.
-    const classification = classifyComposeRunStatus(run.status, input.runId);
-    if (classification.kind === "not_ready") {
-      return ok({
-        status: "crawling" as const,
-        runStatus: classification.runStatus,
-        retryAfterMs: classification.retryAfterMs,
-      });
-    }
-    if (classification.kind === "error") {
-      return err({
-        kind: "HandlerError",
-        operation: "imports.compose_from_run",
-        message: classification.message,
-      });
-    }
-
-    // 2. Load every (or filtered) import_pages row.
-    const pageRows = (await tx.execute(sql`
-      SELECT id::text AS id, source_url, proposed_slug, proposed_title,
-             proposed_modules, proposed_theme_tokens, accepted_page_id,
-             COALESCE(cluster_key, structural_signature, 'content') AS cluster_key,
-             cluster_label, page_css
-      FROM import_pages
-      WHERE run_id = ${input.runId}::uuid
-      ORDER BY created_at ASC
-    `)) as unknown as Array<{
-      id: string;
-      source_url: string;
-      proposed_slug: string;
-      proposed_title: string;
-      proposed_modules: unknown;
-      proposed_theme_tokens: unknown;
-      accepted_page_id: string | null;
-      cluster_key: string;
-      cluster_label: string | null;
-      page_css: string | null;
-    }>;
-
-    const filterSet = input.includeImportPageIds ? new Set(input.includeImportPageIds) : null;
-    const eligible = pageRows.filter(
-      (r) => r.accepted_page_id === null && (filterSet === null || filterSet.has(r.id)),
-    );
-    const skippedAlreadyAccepted = pageRows.length - eligible.length;
-
-    if (eligible.length === 0) {
-      return err({
-        kind: "HandlerError",
-        operation: "imports.compose_from_run",
-        message: "no import_pages to compose (all already accepted or filter empty)",
-      });
-    }
-
-    // 3. Pick layout — site_defaults.default_layout_id if configured,
-    // else the seeded `site-default` slug.
-    const layoutRows = (await tx.execute(sql`
-      SELECT COALESCE(
-        (SELECT default_layout_id FROM site_defaults WHERE id = 1),
-        (SELECT id FROM layouts WHERE slug = 'site-default' AND deleted_at IS NULL LIMIT 1)
-      )::text AS id
-    `)) as unknown as { id: string | null }[];
-    const layoutId = layoutRows[0]?.id;
-    if (!layoutId) {
-      return err({
-        kind: "HandlerError",
-        operation: "imports.compose_from_run",
-        message:
-          "no layout to bind the new template — seed site-default or set site_defaults.default_layout_id",
-      });
-    }
-
-    // 4. Aggregate theme tokens — for each key, majority value wins.
-    type TokensPer = Record<string, string>;
-    const tokenCounts: Record<string, Record<string, number>> = {};
-    for (const r of eligible) {
-      const tokens =
-        typeof r.proposed_theme_tokens === "string"
-          ? (JSON.parse(r.proposed_theme_tokens) as TokensPer)
-          : ((r.proposed_theme_tokens ?? {}) as TokensPer);
-      for (const [k, v] of Object.entries(tokens)) {
-        if (typeof v !== "string" || v.length === 0) continue;
-        tokenCounts[k] ??= {};
-        tokenCounts[k][v] = (tokenCounts[k][v] ?? 0) + 1;
-      }
-    }
-    let aggregatedTokens: Array<{ token: string; value: string; scope?: string }> = [];
-    for (const [k, valueMap] of Object.entries(tokenCounts)) {
-      let bestValue = "";
-      let bestCount = -1;
-      for (const [v, c] of Object.entries(valueMap)) {
-        if (c > bestCount) {
-          bestCount = c;
-          bestValue = v;
-        }
-      }
-      if (bestValue) {
-        // Infer scope from token prefix so the theme renderer can group
-        // by category. Unknown prefixes drop the scope (still valid).
-        const scope = k.startsWith("color-")
-          ? "color"
-          : k.startsWith("font-")
-            ? "font"
-            : k.startsWith("space-")
-              ? "space"
-              : k.startsWith("radius-")
-                ? "radius"
-                : k.startsWith("shadow-")
-                  ? "shadow"
-                  : undefined;
-        aggregatedTokens.push({
-          token: k,
-          value: bestValue,
-          ...(scope ? { scope } : {}),
-        });
-      }
-    }
-
-    // 4b. issue #247 (WS1) — prefer SAMPLED tokens over extractor
-    // tokens. The extractor reads inline-CSS :root vars off raw HTML
-    // (best-effort, survives fetch-only crawls); the sampled aggregate
-    // comes from getComputedStyle in a real render — what the browser
-    // actually painted. Merge = extractor map first, sampled tuples
-    // overwrite same-named keys; extractor-only keys survive as extra
-    // context. Stored-but-malformed tokens fail loudly (no-fallbacks
-    // pre-1.0) instead of silently degrading to extractor-only.
-    let designTokenSource: "sampled" | "extractor" | "none" =
-      aggregatedTokens.length > 0 ? "extractor" : "none";
-    const rawSiteTokens = parseJsonbColumn(run.site_design_tokens);
-    if (rawSiteTokens !== null) {
-      const parsedSiteTokens = siteDesignTokensSchema.safeParse(rawSiteTokens);
-      if (!parsedSiteTokens.success) {
-        return err({
-          kind: "HandlerError",
-          operation: "imports.compose_from_run",
-          message: `import_runs.site_design_tokens is malformed (schema drift?): ${parsedSiteTokens.error.message}. Re-run the ground-truth capture or clear the column.`,
-        });
-      }
-      const sampledFlat = flattenSiteDesignTokens(parsedSiteTokens.data);
-      if (sampledFlat.length > 0) {
-        const byToken = new Map(aggregatedTokens.map((t) => [t.token, t]));
-        for (const t of sampledFlat) byToken.set(t.token, t);
-        aggregatedTokens = [...byToken.values()];
-        designTokenSource = "sampled";
-      }
-    }
-
-    // 5. Merge aggregated tokens into the active themes row via the
-    // `themes.update_tokens` op (v0.11.0, #45 AC #12). The op emits
-    // a theme_snapshots row + audit + acquires the per-entity lock,
-    // so importer-driven theme writes show up in site history and can
-    // be reverted like any other theme edit. Pre-v0.11 wrote a flat
-    // structured_sets row at `theme/site`; the new primitive carries
-    // DTCG-shaped jsonb.
-    // Run #8 — loud skip notes for crawled vars the theme layer must
-    // refuse (numeric "font families" et al). Surfaced in the compose
-    // output so the AI relays them instead of the deploy failing later.
-    const tokenNotes: string[] = [];
-    if (aggregatedTokens.length > 0) {
-      const set: Record<string, unknown> = {};
-      for (const t of aggregatedTokens) {
-        const prepared = prepareLegacyAggregatedToken(t);
-        if (prepared === null) continue;
-        if ("skipNote" in prepared) {
-          tokenNotes.push(prepared.skipNote);
-          continue;
-        }
-        set[prepared.canonicalPath] = prepared.value;
-      }
-      if (Object.keys(set).length > 0) {
-        const r = await updateThemeTokensOp.handler(ctx, { set }, tx);
-        if (!r.ok) {
-          // Run #9 R8 — writes have started; throw so the WHOLE compose
-          // rolls back instead of committing a half-applied theme.
-          throw new OperationAbortError({
-            kind: "HandlerError",
-            operation: "imports.compose_from_run",
-            message: `theme merge failed: ${
-              typeof r.error === "object" && r.error && "message" in r.error
-                ? String((r.error as { message: unknown }).message)
-                : "unknown"
-            }`,
-          });
-        }
-      }
-    }
-
-    // 6. issue #195 — ONE TEMPLATE PER CONFIRMED CLUSTER (#194), not
-    // one template for the whole site. The homepage cluster ('home')
-    // always gets its own template: it is the design contract.
-    //
-    // Every cluster template carries header/content/footer blocks and
-    // the cluster sample's page_css — pre-#195 the template was a bare
-    // content slot with css='' and a literal bug remapped EVERY
-    // header/footer module into `content`
-    // (`m.blockName === "content" ? "content" : "content"`).
-    interface ParsedModule {
-      blockName: "header" | "content" | "footer";
-      position: number;
-      html: string;
-      displayName: string;
-    }
-    const parseModules = (raw: unknown): ParsedModule[] =>
-      (typeof raw === "string" ? JSON.parse(raw) : (raw ?? [])) as ParsedModule[];
-
-    const slugify = (v: string): string =>
-      v
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "")
-        .slice(0, 60) || "pages";
-
-    const clusters = new Map<string, typeof eligible>();
-    for (const r of eligible) {
-      const list = clusters.get(r.cluster_key) ?? [];
-      list.push(r);
-      clusters.set(r.cluster_key, list);
-    }
-
-    // issue #253 (WS0) — chrome binds ONCE at the LAYOUT level, never
-    // per page. Layouts are Caelo's site-wide chrome surface
-    // (layout_modules); the pre-#253 compose duplicated the crawled
-    // header/footer into every page's template blocks while the layout
-    // slots stayed unbound — every page rendered the loud-raw `_` where
-    // the site header belonged. Layout placements render from module
-    // html / field defaults (no content_instance binding), so the
-    // chrome module carries the crawled markup directly.
-    const chromeModules = new Map<"header" | "footer", string>();
-    // Epic #724 — every module this compose writes; their links are
-    // canonicalised once all pages exist (see the end of the handler).
-    const composedModuleIds = new Set<string>();
-    const ensureChromeModule = async (
-      block: "header" | "footer",
-      src: ParsedModule,
-    ): Promise<string | null> => {
-      const existing = chromeModules.get(block);
-      if (existing) return existing;
-      const modInsert = (await tx.execute(sql`
-        INSERT INTO modules (slug, display_name, type, html, css, js, kind, description)
-        VALUES (
-          ${`imported-${input.runId.slice(0, 8)}-${block}`},
-          ${src.displayName || `Imported ${block}`},
-          ${deriveModuleType(src.displayName || block)},
-          ${src.html}, '', '',
-          'chrome',
-          ${`Imported site ${block} — bound to the site layout; every page shows it, edit once, updates everywhere.`}
-        )
-        ON CONFLICT (slug, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
-          WHERE deleted_at IS NULL
-          DO UPDATE SET html = EXCLUDED.html
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-      const moduleId = modInsert[0]?.id;
-      if (!moduleId) return null;
-      chromeModules.set(block, moduleId);
-      composedModuleIds.add(moduleId);
-      return moduleId;
-    };
-
-    // Which chrome blocks does the chosen layout actually declare?
-    // A layout without a header/footer block (e.g. `bare`) gets a loud
-    // note in the result — never a silent skip (CLAUDE.md §2).
-    const layoutBlockRows = (await tx.execute(sql`
-      SELECT name FROM layout_blocks WHERE layout_id = ${layoutId}::uuid
-    `)) as unknown as { name: string }[];
-    const layoutBlockNames = new Set(layoutBlockRows.map((b) => b.name));
-    const chromeBound: string[] = [];
-    const chromeNotes: string[] = [];
-    const chromeHandled = new Set<"header" | "footer">();
-    const bindChromeToLayout = async (
-      block: "header" | "footer",
-      src: ParsedModule,
-    ): Promise<void> => {
-      if (chromeHandled.has(block)) return;
-      chromeHandled.add(block);
-      if (!layoutBlockNames.has(block)) {
-        chromeNotes.push(`layout-missing-${block}-block`);
-        return;
-      }
-      const moduleId = await ensureChromeModule(block, src);
-      if (!moduleId) {
-        chromeNotes.push(`${block}-module-create-failed`);
-        return;
-      }
-      const existingBind = (await tx.execute(sql`
-        SELECT module_id::text AS module_id FROM layout_modules
-        WHERE layout_id = ${layoutId}::uuid AND block_name = ${block}
-        LIMIT 1
-      `)) as unknown as { module_id: string }[];
-      if (existingBind[0]) {
-        if (existingBind[0].module_id === moduleId) {
-          chromeBound.push(block); // idempotent re-run
-        } else {
-          // The operator (or genesis) already has site chrome here —
-          // importing must not clobber it. Loud note, operator decides.
-          chromeNotes.push(`${block}-slot-already-bound-to-other-module`);
-        }
-        return;
-      }
-      await tx.execute(sql`
-        INSERT INTO layout_modules (layout_id, block_name, position, module_id)
-        VALUES (${layoutId}::uuid, ${block}, 0, ${moduleId}::uuid)
-      `);
-      chromeBound.push(block);
-    };
-
-    const ensureClusterTemplate = async (
-      clusterKey: string,
-      label: string | null,
-      sampleCss: string,
-    ): Promise<string | null> => {
-      const suffix = clusterKey === "home" ? "home" : slugify(label ?? clusterKey);
-      const slug = `${input.templateSlug}-${suffix}`.slice(0, 120);
-      const existingTplRows = (await tx.execute(sql`
-        SELECT id::text AS id FROM templates
-        WHERE slug = ${slug} AND deleted_at IS NULL LIMIT 1
-      `)) as unknown as { id: string }[];
-      // issue #253 — imported templates are CONTENT-ONLY; chrome lives
-      // at the layout level. A re-run over a pre-#253 template migrates
-      // it in place: content-only html, legacy chrome blocks dropped,
-      // stale per-page chrome placements removed (their blocks no
-      // longer exist, so the rows would be invisible orphans).
-      const contentOnlyHtml =
-        '<div data-template="imported-page"><caelo-slot name="content">_</caelo-slot></div>';
-      if (existingTplRows[0]) {
-        const tplId = existingTplRows[0].id;
-        await tx.execute(sql`
-          UPDATE templates SET html = ${contentOnlyHtml} WHERE id = ${tplId}::uuid
-        `);
-        await tx.execute(sql`
-          DELETE FROM template_blocks
-          WHERE template_id = ${tplId}::uuid AND name IN ('header', 'footer')
-        `);
-        await tx.execute(sql`
-          DELETE FROM page_modules pm USING pages p
-          WHERE pm.page_id = p.id AND p.template_id = ${tplId}::uuid
-            AND pm.block_name IN ('header', 'footer')
-        `);
-        return tplId;
-      }
-      const displayName =
-        clusterKey === "home"
-          ? `Imported homepage (${run.source_url.slice(0, 50)})`
-          : `Imported: ${label ?? clusterKey} (${run.source_url.slice(0, 40)})`;
-      const tplInsert = (await tx.execute(sql`
-        INSERT INTO templates (slug, display_name, html, css, layout_id)
-        VALUES (
-          ${slug},
-          ${displayName},
-          ${contentOnlyHtml},
-          ${sampleCss},
-          ${layoutId}::uuid
-        )
-        RETURNING id::text AS id
-      `)) as unknown as { id: string }[];
-      const newId = tplInsert[0]?.id;
-      if (!newId) return null;
-      await tx.execute(sql`
-        INSERT INTO template_blocks (template_id, name, display_name, position)
-        VALUES (${newId}::uuid, 'content', 'Content', 0)
-      `);
-      return newId;
-    };
-
-    // 7. Per cluster → template; per page → page + modules. Home first
-    // so the homepage lands before the fan-out (homepage-first is the
-    // migration contract).
-    const createdPageIds: string[] = [];
-    const skippedPages: ComposeSkip[] = [];
-    const templateIdsByCluster = new Map<string, string>();
-    let homepageId: string | null = null;
-    let redirectsCreated = 0;
-    const orderedClusterKeys = [...clusters.keys()].sort((a, b) =>
-      a === "home" ? -1 : b === "home" ? 1 : a.localeCompare(b),
-    );
-    for (const clusterKey of orderedClusterKeys) {
-      const members = clusters.get(clusterKey) ?? [];
-      const sample = members[0];
-      if (!sample) continue;
-      const templateIdForCluster = await ensureClusterTemplate(
-        clusterKey,
-        sample.cluster_label,
-        sample.page_css ?? "",
-      );
-      if (!templateIdForCluster) {
-        // Run #9 R8 — abort (rollback), never commit a partial compose.
-        throw new OperationAbortError({
-          kind: "HandlerError",
-          operation: "imports.compose_from_run",
-          message: `template creation failed for cluster ${clusterKey}`,
-        });
-      }
-      templateIdsByCluster.set(clusterKey, templateIdForCluster);
-
-      for (const r of members) {
-        const proposedModules = parseModules(r.proposed_modules);
-        const pageInsert = (await tx.execute(sql`
-          INSERT INTO pages (slug, title, name, status, template_id, version, current_path)
-          VALUES (
-            ${r.proposed_slug},
-            ${r.proposed_title || r.proposed_slug},
-            ${r.proposed_title || r.proposed_slug},
-            'draft', ${templateIdForCluster}::uuid, 1,
-            -- An earlier run's imported "home" now serves at the root
-            -- (designated): target "/" so the re-run updates it instead
-            -- of minting a second page at "/home". Otherwise NULL lets
-            -- the INSERT default compose the top-level path.
-            CASE WHEN ${r.proposed_slug} = 'home' AND EXISTS (
-              SELECT 1 FROM pages
-              WHERE current_path = '/' AND slug = 'home' AND deleted_at IS NULL
-                AND chat_branch_id IS NULL
-            ) THEN '/' END
-          )
-          -- A re-run updates the page already at this URL (the composed
-          -- path is the unique key since 0264).
-          ON CONFLICT (current_path, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
-            WHERE deleted_at IS NULL
-            DO UPDATE SET title = EXCLUDED.title, name = EXCLUDED.name,
-                          template_id = EXCLUDED.template_id
-          RETURNING id::text AS id
-        `)) as unknown as { id: string }[];
-        const pageId = pageInsert[0]?.id;
-        if (!pageId) {
-          // An upsert with DO UPDATE ... RETURNING always yields a row;
-          // an empty result is a genuine write failure, not a normal
-          // skip. Abort loudly (rollback) rather than silently dropping
-          // the page — CLAUDE.md §2 (no silent degradation).
-          throw new OperationAbortError({
-            kind: "HandlerError",
-            operation: "imports.compose_from_run",
-            message: `page insert returned no row for '${r.proposed_slug}' (${r.source_url}) — nothing from this compose was applied.`,
-          });
-        }
-        createdPageIds.push(pageId);
-        if (clusterKey === "home" || r.proposed_slug === "home" || homepageId === null) {
-          if (clusterKey === "home" || r.proposed_slug === "home" || homepageId === null) {
-            homepageId = pageId;
-          }
-        }
-        // Replace any existing page_modules for this page (idempotent re-run).
-        await tx.execute(sql`DELETE FROM page_modules WHERE page_id = ${pageId}::uuid`);
-        for (const m of proposedModules) {
-          if (m.blockName === "header" || m.blockName === "footer") {
-            // issue #253 — chrome binds at the LAYOUT, once per run,
-            // never as a per-page placement (pre-#253 this inserted a
-            // page_modules row per page, leaving layout slots unbound).
-            await bindChromeToLayout(m.blockName, m);
-            continue;
-          }
-          const modDisplayName = m.displayName || `${m.blockName} ${m.position}`;
-          // Upsert: a re-compose over the same pages reuses their page
-          // ids (pages upsert above), so the deterministic module slug
-          // collides with run 1's orphaned module row — refresh it.
-          const modInsert = (await tx.execute(sql`
-            INSERT INTO modules (slug, display_name, type, html, css, js)
-            VALUES (
-              ${`imported-${pageId.slice(0, 8)}-${m.blockName}-${m.position}`},
-              ${modDisplayName},
-              ${deriveModuleType(modDisplayName)},
-              ${m.html}, '', ''
-            )
-            ON CONFLICT (slug, COALESCE(chat_branch_id, '00000000-0000-0000-0000-000000000000'::uuid))
-              WHERE deleted_at IS NULL
-              DO UPDATE SET html = EXCLUDED.html, display_name = EXCLUDED.display_name
-            RETURNING id::text AS id
-          `)) as unknown as { id: string }[];
-          const moduleId = modInsert[0]?.id;
-          if (!moduleId) {
-            // Swallowing this left a page missing its content module
-            // silently. A DO UPDATE ... RETURNING always yields a row —
-            // an empty result is a real failure. Abort loudly (rollback).
-            throw new OperationAbortError({
-              kind: "HandlerError",
-              operation: "imports.compose_from_run",
-              message: `module insert returned no row for '${r.proposed_slug}' block '${m.blockName}' pos ${m.position} — nothing from this compose was applied.`,
-            });
-          }
-          composedModuleIds.add(moduleId);
-          // v0.12.0 — mint a fresh unsynced content_instance per placement
-          // so page_modules.content_instance_id NOT NULL is satisfied.
-          const ciInsert = (await tx.execute(sql`
-            INSERT INTO content_instances (module_id, "values")
-            VALUES (${moduleId}::uuid, '{}'::jsonb)
-            RETURNING id::text AS id
-          `)) as unknown as { id: string }[];
-          const newCiId = ciInsert[0]?.id;
-          if (!newCiId) {
-            throw new OperationAbortError({
-              kind: "HandlerError",
-              operation: "imports.compose_from_run",
-              message: `content_instance insert returned no row for '${r.proposed_slug}' block '${m.blockName}' pos ${m.position} — nothing from this compose was applied.`,
-            });
-          }
-          await tx.execute(sql`
-            INSERT INTO page_modules
-              (page_id, block_name, position, module_id, content_instance_id, sync_mode)
-            VALUES (
-              ${pageId}::uuid, 'content', ${m.position},
-              ${moduleId}::uuid, ${newCiId}::uuid, 'unsynced'
-            )
-          `);
-        }
-        // Mark the staging row as accepted.
-        await tx.execute(sql`
-          UPDATE import_pages
-             SET accepted_page_id = ${pageId}::uuid, accepted_at = now()
-           WHERE id = ${r.id}::uuid
-        `);
-
-        // issue #196 — URL continuity. The old URL's path 301s to the
-        // new Caelo path whenever they differ. Root ("/") never
-        // redirects — the site root serves the migrated homepage.
-        // Same tx as the page write: a migration cannot half-apply
-        // its redirects (§11: cross-domain patches in one boundary).
-        let sourcePath: string;
-        try {
-          const u = new URL(r.source_url);
-          sourcePath = u.pathname.replace(/\/$/, "") || "/";
-        } catch {
-          sourcePath = "/";
-        }
-        const caeloPath = `/${r.proposed_slug}`;
-        if (sourcePath !== "/" && sourcePath !== caeloPath) {
-          // A LIVE page already owning the old path means the redirect
-          // would shadow real content — that is an operator decision,
-          // not a silent skip or overwrite (no-fallbacks pre-1.0).
-          const shadow = (await tx.execute(sql`
-            SELECT id::text AS id FROM pages
-            WHERE current_path = ${sourcePath}
-              AND deleted_at IS NULL AND id <> ${pageId}::uuid
-            LIMIT 1
-          `)) as unknown as { id: string }[];
-          if (shadow[0]) {
-            // Run #9 R8 — abort (rollback). Pre-fix this `return err`
-            // COMMITTED every page inserted before the conflicting one
-            // (23 mangled pages persisted although compose errored).
-            throw new OperationAbortError({
-              kind: "HandlerError",
-              operation: "imports.compose_from_run",
-              message: `redirect ${sourcePath} → ${caeloPath} would shadow the existing page at ${sourcePath} (${shadow[0].id}). Rename one of them (update_pages_many with a new slug) or exclude this import page, then re-run compose. Nothing from this compose was applied.`,
-            });
-          }
-          // #657 — the same target rule as redirects.create. The path is
-          // derived from a proposed slug, so a hit means a malformed
-          // slug; abort rather than write an off-site/broken 301.
-          const targetIssue = redirectTargetIssue(caeloPath);
-          if (targetIssue) {
-            throw new OperationAbortError({
-              kind: "HandlerError",
-              operation: "imports.compose_from_run",
-              message: `import page ${r.id}: redirect ${sourcePath} → ${caeloPath} rejected — ${targetIssue} Fix the page's proposed slug (a plain slug like 'about-us'), then re-run compose. Nothing from this compose was applied.`,
-            });
-          }
-          // Upsert keeps re-composes idempotent; pointing an existing
-          // redirect at a NEW target is legitimate on re-run.
-          await tx.execute(sql`
-            INSERT INTO redirects (from_path, to_path, status_code, created_by)
-            VALUES (${sourcePath}, ${caeloPath}, 301, ${ctx.actorId}::uuid)
-            ON CONFLICT (from_path) DO UPDATE SET to_path = EXCLUDED.to_path
-          `);
-          redirectsCreated += 1;
-        }
-      }
-    }
-
-    // issue #195 — persist the design fact base for the AI's theme
-    // decisions ("AI decides, code executes": facts are code-computed;
-    // the model reads them from the run + the op result).
-    const homeSample = clusters.get("home")?.[0];
-    let designInventory: string | null = null;
-    if (homeSample) {
-      const homeHtml = parseModules(homeSample.proposed_modules)
-        .map((m) => m.html)
-        .join("\n");
-      const inv = inventoryGenesisDraft(`${homeHtml}\n<style>${homeSample.page_css ?? ""}</style>`);
-      designInventory = formatGenesisInventory(inv);
-      await tx.execute(sql`
-        UPDATE import_runs SET design_inventory = ${designInventory}
-        WHERE id = ${input.runId}::uuid
-      `);
-    }
-
-    const templateId = templateIdsByCluster.get("home") ?? [...templateIdsByCluster.values()][0];
-    if (!templateId) {
-      // Run #9 R8 — abort (rollback): theme/import_runs writes above
-      // must not survive a compose that produced no template.
-      throw new OperationAbortError({
-        kind: "HandlerError",
-        operation: "imports.compose_from_run",
-        message: "no template was created — every page was blocked or filtered",
-      });
-    }
-
-    // Templates were created but EVERY eligible page was skipped by a
-    // per-page gate. Pre-fix this returned `ok` with `pageIds: []`, so
-    // the AI saw "templates but no pages" and invented a "format reason"
-    // to fall back to the fragile direct-build path. Fail loudly instead
-    // (rollback), naming exactly which pages were skipped and why, so the
-    // operator/AI can acknowledge or exclude them and re-run — CLAUDE.md
-    // §2 (no silent degradation: never templates-but-silently-zero-pages).
-    if (createdPageIds.length === 0) {
-      throw new OperationAbortError({
-        kind: "HandlerError",
-        operation: "imports.compose_from_run",
-        message: buildZeroPagesAbortMessage(templateIdsByCluster.size, skippedPages),
-      });
-    }
-
-    // Epic #724 — imports canonicalise at import time (maintainer
-    // decision 3): now that every page and old-URL redirect of the run
-    // exists, internal links in the composed modules become references;
-    // the rest are reported, never guessed.
-    const unresolvedLinks = await canonicaliseImportedModules(
-      tx,
-      ctx,
-      [...composedModuleIds],
-      run.source_url,
-    );
-    // The run report lists them as findings; resolve_import_links retries
-    // them once more pages exist.
-    for (const u of unresolvedLinks) {
-      await tx.execute(sql`
-        INSERT INTO import_run_links (run_id, value, status, entity_kind, entity_id, location)
-        VALUES (${input.runId}::uuid, ${u.value}, 'unresolved', 'module', ${u.moduleId}::uuid, 'html')
-        ON CONFLICT (run_id, value, entity_kind, entity_id) DO UPDATE SET
-          status = 'unresolved', updated_at = now()
-      `);
-    }
-
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: "imports.compose_from_run",
-      input,
-      succeeded: true,
-      entityId: input.runId,
-      resultSummary: `theme=${aggregatedTokens.length} layout=${layoutId} template=${templateId} pages=${createdPageIds.length} redirects=${redirectsCreated} skippedAccepted=${skippedAlreadyAccepted} skippedGated=${skippedPages.length} unresolvedLinks=${unresolvedLinks.length}`,
-    });
-
-    return ok({
-      status: "composed" as const,
-      themeTokensApplied: aggregatedTokens.length - tokenNotes.length,
-      tokenNotes,
-      designTokenSource,
-      layoutId,
-      templateId,
-      templatesByCluster: Object.fromEntries(templateIdsByCluster),
-      pageIds: createdPageIds,
-      homepageId,
-      skippedAlreadyAccepted,
-      skippedPages: skippedPages.map((s) => ({
-        slug: s.slug,
-        sourceUrl: s.sourceUrl,
-        reason: s.reason,
-      })),
-      designInventory,
-      redirectsCreated,
-      chromeBound,
-      chromeNotes,
-      unresolvedInternalLinks: [...new Set(unresolvedLinks.map((u) => u.value))],
-    });
-  },
-});
-
-/**
- * v0.11.0 (#45 AC #12) — convert an importer-aggregated
- * `{token, value, scope?}` tuple into a `themes.update_tokens`-ready
- * `(canonicalPath, value)` pair.
- *
- * The legacy importer stores every theme value as a string. The new
- * DTCG schema accepts:
- *
- *   - color / dimension (color, spacing, radius, breakpoint) — flat
- *     string value, passed through as-is.
- *   - typography composite — `$value` must be an object with
- *     fontFamily / fontSize / etc. so we wrap the legacy string as
- *     `{fontFamily: <value>}`.
- *   - shadow composite — `$value` must be a structured object;
- *     parsing the legacy stringified shadow ("0 1px 2px rgba(...)") is
- *     out of scope for v0.11.0, so shadow tokens from the importer are
- *     dropped (returns null). Importers that need full shadow support
- *     should hand-edit the theme after the run.
- *
- * Scope → category mirrors migration 0097's back-fill so imports land
- * at the same DTCG paths as an upgrade-in-place.
- */
-/** Looks like a single CSS length the `spacing`/`radius` categories
- *  accept — including bare `0` (explicitly valid per the shared
- *  dimensionValueString schema; review finding). */
-function isDimensionValue(v: string): boolean {
-  const t = v.trim();
-  return t === "0" || /^-?\d+(\.\d+)?(px|rem|em|%|vh|vw|ch|pt)$/.test(t);
-}
-
-/**
- * True when a crawled value could plausibly be a font-family stack.
- * Rejects values whose PRIMARY entry (first comma segment, unquoted) is
- * numeric-only with an optional CSS unit — `13px`, `1.5`, `700`, `42px`.
- * Those are font SIZES / WEIGHTS / line-heights, and a "family" like
- * `13px` later fails the deploy hard with `theme-font-unresolvable:13px`
- * (run #8 live-hit: WordPress `--wp--preset--font-size--*` vars).
- */
-export function isPlausibleFontFamilyValue(value: string): boolean {
-  const primary = (value.split(",")[0] ?? "")
-    .trim()
-    .replace(/^["']|["']$/g, "")
-    .trim();
-  if (primary === "") return false;
-  return !/^-?\d+(\.\d+)?[a-z%]*$/i.test(primary);
-}
-
-export function prepareLegacyAggregatedToken(t: {
-  token: string;
-  value: string;
-  scope?: string;
-}): { canonicalPath: string; value: unknown } | { skipNote: string } | null {
-  // Determine category + basename. Order: explicit scope → name
-  // keywords → value shape. The old tail defaulted every leftover to
-  // `spacing`, which fed crawled junk vars into the wrong category —
-  // live-hit 2026-07-12: WordPress's `--wp--preset--shadow--natural`
-  // (a CSS shadow string) landed in `spacing.*` and the
-  // TokenCategoryMismatch aborted the ENTIRE compose_from_run. No
-  // guessing (CLAUDE.md 2): what we cannot place, we drop below.
-  // issue #32 — sampled typography composites arrive with scope
-  // "typography" and a JSON-serialised sub-field object
-  // ({fontFamily, fontSize, fontWeight, lineHeight}). Land them at the
-  // DTCG composite root so the renderer emits the full type scale
-  // (--font-<role> / --text-<role> / --font-weight-<role> /
-  // --leading-<role>). normalizeTokens/themeTypographyComposite validate
-  // the object shape; a malformed payload is our own serialisation bug,
-  // so we drop it (skip) rather than abort the whole compose.
-  if (t.scope === "typography") {
-    const basename = t.token.startsWith("typography-")
-      ? t.token.slice("typography-".length)
-      : t.token;
-    if (!basename) return null;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(t.value);
-    } catch {
-      return null;
-    }
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-    return { canonicalPath: `typography.${basename}`, value: parsed };
-  }
-
-  const name = t.token.toLowerCase();
-  let category: string;
-  if (t.scope === "color") category = "color";
-  else if (t.scope === "font") category = "typography";
-  else if (t.scope === "space") category = "spacing";
-  else if (t.scope === "radius") category = "radius";
-  else if (t.scope === "shadow") category = "shadow";
-  else if (name.includes("shadow")) category = "shadow";
-  else if (name.includes("radius")) category = "radius";
-  else if (name.includes("font") || name.includes("family")) category = "typography";
-  else if (/^#[0-9a-fA-F]{3,8}$/.test(t.value) || name.includes("color")) category = "color";
-  else category = "spacing";
-
-  // Drop shadow tokens — legacy stringified shadows don't round-trip
-  // into the DTCG composite shape. v0.11.0 leaves the existing
-  // shadow tokens untouched.
-  if (category === "shadow") return null;
-
-  // Run #8 live-hit: WordPress `--wp--preset--font-size--*` vars carry
-  // "font" in the NAME but a bare dimension as the VALUE ("13px"). The
-  // typography envelope below would register that as a font FAMILY, and
-  // the generator's font resolver then fails the whole deploy with
-  // `theme-font-unresolvable:13px`. Numeric-only values can never be a
-  // family — skip LOUDLY (the caller relays the note) instead of
-  // registering a token the deploy is guaranteed to choke on.
-  if (category === "typography" && !isPlausibleFontFamilyValue(t.value)) {
-    return { skipNote: `theme-token-skipped-nonfont-typography:${t.token}=${t.value}` };
-  }
-
-  // Strip the leading `<category>-` (or scope-prefixed) name so
-  // `color-primary` becomes `primary`.
-  let basename = t.token;
-  const prefixes = [category, t.scope ?? "", "font", "space"].filter((p) => p);
-  for (const p of prefixes) {
-    if (basename.startsWith(`${p}-`)) {
-      basename = basename.slice(p.length + 1);
-      break;
-    }
-  }
-  if (!basename) return null;
-
-  const canonicalPath = `${category}.${basename}`;
-
-  // Backstop: spacing/radius only accept single CSS lengths. A crawled
-  // var that ends up here with anything else (a gradient, a shadow
-  // list, a font stack) is site-specific noise — dropping ONE junk
-  // token beats aborting the whole compose on a category mismatch.
-  if ((category === "spacing" || category === "radius") && !isDimensionValue(t.value)) {
-    return null;
-  }
-
-  // Shape the value: typography needs the composite object envelope;
-  // everything else is a flat string.
-  const value: unknown = category === "typography" ? { fontFamily: t.value } : t.value;
-
-  return { canonicalPath, value };
-}

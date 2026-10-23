@@ -17,7 +17,6 @@
  *   - module HTML + field defaults   modules.create / .update (and update_many)
  *   - layout HTML         layouts.create / .update
  *   - structured sets     structured_sets.set
- *   - imports             imports.compose_from_run, in report mode
  *
  * NOT covered (deliberately, out of scope for rollout C): CSS `url(...)`
  * media references — in inline `style` attributes and in the module /

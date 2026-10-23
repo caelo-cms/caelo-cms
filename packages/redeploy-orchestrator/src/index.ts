@@ -1190,8 +1190,8 @@ export async function writeRunDesignTokenAggregate(args: {
  * `runId`: ONE Playwright render session per source page produces the
  * source screenshot AND the computed-style token samples. Per-page
  * tokens land on `import_pages.sampled_design_tokens`; the run-level
- * aggregate lands on `import_runs.site_design_tokens` (which
- * compose_from_run prefers over extractor tokens).
+ * aggregate lands on `import_runs.site_design_tokens` (which the run
+ * report surfaces in preference to extractor tokens).
  *
  * Failure contract (CLAUDE.md §2 no-fallbacks): a page that ends up
  * WITHOUT a stored source screenshot always carries a

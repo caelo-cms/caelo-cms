@@ -70,11 +70,13 @@ import {
 import { restoreCommand, takeSqlBackup } from "./upgrade/backup.js";
 import {
   findServingImage,
+  findTemplateImageDigest,
   lookupFailure,
   resolveGcpResourceName,
   servingImageDigests,
 } from "./upgrade/gcp-lookup.js";
 import type { HealthProbe } from "./upgrade/health.js";
+import { platformDigestsOf, type ReleaseImageForms } from "./upgrade/image-forms.js";
 import { releaseImageRef } from "./upgrade/release-images.js";
 import { assessUpgradeRequest, type RefusalCode } from "./upgrader-assess.js";
 import {
@@ -166,6 +168,13 @@ export interface UpgraderJobDeps {
   readonly iam: IamTester;
   /** fetchVerifiedReleaseManifest against the fixed registry. */
   readonly fetchManifest: (version: string) => Promise<ReleaseManifestResult>;
+  /**
+   * Every digest a release image is known by (#1025): the signed platform
+   * digests, else the content-checked index from the fixed mirror
+   * (createReleaseImageForms). One instance per run, so each index is read
+   * at most once.
+   */
+  readonly imageForms: ReleaseImageForms;
   /**
    * Take the install's state lock (the one `pulumi up`, `state migrate` and
    * the CLI `upgrade` hold) right before the run's first write; returns its
@@ -384,10 +393,16 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
     if (!serving.ok) {
       return stopWith("failed", ["lookup"], `Nothing was changed: ${serving.error}.`);
     }
-    if (!recordMatchesServing(meta.imageDigests, serving.digests)) {
+    if (!recordMatchesServing(meta, serving.digests)) {
       // #860 — re-record the serving release ourselves, but only one whose
-      // admin AND gateway images a signed release manifest names.
-      const found = await findServingRelease(meta, serving.digests, deps);
+      // admin AND gateway images a signed release manifest names, as its
+      // index or a platform manifest inside it (#1025).
+      const found = await findServingRelease(meta, serving.digests, {
+        run: deps.run,
+        fetchManifest: deps.fetchManifest,
+        imageForms: deps.imageForms,
+        hintDigests: () => templateDigests(deps, serving.services),
+      });
       if (!found.ok) {
         if (found.retryable) return stopWith("failed", ["registry"], found.reason);
         // #815 — the serving images were read without the lock: a run that
@@ -400,14 +415,17 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
         }
         return stopWith("needs_cloud_shell", ["install-state-drift"], found.reason);
       }
-      // The manifest's digests, not the serving ones: the signed form is the
-      // one every later comparison and deploy uses (gcp-lookup.ts ServingImage).
+      // The manifest's index digests, not the serving ones: the signed form
+      // is the one every deploy pins. The linux/amd64 forms go next to them
+      // (#1025), so the next run matches what Cloud Run records directly.
+      const { platformDigests: _stale, ...rest } = meta;
       meta = {
-        ...meta,
+        ...rest,
         imageDigests: {
           admin: found.manifest.digests.admin,
           gateway: found.manifest.digests.gateway,
         },
+        ...(found.platformDigests ? { platformDigests: found.platformDigests } : {}),
         releaseVersion: found.manifest.version,
       };
       // Judged against now, written under the lock once decided (#815).
@@ -562,9 +580,23 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
         // never "succeeded" while the records name the previous release).
         recordDigests: async (digests) => {
           r.phase("record");
+          // #1025 — both forms, so the next run recognises what Cloud Run
+          // records without a registry lookup. Not knowing the platform form
+          // is no failure: the next run then reads the index itself.
+          const platform = await platformDigestsOf(digests, deps.imageForms, m);
+          if (!platform.ok) {
+            r.warn(
+              `install.json records ${m.version} by its image indexes only; their linux/amd64 forms could not be read (${platform.message}). The next update reads them from the release registry.`,
+            );
+          }
           try {
-            const fresh = deps.readInstall() ?? meta;
-            deps.writeInstall({ ...fresh, imageDigests: digests, releaseVersion: m.version });
+            const { platformDigests: _previous, ...fresh } = deps.readInstall() ?? meta;
+            deps.writeInstall({
+              ...fresh,
+              imageDigests: digests,
+              ...(platform.ok ? { platformDigests: platform.platformDigests } : {}),
+              releaseVersion: m.version,
+            });
             r.info(`Recorded ${m.version} as this install's release.`);
           } catch (e) {
             recordError = errorText(e);
@@ -659,10 +691,17 @@ export async function recordUpdateEnd(
 }
 
 /** Every digest the revisions serving traffic are known by, per service. */
-async function servingDigests(
-  deps: UpgraderJobDeps,
-): Promise<{ ok: true; digests: ServingDigests } | { ok: false; error: string }> {
+async function servingDigests(deps: UpgraderJobDeps): Promise<
+  | {
+      ok: true;
+      digests: ServingDigests;
+      /** The services' deployed names, for the template hints. */
+      services: Readonly<Record<RollSlug, string>>;
+    }
+  | { ok: false; error: string }
+> {
   const digests: Partial<Record<RollSlug, readonly string[]>> = {};
+  const services: Partial<Record<RollSlug, string>> = {};
   for (const slug of ["admin", "gateway"] as const) {
     const prefix = `${gcpNamePrefix(deps.env)}-${slug}`;
     const service = await resolveGcpResourceName(
@@ -678,8 +717,30 @@ async function servingDigests(
     const image = await findServingImage(deps.run, deps.projectId, deps.region, service.name);
     if (!image) return { ok: false, error: `could not read which image the ${slug} serves` };
     digests[slug] = servingImageDigests(image);
+    services[slug] = service.name;
   }
-  return { ok: true, digests: digests as ServingDigests };
+  return {
+    ok: true,
+    digests: digests as ServingDigests,
+    services: services as Record<RollSlug, string>,
+  };
+}
+
+/**
+ * The index digests the services' templates pin (#1025): hints for which
+ * release to check when the serving revisions name only platform digests,
+ * which carry no release tag.
+ */
+async function templateDigests(
+  deps: UpgraderJobDeps,
+  services: Readonly<Record<RollSlug, string>>,
+): Promise<ServingDigests> {
+  const out: Partial<Record<RollSlug, readonly string[]>> = {};
+  for (const slug of ["admin", "gateway"] as const) {
+    const d = await findTemplateImageDigest(deps.run, deps.projectId, deps.region, services[slug]);
+    out[slug] = d ? [d] : [];
+  }
+  return out as ServingDigests;
 }
 
 async function recordFacts(

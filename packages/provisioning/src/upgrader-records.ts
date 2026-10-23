@@ -15,6 +15,12 @@
  * Images that belong to no signed release are a deployment nobody can
  * vouch for, so the run stops and says so.
  *
+ * A serving image is a release's image when its digest is one of that
+ * image's forms (#1025, upgrade/image-forms.ts): the index the manifest
+ * signs, or a platform manifest inside it. Cloud Run records the
+ * linux/amd64 platform manifest it resolved, so comparing with the index
+ * alone never matched on a live install.
+ *
  * Which releases to try comes from untrusted hints — the version
  * install.json names, and the release tags pointing at the serving digests
  * in the fixed mirror (releaseVersionForDigest). A wrong hint costs one
@@ -25,6 +31,7 @@ import type { GcloudRunner } from "./gcloud-retry.js";
 import type { ImageDigests, InstallMetadata } from "./install-state.js";
 import type { ReleaseManifest, ReleaseManifestResult } from "./release-manifest.js";
 import type { RollSlug } from "./upgrade/app-roll.js";
+import type { ReleaseImageForms } from "./upgrade/image-forms.js";
 import { releaseVersionForDigest } from "./upgrade/release-images.js";
 
 /** Every digest each serving image is known by (gcp-lookup.ts servingImageDigests). */
@@ -32,18 +39,35 @@ export type ServingDigests = Readonly<Record<RollSlug, readonly string[]>>;
 
 const SLUGS: readonly RollSlug[] = ["admin", "gateway"];
 
-/** Whether `recorded` names the images that serve, in any form they are known by. */
+/**
+ * Whether install.json names the images that serve: per service, the
+ * recorded index digest or its recorded linux/amd64 form (#1025) is one of
+ * the digests the serving revision is known by.
+ */
 export function recordMatchesServing(
-  recorded: ImageDigests | undefined,
+  recorded: Pick<InstallMetadata, "imageDigests" | "platformDigests">,
   serving: ServingDigests,
 ): boolean {
-  if (!recorded) return false;
-  return SLUGS.every((slug) => serving[slug].includes(recorded[slug]));
+  const { imageDigests, platformDigests } = recorded;
+  if (!imageDigests) return false;
+  return SLUGS.every(
+    (slug) =>
+      serving[slug].includes(imageDigests[slug]) ||
+      (platformDigests !== undefined && serving[slug].includes(platformDigests[slug])),
+  );
 }
 
 /** What {@link findServingRelease} learned. */
 export type ServingRelease =
-  | { readonly ok: true; readonly manifest: ReleaseManifest }
+  | {
+      readonly ok: true;
+      readonly manifest: ReleaseManifest;
+      /**
+       * The linux/amd64 form of each of its images (#1025), to record next
+       * to the index digests; null when it is not known for both.
+       */
+      readonly platformDigests: ImageDigests | null;
+    }
   | {
       readonly ok: false;
       /**
@@ -62,6 +86,15 @@ export interface ServingReleaseDeps {
   readonly run: GcloudRunner;
   /** fetchVerifiedReleaseManifest against the fixed registry. */
   readonly fetchManifest: (version: string) => Promise<ReleaseManifestResult>;
+  /** Every digest a release image is known by (#1025; createReleaseImageForms). */
+  readonly imageForms: ReleaseImageForms;
+  /**
+   * The image digests the services' templates name (the index a deploy
+   * pinned; after a rollback, possibly another release's). Untrusted hints
+   * for which release tags to look up, asked only when nothing else found
+   * the serving release.
+   */
+  readonly hintDigests?: () => Promise<ServingDigests>;
 }
 
 /**
@@ -79,7 +112,7 @@ export async function findServingRelease(
   const unverified: string[] = [];
   const unreachable: string[] = [];
   const tried: string[] = [];
-  for await (const version of candidateVersions(meta, serving, deps.run)) {
+  for await (const version of candidateVersions(meta, serving, deps)) {
     if (tried.includes(version)) continue;
     tried.push(version);
     const fetched = await deps.fetchManifest(version);
@@ -92,12 +125,21 @@ export async function findServingRelease(
       continue;
     }
     const m = fetched.manifest;
-    const matching = SLUGS.filter((slug) => serving[slug].includes(m.digests[slug]));
-    if (matching.length === SLUGS.length) return { ok: true, manifest: m };
-    if (matching.length > 0) {
-      const other = SLUGS.filter((s) => !matching.includes(s));
+    const judged = await judgeRelease(m, serving, deps.imageForms);
+    if (judged.kind === "unreadable") {
+      // The index could not be read, so this release is neither confirmed
+      // nor ruled out: an outage is retried, anything else is a release
+      // record that could not be verified.
+      (judged.transient ? unreachable : unverified).push(`v${version} (${judged.message})`);
+      continue;
+    }
+    if (judged.matching.length === SLUGS.length) {
+      return { ok: true, manifest: m, platformDigests: judged.platformDigests };
+    }
+    if (judged.matching.length > 0) {
+      const other = SLUGS.filter((s) => !judged.matching.includes(s));
       partial.push(
-        `the ${matching.join(", ")} serves v${m.version}'s image, the ${other.join(", ")} does not`,
+        `the ${judged.matching.join(", ")} serves v${m.version}'s image, the ${other.join(", ")} does not`,
       );
     }
   }
@@ -125,6 +167,51 @@ export async function findServingRelease(
   };
 }
 
+/** Which of release `m`'s images serve, by {@link judgeRelease}. */
+type ReleaseJudgement =
+  | {
+      readonly kind: "judged";
+      readonly matching: readonly RollSlug[];
+      readonly platformDigests: ImageDigests | null;
+    }
+  | { readonly kind: "unreadable"; readonly transient: boolean; readonly message: string };
+
+/**
+ * Which of `m`'s images serve. A serving digest equal to the signed index
+ * matches without a lookup; any other is compared with the image's
+ * platform forms (signed, or read from the content-checked index).
+ */
+async function judgeRelease(
+  m: ReleaseManifest,
+  serving: ServingDigests,
+  imageForms: ReleaseImageForms,
+): Promise<ReleaseJudgement> {
+  const matching: RollSlug[] = [];
+  const platform: Partial<Record<RollSlug, string>> = {};
+  for (const slug of SLUGS) {
+    if (serving[slug].includes(m.digests[slug])) {
+      matching.push(slug);
+      const signed = m.platformDigests?.[slug];
+      if (signed) platform[slug] = signed;
+      continue;
+    }
+    const forms = await imageForms.of(m, slug);
+    if (!forms.ok)
+      return { kind: "unreadable", transient: forms.transient, message: forms.message };
+    const match = serving[slug].find((d) => forms.digests.includes(d));
+    if (match) {
+      matching.push(slug);
+      if (forms.amd64) platform[slug] = forms.amd64;
+    }
+  }
+  const { admin, gateway } = platform;
+  return {
+    kind: "judged",
+    matching,
+    platformDigests: admin && gateway ? { admin, gateway } : null,
+  };
+}
+
 /**
  * Release versions worth checking, most likely first. Lazy: the version
  * install.json names usually is the serving one, and then no tag listing
@@ -133,17 +220,26 @@ export async function findServingRelease(
 async function* candidateVersions(
   meta: InstallMetadata,
   serving: ServingDigests,
-  run: GcloudRunner,
+  deps: ServingReleaseDeps,
 ): AsyncGenerator<string> {
   if (meta.releaseVersion) yield meta.releaseVersion;
-  // Release tags point at the index digest a deploy pins (the deployed form,
-  // listed first); the platform digest Cloud Run resolved has no tag.
-  for (const slug of SLUGS) {
-    for (const digest of serving[slug]) {
-      const version = await releaseVersionForDigest(run, slug, digest);
-      if (version) yield version;
+  // Release tags point at the index digest a deploy pins. The platform
+  // digest Cloud Run records for a revision (#1025) has no tag, so the
+  // indexes the service templates name are asked too: only hints, the
+  // signed manifest still decides.
+  const asked: string[] = [];
+  const tagged = async function* (digests: ServingDigests): AsyncGenerator<string> {
+    for (const slug of SLUGS) {
+      for (const digest of digests[slug]) {
+        if (asked.includes(`${slug}@${digest}`)) continue;
+        asked.push(`${slug}@${digest}`);
+        const version = await releaseVersionForDigest(deps.run, slug, digest);
+        if (version) yield version;
+      }
     }
-  }
+  };
+  yield* tagged(serving);
+  if (deps.hintDigests) yield* tagged(await deps.hintDigests());
 }
 
 function capitalize(s: string): string {

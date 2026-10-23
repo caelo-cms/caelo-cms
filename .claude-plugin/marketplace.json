@@ -8,7 +8,12 @@
   "plugins": [
     {
       "name": "caelo",
-      "source": "./integrations/claude-code",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/caelo-cms/caelo-cms.git",
+        "path": "integrations/claude-code",
+        "ref": "release-latest"
+      },
       "description": "Edit a self-hosted Caelo CMS site from Claude Code: MCP server plus skills for connecting, safe editing and handover.",
       "category": "development"
     }

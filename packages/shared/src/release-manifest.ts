@@ -40,6 +40,19 @@ export const ReleaseManifestSchema = z.object({
   version: z.string().regex(SEMVER, "expected a SemVer version without a leading v"),
   channel: z.enum(RELEASE_CHANNELS),
   digests: z.object({ admin: digest, gateway: digest, ops: digest }),
+  /**
+   * #1025 — the linux/amd64 platform manifest inside each image index of
+   * `digests`. The release images are OCI indexes (buildx adds an
+   * attestation manifest even to a single-platform build), and Cloud Run
+   * records the platform manifest it resolved — not the index a deploy
+   * pinned — in a revision's `spec.containers[0].image` and
+   * `status.imageDigest`. Signing this form too lets an upgrader tell
+   * which release serves without a registry round trip. Absent on
+   * releases from before the field: optional, so manifestVersion stays 1
+   * and older readers ignore it; readers then list the index itself
+   * (content-addressed, so it cannot be forged either).
+   */
+  platformDigests: z.object({ admin: digest, gateway: digest, ops: digest }).optional(),
   minFromVersion: z.string().regex(SEMVER),
   infraContractVersion: z.number().int().positive(),
   migrations: z.object({
