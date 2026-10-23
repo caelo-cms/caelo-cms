@@ -32,13 +32,30 @@ export async function cssVarWarningSuffix(
   toolCtx: ToolContext,
   css: string | undefined,
 ): Promise<string> {
-  if (css === undefined || css.trim().length === 0) return "";
+  const [warning] = await cssVarWarnings(ctx, toolCtx, [css]);
+  return warning ? ` ${warning}` : "";
+}
+
+/**
+ * The same scan for several CSS sources at once (one theme read), so a
+ * multi-module tool can attribute each warning to the module whose CSS
+ * caused it. Returns one entry per input: the warning, or "".
+ */
+export async function cssVarWarnings(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  cssList: ReadonlyArray<string | undefined>,
+): Promise<string[]> {
+  const empty = cssList.map(() => "");
+  if (cssList.every((css) => css === undefined || css.trim().length === 0)) return empty;
   const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get_active", {});
-  if (!res.ok) return "";
+  if (!res.ok) return empty;
   const theme = (res.value as { theme: { tokens: ThemeDocument } | null }).theme;
-  if (theme === null) return "";
-  const warning = formatUnknownCssVarWarning(
-    scanCssVars({ css, knownVars: listThemeCssVarNames(theme.tokens) }),
+  if (theme === null) return empty;
+  const knownVars = listThemeCssVarNames(theme.tokens);
+  return cssList.map((css) =>
+    css === undefined || css.trim().length === 0
+      ? ""
+      : (formatUnknownCssVarWarning(scanCssVars({ css, knownVars })) ?? ""),
   );
-  return warning === null ? "" : ` ${warning}`;
 }
