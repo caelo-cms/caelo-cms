@@ -3,30 +3,28 @@
 # Caelo CMS — one-button release from the GitHub Actions UI.
 #
 # Actions → release-cut → Run workflow → pick the bump. The release is cut
-# from the main commit as it is at that moment, then gated, tagged and
-# published from a release branch, so main stays open for merges the
-# whole time (before, every merge during a cut cost the release):
+# from the main commit as it is at that moment and lives on its tag only;
+# main stays open for merges the whole time and never receives the release
+# commit back:
 #
 #   1. Gate: the real-AI suite must be green on that main commit X (main
 #      gets no real-AI run per push; a green run on X is reused).
 #   2. scripts/release.ts writes the release commit R on top of X (version
-#      bump, changelog, catalogue, release declaration) and tags it vX.Y.Z.
+#      stamps, changelog, catalogue, release declaration; main itself is
+#      stamped with the unreleased marker 0.0.0) and tags it vX.Y.Z. The
+#      version it bumps from is the newest stable tag.
 #   3. R is checked before anything is pushed: it may touch only what the
 #      release script writes (scripts/release-commit.ts), and lint, the
 #      lockstep check and the catalogue check must pass on it, so a broken
 #      release commit never gets its tag.
-#   4. release/vX.Y.Z (= R) and the tag are pushed together, and
-#      release.yml is dispatched on the tag (a tag pushed with GITHUB_TOKEN
-#      never triggers other workflows, a dispatch does).
-#   5. Once everything is published, release.yml opens the release PR
-#      release/vX.Y.Z → main. Merging it moves main to the new version.
-#      Only the next cut waits for that merge: it refuses while a tagged
-#      release is not on main yet (release-checks.ts taggedAheadProblem).
+#   4. The tag is pushed and release.yml is dispatched on it (a tag pushed
+#      with GITHUB_TOKEN never triggers other workflows, a dispatch does).
+#      After publishing, release.yml moves `release-latest` (the branch the
+#      Claude Code plugin is served from) to the tag.
 #
-# Why the tag is not on main: main requires linear history, so the release
-# commit reaches it as a squashed copy. The changelog and the release
-# checks find the previous release by version, never by ancestry. See
-# RELEASING.md ("One-button release").
+# Nothing points at a version that has to move: install links open the
+# install repository's main (newest release), the plugin follows
+# release-latest. See RELEASING.md ("One-button release").
 
 name: release-cut
 
@@ -293,21 +291,17 @@ jobs:
           bun scripts/power-catalogue.ts --check
           git diff --exit-code
 
-      - name: Push the release branch + tag, dispatch the release pipeline
+      - name: Push the tag, dispatch the release pipeline
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           V: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          # --atomic: the tag never exists without its branch (release.yml
-          # opens the release PR from it). A leftover release/v* branch of
-          # an aborted cut is replaced: the tag the script made locally is
-          # refused if it already exists remotely, so a published release
-          # is never overwritten.
-          git push --atomic --force-with-lease="release/v${V}" origin \
-            "HEAD:refs/heads/release/v${V}" "refs/tags/v${V}"
+          # A tag that already exists remotely is refused (plain push), so
+          # a published release is never overwritten.
+          git push origin "refs/tags/v${V}"
           gh workflow run release.yml --ref "v${V}" -f tag="v${V}"
-          echo "::notice::v${V} is tagged on release/v${V}. release.yml publishes it, then opens the release PR into main."
+          echo "::notice::v${V} is tagged. release.yml publishes it, then moves release-latest to it."
 
       - name: Delete the real-AI gate branch (best-effort)
         if: always()

@@ -7,7 +7,7 @@
  * The facts the signed manifest asserts are decided at release-cut time
  * and committed in `release-meta.json` with the release commit, so the
  * tag-triggered pipeline (which has no workflow inputs) signs exactly what
- * the maintainer declared. Both ends run the same checks: a release PR
+ * the maintainer declared. Both ends run the same checks: a release commit
  * edited after the cut still cannot sign a `security` flag without a
  * published advisory, or skip an infra-contract bump.
  */
@@ -235,8 +235,8 @@ export function previousStableTag(
 /**
  * The newest tag of any kind strictly older than `version`, as `vX.Y.Z[-pre]`
  * — the changelog's starting point. Found by version, not by walking HEAD's
- * history: a release is tagged on its release branch and reaches main as a
- * squashed copy, so the tag is never an ancestor of main.
+ * history: a release commit sits only on its tag and never reaches main, so
+ * the tag is never an ancestor of main.
  */
 export function previousTag(versions: readonly string[], version: string): string | null {
   const last = versions
@@ -247,9 +247,9 @@ export function previousTag(versions: readonly string[], version: string): strin
 }
 
 /**
- * Why `version` cannot be cut, or null. A tag at or above it means an
- * earlier release has not been merged back into main yet (main still
- * carries the old version), so the bump would collide with a shipped tag.
+ * Why `version` cannot be cut, or null: a tag at or above it exists (an
+ * explicit version or a pre-release line already past it). A bump from the
+ * newest stable tag never collides, but `x.y.z` and `-rc.N` cuts can.
  */
 export function taggedAheadProblem(versions: readonly string[], version: string): string | null {
   const ahead = versions
@@ -258,16 +258,23 @@ export function taggedAheadProblem(versions: readonly string[], version: string)
     .at(-1);
   if (!ahead) return null;
   return (
-    `v${ahead} is already tagged, but main is not past it. Merge its release PR ` +
-    `(release/v${ahead} → main) first, then cut again. If v${ahead} never published, ` +
-    `delete the tag and its branch instead (RELEASING.md, "A release that failed after the cut").`
+    `v${ahead} is already tagged, so v${version} would not be the newest release. ` +
+    `Cut a version above v${ahead}. If v${ahead} never published, delete its tag first ` +
+    `(RELEASING.md, "A release that failed after the cut").`
   );
 }
 
 /**
- * A release commit's own subject. The changelog leaves these out: since
- * releases are tagged off main, the squashed copy of the previous release
- * commit sits in the next release's range.
+ * The version main is stamped with. Release stamps (version, changelog,
+ * declaration) exist only on release commits, which never reach main, so
+ * main says plainly that it is not a release.
+ */
+export const UNRELEASED_VERSION = "0.0.0";
+
+/**
+ * A release commit's own subject. The changelog leaves these out: the
+ * squashed copies of release commits that main received before releases
+ * stopped merging back sit in the next release's range.
  */
 export const RELEASE_COMMIT_SUBJECT =
   /^chore\(release\): v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?( \(#\d+\))?$/;
