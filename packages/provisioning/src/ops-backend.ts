@@ -31,7 +31,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gcloud as defaultGcloud } from "./gcloud.js";
-import { type GcloudRunner, realSleep, runWithRetry, type Sleep } from "./gcloud-retry.js";
+import {
+  type GcloudRunner,
+  realSleep,
+  retryWhileServiceEnabling,
+  runWithRetry,
+  SERVICE_ENABLE_DELAYS_MS,
+  SERVICE_NOT_ENABLED,
+  type Sleep,
+} from "./gcloud-retry.js";
 import { operatorMember } from "./provisioner-identity.js";
 import {
   gcsBackendRecord,
@@ -144,9 +152,16 @@ export async function ensureOpsBackend(
   target: OpsBackendTarget,
   deps: { run?: GcloudRunner; sleep?: Sleep; dryRun?: boolean } = {},
 ): Promise<OpsBackendResult> {
-  const run = deps.run ?? defaultGcloud;
   const sleep = deps.sleep ?? realSleep;
   const dryRun = deps.dryRun ?? false;
+  // `services enable` returns before the enablement has propagated: for a
+  // few minutes the first KMS (or storage) call still answers
+  // SERVICE_DISABLED (#1060). Every call waits that out — on a re-run whose
+  // APIs are long on it costs nothing. A dry run only reads and treats a
+  // disabled API as "not there yet", so it does not wait.
+  const run = dryRun
+    ? (deps.run ?? defaultGcloud)
+    : retryWhileServiceEnabling(deps.run ?? defaultGcloud, sleep);
   const { projectId, region } = target;
   const project = `--project=${projectId}`;
   const bucket = opsBucketName(projectId);
@@ -157,9 +172,12 @@ export async function ensureOpsBackend(
   ];
   const actions: string[] = [];
   const act = (what: string) => actions.push(dryRun ? `would ${what}` : what);
+  const waitedMinutes = Math.round(SERVICE_ENABLE_DELAYS_MS.reduce((a, b) => a + b, 0) / 60_000);
   const fail = (what: string, r: { stderr: string; exitCode: number }): OpsBackendResult => ({
     ok: false,
-    error: `${what} failed: ${reason(r.stderr, r.exitCode)}`,
+    error: SERVICE_NOT_ENABLED.test(r.stderr)
+      ? `${what} failed: the API is still reported as disabled ${waitedMinutes} minutes after it was enabled (${reason(r.stderr, r.exitCode)}). Check that ${OPS_APIS.join(" and ")} show as enabled in project ${projectId} (gcloud services list --enabled --project=${projectId}), then re-run the same command — it picks up where it stopped.`
+      : `${what} failed: ${reason(r.stderr, r.exitCode)}`,
   });
 
   // --- APIs -------------------------------------------------------------
