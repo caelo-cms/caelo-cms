@@ -14,8 +14,14 @@
 import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { join, relative, resolve as resolvePath } from "node:path";
 import * as pulumi from "@pulumi/pulumi/automation";
+import {
+  type AdoptionCandidate,
+  AdoptionError,
+  adoptExistingResources,
+} from "../adopt-existing.js";
 import { AUDIT_PARALLELISM_DEFAULT } from "../audit-job-setup.js";
 import { checkpointableOutputs } from "../checkpoint-secrets.js";
+import { gcloud } from "../gcloud.js";
 import { GCP_STACK_ENV } from "../gcp-names.js";
 import { type ImageDigests, stackWorkDir } from "../install-state.js";
 import { collectPreviewSteps, type PlannedStep } from "../preview-plan.js";
@@ -395,6 +401,7 @@ export function resolveSecretReplication(
 
 /** A resource as `pulumi stack export` lists it. */
 export interface StateResource {
+  urn?: string;
   type?: string;
   inputs?: Record<string, unknown>;
   outputs?: Record<string, unknown>;
@@ -534,6 +541,54 @@ export function pulumiGcpEnv(
   };
 }
 
+/**
+ * The URN of the stack's explicit GCP provider (`new gcp.Provider` in both
+ * stacks), which every stack resource uses. An adopted resource is imported
+ * under it (#1079): under Pulumi's default provider instead, the next `up`
+ * would see a provider change on it.
+ *
+ * @throws AdoptionError unless the state holds exactly one
+ */
+export function stackGcpProviderUrn(resources: ReadonlyArray<StateResource>): string {
+  const urns = resources
+    .filter((r) => r.type === "pulumi:providers:gcp" && typeof r.urn === "string")
+    .map((r) => r.urn as string);
+  if (urns.length !== 1) {
+    throw new AdoptionError(
+      `the stack's state holds ${urns.length} GCP providers, so it is unclear which one resources that already exist would be adopted under. Nothing was imported or applied. Report this; the stack needs a look before the installer can run.`,
+    );
+  }
+  return urns[0] as string;
+}
+
+/** The name {@link importIntoStack} gives the stack's provider in the import's name table. */
+const IMPORT_PROVIDER_NAME = "gcpProvider";
+
+/**
+ * `pulumi import` the candidates into the stack under its explicit provider.
+ * State only: nothing in the project changes. Not protected (the program
+ * does not protect them either) and no code generated.
+ */
+async function importIntoStack(
+  stack: pulumi.Stack,
+  providerUrn: string,
+  candidates: readonly AdoptionCandidate[],
+  onOutput: (msg: string) => void,
+): Promise<void> {
+  await stack.import({
+    resources: candidates.map((c) => ({
+      type: c.step.type,
+      name: c.step.name,
+      id: c.importId,
+      provider: IMPORT_PROVIDER_NAME,
+    })),
+    nameTable: { [IMPORT_PROVIDER_NAME]: providerUrn },
+    protect: false,
+    generateCode: false,
+    onOutput,
+  });
+}
+
 /** Thrown when the review (preview-plan.ts planGate) stops `pulumi up` after the preview. */
 export class PulumiUpDeclinedError extends Error {
   override readonly name = "PulumiUpDeclinedError";
@@ -544,16 +599,23 @@ export class PulumiUpDeclinedError extends Error {
  * Streams resource-create events to the supplied onEvent callback so
  * the wizard can render a live progress bar.
  *
- * On a stack that already holds resources, a preview runs first (#737) and
- * `review` sees its planned steps: it lists them and decides (planGate)
- * whether `up` may apply them. Nothing is applied when it says no.
+ * On a stack that already holds resources, a preview runs first (#737).
+ * Planned creates of resources that exist in the project already (made by
+ * `upgrade` through gcloud) are adopted into the stack and the stack is
+ * previewed again (adopt-existing.ts, #1079). `review` sees that plan and
+ * what was adopted: it lists them and decides (planGate) whether `up` may
+ * apply the plan. Nothing is applied when it says no.
  *
  * @throws PulumiUpDeclinedError when `review` declines the plan
+ * @throws AdoptionError when adopting fails; nothing was applied
  */
 export async function pulumiUpGcp(
   inputs: PulumiUpInputs,
   onEvent: (kind: "resource" | "error" | "log", message: string) => void,
-  review: (steps: readonly PlannedStep[]) => Promise<boolean>,
+  review: (
+    steps: readonly PlannedStep[],
+    adopted: readonly AdoptionCandidate[],
+  ) => Promise<boolean>,
 ): Promise<PulumiUpResult> {
   const env = pulumiGcpEnv(process.env, inputs);
 
@@ -608,11 +670,25 @@ export async function pulumiUpGcp(
 
   // #737 — never `up` a deployed stack blind: list what it would change
   // (replaces and deletes first) and let the review stop it. A first run
-  // on an empty stack only creates, so it skips the extra preview.
+  // on an empty stack only creates, so it skips the extra preview (and has
+  // no provider in its state to adopt anything under).
   if (stateResources.length > 0) {
-    const collector = collectPreviewSteps();
-    await stack.preview({ onEvent: collector.onEvent });
-    if (!(await review(collector.steps()))) {
+    const preview = async () => {
+      const collector = collectPreviewSteps();
+      await stack.preview({ onEvent: collector.onEvent });
+      return collector.steps();
+    };
+    // #1079 — what `upgrade` created through gcloud joins the state first.
+    const { steps, adopted } = await adoptExistingResources(await preview(), {
+      projectId: inputs.projectId,
+      gcloud,
+      preview,
+      importResources: (candidates) =>
+        importIntoStack(stack, stackGcpProviderUrn(stateResources), candidates, (msg) =>
+          onEvent("log", msg),
+        ),
+    });
+    if (!(await review(steps, adopted))) {
       throw new PulumiUpDeclinedError("pulumi up was not run: the planned changes were declined.");
     }
   }

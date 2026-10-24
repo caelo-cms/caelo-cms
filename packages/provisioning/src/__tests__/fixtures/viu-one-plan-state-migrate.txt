@@ -1,0 +1,98 @@
+Pulumi preview (state-migrate), 2026-10-24T14:31:26.306Z: 37 change(s)
+
+DELETES (8):
+  gcp:secretmanager/secretVersion:SecretVersion caelo-production-cookie-secret-v1  <-- LOSES DATA: Secret Manager secret value
+  gcp:secretmanager/secretVersion:SecretVersion caelo-production-csrf-secret-v1  <-- LOSES DATA: Secret Manager secret value
+  gcp:secretmanager/secretIamMember:SecretIamMember caelo-production-csrf-secret-binding
+  random:index/randomBytes:RandomBytes caelo-production-cookie-secret-bytes
+  gcp:secretmanager/secretIamMember:SecretIamMember caelo-production-cookie-secret-binding
+  random:index/randomBytes:RandomBytes caelo-production-csrf-secret-bytes
+  gcp:secretmanager/secret:Secret caelo-production-cookie-secret  <-- LOSES DATA: Secret Manager secret
+  gcp:secretmanager/secret:Secret caelo-production-csrf-secret  <-- LOSES DATA: Secret Manager secret
+Updates in place (15):
+  gcp:compute/network:Network caelo-production-vpc (deletionPolicy)
+  gcp:storage/bucket:Bucket caelo-production-media (deletionPolicy)
+  gcp:secretmanager/secret:Secret caelo-production-secret-kek (deletionPolicy)
+  gcp:secretmanager/secret:Secret caelo-production-postgres-password (deletionPolicy)
+  gcp:serviceaccount/account:Account caelo-production-run-sa (deletionPolicy)
+  gcp:compute/subnetwork:Subnetwork caelo-production-subnet (deletionPolicy)
+  gcp:compute/globalAddress:GlobalAddress caelo-production-pg-private-ip (deletionPolicy)
+  gcp:firebase/hostingSite:HostingSite caelo-production-firebase-site (deletionPolicy)
+  gcp:servicenetworking/connection:Connection caelo-production-pg-peering (deletionPolicy)
+  gcp:firebase/hostingCustomDomain:HostingCustomDomain caelo-production-firebase-apex (deletionPolicy)
+  gcp:sql/databaseInstance:DatabaseInstance caelo-production-pg (deletionPolicy, settings)
+  gcp:sql/user:User caelo-production-admin-user (deletionPolicy)
+  gcp:cloudrunv2/service:Service caelo-production-gateway (client, clientVersion, deletionPolicy, template)
+  gcp:cloudrunv2/service:Service caelo-production-admin (client, clientVersion, deletionPolicy, template)
+  gcp:sql/user:User caelo-production-public-user (deletionPolicy, password)
+Creates (14):
+  gcp:serviceaccount/account:Account caelo-production-gateway-sa
+  gcp:serviceaccount/account:Account caelo-production-mcp-sa
+  gcp:secretmanager/secretIamMember:SecretIamMember caelo-production-gateway-mcp-oauth-seal-key-binding
+  gcp:secretmanager/secretIamMember:SecretIamMember caelo-production-gateway-staging-gate-secret-binding
+  gcp:secretmanager/secretIamMember:SecretIamMember caelo-production-gateway-operator-oauth-client-binding
+  gcp:projects/iAMMember:IAMMember caelo-production-gateway-log-writer
+  gcp:projects/iAMMember:IAMMember caelo-production-gateway-metric-writer
+  gcp:secretmanager/secretIamMember:SecretIamMember caelo-production-gateway-public-role-password-binding
+  gcp:secretmanager/secretIamMember:SecretIamMember caelo-production-staging-gate-secret-binding
+  gcp:secretmanager/secretIamMember:SecretIamMember caelo-production-admin-operator-oauth-client-version-adder
+  gcp:serviceaccount/iAMMember:IAMMember caelo-production-mcp-token-creator-user-owner-example-com
+  gcp:secretmanager/secretIamMember:SecretIamMember caelo-production-tool-approval-secret-binding
+  gcp:secretmanager/secretIamMember:SecretIamMember caelo-production-internal-secret-binding
+  gcp:iap/webCloudRunServiceIamMember:WebCloudRunServiceIamMember caelo-production-admin-iap-mcp
+
+4 of these would destroy data: Secret Manager secret value caelo-production-cookie-secret-v1; Secret Manager secret value caelo-production-csrf-secret-v1; Secret Manager secret caelo-production-cookie-secret; Secret Manager secret caelo-production-csrf-secret.
+
+Every step:
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:compute/network:Network::caelo-production-vpc
+    changes: deletionPolicy
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:storage/bucket:Bucket::caelo-production-media
+    changes: deletionPolicy
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secret:Secret::caelo-production-secret-kek
+    changes: deletionPolicy
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secret:Secret::caelo-production-postgres-password
+    changes: deletionPolicy
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:serviceaccount/account:Account::caelo-production-gateway-sa
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:serviceaccount/account:Account::caelo-production-run-sa
+    changes: deletionPolicy
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:serviceaccount/account:Account::caelo-production-mcp-sa
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:compute/subnetwork:Subnetwork::caelo-production-subnet
+    changes: deletionPolicy
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:compute/globalAddress:GlobalAddress::caelo-production-pg-private-ip
+    changes: deletionPolicy
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:firebase/hostingSite:HostingSite::caelo-production-firebase-site
+    changes: deletionPolicy
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretIamMember:SecretIamMember::caelo-production-gateway-mcp-oauth-seal-key-binding
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretIamMember:SecretIamMember::caelo-production-gateway-staging-gate-secret-binding
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretIamMember:SecretIamMember::caelo-production-gateway-operator-oauth-client-binding
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:projects/iAMMember:IAMMember::caelo-production-gateway-log-writer
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:projects/iAMMember:IAMMember::caelo-production-gateway-metric-writer
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretIamMember:SecretIamMember::caelo-production-gateway-public-role-password-binding
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretIamMember:SecretIamMember::caelo-production-staging-gate-secret-binding
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretIamMember:SecretIamMember::caelo-production-admin-operator-oauth-client-version-adder
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:serviceaccount/iAMMember:IAMMember::caelo-production-mcp-token-creator-user-owner-example-com
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretIamMember:SecretIamMember::caelo-production-tool-approval-secret-binding
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretIamMember:SecretIamMember::caelo-production-internal-secret-binding
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:servicenetworking/connection:Connection::caelo-production-pg-peering
+    changes: deletionPolicy
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:firebase/hostingCustomDomain:HostingCustomDomain::caelo-production-firebase-apex
+    changes: deletionPolicy
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:sql/databaseInstance:DatabaseInstance::caelo-production-pg
+    changes: deletionPolicy, settings
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:sql/user:User::caelo-production-admin-user
+    changes: deletionPolicy
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:cloudrunv2/service:Service::caelo-production-gateway
+    changes: client, clientVersion, deletionPolicy, template
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:cloudrunv2/service:Service::caelo-production-admin
+    changes: client, clientVersion, deletionPolicy, template
+- create urn:pulumi:production::caelo-gcp-firebase::gcp:iap/webCloudRunServiceIamMember:WebCloudRunServiceIamMember::caelo-production-admin-iap-mcp
+- update urn:pulumi:production::caelo-gcp-firebase::gcp:sql/user:User::caelo-production-public-user
+    changes: deletionPolicy, password
+- delete urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretVersion:SecretVersion::caelo-production-cookie-secret-v1
+- delete urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretVersion:SecretVersion::caelo-production-csrf-secret-v1
+- delete urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretIamMember:SecretIamMember::caelo-production-csrf-secret-binding
+- delete urn:pulumi:production::caelo-gcp-firebase::random:index/randomBytes:RandomBytes::caelo-production-cookie-secret-bytes
+- delete urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secretIamMember:SecretIamMember::caelo-production-cookie-secret-binding
+- delete urn:pulumi:production::caelo-gcp-firebase::random:index/randomBytes:RandomBytes::caelo-production-csrf-secret-bytes
+- delete urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secret:Secret::caelo-production-cookie-secret
+- delete urn:pulumi:production::caelo-gcp-firebase::gcp:secretmanager/secret:Secret::caelo-production-csrf-secret

@@ -154,6 +154,8 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
     acceptCost: true,
     bucketRecord: (initial.kind === "gcs" ? "gcs" : null) as "gcs" | "local" | null,
     planFiles: [] as { label: string; steps: number }[],
+    /** What existingInProject answers (#1079); an Error is thrown. */
+    existing: [] as readonly string[] | Error,
   };
   const meta = (): MigrateInstall => ({
     installId: "gcp-firebase-acme",
@@ -208,6 +210,10 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
     writePlan: (label, steps) => {
       m.planFiles.push({ label, steps: steps.length });
       return `${ROOT}/plan-${label}.txt`;
+    },
+    existingInProject: async () => {
+      if (m.existing instanceof Error) throw m.existing;
+      return m.existing;
     },
   };
   p.stacks.set(localUrl, {
@@ -378,6 +384,38 @@ describe("migrateState — failures leave the source authoritative", () => {
     expect(r.error).toContain(`Full diff: ${ROOT}/plan-state-migrate.txt`);
     expect(t.m.planFiles).toEqual([{ label: "state-migrate", steps: 2 }]);
     expect(t.m.backups).toBe(0);
+  });
+
+  it("the refusal names the planned creates the installer adopts (#1079)", async () => {
+    const t = machine();
+    const local = t.p.stacks.get(t.localUrl);
+    if (local) local.drift = 2;
+    t.m.existing = ["service account caelo-production-gateway-sa@acme.iam.gserviceaccount.com"];
+    const r = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain(
+      "1 of the planned creates exist in the project already (service account caelo-production-gateway-sa@acme.iam.gserviceaccount.com): upgrade made them without Pulumi. The installer adopts them into the stack first",
+    );
+    expect(r.error.indexOf("adopts them")).toBeLessThan(r.error.indexOf("Run upgrade first"));
+  });
+
+  it("the refusal says nothing about adopting when nothing exists, and says so when it can't check", async () => {
+    const t = machine();
+    const local = t.p.stacks.get(t.localUrl);
+    if (local) local.drift = 1;
+    const none = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
+    expect(none.ok).toBe(false);
+    if (none.ok) return;
+    expect(none.error).not.toContain("adopt");
+    t.m.existing = new Error("gcloud: PERMISSION_DENIED");
+    const failed = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
+    expect(failed.ok).toBe(false);
+    if (failed.ok) return;
+    expect(failed.error).toContain(
+      "(Could not check which planned creates exist in the project already: gcloud: PERMISSION_DENIED. The installer checks again.)",
+    );
+    expect(failed.error).toContain("Run upgrade first");
   });
 
   it("refuses a stack with pending operations", async () => {
