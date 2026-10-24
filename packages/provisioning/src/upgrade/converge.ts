@@ -364,8 +364,10 @@ export function startConverge(
     // name identities the env contract cannot (stack-contract.ts
     // RemoteMcpIdentity). Resolved here, read-only, and set by the rolls
     // (AppRollHooks.afterMigrations `extraEnv`), so they ride the new
-    // revisions. A failure leaves the vars as the services have them and
-    // warns: only remote MCP depends on them.
+    // revisions. The stack declares the same derived values from the config
+    // the installer writes before `up` (#1082), so neither writer undoes the
+    // other. A failure leaves the vars as the services have them and warns:
+    // only remote MCP depends on them.
     const s = r.step("Resolving the remote-MCP URLs and IAP audience...");
     const resolved = await resolveRemoteMcpIdentity(
       {

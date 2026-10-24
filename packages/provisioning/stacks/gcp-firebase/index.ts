@@ -42,13 +42,16 @@ import {
   adminEnvContract,
   adminMediaVolume,
   adminMediaVolumeTemplate,
+  CLOUD_RUN_IGNORE_CHANGES,
   type CloudRunEnvVar,
   type CloudRunSlug,
   databaseUrls,
   defaultStagingHost,
   GATEWAY_TIMEOUT_SECONDS,
   gatewayEnvContract,
+  REMOTE_MCP_IDENTITY_CONFIG,
   type RuntimeSecret,
+  remoteMcpIdentityStackEnv,
   runtimeSecretBindings,
   secretFileVolumesTemplate,
 } from "../../dist/stack-contract.js";
@@ -552,6 +555,12 @@ function imageRef(service: string): string {
   return digest ? `${base}@${digest}` : `${base}:${cfg.get("image-tag") ?? "latest"}`;
 }
 
+// #1082 — the remote-MCP identity env (stack-contract.ts RemoteMcpIdentity):
+// names generated identities no resource here can take as input, so the CLI
+// resolves them from the live install and writes them as config before `up`.
+// Declared here so the stack is their one owner and `up` keeps them.
+const remoteMcpEnv = remoteMcpIdentityStackEnv(cfg.get(REMOTE_MCP_IDENTITY_CONFIG));
+
 function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
   return new gcp.cloudrunv2.Service(
     `${namePrefix}-${args.serviceName}`,
@@ -600,6 +609,8 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
     },
     {
       ...opts,
+      // #1082 — which tool deployed last; see CLOUD_RUN_IGNORE_CHANGES.
+      ignoreChanges: [...CLOUD_RUN_IGNORE_CHANGES],
       dependsOn: [
         pgAdminUser,
         cmsAdminDb,
@@ -654,7 +665,7 @@ const gatewaySvc = cloudRunService({
   // request passes its rate limits, captcha and honeypot; staging requests
   // pass the staging access gate.
   ingress: "INGRESS_TRAFFIC_ALL",
-  contractEnv: gatewayEnvContract(envContractInputs),
+  contractEnv: [...gatewayEnvContract(envContractInputs), ...remoteMcpEnv.gateway],
 });
 
 const adminSvc = cloudRunService({
@@ -670,11 +681,14 @@ const adminSvc = cloudRunService({
   // Use the input string (known at config time) for the site — the
   // resource output is Output<string | undefined>, which Input<string>
   // rejects.
-  contractEnv: adminEnvContract({
-    ...envContractInputs,
-    firebaseSiteId,
-    gatewayService: gatewaySvc.name,
-  }),
+  contractEnv: [
+    ...adminEnvContract({
+      ...envContractInputs,
+      firebaseSiteId,
+      gatewayService: gatewaySvc.name,
+    }),
+    ...remoteMcpEnv.admin,
+  ],
   mediaVolume: adminMediaVolumeTemplate(adminMediaVolume(project, env)),
 });
 

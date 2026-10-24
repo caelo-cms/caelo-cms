@@ -11,13 +11,15 @@ import { GCP_PUBLIC_BASE_PATHS } from "@caelo-cms/shared";
 import type { GcloudResult } from "./gcloud.js";
 import type { GcloudRunner } from "./gcloud-retry.js";
 import {
-  applyRemoteMcpIdentityEnv,
+  checkRemoteMcpIdentityEnv,
   ensureMcpArmorRule,
+  findRemoteMcpTarget,
   type LiveUrlMap,
   planUrlMapPaths,
   type RemoteMcpTarget,
   resolveGoogleOrgDomain,
   resolveRemoteMcpIdentity,
+  resolveStackRemoteMcpIdentity,
 } from "./remote-mcp.js";
 import {
   GENERAL_RATE_LIMIT_PRIORITY,
@@ -497,30 +499,111 @@ describe("resolveGoogleOrgDomain (#914)", () => {
   });
 });
 
-describe("applyRemoteMcpIdentityEnv", () => {
+const serviceJson = (env: { name: string; value: string }[]) =>
+  ok(JSON.stringify({ spec: { template: { spec: { containers: [{ env }] } } } }));
+const DESCRIBE_JSON = "--region=europe-west1 --project=acme --format=json";
+
+describe("findRemoteMcpTarget (#1082)", () => {
+  it("finds the Pulumi-suffixed services by prefix", async () => {
+    const { run } = fakeGcloud({
+      "run services list --region europe-west1 --project acme --filter metadata.name~^caelo-production-admin":
+        ok("caelo-production-admin-aaa\n"),
+      "run services list --region europe-west1 --project acme --filter metadata.name~^caelo-production-gateway":
+        ok("caelo-production-gateway-bbb\n"),
+    });
+    const { services: _s, ...base } = firebase;
+    expect(await findRemoteMcpTarget(base, { run })).toEqual({ ok: true, target: firebase });
+  });
+
+  it("fails naming the service it cannot find (a fresh install before its first up)", async () => {
+    const { run } = fakeGcloud({ "run services list": ok("") });
+    const { services: _s, ...base } = firebase;
+    const r = await findRemoteMcpTarget(base, { run });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("caelo-production-admin* Cloud Run service");
+  });
+});
+
+describe("resolveStackRemoteMcpIdentity (#1082)", () => {
+  const base = {
+    "projects describe acme": ok("42\n"),
+    "projects get-ancestors acme": ANCESTORS_IN_ORG,
+    "run services describe caelo-production-admin-aaa": ok("https://a-xyz.a.run.app\n"),
+    "run services describe caelo-production-gateway-bbb": ok("https://g-xyz.a.run.app\n"),
+  };
+
+  it("is the live identity when the organisation is readable", async () => {
+    const { run } = fakeGcloud({ ...base, "organizations describe 123456": ok("acme.com\n") });
+    const r = await resolveStackRemoteMcpIdentity(firebase, { run });
+    expect(r.ok && r.identity.googleOrgDomain).toBe("acme.com");
+    expect(r.ok && r.orgDomainError).toBeUndefined();
+  });
+
+  it("carries the admin's live organisation domain over when it cannot be read now", async () => {
+    // The stack owns the var: leaving it out of the config would remove it
+    // on the next `up`, where a gcloud roll leaves it as it is.
+    const { run } = fakeGcloud({
+      ...base,
+      "organizations describe 123456": fail("PERMISSION_DENIED"),
+      [`run services describe caelo-production-admin-aaa ${DESCRIBE_JSON}`]: serviceJson([
+        { name: "CAELO_GOOGLE_ORG_DOMAIN", value: "acme.com" },
+      ]),
+    });
+    const r = await resolveStackRemoteMcpIdentity(firebase, { run });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.identity.googleOrgDomain).toBe("acme.com");
+    expect(r.orgDomainError).toContain("Organization Viewer");
+  });
+
+  it("sets no domain when neither the organisation nor the admin has one", async () => {
+    const { run } = fakeGcloud({
+      ...base,
+      "organizations describe 123456": fail("PERMISSION_DENIED"),
+      [`run services describe caelo-production-admin-aaa ${DESCRIBE_JSON}`]: serviceJson([]),
+    });
+    const r = await resolveStackRemoteMcpIdentity(firebase, { run });
+    expect(r.ok && r.identity.googleOrgDomain).toBeUndefined();
+  });
+});
+
+describe("checkRemoteMcpIdentityEnv (#1082)", () => {
   const identity = {
     adminUrl: "https://a.run.app",
     mcpPublicUrl: "https://g.run.app",
     iapAudience: "/projects/42/locations/europe-west1/services/caelo-production-admin-aaa",
   };
-  const serviceJson = (env: { name: string; value: string }[]) =>
-    ok(JSON.stringify({ spec: { template: { spec: { containers: [{ env }] } } } }));
+  const full = remoteMcpIdentityEnv(identity);
+  const plain = (env: ReturnType<typeof remoteMcpIdentityEnv>["admin"]) =>
+    env.map((e) => ({ name: e.name, value: "value" in e ? e.value : "" }));
 
-  it("updates only a service whose vars differ", async () => {
+  it("reports no drift when the services carry the vars, and never updates a service", async () => {
     const { run, calls } = fakeGcloud({
-      "run services describe caelo-production-admin-aaa": serviceJson([
-        { name: "CAELO_IAP_AUDIENCE", value: identity.iapAudience },
-        { name: "CAELO_MCP_PUBLIC_URL", value: identity.mcpPublicUrl },
-        { name: "CAELO_ADMIN_URL", value: identity.adminUrl },
-      ]),
-      "run services describe caelo-production-gateway-bbb": serviceJson([]),
-      "run services update caelo-production-gateway-bbb": ok(),
+      [`run services describe caelo-production-admin-aaa ${DESCRIBE_JSON}`]: serviceJson(
+        plain(full.admin),
+      ),
+      [`run services describe caelo-production-gateway-bbb ${DESCRIBE_JSON}`]: serviceJson(
+        plain(full.gateway),
+      ),
     });
-    const r = await applyRemoteMcpIdentityEnv(firebase, identity, { run });
-    expect(r.ok).toBe(true);
-    expect(calls.filter((c) => c.startsWith("run services update"))).toEqual([
-      "run services update caelo-production-gateway-bbb --region=europe-west1 --project=acme --update-env-vars=CAELO_ADMIN_URL=https://a.run.app,CAELO_MCP_PUBLIC_URL=https://g.run.app --quiet",
+    const r = await checkRemoteMcpIdentityEnv(firebase, identity, { run });
+    expect(r).toEqual({ ok: true, drift: { admin: [], gateway: [] } });
+    expect(calls.some((c) => c.startsWith("run services update"))).toBe(false);
+  });
+
+  it("names what a service lacks", async () => {
+    const { run, calls } = fakeGcloud({
+      [`run services describe caelo-production-admin-aaa ${DESCRIBE_JSON}`]: serviceJson(
+        plain(full.admin),
+      ),
+      [`run services describe caelo-production-gateway-bbb ${DESCRIBE_JSON}`]: serviceJson([]),
+    });
+    const r = await checkRemoteMcpIdentityEnv(firebase, identity, { run });
+    expect(r.ok && r.drift.gateway.map((c) => c.name)).toEqual([
+      "CAELO_ADMIN_URL",
+      "CAELO_MCP_PUBLIC_URL",
     ]);
+    expect(calls.some((c) => c.startsWith("run services update"))).toBe(false);
   });
 });
 

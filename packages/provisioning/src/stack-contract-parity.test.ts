@@ -15,6 +15,7 @@ import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  CLOUD_RUN_IGNORE_CHANGES,
   type GcpProvider,
   type IamInvariant,
   runtimeSecretBindings,
@@ -131,9 +132,33 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
   });
 
   it("builds the admin + gateway env from the shared contracts", () => {
-    expect(src).toMatch(/serviceName: "admin",[\s\S]*?contractEnv: adminEnvContract\(/);
-    expect(src).toMatch(/serviceName: "gateway",[\s\S]*?contractEnv: gatewayEnvContract\(/);
+    expect(src).toMatch(
+      /serviceName: "admin",[\s\S]*?contractEnv: \[\s*\.\.\.adminEnvContract\([\s\S]*?\.\.\.remoteMcpEnv\.admin,?\s*\]/,
+    );
+    expect(src).toMatch(
+      /serviceName: "gateway",[\s\S]*?contractEnv: \[\s*\.\.\.gatewayEnvContract\([\s\S]*?\.\.\.remoteMcpEnv\.gateway,?\s*\]/,
+    );
     expect(src).toContain("envs: [...args.contractEnv],");
+  });
+
+  it("#1082 — declares the remote-MCP identity env from the config the CLI writes", () => {
+    // The stack is the vars' one owner: `pulumi up` keeps what the CLI used
+    // to add with gcloud after every `up` (and every `up` removed again).
+    expect(src).toContain(
+      "const remoteMcpEnv = remoteMcpIdentityStackEnv(cfg.get(REMOTE_MCP_IDENTITY_CONFIG));",
+    );
+    expect(src.match(/remoteMcpEnv\.(admin|gateway)/g)?.sort()).toEqual([
+      "remoteMcpEnv.admin",
+      "remoteMcpEnv.gateway",
+    ]);
+  });
+
+  it("#1082 — leaves client / clientVersion (who deployed last) to gcloud on both services", () => {
+    expect(src.match(/new gcp\.cloudrunv2\.Service\(/g)).toHaveLength(1);
+    expect(src).toMatch(
+      /new gcp\.cloudrunv2\.Service\([\s\S]*?\.\.\.opts,\s*\/\/[^\n]*\n\s*ignoreChanges: \[\.\.\.CLOUD_RUN_IGNORE_CHANGES\],/,
+    );
+    expect(CLOUD_RUN_IGNORE_CHANGES).toEqual(["client", "clientVersion"]);
   });
 
   it("mounts the media bucket on the admin, and only there, from the contract upgrade applies", () => {
@@ -166,7 +191,7 @@ describe.each(["gcp", "gcp-firebase"] as const)("%s stack ↔ upgrade parity", (
 
   it("#806 — gives the gateway the contract's request timeout upgrade applies", () => {
     expect(src).toMatch(
-      /serviceName: "gateway",[\s\S]*?timeout: `\$\{GATEWAY_TIMEOUT_SECONDS\}s`,[\s\S]*?contractEnv: gatewayEnvContract\(/,
+      /serviceName: "gateway",[\s\S]*?timeout: `\$\{GATEWAY_TIMEOUT_SECONDS\}s`,[\s\S]*?contractEnv: \[\s*\.\.\.gatewayEnvContract\(/,
     );
   });
 

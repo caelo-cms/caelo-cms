@@ -16,6 +16,7 @@ import { confirm, isCancel, log, note } from "@clack/prompts";
 import { bold, red } from "kleur/colors";
 import { adoptionCandidates, existingCandidates } from "./adopt-existing.js";
 import { checkGcloudAuth, gcloud } from "./gcloud.js";
+import { GCP_STACK_ENV } from "./gcp-names.js";
 import {
   adoptStateBackend,
   currentMetadata,
@@ -33,7 +34,13 @@ import { installIapAllowlist } from "./operator-access.js";
 import { ensureOpsBackend } from "./ops-backend.js";
 import { writePlanFile } from "./preview-plan.js";
 import { provisionerServiceAccountEmail } from "./provisioner-identity.js";
+import {
+  findRemoteMcpTarget,
+  type RemoteMcpTarget,
+  resolveStackRemoteMcpIdentity,
+} from "./remote-mcp.js";
 import { selfCommand } from "./self-command.js";
+import type { RemoteMcpIdentity } from "./stack-contract.js";
 import { attachInstall } from "./state-attach.js";
 import {
   gcsBackendRecord,
@@ -192,6 +199,14 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
           iapAllowlist: installIapAllowlist(meta.ownerEmail),
           imageDigests,
         },
+        resolveRemoteMcpIdentity: () =>
+          resolveRemoteMcpIdentityForPreview({
+            provider,
+            projectId,
+            region,
+            env: GCP_STACK_ENV,
+            domain: meta.domain,
+          }),
       }),
       report: clackReporter(),
       resolve: (record) =>
@@ -322,4 +337,21 @@ export function adcNote(run: SyncGcloud): string | null {
   const r = run(["auth", "application-default", "print-access-token"]);
   if (r.ok) return null;
   return "No Application Default Credentials on this machine. upgrade, status and backup don't need them; re-running the installer or `state migrate` does: gcloud auth application-default login";
+}
+
+/**
+ * #1082 — the remote-MCP identity a preview gives the stack, read from the
+ * live install exactly as the installer reads it before `up`
+ * (remote-mcp.ts resolveStackRemoteMcpIdentity). Unreadable: null, with a
+ * warning — the stack's recorded config then stands, and the preview shows
+ * any difference from what the services carry.
+ */
+async function resolveRemoteMcpIdentityForPreview(
+  base: Omit<RemoteMcpTarget, "services">,
+): Promise<RemoteMcpIdentity | null> {
+  const found = await findRemoteMcpTarget(base);
+  const resolved = found.ok ? await resolveStackRemoteMcpIdentity(found.target) : found;
+  if (resolved.ok) return resolved.identity;
+  log.warn(`Could not read the remote-MCP URLs and IAP audience: ${resolved.error}`);
+  return null;
 }

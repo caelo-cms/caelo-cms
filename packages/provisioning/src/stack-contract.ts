@@ -34,6 +34,7 @@
  * Pure module — the stacks import it from `dist/`.
  */
 
+import { z } from "zod";
 import type { SupportedProvider } from "./adapter.js";
 import {
   auditJobResource,
@@ -642,12 +643,21 @@ export function operatorOAuthClientSecretResource(projectId: string, env: string
  * its own name; the gateway's public URL is its own URL; the admin's URL is
  * a service created after the gateway), and on `gcp` the audience is the
  * numeric id of a backend service created after the admin. A resource
- * cannot take its own (or a later resource's) output as input. So the CLI
- * reads the live identities after deploy and applies these vars with gcloud
- * — the wizard after every `pulumi up`, `upgrade` after every roll
- * (remote-mcp.ts `ensureRemoteMcpIdentityEnv`). A roll that does not set
- * them leaves them as they are (planEnvUpdate never removes a var the
- * contract does not own).
+ * cannot take its own (or a later resource's) output as input.
+ *
+ * So the CLI reads the live identities and hands them to the stack as
+ * config ({@link REMOTE_MCP_IDENTITY_CONFIG}, the way the image digests are
+ * pinned), and the stacks declare the vars from it
+ * ({@link remoteMcpIdentityStackEnv}): the stack is their one owner, and a
+ * `pulumi up` keeps them (#1082 — before, the CLI set them with gcloud
+ * after every `up`, every `up` removed them again, and `state migrate`'s
+ * preview could never come back clean). The installer resolves them before
+ * every `up` of a deployed install, and on a fresh one after the first `up`
+ * followed by a second (wizards/gcp.ts); `state migrate`'s preview resolves
+ * them the same way (state-pulumi.ts). `upgrade`, which does not run
+ * Pulumi, applies the same derived values with its gcloud roll (like the
+ * rest of the env contract); a roll that does not set them leaves them as
+ * they are (planEnvUpdate never removes a var the contract does not own).
  *
  * #914 adds two the admin's Google sign-in needs: its own URL (the
  * self-check opens it signed out) and the project's Google organisation
@@ -751,6 +761,97 @@ export function remoteMcpIdentityEnv(
     ],
   };
 }
+
+/**
+ * #1082 — stack config key (`caelo-<provider>:remoteMcpIdentity`) carrying
+ * the {@link RemoteMcpIdentity} as JSON. Written by the CLI before `up`,
+ * read by the stacks ({@link remoteMcpIdentityStackEnv}).
+ */
+export const REMOTE_MCP_IDENTITY_CONFIG = "remoteMcpIdentity";
+
+const remoteMcpIdentitySchema = z
+  .object({
+    adminUrl: z.string().regex(/^https:\/\/[^\s/]+$/),
+    mcpPublicUrl: z.string().regex(/^https:\/\/[^\s/]+$/),
+    iapAudience: z.string().regex(/^\/projects\/\d+\/[^\s]+$/),
+    googleOrgDomain: z
+      .string()
+      .regex(/^([a-z0-9.-]+\.[a-z]{2,}|none)$/)
+      .optional(),
+  })
+  .strict();
+
+/** {@link RemoteMcpIdentity} as the value of {@link REMOTE_MCP_IDENTITY_CONFIG}. */
+export function serializeRemoteMcpIdentity(id: RemoteMcpIdentity): string {
+  return JSON.stringify(remoteMcpIdentitySchema.parse(id));
+}
+
+/**
+ * Parse the {@link REMOTE_MCP_IDENTITY_CONFIG} value; null when unset (a
+ * fresh install before its first `up`).
+ *
+ * @throws Error naming the key when the value is not a valid identity — a
+ *   hand-edited or corrupt config must stop the `up`, not silently drop
+ *   the vars.
+ */
+export function parseRemoteMcpIdentityConfig(raw: string | undefined): RemoteMcpIdentity | null {
+  if (raw === undefined || raw === "") return null;
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      `stack config ${REMOTE_MCP_IDENTITY_CONFIG} is not JSON; delete the key and re-run the installer, which writes it again from the live install`,
+    );
+  }
+  const parsed = remoteMcpIdentitySchema.safeParse(json);
+  if (!parsed.success) {
+    throw new Error(
+      `stack config ${REMOTE_MCP_IDENTITY_CONFIG} is not a remote-MCP identity (${parsed.error.issues.map((i) => i.path.join(".") || i.message).join(", ")}); delete the key and re-run the installer, which writes it again from the live install`,
+    );
+  }
+  return parsed.data;
+}
+
+/**
+ * The remote-MCP identity env each Cloud Run service declares in the stacks:
+ * {@link remoteMcpIdentityEnv} of the configured identity, nothing while the
+ * config is unset.
+ */
+export function remoteMcpIdentityStackEnv(
+  raw: string | undefined,
+): Record<CloudRunSlug, CloudRunEnvVar[]> {
+  const id = parseRemoteMcpIdentityConfig(raw);
+  return id ? remoteMcpIdentityEnv(id) : { admin: [], gateway: [] };
+}
+
+/** Whether two identities would give the services the same env. */
+export function sameRemoteMcpIdentity(
+  a: RemoteMcpIdentity | null,
+  b: RemoteMcpIdentity | null,
+): boolean {
+  if (a === null || b === null) return a === b;
+  return (
+    a.adminUrl === b.adminUrl &&
+    a.mcpPublicUrl === b.mcpPublicUrl &&
+    a.iapAudience === b.iapAudience &&
+    a.googleOrgDomain === b.googleOrgDomain
+  );
+}
+
+/**
+ * #1082 — Pulumi options both stacks give the Cloud Run v2 services.
+ * `client` / `clientVersion` only record which tool deployed the service
+ * last: `gcloud` sets them on every `upgrade` roll, and the provider
+ * (terraform-provider-google `google_cloud_run_v2_service`: `Optional`, not
+ * `Computed`) reads them back on refresh, so the stack, which leaves them
+ * unset, would plan an update on every service `upgrade` ever rolled. They
+ * affect nothing that runs. `ignoreChanges` is Pulumi's way to leave a
+ * property to another writer. (The env itself needs no such option: the
+ * provider holds `containers.env` as a set, so gcloud's reordering is no
+ * diff — only a missing or different var is.)
+ */
+export const CLOUD_RUN_IGNORE_CHANGES: readonly string[] = ["client", "clientVersion"];
 
 /**
  * The env of the admin service.
