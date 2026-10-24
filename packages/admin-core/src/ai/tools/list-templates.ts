@@ -8,31 +8,37 @@
 import { z } from "zod";
 import { makeListReadTool } from "./_make-read-tool.js";
 
+interface TemplateRow {
+  id: string;
+  slug: string;
+  displayName: string;
+  layoutId: string;
+  blocks: { name: string }[];
+}
+
 const listTemplatesInput = z.object({ includeDeleted: z.boolean().default(false) }).strict();
 
-export const listTemplatesTool = makeListReadTool<
-  z.infer<typeof listTemplatesInput>,
-  { id: string; slug: string; displayName: string; layoutId: string }
->({
+export const listTemplatesTool = makeListReadTool<z.infer<typeof listTemplatesInput>, TemplateRow>({
   name: "list_templates",
   description:
-    "List every template with UUID, slug, display name, and bound layout UUID (TOON rows). " +
+    "List every template with UUID, slug, display name, bound layout UUID, and `pageBlocks` (TOON rows). " +
+    "`pageBlocks` are the blocks a page on that template places modules into — the ONLY valid `blockName` values for build_page and add_module target='page' (usually just `content`). " +
+    "Header / footer / nav are NOT page blocks: they are site chrome on the template's LAYOUT (list_layouts), placed once with add_module target='layout'. " +
     "Standard list params: `filter`, `limit`/`offset`, `full: true`. " +
-    "Use when you need a template UUID that isn't in the `# Templates → layouts` context block. DO NOT ask the operator to paste a UUID.",
+    "Use when you need a template UUID or its blocks before building a page. DO NOT ask the operator to paste a UUID.",
   opName: "templates.list",
   input: listTemplatesInput,
   label: "templates",
-  rows: (value) =>
-    (
-      value as {
-        templates: { id: string; slug: string; displayName: string; layoutId: string }[];
-      }
-    ).templates,
+  rows: (value) => (value as { templates: TemplateRow[] }).templates,
   columns: [
     { key: "slug", value: (t) => t.slug },
     { key: "id", value: (t) => t.id },
     { key: "displayName", value: (t) => t.displayName },
     { key: "layoutId", value: (t) => t.layoutId },
+    // #1076 — without this column the only block list the AI had read was
+    // the layout's `header|content|footer`, and it placed a header via
+    // build_page. See _block-roles.ts.
+    { key: "pageBlocks", value: (t) => t.blocks.map((b) => b.name).join("|") },
   ],
   emptyMessage:
     "No templates on this site yet. Call create_template (pass layoutId from list_layouts) to create one.",

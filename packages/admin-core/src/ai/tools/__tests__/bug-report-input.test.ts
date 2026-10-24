@@ -7,12 +7,17 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { bugReportTool, bugReportToolInput, describeBugForwarding } from "../bug-report.js";
+import {
+  bugReportTool,
+  bugReportToolInput,
+  describeBugForwarding,
+  isPlaceholderValue,
+} from "../bug-report.js";
 
 const base = {
   title: "translate_variant fails",
   whatHappened: "Called translate_variant and it threw.",
-  expected: "A translated variant.",
+  expected: "A translated variant row.",
 };
 
 describe("bug_report input", () => {
@@ -61,5 +66,70 @@ describe("bug_report forwarding wording (#902)", () => {
     expect(bugReportTool.description).toContain(
       "never claim the Caelo team was notified unless the result says it was sent",
     );
+  });
+});
+
+describe("bug_report refuses placeholder reports (#1010)", () => {
+  it("refuses the exact report a real-AI run filed", () => {
+    const parsed = bugReportToolInput.safeParse({
+      title: "placeholder",
+      whatHappened: "n/a",
+      expected: "n/a",
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    const paths = parsed.error.issues.map((i) => i.path.join("."));
+    expect(paths).toContain("whatHappened");
+    expect(paths).toContain("expected");
+    for (const issue of parsed.error.issues) {
+      expect(issue.message).toContain("concrete observation");
+      expect(issue.message).toContain("search for that tool");
+    }
+  });
+
+  it("refuses a placeholder title that is long enough to pass the length floor", () => {
+    const parsed = bugReportToolInput.safeParse({ ...base, title: "Placeholder" });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues[0]?.path).toEqual(["title"]);
+    expect(parsed.error.issues[0]?.message).toContain("is a placeholder");
+  });
+
+  it.each(["placeholder", "N/A.", "[TBD]", "todo", "test", "none", "-", "...", "lorem ipsum"])(
+    "treats %p as a placeholder",
+    (value) => {
+      expect(isPlaceholderValue(value)).toBe(true);
+    },
+  );
+
+  it("refuses a placeholder in an optional field and says to leave it out", () => {
+    const parsed = bugReportToolInput.safeParse({ ...base, evidence: "n/a" });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues[0]?.path).toEqual(["evidence"]);
+    expect(parsed.error.issues[0]?.message).toContain("leave evidence out");
+  });
+
+  it("accepts a real report that mentions a placeholder word inside a sentence", () => {
+    const parsed = bugReportToolInput.safeParse({
+      title: "build_page leaves placeholder text",
+      whatHappened: "build_page wrote the literal value 'placeholder' into hero_title.",
+      expected: "The hero_title I passed.",
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("the JSON schema the model sees carries the same length floor", () => {
+    const props = bugReportTool.inputSchema.properties as Record<string, { minLength?: number }>;
+    expect(props.title?.minLength).toBe(10);
+    expect(props.whatHappened?.minLength).toBe(10);
+    expect(props.expected?.minLength).toBe(10);
+  });
+
+  it("the description says when a report is warranted", () => {
+    expect(bugReportTool.description).toContain(
+      "Report only after a concrete failure you observed",
+    );
+    expect(bugReportTool.description).toContain("search for it instead");
   });
 });

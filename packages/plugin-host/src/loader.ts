@@ -76,6 +76,7 @@ import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import {
   inPhase,
   PluginLoadError,
+  PluginNotInReleaseError,
   startRuntimeHeartbeat,
   stopRuntimeHeartbeat,
 } from "./runtime-health.js";
@@ -670,6 +671,17 @@ async function loadActivatedPluginOnce(
     }
   }
   const pluginDir = resolvePath(bootOpts.pluginsRoot, slug);
+  // #1052 — a tier-1 row with no built-in directory: a plugin Caelo no
+  // longer ships. Recorded as the plugin's problem with the Owner's next
+  // step, never filed as a blocking core bug from every instance.
+  if (!existsSync(pluginDir)) {
+    const notInRelease = new PluginNotInReleaseError(slug, pluginDir);
+    await reportLoadFailure(
+      { infra: bootOpts.infra, systemActorId: bootOpts.systemActorId, slug },
+      new PluginLoadError("verify", notInRelease),
+    );
+    return { loaded: false, reason: notInRelease.message };
+  }
   let rawManifest: unknown;
   try {
     rawManifest = JSON.parse(readFileSync(resolvePath(pluginDir, "manifest.json"), "utf8"));
@@ -1141,6 +1153,32 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
         new Error(`plugin "${def.slug}" onActivate failed`, { cause: e }),
       );
     }
+  }
+
+  // #1077 — this instance now holds the plugin's verified definition, so
+  // its publisher can (re)publish the plugin's visitor projection. A
+  // publisher that does not have a plugin leaves its section alone, so
+  // without this mark a reload or a new version would keep serving what
+  // the previous definition published until the plugin's next write. The
+  // flag makes the adapter publish right after this commit, as the outbox
+  // triggers do (cms_admin migration 0281).
+  try {
+    await opts.infra.adapter.withAdminTransaction(
+      {
+        actorId: opts.systemActorId,
+        actorKind: "system",
+        requestId: `plugin-projection-${def.slug}`,
+      },
+      async (tx) => {
+        await tx.execute(
+          sql`INSERT INTO public_projection_outbox (section) VALUES (${`plugin:${pluginId}`})`,
+        );
+        await tx.execute(sql`SELECT set_config('caelo.projection_dirty', 'on', true)`);
+      },
+    );
+  } catch (e) {
+    loadedPlugins.unload(def.slug);
+    throw e;
   }
 
   // Register tools + workers + prompt-context renderers.

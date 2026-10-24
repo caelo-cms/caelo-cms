@@ -72,8 +72,21 @@ export interface ProjectionDatabases {
  */
 export type VisitorProjection = Readonly<Record<string, ReadonlyArray<string>>>;
 
-/** Plugin slug → its declared projection (only plugins that declare one). */
-export type VisitorProjectionDeclarations = ReadonlyMap<string, VisitorProjection>;
+/**
+ * What this publisher knows of each plugin's projection, by slug:
+ *
+ *   - a projection: the plugin runs here (or ships in this image) and
+ *     declares it;
+ *   - `null`: the plugin runs here and declares none, so nothing of it may
+ *     stay published (a version that dropped its declaration);
+ *   - no entry: this publisher does not have the plugin — an instance that
+ *     has not loaded it yet, whose load failed, or the migration job facing
+ *     a runtime-installed plugin. Its section is left exactly as published
+ *     and its outbox rows stay for a publisher that has it (#1077: treating
+ *     "not loaded here" as "declares nothing" withdrew the section another
+ *     publisher had just written, and the gateway answered 503).
+ */
+export type VisitorProjectionDeclarations = ReadonlyMap<string, VisitorProjection | null>;
 
 /** A section of the projection, as the outbox and `published_projection_sections` name it. */
 export type ProjectionSection =
@@ -332,8 +345,11 @@ async function readSnapshot(
   for (const plugin of active) {
     const section: ProjectionSection = `plugin:${plugin.id}`;
     if (!want.has(section) && !want.has("plugins")) continue;
+    // Not ours to judge: another publisher has this plugin (see
+    // VisitorProjectionDeclarations).
+    if (!declarations.has(plugin.slug)) continue;
     const projection = declarations.get(plugin.slug);
-    if (!projection) {
+    if (!projection || Object.keys(projection).length === 0) {
       // A version that dropped its declaration: withdraw what an earlier
       // one published, so the public side keeps nothing undeclared.
       snap.withdrawnPlugins.push(plugin.id);
@@ -508,7 +524,7 @@ export async function publishPublicProjection(
 ): Promise<PublishReport> {
   return dbs.readAdmin(async (tx) => {
     await tx.execute(PROJECTION_LOCK);
-    const outbox = await readOutbox(tx);
+    const outbox = await readOutbox(tx, await foreignPluginSections(tx, declarations));
     const commentIds = opts.comments ? new Set<string>() : outbox.commentIds;
     const snap = await readSnapshot(
       tx,
@@ -541,11 +557,38 @@ interface OutboxBatch {
 
 const OUTBOX_BATCH = 5000;
 
-async function readOutbox(tx: ProjectionTx): Promise<OutboxBatch> {
+/**
+ * The sections of active plugins this publisher does not have (see
+ * {@link VisitorProjectionDeclarations}). Their outbox rows are left for a
+ * publisher that has the plugin: consuming one here would drop the change
+ * it marks, since this publisher does not republish that section.
+ */
+async function foreignPluginSections(
+  tx: ProjectionTx,
+  declarations: VisitorProjectionDeclarations,
+): Promise<ProjectionSection[]> {
+  return (await readActivePlugins(tx))
+    .filter((p) => !declarations.has(p.slug))
+    .map((p) => `plugin:${p.id}` as const);
+}
+
+async function readOutbox(
+  tx: ProjectionTx,
+  foreign: readonly ProjectionSection[],
+): Promise<OutboxBatch> {
+  // Filtered in SQL, not after the LIMIT: rows left for another publisher
+  // must never crowd this publisher's own rows out of the batch.
+  const ours =
+    foreign.length === 0
+      ? sql`true`
+      : sql`section NOT IN (${sql.join(
+          foreign.map((s) => sql`${s}`),
+          sql`, `,
+        )})`;
   const found = (await rows(
     tx,
     sql`SELECT id::text AS id, section, entity_id::text AS entity_id
-        FROM public_projection_outbox ORDER BY id LIMIT ${OUTBOX_BATCH}`,
+        FROM public_projection_outbox WHERE ${ours} ORDER BY id LIMIT ${OUTBOX_BATCH}`,
   )) as unknown as { id: string; section: string; entity_id: string | null }[];
   const sections = new Set<ProjectionSection>();
   const commentIds = new Set<string>();
@@ -590,7 +633,7 @@ export async function drainPublicProjection(
 ): Promise<PublishReport> {
   return dbs.readAdmin(async (tx) => {
     await tx.execute(PROJECTION_LOCK);
-    const outbox = await readOutbox(tx);
+    const outbox = await readOutbox(tx, await foreignPluginSections(tx, declarations));
     if (outbox.count === 0) {
       return { sections: [], comments: 0, drained: 0, pendingPlugins: [] };
     }

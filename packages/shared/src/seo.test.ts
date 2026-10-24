@@ -208,6 +208,56 @@ describe("injectSeoIntoHead", () => {
     expect(out).toContain("<title>PageTitle</title>\n</HEAD>");
     expect(out).toContain("<svg><title>IconTitle</title></svg>");
   });
+
+  // #1017 — the block goes early, before the inline theme CSS.
+  const THEME = '<style data-source="theme">body{}</style><link rel="stylesheet" href="/a.css">';
+
+  it("goes after charset and viewport, before the first style and stylesheet", () => {
+    const html = `<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">${THEME}<title>Old</title></head><body><svg><title>Icon</title></svg></body></html>`;
+    const out = injectSeoIntoHead(html, "<title>Page</title>");
+    expect(out).toStartWith(
+      '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">\n<title>Page</title>\n<style',
+    );
+    expect(out.indexOf("<title>Page</title>")).toBeLessThan(out.indexOf("<style"));
+    expect(out.indexOf("<title>Page</title>")).toBeLessThan(out.indexOf('<link rel="stylesheet"'));
+    expect(out).not.toContain("Old");
+    expect(out).toContain("<svg><title>Icon</title></svg>");
+  });
+
+  it("goes after the charset when there is no viewport", () => {
+    const out = injectSeoIntoHead(
+      `<html><head><meta charset="utf-8">${THEME}</head><body></body></html>`,
+      "<title>Page</title>",
+    );
+    expect(out).toStartWith('<html><head><meta charset="utf-8">\n<title>Page</title>\n<style');
+  });
+
+  it("goes right after <head> when there is neither", () => {
+    const out = injectSeoIntoHead(
+      `<html><head lang="en">${THEME}</head><body></body></html>`,
+      "<title>Page</title>",
+    );
+    expect(out).toStartWith('<html><head lang="en">\n<title>Page</title>\n<style');
+  });
+
+  it("ignores a viewport-looking meta in the body", () => {
+    const out = injectSeoIntoHead(
+      '<html><head><meta charset="utf-8"></head><body><meta name="viewport"></body></html>',
+      "<title>Page</title>",
+    );
+    expect(out).toStartWith('<html><head><meta charset="utf-8">\n<title>Page</title>');
+  });
+
+  it("ignores meta tags inside a comment or a script string", () => {
+    const script = `<script>const sample = '<meta name="viewport" content="width=device-width">';</script>`;
+    const comment = '<!-- <meta name="viewport" content="x"> -->';
+    const html = `<html><head><meta charset="utf-8">${comment}${script}${THEME}</head><body></body></html>`;
+    const out = injectSeoIntoHead(html, "<title>Page</title>");
+    expect(out).toStartWith('<html><head><meta charset="utf-8">\n<title>Page</title>\n<!--');
+    // Comment and script come through byte-for-byte, nothing inserted in them.
+    expect(out).toContain(comment);
+    expect(out).toContain(script);
+  });
 });
 
 describe("schemas", () => {

@@ -177,6 +177,7 @@ export async function upgradeGcpInstallOutcome(
     },
     images.images,
     run,
+    { secretVolumes: true },
   );
   if (!planned.ok) {
     sPre.failed("Pre-flight failed");

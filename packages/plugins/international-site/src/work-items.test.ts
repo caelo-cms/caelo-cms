@@ -159,22 +159,20 @@ function world() {
   };
 
   let aiCalls = 0;
-  /** `answer`: the text `ctx.ai.complete` returns (chrome); `object`:
-   *  the structured answer `ctx.ai.generateObject` returns (pages). */
-  const ctx = (opts: { delegated: boolean; answer?: string; object?: unknown }) =>
+  const schemas: Record<string, unknown>[] = [];
+  /** `object`: the structured answer `ctx.ai.generateObject` returns (pages
+   *  and chrome — #992: no translation parses free text any more). */
+  const ctx = (opts: { delegated: boolean; object?: unknown }) =>
     ({
       invocation: { origin: "chat", actorId: "a", aiDelegated: opts.delegated },
       adminQuery: q,
       cms,
       ai: {
         complete: async () => {
-          aiCalls += 1;
-          if (opts.delegated)
-            throw new Error("AiDelegated: test ctx — the plugin must not call ai");
-          if (opts.answer === undefined) throw new Error("test ctx has no scripted answer");
-          return { text: opts.answer, inputTokens: 1, outputTokens: 1 };
+          throw new Error("test ctx: translations must use ctx.ai.generateObject, not complete");
         },
-        generateObject: async () => {
+        generateObject: async (o: { jsonSchema: Record<string, unknown> }) => {
+          schemas.push(o.jsonSchema);
           aiCalls += 1;
           if (opts.delegated)
             throw new Error("AiDelegated: test ctx — the plugin must not call ai");
@@ -192,6 +190,7 @@ function world() {
     writes,
     ctx,
     aiCalls: () => aiCalls,
+    schemas,
   };
 }
 
@@ -462,11 +461,13 @@ describe("delegated chrome", () => {
 
   it("the install-side translate_chrome still runs on the install's AI", async () => {
     const w = world();
-    const r = await op("translate_chrome")(
-      w.ctx({ delegated: false, answer: JSON.stringify(CHROME_ANSWER) }),
-      { localeCode: "de" },
-    );
+    const r = await op("translate_chrome")(w.ctx({ delegated: false, object: CHROME_ANSWER }), {
+      localeCode: "de",
+    });
     expect(w.aiCalls()).toBe(1);
+    // #992 — the call is constrained to exactly the offered target and path.
+    expect(JSON.stringify(w.schemas[0])).toContain('"enum":["c0"]');
+    expect(JSON.stringify(w.schemas[0])).toContain('"required":["nav[0].label"]');
     expect(r).toEqual({ translated: 1, upToDate: 0, skippedIndependent: 0, nothingToTranslate: 0 });
   });
 

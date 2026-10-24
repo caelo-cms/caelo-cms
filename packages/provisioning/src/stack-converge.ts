@@ -1023,14 +1023,51 @@ export function planSecretFiles(
   const changes: string[] = [];
   // #914 — mounts an older contract made and nothing reads any more
   // (RETIRED_SECRET_FILES) go in the same revision that mounts their
-  // replacement. `--remove-secrets=<dir>/<file>` drops the file, and the
-  // mount with it when it was the volume's only file (gcloud
-  // `_PruneManagedVolumeMapping`). Repeated `--remove-secrets` /
-  // `--update-secrets` flags merge (gcloud map flags use UpdateAction).
+  // replacement. `--remove-secrets=<dir>/<file>` drops the file and its
+  // mount, but NOT the volume: gcloud's `_PruneManagedVolumeMapping` only
+  // deletes the mount, so the volume stayed behind naming a secret the
+  // upgrade deletes after the roll, and the next revision could not deploy
+  // (#954, searchviu). The plan therefore removes that volume itself, plus
+  // any volume of a retired secret that an earlier roll already orphaned.
+  // Repeated map/list flags merge (gcloud UpdateAction); removing a volume
+  // or mount that is already gone is a no-op in gcloud.
+  const removedVolumes = new Set<string>();
+  const removeVolume = (name: string, why: string) => {
+    if (removedVolumes.has(name)) return;
+    removedVolumes.add(name);
+    flags.push(`--remove-volume=${name}`);
+    changes.push(`volume ${name}: removed (${why})`);
+  };
   for (const old of retired) {
-    if (!live.mounts.some((m) => m.mountPath === old.mountDir)) continue;
-    flags.push(`--remove-secrets=${old.mountDir}/${old.fileName}`);
-    changes.push(`secret file ${old.mountDir}/${old.fileName}: removed (${old.why})`);
+    const retiredId = gcpSecretId(env, old.secret);
+    const mount = live.mounts.find((m) => m.mountPath === old.mountDir);
+    if (mount) {
+      const volume = live.volumes.find((v) => v.name === mount.name);
+      const volumeSecret = bareSecretId(volume?.secret?.secretName);
+      if (volume && volumeSecret !== retiredId) {
+        return {
+          ok: false,
+          error: `the service mounts volume "${mount.name}" (secret ${volumeSecret || "(none)"}) at ${old.mountDir}, where only the retired ${retiredId} was ever mounted. Check what it is; remove it (gcloud run services update <service> --remove-volume-mount=${old.mountDir} --remove-volume=${mount.name}) only if nothing needs it, then re-run upgrade.`,
+        };
+      }
+      flags.push(`--remove-secrets=${old.mountDir}/${old.fileName}`);
+      flags.push(`--remove-volume-mount=${old.mountDir}`);
+      changes.push(`secret file ${old.mountDir}/${old.fileName}: removed (${old.why})`);
+      if (volume) removeVolume(volume.name, old.why);
+    }
+    const mounted = new Set(
+      live.mounts.filter((m) => m.mountPath !== old.mountDir).map((m) => m.name),
+    );
+    for (const v of live.volumes) {
+      if (bareSecretId(v.secret?.secretName) !== retiredId) continue;
+      if (mounted.has(v.name)) {
+        return {
+          ok: false,
+          error: `the service mounts volume "${v.name}" of the retired secret ${retiredId} somewhere other than ${old.mountDir}. Nothing reads that secret any more and upgrade deletes it after the roll; remove the mount and the volume (gcloud run services update <service> --remove-volume-mount=<path> --remove-volume=${v.name}), then re-run upgrade.`,
+        };
+      }
+      removeVolume(v.name, `${old.why}; nothing mounts it`);
+    }
   }
   for (const file of files) {
     const secretId = gcpSecretId(env, file.secret);
@@ -1050,6 +1087,50 @@ export function planSecretFiles(
     changes.push(`secret file ${secretFilePath(file)}: (none) → ${secretId}:${file.version}`);
   }
   return { ok: true, flags, changes };
+}
+
+/**
+ * #954 — the secret volumes of a service whose secret no longer exists in
+ * Secret Manager. Cloud Run refuses every new revision of such a service,
+ * so the upgrade names each one with the exact fix before it starts a roll
+ * instead of failing mid-roll. Volumes in `removing` (the roll's own
+ * `--remove-volume` flags) are skipped: the roll takes them off anyway.
+ * A secret gcloud cannot read for another reason is reported too — the
+ * roll's outcome would be unknowable.
+ */
+export async function findVolumesWithMissingSecrets(
+  live: LiveVolumes,
+  where: { readonly serviceName: string; readonly projectId: string; readonly region: string },
+  removing: readonly string[],
+  run: GcloudRunner,
+): Promise<string[]> {
+  const problems: string[] = [];
+  for (const v of live.volumes) {
+    const secretId = bareSecretId(v.secret?.secretName);
+    if (!secretId || removing.includes(v.name)) continue;
+    const r = await run([
+      "secrets",
+      "describe",
+      secretId,
+      `--project=${where.projectId}`,
+      "--format=value(name)",
+    ]);
+    if (r.ok) continue;
+    const mounts = live.mounts.filter((m) => m.name === v.name).map((m) => m.mountPath);
+    const fix = [
+      `gcloud run services update ${where.serviceName}`,
+      `--region=${where.region}`,
+      `--project=${where.projectId}`,
+      ...mounts.map((p) => `--remove-volume-mount=${p}`),
+      `--remove-volume=${v.name}`,
+    ].join(" ");
+    problems.push(
+      RESOURCE_MISSING.test(r.stderr)
+        ? `${where.serviceName} has volume "${v.name}"${mounts.length > 0 ? ` (mounted at ${mounts.join(", ")})` : " (not mounted)"} pointing at secret ${secretId}, which no longer exists, so Cloud Run would refuse the next revision. If nothing reads it, remove it: ${fix} — then re-run upgrade.`
+        : `could not check secret ${secretId} behind volume "${v.name}" of ${where.serviceName}: ${r.stderr.trim() || `gcloud exited ${r.exitCode}`}`,
+    );
+  }
+  return problems;
 }
 
 /** The request timeout of a described service, in seconds (null: Cloud Run's default, 300). */

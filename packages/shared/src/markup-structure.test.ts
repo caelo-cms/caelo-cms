@@ -9,6 +9,7 @@ import {
   NEAR_MATCH_THRESHOLD,
   outermostPatterns,
   parseMarkup,
+  repeatedSiblingPatterns,
   shapeSimilarity,
   shapeTree,
   stripMustache,
@@ -265,5 +266,25 @@ describe("bounds", () => {
   it("does not descend into svg icons", () => {
     const root = parseMarkup('<span class="i"><svg><g><path/><path/></g></svg></span>')[0];
     expect(root?.children[0]?.children).toEqual([]);
+  });
+});
+
+describe("repeatedSiblingPatterns (#1068)", () => {
+  const card = '<article class="tc"><h3 class="n">x</h3><dl><dt>a</dt><dd>b</dd></dl></article>';
+
+  it("finds 3+ sibling copies at any depth, once, and ignores pairs and prose", () => {
+    const found = repeatedSiblingPatterns(
+      parseMarkup(`<div class="grid">${card.repeat(4)}</div>${card.repeat(2)}`),
+    );
+    expect(found.map((f) => [f.node.tag, f.count])).toEqual([["article", 4]]);
+    expect(repeatedSiblingPatterns(parseMarkup(card.repeat(2)))).toEqual([]);
+    expect(repeatedSiblingPatterns(parseMarkup("<ul><li><p>a</p></li></ul>".repeat(5)))).toEqual(
+      [],
+    );
+  });
+
+  it("skips nested module roots: their own module owns them", () => {
+    const tagged = card.replace("<article", '<article data-caelo-module-id="m"');
+    expect(repeatedSiblingPatterns(parseMarkup(tagged.repeat(3)))).toEqual([]);
   });
 });

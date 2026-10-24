@@ -383,11 +383,21 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
     if (!r.ok) {
       return { ok: false, content: `modules.update_many failed: ${describeError(r.error)}` };
     }
-    const v = r.value as { updated: number; notFound: number; failed: string[] };
-    const failMsg = v.failed.length > 0 ? `, failed on: ${v.failed.join(", ")}` : "";
+    const v = r.value as {
+      updated: number;
+      notFound: number;
+      failed: { moduleId: string; message: string }[];
+    };
+    // #1038 — each failed item with its reason, so the AI can fix exactly
+    // that item (re-read after a draft conflict, correct a field) instead
+    // of guessing from a bare id list.
+    const failLines = v.failed.map((f) => `\n- ${f.moduleId}: ${f.message}`).join("");
+    const failMsg = v.failed.length > 0 ? `, failed=${v.failed.length}` : "";
     return {
       ok: true,
-      content: `Updated ${v.updated} modules (notFound=${v.notFound}${failMsg}).`,
+      content: `Updated ${v.updated} modules (notFound=${v.notFound}${failMsg}).${
+        v.failed.length > 0 ? `\nNot applied:${failLines}` : ""
+      }`,
     };
   },
 };

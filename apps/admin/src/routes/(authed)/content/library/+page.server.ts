@@ -5,7 +5,7 @@
  *
  * Loads every active content_instance with placementCount + module slug
  * so the operator can see at a glance which instances are shared
- * across pages (placementCount >= 2) vs orphan (zero placements) vs
+ * across pages (placementCount >= 2) vs orphan (no placements and no nested parent) vs
  * one-off (exactly one placement). Filtering happens client-side
  * because the dataset is small in practice (instances ~= placements,
  * bounded by the number of pages times average modules-per-page).
@@ -33,6 +33,7 @@ export const load: PageServerLoad = async ({ locals }) => {
             values: Record<string, unknown>;
             version: number;
             placementCount: number;
+            nestedParentCount: number;
             createdAt: string;
             updatedAt: string;
           }[];

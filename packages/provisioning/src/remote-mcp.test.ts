@@ -284,6 +284,8 @@ describe("planSecretFiles / planRequestTimeout (upgrade)", () => {
     );
     expect(plan.ok && plan.flags).toEqual([
       "--remove-secrets=/secrets/mcp-oauth-client/client.json",
+      "--remove-volume-mount=/secrets/mcp-oauth-client",
+      "--remove-volume=mcp-oauth-client",
       "--update-secrets=/secrets/operator-oauth-client/client.json=caelo-production-operator-oauth-client:latest",
     ]);
     // Converged: nothing left to remove or mount.

@@ -9,7 +9,9 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  classifyTestExit,
   computeOpCoveragePct,
+  describeTestRun,
   evaluateTier,
   loadOpCoverageSet,
   loadThresholds,
@@ -122,5 +124,50 @@ describe("loadThresholds", () => {
         target: { unitLinePct: 90, integrationOpPct: 80 },
       }),
     ).toThrow();
+  });
+});
+
+describe("classifyTestExit (#984)", () => {
+  it("a clean exit passes; a nonzero exit below 128 is a test failure", () => {
+    expect(classifyTestExit({ exitCode: 0, signalCode: null })).toEqual({ kind: "passed" });
+    expect(classifyTestExit({ exitCode: 1, signalCode: null })).toEqual({
+      kind: "failed",
+      exitCode: 1,
+    });
+  });
+
+  it("a process killed by a signal is a Bun crash, not a test failure, and stays nonzero", () => {
+    // spawnSync reports a signal death as exitCode null — what used to
+    // collapse into a bare `exit 1`.
+    const crashed = classifyTestExit({ exitCode: null, signalCode: "SIGSEGV" });
+    expect(crashed).toEqual({ kind: "crashed", signal: "SIGSEGV", exitCode: 139 });
+    expect(describeTestRun("unit", crashed)).toBe(
+      "[coverage] unit run: Bun crashed (signal SIGSEGV) — not a test failure; rerun the job (exit 139).",
+    );
+    expect(classifyTestExit({ exitCode: null, signalCode: "SIGABRT" })).toMatchObject({
+      kind: "crashed",
+      signal: "SIGABRT",
+    });
+  });
+
+  it("an exit of 128 + n (signal death behind a shell) names the signal", () => {
+    expect(classifyTestExit({ exitCode: 139, signalCode: null })).toEqual({
+      kind: "crashed",
+      signal: "SIGSEGV",
+      exitCode: 139,
+    });
+  });
+
+  it("no exit code and no signal still fails loudly as a crash", () => {
+    const r = classifyTestExit({ exitCode: null, signalCode: null });
+    expect(r.kind).toBe("crashed");
+    expect(r.kind !== "passed" && r.exitCode).toBe(1);
+  });
+
+  it("a test failure keeps its own message", () => {
+    expect(describeTestRun("integration", { kind: "failed", exitCode: 1 })).toBe(
+      "[coverage] integration test run failed (exit 1) — fix failing tests first.",
+    );
+    expect(describeTestRun("unit", { kind: "passed" })).toBeNull();
   });
 });

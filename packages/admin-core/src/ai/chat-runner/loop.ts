@@ -32,7 +32,12 @@ import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { mcpAgentOpFields } from "../../ops/chat/mcp-agent.js";
 
-import type { AIProvider, ChatMessageInput, ProviderStepSummary } from "../provider.js";
+import type {
+  AIProvider,
+  ChatMessageInput,
+  ProviderResponseMessage,
+  ProviderStepSummary,
+} from "../provider.js";
 import { capWrapUpNoticeText, shouldWrapUpAtCap } from "../tools/subagent-budget.js";
 import { buildApprovalPreview } from "./approval.js";
 import {
@@ -801,7 +806,7 @@ export async function* runToolLoop(
       // Never spend a click on a proposal that cannot apply (see
       // approval-preflight.ts): decline SDK-natively so the model fixes it
       // and the operator never sees a card for it.
-      const rejected: ApprovalRequest[] = [];
+      const rejected: { req: ApprovalRequest; reason: string }[] = [];
       const askable: ApprovalRequest[] = [];
       for (const req of run.approvalRequests) {
         let bad = preflightGatedCall(tools, registry, req.name, req.arguments);
@@ -823,27 +828,39 @@ export async function* runToolLoop(
             chatSessionId,
             tool: req.name,
           });
-          history.messages.push({
-            role: "tool",
-            content: "",
-            sdkMessages: [
-              {
-                role: "tool",
-                content: [
-                  {
-                    type: "tool-approval-response",
-                    approvalId: req.approvalId,
-                    approved: false,
-                    reason: bad.reason,
-                  },
-                ],
-              },
-            ],
-          });
-          rejected.push(req);
+          rejected.push({ req, reason: bad.reason });
         } else {
           askable.push(req);
         }
+      }
+      // #1073 — every rejection of this step is answered in ONE tool message,
+      // with the result the SDK itself writes for a denied call
+      // (`execution-denied`). One message per rejection used to be appended
+      // as approval responses, and the SDK collects approval responses from
+      // the LAST message only: with two rejections the first stayed
+      // unanswered and the next run failed (AI_MissingToolResultsError).
+      // Persisted, so a resume of the cards still asked replays it too.
+      if (rejected.length > 0) {
+        const denials: ProviderResponseMessage[] = [
+          {
+            role: "tool",
+            content: rejected.map(({ req, reason }) => ({
+              type: "tool-result",
+              toolCallId: req.toolCallId,
+              toolName: req.name,
+              output: { type: "execution-denied", reason },
+            })),
+          },
+        ];
+        const content = rejected.map(({ req }) => `[${req.name} not proposed]`).join(" ");
+        await execute(registry, adapter, humanCtx, "chat.append_message", {
+          chatSessionId,
+          role: "tool",
+          content,
+          responseMessages: denials,
+          source: "chat-runner approval preflight (rejected gated calls)",
+        });
+        history.messages.push({ role: "tool", content, sdkMessages: denials });
       }
       // Everything failed preflight → nothing to ask; resume so the model
       // can correct itself on the next run.
@@ -907,24 +924,22 @@ export async function* runToolLoop(
       // production resume leaves behind — an e2e-only in-memory approval
       // made an interrupted resume replay differently from production.
       if (autoApprove) {
-        for (const req of askable) {
-          await persistApprovalResponse(registry, adapter, humanCtx, chatSessionId, {
-            approvalId: req.approvalId,
-            approved: true,
-          });
-          history.messages.push({
-            role: "tool",
-            content: "",
-            sdkMessages: [
-              {
-                role: "tool",
-                content: [
-                  { type: "tool-approval-response", approvalId: req.approvalId, approved: true },
-                ],
-              },
-            ],
-          });
-        }
+        // #1074 — all of the step's approvals in ONE tool message, the shape
+        // the production resume writes (the SDK reads approval responses
+        // from the last message only).
+        const decisions = askable.map((req) => ({ approvalId: req.approvalId, approved: true }));
+        const approvals = await persistApprovalResponse(
+          registry,
+          adapter,
+          humanCtx,
+          chatSessionId,
+          decisions,
+        );
+        history.messages.push({
+          role: "tool",
+          content: approvals.content,
+          sdkMessages: approvals.messages,
+        });
         console.error("[chat-runner] auto-approved (e2e)", {
           chatSessionId,
           approvals: run.approvalRequests.map((r) => r.name),

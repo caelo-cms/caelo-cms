@@ -443,6 +443,12 @@ export const SERVICE_SECRET_FILES: Readonly<Record<CloudRunSlug, readonly Secret
 
 /** A secret file an older contract mounted; upgrade unmounts it in the roll. */
 export interface RetiredSecretFile {
+  /**
+   * The contract name of the secret the file was mounted from (gcp id
+   * `caelo-<env>-<secret>`). Names the volume behind the mount — and a
+   * volume left behind without one (#954) — so the roll removes it too.
+   */
+  readonly secret: string;
   readonly mountDir: string;
   readonly fileName: string;
   readonly why: string;
@@ -450,13 +456,15 @@ export interface RetiredSecretFile {
 
 /**
  * Secret files older contracts mounted that nothing reads any more, per
- * service. The roll removes each mount (`--remove-secrets=<path>`) in the
- * same revision that mounts its replacement.
+ * service. The roll removes each mount (`--remove-secrets=<path>`) and the
+ * volume of that secret (`--remove-volume=<name>`) in the same revision that
+ * mounts its replacement (stack-converge.ts planSecretFiles).
  */
 export const RETIRED_SECRET_FILES: Readonly<Record<CloudRunSlug, readonly RetiredSecretFile[]>> = {
   admin: [],
   gateway: [
     {
+      secret: "mcp-oauth-client",
       mountDir: "/secrets/mcp-oauth-client",
       fileName: "client.json",
       why: "the Google sign-in client is mounted from operator-oauth-client now (#914)",

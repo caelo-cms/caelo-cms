@@ -191,16 +191,31 @@ describe("links to pages an import run has not built yet", () => {
             importPageId: homeImportId,
           },
           modules: [
+            // #1028 — a nested entry whose only link sits in rich text.
+            {
+              ref: "faq_box",
+              displayName: `${PFX} faq box`,
+              description: "Hint box.",
+              kind: "content",
+              html: '<div class="box">{{{box_html}}}</div>',
+              fields: [{ name: "box_html", kind: "richtext", label: "Box" }],
+              content: {
+                source: "inline",
+                values: { box_html: `<p>See the <a href="/${PFX}-pricing#faq">FAQ</a>.</p>` },
+              },
+            },
             pageBody(
               "home",
-              `<section><a class="nav" href="/${PFX}-pricing#plans">Pricing</a>{{{intro_html}}}<a href="{{cta_href}}">Go</a></section>`,
+              `<section><a class="nav" href="/${PFX}-pricing#plans">Pricing</a>{{{intro_html}}}<a href="{{cta_href}}">Go</a>{{#boxes}}{{/boxes}}</section>`,
               [
                 { name: "intro_html", kind: "richtext", label: "Intro" },
                 { name: "cta_href", kind: "url", label: "CTA" },
+                { name: "boxes", kind: "module-list", label: "Boxes" },
               ],
               {
                 intro_html: `<p>Meet the <a href="${SOURCE}/${PFX}-team">team</a>.</p>`,
                 cta_href: `/${PFX}-pricing`,
+                boxes: [{ $ref: "faq_box" }],
               },
             ),
           ],
@@ -220,6 +235,7 @@ describe("links to pages an import run has not built yet", () => {
     );
     expect((await recorded()).map((r) => [r.entity_kind, r.value, r.status])).toEqual([
       ["content_instance", `/${PFX}-pricing`, "pending"],
+      ["content_instance", `/${PFX}-pricing#faq`, "pending"],
       ["content_instance", `${SOURCE}/${PFX}-team`, "pending"],
       ["module", `/${PFX}-pricing#plans`, "pending"],
       ["structured_set", `/${PFX}-pricing`, "pending"],
@@ -296,7 +312,7 @@ describe("links to pages an import run has not built yet", () => {
       resolved: number;
       unresolved: { value: string; entityKind: string; location: string }[];
     }>("imports.resolve_links", { runId }, ai);
-    expect(out.resolved).toBe(3);
+    expect(out.resolved).toBe(4);
     expect(out.unresolved.map((u) => [u.entityKind, u.value])).toEqual([
       ["content_instance", `${SOURCE}/${PFX}-team`],
     ]);
@@ -318,6 +334,20 @@ describe("links to pages an import run has not built yet", () => {
           tx`SELECT id::text AS id FROM content_instances WHERE module_id = ${homeModule.id}::uuid`,
       )
     )[0] as { id: string };
+    // #1028 — the nested rich-text entry is finalised like the placement.
+    const boxInstance = (
+      await asSystem(
+        (tx) =>
+          tx`SELECT ci.id::text AS id FROM content_instances ci JOIN modules m ON m.id = ci.module_id
+              WHERE m.display_name = ${`${PFX} faq box`}`,
+      )
+    )[0] as { id: string };
+    const boxValues = (
+      (await branchState("content_instance_snapshots", "content_instance_id", boxInstance.id)) as {
+        values: { box_html: string };
+      }
+    ).values;
+    expect(boxValues.box_html).toContain(`href="caelo:page/${pricingPageId}#faq"`);
     const values = (
       (await branchState("content_instance_snapshots", "content_instance_id", instance.id)) as {
         values: { cta_href: string; intro_html: string };
@@ -349,6 +379,7 @@ describe("links to pages an import run has not built yet", () => {
 
     expect((await recorded()).map((r) => [r.entity_kind, r.value, r.status])).toEqual([
       ["content_instance", `/${PFX}-pricing`, "resolved"],
+      ["content_instance", `/${PFX}-pricing#faq`, "resolved"],
       ["content_instance", `${SOURCE}/${PFX}-team`, "unresolved"],
       ["module", `/${PFX}-pricing#plans`, "resolved"],
       ["structured_set", `/${PFX}-pricing`, "resolved"],
@@ -363,7 +394,7 @@ describe("links to pages an import run has not built yet", () => {
       };
     }>("imports.get_run_report", { runId }, ai);
     expect(report.internalLinks.pending).toBe(0);
-    expect(report.internalLinks.resolved).toBe(3);
+    expect(report.internalLinks.resolved).toBe(4);
     expect(report.internalLinks.unresolved.map((u) => u.value)).toEqual([`${SOURCE}/${PFX}-team`]);
     expect(report.internalLinks.nextStep).toContain("resolve_import_links");
   });

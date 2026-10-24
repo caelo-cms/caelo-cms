@@ -430,3 +430,38 @@ describe("createStructureCheck", () => {
     expect(result.errors[0]?.message).toContain("modules.list failed: boom");
   });
 });
+
+describe("structure/repeated-items (#1068)", () => {
+  const card = (name: string) =>
+    `<article class="tc"><h3 class="tc__name">${name}</h3><dl class="tc__facts"><dt>Price</dt><dd>${name.length} EUR</dd></dl></article>`;
+  const cards = (n: number) => Array.from({ length: n }, (_, i) => card(`Tool ${i}`)).join("");
+
+  it("three copies side by side in one field on one page warn", () => {
+    for (const body of [cards(3), `<div class="grid">${cards(5)}</div>`]) {
+      const findings = structureFindings([page(1, "/compare", text(body))], MODULES, noLayouts);
+      expect(findings.map((f) => [f.ruleId, f.severity, f.pageId])).toEqual([
+        ["structure/repeated-items", "warning", id(1)],
+      ]);
+      expect(findings[0]?.message).toContain("`article.tc` is written out");
+      expect(findings[0]?.message).toContain('"Text"');
+      expect(findings[0]?.fix?.hint).toContain("module-list");
+      expect(() => findingSchema.parse(findings[0])).not.toThrow();
+    }
+  });
+
+  it("two copies stay silent", () => {
+    expect(structureFindings([page(1, "/pair", text(cards(2)))], MODULES, noLayouts)).toEqual([]);
+  });
+
+  it("a page whose copies already block as repeated markup gets only that finding", () => {
+    const findings = structureFindings(
+      [page(1, "/a", text(cards(3))), page(2, "/b", text(cards(3)))],
+      MODULES,
+      noLayouts,
+    );
+    expect(findings.map((f) => f.ruleId)).toEqual([
+      "structure/repeated-markup",
+      "structure/repeated-markup",
+    ]);
+  });
+});

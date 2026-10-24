@@ -244,6 +244,60 @@ export function outermostPatterns(roots: readonly MarkupNode[]): FoundPattern[] 
   return found;
 }
 
+/**
+ * Copies of one pattern side by side at which free markup reads as a
+ * hand-written list (#1068): three cards in a row are a list of items, two
+ * may still be a deliberate pair (a before/after, a two-column split).
+ */
+export const MIN_SIBLING_REPEATS = 3;
+
+/** A pattern repeated side by side in one piece of markup. */
+export interface RepeatedSiblings {
+  /** The first copy. */
+  readonly node: MarkupNode;
+  readonly shape: SubtreeShape;
+  /** How many siblings share its signature. */
+  readonly count: number;
+}
+
+/**
+ * Patterns that repeat {@link MIN_SIBLING_REPEATS}+ times as siblings: the
+ * same component written out once per item (83 tool cards in one richtext
+ * value) instead of a list field rendering one module per item. Roots of
+ * the forest that share a parent are siblings too (the free regions of one
+ * rendered module). A repeated set is reported once and not searched
+ * inside; anything else is searched all the way down. Nested module roots
+ * are skipped: their own module owns them.
+ */
+export function repeatedSiblingPatterns(roots: readonly MarkupNode[]): RepeatedSiblings[] {
+  const shapes = new Map<MarkupNode, SubtreeShape>();
+  for (const r of roots) if (r.moduleId === null) shapeTree(r, shapes);
+  const found: RepeatedSiblings[] = [];
+  const visitSiblings = (siblings: readonly MarkupNode[]) => {
+    const bySig = new Map<string, MarkupNode[]>();
+    for (const n of siblings) {
+      if (n.moduleId !== null) continue;
+      const shape = shapes.get(n);
+      if (!shape || !isPattern(shape)) continue;
+      bySig.set(shape.signature, [...(bySig.get(shape.signature) ?? []), n]);
+    }
+    const reported = new Set<MarkupNode>();
+    for (const copies of bySig.values()) {
+      if (copies.length < MIN_SIBLING_REPEATS) continue;
+      const first = copies[0] as MarkupNode;
+      found.push({ node: first, shape: shapes.get(first) as SubtreeShape, count: copies.length });
+      for (const c of copies) reported.add(c);
+    }
+    for (const n of siblings) {
+      if (n.moduleId === null && !reported.has(n)) visitSiblings(n.children);
+    }
+  };
+  const byParent = new Map<MarkupNode | null, MarkupNode[]>();
+  for (const r of roots) byParent.set(r.parent, [...(byParent.get(r.parent) ?? []), r]);
+  for (const group of byParent.values()) visitSiblings(group);
+  return found;
+}
+
 /** The shape of a whole module template (its first element), or null. */
 export function templateShape(templateHtml: string): SubtreeShape | null {
   const root = parseMarkup(stripMustache(templateHtml))[0];

@@ -45,12 +45,17 @@ const SYSTEM_CTX = {
   requestId: "public-projection",
 };
 
-/** The visitorProjection declarations of every plugin this host loaded. */
+/**
+ * The visitorProjection declaration of every plugin this host loaded —
+ * `null` for one that declares none. A plugin not loaded here has no entry,
+ * so this instance's publishes leave its section to an instance that runs
+ * it (#1077).
+ */
 export function loadedVisitorProjections(): VisitorProjectionDeclarations {
-  const out = new Map<string, Readonly<Record<string, ReadonlyArray<string>>>>();
+  const out = new Map<string, Readonly<Record<string, ReadonlyArray<string>>> | null>();
   for (const p of loadedPlugins.all()) {
     const projection = p.definition.visitorProjection;
-    if (projection && Object.keys(projection).length > 0) out.set(p.slug, projection);
+    out.set(p.slug, projection && Object.keys(projection).length > 0 ? projection : null);
   }
   return out;
 }

@@ -390,8 +390,42 @@ describe("/api/* served from cms_public alone (#635)", () => {
     );
   });
 
+  it("a publisher that does not have the plugin leaves its projection to one that does (#1077)", async () => {
+    // An admin instance that has not loaded the plugin yet (or whose load
+    // failed) drains a change to the plugin registry — here a write to
+    // `plugins` that touches no row, which still marks the section — and a
+    // change to the plugin's own projected rows. It used to read "not
+    // loaded here" as "declares nothing" and withdraw the section another
+    // instance had just published: the gateway then answered 503.
+    await asAdmin(async (tx) => {
+      await tx.unsafe(`UPDATE ${SCHEMA}.settings SET label = 'while-not-loaded-there'`);
+    }, pluginId);
+    await asAdmin(async (tx) => {
+      await tx`UPDATE plugins SET status = status WHERE false`;
+    });
+    const elsewhere = await drainProjectionOnce(adminAdapter, new Map());
+    invalidateGatewaySettings();
+    expect(elsewhere.sections).toContain("plugins");
+    expect(elsewhere.sections).not.toContain(`plugin:${pluginId}`);
+    const kept = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
+    await expectStatus(kept, 200);
+    // What was published stays published, untouched...
+    expect(((await kept.json()) as { data: { label: string } }).data.label).toBe(
+      "changed-by-the-owner",
+    );
+    // ...and the change stays in the outbox for the instance that runs it.
+    await publish();
+    const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
+    expect(((await r.json()) as { data: { label: string } }).data.label).toBe(
+      "while-not-loaded-there",
+    );
+  });
+
   it("a version that drops its declaration withdraws what was published", async () => {
-    await publishProjectionOnce(adminAdapter, { declarations: new Map(), comments: false });
+    await publishProjectionOnce(adminAdapter, {
+      declarations: new Map([[SLUG, null]]),
+      comments: false,
+    });
     try {
       const r = await handleRequest(post(`/api/plugin/${SLUG}/read_setting`, {}));
       await expectStatus(r, 503);

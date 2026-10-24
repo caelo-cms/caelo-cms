@@ -47,6 +47,7 @@
  *     homepage. Once the homepage exists, `/` canonicalises as usual.
  */
 
+import { blankNonMarkup } from "./html-blank.js";
 import {
   findMalformedLinkRefs,
   formatLinkRef,
@@ -419,6 +420,78 @@ function* startTags(html: string): Generator<[number, number]> {
   }
 }
 
+// A whole attribute value that is exactly one placeholder: `{{name}}`,
+// `{{{name}}}`, `{{&name}}`, or a list item `{{.}}` / `{{item}}`.
+const WHOLE_PLACEHOLDER_RE = /^\s*\{\{\{?\s*&?\s*([A-Za-z][A-Za-z0-9_]*|\.)\s*\}?\}\}\s*$/;
+// Section open / close tags, to name the list a `{{.}}` iterates.
+const SECTION_TAG_RE = /\{\{\s*([#^/])\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g;
+
+/**
+ * The fields module HTML puts WHOLE into a link attribute
+ * (`href="{{cta}}"`, `src="{{photo}}"`, `<a href="{{.}}">` inside
+ * `{{#links}}…{{/links}}`), lowercased as the template engine looks them
+ * up. Such a value renders as a link whatever kind the field declares
+ * (`text`), and even when no field declares it at all (the engine puts
+ * every stored value into its view), so link checks and write-time
+ * canonicalisation read it as a URL (#852). A placeholder that is only
+ * part of the value (`href="{{base}}/docs"`, `mailto:{{email}}`) is not:
+ * the value is not a link on its own. `srcset` is a list of candidates,
+ * never one URL, and stays out.
+ *
+ * @example
+ *   urlFieldNamesInHtml('<a href="{{cta_target}}">{{label}}</a>'); // Set { "cta_target" }
+ */
+export function urlFieldNamesInHtml(html: string): Set<string> {
+  const out = new Set<string>();
+  if (!html.includes("{{")) return out;
+  // Commented-out markup and script/style strings are not links: scan a
+  // copy with them blanked (equal length, so offsets match).
+  const markup = blankNonMarkup(html);
+  // Open sections by position, so a `{{.}}` names its innermost list.
+  const sections: { name: string; start: number; end: number }[] = [];
+  const open: { name: string; start: number }[] = [];
+  for (const m of markup.matchAll(SECTION_TAG_RE)) {
+    const name = (m[2] as string).toLowerCase();
+    if (m[1] !== "/") {
+      open.push({ name, start: m.index });
+      continue;
+    }
+    for (let k = open.length - 1; k >= 0; k -= 1) {
+      const o = open[k] as { name: string; start: number };
+      if (o.name !== name) continue;
+      sections.push({ name, start: o.start, end: m.index });
+      open.length = k;
+      break;
+    }
+  }
+  const innermostSection = (at: number): string | null => {
+    let best: { name: string; start: number; end: number } | null = null;
+    for (const s of sections) {
+      if (s.start < at && at < s.end && (best === null || s.start > best.start)) best = s;
+    }
+    return best?.name ?? null;
+  };
+  for (const [start, end] of startTags(markup)) {
+    const tag = markup.slice(start, end);
+    for (const m of tag.matchAll(ATTR_RE)) {
+      const attr = (m[1] as string)
+        .trim()
+        .replace(/\s*=\s*$/, "")
+        .toLowerCase();
+      if (attr === "srcset") continue;
+      const placeholder = WHOLE_PLACEHOLDER_RE.exec(m[2] ?? m[3] ?? "")?.[1];
+      if (placeholder === undefined) continue;
+      if (placeholder !== "." && placeholder.toLowerCase() !== "item") {
+        out.add(placeholder.toLowerCase());
+        continue;
+      }
+      const list = innermostSection(start + m.index);
+      if (list !== null) out.add(list);
+    }
+  }
+  return out;
+}
+
 function canonicaliseTagAttributes(tag: string, run: LinkCanonicaliseRun, where: string): string {
   return tag.replace(ATTR_RE, (whole, prefix: string, dq?: string, sq?: string) => {
     const quote = dq !== undefined ? '"' : "'";
@@ -511,38 +584,60 @@ function canonicaliseFieldValue(
   value: unknown,
   run: LinkCanonicaliseRun,
   where: string,
+  urlNames: ReadonlySet<string> | undefined,
 ): unknown {
   if (field && NESTED_KINDS.has(field.kind)) return value;
-  const asUrl = (field !== undefined && URL_KINDS.has(field.kind)) || isLinkKeyName(name);
+  const asUrl =
+    (field !== undefined && URL_KINDS.has(field.kind)) ||
+    isLinkKeyName(name) ||
+    urlNames?.has(name.toLowerCase()) === true;
   return canonicaliseJsonLinks(value, run, where, asUrl);
 }
 
 /**
  * Canonicalise a content instance's values against its module's fields.
  * Values without a declared field are still scanned (key-name rule +
- * HTML) — a stale value renders nowhere today but may again tomorrow.
+ * HTML): the template engine renders every stored value a placeholder
+ * names, declared or not.
+ *
+ * @param urlNames fields the module HTML puts whole into a link
+ *   attribute ({@link urlFieldNamesInHtml}); their values are URLs
+ *   whatever their declared kind.
  */
 export function canonicaliseContentValues(
   fields: readonly CanonicaliseField[],
   values: Readonly<Record<string, unknown>>,
   run: LinkCanonicaliseRun,
+  urlNames?: ReadonlySet<string>,
 ): Record<string, unknown> {
   const byName = new Map(fields.map((f) => [f.name, f]));
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(values)) {
-    out[k] = canonicaliseFieldValue(byName.get(k), k, v, run, `values.${k}`);
+    out[k] = canonicaliseFieldValue(byName.get(k), k, v, run, `values.${k}`, urlNames);
   }
   return out;
 }
 
-/** Canonicalise every field's `default` (layout chrome content lives there). */
+/**
+ * Canonicalise every field's `default` (layout chrome content lives there).
+ *
+ * @param urlNames as for {@link canonicaliseContentValues}.
+ */
 export function canonicaliseFieldDefaults<F extends CanonicaliseField>(
   fields: readonly F[],
   run: LinkCanonicaliseRun,
+  urlNames?: ReadonlySet<string>,
 ): F[] {
   return fields.map((f) => {
     if (f.default === undefined || f.default === null) return f;
-    const next = canonicaliseFieldValue(f, f.name, f.default, run, `fields.${f.name}.default`);
+    const next = canonicaliseFieldValue(
+      f,
+      f.name,
+      f.default,
+      run,
+      `fields.${f.name}.default`,
+      urlNames,
+    );
     return next === f.default ? f : { ...f, default: next };
   });
 }

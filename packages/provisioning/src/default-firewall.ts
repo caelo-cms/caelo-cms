@@ -30,7 +30,7 @@
  */
 
 import { gcloud as defaultGcloud } from "./gcloud.js";
-import type { GcloudRunner } from "./gcloud-retry.js";
+import { type GcloudRunner, SERVICE_NOT_ENABLED } from "./gcloud-retry.js";
 import {
   ABSENT_DEFAULT_FIREWALL_RULES,
   type AbsentDefaultFirewallRule,
@@ -65,8 +65,10 @@ interface LiveInstance {
  * gcloud's error when Compute Engine is not enabled on the project. Without
  * Compute Engine there is no `default` network, so there is nothing to remove.
  */
-const COMPUTE_DISABLED =
-  /SERVICE_DISABLED|accessNotConfigured|has not been used in project|API \[compute\.googleapis\.com\] not enabled|compute\.googleapis\.com.*(?:disabled|not enabled)/i;
+const COMPUTE_DISABLED = new RegExp(
+  `${SERVICE_NOT_ENABLED.source}|API \\[compute\\.googleapis\\.com\\] not enabled|compute\\.googleapis\\.com.*(?:disabled|not enabled)`,
+  "i",
+);
 
 /** gcloud's stderr when an aggregated list succeeded for only some zones. */
 const PARTIAL_LIST = /did not succeed|unreachable|did not respond|could not fetch/i;

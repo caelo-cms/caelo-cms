@@ -13,7 +13,10 @@
  * - A field-value write: does a text/richtext value carry a component
  *   pattern (a step chain, a comparison table) that now sits in two or
  *   more placements? The second copy is the moment to make it a module.
- *   A one-off on one placement stays silent — that is allowed.
+ *   A one-off on one placement stays silent — that is allowed. One
+ *   exception (#1068): a pattern written out three or more times side by
+ *   side in one value is a list of items as hand-written HTML, on one
+ *   placement too; the hint points at a module-list.
  *
  * Exact structural matches only for field values: near matches are the
  * quality check's job (it sees the whole staged build); here a hint has
@@ -28,12 +31,18 @@ import {
   outermostPatterns,
   parseMarkup,
   patternLabel,
+  repeatedSiblingPatterns,
   type SubtreeShape,
   shapeSimilarity,
   shapeTree,
   stripMustache,
   templateShape,
 } from "@caelo-cms/shared";
+import {
+  hasRepeatCandidates,
+  repeatedValueHints,
+  type ValueInstance,
+} from "./_repeated-value-guard.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 /** A module as the guard compares against it. */
@@ -142,6 +151,7 @@ export function fieldReuseHints(
 ): string[] {
   const found = written.flatMap(valuePatterns);
   if (found.length === 0) return [];
+  const hints: string[] = written.flatMap(repeatedItemHints);
   const templates = new Map<string, CatalogModule>();
   for (const m of catalog) {
     const s = templateShape(m.html);
@@ -155,7 +165,6 @@ export function fieldReuseHints(
       carriers.set(p.shape.signature, list);
     }
   }
-  const hints: string[] = [];
   const seen = new Set<string>();
   for (const p of found) {
     if (seen.has(p.shape.signature)) continue;
@@ -174,6 +183,26 @@ export function fieldReuseHints(
     hints.push(
       `field \`${p.field}\` carries the pattern \`${p.label}\`, which is now free HTML in ${placements} placements (in ${hosts}) — the second copy is the moment to make it a module: mint ONE module from this markup with semantic fields (text-list / module-list for the repeating items), place it wherever the copies are with their values, and remove the free HTML; repeated free markup blocks Publish live in the structure quality check`,
     );
+  }
+  return hints;
+}
+
+/**
+ * Hints for patterns a written value repeats side by side
+ * ({@link repeatedSiblingPatterns}): the items of a list kept as copies.
+ */
+export function repeatedItemHints(values: Readonly<Record<string, unknown>>): string[] {
+  const hints: string[] = [];
+  for (const [field, value] of Object.entries(values)) {
+    const strings = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
+    for (const s of strings) {
+      if (typeof s !== "string" || !s.includes("class=")) continue;
+      for (const r of repeatedSiblingPatterns(parseMarkup(s))) {
+        hints.push(
+          `field \`${field}\` writes the pattern \`${patternLabel(r.node)}\` out ${r.count} times side by side — that is a list of items as hand-written HTML, and each copy will be edited on its own and drift: mint ONE module for the item with semantic fields, give the host module a module-list field (text-list / link-list for plain items) with one entry per item, and remove the copies from this value; the structure quality check warns about it`,
+        );
+      }
+    }
   }
   return hints;
 }
@@ -210,6 +239,16 @@ export async function moduleMarkupFindings(
   return moduleReuseHints(html, await loadCatalog(ctx, toolCtx), excludeModuleIds);
 }
 
+/**
+ * The write's targets for the #1062 repeated-value hint: which modules'
+ * instances to compare against (resolved by `content_instances.list_module_peers`).
+ */
+export interface RepeatScope {
+  readonly moduleIds?: readonly string[];
+  readonly contentInstanceIds?: readonly string[];
+  readonly placements?: readonly { pageId: string; blockName: string; position: number }[];
+}
+
 /** Suffix for a field-value write ("" when there is nothing to say). */
 export async function fieldMarkupSuffix(
   ctx: ExecutionContext,
@@ -227,19 +266,61 @@ export async function fieldMarkupSuffix(
 }
 
 /**
+ * Suffix for the #1062 repeated-value hint ("" when there is nothing to
+ * say). Reads only the instances of the modules the write touched, and
+ * only when the write carries a value worth comparing.
+ */
+export async function repeatedValueSuffix(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  written: readonly Readonly<Record<string, unknown>>[],
+  scope: RepeatScope,
+): Promise<string> {
+  const targets =
+    (scope.moduleIds?.length ?? 0) +
+    (scope.contentInstanceIds?.length ?? 0) +
+    (scope.placements?.length ?? 0);
+  if (targets === 0 || !hasRepeatCandidates(written)) return "";
+  const res = await execute(
+    toolCtx.registry,
+    toolCtx.adapter,
+    ctx,
+    "content_instances.list_module_peers",
+    {
+      moduleIds: [...new Set(scope.moduleIds ?? [])],
+      contentInstanceIds: [...new Set(scope.contentInstanceIds ?? [])],
+      placements: scope.placements ?? [],
+    },
+  );
+  // A failed read only loses the hint; the write it comments on succeeded.
+  if (!res.ok) return "";
+  const hints = repeatedValueHints(
+    written,
+    (res.value as { instances: ValueInstance[] }).instances,
+  );
+  return hints.length === 0 ? "" : ` 🎯 shared-content: ${hints.join(". ")}.`;
+}
+
+/**
  * Wrap a field-value-writing tool so a successful write carries the field
- * markup hints. `pick` names the value objects the input writes.
+ * markup hints and (with `scope`) the repeated-value hint. `pick` names
+ * the value objects the input writes; `scope` names the modules /
+ * instances / placements it writes to.
  */
 export function withFieldMarkupGuard<T>(
   tool: ToolDefinitionWithHandler<T>,
   pick: (input: T) => readonly Readonly<Record<string, unknown>>[],
+  scope?: (input: T) => RepeatScope,
 ): ToolDefinitionWithHandler<T> {
   return {
     ...tool,
     handler: async (ctx, input, toolCtx) => {
       const result = await tool.handler(ctx, input, toolCtx);
       if (!result.ok) return result;
-      const suffix = await fieldMarkupSuffix(ctx, toolCtx, pick(input));
+      const written = pick(input);
+      const suffix =
+        (await fieldMarkupSuffix(ctx, toolCtx, written)) +
+        (scope ? await repeatedValueSuffix(ctx, toolCtx, written, scope(input)) : "");
       return suffix ? { ...result, content: `${result.content}${suffix}` } : result;
     },
   };

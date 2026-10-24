@@ -44,6 +44,7 @@ import {
   linkIssueSeverity,
   type PendingLinkTarget,
   type SiteLinkIndex,
+  urlFieldNamesInHtml,
 } from "@caelo-cms/shared";
 import type { LinkTargets } from "./link-targets.js";
 import {
@@ -100,6 +101,29 @@ export interface ReferenceScanInput {
 const NESTED_MAX_DEPTH = 8;
 const NESTED_KINDS = new Set(["module", "module-list"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// A primitive placeholder (`{{name}}`, `{{{name}}}`, `{{&name}}`): what
+// makes the template engine render a stored value, declared or not.
+const PLACEHOLDER_RE = /\{\{\{?\s*&?\s*([A-Za-z][A-Za-z0-9_]*)\s*\}?\}\}/g;
+
+/** How one module's HTML uses its values (see {@link moduleValueUse}). */
+interface ModuleValueUse {
+  /** Lowercased names put whole into a link attribute (#852). */
+  readonly urlNames: ReadonlySet<string>;
+  /** Lowercased names any primitive placeholder renders. */
+  readonly rendered: ReadonlySet<string>;
+}
+
+/**
+ * Which values a module's HTML renders, and which of them as a link. The
+ * engine puts every stored value into its view (lowercased) and
+ * `{{name}}` renders it whether or not a field declares it, so an
+ * undeclared key in `href="{{name}}"` ships a link like a declared one.
+ */
+function moduleValueUse(html: string): ModuleValueUse {
+  const rendered = new Set<string>();
+  for (const m of html.matchAll(PLACEHOLDER_RE)) rendered.add((m[1] as string).toLowerCase());
+  return { urlNames: urlFieldNamesInHtml(html), rendered };
+}
 
 interface PlaceAcc {
   readonly place: ReferencePlace;
@@ -128,8 +152,10 @@ export type ReferenceSlot =
       readonly kind: "field-value";
       readonly field: SourceField;
       readonly value: unknown;
+      /** The module HTML puts this value whole into a link attribute. */
+      readonly asUrl?: boolean;
     }
-  | { readonly kind: "field-default"; readonly field: SourceField };
+  | { readonly kind: "field-default"; readonly field: SourceField; readonly asUrl?: boolean };
 
 /** Run the check. Issues are sorted: blocks first, then by place. */
 export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssue[] {
@@ -161,6 +187,15 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     for (const p of pages) acc.pages.add(p);
     addSlot(key, { kind: "html", value: m.html, where: "html" }, "html");
   };
+  const valueUse = new Map<string, ModuleValueUse>();
+  const valueUseOf = (moduleId: string, html: string): ModuleValueUse => {
+    let use = valueUse.get(moduleId);
+    if (!use) {
+      use = moduleValueUse(html);
+      valueUse.set(moduleId, use);
+    }
+    return use;
+  };
   const moduleDefault = (moduleId: string, field: SourceField, pages: Iterable<string>) => {
     const m = model.modules.get(moduleId);
     if (!m || field.default === undefined || field.default === null) return;
@@ -172,7 +207,8 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
       field: field.name,
     });
     for (const p of pages) acc.pages.add(p);
-    addSlot(key, { kind: "field-default", field }, "default");
+    const asUrl = valueUseOf(m.id, m.html).urlNames.has(field.name.toLowerCase());
+    addSlot(key, { kind: "field-default", field, asUrl }, "default");
   };
 
   type Unit = {
@@ -202,8 +238,17 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
         synced: false,
       });
     }
-    for (const field of m.fields) {
+    const use = valueUseOf(m.id, m.html);
+    // Stored keys no field declares still render where a placeholder
+    // names them (the engine's view holds every value), so they are
+    // checked like a `text` field; keys nothing renders ship nowhere.
+    const declared = new Set(m.fields.map((f) => f.name));
+    const undeclared: SourceField[] = Object.keys(inst?.values ?? {})
+      .filter((k) => !declared.has(k) && use.rendered.has(k.toLowerCase()))
+      .map((name) => ({ name, kind: "text" }));
+    for (const field of [...m.fields, ...undeclared]) {
       if (NESTED_KINDS.has(field.kind)) continue;
+      const asUrl = use.urlNames.has(field.name.toLowerCase());
       const has = inst !== undefined && Object.hasOwn(inst.values, field.name);
       const value = has ? inst.values[field.name] : field.default;
       if (has && inst) {
@@ -218,7 +263,7 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
         });
         for (const p of u.pages) acc.pages.add(p);
         if (u.synced) acc.synced = true;
-        addSlot(key, { kind: "field-value", field, value }, "value");
+        addSlot(key, { kind: "field-value", field, value, asUrl }, "value");
       } else {
         moduleDefault(m.id, field, u.pages);
       }
@@ -518,12 +563,21 @@ export function scanSlot(slot: ReferenceSlot, lookup: LinkTargetLookup): SlotFin
       break;
     case "field-value":
       where = `values.${slot.field.name}`;
-      canonicaliseContentValues([slot.field], { [slot.field.name]: slot.value }, run);
+      canonicaliseContentValues(
+        [slot.field],
+        { [slot.field.name]: slot.value },
+        run,
+        slot.asUrl ? new Set([slot.field.name.toLowerCase()]) : undefined,
+      );
       refs = collectLinkRefsDeep(slot.value).map((ref) => ({ ref, where }));
       break;
     case "field-default":
       where = `fields.${slot.field.name}.default`;
-      canonicaliseFieldDefaults([slot.field], run);
+      canonicaliseFieldDefaults(
+        [slot.field],
+        run,
+        slot.asUrl ? new Set([slot.field.name.toLowerCase()]) : undefined,
+      );
       refs = collectLinkRefsDeep(slot.field.default).map((ref) => ({ ref, where }));
       break;
   }

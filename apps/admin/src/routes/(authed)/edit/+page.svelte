@@ -24,6 +24,7 @@
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
   import { onMount } from "svelte";
+  import { pinChatParam, unpinChatParam } from "#lib/components/edit/chat-pin.js";
   import CrossChatBanner from "#lib/components/edit/CrossChatBanner.svelte";
   import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
   import PluginPreview from "#lib/components/edit/PluginPreview.svelte";
@@ -200,7 +201,7 @@
 
   function commitPageSwitch(value: string): void {
     activePageId = value;
-    const url = new URL(window.location.href);
+    const url = pageSwitchUrl();
     url.searchParams.set("page", value);
     void goto(url.toString(), { reset: false });
   }
@@ -249,6 +250,11 @@
         imageReplace = msg;
         imagePickerOpen = true;
       } else if (msg.kind === "caelo:ready") {
+        // #965 — the document the post-save reload asked for has rendered.
+        if (awaitingRender !== null) {
+          renderedSave = awaitingRender;
+          awaitingRender = null;
+        }
         // Link-target suggestions for the preview's link editor (#918).
         postToPreview(iframe?.contentWindow, {
           kind: "caelo:page-paths",
@@ -268,7 +274,7 @@
         // initial load.
         if (msg.pageId !== activePageId) {
           activePageId = msg.pageId;
-          const url = new URL(window.location.href);
+          const url = pageSwitchUrl();
           url.searchParams.set("page", msg.pageId);
           void goto(url.toString(), { replace: true, reset: false });
         }
@@ -328,12 +334,49 @@
   // edge collapses bursts into one final reload showing the
   // post-burst state.
   let reloadTimer: ReturnType<typeof setTimeout> | null = null;
-  function scheduleReload(): void {
+  // #965 — which in-place save the preview shows. `saveSeq` counts saves;
+  // the reload scheduled after save n carries n (`reloadFor`), becomes
+  // `awaitingRender` when it is posted, and the next `caelo:ready` from the
+  // reloaded document moves it to `renderedSave`, exposed on the iframe as
+  // `data-caelo-rendered-save`. That is the "the stored text is on screen"
+  // signal; the saving marker alone also vanishes on any other reload.
+  let saveSeq = 0;
+  let reloadFor: number | null = null;
+  let awaitingRender: number | null = null;
+  let renderedSave = $state(0);
+  function scheduleReload(forSave?: number): void {
+    if (forSave !== undefined) reloadFor = forSave;
     if (reloadTimer !== null) clearTimeout(reloadTimer);
     reloadTimer = setTimeout(() => {
       reloadTimer = null;
+      if (reloadFor !== null) {
+        awaitingRender = reloadFor;
+        reloadFor = null;
+      }
       postToPreview(iframe?.contentWindow, { kind: "caelo:reload" });
     }, 200);
+  }
+
+  /**
+   * #965 — re-run the server load without letting it pick another chat
+   * (`chat-pin.ts` says why). The id is the chat this editor wrote into
+   * `?chat=`, so a page switch drops only that, never a chat the operator
+   * picked in the overlay since.
+   */
+  let pinnedChatId: string | null = null;
+  function refreshPinned(): Promise<void> {
+    const url = new URL(window.location.href);
+    if (!pinChatParam(url, data.activeChat.id)) return refreshAll();
+    pinnedChatId = data.activeChat.id;
+    return goto(url.toString(), { replace: true, reset: false, refreshAll: true });
+  }
+
+  /** The editor's URL for a page switch: without the chat this editor pinned. */
+  function pageSwitchUrl(): URL {
+    const url = new URL(window.location.href);
+    unpinChatParam(url, pinnedChatId);
+    pinnedChatId = null;
+    return url;
   }
 
   /**
@@ -373,8 +416,12 @@
           : result;
       await applyAction(outcome);
     } finally {
-      void refreshAll();
-      scheduleReload();
+      // The chat stays pinned through the refresh, and the reload is only
+      // scheduled once the refreshed data (same chat, same branch) is in,
+      // so it renders exactly the branch the save wrote to (#965).
+      const seq = ++saveSeq;
+      await refreshPinned().catch((e: unknown) => console.error("[edit] refresh failed", e));
+      scheduleReload(seq);
     }
   }
 
@@ -427,7 +474,7 @@
     // created pages / layouts surface in the page picker + activate
     // automatically on fresh installs. Without this, `activePage`
     // stays null and the iframe shows nothing while the AI builds.
-    void refreshAll();
+    void refreshPinned();
 
     scheduleReload();
   }
@@ -610,6 +657,7 @@
         bind:this={iframe}
         title="Live preview"
         data-caelo-live-preview
+        data-caelo-rendered-save={renderedSave}
         sandbox="allow-scripts"
         class="h-full w-full border-0 bg-white"
         style:pointer-events={overlayDragging ? "none" : "auto"}

@@ -50,11 +50,76 @@ const LEAKED_PARAMETER_RE = new RegExp(
   `</?(?:${BUG_REPORT_FIELDS.filter((f) => f !== "title").join("|")})\\b[^<>]*>`,
 );
 
+/**
+ * #1010 — the shortest report text that can carry a concrete observation.
+ * A real-AI run filed `{title: "placeholder", whatHappened: "n/a",
+ * expected: "n/a"}`: the model meant to call a deferred tool (list_layouts)
+ * it could not emit yet, and what came out was the cheapest always-loaded
+ * call with filler values (the same shape as load-skill.ts's
+ * bootstrap_site_scaffold note). The floor and the placeholder refusal turn
+ * that into an error that names both ways forward.
+ */
+const MIN_REPORT_TEXT = 10;
+
+/**
+ * Values that say "nothing here" — never a description of a defect. Compared
+ * after trimming case, quotes, brackets and punctuation, so `"N/A."` and
+ * `[placeholder]` match; a value of punctuation only (`-`, `...`) is empty
+ * after that and matches too.
+ */
+const PLACEHOLDER_VALUES = new Set([
+  "placeholder",
+  "n/a",
+  "na",
+  "n.a",
+  "tbd",
+  "tba",
+  "todo",
+  "test",
+  "testing",
+  "none",
+  "null",
+  "nil",
+  "undefined",
+  "unknown",
+  "empty",
+  "nothing",
+  "xxx",
+  "foo",
+  "asdf",
+  "lorem ipsum",
+]);
+
+const EDGE_PUNCTUATION_RE = /^[\s"'`<>[\](){}*_.,:;!?-]+|[\s"'`<>[\](){}*_.,:;!?-]+$/g;
+
+/** True when `value` is a filler token (or only punctuation), not report content. */
+export function isPlaceholderValue(value: string): boolean {
+  const normalized = value.toLowerCase().replace(EDGE_PUNCTUATION_RE, "");
+  return normalized === "" || PLACEHOLDER_VALUES.has(normalized);
+}
+
+const REQUIRED_TEXT_FIELDS = ["title", "whatHappened", "expected"] as const;
+const OPTIONAL_TEXT_FIELDS = ["suspectedTool", "evidence"] as const;
+
+const VALID_REPORT_HINT =
+  "A bug report needs a concrete observation: title = the defect in a few words, whatHappened = the exact tool + arguments you called and what it returned, expected = what that tool's description promised. " +
+  "If you meant to call a different tool that is not in your tool list yet, do not file a report — search for that tool and call it.";
+
+/** A required report text: at least MIN_REPORT_TEXT characters, refused with the hint. */
+function reportText(max: number) {
+  return z
+    .string()
+    .max(max)
+    .min(MIN_REPORT_TEXT, {
+      error: `too short — at least ${MIN_REPORT_TEXT} characters. ${VALID_REPORT_HINT}`,
+    });
+}
+
 export const bugReportToolInput = z
   .object({
-    title: z.string().min(1).max(200),
-    whatHappened: z.string().min(1).max(4000),
-    expected: z.string().min(1).max(4000),
+    title: reportText(200),
+    whatHappened: reportText(4000),
+    expected: reportText(4000),
     suspectedTool: z.string().max(200).optional(),
     evidence: z.string().max(8000).optional(),
     severity: z.enum(["blocking", "degraded", "cosmetic"]).default("degraded"),
@@ -62,6 +127,23 @@ export const bugReportToolInput = z
   })
   .strict()
   .superRefine((input, issues) => {
+    for (const field of REQUIRED_TEXT_FIELDS) {
+      if (!isPlaceholderValue(input[field])) continue;
+      issues.addIssue({
+        code: "custom",
+        path: [field],
+        message: `"${input[field].trim()}" is a placeholder, not a description. ${VALID_REPORT_HINT}`,
+      });
+    }
+    for (const field of OPTIONAL_TEXT_FIELDS) {
+      const value = input[field];
+      if (typeof value !== "string" || !isPlaceholderValue(value)) continue;
+      issues.addIssue({
+        code: "custom",
+        path: [field],
+        message: `"${value.trim()}" is a placeholder — leave ${field} out when you have nothing for it, or pass the real value.`,
+      });
+    }
     for (const field of BUG_REPORT_FIELDS) {
       const value = input[field];
       if (typeof value !== "string") continue;
@@ -106,6 +188,7 @@ export const bugReportTool: ToolDefinitionWithHandler<BugReportToolInput> = {
   description:
     "File a bug report against Caelo ITSELF when a tool or surface behaves contrary to its documented contract — e.g. a tool result contradicts persisted state, a screenshot/render ignores a parameter, an error fires on input the description says is valid. " +
     "This is for defects in the SYSTEM, not for your own mistakes (wrong arguments, misread state) and not for content/design issues on the site being built. " +
+    "Report only after a concrete failure you observed — a tool returned something wrong or broke the task. Never call it as a stand-in for another tool: when the tool you need is not in your tool list, search for it instead. " +
     "Report ONCE per distinct defect (do not re-file the same bug in one session), then CONTINUE the task via a workaround when one exists. Only when the bug genuinely blocks the task: file with blockedTask=true, tell the operator in one sentence what is blocked, and stop that line of work instead of retrying into the same wall. " +
     "`whatHappened` = what you observed (include the exact tool + arguments); `expected` = what the tool's contract promised; `evidence` = the result excerpt that proves it. " +
     "The result says where the report went (stored on this site only, or sent to the Caelo team) — tell the operator exactly that and never claim the Caelo team was notified unless the result says it was sent.",
@@ -115,16 +198,21 @@ export const bugReportTool: ToolDefinitionWithHandler<BugReportToolInput> = {
     additionalProperties: false,
     required: ["title", "whatHappened", "expected"],
     properties: {
-      title: { type: "string", minLength: 1, maxLength: 200 },
+      title: {
+        type: "string",
+        minLength: MIN_REPORT_TEXT,
+        maxLength: 200,
+        description: 'The defect in a few words, e.g. "screenshot_page ignores selector".',
+      },
       whatHappened: {
         type: "string",
-        minLength: 1,
+        minLength: MIN_REPORT_TEXT,
         maxLength: 4000,
         description: "What you observed, incl. the exact tool + arguments used.",
       },
       expected: {
         type: "string",
-        minLength: 1,
+        minLength: MIN_REPORT_TEXT,
         maxLength: 4000,
         description: "What the tool's description / the system's contract promised instead.",
       },

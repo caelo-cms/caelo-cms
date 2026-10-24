@@ -15,6 +15,7 @@ import {
   type ChromeField,
   type ChromeTranslationPayload,
   type ChromeTranslationTarget,
+  chromeTranslationJsonSchema,
   chromeTranslationPayload,
   instanceTargetKey,
   layoutTargetKey,
@@ -490,13 +491,26 @@ export async function translateChrome(
     nothingToTranslate: p.nothingToTranslate,
   });
   if (p.prompt === null) return counts(0);
-  const result = await ai.complete({
+  // #992 — SDK structured output constrained to this call's targets and
+  // paths (CLAUDE.md §12), not JSON parsed out of free text.
+  const retryHint = "Re-run translate_chrome.";
+  const result = await ai.generateObject({
     system: p.prompt.system,
     messages: [{ role: "user", content: p.prompt.user }],
+    jsonSchema: chromeTranslationJsonSchema(p.offered),
     maxTokens: 16_000,
     purpose: "translation",
   });
-  const payload = parseChromeTranslationAnswer(result.text, p, "Re-run translate_chrome.");
+  if (result.object === undefined || result.object === null || typeof result.object !== "object") {
+    throw new Error(
+      `chrome translation response did not match the contract: the model returned no object that fits the schema. ${retryHint}`,
+    );
+  }
+  const payload = parseChromeTranslationAnswer(
+    result.object as Readonly<Record<string, unknown>>,
+    p,
+    retryHint,
+  );
   return counts(await writeChromeTranslation(deps, p, payload));
 }
 

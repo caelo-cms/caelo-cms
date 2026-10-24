@@ -37,6 +37,7 @@ import {
 import {
   type DeployedService,
   type EnvChange,
+  findVolumesWithMissingSecrets,
   type LiveEnvValue,
   type LiveVolumes,
   liveContainerEnv,
@@ -147,6 +148,15 @@ export async function planAppRoll(
   install: AppRollInstall,
   images: Readonly<Record<RollSlug, ReleaseImage>>,
   run: GcloudRunner,
+  checks: {
+    /**
+     * #954 — check that every secret volume's secret still exists. The
+     * operator / converge identity can read secret metadata; the upgrader
+     * job's narrow identity holds no Secret Manager permission at all
+     * (upgrader-setup.ts), so it passes false.
+     */
+    readonly secretVolumes: boolean;
+  },
 ): Promise<PlanResult> {
   const services: ServicePlan[] = [];
   for (const slug of ROLL_ORDER) {
@@ -222,6 +232,25 @@ export async function planAppRoll(
       return { ok: false, error: `the ${s.slug}'s secret files can't be mounted: ${files.error}` };
     }
     secretFiles[s.slug] = files;
+  }
+  // #954 — a volume pointing at a deleted secret makes Cloud Run refuse
+  // every new revision: name it with its fix now, before any roll starts.
+  const orphaned: string[] = [];
+  for (const s of checks.secretVolumes ? services : []) {
+    const removing = secretFiles[s.slug].flags
+      .filter((f) => f.startsWith("--remove-volume="))
+      .map((f) => f.slice("--remove-volume=".length));
+    orphaned.push(
+      ...(await findVolumesWithMissingSecrets(
+        s.liveVolumes,
+        { serviceName: s.serviceName, projectId: install.projectId, region: install.region },
+        removing,
+        run,
+      )),
+    );
+  }
+  if (orphaned.length > 0) {
+    return { ok: false, error: `a service can't take a new revision: ${orphaned.join(" ")}` };
   }
   const warnings: string[] = [];
   const rolls = services.map((s): RollPlan => {

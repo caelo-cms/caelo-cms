@@ -49,22 +49,56 @@ let registry: OperationRegistry;
 let restoreBase: (() => Promise<void>) | null = null;
 let restoreLanguage: (() => Promise<void>) | null = null;
 
-/** Scripted translator: answers every offered path with "DE:<source>". */
+/**
+ * Scripted translator: answers every offered path with "DE:<source>".
+ * #992 — translate_chrome uses structured output, so the answer is built
+ * from the JSON Schema the plugin sent (which targets and paths it allows)
+ * and the source text from the prompt; `complete` would mean the plugin
+ * fell back to parsing free text.
+ */
 const aiPrompts: string[] = [];
+const aiSchemas: Record<string, unknown>[] = [];
+type ChromeSchema = {
+  properties: {
+    targets: {
+      items: {
+        anyOf: Array<{
+          properties: { target: { enum: string[] }; strings: { required: string[] } };
+        }>;
+      };
+    };
+  };
+};
 const scriptedProvider = {
-  complete: async (opts: { messages: ReadonlyArray<{ content: string }> }) => {
+  complete: async () => {
+    throw new Error("scripted provider: translate_chrome must call generateObject, not complete");
+  },
+  generateObject: async (opts: {
+    messages: ReadonlyArray<{ content: string }>;
+    jsonSchema: Record<string, unknown>;
+  }) => {
     const user = opts.messages[0]?.content ?? "";
     aiPrompts.push(user);
-    const targets: { target: string; strings: Record<string, string> }[] = [];
+    aiSchemas.push(opts.jsonSchema);
+    const source = new Map<string, string>();
     for (const section of user.split("### Target ").slice(1)) {
       const id = section.slice(0, section.indexOf(" "));
-      const strings: Record<string, string> = {};
       for (const m of section.matchAll(/([^\n]+):\n```\n([\s\S]*?)\n```/g)) {
-        if (m[1] && m[2] !== undefined) strings[m[1]] = `DE:${m[2]}`;
+        if (m[1] && m[2] !== undefined) source.set(`${id}|${m[1]}`, m[2]);
       }
-      targets.push({ target: id, strings });
     }
-    return { text: JSON.stringify({ targets }), inputTokens: 1, outputTokens: 1 };
+    const variants = (opts.jsonSchema as ChromeSchema).properties.targets.items.anyOf;
+    const targets = variants.map((v) => {
+      const id = v.properties.target.enum[0] ?? "";
+      const strings: Record<string, string> = {};
+      for (const path of v.properties.strings.required) {
+        const text = source.get(`${id}|${path}`);
+        if (text === undefined) throw new Error(`schema offers ${id} ${path}, the prompt does not`);
+        strings[path] = `DE:${text}`;
+      }
+      return { target: id, strings };
+    });
+    return { object: { targets }, inputTokens: 1, outputTokens: 1 };
   },
 };
 
@@ -329,6 +363,15 @@ describe("#592 — menus and footer per language", () => {
     expect(r.translated).toBeGreaterThanOrEqual(2);
     expect(aiPrompts.at(-1)).toContain("Made with care");
     expect(aiPrompts.at(-1)).toContain("Talk to us");
+    // #992 — the schema sent offers exactly the prompt's targets, closed.
+    const sent = aiSchemas.at(-1) as ChromeSchema & { additionalProperties: boolean };
+    expect(sent.additionalProperties).toBe(false);
+    const offeredIds = [...(aiPrompts.at(-1) ?? "").matchAll(/### Target (c\d+) /g)].map(
+      (m) => m[1],
+    );
+    expect(sent.properties.targets.items.anyOf.map((v) => v.properties.target.enum[0])).toEqual(
+      offeredIds,
+    );
 
     const de = await preview(ids.dePreise);
     expect(de.missingSlots.filter((m) => m.startsWith("content-variant:"))).toEqual([]);

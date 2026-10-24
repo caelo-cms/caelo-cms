@@ -297,6 +297,54 @@ describe("static build renders nested modules", () => {
     expect(html).not.toContain("Business");
   });
 
+  it("an optional single module field left unset or null builds as an empty slot (#1041)", async () => {
+    const slug = `${PFX}-empty-slot`;
+    const r = await execute(registry, adapter, SYSTEM, "pages.build_page", {
+      page: { slug, title: `${PFX} Empty slot`, templateId },
+      modules: [
+        {
+          blockName: "content",
+          displayName: `${PFX} empty Card Grid`,
+          description: "Card grid with an optional status block after it.",
+          kind: "content",
+          html: '<section class="cg"><h2>{{title}}</h2>{{>after}}</section>',
+          fields: [
+            { name: "title", kind: "text", label: "Title" },
+            { name: "after", kind: "module", label: "Optional block after the grid" },
+          ],
+          content: { source: "inline", values: { title: "Cards" } },
+        },
+      ],
+    });
+    if (!r.ok) throw new Error(`build_page failed: ${JSON.stringify(r.error)}`);
+    const pageId = (r.value as { pageId: string }).pageId;
+
+    const unset = build(pageId, `${PFX}-empty-unset`);
+    await unset.run;
+    const html = await readFile(await pageFile(pageId, unset.buildDir), "utf8");
+    expect(html).toContain("<h2>Cards</h2></section>");
+    expect(html).not.toContain("caelo:missing");
+
+    // Explicit null — the value the AI writes to say "leave it empty".
+    const ci = (
+      (await asSystem(
+        (tx) =>
+          tx`SELECT pm.content_instance_id AS id FROM page_modules pm WHERE pm.page_id = ${pageId}::uuid LIMIT 1`,
+      )) as { id: string }[]
+    )[0]?.id;
+    if (!ci) throw new Error("placement instance missing");
+    const set = await execute(registry, adapter, SYSTEM, "content_instances.set_values", {
+      id: ci,
+      values: { title: "Cards", after: null },
+    });
+    expect(set.ok).toBe(true);
+    const nulled = build(pageId, `${PFX}-empty-null`);
+    await nulled.run;
+    expect(await readFile(await pageFile(pageId, nulled.buildDir), "utf8")).not.toContain(
+      "caelo:missing",
+    );
+  });
+
   it("fails the build, naming page, module and field, when a nested ref is broken", async () => {
     const broken = await buildPricingPage(`${PFX}-broken`, "broken");
     const gone = broken.cards[1];

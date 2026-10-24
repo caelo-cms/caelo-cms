@@ -56,6 +56,7 @@ import {
   type BugIntakeClusterInfo,
   type BugIntakeReport,
   isNewerVersion,
+  parseVersion,
   redactBugReportFields,
 } from "@caelo-cms/shared";
 import type { IssueState, ReleaseInfo } from "./github.js";
@@ -292,8 +293,14 @@ export class IntakeService {
       current.fixedInVersion !== null &&
       current.issueNumber !== null
     ) {
-      // Reported from a release that contains the fix: it came back.
-      if (!isNewerVersion(current.fixedInVersion, report.caeloVersion)) {
+      // Reported from a release that contains the fix: it came back. A
+      // report whose filing version is unknown (filed before the install
+      // recorded it, #1072) proves nothing about the fix, so it never
+      // reopens the issue.
+      if (
+        isKnownVersion(report.caeloVersion) &&
+        !isNewerVersion(current.fixedInVersion, report.caeloVersion)
+      ) {
         const fixedIn = current.fixedInVersion;
         await this.#d.tracker.updateIssue(current.issueNumber, { state: "open" });
         await this.#d.tracker.addComment(
@@ -521,5 +528,15 @@ export class IntakeService {
     } finally {
       if (this.#locks.get(key) === run) this.#locks.delete(key);
     }
+  }
+}
+
+/** True when `raw` is a release version the regression check can compare. */
+function isKnownVersion(raw: string): boolean {
+  try {
+    parseVersion(raw.replace(/^v/, ""));
+    return true;
+  } catch {
+    return false;
   }
 }

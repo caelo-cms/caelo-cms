@@ -20,6 +20,12 @@
  *   likely the same pattern drifting, but not certain.
  * - `structure/layout-css-module-specific` (warning): layout CSS for
  *   classes only one module (or only free markup) uses.
+ * - `structure/repeated-items` (warning, #1068): one pattern written out
+ *   three or more times side by side in the free markup of one module on
+ *   one page — a list of items kept as hand-written HTML (83 tool cards
+ *   in one richtext value). Not a block: a single page is allowed free
+ *   HTML, but the items belong in a module-list. Pages where the pattern
+ *   already blocks as repeated or similar markup get that finding only.
  *
  * Deliberate exceptions go through the existing per-rule acceptance.
  */
@@ -99,6 +105,7 @@ export function structureFindings(
     ...duplicateModules(analysis, byId),
     ...perPage("structure/similar-markup", "warning", groups.near, byId),
     ...layoutCss(analysis, layouts, byId),
+    ...repeatedItems(analysis, [...groups.exact, ...groups.near], byId),
   ];
   // Errors come first, so a cut keeps what blocks. The fix of one group
   // is site-wide, so the next Stage re-reports whatever was cut.
@@ -221,6 +228,40 @@ function describeGroup(
     `\`${g.label}\` here${host ? ` (in "${host}")` : ""} is ${target}; ` +
     `on ${paths.length} page(s): ${list(paths)}.`
   );
+}
+
+/**
+ * One warning per page for patterns repeated side by side in one module's
+ * free markup, unless that module's free markup on the page is already
+ * part of a repeated / similar group (its finding names the same fix).
+ */
+function repeatedItems(
+  analysis: StructureAnalysis,
+  groups: readonly PatternGroup[],
+  byId: ReadonlyMap<string, StructureModule>,
+): Finding[] {
+  const covered = new Set(
+    groups.flatMap((g) => g.occurrences.map((o) => `${o.pageId}\u0000${o.hostModuleId}`)),
+  );
+  const onPage = new Map<string, string[]>();
+  for (const r of analysis.siblingRepeats) {
+    if (covered.has(`${r.pageId}\u0000${r.hostModuleId}`)) continue;
+    const host = byId.get(r.hostModuleId)?.displayName ?? r.hostModuleId;
+    const line = `\`${r.label}\` is written out ${r.count} times side by side in the free HTML of "${host}".`;
+    onPage.set(r.pageId, [...(onPage.get(r.pageId) ?? []), line]);
+  }
+  return [...onPage].map(([pageId, lines]) => ({
+    ruleId: "structure/repeated-items",
+    severity: "warning" as const,
+    pageId,
+    message: clip(
+      `Repeated items in free markup: ${lines.join(" ")} Each copy is edited on its own and the copies drift.`,
+    ),
+    fix: {
+      tool: "add_module",
+      hint: "mint ONE module for the item with semantic fields, give the host module a module-list field (text-list / link-list for plain items) holding one entry per item, and remove the hand-written copies from the field value",
+    },
+  }));
 }
 
 /** Modules whose templates are structurally identical. */

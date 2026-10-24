@@ -617,13 +617,6 @@ export async function* runSDKStream(args: {
   const { model, input, systemAndMessages, extraOptions, toolsTransform } = args;
   const loop = input.loop;
   const encodeLoopMessages = args.loopMessages ?? ((msgs) => toSDKMessages(msgs));
-  // Approval-resume runs execute the approved gated tool BEFORE step 0 and
-  // deliver its tool_result as leading "initial" response messages that
-  // belong to no step. `prepareStep(stepNumber=0)` receives exactly them in
-  // its accumulated `responseMessages` (public contract; verified against
-  // the installed ai@7.0.55) — captured here so `onStepFinish(0)` can hand
-  // them to the caller for persistence alongside step 0's slice.
-  let initialResponseMessages: readonly unknown[] = [];
   const builtTools = buildSDKTools(input.tools) as Record<string, unknown>;
   const sdkTools = toolsTransform ? toolsTransform(builtTools) : builtTools;
   // Slice 1 (SDK approval gate) — derive the toolApproval map from the tools
@@ -694,7 +687,14 @@ export async function* runSDKStream(args: {
       steps: readonly SDKStepLike[];
       responseMessages?: readonly unknown[];
     }) => {
-      if (opts.stepNumber === 0) initialResponseMessages = opts.responseMessages ?? [];
+      // Approval-resume runs execute the approved gated tool BEFORE step 0
+      // and deliver its tool_result as leading "initial" response messages
+      // that belong to no step. `prepareStep(stepNumber=0)` receives exactly
+      // them in its accumulated `responseMessages` (public contract,
+      // ai@7.0.1xx). Handed over now, before step 0's model call, so a
+      // failing step 0 cannot lose an effect that already happened (#1075).
+      const initial = opts.stepNumber === 0 ? (opts.responseMessages ?? []) : [];
+      if (loop && initial.length > 0) await loop.onInitialResponseMessages(initial);
       if (!loop) return undefined;
       const override = await loop.prepareStep({
         stepIndex: opts.stepNumber,
@@ -716,7 +716,6 @@ export async function* runSDKStream(args: {
               stepIndex: step.stepNumber ?? 0,
               finishReason: step.finishReason ?? "unknown",
               responseMessages: step.response?.messages ?? [],
-              initialResponseMessages: (step.stepNumber ?? 0) === 0 ? initialResponseMessages : [],
             });
           },
         }

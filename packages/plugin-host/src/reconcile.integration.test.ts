@@ -17,7 +17,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerAdminOps } from "@caelo-cms/admin-core";
+import { registerAdminOps, startPublicProjectionPublisher } from "@caelo-cms/admin-core";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
@@ -325,6 +325,71 @@ describe("#1008 — syncPluginHost follows the plugin rows", () => {
   });
 });
 
+describe("#1052 — an active plugin this release does not ship", () => {
+  const GONE = `${PREFIX}gone`;
+
+  async function seedOrphanRow(): Promise<void> {
+    // The shape pre-0.10.24 boots left behind: an `active` tier-1 row for a
+    // built-in plugin whose directory a later release deleted.
+    await sqlSystem(
+      async (tx) => tx`
+        INSERT INTO plugins (slug, version, tier, status, manifest_json, source_path,
+                             manifest_signature, submitted_by)
+        VALUES (${GONE}, '0.1.0', 1, 'active', '{}'::jsonb, ${`packages/plugins/${GONE}`},
+                'unknown', ${SYSTEM_ACTOR_ID}::uuid)`,
+    );
+  }
+
+  async function bugReportsFor(slug: string): Promise<number> {
+    const rows = await sqlSystem(
+      async (tx) =>
+        (await tx`SELECT count(*)::int AS n FROM ai_bug_reports WHERE title LIKE ${`%${slug}%`}`) as {
+          n: number;
+        }[],
+    );
+    return rows[0]?.n ?? 0;
+  }
+
+  it("is recorded as not part of this release, never filed as a core bug, and stays active", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t1052-"));
+    try {
+      await sqlSystem(async (tx) => tx`DELETE FROM ai_bug_reports WHERE title LIKE ${`%${GONE}%`}`);
+      await seedOrphanRow();
+      // Two instances in a row (the second is a fresh host on the same DB).
+      for (let instance = 0; instance < 2; instance++) {
+        resetPluginHost();
+        resetPluginHostSync();
+        await bootstrap({ infra, pluginsRoot: root, systemActorId: SYSTEM_ACTOR_ID });
+        await syncPluginHost(true);
+        const notRunning = pluginsNotRunningHere().find((p) => p.slug === GONE);
+        expect(notRunning?.reason).toContain("is not part of this release");
+        expect(notRunning?.reason).toContain("uninstall it at /settings/plugins");
+      }
+
+      const errors = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT error_class, occurrences, bug_report_id FROM plugin_errors
+                    WHERE plugin_slug = ${GONE}`) as {
+            error_class: string;
+            occurrences: number;
+            bug_report_id: string | null;
+          }[],
+      );
+      // One folded record, the plugin's problem, not linked to a bug report.
+      expect(errors).toEqual([{ error_class: "plugin", occurrences: 2, bug_report_id: null }]);
+      expect(await bugReportsFor(GONE)).toBe(0);
+      // Never switched off by the host: the status is the Owner's.
+      const status = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT status FROM plugins WHERE slug = ${GONE}`) as { status: string }[],
+      );
+      expect(status[0]?.status).toBe("active");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("#1008 — loads of one plugin never overlap", () => {
   it("an activation and a reconcile at the same time load it once, with one set of workers", async () => {
     // Active but not running here: its first load failed.
@@ -353,5 +418,72 @@ describe("#1008 — loads of one plugin never overlap", () => {
     expect(after).toHaveLength(1);
     // The first load's job was stopped, not orphaned.
     expect(before[0]?.job.isStopped()).toBe(true);
+  });
+});
+
+describe("#1077 — a load publishes the plugin's visitor projection from this instance", () => {
+  const PROJECTED = `${PREFIX}projected`;
+  const SCHEMA = "plugin_t1008r_projected";
+  const projected = definePlugin({
+    slug: PROJECTED,
+    version: "0.1.0",
+    tier: 1,
+    schema: {},
+    adminSchema: { settings: { label: "string" } },
+    visitorProjection: { settings: ["label"] },
+    requestedCapabilities: ["cms_admin_schema"],
+    operations: { noop: async () => ({}) },
+  });
+
+  async function publishedSections(): Promise<string[]> {
+    const pub = new SQL(PUBLIC_URL as string);
+    try {
+      return await pub.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        const rows = (await tx`SELECT section FROM published_projection_sections`) as {
+          section: string;
+        }[];
+        return rows.map((r) => r.section);
+      });
+    } finally {
+      await pub.end();
+    }
+  }
+
+  async function withdraw(section: string): Promise<void> {
+    const pub = new SQL(PUBLIC_URL as string);
+    try {
+      await pub.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx`DELETE FROM published_projection_sections WHERE section = ${section}`;
+      });
+    } finally {
+      await pub.end();
+    }
+  }
+
+  it("publishes it on load, and again on a reload, without waiting for the plugin's next write", async () => {
+    // The admin's own publisher, as hooks.server.ts wires it; the poll is
+    // parked so only the publish right after a write can run.
+    const publisher = startPublicProjectionPublisher({ adapter, intervalMs: 3_600_000 });
+    try {
+      const report = await boot([projected]);
+      expect(report.failed).toEqual([]);
+      const section = `plugin:${loadedPlugins.bySlug(PROJECTED)?.pluginId}`;
+      expect(await publishedSections()).toContain(section);
+
+      // Gone from the public side (a publisher that misread "not loaded
+      // here" as "declares nothing" did this, #1077). Loading the plugin
+      // again republishes it from this instance's definition.
+      await withdraw(section);
+      expect((await loadActivatedPlugin(PROJECTED)).loaded).toBe(true);
+      expect(await publishedSections()).toContain(section);
+    } finally {
+      publisher.stop();
+      await sqlSystem(async (tx) => {
+        await tx.unsafe(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+        await tx`DELETE FROM plugin_schema_migrations WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${PROJECTED})`;
+      });
+    }
   });
 });
