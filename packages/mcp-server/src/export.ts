@@ -14,8 +14,9 @@
  *
  * Surface honesty (issue #413): the context arrives ALREADY adapted to
  * the Power-MCP surface — `mcp.get_context` composes the "power-mcp"
- * prompt variant and annotates every mention of an excluded tool in
- * skill bodies/descriptions with `[not available on this surface — …]`.
+ * prompt variant and appends a `[Not available on this surface — …]` note
+ * to skill bodies/descriptions that mention an excluded tool (#1044: a
+ * separate note, never inline after the name).
  * The renderers write that content verbatim; do not add a second
  * filtering pass here, or the two would drift.
  *

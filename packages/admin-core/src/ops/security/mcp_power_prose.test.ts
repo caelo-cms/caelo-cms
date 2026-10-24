@@ -26,7 +26,7 @@ import {
   powerToolCatalogue,
   surfaceToolResultContent,
 } from "./mcp_power.js";
-import { annotateExcludedToolMentions, findExcludedToolMentions } from "./mcp_power_prose.js";
+import { findExcludedToolMentions, withUnavailableToolsNote } from "./mcp_power_prose.js";
 
 // Synthetic names — the helper contract (word boundaries, backticks,
 // idempotence) is independent of which tools are excluded today.
@@ -35,36 +35,58 @@ const FIXTURE = new Map([
   ["alpha_tools", "batch variant; unavailable here"],
 ]);
 
-describe("annotateExcludedToolMentions / findExcludedToolMentions", () => {
-  it("annotates backticked and bare mentions, placing the note outside inline code", () => {
-    const out = annotateExcludedToolMentions("Call `alpha_tool` or alpha_tool now.", FIXTURE);
+describe("withUnavailableToolsNote / findExcludedToolMentions", () => {
+  it("keeps the text byte-for-byte and appends one note listing the mentioned tools (#1044)", () => {
+    const text = "Call `alpha_tool` or alpha_tool now.";
+    const out = withUnavailableToolsNote(text, FIXTURE);
+    expect(out.startsWith(`${text} `)).toBe(true);
     expect(out).toBe(
-      "Call `alpha_tool` [not available on this surface — use beta_tool instead] " +
-        "or alpha_tool [not available on this surface — use beta_tool instead] now.",
+      `${text} [Not available on this surface — this text names tools this connection does not serve; do not call them: \`alpha_tool\` (use beta_tool instead).]`,
+    );
+  });
+
+  it("never puts a note right after a tool name", () => {
+    const text = "Use `alpha_tool` here.\nThen alpha_tools for batches.";
+    const out = withUnavailableToolsNote(text, FIXTURE);
+    expect(out.slice(0, text.length)).toBe(text);
+    // Multi-line text gets the note as its own paragraph, one tool per line.
+    expect(out.slice(text.length)).toBe(
+      "\n\n[Not available on this surface — this text names tools this connection does not serve; do not call them:\n" +
+        "- `alpha_tool` (use beta_tool instead)\n" +
+        "- `alpha_tools` (batch variant; unavailable here)]",
     );
   });
 
   it("never matches inside a longer tool name and is idempotent", () => {
-    const once = annotateExcludedToolMentions("Prefer alpha_tools for batches.", FIXTURE);
-    expect(once).toBe(
-      "Prefer alpha_tools [not available on this surface — batch variant; unavailable here] for batches.",
-    );
-    expect(annotateExcludedToolMentions(once, FIXTURE)).toBe(once);
+    const once = withUnavailableToolsNote("Prefer alpha_tools for batches.", FIXTURE);
+    expect(once).toContain("`alpha_tools` (batch variant; unavailable here)");
+    expect(once).not.toContain("`alpha_tool` (");
+    expect(withUnavailableToolsNote(once, FIXTURE)).toBe(once);
   });
 
-  it("reports only unannotated mentions", () => {
+  it("returns text without mentions unchanged", () => {
+    expect(withUnavailableToolsNote("nothing here", FIXTURE)).toBe("nothing here");
+  });
+
+  it("reports only mentions the note does not cover", () => {
     expect(findExcludedToolMentions("run alpha_tool", FIXTURE.keys())).toEqual(["alpha_tool"]);
-    const annotated = annotateExcludedToolMentions("run alpha_tool and alpha_tools", FIXTURE);
-    expect(findExcludedToolMentions(annotated, FIXTURE.keys())).toEqual([]);
+    const noted = withUnavailableToolsNote("run alpha_tool and alpha_tools", FIXTURE);
+    expect(findExcludedToolMentions(noted, FIXTURE.keys())).toEqual([]);
     expect(findExcludedToolMentions("nothing here", FIXTURE.keys())).toEqual([]);
+    // A note for one tool does not cover a mention of another.
+    const notedForOne = withUnavailableToolsNote("run alpha_tool", FIXTURE);
+    expect(findExcludedToolMentions(`alpha_tools, ${notedForOne}`, FIXTURE.keys())).toEqual([
+      "alpha_tools",
+    ]);
   });
 
   it("round-trips every entry of the LIVE exclusion map", () => {
     for (const name of POWER_MCP_EXCLUDED_TOOLS.keys()) {
       const text = `First call \`${name}\`, then ${name} again.`;
       expect(findExcludedToolMentions(text, POWER_MCP_EXCLUDED_TOOLS.keys())).toEqual([name]);
-      const annotated = annotateExcludedToolMentions(text, POWER_MCP_EXCLUDED_TOOLS);
-      expect(findExcludedToolMentions(annotated, POWER_MCP_EXCLUDED_TOOLS.keys())).toEqual([]);
+      const noted = withUnavailableToolsNote(text, POWER_MCP_EXCLUDED_TOOLS);
+      expect(noted.startsWith(text)).toBe(true);
+      expect(findExcludedToolMentions(noted, POWER_MCP_EXCLUDED_TOOLS.keys())).toEqual([]);
     }
   });
 });
@@ -119,6 +141,16 @@ describe("Power-MCP prompt↔catalog consistency (#413)", () => {
     }
   });
 
+  it("served catalogue descriptions carry no note inline after a tool name (#1044)", () => {
+    for (const t of powerToolCatalogue(createDefaultToolRegistry())) {
+      for (const name of POWER_MCP_EXCLUDED_TOOLS.keys()) {
+        expect(`${t.name}: ${t.description}`).not.toMatch(
+          new RegExp(`${name}\`?\\s*\\[not available on this surface`, "i"),
+        );
+      }
+    }
+  });
+
   it("served catalogue descriptions never recommend an excluded tool", () => {
     const violations = powerToolCatalogue(createDefaultToolRegistry())
       .map(
@@ -166,8 +198,9 @@ describe("surfaceToolResultContent — data results round-trip (bug 2c323d9a)", 
   it("still annotates load_skill results, which are instruction prose", () => {
     const content = `Loaded skill "x" — X. Follow these instructions:\n\n${html}`;
     const served = surfaceToolResultContent("load_skill", content);
-    expect(served).toContain("[not available on this surface — ");
+    // The skill text is served unchanged; the note follows it.
+    expect(served.startsWith(content)).toBe(true);
+    expect(served).toContain("[Not available on this surface — ");
     expect(findExcludedToolMentions(served, names)).toEqual([]);
-    for (const n of names) expect(served).toContain(n);
   });
 });

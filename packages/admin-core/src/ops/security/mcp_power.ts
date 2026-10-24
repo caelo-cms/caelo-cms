@@ -63,7 +63,7 @@ import {
   recordMcpHandoff,
 } from "../mcp_approval_handoffs.js";
 import { exactlyOneMcpCredential, mcpCredentialShape } from "./mcp_credential.js";
-import { annotateExcludedToolMentions } from "./mcp_power_prose.js";
+import { withUnavailableToolsNote } from "./mcp_power_prose.js";
 import { type McpPrincipal, mcpAgentRefOf } from "./mcp_principal.js";
 import { getMcpBridge, resolveMcpPrincipal, type SendChatBridgeOpts } from "./mcp_tokens.js";
 
@@ -88,24 +88,24 @@ export const POWER_MCP_EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
 
 /**
  * Tools whose RESULT is instruction prose the agent follows, not site data.
- * Only these results get the excluded-tool annotation (see
+ * Only these results get the excluded-tool note (see
  * `surfaceToolResultContent`). Today that is `load_skill`: its result IS the
- * skill body, the same text `mcp.get_context` annotates for the skills index
+ * skill body, the same text `mcp.get_context` notes for the skills index
  * and the CLAUDE.md export.
  */
 export const POWER_MCP_INSTRUCTION_RESULT_TOOLS: ReadonlySet<string> = new Set(["load_skill"]);
 
 /**
- * Bug 2c323d9a — the surface-honesty annotation (issue #413) is for prose the
+ * Bug 2c323d9a — the surface-honesty note (issue #413) is for prose the
  * agent reads as instructions. Every other tool result carries site data
  * (content values, module bodies, page HTML, grep hits …) that the agent
- * reads and writes back; annotating it injected the note into a docs page's
+ * reads and writes back; noting it injected the note into a docs page's
  * `<code>spawn_subagent</code>` and the read-modify-write persisted it to the
  * live site. Data results therefore pass through byte-for-byte.
  */
 export function surfaceToolResultContent(toolName: string, content: string): string {
   return POWER_MCP_INSTRUCTION_RESULT_TOOLS.has(toolName)
-    ? annotateExcludedToolMentions(content, POWER_MCP_EXCLUDED_TOOLS)
+    ? withUnavailableToolsNote(content, POWER_MCP_EXCLUDED_TOOLS)
     : content;
 }
 
@@ -124,7 +124,7 @@ const toolCatalogueEntry = z.object({
  * The provider-shaped catalogue minus the excluded set, plus any live
  * Tier-1 plugin tools. Exported for the unit test.
  *
- * issue #413 — descriptions are annotated at this boundary rather than
+ * issue #413 — descriptions get the unavailable-tools note at this boundary rather than
  * reworded at their author sites: several descriptions (correctly, for
  * the chat surface) route to `screenshot_page` and friends, and the
  * in-app copies must stay untouched. Annotating here keeps every current
@@ -152,7 +152,7 @@ export function powerToolCatalogue(
       const conditional = !t.gated && tools.get(t.name)?.needsApproval !== undefined;
       const description = withAiNote(
         t.name,
-        annotateExcludedToolMentions(t.description, POWER_MCP_EXCLUDED_TOOLS),
+        withUnavailableToolsNote(t.description, POWER_MCP_EXCLUDED_TOOLS),
       );
       return {
         name: t.name,
@@ -175,7 +175,7 @@ export function powerToolCatalogue(
     .map((p) => {
       const description = withAiNote(
         p.spec.name,
-        annotateExcludedToolMentions(p.spec.description, POWER_MCP_EXCLUDED_TOOLS),
+        withUnavailableToolsNote(p.spec.description, POWER_MCP_EXCLUDED_TOOLS),
       );
       return {
         name: p.spec.name,
@@ -748,7 +748,7 @@ export const mcpExecuteToolOp = defineOperation({
             });
 
       // issue #413 — results that ARE instruction prose (load_skill's skill
-      // bodies) get the same excluded-tool annotation as the catalogue,
+      // bodies) get the same excluded-tool note as the catalogue,
       // BEFORE caching so replays serve the same honest copy. Every other
       // result is site data and must round-trip unchanged (bug 2c323d9a).
       // issue #620 — a write that took over another chat's lock (or lost one)
@@ -1054,7 +1054,7 @@ export const mcpGetContextOp = defineOperation({
     // "finishing-a-turn") and swaps the playbook's inspect/parallel entry
     // for the tools this surface actually serves. Dynamic parts (site
     // memory, skills index) can still name excluded tools, so the composed
-    // string gets the same annotation pass as the catalogue descriptions.
+    // string gets the same note as the catalogue descriptions.
     const chunks = composeSystemPromptChunks(
       memory,
       {
@@ -1062,7 +1062,7 @@ export const mcpGetContextOp = defineOperation({
       },
       "power-mcp",
     );
-    const systemContext = annotateExcludedToolMentions(
+    const systemContext = withUnavailableToolsNote(
       [...chunks.map((c) => c.body), aiWorkContract(auth.allowCaeloAi)].join("\n\n"),
       POWER_MCP_EXCLUDED_TOOLS,
     );
@@ -1102,9 +1102,9 @@ export const mcpGetContextOp = defineOperation({
     // issue #413 — skill bodies are seeded/operator data written for the
     // chat surface (several MANDATE excluded tools: "call screenshot_page
     // for BOTH viewports"). They cannot be rewritten per surface, so every
-    // excluded-tool mention is annotated with the working alternative —
+    // excluded tool they mention is named in a note with the working alternative —
     // the content stays honest without touching the stored skill.
-    const surfaced = (text: string) => annotateExcludedToolMentions(text, POWER_MCP_EXCLUDED_TOOLS);
+    const surfaced = (text: string) => withUnavailableToolsNote(text, POWER_MCP_EXCLUDED_TOOLS);
     return ok({
       systemContext,
       statusLine: statusLine ? surfaced(statusLine) : null,

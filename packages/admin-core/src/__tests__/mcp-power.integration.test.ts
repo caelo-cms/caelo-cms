@@ -478,6 +478,36 @@ describe("Power-MCP surface (admin token)", () => {
     }
   });
 
+  it("stores a write that names excluded tools byte-for-byte and reads it back unchanged (#1044)", async () => {
+    const slug = `mcp-power-1044-${Date.now().toString(36)}`;
+    // The exact shape bug report #1044 wrote: excluded tool names inside a value.
+    const displayName = "spawn_subagent, `offer_choices` and submit_result";
+    const write = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
+      plaintextToken: adminToken,
+      chatSessionId,
+      toolName: "set_structured_set",
+      args: {
+        kind: "nav-menu",
+        slug,
+        displayName,
+        items: [{ label: "Docs", href: "https://example.com/" }],
+      },
+    });
+    expect(write.ok && (write.value as { ok: boolean }).ok).toBe(true);
+
+    const read = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
+      plaintextToken: adminToken,
+      chatSessionId,
+      toolName: "get_structured_set",
+      args: { kind: "nav-menu", slug },
+    });
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    const content = (read.value as { content: string }).content;
+    expect((JSON.parse(content) as { displayName: string }).displayName).toBe(displayName);
+    expect(content).not.toMatch(/not available on this surface/i);
+  });
+
   it("caches repeats of a caller-supplied toolCallId", async () => {
     const toolCallId = `mcp-power-test-${crypto.randomUUID()}`;
     const call = () =>
@@ -778,7 +808,9 @@ describe("Power-MCP surface (admin token)", () => {
       for (const name of mentioned) expect(servedBody).toContain(name);
       // … but none left as a bare recommendation.
       expect(findExcludedToolMentions(servedBody, excluded)).toEqual([]);
-      expect(servedBody).toContain("[not available on this surface — ");
+      // The stored text is served unchanged; the note follows it (#1044).
+      expect(servedBody.startsWith(s.body)).toBe(true);
+      expect(servedBody).toContain("[Not available on this surface — ");
     }
   });
 });
