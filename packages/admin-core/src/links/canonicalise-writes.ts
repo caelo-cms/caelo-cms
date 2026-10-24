@@ -16,6 +16,7 @@ import {
   canonicaliseHtmlLinks,
   canonicaliseJsonLinks,
   type ExecutionContext,
+  urlFieldNamesInHtml,
 } from "@caelo-cms/shared";
 import { loadModuleStateWithBranchOverlay } from "../snapshots/load.js";
 import {
@@ -27,7 +28,9 @@ import {
 /**
  * Content values of one instance of `moduleId`. Field kinds come from
  * the module's stored schema (a `url` field's whole value is a link; a
- * `text` field's is not).
+ * `text` field's is not — unless the module HTML puts it whole into a
+ * link attribute, `href="{{name}}"`, which makes it one, declared or not:
+ * {@link urlFieldNamesInHtml}, #852).
  *
  * @param previous the values this write replaces (grandfathering), or
  *   undefined for a create.
@@ -45,8 +48,8 @@ export async function canonicaliseInstanceValues(
   const widest = Object.keys(values).map((name) => ({ name, kind: "url" }));
   const probe = probeLinkLookup((run) => canonicaliseContentValues(widest, values, run));
   if (!probe.needsLookup) return { ok: true, value: { ...values }, issues: [], pending: null };
-  const fields = await loadModuleFields(tx, moduleId, ctx.chatBranchId ?? null);
-  if (fields === null) {
+  const schema = await loadModuleSchema(tx, moduleId, ctx.chatBranchId ?? null);
+  if (schema === null) {
     return {
       ok: false,
       message:
@@ -58,14 +61,17 @@ export async function canonicaliseInstanceValues(
   return canonicaliseLinksForWrite(
     tx,
     ctx,
-    (run) => canonicaliseContentValues(fields, values, run),
+    (run) =>
+      canonicaliseContentValues(schema.fields, values, run, urlFieldNamesInHtml(schema.html)),
     { previous, pendingEntity: "content_instance" },
   );
 }
 
 /**
  * A module's HTML and field defaults (layout chrome content lives in
- * the defaults). Either may be undefined on a partial update.
+ * the defaults). Either may be undefined on a partial update. A default
+ * the HTML puts whole into a link attribute is a URL whatever its kind
+ * (#852); on a fields-only update the stored HTML decides.
  *
  * @param previous the module state this write replaces, or undefined.
  */
@@ -80,7 +86,14 @@ export async function canonicaliseModuleCode<F extends CanonicaliseField>(
     ctx,
     (run) => ({
       html: code.html === undefined ? undefined : canonicaliseHtmlLinks(code.html, run, "html"),
-      fields: code.fields === undefined ? undefined : canonicaliseFieldDefaults(code.fields, run),
+      fields:
+        code.fields === undefined
+          ? undefined
+          : canonicaliseFieldDefaults(
+              code.fields,
+              run,
+              urlFieldNamesInHtml(code.html ?? previous?.html ?? ""),
+            ),
     }),
     { previous, pendingEntity: "module" },
   );
@@ -122,22 +135,23 @@ export async function canonicaliseLayoutHtml(
 }
 
 /**
- * The module's declared fields as the chat sees them (its branch's
- * pending edits overlaid on main), or null when the module does not
- * exist — never an empty list standing in for a missing module.
+ * The module's declared fields and HTML as the chat sees them (its
+ * branch's pending edits overlaid on main), or null when the module does
+ * not exist — never an empty list standing in for a missing module.
  */
-async function loadModuleFields(
+async function loadModuleSchema(
   tx: TransactionRunner,
   moduleId: string,
   chatBranchId: string | null,
-): Promise<CanonicaliseField[] | null> {
+): Promise<{ fields: CanonicaliseField[]; html: string } | null> {
   const state = await loadModuleStateWithBranchOverlay(tx, moduleId, chatBranchId);
   if (state === null || state.deletedAt !== null) return null;
-  return state.fields.filter(
+  const fields = state.fields.filter(
     (f): f is CanonicaliseField =>
       typeof f === "object" &&
       f !== null &&
       typeof (f as { name?: unknown }).name === "string" &&
       typeof (f as { kind?: unknown }).kind === "string",
   );
+  return { fields, html: state.html };
 }

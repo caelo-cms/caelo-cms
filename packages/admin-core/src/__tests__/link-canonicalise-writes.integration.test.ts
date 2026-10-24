@@ -264,6 +264,53 @@ describe("content values", () => {
     expect(again.body_html).toBe(stored.body_html);
   });
 
+  it("reads a text-kind field or an undeclared key the HTML puts in an href as a link (#852)", async () => {
+    const moduleId = await makeModule(
+      "text-href",
+      '<a href="{{target}}">{{label}}</a><a href="{{extra}}">more</a><a href="{{base}}/x">part</a>',
+      [
+        { name: "target", kind: "text", label: "Target" },
+        { name: "label", kind: "text", label: "Label" },
+        { name: "base", kind: "text", label: "Base" },
+        { name: "fallback", kind: "text", label: "Fallback", default: `/${PFX}-about` },
+      ],
+    );
+    const { contentInstanceId } = await run<{ contentInstanceId: string }>(
+      "content_instances.create",
+      {
+        moduleId,
+        values: {
+          target: `/${PFX}-about`,
+          label: `/${PFX}-about`,
+          extra: `/${PFX}-pricing`,
+          base: `/${PFX}-about`,
+        },
+      },
+    );
+    const stored = await storedValues(contentInstanceId);
+    expect(stored.target).toBe(`caelo:page/${aboutId}`);
+    expect(stored.extra).toBe(`caelo:page/${pricingId}`);
+    // Rendered as text, and only part of an href: neither is a link.
+    expect(stored.label).toBe(`/${PFX}-about`);
+    expect(stored.base).toBe(`/${PFX}-about`);
+    expect(
+      await refused("content_instances.set_values", {
+        id: contentInstanceId,
+        values: { target: `/${PFX}-nowhere` },
+      }),
+    ).toContain(`"/${PFX}-nowhere" is not the path of any page`);
+
+    // A field default the HTML puts in an href is a link too.
+    await run("modules.update", { moduleId, html: '<a href="{{fallback}}">x</a>' });
+    await run("modules.update", {
+      moduleId,
+      fields: [{ name: "fallback", kind: "text", label: "Fallback", default: `/${PFX}-pricing` }],
+    });
+    expect(JSON.stringify((await storedModule(moduleId)).fields)).toContain(
+      `"default":"caelo:page/${pricingId}"`,
+    );
+  });
+
   it("refuses a link to no page with an actionable message and writes nothing", async () => {
     const moduleId = await makeModule("cta-missing", '<a href="{{cta_href}}">x</a>', CTA_FIELDS);
     const message = await refused("content_instances.create", {

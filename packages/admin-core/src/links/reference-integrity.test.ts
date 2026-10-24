@@ -217,6 +217,61 @@ describe("reference integrity policy (#724 decisions)", () => {
     expect(issues).toEqual([]);
   });
 
+  it("an href filled by a text-kind field or an undeclared stored key is checked (#852)", () => {
+    const m = mod(
+      1,
+      '<a href="{{target}}">{{label}}</a><a href="{{extra}}">more</a><ul>{{#links}}<li><a href="{{.}}">x</a></li>{{/links}}</ul><p>{{stale}}</p>',
+      [
+        { name: "target", kind: "text" },
+        { name: "label", kind: "text" },
+        { name: "links", kind: "text-list" },
+      ],
+    );
+    const ci = id(201);
+    const issues = scan(
+      model({
+        modules: new Map([[m.id, m]]),
+        instances: new Map([
+          [
+            ci,
+            {
+              id: ci,
+              moduleId: m.id,
+              values: {
+                // A text field in an href: its literal path is a link.
+                target: "/about",
+                label: "/nope",
+                // No field declares it, yet `{{extra}}` renders it into an href.
+                extra: `caelo:page/${GONE}`,
+                links: ["/gone-literal"],
+                // Undeclared and rendered as text: a path-like string is no link.
+                stale: "/also-text",
+                // Undeclared and rendered nowhere: ships nothing.
+                unused: `caelo:page/${GONE}`,
+              },
+            },
+          ],
+        ]),
+        placements: [
+          {
+            pageId: ABOUT,
+            blockName: "content",
+            moduleId: m.id,
+            contentInstanceId: ci,
+            syncMode: "unsynced",
+          },
+        ],
+      }),
+      "staging",
+    );
+    const found = issues.map((i) => `${i.problem}@${i.where}`).sort();
+    expect(found).toEqual([
+      "broken-literal@values.links[0]",
+      "literal-link@values.target",
+      "missing-target@values.extra",
+    ]);
+  });
+
   it("a link without a same-language page is variant-missing on the rendering page only", () => {
     const m = model({
       ...placed(DE_HOME, `caelo:page/${ABOUT}`),
