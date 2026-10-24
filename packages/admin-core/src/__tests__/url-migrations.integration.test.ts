@@ -15,6 +15,7 @@ import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
+import { PENDING_TABLES } from "../ops/cancel_proposal.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -307,5 +308,71 @@ describe("#390 — URL-diff engine", () => {
         >,
     );
     expect(path[0]?.current_path).toBe("/de/t390-delta");
+  });
+
+  // #699 — the AI withdraws a URL-migration proposal it queued in error.
+  it("the AI cancels its own pending migration; another actor cannot", async () => {
+    await cleanup();
+    const pageE = await seedPage("t390-epsilon");
+    await sqlSystem(async (tx) => {
+      await tx.unsafe(`UPDATE pages SET current_path = '/de/t390-epsilon' WHERE id = '${pageE}'`);
+    });
+    const AI_CTX: ExecutionContext = { ...SYS_CTX, actorKind: "ai" };
+    const proposed = await execute(registry, adapter, AI_CTX, "url_migrations.propose_migrate", {
+      reason: "queued in error",
+    });
+    if (!proposed.ok) throw new Error(JSON.stringify(proposed.error));
+    const { proposalId } = proposed.value as { proposalId: string };
+
+    const foreign = await execute(
+      registry,
+      adapter,
+      { ...AI_CTX, actorId: "00000000-0000-0000-0000-00000000eeee" },
+      "pending_proposals.cancel",
+      { proposalId },
+    );
+    expect(foreign.ok).toBe(false);
+
+    const cancelled = await execute(registry, adapter, AI_CTX, "pending_proposals.cancel", {
+      proposalId,
+      reason: "wrong plugin",
+    });
+    if (!cancelled.ok) throw new Error(JSON.stringify(cancelled.error));
+    expect(cancelled.value).toEqual({ cancelled: true, domain: "url_migrations" });
+
+    const row = await sqlSystem(
+      (tx) =>
+        tx.unsafe(
+          `SELECT status, decision_reason FROM url_migration_pending_actions WHERE id = '${proposalId}'`,
+        ) as Promise<{ status: string; decision_reason: string }[]>,
+    );
+    expect(row[0]).toEqual({ status: "cancelled", decision_reason: "wrong plugin" });
+    const queue = await execute(registry, adapter, SYS_CTX, "url_migrations.list_pending", {});
+    expect(queue.ok && (queue.value as { proposals: unknown[] }).proposals).toEqual([]);
+    // Withdrawing moved nothing.
+    const path = await sqlSystem(
+      (tx) =>
+        tx.unsafe(`SELECT current_path FROM pages WHERE id = '${pageE}'`) as Promise<
+          { current_path: string }[]
+        >,
+    );
+    expect(path[0]?.current_path).toBe("/de/t390-epsilon");
+  });
+
+  it("pending_proposals.cancel covers every *_pending_actions table, and each allows 'cancelled'", async () => {
+    const tables = await sqlSystem(
+      (tx) =>
+        tx.unsafe(`
+          SELECT c.relname AS name, pg_get_constraintdef(k.oid) AS status_check
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+            LEFT JOIN pg_constraint k
+              ON k.conrelid = c.oid AND k.contype = 'c' AND k.conname = c.relname || '_status_check'
+           WHERE c.relkind = 'r' AND c.relname LIKE '%\\_pending\\_actions'
+           ORDER BY 1`) as Promise<{ name: string; status_check: string | null }[]>,
+    );
+    expect(tables.length).toBeGreaterThan(10);
+    expect(tables.map((t) => t.name)).toEqual([...PENDING_TABLES].sort());
+    for (const t of tables) expect(`${t.name}: ${t.status_check}`).toContain("'cancelled'");
   });
 });

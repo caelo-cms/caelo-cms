@@ -9,7 +9,8 @@
  *    AI callers to rows where proposed_by = ctx.actorId. Human callers
  *    can cancel any of their own proposals. (Reject-on-behalf-of-others
  *    is the operator's existing /settings/<domain>/pending Reject button.)
- *  - Sets status='cancelled' (added to the CHECK in v0.2.35) on the
+ *  - Sets status='cancelled' (added to the CHECK in v0.2.35; for
+ *    url_migration + quality in 0349) on the
  *    matching row in whichever *_pending_actions table holds the id.
  *  - Idempotent: cancelling an already-applied/rejected/cancelled row
  *    returns OK with `wasAlreadyDecided: true`.
@@ -26,7 +27,8 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 
-const PENDING_TABLES = [
+/** Every `*_pending_actions` table the cancel op searches; exported for the coverage test. */
+export const PENDING_TABLES = [
   "deploy_pending_actions",
   "layout_pending_actions",
   "user_pending_actions",
@@ -40,6 +42,11 @@ const PENDING_TABLES = [
   "site_defaults_pending_actions",
   "plugin_pending_actions",
   "owner_settings_pending_actions",
+  // #699 — these three were missing: the AI could not withdraw a URL
+  // migration, theme or quality proposal it queued in error.
+  "url_migration_pending_actions",
+  "theme_pending_actions",
+  "quality_pending_actions",
 ] as const;
 
 export const cancelProposalOp = defineOperation({
@@ -206,6 +213,27 @@ async function runCancelOnTable(
         WHERE id=${proposalId}::uuid AND status='pending' AND proposed_by=${actorId}::uuid
         RETURNING id::text AS id
       `)) as unknown as { id: string }[];
+    case "url_migration_pending_actions":
+      return (await tx.execute(sql`
+        UPDATE url_migration_pending_actions SET status='cancelled', decided_at=now(),
+          decided_by=${actorId}::uuid, decision_reason=${reason}
+        WHERE id=${proposalId}::uuid AND status='pending' AND proposed_by=${actorId}::uuid
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+    case "theme_pending_actions":
+      return (await tx.execute(sql`
+        UPDATE theme_pending_actions SET status='cancelled', decided_at=now(),
+          decided_by=${actorId}::uuid, decision_reason=${reason}
+        WHERE id=${proposalId}::uuid AND status='pending' AND proposed_by=${actorId}::uuid
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+    case "quality_pending_actions":
+      return (await tx.execute(sql`
+        UPDATE quality_pending_actions SET status='cancelled', decided_at=now(),
+          decided_by=${actorId}::uuid, decision_reason=${reason}
+        WHERE id=${proposalId}::uuid AND status='pending' AND proposed_by=${actorId}::uuid
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
   }
 }
 
@@ -218,5 +246,6 @@ function tableToDomain(table: string): string {
   if (table === "site_defaults_pending_actions") return "site_defaults";
   if (table === "plugin_pending_actions") return "plugins";
   if (table === "owner_settings_pending_actions") return "owner_settings";
+  if (table === "quality_pending_actions") return "quality";
   return table.replace(/_pending_actions$/, "") + "s".replace(/ss$/, "s");
 }
