@@ -304,6 +304,55 @@ describe("renderTemplate — empty single module field (#1041)", () => {
   });
 });
 
+describe("renderTemplate — literal braces in content are data (#1053)", () => {
+  it("a text-list item keeps a literal {{Page URL}}", () => {
+    const r = renderTemplate({
+      html: "<ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>",
+      fields: [{ name: "items", kind: "text-list" }],
+      contentValues: { items: ["link.href = '{{Page URL}}';", "{{title}}"] },
+    });
+    expect(r.html).toBe("<ul><li>link.href = '{{Page URL}}';</li><li>{{title}}</li></ul>");
+    expect(r.missingSlots).toEqual([]);
+  });
+
+  it("a link-list label is never re-substituted as a placeholder", () => {
+    const r = renderTemplate({
+      html: '<nav>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}</nav>',
+      fields: [{ name: "nav", kind: "link-list" }],
+      contentValues: { nav: [{ label: "{{href}} {{Click URL}}", href: "/x" }] },
+    });
+    expect(r.html).toBe('<nav><a href="/x">{{href}} {{Click URL}}</a></nav>');
+  });
+
+  it("rendered nested module HTML is pasted verbatim, not parsed again", () => {
+    const r = renderTemplate({
+      html: "<section>{{>body}}</section>",
+      fields: [{ name: "body", kind: "module" }],
+      contentValues: { body: { moduleId: "m", contentInstanceId: "c" } },
+      partials: { body: "<code>{{Page URL}}</code>" },
+    });
+    expect(r.html).toBe("<section><code>{{Page URL}}</code></section>");
+  });
+
+  it("a top-level {{{body_html}}} value with braces still renders as written", () => {
+    const r = renderTemplate({
+      html: "<article>{{{body_html}}}</article>",
+      fields: [{ name: "body_html", kind: "richtext" }],
+      contentValues: { body_html: "<p><code>{{Page URL}}</code></p>" },
+    });
+    expect(r.html).toBe("<article><p><code>{{Page URL}}</code></p></article>");
+  });
+
+  it("a non-identifier tag in module HTML stays literal instead of rendering empty", () => {
+    const r = renderTemplate({
+      html: "<script>dataLayer.push({ url: '{{Page URL}}' })</script>",
+      fields: [],
+    });
+    expect(r.html).toBe("<script>dataLayer.push({ url: '{{Page URL}}' })</script>");
+    expect(r.missingSlots).toEqual([]);
+  });
+});
+
 describe("renderTemplate — loud-raw on unknown sections (AC #3)", () => {
   it("unknown {{#unknown}}…{{/unknown}} leaves raw markers + tracks field-not-declared", () => {
     const r = renderTemplate({
