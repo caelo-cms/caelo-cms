@@ -27,6 +27,7 @@ const NOT_IMPLEMENTED =
   "Azure Blob static publisher not yet implemented. Stage / Confirm-publish on Azure Cloud installs is tracked for a future release; until then run on GCP, self-hosted, or wait for the Azure adapter. See https://github.com/caelo-cms/caelo-cms/issues for status.";
 
 export const azureStaticPublisher: StaticPublisher = {
+  servesCurrentDir: false,
   async publishStaging() {
     throw new Error(NOT_IMPLEMENTED);
   },

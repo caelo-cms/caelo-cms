@@ -2,11 +2,17 @@
 
 /**
  * What a finished Stage shows the operator: where to preview the staged
- * build and how many draft pages it does NOT contain. Shared by /edit's
+ * build, how many draft pages it does NOT contain, and (#1008) the active
+ * plugins it was built without. Shared by /edit's
  * Stage button and the Open changes overview (issue #620).
  */
 
-import { describeUnpublishedLinks, type UnpublishedLinkTarget } from "@caelo-cms/admin-core";
+import {
+  type DeployPluginProblem,
+  describeStagedPluginProblems,
+  describeUnpublishedLinks,
+  type UnpublishedLinkTarget,
+} from "@caelo-cms/admin-core";
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { getQueryContext } from "./query.js";
@@ -31,6 +37,8 @@ export async function describeStagedBuild(
     readonly draftPages: { readonly count: number; readonly pages: readonly { title: string }[] };
     /** #724 — links in the build to pages it does not contain. */
     readonly unpublishedLinks: readonly UnpublishedLinkTarget[];
+    /** #1008 — active plugins that did not run while the build ran. */
+    readonly pluginProblems: readonly DeployPluginProblem[];
   },
   pageId: string | null,
 ): Promise<{
@@ -39,6 +47,7 @@ export async function describeStagedBuild(
   draftPageCount: number;
   draftPageTitles: string[];
   unpublishedLinkWarning: string | null;
+  pluginProblemWarning: string | null;
 }> {
   const { adapter, registry } = getQueryContext();
   let previewUrl: string;
@@ -80,5 +89,6 @@ export async function describeStagedBuild(
     draftPageCount: build.draftPages.count,
     draftPageTitles: build.draftPages.pages.map((p) => p.title),
     unpublishedLinkWarning: describeUnpublishedLinks(build.unpublishedLinks),
+    pluginProblemWarning: describeStagedPluginProblems(build.pluginProblems),
   };
 }

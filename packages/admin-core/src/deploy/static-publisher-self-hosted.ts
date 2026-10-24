@@ -23,6 +23,7 @@ import { dirname, join, sep } from "node:path";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
 export const selfHostedStaticPublisher: StaticPublisher = {
+  servesCurrentDir: true,
   /**
    * For self-hosted, the generator subprocess already wrote
    * `<outDir>/builds/<runId>/` AND synced into `<outDir>/current/`

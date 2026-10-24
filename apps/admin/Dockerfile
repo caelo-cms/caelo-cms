@@ -154,8 +154,8 @@ RUN bun run --filter @caelo-cms/mcp-server build
 
 # v0.2.18 — build every Tier-1 plugin's dist/. The plugin-host loader
 # dynamic-imports `packages/plugins/<slug>/dist/index.js` at startup;
-# without these built into the image, every plugin lands at
-# status='failed'. .dockerignore excludes dist/ from the COPY, so the
+# without these built into the image, every plugin fails to load
+# (recorded in plugin_errors). .dockerignore excludes dist/ from the COPY, so the
 # Dockerfile must produce them itself. tsc -b is incremental, so the
 # cost is negligible after the first cached layer.
 RUN bunx tsc -b packages/plugins/*

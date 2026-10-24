@@ -19,7 +19,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { moduleUpdateSchema, redirectTargetPathSchema } from "@caelo-cms/shared";
+import { moduleUpdateSchema, redirectTargetPathSchema, sourceTextArg } from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import {
@@ -327,9 +327,15 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
 // a module's field schema or metadata and the AI had to fall back to N×
 // edit_module (the exact N+1 chain the bulk tool exists to replace). Reusing
 // the shared schema means the tool can never be a subset of the op again.
-const moduleUpdateInput = z
-  .object({ updates: z.array(moduleUpdateSchema).min(1).max(200) })
-  .strict();
+// The source fields additionally decode a whole-value CDATA envelope, like
+// every other AI authoring surface (`sourceTextArg`); the op's own refusal
+// of any other CDATA marker still applies to the decoded value.
+const moduleUpdateItem = moduleUpdateSchema.extend({
+  html: sourceTextArg(moduleUpdateSchema.shape.html.unwrap()).optional(),
+  css: sourceTextArg(moduleUpdateSchema.shape.css.unwrap()).optional(),
+  js: sourceTextArg(moduleUpdateSchema.shape.js.unwrap()).optional(),
+});
+const moduleUpdateInput = z.object({ updates: z.array(moduleUpdateItem).min(1).max(200) }).strict();
 type ModuleUpdateInput = z.infer<typeof moduleUpdateInput>;
 
 export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput> = {

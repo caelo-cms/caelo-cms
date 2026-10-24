@@ -37,6 +37,7 @@
         draftPageTitles?: string[];
         alsoIncludes?: string[];
         unpublishedLinkWarning?: string | null;
+        pluginProblemWarning?: string | null;
       };
       // Run #9 R10 — say what is NOT in the staged build. Staging ships
       // published pages only; a success toast that hides "your 92 draft
@@ -61,9 +62,17 @@
       }
       // #724 — links to pages the build does not contain lead nowhere.
       if (typeof s.unpublishedLinkWarning === "string") parts.push(s.unpublishedLinkWarning);
-      toast.success("Staged.", {
-        description: parts.length > 0 ? parts.join(" — ") : undefined,
-      });
+      const description = parts.length > 0 ? parts.join(" — ") : undefined;
+      // #1008 — a Stage built without an active plugin is not a plain
+      // success: staging lacks the plugin's output and Publish live will
+      // refuse it, so it is said first and loudly.
+      if (typeof s.pluginProblemWarning === "string") {
+        toast.warning("Staged without an active plugin.", {
+          description: [s.pluginProblemWarning, description].filter(Boolean).join(" — "),
+        });
+      } else {
+        toast.success("Staged.", { description });
+      }
     } else if (typeof f["ok"] === "boolean" && f["ok"] === true) {
       toast.success("Saved.");
     } else if (typeof f["ok"] === "string") {

@@ -135,6 +135,7 @@ import {
   listPluginInstallationsTool,
   proposeRevokePluginCapabilityTool,
   rejectPluginTool,
+  reloadPluginTool,
   revalidatePluginTool,
 } from "./plugin-lifecycle-tools.js";
 import { proposeDeployPromoteTool, proposeDeployRollbackTool } from "./propose-deploy-promote.js";
@@ -532,6 +533,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(proposeRevokePluginCapabilityTool);
   registry.register(rejectPluginTool);
   registry.register(revalidatePluginTool);
+  registry.register(reloadPluginTool);
   registry.register(proposeLayoutDeleteTool);
   registry.register(proposeUserCreateTool);
   registry.register(proposeUserSetRolesTool);

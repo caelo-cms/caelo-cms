@@ -207,14 +207,20 @@ describe("build_page writes the new page's meta description (fill-once)", () => 
     expect((await readiness()).ready).toBe(true);
   });
 
-  it("refuses metaDescription for an existing page, pointing at autofill_page_seo", async () => {
+  it("pageId: fills an existing page's first description, keeps one it already has", async () => {
     const pageId = await createPage(`${PFX}-existing`, "Existing", "draft");
-    const r = await execute(registry, adapter, SYS, "pages.build_page", {
-      page: { pageId, metaDescription: "Should not be written." },
+    const first = await op<{ metaDescription: string | null }>("pages.build_page", {
+      page: { pageId, metaDescription: "Our workshop, our tools, our people." },
       modules: [],
     });
-    expect(r.ok).toBe(false);
-    expect(JSON.stringify(r.ok ? null : r.error)).toContain("autofill_page_seo");
+    expect(first.metaDescription).toBe("written");
+    const again = await op<{ metaDescription: string | null }>("pages.build_page", {
+      page: { pageId, metaDescription: "Something else entirely." },
+      modules: [],
+    });
+    expect(again.metaDescription).toBe("kept-existing");
+    const seo = await op<{ seo: { metaDescription: string } }>("pages_seo.get", { pageId });
+    expect(seo.seo.metaDescription).toBe("Our workshop, our tools, our people.");
   });
 });
 

@@ -21,6 +21,8 @@ import {
   composeHeadBlock,
   dormantDataListNames,
   injectPluginAssets,
+  pluginNotRunningMarker,
+  pluginsNotRunningHere,
   resolveDataLists,
   resolveModuleDeferrals,
   resolvePublicPageUrls,
@@ -1417,6 +1419,9 @@ export const renderPagePreviewOp = defineOperation({
         ...fontMarkers,
         ...cssVarMarkers,
         ...seoMarkers,
+        // #1008 — an active plugin this server could not load renders
+        // without its contribution; loud here (and Publish live refuses).
+        ...pluginsNotRunningHere().map((p) => pluginNotRunningMarker(p.slug)),
         // Epic #724 — `link-target-missing:<kind>/<id>`, once per target.
         ...new Set([
           ...pageLinkMarkers,

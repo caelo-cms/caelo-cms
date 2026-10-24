@@ -84,6 +84,7 @@ import {
   setChatExtendedThinkingOp,
   setPinnedElementsOp,
 } from "./ops/chat/sessions.js";
+import { pinSkillsIndexOp } from "./ops/chat/skills-index-pin.js";
 import {
   listPendingChangesOp,
   stageChatChangesOp,
@@ -217,6 +218,7 @@ import {
   proposeDeployRollbackOp,
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
+import { beginDeployRunOp } from "./ops/deploy-run-lifecycle.js";
 import { hostingStatusOp, reconnectHostingDomainOp } from "./ops/domain_hosting.js";
 import {
   executeDomainProposalOp,
@@ -415,6 +417,7 @@ import {
   revalidatePluginOp,
   submitPluginOp,
 } from "./ops/plugins/registry.js";
+import { reloadPluginOp } from "./ops/plugins/reload.js";
 import { executeUninstallPluginOp, proposeUninstallPluginOp } from "./ops/plugins/uninstall.js";
 import {
   getProvisioningOutputsOp,
@@ -856,6 +859,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listChatSessionsOp);
   registry.register(createChatSessionOp);
   registry.register(getChatSessionOp);
+  registry.register(pinSkillsIndexOp);
   registry.register(getChatBranchIdOp);
   registry.register(renameChatSessionOp);
   registry.register(archiveChatSessionOp);
@@ -996,6 +1000,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);
   registry.register(updateDeployProgressOp);
+  // #1003 — a run's row, committed when it starts (visible while it runs).
+  registry.register(beginDeployRunOp);
   // #969 — the orchestrator's keep-alive for the served staging preview.
   registry.register(refreshStagingPreviewOp);
   // v0.2.19 — propose/execute pair for promote + rollback. AI proposes
@@ -1345,6 +1351,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(disablePluginOp);
   registry.register(rejectPluginOp);
   registry.register(revalidatePluginOp);
+  registry.register(reloadPluginOp);
   // v0.2.18 — comments long-term archive (cms_public is now ephemeral
   // after moderation; long-term store + static-render reads land here).
   registry.register(commentArchiveInsertOp);

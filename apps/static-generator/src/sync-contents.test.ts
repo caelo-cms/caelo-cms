@@ -56,4 +56,27 @@ describe("syncContents", () => {
     await syncContents(src, dst);
     expect(await listing(dst)).toEqual(["x/", "x/keep.html"]);
   });
+
+  it("#1003 mirrors a large tree exactly, with stale files and kind changes at every depth", async () => {
+    // More files than the parallelism, nested directories, and conflicts at
+    // depth 1 and 3: the batched copy must end in exactly src's tree.
+    const srcFiles: Record<string, string> = {};
+    const dstFiles: Record<string, string> = {};
+    for (let i = 0; i < 300; i++) {
+      srcFiles[`p-${i}/index.html`] = `new ${i}`;
+      if (i % 3 === 0) dstFiles[`p-${i}/index.html`] = `old ${i}`;
+    }
+    srcFiles["deep/a/b/leaf"] = "file now";
+    dstFiles["deep/a/b/leaf/index.html"] = "was a dir";
+    srcFiles["swap/index.html"] = "dir now";
+    dstFiles.swap = "was a file";
+    dstFiles["gone/x/y/old.html"] = "stale";
+    const src = await tree(srcFiles);
+    const dst = await tree(dstFiles);
+    await syncContents(src, dst);
+    expect(await listing(dst)).toEqual(await listing(src));
+    expect(await readFile(join(dst, "p-299/index.html"), "utf8")).toBe("new 299");
+    expect(await readFile(join(dst, "p-0/index.html"), "utf8")).toBe("new 0");
+    expect(await readFile(join(dst, "deep/a/b/leaf"), "utf8")).toBe("file now");
+  });
 });

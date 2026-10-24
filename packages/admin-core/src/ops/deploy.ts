@@ -27,6 +27,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 // Top-level import, NOT a lazy `require()`. issue #262: under vite's dev
 // SSR the module graph is pure ESM on a Node runtime, where `require` is
 // undefined — the lazy call threw inside the deploy.trigger transaction,
@@ -59,18 +60,28 @@ import {
 import { type DeployTarget, readSeoSettings } from "@caelo-cms/static-generator";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { describeError } from "../ai/tools/_describe-error.js";
+import { SYSTEM_ACTOR_ID } from "../audit.js";
 import {
   buildManifestOf,
   compareBuildManifests,
   hostNormaliser,
   parityRefusal,
 } from "../deploy/build-parity.js";
+import { holdDeployRun } from "../deploy/deploy-run-lock.js";
 import { draftPagesSummary, mainDraftPages } from "../deploy/draft-pages.js";
 import { lockLiveReleases } from "../deploy/live-release-lock.js";
 import {
   describeMissingMetaDescriptions,
   pagesMissingMetaDescription,
 } from "../deploy/missing-seo.js";
+import {
+  activePluginProblems,
+  deployPluginProblem,
+  describePluginProblems,
+  stagedWithoutPlugins,
+} from "../deploy/plugin-problems.js";
+import { ProgressThrottle } from "../deploy/progress-throttle.js";
 import { stagingSiteUrl } from "../deploy/staging-domain.js";
 import { lockStagingPublication } from "../deploy/staging-publication-lock.js";
 import {
@@ -87,7 +98,7 @@ import {
   openAiStageHoldIds,
   releaseAiStageHolds,
 } from "../stage/ai-stage-hold.js";
-import { json, uuidList } from "./quality/_shared.js";
+import { json } from "./quality/_shared.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 import {
   checkProductionBuildGate,
@@ -239,6 +250,19 @@ function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
     buildId: r.build_id,
     progress,
   };
+}
+
+/** Minimum gap between two progress writes of one build (#1003). */
+const PROGRESS_INTERVAL_MS = 1000;
+
+/**
+ * The system actor for a run's internal steps (deploy.begin_run,
+ * deploy.update_progress), keeping the trigger's request id for log
+ * correlation. Those ops are system callbacks: an AI-started Stage must
+ * reach them too.
+ */
+function systemContextOf(ctx: ExecutionContext): ExecutionContext {
+  return { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: ctx.requestId };
 }
 
 export const listDeployTargetsOp = defineOperation({
@@ -401,7 +425,10 @@ async function runGenerator(
     changedPageIds?: ReadonlyArray<string>;
     /** #650 — render this origin instead of the stored site URL. */
     siteBaseUrlOverride?: string;
-    /** #650 — false: leave `<outDir>/current/` alone (Publish live rebuild). */
+    /**
+     * false: leave `<outDir>/current/` alone — #650 Publish live's rebuild,
+     * and #1003 every build on a publisher that does not serve `current/`.
+     */
     syncCurrent?: boolean;
   },
 ): Promise<{ ok: true; result: SubprocessDone } | { ok: false; message: string; stderr: string }> {
@@ -411,7 +438,23 @@ async function runGenerator(
   if (!adminUrl || !publicUrl) {
     return { ok: false, message: "ADMIN_DATABASE_URL / PUBLIC_DATABASE_URL not set", stderr: "" };
   }
+  // #1003 — progress lands on the run row deploy.begin_run committed, at
+  // most once per interval (it was one transaction per page), as the system
+  // actor: update_progress is an internal callback whoever started the run.
+  const progress = new ProgressThrottle<{ pagesDone: number; pagesTotal: number }>(
+    (p) =>
+      execute(registry, adapter, systemContextOf(ctx), "deploy.update_progress", {
+        runId: args.runId,
+        ...p,
+      }),
+    PROGRESS_INTERVAL_MS,
+  );
   return await new Promise((respond) => {
+    // The last progress is written before the caller finishes the run, so
+    // no progress write can land after the run's final update.
+    const finish = (r: Parameters<typeof respond>[0]): void => {
+      void progress.flush().then(() => respond(r));
+    };
     const child = spawn("bun", ["run", args.cliPath], {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env },
@@ -472,13 +515,7 @@ async function runGenerator(
         if (ev.kind === "plugin-call") {
           void answerPluginCall(ev);
         } else if (ev.kind === "progress") {
-          // Fire-and-forget: progress updates are advisory, a stale row
-          // is preferable to blocking the parent on each line.
-          void execute(registry, adapter, ctx, "deploy.update_progress", {
-            runId: args.runId,
-            pagesDone: ev.pagesDone,
-            pagesTotal: ev.pagesTotal,
-          });
+          progress.offer({ pagesDone: ev.pagesDone, pagesTotal: ev.pagesTotal });
         } else if (ev.kind === "done") {
           const done = subprocessDoneSchema.safeParse(ev);
           finalEvent = done.success
@@ -495,17 +532,17 @@ async function runGenerator(
     child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
 
     child.on("error", (e) => {
-      respond({ ok: false, message: e.message, stderr: Buffer.concat(stderrChunks).toString() });
+      finish({ ok: false, message: e.message, stderr: Buffer.concat(stderrChunks).toString() });
     });
     child.on("close", (code) => {
       if (!child.stdin.destroyed) child.stdin.end();
       const stderr = Buffer.concat(stderrChunks).toString();
       if (finalEvent && finalEvent.kind === "done") {
-        respond({ ok: true, result: finalEvent });
+        finish({ ok: true, result: finalEvent });
       } else if (finalEvent && finalEvent.kind === "error") {
-        respond({ ok: false, message: finalEvent.message, stderr });
+        finish({ ok: false, message: finalEvent.message, stderr });
       } else {
-        respond({
+        finish({
           ok: false,
           message: `generator exited ${code} without a done event`,
           stderr,
@@ -587,6 +624,12 @@ export const triggerDeployOp = defineOperation({
      * A Stage warning; Publish live blocks on them (rollout F).
      */
     unpublishedLinkTargets: z.array(unpublishedLinkTargetSchema),
+    /**
+     * #1008 — active plugins that were not running when this build ran,
+     * so it lacks their output. A Stage warning; such a Stage is never
+     * published, and a production build refuses instead.
+     */
+    pluginProblems: z.array(deployPluginProblem),
   }),
   handler: async (ctx, input, tx) => {
     const startedAt = await runStartedAt(tx);
@@ -691,6 +734,20 @@ export const triggerDeployOp = defineOperation({
         return err({ kind: "HandlerError", operation: "deploy.trigger", message: missingSeo });
       }
     }
+    // #1008 — a site built without an active plugin lacks what it adds. A
+    // Stage records and reports it; production refuses (no override: the
+    // fix is to get the plugin running, not to ship without it).
+    const pluginProblems =
+      target.env === "staging" || target.env === "production" ? await activePluginProblems(tx) : [];
+    if (target.env === "production" && pluginProblems.length > 0) {
+      const message = describePluginProblems(pluginProblems);
+      await tx.execute(sql`
+        INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message, plugin_problems)
+        VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz, clock_timestamp(),
+                ${`Blocked, plugins not running: ${message}`}, ${jsonbParam(pluginProblems)})
+      `);
+      return err({ kind: "HandlerError", operation: "deploy.trigger", message });
+    }
     if (target.env === "production") {
       const gate = await checkProductionBuildGate(tx, ctx, input.publishAnyway);
       if (gate.ok) override = gate.override;
@@ -727,56 +784,74 @@ export const triggerDeployOp = defineOperation({
     // starts, so a later direct production build can tell whether main
     // still renders what this Stage's quality check saw (taken before the
     // generator runs: a change landing mid-build counts as unchecked).
-    const fingerprint =
-      target.env === "staging" ? jsonbParam(await computeRenderFingerprint(tx)) : sql`NULL`;
+    const fingerprint = target.env === "staging" ? await computeRenderFingerprint(tx) : null;
     // Issue #620 — the AI holds this build covers: open now means committed
     // together with its merge, before the generator reads main.
     const coveredHolds = await openAiStageHoldIds(tx);
-    // #834 — the Caelo version rendering this build: Publish live's parity
-    // guard names an upgrade between Stage and Publish live as the cause.
-    const runIdRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status, started_at, render_fingerprint,
-                               covered_ai_hold_ids, caelo_version)
-      VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'running', ${startedAt}::timestamptz,
-              ${fingerprint}, ${uuidList(coveredHolds)}, ${CAELO_VERSION})
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
-    const runId = runIdRows[0]?.id;
-    if (!runId) {
-      return err({
-        kind: "HandlerError",
-        operation: "deploy.trigger",
-        message: "could not create deploy_runs row",
-      });
-    }
-    timer.lap("prepare");
 
-    const repoRoot = resolveOutputRoot(input.repoRoot);
-    const cliPath = resolveGeneratorCli();
-
-    // The trigger op needs a registry+adapter pair to land progress
-    // updates on the row from inside its subprocess-watcher loop. The
-    // host process sets the bridge at startup; tests do the same.
     const runKind = target.env === "staging" ? "stage" : "build";
+    // The trigger op needs a registry+adapter pair to commit the run row and
+    // land progress on it from outside this transaction. The host process
+    // sets the bridge at startup; tests do the same.
     const bridge = getDeployBridge();
     if (!bridge) {
-      // The generator could not start: its step ends here, recorded like
-      // every other failure after the run began.
+      // Preparation is done and the generator could not start: the failed
+      // run records both steps like every other failure after start.
+      timer.lap("prepare");
       timer.lap("generator");
-      await tx.execute(sql`
-        UPDATE deploy_runs
-        SET status = 'failed', finished_at = clock_timestamp(),
-            error_message = 'deploy-bridge not configured',
-            phase_timings = ${phaseTimingsParam(timer)}
-        WHERE id = ${runId}::uuid
-      `);
-      logRunTimings(runKind, runId, timer, { status: "failed" });
+      const failedRows = (await tx.execute(sql`
+        INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at,
+                                 error_message, phase_timings)
+        VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz,
+                clock_timestamp(), 'deploy-bridge not configured', ${phaseTimingsParam(timer)})
+        RETURNING id::text AS id
+      `)) as unknown as { id: string }[];
+      const failedRunId = failedRows[0]?.id;
+      if (!failedRunId) throw new Error("INSERT INTO deploy_runs returned no row");
+      logRunTimings(runKind, failedRunId, timer, { status: "failed" });
       return err({
         kind: "HandlerError",
         operation: "deploy.trigger",
         message: "deploy-bridge not configured",
       });
     }
+    // #1003 — the run row is committed now, in its own transaction, so the
+    // deployments page shows the running build and its progress lands; this
+    // transaction finishes it. The lock, held until this transaction ends,
+    // is what tells a later run that this one is still building.
+    const runId = randomUUID();
+    await holdDeployRun(tx, runId);
+    const begun = await execute(
+      bridge.registry,
+      bridge.adapter,
+      systemContextOf(ctx),
+      "deploy.begin_run",
+      {
+        runId,
+        targetId: target.id,
+        actorId: ctx.actorId,
+        startedAt,
+        renderFingerprint: fingerprint,
+        coveredAiHoldIds: coveredHolds,
+        // #834 — the Caelo version rendering this build: Publish live's
+        // parity guard names an upgrade between Stage and Publish live.
+        caeloVersion: CAELO_VERSION,
+        // #1008 — which active plugins did not run for this build; Publish
+        // live refuses a Stage that has any (null: a dev build, not checked).
+        pluginProblems: target.env === "dev" ? null : pluginProblems,
+      },
+    );
+    if (!begun.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "deploy.trigger",
+        message: `could not start the deploy run: ${describeError(begun.error)}`,
+      });
+    }
+    timer.lap("prepare");
+
+    const repoRoot = resolveOutputRoot(input.repoRoot);
+    const cliPath = resolveGeneratorCli();
     // v0.2.78 — on Cloud Run the row's out_dir (e.g. 'output/staging')
     // resolves to a path the container can't write (read-only FS).
     // Override to /tmp/caelo-builds/<env> which is always writable.
@@ -788,6 +863,23 @@ export const triggerDeployOp = defineOperation({
       ...rowToTarget(target),
       outDir: effectiveOutDir(provider, target.env, target.out_dir),
     };
+    // Loaded before the build: the publisher decides whether the build is
+    // mirrored into `current/` (#1003 — only a serving layer that reads it
+    // needs the copy, which was the largest step of a Stage).
+    let publisher: StaticPublisher;
+    try {
+      publisher = await loadStaticPublisher(provider);
+    } catch (e) {
+      const message = `publish failed: ${e instanceof Error ? e.message : String(e)}`;
+      await tx.execute(sql`
+        UPDATE deploy_runs
+        SET status = 'failed', finished_at = clock_timestamp(), error_message = ${message},
+            phase_timings = ${phaseTimingsParam(timer)}
+        WHERE id = ${runId}::uuid
+      `);
+      logRunTimings(runKind, runId, timer, { status: "failed" });
+      return err({ kind: "HandlerError", operation: "deploy.trigger", message });
+    }
     const subprocess = await runGenerator(bridge.registry, bridge.adapter, ctx, {
       cliPath,
       runId,
@@ -795,6 +887,7 @@ export const triggerDeployOp = defineOperation({
       repoRoot,
       changedPageIds: input.changedPageIds,
       ...(stagingOrigin ? { siteBaseUrlOverride: stagingOrigin } : {}),
+      syncCurrent: publisher.servesCurrentDir,
     });
     if (subprocess.ok) timer.include("generator", subprocess.result.phases);
     timer.lap("generator");
@@ -830,7 +923,6 @@ export const triggerDeployOp = defineOperation({
     let publishSummary: Awaited<
       ReturnType<Awaited<ReturnType<typeof loadStaticPublisher>>["publishStaging"]>
     >;
-    let publisher: StaticPublisher;
     try {
       // #650 — publishing a preview, recording it as the staging origin and
       // pruning the others is one ordered step per Stage: a concurrent Stage
@@ -839,7 +931,6 @@ export const triggerDeployOp = defineOperation({
         await lockStagingPublication(tx);
         timer.lap("lock-wait");
       }
-      publisher = await loadStaticPublisher(provider);
       const { phases: publishPhases, ...summary } = await publisher.publishStaging({
         buildDir: subprocess.result.buildDir,
         runId,
@@ -998,6 +1089,7 @@ export const triggerDeployOp = defineOperation({
       ...(previewUrl ? { previewUrl } : {}),
       draftPages: await mainDraftPages(tx),
       unpublishedLinkTargets: subprocess.result.unpublishedLinkTargets,
+      pluginProblems,
     });
   },
 });
@@ -1068,7 +1160,8 @@ export const promoteDeployOp = defineOperation({
     }
     const fromRunRows = (await tx.execute(sql`
       SELECT id::text AS id, build_id, site_url,
-             COALESCE(to_jsonb(covered_ai_hold_ids), '[]'::jsonb) AS covered_ai_hold_ids
+             COALESCE(to_jsonb(covered_ai_hold_ids), '[]'::jsonb) AS covered_ai_hold_ids,
+             plugin_problems
       FROM deploy_runs
       WHERE target_id = ${from.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
       ORDER BY started_at DESC LIMIT 1
@@ -1077,6 +1170,7 @@ export const promoteDeployOp = defineOperation({
       build_id: string | null;
       site_url: string | null;
       covered_ai_hold_ids: unknown;
+      plugin_problems: unknown;
     }[];
     const fromRow = fromRunRows[0];
     const fromRunId = fromRow?.id;
@@ -1109,6 +1203,22 @@ export const promoteDeployOp = defineOperation({
       }
     }
 
+    // #1008 — never publish a site without an active plugin: not while one
+    // is not running, and not a Stage that was built while one was not
+    // (it lacks that plugin's output even after the plugin recovered).
+    if (to.env === "production") {
+      const stale = stagedWithoutPlugins(fromRow?.plugin_problems);
+      if (stale) return err({ kind: "HandlerError", operation: "deploy.promote", message: stale });
+      const problems = await activePluginProblems(tx);
+      if (problems.length > 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "deploy.promote",
+          message: describePluginProblems(problems),
+        });
+      }
+    }
+
     // #553 — the quality gate. Every Publish-live path runs this handler
     // (the toolbar, the pages list, Ops, and the approved propose_deploy_promote,
     // which calls the handler directly), so the gate lives here and nowhere
@@ -1129,17 +1239,48 @@ export const promoteDeployOp = defineOperation({
     const fromTarget = rowToTarget(from);
     const toTarget = rowToTarget(to);
 
-    const toRunIdRows = (await tx.execute(sql`
-      INSERT INTO deploy_runs (target_id, actor_id, status, started_at)
-      VALUES (${to.id}::uuid, ${ctx.actorId}::uuid, 'running', ${startedAt}::timestamptz)
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
-    const toRunId = toRunIdRows[0]?.id;
-    if (!toRunId) {
+    const bridge = getDeployBridge();
+    if (!bridge) {
+      await tx.execute(sql`
+        INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, error_message)
+        VALUES (${to.id}::uuid, ${ctx.actorId}::uuid, 'failed', ${startedAt}::timestamptz,
+                clock_timestamp(), 'deploy-bridge not configured')
+      `);
       return err({
         kind: "HandlerError",
         operation: "deploy.promote",
-        message: "could not create deploy_runs row for promotion target",
+        message: "deploy-bridge not configured",
+      });
+    }
+    // #1003 — committed now, like a Stage's run (see deploy.trigger): the
+    // deployments page shows the running Publish live and its rebuild's
+    // progress; the lock marks it as still building until this transaction ends.
+    const toRunId = randomUUID();
+    await holdDeployRun(tx, toRunId);
+    const begun = await execute(
+      bridge.registry,
+      bridge.adapter,
+      systemContextOf(ctx),
+      "deploy.begin_run",
+      {
+        runId: toRunId,
+        targetId: to.id,
+        actorId: ctx.actorId,
+        startedAt,
+        renderFingerprint: null,
+        coveredAiHoldIds: null,
+        // Set when the run finishes: a rebuild is rendered by this version,
+        // a copy keeps the version of the build it copies.
+        caeloVersion: null,
+        // The plugin check belongs to the Stage it promotes, not to this run.
+        pluginProblems: null,
+      },
+    );
+    if (!begun.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "deploy.promote",
+        message: `could not start the deploy run: ${describeError(begun.error)}`,
       });
     }
     timer.lap("prepare");

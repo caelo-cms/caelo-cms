@@ -75,6 +75,11 @@ export {
   sweepChatImagesOnce,
 } from "./chat-image-gc-worker.js";
 export * from "./csrf.js";
+// #1008 — the Stage warning for a build made while active plugins did not run.
+export {
+  type DeployPluginProblem,
+  describeStagedPluginProblems,
+} from "./deploy/plugin-problems.js";
 // #842 — reading a staged GCS run (admin staging preview).
 export {
   readStagedBuildFiles,

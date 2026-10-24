@@ -43,7 +43,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
       type: "object",
       additionalProperties: false,
       description:
-        "EITHER { pageId } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
+        "EITHER { pageId, metaDescription? } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
       properties: {
         pageId: { type: "string", format: "uuid" },
         slug: {
@@ -67,7 +67,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           minLength: 1,
           maxLength: 320,
           description:
-            "Create mode: the new page's meta description (150–160 characters, written from the page's content; in a migration, the source page's). A Stage refuses a published page without one — pass it here so the page is Stage-ready from this call (fill-once, same as autofill_page_seo).",
+            "The page's meta description (150–160 characters, written from the page's content; in a migration, the source page's). A Stage refuses a published page without one — pass it here so the page is Stage-ready from this call. Fill-once, same as autofill_page_seo: with pageId it is written only when the page has no description yet; an existing one is kept and the result says so.",
         },
         parentPageId: {
           type: "string",
@@ -274,6 +274,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       detached: { index: number; ref: string; moduleId: string; contentInstanceId: string }[];
       extractedFieldsByIndex: Record<string, { name: string; kind: string }[]>;
       ignoredAuthoringByIndex: Record<string, string[]>;
+      reusedMintByIndex: Record<string, number>;
       metaDescription: "written" | "unchanged" | "kept-existing" | null;
     };
 
@@ -318,7 +319,11 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
         : "";
     const missingMeta = input.modules
       .map((m, i) =>
-        m.moduleId === undefined && (m.description === undefined || m.kind === undefined) ? i : -1,
+        m.moduleId === undefined &&
+        value.reusedMintByIndex[String(i)] === undefined &&
+        (m.description === undefined || m.kind === undefined)
+          ? i
+          : -1,
       )
       .filter((i) => i >= 0);
     const missingMetaHint =
@@ -339,6 +344,16 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
             .join(
               "; ",
             )}. To change that shared module (rename / structure / fields), use edit_module.`
+        : "";
+
+    const reusedEntries = Object.entries(value.reusedMintByIndex);
+    const reusedHint =
+      reusedEntries.length > 0
+        ? ` ℹ️ ${reusedEntries
+            .map(([idx, first]) => `modules[${idx}] repeats modules[${first}]'s html`)
+            .join(
+              "; ",
+            )} — placed that one module again with its own content instead of minting copies. To say so directly, pass moduleId: {"$ref": "<the first entry's ref>"}.`
         : "";
 
     // css-var scan per freshly-authored module (one theme read) and
@@ -383,7 +398,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       ok: true,
       content:
         `page ${value.pageId}${value.createdPage ? " created" : ""} — ${value.placements.length} module(s) placed (${mintedCount} minted, ${reusedCount} reused) in one transaction.\n` +
-        `${lines.join("\n")}${moduleNotes}${extractedHint}${missingMetaHint}${ignoredHint}${metaNote}${readiness}`,
+        `${lines.join("\n")}${moduleNotes}${extractedHint}${missingMetaHint}${ignoredHint}${reusedHint}${metaNote}${readiness}`,
       value,
     };
   },

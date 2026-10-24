@@ -7,6 +7,7 @@
  * a permission round-trip.
  */
 
+import { pluginFailedHereReason, pluginRunsHere } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok, skillAutoEngagementHints } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -33,6 +34,15 @@ const skillRow = z.object({
    *  index to the skills that were already active when the chat began
    *  and announces anything newer in the history instead. */
   activatedAt: z.string().nullable(),
+  /** The plugin this skill belongs to; null for a standalone skill. */
+  pluginSlug: z.string().nullable(),
+  /**
+   * #1008 — why this skill's plugin does not run in this server process,
+   * so its tools (and therefore the skill) are not available here; null
+   * when it runs or the skill is standalone. The Owner's status is
+   * untouched: the plugin is still active, it just failed to load here.
+   */
+  notRunningHere: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -47,8 +57,20 @@ interface SkillDb {
   auto_engagement_hints: unknown;
   status: "awaiting_activation" | "active" | "archived";
   activated_at: string | Date | null;
+  plugin_owner_slug: string | null;
   created_at: string | Date;
   updated_at: string | Date;
+}
+
+/**
+ * Why the plugin owning a skill does not run in this process (its tools
+ * are absent here), or null. A plugin's skills are available exactly where
+ * its tools are; this is per process on purpose — another server's failure
+ * never hides a skill on a server that runs the plugin.
+ */
+function notRunningHere(pluginSlug: string | null): string | null {
+  if (pluginSlug === null || pluginRunsHere(pluginSlug)) return null;
+  return pluginFailedHereReason(pluginSlug) ?? "the plugin is not loaded on this server";
 }
 
 function rowToOut(r: SkillDb): z.infer<typeof skillRow> {
@@ -73,6 +95,8 @@ function rowToOut(r: SkillDb): z.infer<typeof skillRow> {
       alwaysOn: (hintsRaw as { alwaysOn?: unknown }).alwaysOn ?? false,
     }),
     status: r.status,
+    pluginSlug: r.plugin_owner_slug,
+    notRunningHere: notRunningHere(r.plugin_owner_slug),
     activatedAt:
       r.activated_at === null
         ? null
@@ -93,6 +117,12 @@ export const listSkillsOp = defineOperation({
   input: z
     .object({
       status: z.enum(["awaiting_activation", "active", "archived", "any"]).default("active"),
+      /**
+       * #1008 — also return skills whose plugin does not run in this
+       * process (marked by `notRunningHere`). Only the chat-runner's pinned
+       * `## Skills` index needs them; every other reader leaves them out.
+       */
+      includeNotRunningHere: z.boolean().default(false),
     })
     .strict(),
   output: z.object({ skills: z.array(skillRow) }),
@@ -102,7 +132,7 @@ export const listSkillsOp = defineOperation({
         ? sql`
             SELECT id::text AS id, slug, display_name, description, body,
                    allowlisted_tools, auto_engagement_hints, status,
-                   activated_at, created_at, updated_at
+                   activated_at, plugin_owner_slug, created_at, updated_at
             FROM skills
             WHERE plugin_skill_available(plugin_id, plugin_artifact_digest, plugin_owner_slug)
             ORDER BY status ASC, slug ASC
@@ -110,13 +140,18 @@ export const listSkillsOp = defineOperation({
         : sql`
             SELECT id::text AS id, slug, display_name, description, body,
                    allowlisted_tools, auto_engagement_hints, status,
-                   activated_at, created_at, updated_at
+                   activated_at, plugin_owner_slug, created_at, updated_at
             FROM skills
             WHERE status = ${input.status} AND plugin_skill_available(plugin_id, plugin_artifact_digest, plugin_owner_slug)
             ORDER BY slug ASC
           `,
     )) as unknown as SkillDb[];
-    return ok({ skills: rows.map(rowToOut) });
+    const skills = rows.map(rowToOut);
+    return ok({
+      skills: input.includeNotRunningHere
+        ? skills
+        : skills.filter((sk) => sk.notRunningHere === null),
+    });
   },
 });
 
@@ -125,17 +160,31 @@ export const getSkillOp = defineOperation({
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z.object({ slug: z.string().min(1).max(120) }).strict(),
-  output: z.object({ skill: skillRow.nullable() }),
+  output: z.object({
+    skill: skillRow.nullable(),
+    /**
+     * #1008 — set (and `skill` null) when the skill exists but its plugin
+     * does not run in this process: its tools are absent here.
+     */
+    notRunningHere: z.object({ pluginSlug: z.string(), reason: z.string() }).nullable(),
+  }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, display_name, description, body,
              allowlisted_tools, auto_engagement_hints, status,
-             activated_at, created_at, updated_at
+             activated_at, plugin_owner_slug, created_at, updated_at
       FROM skills WHERE slug = ${input.slug}
         AND plugin_skill_available(plugin_id, plugin_artifact_digest, plugin_owner_slug) LIMIT 1
     `)) as unknown as SkillDb[];
     const r = rows[0];
-    return ok({ skill: r ? rowToOut(r) : null });
+    const skill = r ? rowToOut(r) : null;
+    if (skill?.pluginSlug && skill.notRunningHere !== null) {
+      return ok({
+        skill: null,
+        notRunningHere: { pluginSlug: skill.pluginSlug, reason: skill.notRunningHere },
+      });
+    }
+    return ok({ skill, notRunningHere: null });
   },
 });
 
