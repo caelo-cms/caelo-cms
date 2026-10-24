@@ -20,6 +20,11 @@ import * as automation from "@pulumi/pulumi/automation";
 import { redactCredentials } from "./checkpoint-secrets.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
 import { collectPreviewSteps } from "./preview-plan.js";
+import {
+  REMOTE_MCP_IDENTITY_CONFIG,
+  type RemoteMcpIdentity,
+  serializeRemoteMcpIdentity,
+} from "./stack-contract.js";
 import type { ResolvedBackend } from "./state-backend.js";
 import type { StatePulumiOps } from "./state-migrate.js";
 import {
@@ -68,6 +73,12 @@ export interface RealPulumiOpsInputs {
   readonly impersonateServiceAccount: string;
   /** The config a wizard run sets, so a preview shows real drift only. */
   readonly stackConfig: StackConfigInputs;
+  /**
+   * #1082 — the remote-MCP identity read from the live install, as the
+   * installer reads it before its `up` (null when it cannot be read: the
+   * stack's config then stays as it is). Asked once per preview.
+   */
+  readonly resolveRemoteMcpIdentity: () => Promise<RemoteMcpIdentity | null>;
 }
 
 /** {@link StatePulumiOps} backed by the `pulumi` CLI + Automation API. */
@@ -194,6 +205,16 @@ export function realStatePulumiOps(inputs: RealPulumiOpsInputs): StatePulumiOps 
         const resources = ((await stack.exportStack()).deployment?.resources ??
           []) as StateResource[];
         await applyStackConfig(stack, inputs.stackConfig, resources);
+      }
+      // #1082 — the identity env the stack declares, set the way the
+      // installer sets it before every `up`: from the live install. A stack
+      // last applied before the stack owned it has no such config yet, and
+      // its preview would show the vars removed.
+      const identity = await inputs.resolveRemoteMcpIdentity();
+      if (identity) {
+        await stack.setConfig(`caelo-${inputs.provider}:${REMOTE_MCP_IDENTITY_CONFIG}`, {
+          value: serializeRemoteMcpIdentity(identity),
+        });
       }
       await assertStackProject(stack, inputs.provider, inputs.stackConfig.projectId);
       // #737 — the steps themselves, not just the summary's count: a

@@ -3,13 +3,15 @@
 /**
  * #806 — the CLI's part of remote MCP on a Google IAP install (`gcp`,
  * `gcp-firebase`), run as the operator's (or the provisioner's) gcloud
- * identity by the wizard after `pulumi up` and by `cms-provision upgrade`
- * after the roll. Every step is idempotent.
+ * identity by the wizard around `pulumi up`, by `state migrate`'s preview
+ * and by `cms-provision upgrade` around the roll. Every step is idempotent.
  *
- *   - {@link ensureRemoteMcpIdentityEnv}: the env vars that name generated
- *     identities ({@link RemoteMcpIdentity} — why the stacks cannot declare
- *     them is in stack-contract.ts), applied with `gcloud run services
- *     update` only where they differ.
+ *   - {@link resolveStackRemoteMcpIdentity}: the env vars that name
+ *     generated identities ({@link RemoteMcpIdentity}), resolved from the
+ *     live install for the stack config the installer writes before `up`
+ *     (#1082: the stack is their one owner — stack-contract.ts says why
+ *     they cannot be plain resource inputs), and
+ *     {@link checkRemoteMcpIdentityEnv}, the read-only check after it.
  *   - {@link ensureRemoteMcpEdge} (`gcp` only): the load balancer's part for
  *     installs whose URL map / Cloud Armor policy predate it — the
  *     `/.well-known/oauth-*` path rules (the stack ignores `pathRules` after
@@ -43,11 +45,13 @@ import type { HttpFetch } from "./runtime-secrets.js";
 import {
   type CloudRunSlug,
   type GcpProvider,
+  REMOTE_MCP_ENV,
   type RemoteMcpIdentity,
   remoteMcpIdentity,
   remoteMcpIdentityEnv,
 } from "./stack-contract.js";
 import { type EnvChange, liveContainerEnv, planEnvUpdate } from "./stack-converge.js";
+import { lookupFailure, resolveGcpResourceName } from "./upgrade/gcp-lookup.js";
 
 /** The install remote MCP is set up on. */
 export interface RemoteMcpTarget {
@@ -226,74 +230,116 @@ async function resolveServiceIdentity(
   };
 }
 
-/**
- * Bring both services' {@link RemoteMcpIdentity} env vars to `identity`
- * with one `gcloud run services update` per service that differs (a new
- * revision only then). Vars already right are left alone.
- */
-export async function applyRemoteMcpIdentityEnv(
+/** `gcloud run services describe --format=json` of one service, or why it failed. */
+async function describeService(
   target: RemoteMcpTarget,
-  identity: RemoteMcpIdentity,
-  deps: { run?: GcloudRunner } = {},
-): Promise<RemoteMcpResult<{ readonly changes: Record<CloudRunSlug, EnvChange[]> }>> {
-  const run = deps.run ?? defaultGcloud;
-  const desired = remoteMcpIdentityEnv(identity);
-  const changes: Record<CloudRunSlug, EnvChange[]> = { admin: [], gateway: [] };
-  for (const slug of ["admin", "gateway"] as const) {
-    const service = target.services[slug];
-    const describe = await run([
-      "run",
-      "services",
-      "describe",
-      service,
-      `--region=${target.region}`,
-      `--project=${target.projectId}`,
-      "--format=json",
-    ]);
-    if (!describe.ok) return { ok: false, error: `describe ${service}: ${describe.stderr.trim()}` };
-    if (parseJson(describe.stdout) === null) {
-      return { ok: false, error: `describe ${service}: output is not JSON` };
-    }
-    const plan = planEnvUpdate(liveContainerEnv(describe.stdout), desired[slug]);
-    if (!plan.ok) return { ok: false, error: `${slug}: ${plan.error}` };
-    if (plan.flags.length === 0) continue;
-    const update = await run([
-      "run",
-      "services",
-      "update",
-      service,
-      `--region=${target.region}`,
-      `--project=${target.projectId}`,
-      ...plan.flags,
-      "--quiet",
-    ]);
-    if (!update.ok) return { ok: false, error: `update ${service}: ${update.stderr.trim()}` };
-    changes[slug] = plan.changes;
+  service: string,
+  run: GcloudRunner,
+): Promise<RemoteMcpResult<{ readonly json: string }>> {
+  const describe = await run([
+    "run",
+    "services",
+    "describe",
+    service,
+    `--region=${target.region}`,
+    `--project=${target.projectId}`,
+    "--format=json",
+  ]);
+  if (!describe.ok) return { ok: false, error: `describe ${service}: ${describe.stderr.trim()}` };
+  if (parseJson(describe.stdout) === null) {
+    return { ok: false, error: `describe ${service}: output is not JSON` };
   }
-  return { ok: true, changes };
+  return { ok: true, json: describe.stdout };
 }
 
-/** {@link resolveRemoteMcpIdentity} then {@link applyRemoteMcpIdentityEnv}. */
-export async function ensureRemoteMcpIdentityEnv(
+/**
+ * #1082 — the deployed install remote MCP is resolved on: the Pulumi-suffixed
+ * admin and gateway Cloud Run services found by prefix. Read-only.
+ */
+export async function findRemoteMcpTarget(
+  base: Omit<RemoteMcpTarget, "services">,
+  deps: { run?: GcloudRunner } = {},
+): Promise<RemoteMcpResult<{ readonly target: RemoteMcpTarget }>> {
+  const run = deps.run ?? defaultGcloud;
+  const services: Partial<Record<CloudRunSlug, string>> = {};
+  for (const slug of ["admin", "gateway"] as const) {
+    const prefix = `${gcpNamePrefix(base.env)}-${slug}`;
+    const lookup = await resolveGcpResourceName(
+      run,
+      "run-service",
+      prefix,
+      base.projectId,
+      base.region,
+    );
+    if (lookup.status !== "found") {
+      return {
+        ok: false,
+        error: lookupFailure(lookup, `${prefix}* Cloud Run service`, "operator"),
+      };
+    }
+    services[slug] = lookup.name;
+  }
+  return {
+    ok: true,
+    target: { ...base, services: services as Record<CloudRunSlug, string> },
+  };
+}
+
+/**
+ * #1082 — the identity the installer writes into the stack config before
+ * `up` (stack-contract.ts REMOTE_MCP_IDENTITY_CONFIG), so the stack declares
+ * the vars the services carry and `up` keeps them.
+ *
+ * {@link resolveRemoteMcpIdentity}, except for the organisation domain when
+ * it cannot be read: then the admin's live `CAELO_GOOGLE_ORG_DOMAIN` is
+ * carried over (an earlier run as an account with the Organization Viewer
+ * role set it). The stack would otherwise remove it, where a gcloud roll
+ * leaves it as it is. `orgDomainError` still says why it was not read.
+ */
+export async function resolveStackRemoteMcpIdentity(
   target: RemoteMcpTarget,
   deps: { run?: GcloudRunner } = {},
 ): Promise<
-  RemoteMcpResult<{
-    readonly identity: RemoteMcpIdentity;
-    readonly changes: Record<CloudRunSlug, EnvChange[]>;
-    readonly orgDomainError?: string;
-  }>
+  RemoteMcpResult<{ readonly identity: RemoteMcpIdentity; readonly orgDomainError?: string }>
 > {
-  const resolved = await resolveRemoteMcpIdentity(target, deps);
-  if (!resolved.ok) return resolved;
-  const applied = await applyRemoteMcpIdentityEnv(target, resolved.identity, deps);
-  if (!applied.ok) return applied;
+  const run = deps.run ?? defaultGcloud;
+  const resolved = await resolveRemoteMcpIdentity(target, { run });
+  if (!resolved.ok || !resolved.orgDomainError) return resolved;
+  const admin = await describeService(target, target.services.admin, run);
+  if (!admin.ok) return admin;
+  const live = liveContainerEnv(admin.json).get(REMOTE_MCP_ENV.googleOrgDomain);
   return {
     ok: true,
-    identity: resolved.identity,
-    changes: applied.changes,
-    ...(resolved.orgDomainError ? { orgDomainError: resolved.orgDomainError } : {}),
+    identity:
+      live?.kind === "value"
+        ? { ...resolved.identity, googleOrgDomain: live.value }
+        : resolved.identity,
+    orgDomainError: resolved.orgDomainError,
   };
+}
+
+/**
+ * #1082 — what each service's identity env lacks against `identity`
+ * (read-only). The stack owns these vars now; this is the installer's check
+ * that the `up` it just ran put them in place. An empty list per service is
+ * the expected answer.
+ */
+export async function checkRemoteMcpIdentityEnv(
+  target: RemoteMcpTarget,
+  identity: RemoteMcpIdentity,
+  deps: { run?: GcloudRunner } = {},
+): Promise<RemoteMcpResult<{ readonly drift: Record<CloudRunSlug, EnvChange[]> }>> {
+  const run = deps.run ?? defaultGcloud;
+  const desired = remoteMcpIdentityEnv(identity);
+  const drift: Record<CloudRunSlug, EnvChange[]> = { admin: [], gateway: [] };
+  for (const slug of ["admin", "gateway"] as const) {
+    const described = await describeService(target, target.services[slug], run);
+    if (!described.ok) return described;
+    const plan = planEnvUpdate(liveContainerEnv(described.json), desired[slug]);
+    if (!plan.ok) return { ok: false, error: `${slug}: ${plan.error}` };
+    drift[slug] = plan.changes;
+  }
+  return { ok: true, drift };
 }
 
 // ===========================================================================

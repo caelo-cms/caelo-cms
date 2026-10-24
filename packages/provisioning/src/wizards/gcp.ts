@@ -105,10 +105,20 @@ import {
 } from "../provisioner-identity.js";
 import { revokePublicRoleMemberships } from "../public-role-isolation.js";
 import { decideRegion, detectCliRegion, installableRegions, suggestRegion } from "../regions.js";
-import { ensureRemoteMcpEdge, ensureRemoteMcpIdentityEnv } from "../remote-mcp.js";
+import {
+  checkRemoteMcpIdentityEnv,
+  ensureRemoteMcpEdge,
+  findRemoteMcpTarget,
+  type RemoteMcpTarget,
+  resolveStackRemoteMcpIdentity,
+} from "../remote-mcp.js";
 import type { RunMode } from "../run-mode.js";
 import { selfCommand } from "../self-command.js";
-import { ABSENT_DEFAULT_FIREWALL_RULES } from "../stack-contract.js";
+import {
+  ABSENT_DEFAULT_FIREWALL_RULES,
+  type RemoteMcpIdentity,
+  sameRemoteMcpIdentity,
+} from "../stack-contract.js";
 import {
   chooseInstallBackend,
   describeBackend,
@@ -120,7 +130,6 @@ import {
   resolveBackend,
 } from "../state-backend.js";
 import { acquireStateLock, GcsStateStore } from "../state-store.js";
-import { lookupFailure, resolveGcpResourceName } from "../upgrade/gcp-lookup.js";
 import { createReleaseImageForms, platformDigestsOf } from "../upgrade/image-forms.js";
 import {
   releaseVersionForDigest,
@@ -379,12 +388,22 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
   // post-cleanup re-runs both pass through cleanly).
   await stepDrainLegacyCaeloAdminUser(projectId, region);
 
+  // === 9.8. The remote-MCP identity the stack declares (#1082) ===
+  // The stack owns the identity env vars (stack-contract.ts
+  // RemoteMcpIdentity) and declares them from config the CLI resolves from
+  // the live services, so this `up` keeps what they carry. A fresh install
+  // has no services yet: the identity is resolved after the first `up` and
+  // applied by a second one below.
+  const identityBefore = deployed
+    ? await stepResolveRemoteMcpIdentity(projectId, region, provider, domain, "before")
+    : null;
+
   // === 10. Pulumi up via Automation SDK ===
   // Pre-built signed images live at the Caelo-team public AR repo
   // (caelo-website/caelo-cms-images by default). Cloud Run reads them
   // directly with no operator-side IAM binding — anonymous public pull.
   phase("Provisioning the infrastructure (pulumi up, 8-15 min)");
-  await stepPulumiUp(installId, {
+  const upOpts: PulumiUpOpts = {
     projectId,
     domain,
     // #650 — the wizard recorded it (or the install predates the setting).
@@ -406,8 +425,23 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     // matching config namespace.
     provider,
     nonInteractive: opts.nonInteractive,
-  });
+  };
+  await stepPulumiUp(installId, { ...upOpts, remoteMcpIdentity: identityBefore?.identity ?? null });
   recordImageDigests(installId, imageDigests);
+
+  // === 10.05. The identity once the services exist (#1082) ===
+  // Read again after every `up`: on a fresh install (or one whose identity
+  // could not be read before) this is the first time it can be, and an `up`
+  // that replaced a service changed it. A second `up` then applies it
+  // through the stack — never through gcloud, which the next `up` would
+  // undo.
+  const identity = await stepResolveRemoteMcpIdentity(projectId, region, provider, domain, "after");
+  if (identity && !sameRemoteMcpIdentity(identity.identity, identityBefore?.identity ?? null)) {
+    log.info(
+      "Applying the remote-MCP URLs and IAP audience through the stack (second pulumi up)...",
+    );
+    await stepPulumiUp(installId, { ...upOpts, remoteMcpIdentity: identity.identity });
+  }
 
   // === 10.1. Remove the default network's pre-populated firewall rules ===
   // GCP creates them when Compute Engine is enabled (step 5). Run after
@@ -489,11 +523,9 @@ export async function runGcpConverge(opts: GcpConvergeOpts): Promise<void> {
     keepSigner ? [`serviceAccount:${upgraderServiceAccountEmail(projectId, GCP_STACK_ENV)}`] : [],
   );
 
-  // === 11.6. Remote MCP (#806): LB rules (gcp) + the identity env ===
-  // After `pulumi up` on every pass: the identity env names services Pulumi
-  // generated, so the stack cannot declare it, and an `up` that changed a
-  // service's template dropped it (remote-mcp.ts).
-  const remoteMcpReady = await stepRemoteMcp(projectId, region, provider, domain);
+  // === 11.6. Remote MCP (#806): LB rules (gcp) + a check of the identity env ===
+  // The env itself came with `pulumi up` (step 10.05, #1082).
+  const remoteMcpReady = await stepRemoteMcp(projectId, provider, domain, identity);
 
   // A fresh install ran every converge step above, so it is at this CLI's
   // infrastructure contract — recorded only when the upgrader and the
@@ -1166,35 +1198,87 @@ async function stepOperatorAccessSync(
   s.stop(green(`Operator-access sync job ready (${r.done.length} steps)`));
 }
 
+/** The install's identity for the stack, with the deployed services it was read from. */
+interface ResolvedRemoteMcpIdentity {
+  readonly target: RemoteMcpTarget;
+  readonly identity: RemoteMcpIdentity;
+}
+
+/**
+ * #1082 — resolve the remote-MCP identity (remote-mcp.ts
+ * resolveStackRemoteMcpIdentity) for the stack config: the deployed
+ * services' names, then their URLs / the IAP backend and the organisation.
+ * Read-only. Not fatal: remote MCP stays off until the Owner sets it up, so
+ * a failure warns and the `up` keeps the identity the config last recorded.
+ *
+ * @param when `before` the `up` (the services exist), or `after` it
+ * @returns the identity, or null when it could not be read
+ */
+async function stepResolveRemoteMcpIdentity(
+  projectId: string,
+  region: string,
+  provider: "gcp" | "gcp-firebase",
+  domain: string,
+  when: "before" | "after",
+): Promise<ResolvedRemoteMcpIdentity | null> {
+  const s = spinner();
+  s.start(
+    "Reading the remote-MCP URLs and IAP audience (Google sign-in, ChatGPT / claude.ai connectors)...",
+  );
+  const failed = (error: string) => {
+    s.stop(yellow(`Remote-MCP URLs not read: ${error}`));
+    log.warn(
+      when === "before"
+        ? "pulumi up keeps the remote-MCP env the stack recorded last; the installer reads it again after the update."
+        : "The install works; Settings → Google sign-in and Settings → MCP report this install as not prepared until a re-run of the installer reads them.",
+    );
+    return null;
+  };
+  const found = await findRemoteMcpTarget({
+    provider,
+    projectId,
+    region,
+    env: GCP_STACK_ENV,
+    domain,
+  });
+  if (!found.ok) return failed(found.error);
+  const { target } = found;
+  const resolved = await resolveStackRemoteMcpIdentity(target);
+  if (!resolved.ok) return failed(resolved.error);
+  s.stop(green(`Remote-MCP URLs read (${resolved.identity.mcpPublicUrl})`));
+  if (resolved.orgDomainError && when === "after") {
+    // #914 — without the organisation's domain the admin cannot tell who
+    // IAP's built-in sign-in admits, so it refuses new users until the
+    // Owner sets up Google sign-in. Say so now rather than at the first
+    // invite.
+    log.warn(
+      `Could not read this project's Google organisation (${resolved.orgDomainError}). Set up Google sign-in under Settings → Google sign-in before adding users, or re-run ${bold(selfCommand("upgrade"))} as an account with the Organization Viewer role.`,
+    );
+  }
+  return { target, identity: resolved.identity };
+}
+
 /**
  * #806 — the CLI's part of remote MCP (remote-mcp.ts): on `gcp` the load
- * balancer's discovery routes and Cloud Armor rule, on both providers the
- * env vars naming the admin URL, the broker's public URL and the IAP
- * audience. Remote MCP stays off until the Owner sets it up under Settings →
- * MCP, so a failure does not stop the install: it warns, and the next pass
- * or `upgrade` retries. Idempotent.
+ * balancer's discovery routes and Cloud Armor rule. The identity env vars
+ * (admin URL, the broker's public URL, the IAP audience) come with `pulumi
+ * up` from the stack config (#1082); this only checks that the services
+ * carry them. Remote MCP stays off until the Owner sets it up under
+ * Settings → MCP, so a failure does not stop the install: it warns, and the
+ * next pass or `upgrade` retries. Idempotent.
  *
  * @returns whether every part is in place
  */
 async function stepRemoteMcp(
   projectId: string,
-  region: string,
   provider: "gcp" | "gcp-firebase",
   domain: string,
+  identity: ResolvedRemoteMcpIdentity | null,
 ): Promise<boolean> {
   const s = spinner();
   s.start(
     "Preparing remote MCP (ChatGPT / claude.ai connectors; off until the Owner enables it)...",
   );
-  const name = (slug: "admin" | "gateway") =>
-    resolveGcpResourceName(
-      gcloud,
-      "run-service",
-      `caelo-${GCP_STACK_ENV}-${slug}`,
-      projectId,
-      region,
-    );
-  const [adminLookup, gatewayLookup] = [await name("admin"), await name("gateway")];
   const failed = (error: string) => {
     s.stop(yellow(`Remote MCP not prepared: ${error}`));
     log.warn(
@@ -1202,38 +1286,16 @@ async function stepRemoteMcp(
     );
     return false;
   };
-  if (adminLookup.status !== "found") {
-    return failed(
-      lookupFailure(adminLookup, `caelo-${GCP_STACK_ENV}-admin* Cloud Run service`, "operator"),
-    );
-  }
-  if (gatewayLookup.status !== "found") {
-    return failed(
-      lookupFailure(gatewayLookup, `caelo-${GCP_STACK_ENV}-gateway* Cloud Run service`, "operator"),
-    );
-  }
-  const [admin, gateway] = [adminLookup.name, gatewayLookup.name];
+  if (!identity) return failed("its URLs and IAP audience could not be read (see above)");
   const edge = await ensureRemoteMcpEdge({ provider, projectId, env: GCP_STACK_ENV, domain });
   if (!edge.ok) return failed(edge.error);
-  const env = await ensureRemoteMcpIdentityEnv({
-    provider,
-    projectId,
-    region,
-    env: GCP_STACK_ENV,
-    domain,
-    services: { admin, gateway },
-  });
-  if (!env.ok) return failed(env.error);
-  s.stop(green(`Remote MCP and Google sign-in prepared (${env.identity.mcpPublicUrl})`));
-  if (env.orgDomainError) {
-    // #914 — without the organisation's domain the admin cannot tell who
-    // IAP's built-in sign-in admits, so it refuses new users until the
-    // Owner sets up Google sign-in. Say so now rather than at the first
-    // invite.
-    log.warn(
-      `Could not read this project's Google organisation (${env.orgDomainError}). Set up Google sign-in under Settings → Google sign-in before adding users, or re-run ${bold(selfCommand("upgrade"))} as an account with the Organization Viewer role.`,
-    );
+  const check = await checkRemoteMcpIdentityEnv(identity.target, identity.identity);
+  if (!check.ok) return failed(check.error);
+  const missing = [...check.drift.admin, ...check.drift.gateway].map((c) => c.name);
+  if (missing.length > 0) {
+    return failed(`pulumi up left ${[...new Set(missing)].join(", ")} out of the services' env`);
   }
+  s.stop(green(`Remote MCP and Google sign-in prepared (${identity.identity.mcpPublicUrl})`));
   return true;
 }
 
@@ -1481,6 +1543,8 @@ interface PulumiUpOpts {
   provider?: "gcp" | "gcp-firebase";
   /** No terminal to ask (the install job, `--non-interactive`): see planGate. */
   nonInteractive: boolean;
+  /** #1082 — the remote-MCP identity the stack declares (gcp-pulumi.ts PulumiUpInputs). */
+  remoteMcpIdentity?: RemoteMcpIdentity | null;
 }
 
 /**

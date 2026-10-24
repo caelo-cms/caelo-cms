@@ -30,7 +30,12 @@ import {
   withoutAmbientGoogleCredentials,
 } from "../provisioner-identity.js";
 import { ensureGeneratedSecrets, stackSecretReplication } from "../runtime-secrets.js";
-import { ADMIN_MEMORY_DEFAULT } from "../stack-contract.js";
+import {
+  ADMIN_MEMORY_DEFAULT,
+  REMOTE_MCP_IDENTITY_CONFIG,
+  type RemoteMcpIdentity,
+  serializeRemoteMcpIdentity,
+} from "../stack-contract.js";
 import type { ResolvedBackend } from "../state-backend.js";
 
 /**
@@ -96,6 +101,13 @@ export interface PulumiUpInputs {
    * Defaults to 'gcp' for backwards compatibility.
    */
   provider?: "gcp" | "gcp-firebase";
+  /**
+   * #1082 — the remote-MCP identity the stack declares as env
+   * (stack-contract.ts REMOTE_MCP_IDENTITY_CONFIG), resolved from the live
+   * install. Null when it could not be resolved (a fresh install before its
+   * first `up`): the config keeps what an earlier run wrote.
+   */
+  remoteMcpIdentity?: RemoteMcpIdentity | null;
 }
 
 export interface PulumiUpResult {
@@ -456,6 +468,7 @@ export type StackConfigInputs = Pick<
   | "wafAdaptiveProtection"
   | "iapAllowlist"
   | "imageDigests"
+  | "remoteMcpIdentity"
 > & { provider: "gcp" | "gcp-firebase" };
 
 /**
@@ -494,6 +507,13 @@ export async function applyStackConfig(
     // v0.3.2 — anthropicApiKey config dropped. Runtime path is
     // /settings/ai → ai_providers (KEK-encrypted).
     ...imageDigestConfig(provider, inputs.imageDigests),
+    ...(inputs.remoteMcpIdentity
+      ? {
+          [`${ns}:${REMOTE_MCP_IDENTITY_CONFIG}`]: {
+            value: serializeRemoteMcpIdentity(inputs.remoteMcpIdentity),
+          },
+        }
+      : {}),
   });
 
   // Read back only after the required keys are set: `pulumi config` refuses to

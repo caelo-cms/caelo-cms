@@ -37,13 +37,16 @@ import {
   adminEnvContract,
   adminMediaVolume,
   adminMediaVolumeTemplate,
+  CLOUD_RUN_IGNORE_CHANGES,
   type CloudRunEnvVar,
   type CloudRunSlug,
   databaseUrls,
   defaultStagingHost,
   GATEWAY_TIMEOUT_SECONDS,
   gatewayEnvContract,
+  REMOTE_MCP_IDENTITY_CONFIG,
   type RuntimeSecret,
+  remoteMcpIdentityStackEnv,
   runtimeSecretBindings,
   STATIC_CDN_POLICY,
   secretFileVolumesTemplate,
@@ -685,6 +688,12 @@ const envContractInputs = {
   },
 } as const;
 
+// #1082 — the remote-MCP identity env (stack-contract.ts RemoteMcpIdentity):
+// names generated identities no resource here can take as input, so the CLI
+// resolves them from the live install and writes them as config before `up`.
+// Declared here so the stack is their one owner and `up` keeps them.
+const remoteMcpEnv = remoteMcpIdentityStackEnv(cfg.get(REMOTE_MCP_IDENTITY_CONFIG));
+
 function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
   return new gcp.cloudrunv2.Service(
     `${namePrefix}-${args.serviceName}`,
@@ -740,6 +749,8 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
     },
     {
       ...opts,
+      // #1082 — which tool deployed last; see CLOUD_RUN_IGNORE_CHANGES.
+      ignoreChanges: [...CLOUD_RUN_IGNORE_CHANGES],
       dependsOn: [
         pgAdminUser,
         cmsAdminDb,
@@ -771,7 +782,7 @@ const adminSvc = cloudRunService({
   // in Cloud Run logs. 3600s is the platform max; no cost penalty for
   // unused timeout (Cloud Run bills running time, not allocated time).
   timeout: "3600s",
-  contractEnv: adminEnvContract(envContractInputs),
+  contractEnv: [...adminEnvContract(envContractInputs), ...remoteMcpEnv.admin],
   mediaVolume: adminMediaVolumeTemplate(adminMediaVolume(project, env)),
 });
 const gatewaySvc = cloudRunService({
@@ -786,7 +797,7 @@ const gatewaySvc = cloudRunService({
   timeout: `${GATEWAY_TIMEOUT_SECONDS}s`,
   // public_role on cms_public only: no cms_admin login of any role
   // (#613, #635, CLAUDE.md §2).
-  contractEnv: gatewayEnvContract(envContractInputs),
+  contractEnv: [...gatewayEnvContract(envContractInputs), ...remoteMcpEnv.gateway],
 });
 
 // =========================================================================
