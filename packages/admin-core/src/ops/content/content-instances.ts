@@ -51,9 +51,11 @@ import { recordPendingImportLinks } from "../../links/import-targets.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
+  loadBranchedModuleStates,
   loadContentInstanceBranchStates,
   loadContentInstanceState,
   loadContentInstanceStateWithBranchOverlay,
+  loadModuleStateWithBranchOverlay,
   loadPageLayoutState,
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
@@ -146,17 +148,19 @@ function iso(v: string | Date | null | undefined): string | null {
  */
 async function validateNestedRefs(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  chatBranchId: string | null,
   moduleId: string,
   values: Record<string, unknown>,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  // Read the owning module's fields schema. Skip if module not found —
-  // the caller already validated that.
-  const modRows = (await tx.execute(sql`
-    SELECT fields FROM modules WHERE id = ${moduleId}::uuid LIMIT 1
-  `)) as unknown as { fields: unknown }[];
-  if (modRows.length === 0) return { ok: true };
-  const rawFields =
-    typeof modRows[0]?.fields === "string" ? JSON.parse(modRows[0].fields) : modRows[0]?.fields;
+  // Read the owning module's fields schema AS THE CALLER SEES IT (#1042):
+  // a chat's `edit_module` lands only in its branch snapshot, so reading
+  // live `modules.fields` validated the values against main's schema — a
+  // field the chat had just turned from `module` into `module-list`
+  // rejected the list it now declares. Skip if module not found — the
+  // caller already validated that.
+  const owner = await loadModuleStateWithBranchOverlay(tx, moduleId, chatBranchId);
+  if (owner === null) return { ok: true };
+  const rawFields: unknown = owner.fields;
   if (!Array.isArray(rawFields)) return { ok: true };
 
   type Field = {
@@ -317,7 +321,9 @@ async function validateNestedRefs(
       sql`, `,
     )})
   `)) as unknown as { id: string; module_id: string; deleted_at: Date | null }[];
-  const ciMap = new Map(ciRows.map((r) => [r.id, r]));
+  const ciMap = new Map<string, { module_id: string; deleted_at: Date | string | null }>(
+    ciRows.map((r) => [r.id, r]),
+  );
 
   const allModuleIds = [...new Set(refsToCheck.map((r) => r.ref.moduleId))];
   const modRows2 = (await tx.execute(sql`
@@ -328,7 +334,23 @@ async function validateNestedRefs(
       sql`, `,
     )})
   `)) as unknown as { id: string; slug: string; type: string; deleted_at: Date | null }[];
-  const moduleMap = new Map(modRows2.map((r) => [r.id, r]));
+  const moduleMap = new Map<string, { slug: string; type: string; deleted_at: unknown }>(
+    modRows2.map((r) => [r.id, r]),
+  );
+  // Same branch view for the referenced rows: a chat's own module edits
+  // (type, delete) and instance deletes live only in its snapshots.
+  if (chatBranchId) {
+    for (const [id, st] of await loadBranchedModuleStates(tx, chatBranchId, allModuleIds)) {
+      moduleMap.set(id, { slug: st.slug, type: st.type, deleted_at: st.deletedAt });
+    }
+    for (const [id, st] of await loadContentInstanceBranchStates(
+      tx,
+      allInstanceIds,
+      chatBranchId,
+    )) {
+      ciMap.set(id, { module_id: st.moduleId, deleted_at: st.deletedAt });
+    }
+  }
 
   for (const c of refsToCheck) {
     const m = moduleMap.get(c.ref.moduleId);
@@ -715,7 +737,12 @@ export const createContentInstanceOp = defineOperation({
     // v0.12.1 — validate nested-module-ref shapes against the module's
     // declared fields[] BEFORE persisting so bad refs fail at write time
     // with an actionable error (not at render time as missingSlots).
-    const refValidation = await validateNestedRefs(tx, input.moduleId, input.values);
+    const refValidation = await validateNestedRefs(
+      tx,
+      ctx.chatBranchId ?? null,
+      input.moduleId,
+      input.values,
+    );
     if (!refValidation.ok) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
@@ -1106,7 +1133,7 @@ export const setContentInstanceValuesOp = defineOperation({
 
     // v0.12.1 — validate nested-module-ref shapes against the owning
     // module's fields[] so bad refs fail at write time, not render time.
-    const refValidation = await validateNestedRefs(tx, prev.moduleId, input.values);
+    const refValidation = await validateNestedRefs(tx, branchId, prev.moduleId, input.values);
     if (!refValidation.ok) {
       await recordAudit(tx, {
         actorId: ctx.actorId,

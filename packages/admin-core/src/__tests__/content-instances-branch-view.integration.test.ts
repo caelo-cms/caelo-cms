@@ -13,6 +13,8 @@
  *     placements as the branch sees them, and count nested parents (a
  *     child shown inside a parent's module-list is not an orphan);
  *     `content_instances.delete` refuses a child that still has a parent.
+ *   - #1042 — nested-ref validation reads the owning module's fields as
+ *     the chat edited them.
  *
  * Integration tier against a throwaway Postgres (never the dev DB).
  */
@@ -366,5 +368,46 @@ describe("#1067 — placements and nested parents as the caller sees them", () =
     expect(
       (await op<Got>(SYS, "content_instances.get", { id: child.contentInstanceId })).nestedParents,
     ).toEqual([parent.contentInstanceId]);
+  });
+});
+
+describe("#1042 — nested-ref validation reads the chat's module schema", () => {
+  it("a field the chat turned from module into module-list accepts a list", async () => {
+    const holder = await createModule("holder", "<div>{{>cta}}</div>", [
+      { name: "cta", kind: "module", label: "CTA" },
+    ]);
+    const card = await op<{ contentInstanceId: string }>(SYS, "content_instances.create", {
+      moduleId: cardId,
+      displayName: "CTA card",
+      purpose: "test",
+      values: { title: "CTA" },
+    });
+    const instance = await op<{ contentInstanceId: string }>(SYS, "content_instances.create", {
+      moduleId: holder,
+      displayName: "Holder",
+      purpose: "test",
+      values: { cta: { moduleId: cardId, contentInstanceId: card.contentInstanceId } },
+    });
+    const chat = await draftChat("schema");
+    await op(chat, "modules.update", {
+      moduleId: holder,
+      html: "<div>{{#cta}}{{>.}}{{/cta}}</div>",
+      fields: [{ name: "cta", kind: "module-list", label: "CTAs" }],
+    });
+    await op(chat, "content_instances.set_values", {
+      id: instance.contentInstanceId,
+      values: { cta: [] },
+    });
+    const got = await op<Got>(chat, "content_instances.get", { id: instance.contentInstanceId });
+    expect(got.instance.values).toEqual({ cta: [] });
+    // Main's schema still says `module`: the same write without the chat fails there.
+    expect(
+      (
+        await run(SYS, "content_instances.set_values", {
+          id: instance.contentInstanceId,
+          values: { cta: [] },
+        })
+      ).ok,
+    ).toBe(false);
   });
 });
