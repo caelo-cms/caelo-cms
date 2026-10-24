@@ -42,11 +42,18 @@ export async function canonicaliseInstanceValues(
   values: Readonly<Record<string, unknown>>,
   previous: unknown,
 ): Promise<CanonicaliseOutcome<Record<string, unknown>>> {
-  // Probe before loading the module's fields: with every value treated
-  // as a URL field (the widest reading), link-free values skip both the
-  // field load and the site lookup.
-  const widest = Object.keys(values).map((name) => ({ name, kind: "url" }));
-  const probe = probeLinkLookup((run) => canonicaliseContentValues(widest, values, run));
+  // Probe before loading the module's fields: link-free values skip both
+  // the field load and the site lookup. The widest reading takes BOTH
+  // shapes a value can carry a link in — the whole value as a URL (a
+  // `url` field) and links inside it as HTML (a `richtext` field). A URL
+  // reading alone sees `<p><a href="/x">` as one non-path string, so an
+  // instance whose only links sat in rich text skipped canonicalisation
+  // and stored them as literal paths (#1028).
+  const asUrl = Object.keys(values).map((name) => ({ name, kind: "url" }));
+  const probe = probeLinkLookup((run) => {
+    canonicaliseContentValues(asUrl, values, run);
+    return canonicaliseContentValues([], values, run);
+  });
   if (!probe.needsLookup) return { ok: true, value: { ...values }, issues: [], pending: null };
   const schema = await loadModuleSchema(tx, moduleId, ctx.chatBranchId ?? null);
   if (schema === null) {

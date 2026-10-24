@@ -311,6 +311,43 @@ describe("content values", () => {
     );
   });
 
+  it("canonicalises a nested module-list entry whose only links sit in richtext HTML (#1028)", async () => {
+    const r = await run<{
+      pageId: string;
+      detached: { ref: string; contentInstanceId: string }[];
+    }>("pages.build_page", {
+      page: { slug: `${PFX}-nested`, title: `${PFX} nested`, templateId },
+      modules: [
+        {
+          ref: "box",
+          displayName: `${PFX} Hint box`,
+          description: "A hint box inside an article.",
+          kind: "content",
+          html: '<div class="rg-box">{{{inhalt_html}}}</div>',
+          fields: [{ name: "inhalt_html", kind: "richtext", label: "Inhalt" }],
+          content: {
+            source: "inline",
+            values: { inhalt_html: `<p>Der <a href="/${PFX}-about">Test</a> umfasst …</p>` },
+          },
+        },
+        {
+          blockName: "content",
+          displayName: `${PFX} Article`,
+          description: "Article body built from blocks.",
+          kind: "content",
+          html: '<article class="art">{{#bausteine}}{{/bausteine}}</article>',
+          fields: [{ name: "bausteine", kind: "module-list", label: "Bausteine" }],
+          content: { source: "inline", values: { bausteine: [{ $ref: "box" }] } },
+        },
+      ],
+    });
+    const box = r.detached.find((d) => d.ref === "box");
+    if (!box) throw new Error("detached box missing");
+    expect((await storedValues(box.contentInstanceId)).inhalt_html).toBe(
+      `<p>Der <a href="caelo:page/${aboutId}">Test</a> umfasst …</p>`,
+    );
+  });
+
   it("refuses a link to no page with an actionable message and writes nothing", async () => {
     const moduleId = await makeModule("cta-missing", '<a href="{{cta_href}}">x</a>', CTA_FIELDS);
     const message = await refused("content_instances.create", {
