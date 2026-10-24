@@ -269,6 +269,41 @@ describe("renderTemplate — single nested {{>name}}", () => {
   });
 });
 
+describe("renderTemplate — empty single module field (#1041)", () => {
+  const moduleField: TemplateField = { name: "after", kind: "module" };
+
+  it("an unset module field renders empty and is not a failure", () => {
+    const r = renderTemplate({
+      html: "<aside>{{>after}}</aside>",
+      fields: [moduleField],
+      contentValues: {},
+      partials: {},
+    });
+    expect(r.html).toBe("<aside></aside>");
+    expect(r.missingSlots).toEqual([]);
+  });
+
+  it("an explicit null module field renders empty and is not a failure", () => {
+    const r = renderTemplate({
+      html: "<aside>{{>after}}</aside>",
+      fields: [moduleField],
+      contentValues: { after: null },
+      partials: {},
+    });
+    expect(r.html).toBe("<aside></aside>");
+    expect(r.missingSlots).toEqual([]);
+  });
+
+  it("a present non-ref value is still module-ref-malformed", () => {
+    const r = renderTemplate({
+      html: "<aside>{{>after}}</aside>",
+      fields: [moduleField],
+      contentValues: { after: { moduleId: "m" } },
+    });
+    expect(r.missingSlots).toEqual(["module-ref-malformed:after"]);
+  });
+});
+
 describe("renderTemplate — loud-raw on unknown sections (AC #3)", () => {
   it("unknown {{#unknown}}…{{/unknown}} leaves raw markers + tracks field-not-declared", () => {
     const r = renderTemplate({

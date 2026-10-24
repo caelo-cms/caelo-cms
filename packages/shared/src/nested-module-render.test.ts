@@ -211,6 +211,39 @@ describe("renderModuleWithContent — nested module slots", () => {
   });
 });
 
+describe("renderModuleWithContent — empty optional module field (#1041)", () => {
+  it("an unset or null `module` field renders an empty slot without a marker", () => {
+    for (const values of [{}, { after: null }]) {
+      const resolver = buildResolver(
+        [
+          {
+            moduleId: PARENT_MOD_ID,
+            slug: "card-grid",
+            html: "<section><h2>{{title}}</h2>{{>after}}</section>",
+            css: "",
+            js: "",
+            fields: [
+              { name: "title", kind: "text" },
+              { name: "after", kind: "module" },
+            ],
+          },
+        ],
+        [
+          {
+            id: PARENT_CI_ID,
+            moduleId: PARENT_MOD_ID,
+            values: { title: "T", ...values },
+            deletedAt: null,
+          },
+        ],
+      );
+      const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+      expect(r.html).toBe("<section><h2>T</h2></section>");
+      expect(r.missingSlots).toEqual([]);
+    }
+  });
+});
+
 describe("renderModuleWithContent — list-of-primitive slots", () => {
   it("text-list iterates {{.}} per string element", () => {
     const resolver = buildResolver(
