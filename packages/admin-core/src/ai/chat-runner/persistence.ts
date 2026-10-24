@@ -17,6 +17,7 @@ import {
 } from "@caelo-cms/shared";
 
 import { mcpAgentOpFields } from "../../ops/chat/mcp-agent.js";
+import type { ProviderResponseMessage } from "../provider.js";
 import type { AccumulatedServerToolCall, AccumulatedToolCall, ChatRunnerOptions } from "./types.js";
 
 /** The session aggregate `chat.get_session` returns. */
@@ -132,39 +133,45 @@ export async function claimTurnApprovals(
 }
 
 /**
- * Plan B (SDK approval gate) — persist the Owner's in-chat Approve/Reject as a
- * role='tool' row carrying the SDK tool-approval-response ModelMessage in
- * `responseMessages`. On the resume turn, buildProviderHistory replays it
- * verbatim (Option C passthrough) after the paused assistant turn, so the SDK
- * either runs the gated tool (approved) or lets the model react to the denial.
+ * Plan B (SDK approval gate) — persist approval decisions as ONE role='tool'
+ * row carrying ONE SDK tool message with a tool-approval-response part per
+ * decision (`responseMessages`). On the resume run the history replays it
+ * verbatim after the paused assistant turn, so the SDK runs each approved
+ * gated tool and lets the model react to each denial. One message for all of
+ * them, because the SDK collects approval responses from the LAST message
+ * only (#1074; same shape as `insertApprovalResponseRow` in
+ * ops/chat/turn-approvals.ts).
+ *
+ * @returns the persisted content and messages, for the in-memory history,
+ *   and whether the row was saved.
  */
 export async function persistApprovalResponse(
   registry: OperationRegistry,
   adapter: DatabaseAdapter,
   humanCtx: ExecutionContext,
   chatSessionId: string,
-  decision: { approvalId: string; approved: boolean; reason?: string },
-): Promise<boolean> {
+  decisions: readonly { approvalId: string; approved: boolean; reason?: string }[],
+): Promise<{ saved: boolean; content: string; messages: ProviderResponseMessage[] }> {
+  const messages: ProviderResponseMessage[] = [
+    {
+      role: "tool",
+      content: decisions.map((d) => ({
+        type: "tool-approval-response",
+        approvalId: d.approvalId,
+        approved: d.approved,
+        ...(d.reason ? { reason: d.reason } : {}),
+      })),
+    },
+  ];
+  const content = decisions.map((d) => `[approval ${d.approved ? "granted" : "denied"}]`).join(" ");
   const save = await execute(registry, adapter, humanCtx, "chat.append_message", {
     chatSessionId,
     role: "tool",
-    content: `[approval ${decision.approved ? "granted" : "denied"}]`,
-    responseMessages: [
-      {
-        role: "tool",
-        content: [
-          {
-            type: "tool-approval-response",
-            approvalId: decision.approvalId,
-            approved: decision.approved,
-            ...(decision.reason ? { reason: decision.reason } : {}),
-          },
-        ],
-      },
-    ],
+    content,
+    responseMessages: messages,
     source: "chat-runner approval response (persistApprovalResponse)",
   });
-  return save.ok;
+  return { saved: save.ok, content, messages };
 }
 
 /** Persist the user's message + chips. Returns false if the append failed. */

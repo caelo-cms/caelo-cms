@@ -924,24 +924,22 @@ export async function* runToolLoop(
       // production resume leaves behind — an e2e-only in-memory approval
       // made an interrupted resume replay differently from production.
       if (autoApprove) {
-        for (const req of askable) {
-          await persistApprovalResponse(registry, adapter, humanCtx, chatSessionId, {
-            approvalId: req.approvalId,
-            approved: true,
-          });
-          history.messages.push({
-            role: "tool",
-            content: "",
-            sdkMessages: [
-              {
-                role: "tool",
-                content: [
-                  { type: "tool-approval-response", approvalId: req.approvalId, approved: true },
-                ],
-              },
-            ],
-          });
-        }
+        // #1074 — all of the step's approvals in ONE tool message, the shape
+        // the production resume writes (the SDK reads approval responses
+        // from the last message only).
+        const decisions = askable.map((req) => ({ approvalId: req.approvalId, approved: true }));
+        const approvals = await persistApprovalResponse(
+          registry,
+          adapter,
+          humanCtx,
+          chatSessionId,
+          decisions,
+        );
+        history.messages.push({
+          role: "tool",
+          content: approvals.content,
+          sdkMessages: approvals.messages,
+        });
         console.error("[chat-runner] auto-approved (e2e)", {
           chatSessionId,
           approvals: run.approvalRequests.map((r) => r.name),

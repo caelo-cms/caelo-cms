@@ -330,4 +330,21 @@ describe("approval answers the SDK can read", () => {
     expect(JSON.stringify(denialRows[0]?.responseMessages)).toContain("toolu_X2");
     for (const prompt of p.seenPrompts) expect(duplicateResults(prompt)).toEqual([]);
   });
+
+  it("#1074 — two e2e auto-approvals in one step both run; the turn continues", async () => {
+    gatedRuns = 0;
+    const p = new MultiFixtureProvider([
+      [call("toolu_X1", "propose_thing"), call("toolu_X2", "propose_thing"), ...toolUse],
+      [call("toolu_W", "read_thing"), ...toolUse],
+      endTurn,
+    ]);
+    const { result, fixture } = await withAutoApprove(true, () =>
+      run(p, [{ role: "user", content: "go" }], catalogue()),
+    );
+    expect(result.stopReason).toBe("end_turn");
+    expect(gatedRuns).toBe(2);
+    const approvalRows = fixture.appended.filter((m) => m.content.includes("[approval granted]"));
+    expect(approvalRows).toHaveLength(1);
+    for (const prompt of p.seenPrompts) expect(duplicateResults(prompt)).toEqual([]);
+  });
 });
