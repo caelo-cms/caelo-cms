@@ -997,7 +997,7 @@ function sortByPath(placements: PlacementInView[]): PlacementInView[] {
 }
 
 /** Placement count per instance id, as the caller sees it (absent = 0). */
-async function countPlacementsInView(
+export async function countPlacementsInView(
   tx: Tx,
   contentInstanceIds: readonly string[],
   branchId: string | null,

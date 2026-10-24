@@ -13,7 +13,10 @@
  * of the module's HTML — values that never differ are not fields.
  *
  * A warning on an already-successful write, never a gate (same contract
- * as the markup guard it rides with).
+ * as the markup guard it rides with). The comparison set is module-scoped:
+ * `content_instances.list_module_peers` reads only the instances of the
+ * modules the write touched, so a write never scans the whole library
+ * (epic #1003 — 50k pages).
  */
 
 /** Copies of one value (private instances of one module) that trigger the hint. */

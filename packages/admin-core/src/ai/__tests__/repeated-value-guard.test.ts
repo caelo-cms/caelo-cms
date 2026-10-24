@@ -82,36 +82,44 @@ describe("withFieldMarkupGuard — shared-content hint", () => {
     actorKind: "ai",
     requestId: "issue-1062-unit",
   };
+  const reads: { name: string; input: unknown }[] = [];
   const toolCtx = {
     registry,
     adapter: {
-      runOperation: async (op: { name: string }) => {
-        if (op.name === "content_instances.list") {
-          return ok({
-            instances: ["a", "b", "c"].map((id) => ({
-              ...inst(id, { lead: LEAD }),
-              moduleSlug: "demo",
-              nestedParentCount: 0,
-            })),
-          });
+      runOperation: async (op: { name: string }, _ctx: unknown, input: unknown) => {
+        reads.push({ name: op.name, input });
+        if (op.name === "content_instances.list_module_peers") {
+          return ok({ instances: ["a", "b", "c"].map((id) => inst(id, { lead: LEAD })) });
         }
-        return ok({ modules: [] });
+        return ok({ modules: [], instances: [] });
       },
     } as unknown as DatabaseAdapter,
   } as ToolContext;
-  const tool: ToolDefinitionWithHandler<{ values: Record<string, unknown> }> = {
+  const tool: ToolDefinitionWithHandler<{ moduleId: string; values: Record<string, unknown> }> = {
     name: "fake_write",
     description: "",
     schema: undefined as never,
     handler: async () => ({ ok: true, content: "written." }),
   };
+  const guarded = withFieldMarkupGuard(
+    tool,
+    (i) => [i.values],
+    (i) => ({ moduleIds: [i.moduleId] }),
+  );
 
-  it("appends the hint to the write that made the third copy", async () => {
-    const r = await withFieldMarkupGuard(tool, (i) => [i.values]).handler(
-      AI,
-      { values: { lead: LEAD } },
-      toolCtx,
-    );
+  it("reads only the written module's instances and appends the hint", async () => {
+    reads.length = 0;
+    const r = await guarded.handler(AI, { moduleId: MOD, values: { lead: LEAD } }, toolCtx);
     expect(r.content).toStartWith("written. 🎯 shared-content: `lead` of module");
+    // Module-scoped: one peers read for MOD, never the whole library.
+    expect(reads.map((x) => x.name)).toEqual(["content_instances.list_module_peers"]);
+    expect(reads[0]?.input).toEqual({ moduleIds: [MOD], contentInstanceIds: [], placements: [] });
+  });
+
+  it("reads nothing when no written value qualifies", async () => {
+    reads.length = 0;
+    const r = await guarded.handler(AI, { moduleId: MOD, values: { label: "Go" } }, toolCtx);
+    expect(r.content).toBe("written.");
+    expect(reads).toEqual([]);
   });
 });

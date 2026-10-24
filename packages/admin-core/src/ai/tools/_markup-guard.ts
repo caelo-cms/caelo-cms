@@ -216,50 +216,87 @@ export async function moduleMarkupFindings(
 }
 
 /**
- * Suffix for a field-value write ("" when there is nothing to say): the
- * markup hints above plus the #1062 repeated-value hint, from ONE read of
- * the content instances as the caller sees them.
+ * The write's targets for the #1062 repeated-value hint: which modules'
+ * instances to compare against (resolved by `content_instances.list_module_peers`).
  */
+export interface RepeatScope {
+  readonly moduleIds?: readonly string[];
+  readonly contentInstanceIds?: readonly string[];
+  readonly placements?: readonly { pageId: string; blockName: string; position: number }[];
+}
+
+/** Suffix for a field-value write ("" when there is nothing to say). */
 export async function fieldMarkupSuffix(
   ctx: ExecutionContext,
   toolCtx: ToolContext,
   written: readonly Readonly<Record<string, unknown>>[],
 ): Promise<string> {
-  const markup = written.some((v) => valuePatterns(v).length > 0);
-  const repeats = hasRepeatCandidates(written);
-  if (!markup && !repeats) return "";
+  if (!written.some((v) => valuePatterns(v).length > 0)) return "";
   const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "content_instances.list", {});
   if (!res.ok) return "";
-  const all = (res.value as { instances?: (IndexedInstance & ValueInstance)[] }).instances ?? [];
-  const parts: string[] = [];
-  if (markup) {
-    const instances = all.filter((i) =>
-      Object.values(i.values).some((v) => JSON.stringify(v).includes("class=")),
-    );
-    const hints = fieldReuseHints(written, instances, await loadCatalog(ctx, toolCtx));
-    if (hints.length > 0) parts.push(` 🎯 markup-guard: ${hints.join(". ")}.`);
-  }
-  if (repeats) {
-    const hints = repeatedValueHints(written, all);
-    if (hints.length > 0) parts.push(` 🎯 shared-content: ${hints.join(". ")}.`);
-  }
-  return parts.join("");
+  const instances = ((res.value as { instances?: IndexedInstance[] }).instances ?? []).filter((i) =>
+    Object.values(i.values).some((v) => JSON.stringify(v).includes("class=")),
+  );
+  const hints = fieldReuseHints(written, instances, await loadCatalog(ctx, toolCtx));
+  return hints.length === 0 ? "" : ` 🎯 markup-guard: ${hints.join(". ")}.`;
+}
+
+/**
+ * Suffix for the #1062 repeated-value hint ("" when there is nothing to
+ * say). Reads only the instances of the modules the write touched, and
+ * only when the write carries a value worth comparing.
+ */
+export async function repeatedValueSuffix(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  written: readonly Readonly<Record<string, unknown>>[],
+  scope: RepeatScope,
+): Promise<string> {
+  const targets =
+    (scope.moduleIds?.length ?? 0) +
+    (scope.contentInstanceIds?.length ?? 0) +
+    (scope.placements?.length ?? 0);
+  if (targets === 0 || !hasRepeatCandidates(written)) return "";
+  const res = await execute(
+    toolCtx.registry,
+    toolCtx.adapter,
+    ctx,
+    "content_instances.list_module_peers",
+    {
+      moduleIds: [...new Set(scope.moduleIds ?? [])],
+      contentInstanceIds: [...new Set(scope.contentInstanceIds ?? [])],
+      placements: scope.placements ?? [],
+    },
+  );
+  // A failed read only loses the hint; the write it comments on succeeded.
+  if (!res.ok) return "";
+  const hints = repeatedValueHints(
+    written,
+    (res.value as { instances: ValueInstance[] }).instances,
+  );
+  return hints.length === 0 ? "" : ` 🎯 shared-content: ${hints.join(". ")}.`;
 }
 
 /**
  * Wrap a field-value-writing tool so a successful write carries the field
- * markup hints. `pick` names the value objects the input writes.
+ * markup hints and (with `scope`) the repeated-value hint. `pick` names
+ * the value objects the input writes; `scope` names the modules /
+ * instances / placements it writes to.
  */
 export function withFieldMarkupGuard<T>(
   tool: ToolDefinitionWithHandler<T>,
   pick: (input: T) => readonly Readonly<Record<string, unknown>>[],
+  scope?: (input: T) => RepeatScope,
 ): ToolDefinitionWithHandler<T> {
   return {
     ...tool,
     handler: async (ctx, input, toolCtx) => {
       const result = await tool.handler(ctx, input, toolCtx);
       if (!result.ok) return result;
-      const suffix = await fieldMarkupSuffix(ctx, toolCtx, pick(input));
+      const written = pick(input);
+      const suffix =
+        (await fieldMarkupSuffix(ctx, toolCtx, written)) +
+        (scope ? await repeatedValueSuffix(ctx, toolCtx, written, scope(input)) : "");
       return suffix ? { ...result, content: `${result.content}${suffix}` } : result;
     },
   };

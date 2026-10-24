@@ -15,6 +15,8 @@
  *     `content_instances.delete` refuses a child that still has a parent.
  *   - #1042 — nested-ref validation reads the owning module's fields as
  *     the chat edited them.
+ *   - #1062 — `content_instances.list_module_peers` returns only the
+ *     instances of the modules a write touched (module-scoped read).
  *
  * Integration tier against a throwaway Postgres (never the dev DB).
  */
@@ -409,5 +411,40 @@ describe("#1042 — nested-ref validation reads the chat's module schema", () =>
         })
       ).ok,
     ).toBe(false);
+  });
+});
+
+describe("#1062 — list_module_peers reads only the touched modules", () => {
+  it("resolves module ids, instance ids and the chat's placements; other modules are absent", async () => {
+    const pageId = await livePage("peers", ["P0"]);
+    const chat = await draftChat("peers");
+    // On the chat, position 0 becomes a hero: the placement resolves to hero.
+    await op(chat, "pages.set_modules", {
+      pageId,
+      blocks: [{ blockName: "content", moduleIds: [heroId] }],
+    });
+    type Peers = { instances: { moduleId: string; placementCount: number }[] };
+    const byPlacement = await op<Peers>(chat, "content_instances.list_module_peers", {
+      placements: [{ pageId, blockName: "content", position: 0 }],
+    });
+    expect(byPlacement.instances.length).toBeGreaterThan(0);
+    expect(new Set(byPlacement.instances.map((i) => i.moduleId))).toEqual(new Set([heroId]));
+    const onMain = await op<Peers>(SYS, "content_instances.list_module_peers", {
+      placements: [{ pageId, blockName: "content", position: 0 }],
+    });
+    expect(new Set(onMain.instances.map((i) => i.moduleId))).toEqual(new Set([cardId]));
+
+    const cardInstance = (
+      await op<{ instances: { id: string }[] }>(SYS, "content_instances.list", { pageId })
+    ).instances[0]?.id as string;
+    const byInstance = await op<Peers>(SYS, "content_instances.list_module_peers", {
+      contentInstanceIds: [cardInstance],
+    });
+    expect(byInstance.instances.every((i) => i.moduleId === cardId)).toBe(true);
+    const byModule = await op<Peers>(SYS, "content_instances.list_module_peers", {
+      moduleIds: [heroId],
+    });
+    expect(byModule.instances.every((i) => i.moduleId === heroId)).toBe(true);
+    expect((await op<Peers>(SYS, "content_instances.list_module_peers", {})).instances).toEqual([]);
   });
 });
