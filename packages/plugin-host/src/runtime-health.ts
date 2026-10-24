@@ -421,7 +421,10 @@ function serialized(slug: string, write: () => Promise<void>): Promise<void> {
  * lifetime; each beat writes these again until they land. A newer write
  * for the same plugin replaces the entry.
  */
-const unsavedOutcomes = new Map<string, RuntimeOutcome>();
+/** "This instance runs nothing of the plugin": its row is deleted. */
+const CLEARED = Symbol("cleared");
+
+const unsavedOutcomes = new Map<string, RuntimeOutcome | typeof CLEARED>();
 
 /**
  * Say what this instance runs for `slug`: loaded, or failed to load with
@@ -455,7 +458,7 @@ function writeOutcome(
   infra: PluginHostInfra,
   systemActorId: string,
   slug: string,
-  outcome: RuntimeOutcome,
+  outcome: RuntimeOutcome | typeof CLEARED,
 ): Promise<void> {
   return serialized(slug, async () => {
     if (unsavedOutcomes.get(slug) !== outcome) return;
@@ -467,12 +470,18 @@ async function upsertOutcome(
   infra: PluginHostInfra,
   systemActorId: string,
   slug: string,
-  outcome: RuntimeOutcome,
+  outcome: RuntimeOutcome | typeof CLEARED,
 ): Promise<void> {
   try {
     await infra.adapter.withAdminTransaction(
       systemCtx(systemActorId, `plugin-runtime-${slug}`),
       async (tx) => {
+        if (outcome === CLEARED) {
+          await tx.execute(sql`
+            DELETE FROM plugin_runtime WHERE instance_id = ${INSTANCE_ID} AND plugin_slug = ${slug}
+          `);
+          return;
+        }
         await tx.execute(sql`
           INSERT INTO plugin_runtime
             (instance_id, plugin_slug, revision, state, error_id, outcome_seq)
@@ -496,6 +505,20 @@ async function upsertOutcome(
       `[plugin-host] could not record the runtime state of ${slug} (retried on the next heartbeat): ${describeLoadError(e)}`,
     );
   }
+}
+
+/**
+ * Forget this instance's row for `slug` (the plugin stopped running here).
+ * Retried on the heartbeat like a refused outcome, so a stopped plugin
+ * never keeps counting as loaded on this server.
+ */
+export async function clearPluginRuntime(opts: {
+  infra: PluginHostInfra;
+  systemActorId: string;
+  slug: string;
+}): Promise<void> {
+  unsavedOutcomes.set(opts.slug, CLEARED);
+  await writeOutcome(opts.infra, opts.systemActorId, opts.slug, CLEARED);
 }
 
 /** The plugins whose runtime state is still waiting to be written (tests). */

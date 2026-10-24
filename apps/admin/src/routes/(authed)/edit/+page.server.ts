@@ -768,8 +768,14 @@ export const actions: Actions = {
     const staged = await stageChatSessions({ adapter, registry }, locals.ctx, [chatSessionId]);
     if (!staged.ok) return fail(500, { error: staged.error.message });
     const summary = staged.value;
-    const { previewUrl, previewLabel, draftPageCount, draftPageTitles, unpublishedLinkWarning } =
-      await describeStagedBuild(locals.ctx, summary, pageId || null);
+    const {
+      previewUrl,
+      previewLabel,
+      draftPageCount,
+      draftPageTitles,
+      unpublishedLinkWarning,
+      pluginProblemWarning,
+    } = await describeStagedBuild(locals.ctx, summary, pageId || null);
 
     return {
       staged: {
@@ -783,6 +789,7 @@ export const actions: Actions = {
         draftPageCount,
         draftPageTitles,
         unpublishedLinkWarning,
+        pluginProblemWarning,
         // Issue #620 — other chats' changes to the same things rode along.
         alsoIncludes: summary.alsoIncludes.map((a) => a.title),
       },

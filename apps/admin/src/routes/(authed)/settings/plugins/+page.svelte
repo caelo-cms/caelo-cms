@@ -164,6 +164,14 @@
                 </TableCell>
                 <TableCell class="font-mono text-xs">{p.sourcePath ?? "—"}</TableCell>
                 <TableCell>
+                  {#if p.status === "active" && p.health.state === "failing"}
+                    <form method="post" action="?/reload" use:enhance class="mb-1">
+                      <input type="hidden" name="slug" value={p.slug} />
+                      <Button type="submit" size="sm" data-testid="reload-{p.slug}">
+                        Reload on all servers
+                      </Button>
+                    </form>
+                  {/if}
                   {#if p.status === "active"}
                     <form method="post" action="?/disable" use:enhance use:confirmSubmit={{ title: `Disable ${p.slug}?`, description: "Everything this plugin adds to the site stops working until you re-enable it.", confirmLabel: "Disable plugin" }}>
                       <input type="hidden" name="slug" value={p.slug} />
@@ -288,6 +296,14 @@
                   <PluginHealth slug={p.slug} health={p.health} />
                 </TableCell>
                 <TableCell>
+                  {#if p.health.state === "failing"}
+                    <form method="post" action="?/reload" use:enhance class="mb-1">
+                      <input type="hidden" name="slug" value={p.slug} />
+                      <Button type="submit" size="sm" data-testid="reload-{p.slug}">
+                        Reload on all servers
+                      </Button>
+                    </form>
+                  {/if}
                   <form method="post" action="?/disable" use:enhance use:confirmSubmit={{ title: `Disable ${p.slug}?`, description: "Everything this plugin adds to the site stops working until you re-enable it.", confirmLabel: "Disable plugin" }}>
                     <input type="hidden" name="slug" value={p.slug} />
                     <input type="hidden" name="artifactDigest" value={p.artifactDigest ?? ""} />

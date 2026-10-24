@@ -21,6 +21,7 @@ import { ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { deployRunIsOrphaned } from "../deploy/deploy-run-lock.js";
+import { deployPluginProblem } from "../deploy/plugin-problems.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { uuidList } from "./quality/_shared.js";
 
@@ -52,6 +53,12 @@ export const beginDeployRunOp = defineOperation({
       coveredAiHoldIds: z.array(z.string().uuid()).nullable(),
       /** #834 — the Caelo version rendering the build; null for a copy-promote. */
       caeloVersion: z.string().nullable(),
+      /**
+       * #1008 — the active plugins that did not run for this build (Publish
+       * live refuses a Stage that has any); null for a dev build or a
+       * Publish live run, which are not checked.
+       */
+      pluginProblems: z.array(deployPluginProblem).nullable(),
     })
     .strict(),
   output: z.object({ orphanedRunIds: z.array(z.string()) }),
@@ -71,12 +78,13 @@ export const beginDeployRunOp = defineOperation({
     }
     await tx.execute(sql`
       INSERT INTO deploy_runs (id, target_id, actor_id, status, started_at, render_fingerprint,
-                               covered_ai_hold_ids, caelo_version)
+                               covered_ai_hold_ids, caelo_version, plugin_problems)
       VALUES (${input.runId}::uuid, ${input.targetId}::uuid, ${input.actorId}::uuid, 'running',
               ${input.startedAt}::timestamptz,
               ${input.renderFingerprint === null ? sql`NULL` : jsonbParam(input.renderFingerprint)},
               ${input.coveredAiHoldIds === null ? sql`NULL` : uuidList(input.coveredAiHoldIds)},
-              ${input.caeloVersion})
+              ${input.caeloVersion},
+              ${input.pluginProblems === null ? sql`NULL` : jsonbParam(input.pluginProblems)})
     `);
     if (orphanedRunIds.length > 0) {
       console.error("[deploy] marked runs that stopped mid-build as failed", { orphanedRunIds });

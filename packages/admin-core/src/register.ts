@@ -417,6 +417,7 @@ import {
   revalidatePluginOp,
   submitPluginOp,
 } from "./ops/plugins/registry.js";
+import { reloadPluginOp } from "./ops/plugins/reload.js";
 import { executeUninstallPluginOp, proposeUninstallPluginOp } from "./ops/plugins/uninstall.js";
 import {
   getProvisioningOutputsOp,
@@ -1350,6 +1351,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(disablePluginOp);
   registry.register(rejectPluginOp);
   registry.register(revalidatePluginOp);
+  registry.register(reloadPluginOp);
   // v0.2.18 — comments long-term archive (cms_public is now ephemeral
   // after moderation; long-term store + static-render reads land here).
   registry.register(commentArchiveInsertOp);

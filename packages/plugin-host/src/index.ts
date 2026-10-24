@@ -134,7 +134,8 @@ export {
   loadActivatedPlugin,
   resetPluginHost,
 } from "./loader.js";
-// #1008 — a plugin's skills are available where it runs: in this process.
+// #1008 — whether a plugin runs in this process: where its skills are
+// available, and what the Publish-live gate checks every active plugin against.
 export {
   pluginFailedHereReason,
   pluginRunsHere,
@@ -149,6 +150,15 @@ export {
   type PublicUrlPage,
   resolvePublicPageUrls,
 } from "./public-urls.js";
+export {
+  type PluginNotRunning,
+  pluginNotRunningMarker,
+  pluginNotRunningReason,
+  pluginNotRunningSlug,
+  pluginsNotRunningHere,
+  resetPluginHostSync,
+  syncPluginHost,
+} from "./reconcile.js";
 export {
   applyPluginRowState,
   discardBranchPluginRows,

@@ -216,6 +216,11 @@ export async function verifyInMemoryPlugin(tp: InMemoryPlugin): Promise<Verified
  */
 let bootOpts: BootstrapOpts | null = null;
 
+/** Whether `bootstrap` ran in this process (the reconciler waits for it). */
+export function pluginHostBootstrapped(): { infra: PluginHostInfra; systemActorId: string } | null {
+  return bootOpts ? { infra: bootOpts.infra, systemActorId: bootOpts.systemActorId } : null;
+}
+
 export async function bootstrap(opts: BootstrapOpts): Promise<LoadReport> {
   setHostInfra(opts.infra);
   setHostSystemActorId(opts.systemActorId);
@@ -607,6 +612,9 @@ export async function verifyDiskPlugin(
   return { definition, manifest, signatureHex };
 }
 
+/** Loads in flight per slug: concurrent callers share one (see below). */
+const activatedLoads = new Map<string, Promise<{ loaded: boolean; reason?: string }>>();
+
 /**
  * Load a plugin the Owner just activated, without a host restart.
  *
@@ -618,9 +626,25 @@ export async function verifyDiskPlugin(
  * again rather than trusting anything cached — activation is exactly
  * the moment to re-check a signature. Returns the reason instead of
  * throwing so the caller can surface it on the activation screen; the
- * row is already active either way, and the next boot retries.
+ * row is already active either way; the failure is recorded (load-outcome.ts)
+ * and `plugins.reload` retries it on every server.
  */
-export async function loadActivatedPlugin(
+export function loadActivatedPlugin(slug: string): Promise<{ loaded: boolean; reason?: string }> {
+  // #1008 — the Owner's activation, an installation finishing and the
+  // reconciler can each ask for the same plugin at once; two loads racing
+  // through provisioning would both register it. Concurrent callers share
+  // the one load in flight; a call after it settled loads again (a reload
+  // or an update must re-verify).
+  const inFlight = activatedLoads.get(slug);
+  if (inFlight) return inFlight;
+  const load = loadActivatedPluginOnce(slug).finally(() => {
+    if (activatedLoads.get(slug) === load) activatedLoads.delete(slug);
+  });
+  activatedLoads.set(slug, load);
+  return load;
+}
+
+async function loadActivatedPluginOnce(
   slug: string,
 ): Promise<{ loaded: boolean; reason?: string }> {
   if (!bootOpts) return { loaded: false, reason: "plugin host not bootstrapped" };
@@ -971,11 +995,25 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
           source_path = EXCLUDED.source_path,
           manifest_signature = EXCLUDED.manifest_signature,
           updated_at = now()
+        -- #1008: only a changed release writes the row. Every instance
+        -- reconciles when the plugin rows change (reconcile.ts), and every
+        -- load attempt runs this upsert, so an unconditional update would
+        -- make instances retrying a failing plugin wake each other forever.
+        WHERE (plugins.version, plugins.manifest_json, plugins.source_path, plugins.manifest_signature)
+          IS DISTINCT FROM
+          (EXCLUDED.version, EXCLUDED.manifest_json, EXCLUDED.source_path, EXCLUDED.manifest_signature)
         RETURNING id::text AS id, status
       `)) as unknown as { id: string; status: string }[];
-        const id = rows[0]?.id;
-        if (!id) throw new Error("plugins upsert returned no id");
-        const persistedStatus = rows[0]?.status ?? initialStatus;
+        // An unchanged row is not returned by the upsert; read it instead.
+        const row =
+          rows[0] ??
+          (
+            (await tx.execute(sql`
+              SELECT id::text AS id, status FROM plugins WHERE slug = ${def.slug}
+            `)) as unknown as { id: string; status: string }[]
+          )[0];
+        if (!row) throw new Error("plugins upsert returned no id");
+        const { id, status: persistedStatus } = row;
 
         const actorRows = (await tx.execute(sql`
         INSERT INTO actors (kind, display_name, plugin_id)

@@ -75,6 +75,9 @@
         {#if form.staged.unpublishedLinkWarning}
           {form.staged.unpublishedLinkWarning}
         {/if}
+        {#if form.staged.pluginProblemWarning}
+          <strong>{form.staged.pluginProblemWarning}</strong>
+        {/if}
       </AlertDescription>
     </Alert>
   {/if}

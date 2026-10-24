@@ -59,6 +59,7 @@ import {
   loadedPlugins,
   type AIProvider as PluginHostAIProvider,
   type SnapshotEmitter,
+  syncPluginHost,
 } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { startRedeployOrchestrator } from "@caelo-cms/redeploy-orchestrator";
@@ -120,7 +121,7 @@ const SYSTEM_CTX: ExecutionContext = {
 // against that key via the `.tier1-trust-root` drop file. Production
 // images sign at image-build time (same mechanism, throwaway build key;
 // image provenance is cosign's job).
-let pluginHostBootstrapped = false;
+let pluginHostBoot: Promise<void> | null = null;
 
 /** Walk up from cwd to the directory containing `packages/plugins`.
  *  Throws (no-fallbacks) when the workspace shape isn't found. */
@@ -137,9 +138,17 @@ function findWorkspaceRoot(): string {
   );
 }
 
-async function bootstrapPlugins(): Promise<void> {
-  if (pluginHostBootstrapped) return;
-  pluginHostBootstrapped = true;
+/**
+ * The plugin host boot, started once and shared: every request waits for
+ * it (#1008) so none renders, dispatches or passes the Publish-live gate on
+ * empty registries during a cold start.
+ */
+function bootstrapPlugins(): Promise<void> {
+  if (!pluginHostBoot) pluginHostBoot = bootPluginHost();
+  return pluginHostBoot;
+}
+
+async function bootPluginHost(): Promise<void> {
   const { adapter, registry } = getQueryContext();
   // P11.5 audit fix #3 — wire emitSnapshot + aiProvider so plugins that
   // declare those capabilities get working handles. Plugin's
@@ -260,6 +269,17 @@ async function bootstrapPlugins(): Promise<void> {
 // are, and is retried at the next start. The Owner sees the report and
 // can re-run or revert it at Settings → Internal links.
 async function migrateLinksOnce(): Promise<void> {
+  // The conversion recognises absolute links to the site's own host by the
+  // stored base URL, which CAELO_SITE_URL seeds. Run it after that seed:
+  // before it, those links would be judged external and stay literal for
+  // good, because the run records as applied (#1008 review).
+  await seedSiteBaseUrl();
+  if (process.env.CAELO_SITE_URL?.trim() && siteBaseUrlSeed === null) {
+    console.error(
+      "[bootstrap.link_migration] skipped: the site base URL could not be seeded yet (retried at the next start)",
+    );
+    return;
+  }
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, SYSTEM_CTX, "links.migrate_to_references", {
     trigger: "boot",
@@ -603,7 +623,12 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapDomainEventGc();
   bootstrapQualityAudits();
   bootstrapBugForwarding();
-  bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
+  // #1008 — wait for the shared plugin-host boot, then follow plugin
+  // decisions made through any instance (throttled state check; reconciles
+  // only when the plugin rows changed), so this request renders and
+  // dispatches on the database's plugin state.
+  await bootstrapPlugins().catch((e) => console.error("[bootstrap.plugins] failed", e));
+  await syncPluginHost();
   consumePendingBootstrapToken().catch((e) => console.error("[bootstrap.token] failed", e));
   await seedSiteBaseUrl();
   await seedStagingHost();

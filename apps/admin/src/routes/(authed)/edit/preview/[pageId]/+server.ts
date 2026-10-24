@@ -18,10 +18,12 @@
  * see answers 404.
  */
 
+import { pluginsNotRunningHere } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
 import { injectEditOverlay } from "#lib/server/edit-overlay.js";
 import { requirePermission } from "#lib/server/guards.js";
+import { withPluginProblemsBanner } from "#lib/server/plugin-problems-banner.js";
 import { previewDocumentResponse } from "#lib/server/preview-sandbox.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
@@ -48,7 +50,7 @@ export const GET: RequestHandler = async ({ params, url, locals, cookies }) => {
     throw error(500, `Preview render failed: ${message}`);
   }
   const composed = result.value as { html: string };
-  const html = injectEditOverlay(composed.html);
+  const html = injectEditOverlay(withPluginProblemsBanner(composed.html, pluginsNotRunningHere()));
 
   // #946 — the module scripts in this page are untrusted: the document is
   // sandboxed into an opaque origin (CSP), never run as the operator.

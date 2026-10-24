@@ -172,7 +172,7 @@ export const actions: Actions = {
     if (!live.loaded) {
       return {
         ok: true,
-        message: `Activated ${slug}, but it could not be loaded into the running host (${live.reason}). It will be retried on the next restart.`,
+        message: `Activated ${slug}, but it could not be loaded on this server (${live.reason}). It stays active; its health below shows the error — use "Reload on all servers" once the cause is fixed.`,
       };
     }
     return { ok: true, message: `Activated ${slug}.` };
@@ -200,12 +200,30 @@ export const actions: Actions = {
     if (!live.loaded) {
       return {
         ok: true,
-        message: `Re-enabled ${slug}, but it could not be loaded into the running host (${live.reason}). It will be retried on the next restart.`,
+        message: `Re-enabled ${slug}, but it could not be loaded on this server (${live.reason}). It stays enabled; its health below shows the error — use "Reload on all servers" once the cause is fixed.`,
       };
     }
     return { ok: true, message: `Plugin ${slug} re-enabled.` };
   },
 
+  // #1008 — retry an active plugin that failed to load, on every server.
+  reload: async ({ request, locals }) => {
+    requirePermission(locals, "settings.write");
+    const form = await request.formData();
+    const slug = form.get("slug");
+    if (typeof slug !== "string" || !slug) return fail(400, { error: "slug required" });
+    const { adapter, registry } = getQueryContext();
+    const r = await execute(registry, adapter, locals.ctx, "plugins.reload", { slug });
+    if (!r.ok) {
+      return fail(400, {
+        error: "message" in r.error ? String(r.error.message) : r.error.kind,
+      });
+    }
+    return {
+      ok: true,
+      message: `Reloading ${slug} on every server. This server has retried already; the others follow within seconds.`,
+    };
+  },
   disable: async ({ request, locals }) => {
     requirePermission(locals, "settings.write");
     const form = await request.formData();

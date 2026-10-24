@@ -38,6 +38,7 @@ import {
   runPluginOperation,
 } from "./index.js";
 import {
+  clearPluginRuntime,
   hostInstanceId,
   recordPluginError,
   recordPluginRuntime,
@@ -535,6 +536,18 @@ describe("#1008 — a failing load never switches a plugin off", () => {
 
     await runtimeHeartbeatOnce(infra, SYSTEM_ACTOR_ID);
     expect((await runtimeOf(slug)).map((r) => r.state)).toEqual(["loaded"]);
+    expect(unsavedRuntimeSlugs()).not.toContain(slug);
+
+    // The same for clearing the row (the plugin stopped running here).
+    failNext = true;
+    await clearPluginRuntime({
+      infra: { adapter: flaky, registry },
+      systemActorId: SYSTEM_ACTOR_ID,
+      slug,
+    });
+    expect((await runtimeOf(slug)).map((r) => r.state)).toEqual(["loaded"]);
+    await runtimeHeartbeatOnce(infra, SYSTEM_ACTOR_ID);
+    expect(await runtimeOf(slug)).toEqual([]);
     expect(unsavedRuntimeSlugs()).not.toContain(slug);
   });
 

@@ -109,6 +109,14 @@ FROM plugin_errors ORDER BY last_seen_at DESC LIMIT 20;
 ```
 
 A `core` error is Caelo's (it went to the bug intake when forwarding is on).
+Servers do not retry a failing plugin on their own: once the cause is fixed,
+click **Reload on all servers** on `/settings/plugins` (or ask the AI —
+`reload_plugin`). Every admin instance follows plugin changes within seconds
+of the next request (it compares a fingerprint of the plugin rows), so a restart is
+not needed for an activation, disable, uninstall or reload to take effect.
+While an active plugin does not run, Publish live is refused, and a Stage
+built during that time is never published — Stage again after the reload.
+
 To stop a plugin that misbehaves, disable it via the UI or:
 ```sql
 UPDATE plugins SET status='disabled' WHERE slug='<slug>';
