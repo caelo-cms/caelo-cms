@@ -260,7 +260,11 @@ describe("bug forwarding", () => {
     const { bugReportTool, bugReportToolInput } = await import("../ai/tools/bug-report.js");
     const r = await bugReportTool.handler(
       SYSTEM,
-      bugReportToolInput.parse({ title: "BF tool", whatHappened: "x", expected: "y" }),
+      bugReportToolInput.parse({
+        title: "BF tool report",
+        whatHappened: "screenshot_page ignored the selector.",
+        expected: "A cropped screenshot.",
+      }),
       { adapter, registry } as Parameters<typeof bugReportTool.handler>[2],
     );
     expect(r.content).toContain("will be sent to the Caelo team");
