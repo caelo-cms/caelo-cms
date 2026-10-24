@@ -35,6 +35,7 @@ const NOT_IMPLEMENTED =
   "AWS S3 static publisher not yet implemented. Stage / Confirm-publish on AWS Cloud installs is tracked for a future release; until then run on GCP, self-hosted, or wait for the AWS adapter. See https://github.com/caelo-cms/caelo-cms/issues for status.";
 
 export const s3StaticPublisher: StaticPublisher = {
+  servesCurrentDir: false,
   async publishStaging() {
     throw new Error(NOT_IMPLEMENTED);
   },

@@ -26,6 +26,7 @@
 import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
 import {
   type BuildPageContent,
+  type BuildPageInput,
   buildPageInputSchema,
   buildPagePlacementResultSchema,
   contentInstanceCreateSchema,
@@ -56,6 +57,28 @@ import { createModuleOp } from "./modules.js";
 import { createPageOp } from "./pages.js";
 
 /** Human-readable label for error messages: index + best identifier. */
+type BuildPageModuleEntry = BuildPageInput["modules"][number];
+
+/**
+ * True when mint entry `entry` repeats `earlier` — the same html, and every
+ * other authoring field either omitted or equal — so it is a second placement
+ * of the same module, not a new one. The model writes three feature cards as
+ * three entries with one card's markup, declaring `fields` (and css) on the
+ * first only; minting each separately failed the later ones on their
+ * undeclared placeholders (e2e-livedit run 40025014982), and three minted
+ * copies would be the repeated markup CLAUDE.md §1A makes one module anyway.
+ * Placing the first entry's module again is what `moduleId: {"$ref"}` says
+ * explicitly. Anything that differs keeps the entry a separate mint.
+ */
+export function repeatsMint(entry: BuildPageModuleEntry, earlier: BuildPageModuleEntry): boolean {
+  if (entry.html === undefined || entry.html !== earlier.html) return false;
+  if (entry.displayName !== earlier.displayName) return false;
+  const keys = ["description", "kind", "type", "css", "js", "fields", "bindThemeLiterals"] as const;
+  return keys.every(
+    (k) => entry[k] === undefined || JSON.stringify(entry[k]) === JSON.stringify(earlier[k]),
+  );
+}
+
 function moduleLabel(
   index: number,
   entry: { displayName?: string; moduleId?: string | { $ref: string } },
@@ -112,6 +135,10 @@ export const buildPageOp = defineOperation({
      *  were NOT applied (differing metadata or any structural field). Surfaced
      *  so a change the AI intended never vanishes silently. */
     ignoredAuthoringByIndex: z.record(z.string(), z.array(z.string())),
+    /** Per entry index that repeated an earlier mint entry of this call
+     *  (same html, nothing conflicting): the index whose module it placed
+     *  again instead of minting a copy. See `repeatsMint`. */
+    reusedMintByIndex: z.record(z.string(), z.number().int()),
     /**
      * What `page.metaDescription` did: `written` (first fill), `unchanged`
      * (already filled with the same text), `kept-existing` (an import
@@ -297,6 +324,10 @@ export const buildPageOp = defineOperation({
     // tool can tell the AI its change wasn't applied (use edit_module) instead
     // of vanishing it.
     const ignoredAuthoringByIndex: Record<string, string[]> = {};
+    // Mint entries by their exact html, so a later entry that repeats one
+    // places the same module again (see `repeatsMint`).
+    const mintedByHtml = new Map<string, { index: number; moduleId: string }>();
+    const reusedMintByIndex: Record<string, number> = {};
     // Local `ref` handles → the ids this call minted for them. Later
     // entries embed a nested module by writing {"$ref": "<ref>"} in a
     // module / module-list field value; resolution replaces it with the
@@ -405,46 +436,54 @@ export const buildPageOp = defineOperation({
             `${moduleLabel(i, entry)}: pass either \`moduleId\` (place an existing module) or \`displayName\` + \`html\` (mint a new one)`,
           );
         }
-        // Run the singular schema so defaults apply, then delegate to
-        // modules.create (extractor fallback, type derivation, slug-dup
-        // check, media usage, snapshot). slugifyModuleSection includes
-        // the index so two same-named entries in one batch can't
-        // collide on the slug.
-        const parsed = moduleCreateSchema.safeParse({
-          slug: slugifyModuleSection(displayName, i),
-          displayName,
-          html,
-          ...(entry.description !== undefined ? { description: entry.description } : {}),
-          ...(entry.kind !== undefined ? { kind: entry.kind } : {}),
-          ...(entry.type !== undefined ? { type: entry.type } : {}),
-          ...(entry.css !== undefined ? { css: entry.css } : {}),
-          ...(entry.js !== undefined ? { js: entry.js } : {}),
-          ...(entry.fields !== undefined ? { fields: entry.fields } : {}),
-        });
-        if (!parsed.success) {
-          const issue = parsed.error.issues[0];
-          const at = issue && issue.path.length > 0 ? ` at ${issue.path.join(".")}` : "";
-          return fail(
-            `${moduleLabel(i, entry)}${at}: ${issue?.message ?? "invalid module payload"}`,
-          );
-        }
-        const created = await createModuleOp.handler(ctx, parsed.data, tx);
-        if (!created.ok) {
-          const inner = created.error as { message?: string };
-          return fail(
-            `${moduleLabel(i, entry)}: modules.create failed: ${inner.message ?? created.error.kind}`,
-          );
-        }
-        wrote = true;
-        minted = true;
-        moduleId = (created.value as { moduleId: string }).moduleId;
-        const extracted = (created.value as { extractedFields?: { name: string; kind: string }[] })
-          .extractedFields;
-        if (extracted && extracted.length > 0) {
-          extractedFieldsByIndex[String(i)] = extracted.map((f) => ({
-            name: f.name,
-            kind: f.kind,
-          }));
+        const twin = mintedByHtml.get(html);
+        if (twin && repeatsMint(entry, input.modules[twin.index] as BuildPageModuleEntry)) {
+          moduleId = twin.moduleId;
+          reusedMintByIndex[String(i)] = twin.index;
+        } else {
+          // Run the singular schema so defaults apply, then delegate to
+          // modules.create (extractor fallback, type derivation, slug-dup
+          // check, media usage, snapshot). slugifyModuleSection includes
+          // the index so two same-named entries in one batch can't
+          // collide on the slug.
+          const parsed = moduleCreateSchema.safeParse({
+            slug: slugifyModuleSection(displayName, i),
+            displayName,
+            html,
+            ...(entry.description !== undefined ? { description: entry.description } : {}),
+            ...(entry.kind !== undefined ? { kind: entry.kind } : {}),
+            ...(entry.type !== undefined ? { type: entry.type } : {}),
+            ...(entry.css !== undefined ? { css: entry.css } : {}),
+            ...(entry.js !== undefined ? { js: entry.js } : {}),
+            ...(entry.fields !== undefined ? { fields: entry.fields } : {}),
+          });
+          if (!parsed.success) {
+            const issue = parsed.error.issues[0];
+            const at = issue && issue.path.length > 0 ? ` at ${issue.path.join(".")}` : "";
+            return fail(
+              `${moduleLabel(i, entry)}${at}: ${issue?.message ?? "invalid module payload"}`,
+            );
+          }
+          const created = await createModuleOp.handler(ctx, parsed.data, tx);
+          if (!created.ok) {
+            const inner = created.error as { message?: string };
+            return fail(
+              `${moduleLabel(i, entry)}: modules.create failed: ${inner.message ?? created.error.kind}`,
+            );
+          }
+          wrote = true;
+          minted = true;
+          moduleId = (created.value as { moduleId: string }).moduleId;
+          if (!mintedByHtml.has(html)) mintedByHtml.set(html, { index: i, moduleId });
+          const extracted = (
+            created.value as { extractedFields?: { name: string; kind: string }[] }
+          ).extractedFields;
+          if (extracted && extracted.length > 0) {
+            extractedFieldsByIndex[String(i)] = extracted.map((f) => ({
+              name: f.name,
+              kind: f.kind,
+            }));
+          }
         }
       }
 
@@ -669,6 +708,7 @@ export const buildPageOp = defineOperation({
       detached,
       extractedFieldsByIndex,
       ignoredAuthoringByIndex,
+      reusedMintByIndex,
       metaDescription,
     });
   },

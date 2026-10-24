@@ -51,14 +51,26 @@ const colorValueString = z
     "color value must be #hex, oklch(...), rgb(...), or a CSS named color",
   );
 
-/** Dimension: a CSS length / percentage / numeric value. */
+/**
+ * Dimension: a CSS length / percentage / numeric value, or a CSS math
+ * function over them (`clamp()`, `calc()`, `min()`, `max()`).
+ *
+ * The math functions are accepted because fluid type is the idiomatic way to
+ * size a display heading — `clamp(2.5rem, 2rem + 2.5vw, 4rem)` — and token
+ * values are emitted verbatim as CSS custom properties, where a browser
+ * resolves them like any length. Refusing them (e2e-livedit run 40018361466,
+ * set_theme_tokens `typography.display`) cost a retry and the AI downgraded to
+ * a fixed size it had not chosen. The arguments are limited to numbers,
+ * units, operators, commas and nested parentheses, so a value cannot close
+ * the declaration (`;`, `{`, `}`) or carry markup.
+ */
 const dimensionValueString = z
   .string()
   .min(1)
-  .max(80)
+  .max(120)
   .regex(
-    /^-?\d+(\.\d+)?(rem|em|px|%|vh|vw|vmin|vmax|pt|pc|ch|ex|fr|deg|rad|turn|s|ms)?$|^auto$|^0$/,
-    "dimension must be a CSS length / number / percentage",
+    /^-?\d+(\.\d+)?(rem|em|px|%|vh|vw|vmin|vmax|pt|pc|ch|ex|fr|deg|rad|turn|s|ms)?$|^auto$|^0$|^(calc|clamp|min|max)\([0-9a-zA-Z.%+\-*/,\s()]+\)$/,
+    "dimension must be a CSS length / number / percentage, or clamp()/calc()/min()/max() over them",
   );
 
 /** Font-weight: keyword or 1-1000 number. */
@@ -422,6 +434,16 @@ const CATEGORY_EXPECTATIONS: Record<string, string> = {
 };
 
 /** Compact, human-readable render of a rejected `$value` for the error tail. */
+/** The value `path` points at inside `root`; `root` itself for an empty path. */
+function valueAtPath(root: unknown, path: readonly PropertyKey[]): unknown {
+  let node = root;
+  for (const key of path) {
+    if (node === null || typeof node !== "object") return node;
+    node = (node as Record<PropertyKey, unknown>)[key];
+  }
+  return node;
+}
+
 function describeValue(value: unknown): string {
   if (typeof value === "string") return JSON.stringify(value);
   if (value === undefined) return "undefined";
@@ -488,10 +510,13 @@ function refineKnownCategoryLeaves(
         });
       } else {
         for (const issue of sub.error.issues) {
+          // Name the offending LEAF, not the whole composite `$value`: a
+          // typography value prints `fontFamily` first, so the truncated
+          // object hid the `fontSize` the issue was about.
           ctx.addIssue({
             code: "custom",
             path: [...path, ...issue.path],
-            message: `${category} token "${String(name)}" invalid: ${issue.message} (got ${describeValue(obj.$value)})`,
+            message: `${category} token "${String(name)}" invalid: ${issue.message} (got ${describeValue(valueAtPath(obj, issue.path))})`,
           });
         }
       }

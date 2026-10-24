@@ -53,14 +53,21 @@ FROM deploy_runs ORDER BY started_at DESC LIMIT 5;
 
 If `status='failed'`: read `error_message`, fix root cause, then `deploy.trigger` again (admin UI or `bunx cms-provision deploy`).
 
-If `status='running'` and `started_at < now() - interval '15 minutes'`: the static-gen subprocess died. Check stderr of the orchestrator. Manual recovery:
+A Stage or Publish live shows as `status='running'` while it builds (its row is committed when it starts, with `progress` updated about once a second). A run whose process died (crash, restarted instance) stays `running` until the next Stage or Publish live: that one marks it `failed` with "This build stopped without finishing …" — a run still building on another instance holds an advisory lock on its id and is left alone. Nothing a stopped run built was published; start it again. Check the admin's stderr for why it stopped.
+
+### Stage / Publish live slow
+
+Every Stage and Publish live records where its time went (`deploy_runs.phase_timings`, since 0346) and logs one line per run: `[deploy] stage succeeded in <ms> ms {…}`. The Stage button's whole wait, chat merges included, is logged as `[stage] staged <n> pages in <ms> ms {…}`.
 
 ```sql
-UPDATE deploy_runs SET status='failed', error_message='manual reset',
-  finished_at=now() WHERE id='<stuck-id>';
+SELECT id, status, page_count, file_count,
+       (EXTRACT(EPOCH FROM finished_at - started_at) * 1000)::int AS took_ms,
+       phase_timings
+FROM deploy_runs WHERE phase_timings IS NOT NULL
+ORDER BY started_at DESC LIMIT 5;
 ```
 
-Then trigger a fresh deploy.
+Top-level steps (`prepare`, `generator`, `lock-wait`, `publish`, `parity`, `select-preview`, `finish`) add up to the run. A dotted name breaks down the step it starts with: `generator.compose` / `generator.media` / `generator.write` are the build's passes, `publish.hash` / `publish.upload` the provider upload. A long `lock-wait` means another Stage or Publish live held the staging lock.
 
 ### Stage / Publish live slow
 

@@ -218,6 +218,7 @@ import {
   proposeDeployRollbackOp,
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
+import { beginDeployRunOp } from "./ops/deploy-run-lifecycle.js";
 import { hostingStatusOp, reconnectHostingDomainOp } from "./ops/domain_hosting.js";
 import {
   executeDomainProposalOp,
@@ -999,6 +1000,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);
   registry.register(updateDeployProgressOp);
+  // #1003 — a run's row, committed when it starts (visible while it runs).
+  registry.register(beginDeployRunOp);
   // #969 — the orchestrator's keep-alive for the served staging preview.
   registry.register(refreshStagingPreviewOp);
   // v0.2.19 — propose/execute pair for promote + rollback. AI proposes

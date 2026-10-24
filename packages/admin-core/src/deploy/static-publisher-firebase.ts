@@ -49,6 +49,7 @@ import {
   IMMUTABLE_CACHE_CONTROL,
   NOSNIFF,
   PhaseTimer,
+  runBatched,
   SVG_DOCUMENT_CSP,
   SVG_PATH_PATTERN,
 } from "@caelo-cms/shared";
@@ -332,30 +333,6 @@ async function gzipAndHashBytes(input: Buffer): Promise<{ body: Buffer; sha256: 
     gz.on("error", reject);
     gz.end(input);
   });
-}
-
-/**
- * Run `worker` over `items` with at most `parallelism` in flight.
- * Local copy of static-publisher-gcs's runBatched (kept independent
- * so changing one publisher doesn't ripple through the other).
- */
-async function runBatched<T>(
-  items: ReadonlyArray<T>,
-  parallelism: number,
-  worker: (item: T) => Promise<void>,
-): Promise<void> {
-  let cursor = 0;
-  const next = async (): Promise<void> => {
-    while (cursor < items.length) {
-      const i = cursor++;
-      // biome-ignore lint/style/noNonNullAssertion: cursor < length checked
-      await worker(items[i]!);
-    }
-  };
-  const workers: Promise<void>[] = [];
-  const n = Math.min(parallelism, items.length);
-  for (let i = 0; i < n; i++) workers.push(next());
-  await Promise.all(workers);
 }
 
 interface CreateVersionResponse {
@@ -813,6 +790,7 @@ async function retirePreviewChannel(
 }
 
 export const firebaseHostingPublisher: StaticPublisher = {
+  servesCurrentDir: false,
   async publishStaging({ buildDir, runId, target }) {
     const timer = new PhaseTimer();
     const site = siteName();

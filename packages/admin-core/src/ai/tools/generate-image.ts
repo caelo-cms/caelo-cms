@@ -46,7 +46,12 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
       prompt: { type: "string" },
       size: { type: "string", enum: ["1024x1024", "1792x1024", "1024x1792"] },
       quality: { type: "string", enum: ["standard", "hd"] },
-      imageSize: { type: "string", enum: ["1K", "2K", "4K"] },
+      imageSize: {
+        type: "string",
+        enum: ["1K", "2K", "4K"],
+        description:
+          "Native resolution. 2K / 4K only on models whose get_image_capabilities lists them; omit it otherwise. 1K is accepted on every model.",
+      },
       references: { type: "array", items: { type: "string" }, maxItems: 14 },
       altText: { type: "string" },
     },

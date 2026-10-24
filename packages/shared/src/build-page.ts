@@ -20,7 +20,7 @@
  */
 
 import { z } from "zod";
-import { positionInputSchema } from "./ai-tools.js";
+import { positionInputSchema, sourceTextArg } from "./ai-tools.js";
 import {
   contentInstanceCreateSchema,
   MODULE_CSS_MAX,
@@ -155,9 +155,9 @@ export const buildPageModuleSchema = z
     description: z.string().max(1000).optional(),
     kind: moduleKindSchema.optional(),
     type: slugSchema.optional(),
-    html: z.string().min(1).max(MODULE_HTML_MAX).optional(),
-    css: z.string().max(MODULE_CSS_MAX).optional(),
-    js: z.string().max(MODULE_JS_MAX).optional(),
+    html: sourceTextArg(z.string().min(1).max(MODULE_HTML_MAX)).optional(),
+    css: sourceTextArg(z.string().max(MODULE_CSS_MAX)).optional(),
+    js: sourceTextArg(z.string().max(MODULE_JS_MAX)).optional(),
     fields: z.array(moduleFieldSchema).max(64).optional(),
     /** issue #164 slice 2 — opt-in mechanical token binding (tool layer). */
     bindThemeLiterals: z.boolean().optional(),
@@ -239,9 +239,13 @@ export const buildPageTargetSchema = z
      * The new page's meta description, written in the same transaction
      * with the fill-once semantics of `pages_seo.autofill` (CLAUDE.md §2).
      * A staging build refuses a published page without one, so the page
-     * is Stage-ready from the call that creates it. Create mode (or an
-     * importPageId rebuild) only — an existing page gets its first
-     * description from `autofill_page_seo`.
+     * is Stage-ready from the call that creates it. With `pageId` it is the
+     * existing page's FIRST description, same fill-once rule: a page that
+     * already has a different one keeps it (`kept-existing`, never an
+     * overwrite). Refusing it there (as #993 did) failed the natural "build
+     * the page's content and describe it in one pass" call (e2e-livedit run
+     * 40018361466) although the op applied it safely for importPageId
+     * rebuilds of existing pages all along.
      */
     metaDescription: z.string().trim().min(1).max(SEO_DESCRIPTION_HARD_MAX).optional(),
   })
@@ -251,13 +255,6 @@ export const buildPageTargetSchema = z
       ["slug", "title", "name", "templateId", "status", "parentPageId"] as const
     ).filter((k) => page[k] !== undefined);
     if (page.pageId !== undefined) {
-      if (page.metaDescription !== undefined) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            "page.metaDescription is written only for a page this call CREATES — drop it with pageId; an existing page without a description gets one via autofill_page_seo.",
-        });
-      }
       if (createKeys.length > 0) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,

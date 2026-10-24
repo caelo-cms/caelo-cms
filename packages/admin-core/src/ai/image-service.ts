@@ -200,6 +200,27 @@ function resultText(
 }
 
 /**
+ * The `imageSize` to send for a chat request. A model without selectable
+ * resolution (empty `imageSizes`) always produces its one native size, which
+ * is 1K-class (1024px on the short side) for every profile we ship, so a
+ * request for "1K" there is already satisfied and is dropped instead of
+ * refused. Why: the tool schema offers `imageSize` for every model and the AI
+ * picks the smallest one without first calling get_image_capabilities
+ * (e2e-livedit run 40021968702, gemini-2.5-flash-image); refusing a request
+ * the output meets anyway only cost a retry. 2K / 4K on such a model is still
+ * refused by `capabilityRefusal`.
+ *
+ * Exported for the unit test.
+ */
+export function chatImageSize(
+  caps: { readonly imageSizes: readonly string[] },
+  imageSize: "1K" | "2K" | "4K" | undefined,
+): "1K" | "2K" | "4K" | undefined {
+  if (imageSize === "1K" && caps.imageSizes.length === 0) return undefined;
+  return imageSize;
+}
+
+/**
  * Run one generate/edit request end to end. `sources` are the edit source
  * (first) and references, already loaded; the caller checked nothing else.
  */
@@ -219,6 +240,7 @@ export async function runImageRequest(args: {
   altText?: string;
 }): Promise<ToolResult> {
   const { ctx, toolCtx, configured } = args;
+  const imageSize = chatImageSize(configured.capabilities, args.imageSize);
   const tool = args.operation === "edit" ? "edit_image" : "generate_image";
   if (!toolCtx.toolCallId || !toolCtx.chatSessionId) {
     // §2 fail loud: without the call and session there is no stable request
@@ -233,7 +255,7 @@ export async function runImageRequest(args: {
     references: args.sources.map((s) => ({ bytes: s.data.byteLength, mediaType: s.mediaType })),
     mask: args.mask !== undefined,
     ...(args.size ? { size: args.size } : {}),
-    ...(args.imageSize ? { imageSize: args.imageSize } : {}),
+    ...(imageSize ? { imageSize } : {}),
   });
   if (refusal) return { ok: false, content: `${tool}: ${refusal} (see get_image_capabilities)` };
   if (args.mask && args.mask.mediaType !== "image/png") {
@@ -246,7 +268,7 @@ export async function runImageRequest(args: {
   const requested = {
     ...(args.size ? { size: args.size } : {}),
     ...(args.quality ? { quality: args.quality } : {}),
-    ...(args.imageSize ? { imageSize: args.imageSize } : {}),
+    ...(imageSize ? { imageSize } : {}),
   };
   // Provenance: an edit's first source is the image it changes.
   const references = args.sources.map((s, i) => ({
@@ -314,7 +336,7 @@ export async function runImageRequest(args: {
       apiKey: configured.apiKey,
       ...(args.size ? { size: args.size } : {}),
       ...(args.quality ? { quality: args.quality } : {}),
-      ...(args.imageSize ? { imageSize: args.imageSize } : {}),
+      ...(imageSize ? { imageSize } : {}),
       ...(args.operation === "edit"
         ? {
             editSource: { data: args.sources[0]!.data, mediaType: args.sources[0]!.mediaType },

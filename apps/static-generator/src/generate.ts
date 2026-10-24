@@ -43,6 +43,7 @@ import {
   PhaseTimer,
   type PhaseTiming,
   redirectTargetIssue,
+  runBatched,
   type ThemeDocument,
   themeFaviconRendition,
   trimSlashes,
@@ -78,6 +79,9 @@ import {
   runSeoPass,
 } from "./seo-pass.js";
 import { syncContents } from "./sync-contents.js";
+
+/** Page files written at once: bounded so a large site cannot exhaust file descriptors. */
+const WRITE_PARALLELISM = 32;
 
 export interface DeployTarget {
   readonly id: string;
@@ -443,7 +447,9 @@ export async function generateSite(args: {
    * Mirror the finished build into `<outDir>/current/` (the directory the
    * self-hosted serving layer serves). Default true. #650 — Publish live's
    * rebuild passes false: the build must pass the parity guard before
-   * anything serves it, and the publisher puts it live afterwards.
+   * anything serves it, and the publisher puts it live afterwards. #1003 —
+   * cloud publishers pass false too: they upload the build directory and
+   * nothing reads `current/`.
    */
   syncCurrent?: boolean;
 }): Promise<GenerateResult> {
@@ -1125,18 +1131,26 @@ export async function generateSite(args: {
   // populated for files whose Content-Type can't be inferred from
   // the extension (no extension AND it's a page).
   const contentTypeOverrides: Record<string, string> = {};
+  const pageDirs = new Set<string>();
   for (const p of composedPages) {
     const filePath = resolve(buildDir, p.relPath);
     if (!filePath.startsWith(`${buildDir}/`)) {
       throw new Error(`static-generator: output path "${p.relPath}" escapes build directory`);
     }
-    await mkdir(join(filePath, ".."), { recursive: true });
-    await writeFile(filePath, p.html, "utf8");
-    fileCount += 1;
+    pageDirs.add(dirname(filePath));
     if (target.pageUrlStyle === "no-extension" && !p.relPath.endsWith(".html")) {
       contentTypeOverrides[p.relPath] = "text/html; charset=utf-8";
     }
   }
+  // #1003 — one mkdir per directory, then the files in parallel batches:
+  // written one at a time this was seconds on a few thousand pages.
+  await runBatched([...pageDirs], WRITE_PARALLELISM, async (dir) => {
+    await mkdir(dir, { recursive: true });
+  });
+  await runBatched(composedPages, WRITE_PARALLELISM, async (p) => {
+    await writeFile(resolve(buildDir, p.relPath), p.html, "utf8");
+  });
+  fileCount += composedPages.length;
 
   await writeFile(
     join(buildDir, "robots.txt"),
@@ -1228,12 +1242,12 @@ export async function generateSite(args: {
   if (args.syncCurrent !== false) {
     await mkdir(currentLink, { recursive: true });
     await syncContents(buildDir, currentLink);
+    timer.lap("sync-current");
   }
 
   // Best-effort old-build retention: keep the most recent 5, remove the
   // rest. Failures are swallowed because they don't affect the live
   // serving target (which is `current/`).
-  timer.lap("sync-current");
   await pruneOldBuilds(buildsDir, runId, 5);
   timer.lap("prune");
 

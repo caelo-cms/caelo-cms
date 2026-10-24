@@ -6,7 +6,10 @@
  * uses to render a per-source breakdown:
  *
  *   - pendingProposals — site_memory_proposals awaiting Owner review.
- *   - failedDeploys    — deploy_runs.status='failed' in the last 7 days.
+ *   - failedDeploys    — deploy targets whose most recent finished run
+ *                        failed. A failure that a later successful run
+ *                        on the same target superseded is history, not
+ *                        an open problem, so it does not count.
  *   - staleBranches    — chat_sessions whose last_active_at is over 14
  *                        days old, no published_at, no archived_at.
  *
@@ -88,8 +91,17 @@ export const aggregateNotificationsOp = defineOperation({
       )
       SELECT
         (SELECT count(*)::int FROM pending) AS pending_proposals,
-        (SELECT count(*)::int FROM deploy_runs
-           WHERE status = 'failed' AND started_at > now() - interval '7 days') AS failed_deploys,
+        -- One row per target: its latest finished run. Running/pending
+        -- rows are skipped so an in-flight retry neither hides nor
+        -- clears the failure until it actually finishes. No time window:
+        -- a target whose last run failed weeks ago is still broken.
+        (SELECT count(*)::int FROM (
+           SELECT DISTINCT ON (target_id) status
+             FROM deploy_runs
+            WHERE status IN ('succeeded', 'failed')
+            ORDER BY target_id, started_at DESC
+         ) latest
+          WHERE latest.status = 'failed') AS failed_deploys,
         (SELECT count(*)::int FROM chat_sessions
            WHERE last_active_at < now() - interval '14 days'
              AND archived_at IS NULL
