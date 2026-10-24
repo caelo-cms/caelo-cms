@@ -9,6 +9,10 @@
  *     the write hits the chat's placement, never main's row at the same
  *     position. `list_for_page` and `content_instances.list({ pageId })`
  *     read the same view.
+ *   - #1067 — `content_instances.get` / `.list` / `.set_values` report
+ *     placements as the branch sees them, and count nested parents (a
+ *     child shown inside a parent's module-list is not an orphan);
+ *     `content_instances.delete` refuses a child that still has a parent.
  *
  * Integration tier against a throwaway Postgres (never the dev DB).
  */
@@ -16,6 +20,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
+import { getContentInstanceTool } from "../ai/tools/get-content-instance.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -105,7 +110,11 @@ async function listForPage(ctx: ExecutionContext, pageId: string): Promise<Place
   ).placements;
 }
 
-type Got = { instance: { values: Record<string, unknown> } };
+type Got = {
+  instance: { values: Record<string, unknown>; placementCount: number; nestedParentCount: number };
+  placements: { pageId: string; position: number; syncMode: string }[];
+  nestedParents: string[];
+};
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
@@ -212,6 +221,14 @@ describe("#1045 — placement writes resolve through the chat's layout", () => {
       id: shared.contentInstanceId,
     });
     expect(sharedInChat.instance.values).toEqual({ title: "Shared" });
+    // #1067 — the fork rebinds only the chat's layout: in the chat the
+    // shared row has no placement any more, on main it still has one.
+    expect(sharedInChat.placements).toHaveLength(0);
+    expect(sharedInChat.instance.placementCount).toBe(0);
+    const sharedOnMain = await op<Got>(SYS, "content_instances.get", {
+      id: shared.contentInstanceId,
+    });
+    expect(sharedOnMain.placements).toHaveLength(1);
     expect(forked.contentInstanceId).not.toBe(shared.contentInstanceId);
   });
 
@@ -244,5 +261,110 @@ describe("#1045 — placement writes resolve through the chat's layout", () => {
     expect((await listForPage(chat, pageId)).map((p) => p.values)).toEqual([{ title: "Edited" }]);
     const old = await op<Got>(chat, "content_instances.get", { id: oldInstance });
     expect(old.instance.values).toEqual({ title: "Old" });
+    expect(old.placements).toHaveLength(0);
+  });
+});
+
+describe("#1067 — placements and nested parents as the caller sees them", () => {
+  it("a placement bound on the draft shows in get / list / set_values there, not on main", async () => {
+    const shared = await op<{ contentInstanceId: string }>(SYS, "content_instances.create", {
+      moduleId: cardId,
+      slug: `cibv-bound-${TS}`,
+      displayName: "Bound on draft",
+      purpose: "test",
+      values: { title: "Bound" },
+    });
+    const pageId = await livePage("bind", ["B0"]);
+    const chat = await draftChat("bind");
+    await op(chat, "placement.set_content", {
+      pageId,
+      blockName: "content",
+      position: 0,
+      contentInstanceId: shared.contentInstanceId,
+      syncMode: "synced",
+    });
+    const got = await op<Got>(chat, "content_instances.get", { id: shared.contentInstanceId });
+    expect(got.placements).toEqual([
+      expect.objectContaining({ pageId, position: 0, syncMode: "synced" }),
+    ]);
+    expect(got.instance.placementCount).toBe(1);
+    const listed = await op<{ instances: { id: string; placementCount: number }[] }>(
+      chat,
+      "content_instances.list",
+      {},
+    );
+    expect(listed.instances.find((i) => i.id === shared.contentInstanceId)?.placementCount).toBe(1);
+    const written = await op<{ placementCount: number }>(chat, "content_instances.set_values", {
+      id: shared.contentInstanceId,
+      values: { title: "Bound v2" },
+    });
+    expect(written.placementCount).toBe(1);
+    const onMain = await op<Got>(SYS, "content_instances.get", { id: shared.contentInstanceId });
+    expect(onMain.placements).toHaveLength(0);
+    // ...and the delete refuses in the chat, where the placement exists.
+    const del = await run(chat, "content_instances.delete", { id: shared.contentInstanceId });
+    expect(del.ok).toBe(false);
+  });
+
+  it("a child shown in a parent's module-list is not an orphan; delete refuses until it is removed", async () => {
+    const listModule = await createModule("list", "<ul>{{#items}}{{>.}}{{/items}}</ul>", [
+      { name: "items", kind: "module-list", label: "Items" },
+    ]);
+    const child = await op<{ contentInstanceId: string }>(SYS, "content_instances.create", {
+      moduleId: cardId,
+      displayName: "Nested child",
+      purpose: "test",
+      values: { title: "Child" },
+    });
+    const parent = await op<{ contentInstanceId: string }>(SYS, "content_instances.create", {
+      moduleId: listModule,
+      displayName: "Parent list",
+      purpose: "test",
+      values: { items: [{ moduleId: cardId, contentInstanceId: child.contentInstanceId }] },
+    });
+
+    const got = await op<Got>(SYS, "content_instances.get", { id: child.contentInstanceId });
+    expect(got.placements).toHaveLength(0);
+    expect(got.nestedParents).toEqual([parent.contentInstanceId]);
+    expect(got.instance.nestedParentCount).toBe(1);
+    const listed = await op<{ instances: { id: string; nestedParentCount: number }[] }>(
+      SYS,
+      "content_instances.list",
+      { moduleId: cardId },
+    );
+    expect(listed.instances.find((i) => i.id === child.contentInstanceId)?.nestedParentCount).toBe(
+      1,
+    );
+
+    // The AI tool never calls it an orphan.
+    const tool = await getContentInstanceTool.handler(SYS, { id: child.contentInstanceId }, {
+      registry,
+      adapter,
+    } as unknown as Parameters<typeof getContentInstanceTool.handler>[2]);
+    expect(tool.content).not.toContain("safe to delete");
+    expect(tool.content).toContain(parent.contentInstanceId);
+
+    const refused = await run(SYS, "content_instances.delete", { id: child.contentInstanceId });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    const message = "message" in refused.error ? refused.error.message : "";
+    expect(message).toContain(parent.contentInstanceId);
+    expect(message).toContain("set_content_instance_values");
+
+    // In a chat, removing the child from the parent's list frees it there.
+    const chat = await draftChat("nested");
+    await op(chat, "content_instances.set_values", {
+      id: parent.contentInstanceId,
+      values: { items: [] },
+    });
+    const inChat = await op<Got>(chat, "content_instances.get", { id: child.contentInstanceId });
+    expect(inChat.nestedParents).toEqual([]);
+    expect((await run(chat, "content_instances.delete", { id: child.contentInstanceId })).ok).toBe(
+      true,
+    );
+    // Main still has the parent showing the child.
+    expect(
+      (await op<Got>(SYS, "content_instances.get", { id: child.contentInstanceId })).nestedParents,
+    ).toEqual([parent.contentInstanceId]);
   });
 });

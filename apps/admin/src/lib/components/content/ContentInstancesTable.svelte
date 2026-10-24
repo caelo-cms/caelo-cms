@@ -25,6 +25,8 @@
     displayName: string | null;
     values: Record<string, unknown>;
     placementCount: number;
+    /** Instances that show this one inside a module / module-list field. */
+    nestedParentCount: number;
     updatedAt: string;
   }
 
@@ -64,7 +66,9 @@
         </TableCell>
         <TableCell class="text-muted-foreground">{valuePreview(i.values)}</TableCell>
         <TableCell class="text-right">
-          {#if i.placementCount === 0}
+          {#if i.placementCount === 0 && i.nestedParentCount > 0}
+            <Badge variant="outline">nested · {i.nestedParentCount}</Badge>
+          {:else if i.placementCount === 0}
             <Badge variant="outline">orphan</Badge>
           {:else if i.placementCount >= 2}
             <Badge variant="secondary">shared · {i.placementCount}</Badge>
