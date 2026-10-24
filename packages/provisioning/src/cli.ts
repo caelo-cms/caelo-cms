@@ -1500,6 +1500,28 @@ async function domainMappingCommand(kind: "admin" | "staging"): Promise<void> {
     // Prints the staging basic-auth password ON PURPOSE (#678): the operator
     // asked for it to be shown once; it is never written to disk or logs.
     console.log(describeStagingApply(applied.value).join("\n"));
+    // #1058 — and the admin's CAELO_STAGING_HOST, so the provisioned value
+    // agrees with install.json and the stored host (the converge job
+    // refuses an install whose records and admin disagree). After the
+    // provision call: the update starts a new admin revision.
+    const { setAdminStagingHostEnv } = await import("./admin-domain.js");
+    const env = await setAdminStagingHostEnv({
+      projectId: meta.projectId,
+      region: meta.region,
+      stagingHost: r.hostname,
+    });
+    if (env.status === "failed") {
+      console.error(
+        `${command}: ${r.hostname} is mapped and stored in the admin, but its CAELO_STAGING_HOST could not be updated: ${env.error}\n` +
+          `Run \`${retry}\` again once that is fixed (it is idempotent).`,
+      );
+      process.exit(5);
+    }
+    if (env.status === "set") {
+      console.log(
+        `The admin (${env.service}) now runs with CAELO_STAGING_HOST=${r.hostname}${env.previous ? ` (was ${env.previous})` : ""}.`,
+      );
+    }
   }
   if (r.records.length === 0) {
     console.log(

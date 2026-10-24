@@ -22,11 +22,13 @@
  * artifact, written even when the gate fails.
  *
  * The pure helpers (`parseLcovLinePct`, `loadOpCoverageSet`,
- * `computeOpCoveragePct`, `evaluateTier`, `loadThresholds`) are exported for
+ * `computeOpCoveragePct`, `evaluateTier`, `loadThresholds`,
+ * `classifyTestExit`) are exported for
  * unit testing; the orchestration runs only under `import.meta.main`.
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 
@@ -190,6 +192,52 @@ function writeStepSummary(summary: CoverageSummary): void {
   appendFileSync(path, `${md}\n`);
 }
 
+/**
+ * How a `bun test` run ended. A Bun crash (#984: "panic: Segmentation
+ * fault … a bug in Bun") kills the process by a signal — or, behind a
+ * shell, exits 128 + the signal number — and must not read as "tests
+ * failed": the log then shows a bare exit 1 with no `(fail)` line.
+ */
+export type TestRunOutcome =
+  | { readonly kind: "passed" }
+  | { readonly kind: "failed"; readonly exitCode: number }
+  | { readonly kind: "crashed"; readonly signal: string; readonly exitCode: number };
+
+const SIGNAL_NAMES: ReadonlyMap<number, string> = new Map(
+  Object.entries(osConstants.signals).map(([name, n]) => [n, name]),
+);
+
+/**
+ * Classify a finished test process from `Bun.spawnSync`'s `exitCode` /
+ * `signalCode`. A crash keeps a nonzero exit (128 + signal number, the
+ * shell convention) so the gate still fails.
+ */
+export function classifyTestExit(proc: {
+  readonly exitCode: number | null;
+  readonly signalCode?: string | null;
+}): TestRunOutcome {
+  if (proc.signalCode) {
+    const n = (osConstants.signals as Record<string, number | undefined>)[proc.signalCode];
+    return { kind: "crashed", signal: proc.signalCode, exitCode: n ? 128 + n : 1 };
+  }
+  if (proc.exitCode === null) return { kind: "crashed", signal: "unknown", exitCode: 1 };
+  if (proc.exitCode === 0) return { kind: "passed" };
+  if (proc.exitCode >= 128) {
+    const signal = SIGNAL_NAMES.get(proc.exitCode - 128) ?? `exit ${proc.exitCode}`;
+    return { kind: "crashed", signal, exitCode: proc.exitCode };
+  }
+  return { kind: "failed", exitCode: proc.exitCode };
+}
+
+/** The log line for a run that did not pass; null when it passed. */
+export function describeTestRun(tier: TierName, outcome: TestRunOutcome): string | null {
+  if (outcome.kind === "passed") return null;
+  if (outcome.kind === "crashed") {
+    return `[coverage] ${tier} run: Bun crashed (signal ${outcome.signal}) — not a test failure; rerun the job (exit ${outcome.exitCode}).`;
+  }
+  return `[coverage] ${tier} test run failed (exit ${outcome.exitCode}) — fix failing tests first.`;
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration (runs only as a script, never on import)
 // ---------------------------------------------------------------------------
@@ -207,14 +255,18 @@ function discoverTestFiles(): { unit: string[]; integration: string[] } {
   return { unit: unit.sort(), integration: integration.sort() };
 }
 
-function runTests(files: string[], extraArgs: string[], extraEnv: Record<string, string>): number {
+function runTests(
+  files: string[],
+  extraArgs: string[],
+  extraEnv: Record<string, string>,
+): TestRunOutcome {
   const proc = Bun.spawnSync(["bun", "test", ...extraArgs, ...files], {
     cwd: REPO_ROOT,
     stdout: "inherit",
     stderr: "inherit",
     env: { ...process.env, ...extraEnv },
   });
-  return proc.exitCode ?? 1;
+  return classifyTestExit({ exitCode: proc.exitCode, signalCode: proc.signalCode ?? null });
 }
 
 async function enumerateDeclaredOps(): Promise<string[]> {
@@ -260,9 +312,9 @@ async function main(): Promise<number> {
     ],
     {},
   );
-  if (unitExit !== 0) {
-    console.error(`[coverage] unit test run failed (exit ${unitExit}) — fix failing tests first.`);
-    return unitExit;
+  if (unitExit.kind !== "passed") {
+    console.error(describeTestRun("unit", unitExit));
+    return unitExit.exitCode;
   }
   const unitLcovPath = join(unitLcovDir, "lcov.info");
   if (!existsSync(unitLcovPath)) {
@@ -284,11 +336,9 @@ async function main(): Promise<number> {
     // deliberately runs without it — unit tests must not depend on DB state.
     CAELO_TEST_DB_RESET: "1",
   });
-  if (integExit !== 0) {
-    console.error(
-      `[coverage] integration test run failed (exit ${integExit}) — fix failing tests first.`,
-    );
-    return integExit;
+  if (integExit.kind !== "passed") {
+    console.error(describeTestRun("integration", integExit));
+    return integExit.exitCode;
   }
   const executed = loadOpCoverageSet(readFileSync(OP_COVERAGE_FILE, "utf8"));
   const declared = await enumerateDeclaredOps();

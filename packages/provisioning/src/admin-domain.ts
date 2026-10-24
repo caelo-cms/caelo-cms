@@ -31,6 +31,8 @@
 
 import { gcloud as defaultGcloud, type GcloudResult } from "./gcloud.js";
 import { ensureGcloudComponent } from "./gcloud-components.js";
+import { STAGING_HOST_ENV } from "./stack-contract.js";
+import { liveContainerEnv } from "./stack-converge.js";
 
 type Run = (args: string[]) => Promise<GcloudResult>;
 
@@ -169,6 +171,75 @@ export async function enableStagingDomain(
       ? opts.domain
       : opts.stagingHost;
   return mapDomain(run, logOf(opts), scope, verifyDomain, opts.stagingHost, found.service);
+}
+
+/** What {@link setAdminStagingHostEnv} did. */
+export type AdminStagingEnvResult =
+  | { readonly status: "set"; readonly service: string; readonly previous: string | null }
+  | { readonly status: "unchanged"; readonly service: string }
+  | { readonly status: "failed"; readonly error: string };
+
+/**
+ * #1058 — point the admin's `CAELO_STAGING_HOST` at the host
+ * `staging-domain enable` just mapped. The database row
+ * (`staging_access.staging_host`) is the admin's truth and is set through
+ * `staging_access.provision` (staging-admin.ts), but the env var is what
+ * provisioning recorded: left on the old host, the seed would restore the
+ * old host on a fresh database, and the converge job refuses every
+ * cloud-setup update because install.json and the deployed admin disagree
+ * (converge-job-gcp.ts `deployedSiteMismatch`). Same variable the upgrade's
+ * env contract sets (stack-contract.ts STAGING_HOST_ENV); updating only it
+ * keeps every other var exactly as deployed. A new revision only when the
+ * value differs, so a re-run is a no-op.
+ */
+export async function setAdminStagingHostEnv(
+  opts: Pick<DomainOpts, "projectId" | "region" | "run"> & { stagingHost: string },
+): Promise<AdminStagingEnvResult> {
+  const run = opts.run ?? defaultGcloud;
+  const scope = [`--region=${opts.region}`, `--project=${opts.projectId}`];
+  const found = await findService(run, scope, "admin");
+  if (!found.ok) return { status: "failed", error: found.error };
+  const described = await run([
+    "run",
+    "services",
+    "describe",
+    found.service,
+    ...scope,
+    "--format=json",
+  ]);
+  if (!described.ok) {
+    return { status: "failed", error: `read the admin's env: ${described.stderr.trim()}` };
+  }
+  let live: ReturnType<typeof liveContainerEnv>;
+  try {
+    live = liveContainerEnv(described.stdout);
+  } catch {
+    return { status: "failed", error: "read the admin's env: gcloud's answer is not JSON" };
+  }
+  const current = live.get(STAGING_HOST_ENV);
+  if (current?.kind === "secret") {
+    return {
+      status: "failed",
+      error: `the admin reads ${STAGING_HOST_ENV} from secret ${current.secret}, not a plain value; run \`cms-provision upgrade\` to bring its env back to the contract, then re-run`,
+    };
+  }
+  if (current?.value === opts.stagingHost) return { status: "unchanged", service: found.service };
+  const update = await run([
+    "run",
+    "services",
+    "update",
+    found.service,
+    ...scope,
+    `--update-env-vars=${STAGING_HOST_ENV}=${opts.stagingHost}`,
+    "--quiet",
+  ]);
+  if (!update.ok) {
+    return {
+      status: "failed",
+      error: `set ${STAGING_HOST_ENV} on the admin: ${update.stderr.trim()}`,
+    };
+  }
+  return { status: "set", service: found.service, previous: current?.value ?? null };
 }
 
 /** Steps 2–4 of the module doc for `hostname` → `service`. */

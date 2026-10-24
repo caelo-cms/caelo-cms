@@ -301,6 +301,62 @@ describe("ensureOpsBackend — new install", () => {
   });
 });
 
+describe("ensureOpsBackend — a just-enabled KMS API (#1060)", () => {
+  const DISABLED =
+    "ERROR: (gcloud.kms.keyrings.describe) PERMISSION_DENIED: Cloud Key Management Service (KMS) API has not been used in project 42 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/cloudkms.googleapis.com/overview?project=42 then retry. (reason: SERVICE_DISABLED)";
+
+  /** KMS calls answer SERVICE_DISABLED for the first `failures` calls after enabling. */
+  function propagating(failures: number) {
+    const g = fakeGcp();
+    let left = failures;
+    const sleeps: number[] = [];
+    const run = async (args: string[]) => {
+      if (args[0] === "kms" && left > 0) {
+        left--;
+        g.calls.push(args.join(" "));
+        return fail(DISABLED);
+      }
+      return g.run(args);
+    };
+    const sleep = async (ms: number) => {
+      sleeps.push(ms);
+    };
+    return { g, run, sleep, sleeps };
+  }
+
+  it("waits for the enablement to propagate, then creates the key ring and key", async () => {
+    const p = propagating(2);
+    const r = await ensureOpsBackend(TARGET, { run: p.run, sleep: p.sleep });
+    expect(r.ok).toBe(true);
+    expect(p.g.state.ring && p.g.state.key).toBe(true);
+    expect(p.sleeps.length).toBe(2);
+    expect(p.g.calls.filter((c) => c.startsWith("kms keyrings describe")).length).toBe(3);
+  });
+
+  it("fails loudly with the next step when the API never comes up", async () => {
+    const p = propagating(Number.POSITIVE_INFINITY);
+    const r = await ensureOpsBackend(TARGET, { run: p.run, sleep: p.sleep });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain("Reading key ring caelo failed");
+    expect(r.error).toContain("still reported as disabled");
+    expect(r.error).toContain("gcloud services list --enabled --project=acme");
+    expect(r.error).toContain("re-run the same command");
+    // Waited a few minutes in total, then stopped — no endless loop.
+    const waited = p.sleeps.reduce((a, b) => a + b, 0);
+    expect(waited).toBeGreaterThanOrEqual(3 * 60_000);
+    expect(waited).toBeLessThanOrEqual(5 * 60_000);
+    expect(p.g.state.ring).toBe(false);
+  });
+
+  it("does not wait in a dry run", async () => {
+    const p = propagating(Number.POSITIVE_INFINITY);
+    const r = await ensureOpsBackend(TARGET, { run: p.run, sleep: p.sleep, dryRun: true });
+    expect(r.ok).toBe(true);
+    expect(p.sleeps).toEqual([]);
+  });
+});
+
 describe("cost table (CLAUDE.md §11.C)", () => {
   it("lists the state bucket + KMS key at under $0.10/mo without float noise in the total", () => {
     const est = estimateGcpCost({

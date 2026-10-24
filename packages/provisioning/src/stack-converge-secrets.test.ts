@@ -14,13 +14,20 @@
 
 import { describe, expect, it } from "bun:test";
 import { databaseUrlFromEnv } from "@caelo-cms/shared";
-import type { CloudRunSlug } from "./stack-contract.js";
+import type { GcloudResult } from "./gcloud.js";
 import {
+  type CloudRunSlug,
+  OPERATOR_OAUTH_CLIENT_FILE,
+  RETIRED_SECRET_FILES,
+} from "./stack-contract.js";
+import {
+  findVolumesWithMissingSecrets,
   type LiveEnvValue,
   liveContainerEnv,
   liveEnvHasInlinePassword,
   planContractEnv,
   planEnvUpdate,
+  planSecretFiles,
   serviceRollArgs,
 } from "./stack-converge.js";
 
@@ -458,5 +465,134 @@ describe("liveEnvHasInlinePassword", () => {
     upgrade(services);
     expect(liveEnvHasInlinePassword(services.admin.env)).toBe(false);
     expect(liveEnvHasInlinePassword(services.gateway.env)).toBe(false);
+  });
+});
+
+describe("retiring a secret file removes its volume too (#954)", () => {
+  // The shape searchviu's gateway was left in: gcloud names a volume it
+  // mints for `--update-secrets` after the secret plus a random suffix.
+  const RETIRED_VOLUME = "caelo-production-mcp-oauth-client-mac-won";
+  const OPERATOR_VOLUME = "caelo-production-operator-oauth-client-puw-tuq";
+  const operatorVolume = {
+    name: OPERATOR_VOLUME,
+    secret: {
+      secretName: "caelo-production-operator-oauth-client",
+      items: [{ key: "latest", path: "client.json" }],
+    },
+  };
+  const retiredVolume = {
+    name: RETIRED_VOLUME,
+    secret: {
+      secretName: "projects/42/secrets/caelo-production-mcp-oauth-client",
+      items: [{ key: "latest", path: "client.json" }],
+    },
+  };
+  const plan = (live: Parameters<typeof planSecretFiles>[0]) =>
+    planSecretFiles(live, [OPERATOR_OAUTH_CLIENT_FILE], "production", RETIRED_SECRET_FILES.gateway);
+
+  it("a retired mount: removes the file, the mount and the volume behind it in the roll", () => {
+    const r = plan({
+      executionEnvironment: null,
+      volumes: [retiredVolume],
+      mounts: [{ name: RETIRED_VOLUME, mountPath: "/secrets/mcp-oauth-client" }],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.flags).toContain("--remove-secrets=/secrets/mcp-oauth-client/client.json");
+    expect(r.flags).toContain(`--remove-volume=${RETIRED_VOLUME}`);
+    expect(r.flags).toContain("--remove-volume-mount=/secrets/mcp-oauth-client");
+    expect(r.changes.some((c) => c.startsWith(`volume ${RETIRED_VOLUME}: removed`))).toBe(true);
+  });
+
+  it("an orphaned retired volume (no mount, the searchviu state): removes it and says so", () => {
+    const r = plan({
+      executionEnvironment: null,
+      volumes: [retiredVolume, operatorVolume],
+      mounts: [{ name: OPERATOR_VOLUME, mountPath: "/secrets/operator-oauth-client" }],
+    });
+    expect(r).toEqual({
+      ok: true,
+      flags: [`--remove-volume=${RETIRED_VOLUME}`],
+      changes: [
+        `volume ${RETIRED_VOLUME}: removed (the Google sign-in client is mounted from operator-oauth-client now (#914); nothing mounts it)`,
+      ],
+    });
+  });
+
+  it("a converged service plans nothing", () => {
+    const r = plan({
+      executionEnvironment: null,
+      volumes: [operatorVolume],
+      mounts: [{ name: OPERATOR_VOLUME, mountPath: "/secrets/operator-oauth-client" }],
+    });
+    expect(r).toEqual({ ok: true, flags: [], changes: [] });
+  });
+
+  it("refuses a volume of the retired secret mounted somewhere else instead of pulling it", () => {
+    const r = plan({
+      executionEnvironment: null,
+      volumes: [retiredVolume, operatorVolume],
+      mounts: [
+        { name: OPERATOR_VOLUME, mountPath: "/secrets/operator-oauth-client" },
+        { name: RETIRED_VOLUME, mountPath: "/elsewhere" },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error).toContain(`--remove-volume=${RETIRED_VOLUME}`);
+  });
+
+  describe("preflight: a volume pointing at a deleted secret", () => {
+    const ok = (stdout = ""): GcloudResult => ({ ok: true, stdout, stderr: "", exitCode: 0 });
+    const missing: GcloudResult = {
+      ok: false,
+      stdout: "",
+      stderr:
+        "ERROR: (gcloud.secrets.describe) NOT_FOUND: Secret [projects/42/secrets/x] not found",
+      exitCode: 1,
+    };
+    const where = {
+      serviceName: "caelo-production-gateway-532b35d",
+      projectId: "acme",
+      region: "europe-west1",
+    };
+    const live = {
+      executionEnvironment: null,
+      volumes: [retiredVolume, operatorVolume],
+      mounts: [{ name: OPERATOR_VOLUME, mountPath: "/secrets/operator-oauth-client" }],
+    };
+    const gcloud = (gone: string) => {
+      const calls: string[] = [];
+      const run = async (args: string[]) => {
+        calls.push(args.join(" "));
+        return args[2] === gone ? missing : ok("name");
+      };
+      return { run, calls };
+    };
+
+    it("names the volume and the exact fix", async () => {
+      const g = gcloud("caelo-production-mcp-oauth-client");
+      const problems = await findVolumesWithMissingSecrets(live, where, [], g.run);
+      expect(problems).toHaveLength(1);
+      expect(problems[0]).toContain(`volume "${RETIRED_VOLUME}" (not mounted)`);
+      expect(problems[0]).toContain("caelo-production-mcp-oauth-client, which no longer exists");
+      expect(problems[0]).toContain(
+        `gcloud run services update caelo-production-gateway-532b35d --region=europe-west1 --project=acme --remove-volume=${RETIRED_VOLUME}`,
+      );
+    });
+
+    it("skips a volume the roll removes anyway", async () => {
+      const g = gcloud("caelo-production-mcp-oauth-client");
+      expect(await findVolumesWithMissingSecrets(live, where, [RETIRED_VOLUME], g.run)).toEqual([]);
+      expect(g.calls.some((c) => c.includes("mcp-oauth-client"))).toBe(false);
+    });
+
+    it("a mounted volume's fix removes the mount too", async () => {
+      const g = gcloud("caelo-production-operator-oauth-client");
+      const [problem] = await findVolumesWithMissingSecrets(live, where, [RETIRED_VOLUME], g.run);
+      expect(problem).toContain(
+        `--remove-volume-mount=/secrets/operator-oauth-client --remove-volume=${OPERATOR_VOLUME}`,
+      );
+    });
   });
 });

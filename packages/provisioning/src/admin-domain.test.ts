@@ -252,3 +252,90 @@ describe("enableStagingDomain (#650)", () => {
     expect(install).toBeLessThan(calls.findIndex((c) => c[0] === "beta"));
   });
 });
+
+describe("setAdminStagingHostEnv (#1058)", () => {
+  const adminJson = (env: { name: string; value?: string; valueFrom?: unknown }[]) =>
+    JSON.stringify({ spec: { template: { spec: { containers: [{ env }] } } } });
+
+  it("points the admin's CAELO_STAGING_HOST at the mapped host, touching no other var", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services list": [ok("caelo-production-admin-abc\n")],
+      "run services describe": [
+        ok(
+          adminJson([
+            { name: "CAELO_SITE_URL", value: "https://example.com" },
+            { name: "CAELO_STAGING_HOST", value: "staging.example.com" },
+          ]),
+        ),
+      ],
+    });
+    const { setAdminStagingHostEnv } = await import("./admin-domain.js");
+    const r = await setAdminStagingHostEnv({
+      projectId: "p",
+      region: "europe-west1",
+      stagingHost: "preview.example.com",
+      run,
+    });
+    expect(r).toEqual({
+      status: "set",
+      service: "caelo-production-admin-abc",
+      previous: "staging.example.com",
+    });
+    expect(calls).toContainEqual([
+      "run",
+      "services",
+      "update",
+      "caelo-production-admin-abc",
+      "--region=europe-west1",
+      "--project=p",
+      "--update-env-vars=CAELO_STAGING_HOST=preview.example.com",
+      "--quiet",
+    ]);
+    expect(calls[0]).toContain("--filter=metadata.name~^caelo-production-admin");
+  });
+
+  it("is idempotent: no new revision when the admin already has the host", async () => {
+    const { run, calls } = fakeGcloud({
+      "run services list": [ok("caelo-production-admin-abc\n")],
+      "run services describe": [
+        ok(adminJson([{ name: "CAELO_STAGING_HOST", value: "preview.example.com" }])),
+      ],
+    });
+    const { setAdminStagingHostEnv } = await import("./admin-domain.js");
+    const r = await setAdminStagingHostEnv({
+      projectId: "p",
+      region: "europe-west1",
+      stagingHost: "preview.example.com",
+      run,
+    });
+    expect(r.status).toBe("unchanged");
+    expect(calls.some((c) => c.includes("update"))).toBe(false);
+  });
+
+  it("fails loudly when the admin cannot be read or updated", async () => {
+    const { setAdminStagingHostEnv } = await import("./admin-domain.js");
+    const unreadable = fakeGcloud({
+      "run services list": [ok("caelo-production-admin-abc\n")],
+      "run services describe": [fail("PERMISSION_DENIED")],
+    });
+    const a = await setAdminStagingHostEnv({
+      projectId: "p",
+      region: "europe-west1",
+      stagingHost: "preview.example.com",
+      run: unreadable.run,
+    });
+    expect(a.status === "failed" && a.error).toContain("PERMISSION_DENIED");
+    const refused = fakeGcloud({
+      "run services list": [ok("caelo-production-admin-abc\n")],
+      "run services describe": [ok(adminJson([]))],
+      "run services update": [fail("revision failed")],
+    });
+    const b = await setAdminStagingHostEnv({
+      projectId: "p",
+      region: "europe-west1",
+      stagingHost: "preview.example.com",
+      run: refused.run,
+    });
+    expect(b.status === "failed" && b.error).toContain("set CAELO_STAGING_HOST on the admin");
+  });
+});
