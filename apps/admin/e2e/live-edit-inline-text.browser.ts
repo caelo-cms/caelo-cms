@@ -16,6 +16,43 @@ const TPL_SLUG = `e2e-le-inline-tpl-${ts}`;
 const MOD_SLUG = `e2e-le-inline-mod-${ts}`;
 const PAGE_SLUG = `e2e-le-inline-page-${ts}`;
 
+/**
+ * #965 — open a chat for dev-owner through the real op and print its id.
+ * Other specs do this in parallel all the time; this spec does it on
+ * purpose so the race is deterministic instead of a 5 % CI flake.
+ */
+function openOwnerChat(title: string, isolation?: "experiment"): string {
+  return runBunInlineCapture(
+    `
+    import { SQL } from "bun";
+    import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
+    import { registerAdminOps } from "@caelo-cms/admin-core";
+    const db = new SQL(process.env.ADMIN_DATABASE_URL);
+    const ownerId = await db.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return (await tx\`SELECT id::text AS id FROM users WHERE email = 'dev-owner@example.com'\`)[0].id;
+    });
+    await db.end();
+    const adapter = new DatabaseAdapter({
+      adminDatabaseUrl: process.env.ADMIN_DATABASE_URL,
+      publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL,
+    });
+    const registry = new OperationRegistry();
+    registerAdminOps(registry);
+    const r = await execute(registry, adapter, { actorId: ownerId, actorKind: "human", requestId: "e2e-965" }, "chat.create_session", {
+      title: process.env.CHAT_TITLE,
+      ...(process.env.CHAT_ISOLATION ? { isolation: process.env.CHAT_ISOLATION } : {}),
+    });
+    await adapter.close();
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    process.stdout.write(r.value.chatSessionId);
+    `,
+    { CHAT_TITLE: title, CHAT_ISOLATION: isolation ?? "" },
+  ).trim();
+}
+
+let experimentChat: string | null = null;
+
 function runBunInlineCapture(script: string, env: Record<string, string>): string {
   const r = spawnSync("bun", ["-e", script], {
     env: { ...process.env, ...env },
@@ -31,6 +68,20 @@ test.beforeAll(() => {
 });
 
 test.afterAll(() => {
+  if (experimentChat) {
+    runBunInline(
+      `
+      import { SQL } from "bun";
+      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+      await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        await tx\`UPDATE chat_sessions SET archived_at = now() WHERE id = \${process.env.CHAT}::uuid\`;
+      });
+      await sql.end();
+      `,
+      { CHAT: experimentChat },
+    );
+  }
   runBunInline(
     `
     import { SQL } from "bun";
@@ -94,12 +145,20 @@ test("right-click → Edit text saves one field in place; Escape restores", asyn
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
+  // The live-edit load resumes the operator's most recently active
+  // unpublished chat; make that a shared-draft chat of ours.
+  openOwnerChat(`e2e-le-inline-draft-${ts}`);
   await page.goto(`/edit?page=${ids.pg}`);
 
   const preview = page.frameLocator("iframe[title='Live preview']");
   const h1 = preview.locator("section[data-caelo-module-id] h1");
   const p = preview.locator("section[data-caelo-module-id] p");
   await expect(h1).toHaveText("INLINE_BEFORE", { timeout: 15_000 });
+  // #965 — another chat becomes the most recent one after the page loaded
+  // (an experiment on its own branch, like open-changes.browser.ts opens in
+  // parallel). The refresh after the save must stay on the chat the save
+  // wrote to, not re-pick this one and show its branch.
+  experimentChat = openOwnerChat(`e2e-le-inline-experiment-${ts}`, "experiment");
 
   // Escape restores the text and saves nothing.
   await p.click({ button: "right", position: { x: 8, y: 8 } });
@@ -118,10 +177,19 @@ test("right-click → Edit text saves one field in place; Escape restores", asyn
   await page.keyboard.press("Enter");
   expect((await saved).ok()).toBe(true);
   await expect(page.getByText("Saved.", { exact: true })).toBeVisible({ timeout: 10_000 });
-  // The edited span shows the new text before the save lands; the preview
-  // has reloaded with the stored text once that span is gone.
-  await expect(preview.locator("[data-caelo-saving]")).toHaveCount(0, { timeout: 15_000 });
-  await expect(h1).toHaveText("Fish & chips", { timeout: 15_000 });
+  // #965 — the saving marker vanishes on ANY reload, so it is not the
+  // completion signal. The editor marks the iframe once the reload that
+  // follows this save has rendered (the first save of this page load); the
+  // chat is pinned in the URL so that reload shows the branch the save
+  // wrote to, not whichever chat the load would pick next.
+  await expect(page.locator("iframe[title='Live preview']")).toHaveAttribute(
+    "data-caelo-rendered-save",
+    "1",
+    { timeout: 15_000 },
+  );
+  await expect(page).toHaveURL(/[?&]chat=[0-9a-f-]{36}/);
+  await expect(preview.locator("[data-caelo-saving]")).toHaveCount(0);
+  await expect(h1).toHaveText("Fish & chips");
   await expect(p).toHaveText("Body stays");
 
   // Stored once-escaped, on the chat's branch (live row untouched).
