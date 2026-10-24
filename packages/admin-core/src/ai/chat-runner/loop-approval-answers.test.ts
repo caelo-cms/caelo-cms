@@ -347,4 +347,19 @@ describe("approval answers the SDK can read", () => {
     expect(approvalRows).toHaveLength(1);
     for (const prompt of p.seenPrompts) expect(duplicateResults(prompt)).toEqual([]);
   });
+
+  it("#1075 — a resume whose first step times out applies the approved tool once", async () => {
+    gatedRuns = 0;
+    const p = new HangsOnce([[call("toolu_W", "read_thing"), ...toolUse], endTurn]);
+    const { result, fixture } = await withAutoApprove(false, () =>
+      run(p, resumeHistory(), catalogue(), { firstEventTimeoutMs: 50 }),
+    );
+    expect(result.stopReason).toBe("end_turn");
+    expect(gatedRuns).toBe(1);
+    // The applied result is on the transcript before step 0 ran.
+    const applied = fixture.appended.filter((m) => m.content === "[approved tool results]");
+    expect(applied).toHaveLength(1);
+    expect(JSON.stringify(applied[0]?.responseMessages)).toContain("toolu_X");
+    for (const prompt of p.seenPrompts) expect(duplicateResults(prompt)).toEqual([]);
+  });
 });

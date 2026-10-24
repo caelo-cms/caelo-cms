@@ -572,12 +572,46 @@ export async function* streamProviderTurn(
     }
   };
 
+  /**
+   * #1075 — the results of the gated tools an approval resume applied
+   * before step 0. Persisted and appended to the turn's history right away,
+   * before step 0's model call: if that call fails (first-chunk timeout,
+   * provider error) the retry run starts from a history whose last message
+   * answers the approval, so the SDK does not collect — and apply — it a
+   * second time. Same replay order as before (they precede step 0's turn).
+   */
+  const onInitialResponseMessages = async (
+    messages: readonly ProviderResponseMessage[],
+  ): Promise<void> => {
+    const content = "[approved tool results]";
+    const saved = await execute(registry, adapter, humanCtx, "chat.append_message", {
+      chatSessionId: args.chatSessionId,
+      role: "tool",
+      content,
+      responseMessages: messages,
+      source: "chat-runner approval-resume results (onInitialResponseMessages)",
+    });
+    if (!saved.ok) {
+      // The effect happened; its record did not. Loud, and the run ends
+      // after this step (stopWhen, like every failed persist) instead of
+      // continuing on a transcript that would replay without it.
+      console.error("[chat-runner] failed to persist approval-resume results", {
+        chatSessionId: args.chatSessionId,
+      });
+      result.persistFailureMessage = "the approved action's result could not be saved";
+      queue.push({
+        kind: "error",
+        message: "Failed to save the approved action's result.",
+      });
+    }
+    history.messages.push({ role: "tool", content, sdkMessages: messages });
+  };
+
   /** Per-step persistence + history append — the SDK awaits this. */
   const onStepFinish = async (info: {
     stepIndex: number;
     finishReason: string;
     responseMessages: readonly ProviderResponseMessage[];
-    initialResponseMessages: readonly ProviderResponseMessage[];
   }): Promise<void> => {
     await quiescence.whenQuiescent();
     const s = step;
@@ -591,10 +625,7 @@ export async function* streamProviderTurn(
       sdkAnsweredClientCallIds(info.responseMessages),
     );
     const text = s.text.join("");
-    const slice = [
-      ...info.initialResponseMessages,
-      ...stripOwnClientToolResults(info.responseMessages, s.executedIds),
-    ];
+    const slice = stripOwnClientToolResults(info.responseMessages, s.executedIds);
     const persistedToolCalls = [...s.serverCalls, ...s.clientCalls];
 
     if (s.anchorMessageId) {
@@ -911,6 +942,7 @@ export async function* streamProviderTurn(
             return { messages: history.messages };
           },
           onStepFinish,
+          onInitialResponseMessages,
           stopWhen: async ({ steps }) => {
             if (fatalPersist()) return true;
             // A pending gated approval must pause the run even when a
