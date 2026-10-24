@@ -74,17 +74,27 @@ export async function loadMainModules(
   });
 }
 
+/**
+ * A module's name, stored field list and HTML: the HTML decides which
+ * values render as a whole link (`href="{{name}}"`, #852).
+ */
+export interface ModuleSchemaRow {
+  readonly name: string;
+  readonly fields: unknown[];
+  readonly html: string;
+}
+
 /** Every module's stored field list (deleted ones too: an instance may outlive its module's deletion). */
 export async function loadAllModuleFields(
   tx: TransactionRunner,
-): Promise<Map<string, { name: string; fields: unknown[] }>> {
+): Promise<Map<string, ModuleSchemaRow>> {
   const rows = (await tx.execute(sql`
-    SELECT id::text AS id, display_name, fields FROM modules
-  `)) as unknown as { id: string; display_name: string; fields: unknown }[];
-  const out = new Map<string, { name: string; fields: unknown[] }>();
+    SELECT id::text AS id, display_name, fields, html FROM modules
+  `)) as unknown as { id: string; display_name: string; fields: unknown; html: string }[];
+  const out = new Map<string, ModuleSchemaRow>();
   for (const r of rows) {
     const f = parse<unknown>(r.fields);
-    out.set(r.id, { name: r.display_name, fields: Array.isArray(f) ? f : [] });
+    out.set(r.id, { name: r.display_name, fields: Array.isArray(f) ? f : [], html: r.html });
   }
   return out;
 }

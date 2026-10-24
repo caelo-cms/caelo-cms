@@ -17,6 +17,7 @@ import {
   describeLinkIssues,
   type LinkTargetLookup,
   linkCanonicaliseRun,
+  urlFieldNamesInHtml,
 } from "./link-canonicalise.js";
 
 const ABOUT = "11111111-1111-4111-8111-111111111111";
@@ -412,5 +413,22 @@ describe("grandfathering + messages", () => {
     expect(msg).toContain('values.cta_href: "/pricing" is not the path of any page on this site');
     expect(msg).toContain("list_pages");
     expect(msg).toContain("create it first");
+  });
+});
+
+describe("urlFieldNamesInHtml (#852)", () => {
+  it("names fields put whole into href/src, in sections too, and skips partial values", () => {
+    const names = urlFieldNamesInHtml(
+      '<a href="{{Target}}">{{label}}</a><img src="{{{photo}}}" alt="">' +
+        "<ul>{{#links}}<li><a href='{{.}}'>x</a></li>{{/links}}</ul>" +
+        '{{#cta}}<a href=" {{cta}} ">go</a>{{/cta}}' +
+        '<a href="{{base}}/docs">part</a><a href="mailto:{{email}}">m</a>' +
+        '<img srcset="{{set}}" alt="">',
+    );
+    expect([...names].sort()).toEqual(["cta", "links", "photo", "target"]);
+  });
+
+  it("returns nothing for HTML without placeholders", () => {
+    expect(urlFieldNamesInHtml('<a href="/about">x</a>').size).toBe(0);
   });
 });

@@ -211,6 +211,83 @@ describe("renderModuleWithContent — nested module slots", () => {
   });
 });
 
+describe("renderModuleWithContent — content braces through nesting (#1053)", () => {
+  it("a nested richtext value with {{Page URL}} reaches the page literally", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "parent",
+          html: "<section>{{>child}}</section>",
+          css: "",
+          js: "",
+          fields: [{ name: "child", kind: "module" }],
+        },
+        {
+          moduleId: CHILD_MOD_ID,
+          slug: "child",
+          html: "<div>{{{body_html}}}</div>",
+          css: "",
+          js: "",
+          fields: [{ name: "body_html", kind: "richtext" }],
+        },
+      ],
+      [
+        {
+          id: PARENT_CI_ID,
+          moduleId: PARENT_MOD_ID,
+          values: { child: { moduleId: CHILD_MOD_ID, contentInstanceId: CHILD_CI_ID } },
+          deletedAt: null,
+        },
+        {
+          id: CHILD_CI_ID,
+          moduleId: CHILD_MOD_ID,
+          values: { body_html: "<code>link_en.href = '{{Page URL}}';</code>" },
+          deletedAt: null,
+        },
+      ],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+    expect(r.html).toBe(
+      `<section><div ${tag(CHILD_MOD_ID)}><code>link_en.href = '{{Page URL}}';</code></div></section>`,
+    );
+    expect(r.missingSlots).toEqual([]);
+  });
+});
+
+describe("renderModuleWithContent — empty optional module field (#1041)", () => {
+  it("an unset or null `module` field renders an empty slot without a marker", () => {
+    for (const values of [{}, { after: null }]) {
+      const resolver = buildResolver(
+        [
+          {
+            moduleId: PARENT_MOD_ID,
+            slug: "card-grid",
+            html: "<section><h2>{{title}}</h2>{{>after}}</section>",
+            css: "",
+            js: "",
+            fields: [
+              { name: "title", kind: "text" },
+              { name: "after", kind: "module" },
+            ],
+          },
+        ],
+        [
+          {
+            id: PARENT_CI_ID,
+            moduleId: PARENT_MOD_ID,
+            values: { title: "T", ...values },
+            deletedAt: null,
+          },
+        ],
+      );
+      const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
+      expect(r.html).toBe("<section><h2>T</h2></section>");
+      expect(r.missingSlots).toEqual([]);
+    }
+  });
+});
+
 describe("renderModuleWithContent — list-of-primitive slots", () => {
   it("text-list iterates {{.}} per string element", () => {
     const resolver = buildResolver(

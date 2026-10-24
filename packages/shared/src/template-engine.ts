@@ -187,6 +187,12 @@ const SECTION_RE =
   /\{\{\s*#\s*([a-z][a-z0-9_]*)\s*\}\}((?:(?!\{\{\s*\/\s*\1\s*\}\})[\s\S])*)\{\{\s*\/\s*\1\s*\}\}/g;
 const PARTIAL_RE = /\{\{\s*>\s*([a-z][a-z0-9_]*)\s*\}\}/g;
 const PRIMITIVE_RE = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g;
+// A plain tag (no Mustache sigil) of any name, and the identifier test
+// that tells a field placeholder from literal text such as `{{Page URL}}`.
+// No `\s*` before the close: it would overlap `[^{}]*` (polynomial
+// backtracking); the callback trims instead.
+const NON_IDENTIFIER_TAG_RE = /\{\{\s*([^#^/>!&={}\s][^{}]*)\}\}/g;
+const IDENTIFIER_RE = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 
 // Section-dispatch kinds (the engine's `{{#name}}` operand). Imported
 // from content.ts so new list-shaped kinds wire through automatically
@@ -284,6 +290,14 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   // pattern into their HTML can't break loud-raw restore by
   // intercepting the sentinel for a known-key sentinel — they would
   // have to guess the UUID minted at render time.
+  //
+  // The same sentinels also carry DATA through the render (#1053): every
+  // value the engine pastes into the template before Mustache runs — a
+  // list item, a link label/href, a conditional's `{{.}}`, a plugin list
+  // value, a rendered nested module — is wrapped, so literal `{{…}}` in
+  // content (a GTM `{{Page URL}}` in a code example) is never parsed as a
+  // tag a second time. Values Mustache substitutes itself are never
+  // re-parsed, so only these pre-pasted ones need it.
   const sentinels = new Map<string, string>();
   const sentinelPrefix = `__CAELO_TPL_${globalThis.crypto.randomUUID()}_`;
   const mkSentinel = (original: string): string => {
@@ -380,15 +394,28 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
     return mkSentinel(match);
   });
 
+  // 3b. A tag whose name is not a field identifier (`{{Page URL}}`, a
+  //     Google Tag Manager variable in a snippet) can never be a
+  //     placeholder — field names are snake_case. Mustache would look it
+  //     up and silently render "", so it stays literal (#1053).
+  html = html.replace(NON_IDENTIFIER_TAG_RE, (match, name: string) =>
+    IDENTIFIER_RE.test(name.trim()) ? match : mkSentinel(match),
+  );
+
   // 4. Render. The view holds only lowercase keys; sentinels survive
   //    untouched; sections + partials are already substituted.
   const rendered = Mustache.render(html, view);
 
-  // 5. Restore loud-raw sentinels.
-  let final = rendered;
-  for (const [sentinel, original] of sentinels) {
-    final = final.split(sentinel).join(original);
-  }
+  // 5. Restore sentinels in one pass. A single replace never re-scans
+  //    the text it inserts, so restored content cannot be mistaken for a
+  //    sentinel (and a list of N items costs one scan, not N).
+  let final =
+    sentinels.size === 0
+      ? rendered
+      : rendered.replace(
+          new RegExp(`${sentinelPrefix}\\d+__`, "g"),
+          (key) => sentinels.get(key) ?? key,
+        );
 
   // 6. Resolve internal references (epic #724). Last, so values,
   //    defaults and list items substituted above are covered; nested
@@ -417,7 +444,7 @@ function renderSection(
     // fields are looked up FIRST by construction, so a plugin can never
     // shadow something the module's author declared.
     const items = dataLists[name];
-    if (items) return renderDataList(inner, items);
+    if (items) return renderDataList(inner, items, mkSentinel);
     // Declared by an installed plugin that is NOT running. Naming the
     // plugin turns "unknown field" (hunt for a typo) into "switch that
     // plugin back on", which is the actual fix.
@@ -430,13 +457,13 @@ function renderSection(
     return mkSentinel(match);
   }
   if (field.kind === "module-list") {
-    return renderModuleList(name, field, cvs, partials, missing);
+    return renderModuleList(name, field, cvs, partials, missing, mkSentinel);
   }
   if (field.kind === "text-list") {
-    return renderTextList(name, inner, field, cvs, missing);
+    return renderTextList(name, inner, field, cvs, missing, mkSentinel);
   }
   if (field.kind === "link-list") {
-    return renderLinkList(name, inner, field, cvs, missing);
+    return renderLinkList(name, inner, field, cvs, missing, mkSentinel);
   }
   // Any NON-list field used as a `{{#name}}…{{/name}}` section is a
   // CONDITIONAL (Mustache semantics): render the inner block once when the
@@ -449,7 +476,7 @@ function renderSection(
   // partial pass); `{{.}}`/`{{item}}` are substituted here for parity with
   // the *-list renderers. An empty conditional is intentional, not
   // "missing" — nothing is pushed to `missing`.
-  return renderConditionalSection(name, inner, field, cvs);
+  return renderConditionalSection(name, inner, field, cvs, mkSentinel);
 }
 
 /**
@@ -461,11 +488,14 @@ function renderConditionalSection(
   inner: string,
   field: TemplateField,
   cvs: Readonly<Record<string, unknown>>,
+  mkSentinel: (original: string) => string,
 ): string {
   const raw = Object.hasOwn(cvs, name) ? cvs[name] : field.default;
   if (!isPresentSectionValue(raw)) return "";
   const value = scalarSectionString(raw);
-  return value.length > 0 ? inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => value) : inner;
+  return value.length > 0
+    ? inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => mkSentinel(value))
+    : inner;
 }
 
 /**
@@ -498,6 +528,7 @@ function renderTextList(
   field: TemplateField,
   cvs: Readonly<Record<string, unknown>>,
   missing: string[],
+  mkSentinel: (original: string) => string,
 ): string {
   const raw = Object.hasOwn(cvs, name) ? cvs[name] : field.default;
   if (!Array.isArray(raw)) return "";
@@ -510,7 +541,7 @@ function renderTextList(
       continue;
     }
     const value = String(el);
-    parts.push(inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => value));
+    parts.push(inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => mkSentinel(value)));
   }
   return parts.join("");
 }
@@ -529,13 +560,16 @@ function renderTextList(
 function renderDataList(
   inner: string,
   items: ReadonlyArray<Readonly<Record<string, string>>>,
+  mkSentinel: (original: string) => string,
 ): string {
   const parts: string[] = [];
   for (const item of items) {
     let rendered = inner;
     for (const [key, value] of Object.entries(item)) {
       const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      rendered = rendered.replace(new RegExp(`\\{\\{\\s*${escaped}\\s*\\}\\}`, "g"), () => value);
+      rendered = rendered.replace(new RegExp(`\\{\\{\\s*${escaped}\\s*\\}\\}`, "g"), () =>
+        mkSentinel(value),
+      );
     }
     parts.push(rendered);
   }
@@ -548,6 +582,7 @@ function renderLinkList(
   field: TemplateField,
   cvs: Readonly<Record<string, unknown>>,
   missing: string[],
+  mkSentinel: (original: string) => string,
 ): string {
   const raw = Object.hasOwn(cvs, name) ? cvs[name] : field.default;
   if (!Array.isArray(raw)) return "";
@@ -566,7 +601,9 @@ function renderLinkList(
     }
     const { label, href } = el as { label: string; href: string };
     parts.push(
-      inner.replace(/\{\{\s*label\s*\}\}/g, () => label).replace(/\{\{\s*href\s*\}\}/g, () => href),
+      inner
+        .replace(/\{\{\s*label\s*\}\}/g, () => mkSentinel(label))
+        .replace(/\{\{\s*href\s*\}\}/g, () => mkSentinel(href)),
     );
   }
   return parts.join("");
@@ -578,6 +615,7 @@ function renderModuleList(
   cvs: Readonly<Record<string, unknown>>,
   partials: PartialResolver,
   missing: string[],
+  mkSentinel: (original: string) => string,
 ): string {
   const raw = Object.hasOwn(cvs, name) ? cvs[name] : field.default;
   if (!Array.isArray(raw)) return "";
@@ -601,7 +639,7 @@ function renderModuleList(
       parts.push(`<!-- caelo:module-list ${name} needs recursive renderer (compose path) -->`);
       continue;
     }
-    parts.push(partialHtml);
+    parts.push(mkSentinel(partialHtml));
   }
   return parts.join("");
 }
@@ -625,7 +663,14 @@ function renderPartialRef(
     missing.push(reason);
     return comment(reason);
   }
-  const ref = cvs[name];
+  const ref = Object.hasOwn(cvs, name) ? cvs[name] : undefined;
+  // An unset or explicitly null single `module` field is an EMPTY slot,
+  // the same as an empty module-list / text-list: it renders nothing and
+  // is not a failure (#1041). The static generator refuses a Stage on any
+  // marker, so flagging "empty" here made an optional nested slot
+  // impossible to leave blank. A present value that is not a ref is still
+  // malformed and stays loud.
+  if (ref === undefined || ref === null) return "";
   if (!isNestedRef(ref)) {
     missing.push(`module-ref-malformed:${name}`);
     return comment(`module-ref-malformed ${name}`);
@@ -636,5 +681,5 @@ function renderPartialRef(
     missing.push(`${NESTED_RENDERER_UNAVAILABLE}:${name}`);
     return `<!-- caelo:module ${name} needs recursive renderer (compose path) -->`;
   }
-  return partialHtml;
+  return mkSentinel(partialHtml);
 }

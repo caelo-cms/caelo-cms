@@ -32,7 +32,7 @@ Troubleshooting (the audit's failure message names which one):
 
 ## Core check: `structure` (#820)
 
-Free markup that should be a module: `structure/repeated-markup`, `structure/duplicate-module` (errors), `structure/similar-markup`, `structure/layout-css-module-specific` (warnings). See `checks/structure.ts`.
+Free markup that should be a module: `structure/repeated-markup`, `structure/duplicate-module` (errors), `structure/similar-markup`, `structure/layout-css-module-specific`, `structure/repeated-items` (one pattern written out 3+ times side by side in one module's free markup, #1068) (warnings). See `checks/structure.ts`.
 
 **What counts as free markup.** Each module root in the staged HTML (`data-caelo-module-id`) is walked against its own template; whatever the template cannot account for came in through a field value and is free. Sub-modules in `module` / `module-list` fields carry their own `data-caelo-module-id` (#1027), so an FAQ entry or a card in a list is module output, never free markup of its parent. A template child accounts for a rendered element by best fit (exact class set, then most classes in common, then the fewest unaccounted elements, then sibling order), so a classless left column never claims the classed right column next to it.
 

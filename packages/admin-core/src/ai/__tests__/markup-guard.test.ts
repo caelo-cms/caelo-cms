@@ -15,6 +15,7 @@ import {
   fieldReuseHints,
   type IndexedInstance,
   moduleReuseHints,
+  repeatedItemHints,
   valuePatterns,
   withFieldMarkupGuard,
 } from "../tools/_markup-guard.js";
@@ -145,5 +146,27 @@ describe("withFieldMarkupGuard", () => {
     expect((await guarded.handler(AI, { values: { title: "x" } }, toolCtx)).content).toBe(
       "written.",
     );
+  });
+});
+
+describe("repeatedItemHints (#1068)", () => {
+  const card = (n: number) =>
+    `<article class="tc"><h3 class="tc__name">Tool ${n}</h3><dl class="tc__facts"><dt>Price</dt><dd>${n}</dd></dl></article>`;
+  const cards = (n: number) => Array.from({ length: n }, (_, i) => card(i)).join("");
+
+  it("three copies side by side in one value point at a module-list, on one placement too", () => {
+    const written = { body_html: `<div class="grid">${cards(3)}</div>` };
+    expect(repeatedItemHints(written)).toEqual([
+      expect.stringContaining("field `body_html` writes the pattern `article.tc` out 3 times"),
+    ]);
+    const hints = fieldReuseHints([written], [inst("i1", written)], []);
+    expect(hints).toHaveLength(1);
+    expect(hints[0]).toContain("module-list");
+  });
+
+  it("two copies stay silent", () => {
+    const written = { body_html: cards(2) };
+    expect(repeatedItemHints(written)).toEqual([]);
+    expect(fieldReuseHints([written], [inst("i1", written)], [])).toEqual([]);
   });
 });

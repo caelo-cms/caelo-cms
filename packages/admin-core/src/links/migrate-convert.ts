@@ -21,6 +21,7 @@ import {
   type LinkCanonicaliseIssue,
   type LinkTargetLookup,
   linkCanonicaliseRun,
+  urlFieldNamesInHtml,
 } from "@caelo-cms/shared";
 import { probeLinkLookup } from "./canonicalise.js";
 
@@ -90,13 +91,20 @@ function isField(f: unknown): f is CanonicaliseField {
   );
 }
 
-/** A module's field list: only `default` values are touched. */
+/**
+ * A module's field list: only `default` values are touched.
+ *
+ * @param html the module's HTML: a default it puts whole into a link
+ *   attribute is a URL whatever its kind ({@link urlFieldNamesInHtml}).
+ */
 export function convertFieldDefaults(
   fields: readonly unknown[],
   cx: ConvertContext,
+  html: string,
 ): PartOutcome<unknown[]> {
+  const urlNames = urlFieldNamesInHtml(html);
   return convert([...fields], cx, (run) =>
-    fields.map((f) => (isField(f) ? canonicaliseFieldDefaults([f], run)[0] : f)),
+    fields.map((f) => (isField(f) ? canonicaliseFieldDefaults([f], run, urlNames)[0] : f)),
   );
 }
 
@@ -105,13 +113,20 @@ export function declaredFields(fields: unknown): CanonicaliseField[] {
   return Array.isArray(fields) ? fields.filter(isField) : [];
 }
 
-/** Content values against the module's fields (as the write path reads them). */
+/**
+ * Content values against the module's fields and HTML, as the write path
+ * reads them (`html` undefined when the module is gone).
+ */
 export function convertContentValues(
   fields: readonly CanonicaliseField[],
   values: Readonly<Record<string, unknown>>,
   cx: ConvertContext,
+  html: string | undefined,
 ): PartOutcome<Record<string, unknown>> {
-  return convert({ ...values }, cx, (run) => canonicaliseContentValues(fields, values, run));
+  const urlNames = html === undefined ? undefined : urlFieldNamesInHtml(html);
+  return convert({ ...values }, cx, (run) =>
+    canonicaliseContentValues(fields, values, run, urlNames),
+  );
 }
 
 /** Structured-set items: every `href` at any depth. */

@@ -1129,6 +1129,26 @@ export const renderPagePreviewOp = defineOperation({
     // reachability punishes the operator for a network condition — but
     // they surface as `theme-font-unresolvable:<family>` in missingSlots
     // (loud, CLAUDE.md §2); the deploy path hard-fails on the same state.
+    // Site settings first: the font preload follows the site language,
+    // and the SEO head below reads the rest.
+    const settingsRows = (await tx.execute(sql`
+      SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
+             site_language
+      FROM site_defaults WHERE id = 1 LIMIT 1
+    `)) as unknown as {
+      site_base_url: string | null;
+      sitemap_enabled: boolean;
+      organization_json: string | null;
+      site_language: string | null;
+    }[];
+    const settingsRow = settingsRows[0];
+    if (!settingsRow) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.render_preview",
+        message: "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it",
+      });
+    }
     let previewFonts: ComposeFonts | undefined;
     const fontMarkers: string[] = [];
     if (composeTheme !== undefined) {
@@ -1141,9 +1161,10 @@ export const renderPagePreviewOp = defineOperation({
         loadFontUsage: () => loadSiteFontUsage(tx, themeTokens),
         cacheDir: defaultFontsCacheDir(process.cwd()),
         publicBasePath: "/_caelo/fonts",
-        // The editor iframe gains nothing from a preload hint; the @font-face
-        // CSS (and so the rendered typefaces) is identical to the build's.
-        preloadLanguage: null,
+        // Same preload as the build (#1065): the composed render is what
+        // inspect_page_render reports as the page's HTML, so a hint the
+        // deployed page carries must show here too.
+        preloadLanguage: settingsRow.site_language,
       });
       if (resolvedFonts.css.length > 0) {
         previewFonts = { css: resolvedFonts.css, preloads: resolvedFonts.preloads };
@@ -1261,24 +1282,6 @@ export const renderPagePreviewOp = defineOperation({
       noindex: boolean;
     }[];
     const seoRow = seoRows[0];
-    const settingsRows = (await tx.execute(sql`
-      SELECT site_base_url, sitemap_enabled, organization_json::text AS organization_json,
-             site_language
-      FROM site_defaults WHERE id = 1 LIMIT 1
-    `)) as unknown as {
-      site_base_url: string | null;
-      sitemap_enabled: boolean;
-      organization_json: string | null;
-      site_language: string | null;
-    }[];
-    const settingsRow = settingsRows[0];
-    if (!settingsRow) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages.render_preview",
-        message: "site_defaults row (id=1) is missing — the cms_admin migrations did not seed it",
-      });
-    }
     let organization: SiteSeoSettings["organization"] = {};
     if (settingsRow.organization_json) {
       try {

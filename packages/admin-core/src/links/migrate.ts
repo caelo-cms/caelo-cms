@@ -73,6 +73,7 @@ import {
   loadPendingBranches,
   loadPluginRowTasks,
   lockBranchEntities,
+  type ModuleSchemaRow,
 } from "./migrate-load.js";
 
 /** One link the migration left literal. */
@@ -298,7 +299,7 @@ async function migrateMainModules(
 ): Promise<void> {
   for (const m of await loadMainModules(tx, { lock: scope.apply })) {
     const html = convertModuleHtml(m.html, cx);
-    const fields = convertFieldDefaults(m.fields, cx);
+    const fields = convertFieldDefaults(m.fields, cx, m.html);
     const entity = {
       entityKind: "module" as const,
       entityId: m.id,
@@ -346,11 +347,11 @@ async function migrateMainInstances(
   cx: ConvertContext,
   c: Collector,
   batch: ScopeBatch,
-  moduleFields: Map<string, { name: string; fields: unknown[] }>,
+  moduleFields: Map<string, ModuleSchemaRow>,
 ): Promise<void> {
   for (const ci of await loadMainInstances(tx, { lock: scope.apply })) {
     const mod = moduleFields.get(ci.moduleId);
-    const out = convertContentValues(declaredFields(mod?.fields), ci.values, cx);
+    const out = convertContentValues(declaredFields(mod?.fields), ci.values, cx, mod?.html);
     const label = `content "${ci.label ?? mod?.name ?? ci.id}"${mod && ci.label ? ` (${mod.name})` : ""}`;
     c.record(out, "content_values", {
       entityKind: "contentInstance",
@@ -491,7 +492,7 @@ export async function writeMainSet(
 
 function fieldsFor(
   loc: { readonly fields?: readonly { name: string; kind: string }[]; readonly moduleId?: string },
-  moduleFields: Map<string, { name: string; fields: unknown[] }>,
+  moduleFields: Map<string, ModuleSchemaRow>,
 ): CanonicaliseField[] | undefined {
   if (loc.fields) return [...loc.fields];
   if (loc.moduleId) return declaredFields(moduleFields.get(loc.moduleId)?.fields);
@@ -505,7 +506,7 @@ async function migrateMainPluginRows(
   c: Collector,
   batch: ScopeBatch,
   sets: readonly PluginLinkLocationSet[],
-  moduleFields: Map<string, { name: string; fields: unknown[] }>,
+  moduleFields: Map<string, ModuleSchemaRow>,
 ): Promise<void> {
   for (const set of sets) {
     for (const loc of set.locations) {
@@ -556,18 +557,22 @@ async function migrateBranch(
   c: Collector,
   batch: ScopeBatch,
   pluginSets: readonly PluginLinkLocationSet[],
-  moduleFields: Map<string, { name: string; fields: unknown[] }>,
+  moduleFields: Map<string, ModuleSchemaRow>,
 ): Promise<void> {
   const modules = await loadBranchStates(tx, "module", branchId);
   // A chat that changed a module's fields renders its instances with them.
   const fieldsOf = new Map(moduleFields);
   for (const m of modules)
-    fieldsOf.set(m.entityId, { name: m.state.displayName, fields: m.state.fields });
+    fieldsOf.set(m.entityId, {
+      name: m.state.displayName,
+      fields: m.state.fields,
+      html: m.state.html,
+    });
 
   for (const m of modules) {
     if (m.state.deletedAt) continue;
     const html = convertModuleHtml(m.state.html, cx);
-    const fields = convertFieldDefaults(m.state.fields, cx);
+    const fields = convertFieldDefaults(m.state.fields, cx, m.state.html);
     const entity = {
       entityKind: "module" as const,
       entityId: m.entityId,
@@ -592,7 +597,7 @@ async function migrateBranch(
   for (const ci of await loadBranchStates(tx, "contentInstance", branchId)) {
     if (ci.state.deletedAt) continue;
     const mod = fieldsOf.get(ci.state.moduleId);
-    const out = convertContentValues(declaredFields(mod?.fields), ci.state.values, cx);
+    const out = convertContentValues(declaredFields(mod?.fields), ci.state.values, cx, mod?.html);
     const name = ci.state.displayName ?? ci.state.slug ?? mod?.name ?? ci.entityId;
     c.record(out, "content_values", {
       entityKind: "contentInstance",

@@ -176,7 +176,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
     templateId: template.templateId,
     blocks: [{ name: "content", displayName: "Content", position: 0 }],
   });
-  await run("pages.build_page", {
+  const built = (await run("pages.build_page", {
     page: { slug: "home", title: "Fonts", templateId: template.templateId, status: "published" },
     modules: [
       {
@@ -189,7 +189,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
         content: { source: "inline", values: { body_text: "Grüße" } },
       },
     ],
-  });
+  })) as { pageId: string };
   const cacheDir = await mkdtemp(join(tmpdir(), "font-service-test-"));
   try {
     await adapter.withAdminTransaction(ctx, async (tx) => {
@@ -295,7 +295,28 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
       await tx.execute(sql`UPDATE themes SET is_active=false WHERE is_active=true`);
       await tx.execute(sql`UPDATE themes SET is_active=true WHERE slug='site-default'`);
     });
+    // #1065 — the composed preview (what inspect_page_render reports as the
+    // page's HTML) carries the same Latin preload as the build.
+    await adapter.withAdminTransaction(ctx, async (tx) => {
+      await tx.execute(sql`UPDATE themes SET is_active=false WHERE is_active=true`);
+      await tx.execute(sql`UPDATE themes SET is_active=true WHERE slug=${THEME_SLUG}`);
+    });
+    const composed = (await run("pages.render_preview", { pageId: built.pageId })) as {
+      html: string;
+    };
+    const previewPreloads = [
+      ...composed.html.matchAll(/<link rel="preload" as="font"[^>]*href="([^"]+)"/g),
+    ].map((m) => m[1]);
+    expect(previewPreloads).toEqual([
+      expect.stringMatching(
+        /^\/_caelo\/fonts\/pinned\/[0-9a-f]{64}\.[0-9a-f]{12}\.latin\.[0-9a-f]{12}\.woff2$/,
+      ),
+    ]);
   } finally {
+    await adapter.withAdminTransaction(ctx, async (tx) => {
+      await tx.execute(sql`UPDATE themes SET is_active=false WHERE is_active=true`);
+      await tx.execute(sql`UPDATE themes SET is_active=true WHERE slug='site-default'`);
+    });
     await rm(cacheDir, { recursive: true, force: true });
   }
 });
