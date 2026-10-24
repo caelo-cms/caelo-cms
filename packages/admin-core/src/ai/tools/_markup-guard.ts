@@ -34,6 +34,11 @@ import {
   stripMustache,
   templateShape,
 } from "@caelo-cms/shared";
+import {
+  hasRepeatCandidates,
+  repeatedValueHints,
+  type ValueInstance,
+} from "./_repeated-value-guard.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 /** A module as the guard compares against it. */
@@ -210,20 +215,35 @@ export async function moduleMarkupFindings(
   return moduleReuseHints(html, await loadCatalog(ctx, toolCtx), excludeModuleIds);
 }
 
-/** Suffix for a field-value write ("" when there is nothing to say). */
+/**
+ * Suffix for a field-value write ("" when there is nothing to say): the
+ * markup hints above plus the #1062 repeated-value hint, from ONE read of
+ * the content instances as the caller sees them.
+ */
 export async function fieldMarkupSuffix(
   ctx: ExecutionContext,
   toolCtx: ToolContext,
   written: readonly Readonly<Record<string, unknown>>[],
 ): Promise<string> {
-  if (!written.some((v) => valuePatterns(v).length > 0)) return "";
+  const markup = written.some((v) => valuePatterns(v).length > 0);
+  const repeats = hasRepeatCandidates(written);
+  if (!markup && !repeats) return "";
   const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "content_instances.list", {});
   if (!res.ok) return "";
-  const instances = ((res.value as { instances?: IndexedInstance[] }).instances ?? []).filter((i) =>
-    Object.values(i.values).some((v) => JSON.stringify(v).includes("class=")),
-  );
-  const hints = fieldReuseHints(written, instances, await loadCatalog(ctx, toolCtx));
-  return hints.length === 0 ? "" : ` 🎯 markup-guard: ${hints.join(". ")}.`;
+  const all = (res.value as { instances?: (IndexedInstance & ValueInstance)[] }).instances ?? [];
+  const parts: string[] = [];
+  if (markup) {
+    const instances = all.filter((i) =>
+      Object.values(i.values).some((v) => JSON.stringify(v).includes("class=")),
+    );
+    const hints = fieldReuseHints(written, instances, await loadCatalog(ctx, toolCtx));
+    if (hints.length > 0) parts.push(` 🎯 markup-guard: ${hints.join(". ")}.`);
+  }
+  if (repeats) {
+    const hints = repeatedValueHints(written, all);
+    if (hints.length > 0) parts.push(` 🎯 shared-content: ${hints.join(". ")}.`);
+  }
+  return parts.join("");
 }
 
 /**
