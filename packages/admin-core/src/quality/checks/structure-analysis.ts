@@ -23,6 +23,7 @@ import {
   outermostPatterns,
   parseMarkup,
   patternLabel,
+  repeatedSiblingPatterns,
   type SubtreeShape,
   shapeTree,
   stripMustache,
@@ -48,6 +49,17 @@ export interface PatternOccurrence {
   readonly shape: SubtreeShape;
 }
 
+/** A pattern written out side by side in one module's free markup (#1068). */
+export interface SiblingRepeat {
+  readonly pageId: string;
+  readonly path: string;
+  /** The module whose field value carried the copies. */
+  readonly hostModuleId: string;
+  readonly label: string;
+  /** Copies side by side. */
+  readonly count: number;
+}
+
 /** Where a CSS class is used across the staged pages. */
 export interface ClassUse {
   /** Modules whose TEMPLATE renders it. */
@@ -60,6 +72,7 @@ export interface ClassUse {
 
 export interface StructureAnalysis {
   readonly occurrences: readonly PatternOccurrence[];
+  readonly siblingRepeats: readonly SiblingRepeat[];
   readonly classUse: ReadonlyMap<string, ClassUse>;
   /** Module id → the pages it is rendered on. */
   readonly placements: ReadonlyMap<string, ReadonlySet<string>>;
@@ -95,6 +108,7 @@ export function analyseStructure(
   }
 
   const occurrences: PatternOccurrence[] = [];
+  const siblingRepeats: SiblingRepeat[] = [];
   const classUse = new Map<string, ClassUse>();
   const placements = new Map<string, Set<string>>();
   const use = (cls: string): ClassUse => {
@@ -138,9 +152,18 @@ export function analyseStructure(
           shape: p.shape,
         });
       }
+      for (const r of repeatedSiblingPatterns(free ?? [])) {
+        siblingRepeats.push({
+          pageId: page.pageId,
+          path: page.path,
+          hostModuleId: id,
+          label: patternLabel(r.node),
+          count: r.count,
+        });
+      }
     }
   }
-  return { occurrences, classUse, placements, templateShapes };
+  return { occurrences, siblingRepeats, classUse, placements, templateShapes };
 }
 
 /** Classes on elements outside every module root (the layout's own markup). */
