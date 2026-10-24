@@ -333,11 +333,18 @@ export function renderSeoHead(input: SeoMetaInput): string {
 }
 
 /**
- * Inject `renderSeoHead`'s output just before `</head>`. Replaces any
- * existing `<title>` so the page-level title wins over a layout-
- * supplied default. Pre-existing meta tags from the layout are left
- * alone — authors can still drop e.g. `<meta name="theme-color">` in
- * the layout HTML.
+ * Inject `renderSeoHead`'s output early in `<head>`: right after the last
+ * `<meta charset>` / `<meta name="viewport">`, or right after `<head>`
+ * when the layout has neither (#1017). Layouts inline the theme CSS, so a
+ * block appended before `</head>` put the title tens of kilobytes into
+ * the page, past what byte-limited crawlers and link-preview fetchers
+ * read; charset and viewport stay first, as the HTML spec wants the
+ * charset in the first 1024 bytes.
+ *
+ * Replaces any existing `<title>` so the page-level title wins over a
+ * layout-supplied default. Pre-existing meta tags from the layout are
+ * left alone — authors can still drop e.g. `<meta name="theme-color">`
+ * in the layout HTML.
  */
 export function injectSeoIntoHead(html: string, headBlock: string): string {
   const headCloseMatch = /<\/head\s*>/i.exec(html);
@@ -345,11 +352,32 @@ export function injectSeoIntoHead(html: string, headBlock: string): string {
     const headEnd = headCloseMatch.index;
     // Strip a layout-supplied <title> inside <head> only (never an SVG
     // <title> in <body>); we re-emit the page title in headBlock.
-    const beforeClose = html.slice(0, headEnd).replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, "");
-    const afterClose = html.slice(headEnd);
-    return `${beforeClose}${headBlock}\n${afterClose}`;
+    const head = html.slice(0, headEnd).replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, "");
+    const at = seoInsertionPoint(head);
+    return `${head.slice(0, at)}\n${headBlock}\n${head.slice(at)}${html.slice(headEnd)}`;
   }
   // No closing head tag — prepend the block to the document.
   const titleStripped = html.replace(/<title\b[^>]*>[\s\S]*?<\/title>/i, "");
   return `${headBlock}\n${titleStripped}`;
+}
+
+/**
+ * Where the SEO block goes inside `head` (the document up to `</head>`):
+ * after the last charset / viewport meta of the head, else after the
+ * `<head>` tag, else (a document with `</head>` but no `<head>` tag) at
+ * the end, where it always went.
+ */
+function seoInsertionPoint(head: string): number {
+  const open = /<head\b[^>]*>/i.exec(head);
+  if (!open) return head.length;
+  const start = open.index + open[0].length;
+  let at = start;
+  const metaRe = /<meta\b[^>]*>/gi;
+  metaRe.lastIndex = start;
+  for (let m = metaRe.exec(head); m !== null; m = metaRe.exec(head)) {
+    if (/\bcharset\s*=/i.test(m[0]) || /\bname\s*=\s*["']?viewport\b/i.test(m[0])) {
+      at = m.index + m[0].length;
+    }
+  }
+  return at;
 }
