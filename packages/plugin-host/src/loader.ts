@@ -612,6 +612,9 @@ export async function verifyDiskPlugin(
   return { definition, manifest, signatureHex };
 }
 
+/** Loads in flight per slug: concurrent callers share one (see below). */
+const activatedLoads = new Map<string, Promise<{ loaded: boolean; reason?: string }>>();
+
 /**
  * Load a plugin the Owner just activated, without a host restart.
  *
@@ -626,7 +629,22 @@ export async function verifyDiskPlugin(
  * row is already active either way; the failure is recorded (load-outcome.ts)
  * and `plugins.reload` retries it on every server.
  */
-export async function loadActivatedPlugin(
+export function loadActivatedPlugin(slug: string): Promise<{ loaded: boolean; reason?: string }> {
+  // #1008 — the Owner's activation, an installation finishing and the
+  // reconciler can each ask for the same plugin at once; two loads racing
+  // through provisioning would both register it. Concurrent callers share
+  // the one load in flight; a call after it settled loads again (a reload
+  // or an update must re-verify).
+  const inFlight = activatedLoads.get(slug);
+  if (inFlight) return inFlight;
+  const load = loadActivatedPluginOnce(slug).finally(() => {
+    if (activatedLoads.get(slug) === load) activatedLoads.delete(slug);
+  });
+  activatedLoads.set(slug, load);
+  return load;
+}
+
+async function loadActivatedPluginOnce(
   slug: string,
 ): Promise<{ loaded: boolean; reason?: string }> {
   if (!bootOpts) return { loaded: false, reason: "plugin host not bootstrapped" };

@@ -44,6 +44,10 @@ class WorkerScheduler {
     dispatch: typeof runPluginOperation;
     pluginActorId: string;
   }): void {
+    // A plugin loaded again (a reload, an update, two load paths racing)
+    // replaces its workers: the old cron jobs are stopped first, or they
+    // would keep firing with no handle left to stop them (#1008).
+    this.unschedulePlugin(opts.pluginSlug);
     if (opts.workers.length === 0) return;
     const list: ScheduledWorker[] = [];
     for (const w of opts.workers) {

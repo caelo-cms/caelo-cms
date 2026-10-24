@@ -269,6 +269,17 @@ async function bootPluginHost(): Promise<void> {
 // are, and is retried at the next start. The Owner sees the report and
 // can re-run or revert it at Settings → Internal links.
 async function migrateLinksOnce(): Promise<void> {
+  // The conversion recognises absolute links to the site's own host by the
+  // stored base URL, which CAELO_SITE_URL seeds. Run it after that seed:
+  // before it, those links would be judged external and stay literal for
+  // good, because the run records as applied (#1008 review).
+  await seedSiteBaseUrl();
+  if (process.env.CAELO_SITE_URL?.trim() && siteBaseUrlSeed === null) {
+    console.error(
+      "[bootstrap.link_migration] skipped: the site base URL could not be seeded yet (retried at the next start)",
+    );
+    return;
+  }
   const { adapter, registry } = getQueryContext();
   const r = await execute(registry, adapter, SYSTEM_CTX, "links.migrate_to_references", {
     trigger: "boot",

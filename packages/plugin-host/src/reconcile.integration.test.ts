@@ -26,9 +26,11 @@ import {
   bootstrap,
   ensureDevSignedManifests,
   isPluginDisabled,
+  loadActivatedPlugin,
   loadedPlugins,
   type PluginHostInfra,
   pluginsNotRunningHere,
+  pluginWorkerScheduler,
   resetPluginHost,
   resetPluginHostSync,
   syncPluginHost,
@@ -48,12 +50,15 @@ const PREFIX = "t1008r-";
 const STEADY = `${PREFIX}steady`;
 const FLAKY = `${PREFIX}flaky`;
 const DISK = `${PREFIX}disk`;
+const WORKERED = `${PREFIX}workered`;
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let infra: PluginHostInfra;
 /** Flipped by a test to let the flaky plugin's onActivate succeed. */
 let flakyHealthy = false;
+/** How often the workered plugin's onActivate ran (one per load). */
+let workeredActivations = 0;
 
 async function sqlSystem<T>(fn: (tx: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new SQL(ADMIN_URL as string);
@@ -119,6 +124,22 @@ const flaky = definePlugin({
   },
 });
 
+const workered = definePlugin({
+  slug: WORKERED,
+  version: "0.1.0",
+  tier: 1,
+  schema: {},
+  requestedCapabilities: ["background_workers"],
+  operations: { noop: async () => ({}) },
+  workers: [{ name: "tick", cron: "0 0 * * *", operationName: "noop" }], // daily; never fires here
+  onActivate: async () => {
+    workeredActivations += 1;
+    // Slow enough that two loads started together overlap.
+    await Bun.sleep(150);
+    if (!flakyHealthy) throw new Error("upstream not configured yet");
+  },
+});
+
 function boot(plugins = [steady, flaky]) {
   return bootstrap({
     infra,
@@ -137,6 +158,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   flakyHealthy = false;
+  workeredActivations = 0;
   await wipe();
 });
 
@@ -300,5 +322,36 @@ describe("#1008 — syncPluginHost follows the plugin rows", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("#1008 — loads of one plugin never overlap", () => {
+  it("an activation and a reconcile at the same time load it once, with one set of workers", async () => {
+    // Active but not running here: its first load failed.
+    const report = await boot([workered]);
+    expect(report.failed.map((f) => f.slug)).toEqual([WORKERED]);
+    expect(loadedPlugins.bySlug(WORKERED)).toBeUndefined();
+
+    flakyHealthy = true;
+    workeredActivations = 0;
+    // The Owner's activation path and the request-time reconcile race.
+    const [activated] = await Promise.all([loadActivatedPlugin(WORKERED), syncPluginHost(true)]);
+    expect(activated.loaded).toBe(true);
+    expect(loadedPlugins.bySlug(WORKERED)).toBeDefined();
+    expect(workeredActivations).toBe(1);
+    expect(pluginWorkerScheduler.list().filter((w) => w.pluginSlug === WORKERED)).toHaveLength(1);
+  });
+
+  it("a plugin loaded again replaces its workers instead of adding to them", async () => {
+    flakyHealthy = true;
+    await boot([workered]);
+    const before = pluginWorkerScheduler.list().filter((w) => w.pluginSlug === WORKERED);
+    expect(before).toHaveLength(1);
+    // A second, sequential load (a reload or an update) registers it again.
+    expect((await loadActivatedPlugin(WORKERED)).loaded).toBe(true);
+    const after = pluginWorkerScheduler.list().filter((w) => w.pluginSlug === WORKERED);
+    expect(after).toHaveLength(1);
+    // The first load's job was stopped, not orphaned.
+    expect(before[0]?.job.isStopped()).toBe(true);
   });
 });
