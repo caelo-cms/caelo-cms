@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { withFieldMarkupGuard } from "./_markup-guard.js";
+import { placementTargets } from "./_repeated-value-guard.js";
 import { activatePluginTool } from "./activate-plugin.js";
 import { addModuleTool } from "./add-module.js";
 import { addPluginToPageTool } from "./add-plugin-to-page.js";
@@ -269,7 +270,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
     withFieldMarkupGuard(
       setPageModuleContentTool,
       (i) => [i.contentValues],
-      (i) => ({ placements: [i] }),
+      (i) => placementTargets([i]),
     ),
   );
   // #917 — targeted text edits of one placement (escaped plain text, so no
@@ -287,7 +288,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
     withFieldMarkupGuard(
       setPageModuleContentManyTool,
       (i) => i.items.map((x) => x.contentValues),
-      (i) => ({ placements: i.items }),
+      (i) => placementTargets(i.items),
     ),
   );
   registry.register(

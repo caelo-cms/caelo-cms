@@ -12,7 +12,11 @@ import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { type ExecutionContext, ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../register.js";
 import { withFieldMarkupGuard } from "../tools/_markup-guard.js";
-import { repeatedValueHints, type ValueInstance } from "../tools/_repeated-value-guard.js";
+import {
+  placementTargets,
+  repeatedValueHints,
+  type ValueInstance,
+} from "../tools/_repeated-value-guard.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "../tools/dispatch.js";
 
 const MOD = "00000000-0000-4000-8000-000000001062";
@@ -114,6 +118,40 @@ describe("withFieldMarkupGuard — shared-content hint", () => {
     // Module-scoped: one peers read for MOD, never the whole library.
     expect(reads.map((x) => x.name)).toEqual(["content_instances.list_module_peers"]);
     expect(reads[0]?.input).toEqual({ moduleIds: [MOD], contentInstanceIds: [], placements: [] });
+  });
+
+  it("passes placement writes to the strict peer lookup as coordinates only", async () => {
+    const PAGE = "11111111-1111-4111-8111-111111111111";
+    const placementTool: ToolDefinitionWithHandler<{
+      pageId: string;
+      blockName: string;
+      position: number;
+      contentValues: Record<string, unknown>;
+    }> = {
+      name: "fake_placement_write",
+      description: "",
+      schema: undefined as never,
+      handler: async () => ({ ok: true, content: "written." }),
+    };
+    const guardedPlacement = withFieldMarkupGuard(
+      placementTool,
+      (i) => [i.contentValues],
+      (i) => placementTargets([i]),
+    );
+    reads.length = 0;
+    const r = await guardedPlacement.handler(
+      AI,
+      { pageId: PAGE, blockName: "content", position: 2, contentValues: { lead: LEAD } },
+      toolCtx,
+    );
+    // The whole write input (with contentValues) would fail the op's strict
+    // schema before it ran, and the hint would silently be lost.
+    expect(reads[0]?.input).toEqual({
+      moduleIds: [],
+      contentInstanceIds: [],
+      placements: [{ pageId: PAGE, blockName: "content", position: 2 }],
+    });
+    expect(r.content).toStartWith("written. 🎯 shared-content:");
   });
 
   it("reads nothing when no written value qualifies", async () => {

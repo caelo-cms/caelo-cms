@@ -54,6 +54,7 @@ import {
   type LinkRef,
   parseLinkRef,
 } from "./link-refs.js";
+import { blankNonMarkup } from "./html-blank.js";
 import { MEDIA_URL_PREFIX } from "./media.js";
 
 /** What the canonicaliser needs to know about the site. */
@@ -443,10 +444,13 @@ const SECTION_TAG_RE = /\{\{\s*([#^/])\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g;
 export function urlFieldNamesInHtml(html: string): Set<string> {
   const out = new Set<string>();
   if (!html.includes("{{")) return out;
+  // Commented-out markup and script/style strings are not links: scan a
+  // copy with them blanked (equal length, so offsets match).
+  const markup = blankNonMarkup(html);
   // Open sections by position, so a `{{.}}` names its innermost list.
   const sections: { name: string; start: number; end: number }[] = [];
   const open: { name: string; start: number }[] = [];
-  for (const m of html.matchAll(SECTION_TAG_RE)) {
+  for (const m of markup.matchAll(SECTION_TAG_RE)) {
     const name = (m[2] as string).toLowerCase();
     if (m[1] !== "/") {
       open.push({ name, start: m.index });
@@ -467,8 +471,8 @@ export function urlFieldNamesInHtml(html: string): Set<string> {
     }
     return best?.name ?? null;
   };
-  for (const [start, end] of startTags(html)) {
-    const tag = html.slice(start, end);
+  for (const [start, end] of startTags(markup)) {
+    const tag = markup.slice(start, end);
     for (const m of tag.matchAll(ATTR_RE)) {
       const attr = (m[1] as string)
         .trim()

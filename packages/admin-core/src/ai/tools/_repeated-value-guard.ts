@@ -101,3 +101,17 @@ export function repeatedValueHints(
       `${m.fields.map((f) => `\`${f}\``).join(", ")} of module "${m.module}" (${moduleId}) now hold the same value in ${m.count} separate private copies — one change later means ${m.count} rewrites. If the value is the same on every page, put it into the module's HTML (edit_module) instead of a field; if the whole section repeats, bind the placements to ONE shared instance (create_content_instance + set_placement_content with syncMode "synced")`,
   );
 }
+
+/**
+ * The placement coordinates of placement writes, as the strict peer lookup
+ * (`content_instances.list_module_peers`) takes them. A write input carries
+ * more (its `contentValues`), which that schema refuses — and a refused
+ * lookup silently yields no hint.
+ */
+export function placementTargets(
+  items: ReadonlyArray<{ pageId: string; blockName: string; position: number }>,
+): { placements: { pageId: string; blockName: string; position: number }[] } {
+  return {
+    placements: items.map(({ pageId, blockName, position }) => ({ pageId, blockName, position })),
+  };
+}

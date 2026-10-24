@@ -8,6 +8,7 @@
  */
 
 import { z } from "zod";
+import { blankNonMarkup } from "./html-blank.js";
 import { trimSlashes } from "./url.js";
 
 export const CHANGEFREQ_VALUES = [
@@ -383,20 +384,4 @@ function seoInsertionPoint(head: string): number {
     }
   }
   return at;
-}
-
-/**
- * `html` with comments and the contents of raw-text elements (script,
- * style, template, noscript, textarea) replaced by spaces of the same
- * length, so offsets found in the result are offsets in `html`.
- */
-function blankNonMarkup(html: string): string {
-  const blank = (s: string): string => " ".repeat(s.length);
-  return html
-    .replace(/<!--[\s\S]*?(?:-->|$)/g, blank)
-    .replace(
-      /(<(script|style|template|noscript|textarea)\b[^>]*>)([\s\S]*?)(<\/\2\s*>|$)/gi,
-      (_all, open: string, _tag: string, body: string, close: string) =>
-        `${open}${blank(body)}${close}`,
-    );
 }

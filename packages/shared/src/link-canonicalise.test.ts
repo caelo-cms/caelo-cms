@@ -431,4 +431,13 @@ describe("urlFieldNamesInHtml (#852)", () => {
   it("returns nothing for HTML without placeholders", () => {
     expect(urlFieldNamesInHtml('<a href="/about">x</a>').size).toBe(0);
   });
+
+  it("ignores links inside comments and script or style text", () => {
+    const names = urlFieldNamesInHtml(
+      '<!-- <a href="{{caption}}">old</a> --><p>{{caption}}</p>' +
+        "<script>const t = '<a href=\"{{label}}\">x</a>';</script>" +
+        '<style>/* <img src="{{photo}}"> */</style><a href="{{target}}">go</a>',
+    );
+    expect([...names]).toEqual(["target"]);
+  });
 });
