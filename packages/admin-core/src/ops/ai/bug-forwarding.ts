@@ -51,7 +51,8 @@ const reportColumns = sql`
   title,
   what_happened AS "whatHappened",
   expected,
-  evidence`;
+  evidence,
+  caelo_version AS "caeloVersion"`;
 
 const countsSchema = z.object({
   localOnly: z.number(),
