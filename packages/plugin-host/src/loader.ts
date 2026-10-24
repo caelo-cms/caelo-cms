@@ -1155,6 +1155,32 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     }
   }
 
+  // #1077 — this instance now holds the plugin's verified definition, so
+  // its publisher can (re)publish the plugin's visitor projection. A
+  // publisher that does not have a plugin leaves its section alone, so
+  // without this mark a reload or a new version would keep serving what
+  // the previous definition published until the plugin's next write. The
+  // flag makes the adapter publish right after this commit, as the outbox
+  // triggers do (cms_admin migration 0281).
+  try {
+    await opts.infra.adapter.withAdminTransaction(
+      {
+        actorId: opts.systemActorId,
+        actorKind: "system",
+        requestId: `plugin-projection-${def.slug}`,
+      },
+      async (tx) => {
+        await tx.execute(
+          sql`INSERT INTO public_projection_outbox (section) VALUES (${`plugin:${pluginId}`})`,
+        );
+        await tx.execute(sql`SELECT set_config('caelo.projection_dirty', 'on', true)`);
+      },
+    );
+  } catch (e) {
+    loadedPlugins.unload(def.slug);
+    throw e;
+  }
+
   // Register tools + workers + prompt-context renderers.
   for (const tool of def.tools ?? []) {
     pluginToolsRegistry.register(def.slug, tool);

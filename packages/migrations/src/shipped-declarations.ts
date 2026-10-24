@@ -29,15 +29,23 @@ const manifestDeclaration = z.object({
   visitorProjection: z.record(z.string(), z.array(z.string())).optional(),
 });
 
-/** Read every `<pluginsRoot>/<dir>/manifest.json` that declares a projection. */
+/**
+ * Read every `<pluginsRoot>/<dir>/manifest.json`: its projection, or `null`
+ * when the shipped version declares none (so an earlier version's
+ * published rows are withdrawn). A plugin without a manifest here is not
+ * in the map at all, and the publisher leaves its section alone.
+ */
 export function readShippedVisitorProjections(pluginsRoot: string): VisitorProjectionDeclarations {
-  const out = new Map<string, VisitorProjection>();
+  const out = new Map<string, VisitorProjection | null>();
   if (!existsSync(pluginsRoot)) return out;
   for (const dir of readdirSync(pluginsRoot)) {
     const path = resolve(pluginsRoot, dir, "manifest.json");
     if (!existsSync(path)) continue;
     const parsed = manifestDeclaration.parse(JSON.parse(readFileSync(path, "utf8")));
-    if (!parsed.visitorProjection) continue;
+    if (!parsed.visitorProjection) {
+      out.set(parsed.slug, null);
+      continue;
+    }
     assertVisitorProjection(parsed.slug, parsed.visitorProjection);
     out.set(parsed.slug, parsed.visitorProjection);
   }
