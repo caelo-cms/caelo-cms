@@ -247,6 +247,17 @@ describe("injectSeoIntoHead", () => {
     );
     expect(out).toStartWith('<html><head><meta charset="utf-8">\n<title>Page</title>');
   });
+
+  it("ignores meta tags inside a comment or a script string", () => {
+    const script = `<script>const sample = '<meta name="viewport" content="width=device-width">';</script>`;
+    const comment = '<!-- <meta name="viewport" content="x"> -->';
+    const html = `<html><head><meta charset="utf-8">${comment}${script}${THEME}</head><body></body></html>`;
+    const out = injectSeoIntoHead(html, "<title>Page</title>");
+    expect(out).toStartWith('<html><head><meta charset="utf-8">\n<title>Page</title>\n<!--');
+    // Comment and script come through byte-for-byte, nothing inserted in them.
+    expect(out).toContain(comment);
+    expect(out).toContain(script);
+  });
 });
 
 describe("schemas", () => {

@@ -368,16 +368,35 @@ export function injectSeoIntoHead(html: string, headBlock: string): string {
  * the end, where it always went.
  */
 function seoInsertionPoint(head: string): number {
-  const open = /<head\b[^>]*>/i.exec(head);
+  // Only real elements count: a meta tag inside a comment or a script
+  // string would otherwise put the block inside that comment or string.
+  const markup = blankNonMarkup(head);
+  const open = /<head\b[^>]*>/i.exec(markup);
   if (!open) return head.length;
   const start = open.index + open[0].length;
   let at = start;
   const metaRe = /<meta\b[^>]*>/gi;
   metaRe.lastIndex = start;
-  for (let m = metaRe.exec(head); m !== null; m = metaRe.exec(head)) {
+  for (let m = metaRe.exec(markup); m !== null; m = metaRe.exec(markup)) {
     if (/\bcharset\s*=/i.test(m[0]) || /\bname\s*=\s*["']?viewport\b/i.test(m[0])) {
       at = m.index + m[0].length;
     }
   }
   return at;
+}
+
+/**
+ * `html` with comments and the contents of raw-text elements (script,
+ * style, template, noscript, textarea) replaced by spaces of the same
+ * length, so offsets found in the result are offsets in `html`.
+ */
+function blankNonMarkup(html: string): string {
+  const blank = (s: string): string => " ".repeat(s.length);
+  return html
+    .replace(/<!--[\s\S]*?(?:-->|$)/g, blank)
+    .replace(
+      /(<(script|style|template|noscript|textarea)\b[^>]*>)([\s\S]*?)(<\/\2\s*>|$)/gi,
+      (_all, open: string, _tag: string, body: string, close: string) =>
+        `${open}${blank(body)}${close}`,
+    );
 }
