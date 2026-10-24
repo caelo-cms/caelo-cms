@@ -38,6 +38,11 @@ import {
   stripMustache,
   templateShape,
 } from "@caelo-cms/shared";
+import {
+  hasRepeatCandidates,
+  repeatedValueHints,
+  type ValueInstance,
+} from "./_repeated-value-guard.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 /** A module as the guard compares against it. */
@@ -234,6 +239,16 @@ export async function moduleMarkupFindings(
   return moduleReuseHints(html, await loadCatalog(ctx, toolCtx), excludeModuleIds);
 }
 
+/**
+ * The write's targets for the #1062 repeated-value hint: which modules'
+ * instances to compare against (resolved by `content_instances.list_module_peers`).
+ */
+export interface RepeatScope {
+  readonly moduleIds?: readonly string[];
+  readonly contentInstanceIds?: readonly string[];
+  readonly placements?: readonly { pageId: string; blockName: string; position: number }[];
+}
+
 /** Suffix for a field-value write ("" when there is nothing to say). */
 export async function fieldMarkupSuffix(
   ctx: ExecutionContext,
@@ -251,19 +266,61 @@ export async function fieldMarkupSuffix(
 }
 
 /**
+ * Suffix for the #1062 repeated-value hint ("" when there is nothing to
+ * say). Reads only the instances of the modules the write touched, and
+ * only when the write carries a value worth comparing.
+ */
+export async function repeatedValueSuffix(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  written: readonly Readonly<Record<string, unknown>>[],
+  scope: RepeatScope,
+): Promise<string> {
+  const targets =
+    (scope.moduleIds?.length ?? 0) +
+    (scope.contentInstanceIds?.length ?? 0) +
+    (scope.placements?.length ?? 0);
+  if (targets === 0 || !hasRepeatCandidates(written)) return "";
+  const res = await execute(
+    toolCtx.registry,
+    toolCtx.adapter,
+    ctx,
+    "content_instances.list_module_peers",
+    {
+      moduleIds: [...new Set(scope.moduleIds ?? [])],
+      contentInstanceIds: [...new Set(scope.contentInstanceIds ?? [])],
+      placements: scope.placements ?? [],
+    },
+  );
+  // A failed read only loses the hint; the write it comments on succeeded.
+  if (!res.ok) return "";
+  const hints = repeatedValueHints(
+    written,
+    (res.value as { instances: ValueInstance[] }).instances,
+  );
+  return hints.length === 0 ? "" : ` 🎯 shared-content: ${hints.join(". ")}.`;
+}
+
+/**
  * Wrap a field-value-writing tool so a successful write carries the field
- * markup hints. `pick` names the value objects the input writes.
+ * markup hints and (with `scope`) the repeated-value hint. `pick` names
+ * the value objects the input writes; `scope` names the modules /
+ * instances / placements it writes to.
  */
 export function withFieldMarkupGuard<T>(
   tool: ToolDefinitionWithHandler<T>,
   pick: (input: T) => readonly Readonly<Record<string, unknown>>[],
+  scope?: (input: T) => RepeatScope,
 ): ToolDefinitionWithHandler<T> {
   return {
     ...tool,
     handler: async (ctx, input, toolCtx) => {
       const result = await tool.handler(ctx, input, toolCtx);
       if (!result.ok) return result;
-      const suffix = await fieldMarkupSuffix(ctx, toolCtx, pick(input));
+      const written = pick(input);
+      const suffix =
+        (await fieldMarkupSuffix(ctx, toolCtx, written)) +
+        (scope ? await repeatedValueSuffix(ctx, toolCtx, written, scope(input)) : "");
       return suffix ? { ...result, content: `${result.content}${suffix}` } : result;
     },
   };

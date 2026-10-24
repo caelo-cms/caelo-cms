@@ -18,7 +18,7 @@ export const getContentInstanceTool: ToolDefinitionWithHandler<
 > = {
   name: "get_content_instance",
   description:
-    "Fetch one content_instance by id. Returns the values + the list of placements (page slug + block + position + sync_mode) that bind to it. Use this to confirm blast radius before set_content_instance_values.",
+    "Fetch one content_instance by id. Returns the values, the placements (page path + block + position + sync_mode) that bind to it, and the parent instances that show it inside a module / module-list field — all as this chat's draft sees them. Use this to confirm blast radius before set_content_instance_values, and before deleting (orphan = no placements AND no parents).",
   schema: getContentInstanceToolInput,
   inputSchema: z.toJSONSchema(getContentInstanceToolInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {
@@ -49,7 +49,7 @@ export const getContentInstanceTool: ToolDefinitionWithHandler<
         content: `content_instances.get failed: ${describeError(r.error)}${inventory}`,
       };
     }
-    const { instance, placements } = r.value as {
+    const { instance, placements, nestedParents } = r.value as {
       instance: {
         id: string;
         moduleSlug: string;
@@ -59,6 +59,7 @@ export const getContentInstanceTool: ToolDefinitionWithHandler<
         version: number;
       };
       placements: { pagePath: string; blockName: string; position: number; syncMode: string }[];
+      nestedParents: string[];
     };
     const placementLines = placements
       .map((p) => `  - ${p.pagePath} · ${p.blockName}#${p.position} (${p.syncMode})`)
@@ -70,7 +71,14 @@ export const getContentInstanceTool: ToolDefinitionWithHandler<
         `values: ${JSON.stringify(instance.values)}\n` +
         (placements.length > 0
           ? `bound to ${placements.length} placement(s):\n${placementLines}`
-          : "bound to no placements (orphan — safe to delete)"),
+          : "bound to no placements of its own") +
+        // #1067 — a nested child renders wherever its parent renders, so
+        // "no placements" alone never means orphan.
+        (nestedParents.length > 0
+          ? `\nshown inside ${nestedParents.length} parent instance(s) (module / module-list field): ${nestedParents.join(", ")} — NOT an orphan; deleting it is refused until it is removed from those parents`
+          : placements.length === 0
+            ? " and no parent instance (orphan — safe to delete)"
+            : ""),
     };
   },
 };

@@ -51,12 +51,15 @@ import { recordPendingImportLinks } from "../../links/import-targets.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
+  loadBranchedModuleStates,
   loadContentInstanceBranchStates,
   loadContentInstanceState,
   loadContentInstanceStateWithBranchOverlay,
+  loadModuleStateWithBranchOverlay,
   loadPageLayoutState,
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
+import type { PageLayoutState } from "../../snapshots/state.js";
 import { jsonbParam } from "../../sql-helpers.js";
 import { findContentInstancesContaining } from "./content-instance-refs.js";
 
@@ -87,7 +90,13 @@ const contentInstanceRowSchema = z.object({
   purpose: z.string().nullable(),
   values: z.record(z.string(), z.unknown()),
   version: z.number().int().nonnegative(),
+  /** Placements bound to this instance as the caller sees them (branch view). */
   placementCount: z.number().int().nonnegative(),
+  /**
+   * #1067 — instances that show this one inside a `module` / `module-list`
+   * field. Orphan = no placements AND no nested parents.
+   */
+  nestedParentCount: z.number().int().nonnegative(),
   createdAt: z.string(),
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
@@ -104,7 +113,6 @@ type ContentInstanceRowSql = {
   purpose?: string | null;
   values: unknown;
   version: number | string;
-  placement_count: number | string;
   created_at: string | Date;
   updated_at: string | Date;
   deleted_at: string | Date | null;
@@ -140,17 +148,19 @@ function iso(v: string | Date | null | undefined): string | null {
  */
 async function validateNestedRefs(
   tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  chatBranchId: string | null,
   moduleId: string,
   values: Record<string, unknown>,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
-  // Read the owning module's fields schema. Skip if module not found —
-  // the caller already validated that.
-  const modRows = (await tx.execute(sql`
-    SELECT fields FROM modules WHERE id = ${moduleId}::uuid LIMIT 1
-  `)) as unknown as { fields: unknown }[];
-  if (modRows.length === 0) return { ok: true };
-  const rawFields =
-    typeof modRows[0]?.fields === "string" ? JSON.parse(modRows[0].fields) : modRows[0]?.fields;
+  // Read the owning module's fields schema AS THE CALLER SEES IT (#1042):
+  // a chat's `edit_module` lands only in its branch snapshot, so reading
+  // live `modules.fields` validated the values against main's schema — a
+  // field the chat had just turned from `module` into `module-list`
+  // rejected the list it now declares. Skip if module not found — the
+  // caller already validated that.
+  const owner = await loadModuleStateWithBranchOverlay(tx, moduleId, chatBranchId);
+  if (owner === null) return { ok: true };
+  const rawFields: unknown = owner.fields;
   if (!Array.isArray(rawFields)) return { ok: true };
 
   type Field = {
@@ -311,7 +321,9 @@ async function validateNestedRefs(
       sql`, `,
     )})
   `)) as unknown as { id: string; module_id: string; deleted_at: Date | null }[];
-  const ciMap = new Map(ciRows.map((r) => [r.id, r]));
+  const ciMap = new Map<string, { module_id: string; deleted_at: Date | string | null }>(
+    ciRows.map((r) => [r.id, r]),
+  );
 
   const allModuleIds = [...new Set(refsToCheck.map((r) => r.ref.moduleId))];
   const modRows2 = (await tx.execute(sql`
@@ -322,7 +334,23 @@ async function validateNestedRefs(
       sql`, `,
     )})
   `)) as unknown as { id: string; slug: string; type: string; deleted_at: Date | null }[];
-  const moduleMap = new Map(modRows2.map((r) => [r.id, r]));
+  const moduleMap = new Map<string, { slug: string; type: string; deleted_at: unknown }>(
+    modRows2.map((r) => [r.id, r]),
+  );
+  // Same branch view for the referenced rows: a chat's own module edits
+  // (type, delete) and instance deletes live only in its snapshots.
+  if (chatBranchId) {
+    for (const [id, st] of await loadBranchedModuleStates(tx, chatBranchId, allModuleIds)) {
+      moduleMap.set(id, { slug: st.slug, type: st.type, deleted_at: st.deletedAt });
+    }
+    for (const [id, st] of await loadContentInstanceBranchStates(
+      tx,
+      allInstanceIds,
+      chatBranchId,
+    )) {
+      ciMap.set(id, { module_id: st.moduleId, deleted_at: st.deletedAt });
+    }
+  }
 
   for (const c of refsToCheck) {
     const m = moduleMap.get(c.ref.moduleId);
@@ -374,7 +402,11 @@ async function validateNestedRefs(
   return { ok: true };
 }
 
-function rowToContentInstance(r: ContentInstanceRowSql): z.infer<typeof contentInstanceRowSchema> {
+function rowToContentInstance(
+  r: ContentInstanceRowSql,
+  placementCount: number,
+  nestedParentCount: number,
+): z.infer<typeof contentInstanceRowSchema> {
   const rawValues = typeof r.values === "string" ? JSON.parse(r.values) : r.values;
   const moduleKindRaw =
     r.module_kind === "chrome" ||
@@ -395,10 +427,8 @@ function rowToContentInstance(r: ContentInstanceRowSql): z.infer<typeof contentI
     purpose: r.purpose ?? null,
     values: (rawValues ?? {}) as Record<string, unknown>,
     version: typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version,
-    placementCount:
-      typeof r.placement_count === "string"
-        ? Number.parseInt(r.placement_count, 10)
-        : r.placement_count,
+    placementCount,
+    nestedParentCount,
     createdAt: iso(r.created_at) ?? "",
     updatedAt: iso(r.updated_at) ?? "",
     deletedAt: iso(r.deleted_at),
@@ -441,9 +471,26 @@ export const listContentInstancesOp = withHumanisedLinks(
       const searchFilter = input.search
         ? sql`AND (ci.display_name ILIKE ${`%${input.search}%`} OR ci.slug ILIKE ${`%${input.search}%`})`
         : sql``;
-      const pageFilter = input.pageId
-        ? sql`AND EXISTS (SELECT 1 FROM page_modules pm WHERE pm.content_instance_id = ci.id AND pm.page_id = ${input.pageId}::uuid)`
-        : sql``;
+      // #1045 — "instances used on this page" as the caller's branch sees
+      // the page (the live `page_modules` join listed main's placements).
+      let pageFilter = sql``;
+      if (input.pageId) {
+        const layout = await loadPageLayoutStateWithBranchOverlay(
+          tx,
+          input.pageId,
+          ctx.chatBranchId ?? null,
+        );
+        const onPage = [
+          ...new Set(
+            layout.blocks.flatMap((b) => (b.placements ?? []).map((p) => p.contentInstanceId)),
+          ),
+        ];
+        if (onPage.length === 0) return ok({ instances: [] });
+        pageFilter = sql`AND ci.id IN (${sql.join(
+          onPage.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`;
+      }
       const deletedFilter = input.includeDeleted ? sql`` : sql`AND ci.deleted_at IS NULL`;
 
       const rows = (await tx.execute(sql`
@@ -460,9 +507,7 @@ export const listContentInstancesOp = withHumanisedLinks(
         ci.version,
         ci.created_at,
         ci.updated_at,
-        ci.deleted_at,
-        (SELECT COUNT(*) FROM page_modules pm WHERE pm.content_instance_id = ci.id)::int
-          AS placement_count
+        ci.deleted_at
       FROM content_instances ci
       JOIN modules m ON m.id = ci.module_id
       WHERE 1=1
@@ -496,8 +541,16 @@ export const listContentInstancesOp = withHumanisedLinks(
         }
       }
       const visible = input.includeDeleted ? rows : rows.filter((r) => r.deleted_at === null);
+      const ids = visible.map((r) => r.id);
+      const branchId = ctx.chatBranchId ?? null;
+      const counts = await countPlacementsInView(tx, ids, branchId);
+      const parents = await nestedParentsInView(tx, branchId, ids);
 
-      return ok({ instances: visible.map(rowToContentInstance) });
+      return ok({
+        instances: visible.map((r) =>
+          rowToContentInstance(r, counts.get(r.id) ?? 0, parents.get(r.id)?.length ?? 0),
+        ),
+      });
     },
   }),
 );
@@ -513,6 +566,8 @@ export const getContentInstanceOp = withHumanisedLinks(
     output: z.object({
       instance: contentInstanceRowSchema,
       placements: z.array(contentInstancePlacementSchema),
+      /** Ids of the instances that show this one inside a module / module-list field. */
+      nestedParents: z.array(z.string()),
     }),
     handler: async (ctx, input, tx) => {
       // v0.12.2 — ci ⨝ modules both have chat_branch_id; qualify with `ci.`
@@ -535,9 +590,7 @@ export const getContentInstanceOp = withHumanisedLinks(
         ci.version,
         ci.created_at,
         ci.updated_at,
-        ci.deleted_at,
-        (SELECT COUNT(*) FROM page_modules pm WHERE pm.content_instance_id = ci.id)::int
-          AS placement_count
+        ci.deleted_at
       FROM content_instances ci
       JOIN modules m ON m.id = ci.module_id
       WHERE ci.id = ${input.id}::uuid ${branchFilter}
@@ -571,40 +624,28 @@ export const getContentInstanceOp = withHumanisedLinks(
           r.deleted_at = overlay.deletedAt;
         }
       }
-      const placements = (await tx.execute(sql`
-      SELECT
-        pm.page_id::text AS page_id,
-        p.slug AS page_slug,
-        p.current_path AS page_path,
-        p.title AS page_title,
-        pm.block_name,
-        pm.position,
-        pm.sync_mode
-      FROM page_modules pm
-      JOIN pages p ON p.id = pm.page_id
-      WHERE pm.content_instance_id = ${input.id}::uuid
-        AND p.deleted_at IS NULL
-      ORDER BY p.current_path ASC, pm.block_name ASC, pm.position ASC
-    `)) as unknown as {
-        page_id: string;
-        page_slug: string;
-        page_path: string;
-        page_title: string;
-        block_name: string;
-        position: number;
-        sync_mode: "synced" | "unsynced";
-      }[];
+      // #1067 — placements and nested parents as the caller's branch sees
+      // them; the live `page_modules` read showed main's bindings, so a
+      // chat that had just placed (or forked away) the instance read the
+      // opposite of its own draft.
+      const branchId = ctx.chatBranchId ?? null;
+      const inView = await listPlacementsInView(tx, [input.id], branchId);
+      const nestedParents =
+        (await nestedParentsInView(tx, branchId, [input.id])).get(input.id) ?? [];
       return ok({
-        instance: rowToContentInstance(r),
-        placements: placements.map((p) => ({
-          pageId: p.page_id,
-          pageSlug: p.page_slug,
-          pagePath: p.page_path,
-          pageTitle: p.page_title,
-          blockName: p.block_name,
-          position: p.position,
-          syncMode: p.sync_mode,
-        })),
+        instance: rowToContentInstance(r, inView.length, nestedParents.length),
+        placements: inView
+          .filter((p) => !p.pageDeleted)
+          .map((p) => ({
+            pageId: p.pageId,
+            pageSlug: p.pageSlug,
+            pagePath: p.path,
+            pageTitle: p.pageTitle,
+            blockName: p.blockName,
+            position: p.position,
+            syncMode: p.syncMode,
+          })),
+        nestedParents,
       });
     },
   }),
@@ -696,7 +737,12 @@ export const createContentInstanceOp = defineOperation({
     // v0.12.1 — validate nested-module-ref shapes against the module's
     // declared fields[] BEFORE persisting so bad refs fail at write time
     // with an actionable error (not at render time as missingSlots).
-    const refValidation = await validateNestedRefs(tx, input.moduleId, input.values);
+    const refValidation = await validateNestedRefs(
+      tx,
+      ctx.chatBranchId ?? null,
+      input.moduleId,
+      input.values,
+    );
     if (!refValidation.ok) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
@@ -822,77 +868,118 @@ export const createContentInstancesManyOp = defineOperation({
 
 // ─── content_instances.set_values ────────────────────────────────────
 
-async function countPlacements(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  contentInstanceId: string,
-): Promise<number> {
-  const rows = (await tx.execute(sql`
-    SELECT COUNT(*)::int AS n FROM page_modules
-    WHERE content_instance_id = ${contentInstanceId}::uuid
-  `)) as unknown as { n: number | string }[];
-  const n = rows[0]?.n ?? 0;
-  return typeof n === "string" ? Number.parseInt(n, 10) : n;
-}
-
 /** One placement bound to a content_instance, as the caller sees it. */
 interface PlacementInView {
+  readonly contentInstanceId: string;
   readonly pageId: string;
   readonly path: string;
+  readonly pageSlug: string;
+  readonly pageTitle: string;
+  /** The page is soft-deleted; its placement still holds the instance (restore). */
+  readonly pageDeleted: boolean;
   readonly blockName: string;
   readonly position: number;
+  readonly syncMode: "synced" | "unsynced";
 }
 
+type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
+
 /**
- * The placements bound to `contentInstanceId` as `branchId` sees them:
- * live `page_modules`, with every page the branch has a pending layout
- * snapshot for replaced by that snapshot. PR #947 review — in a chat,
- * `fork_placement_content` rebinds only the branch layout, so a
- * live-only count kept refusing the delete the refusal told the AI to
- * retry. Ordered by path so the refusal names pages deterministically.
+ * The placements bound to any of `contentInstanceIds` as `branchId` sees
+ * them: live `page_modules`, with every page the branch has a pending
+ * layout snapshot for replaced by that snapshot. PR #947 review — in a
+ * chat, `fork_placement_content` rebinds only the branch layout, so a
+ * live-only view kept refusing the delete the refusal told the AI to
+ * retry. #1067 — every placement read (get, list's placementCount,
+ * set_values' blast radius, delete's guard) goes through here so they
+ * agree with each other and with the preview. Ordered by path so
+ * messages name pages deterministically.
  */
 async function listPlacementsInView(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  contentInstanceId: string,
+  tx: Tx,
+  contentInstanceIds: readonly string[],
   branchId: string | null,
 ): Promise<PlacementInView[]> {
+  if (contentInstanceIds.length === 0) return [];
+  const idList = sql.join(
+    contentInstanceIds.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
   const live = (await tx.execute(sql`
-    SELECT pm.page_id::text AS page_id, p.current_path AS path, pm.block_name, pm.position
+    SELECT pm.content_instance_id::text AS content_instance_id, pm.page_id::text AS page_id,
+           p.current_path AS path, p.slug AS page_slug, p.title AS page_title,
+           (p.deleted_at IS NOT NULL) AS page_deleted, pm.block_name, pm.position, pm.sync_mode
     FROM page_modules pm
     JOIN pages p ON p.id = pm.page_id
-    WHERE pm.content_instance_id = ${contentInstanceId}::uuid
-  `)) as unknown as { page_id: string; path: string; block_name: string; position: number }[];
+    WHERE pm.content_instance_id IN (${idList})
+  `)) as unknown as {
+    content_instance_id: string;
+    page_id: string;
+    path: string;
+    page_slug: string;
+    page_title: string;
+    page_deleted: boolean;
+    block_name: string;
+    position: number;
+    sync_mode: "synced" | "unsynced";
+  }[];
   const placements: PlacementInView[] = live.map((r) => ({
+    contentInstanceId: r.content_instance_id,
     pageId: r.page_id,
     path: r.path,
+    pageSlug: r.page_slug,
+    pageTitle: r.page_title,
+    pageDeleted: r.page_deleted,
     blockName: r.block_name,
     position: r.position,
+    syncMode: r.sync_mode,
   }));
   if (branchId === null) return sortByPath(placements);
 
+  // The newest pending layout per page the branch reshaped — the same row
+  // `loadPageLayoutStateWithBranchOverlay` picks, in one query.
   const overlaid = (await tx.execute(sql`
-    SELECT DISTINCT p.id::text AS page_id, p.current_path AS path
+    SELECT DISTINCT ON (pls.page_id)
+           pls.page_id::text AS page_id, p.current_path AS path, p.slug AS page_slug,
+           p.title AS page_title, (p.deleted_at IS NOT NULL) AS page_deleted, pls.state
     FROM page_layout_snapshots pls
     JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
     JOIN pages p ON p.id = pls.page_id
     WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-  `)) as unknown as { page_id: string; path: string }[];
+    ORDER BY pls.page_id, ss.created_at DESC
+  `)) as unknown as {
+    page_id: string;
+    path: string;
+    page_slug: string;
+    page_title: string;
+    page_deleted: boolean;
+    state: unknown;
+  }[];
+  const wanted = new Set(contentInstanceIds);
   const overlaidIds = new Set(overlaid.map((r) => r.page_id));
   const inView = placements.filter((p) => !overlaidIds.has(p.pageId));
   for (const page of overlaid) {
-    const layout = await loadPageLayoutStateWithBranchOverlay(tx, page.page_id, branchId);
+    const layout = (
+      typeof page.state === "string" ? JSON.parse(page.state) : page.state
+    ) as PageLayoutState;
     for (const block of layout.blocks) {
       if (!block.placements) {
         throw new Error(
-          `content_instances.delete: branch layout of page ${page.page_id} block ${block.blockName} has no placements — the snapshot predates v0.12; undo that chat's layout change and redo it`,
+          `content_instances: branch layout of page ${page.page_id} block ${block.blockName} has no placements — the snapshot predates v0.12; undo that chat's layout change and redo it`,
         );
       }
       block.placements.forEach((pl, position) => {
-        if (pl.contentInstanceId !== contentInstanceId) return;
+        if (!wanted.has(pl.contentInstanceId)) return;
         inView.push({
+          contentInstanceId: pl.contentInstanceId,
           pageId: page.page_id,
           path: page.path,
+          pageSlug: page.page_slug,
+          pageTitle: page.page_title,
+          pageDeleted: page.page_deleted,
           blockName: block.blockName,
           position,
+          syncMode: pl.syncMode,
         });
       });
     }
@@ -907,6 +994,55 @@ function sortByPath(placements: PlacementInView[]): PlacementInView[] {
       a.blockName.localeCompare(b.blockName) ||
       a.position - b.position,
   );
+}
+
+/** Placement count per instance id, as the caller sees it (absent = 0). */
+export async function countPlacementsInView(
+  tx: Tx,
+  contentInstanceIds: readonly string[],
+  branchId: string | null,
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  for (const p of await listPlacementsInView(tx, contentInstanceIds, branchId)) {
+    counts.set(p.contentInstanceId, (counts.get(p.contentInstanceId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+/** Above this many ids the parent scan matches any nested ref instead of OR-ing ids. */
+const NESTED_PARENT_ID_NEEDLES_MAX = 20;
+
+/**
+ * The content instances (live + the caller's branch view, deleted ones
+ * excluded) that list each of `contentInstanceIds` in a `module` /
+ * `module-list` field, keyed by child id. A child with no placement of
+ * its own still renders wherever such a parent renders — it is not an
+ * orphan (#1067). The substring prefilter is confirmed against the
+ * parsed refs.
+ */
+async function nestedParentsInView(
+  tx: Tx,
+  branchId: string | null,
+  contentInstanceIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (contentInstanceIds.length === 0) return out;
+  const wanted = new Set(contentInstanceIds);
+  const needles =
+    contentInstanceIds.length > NESTED_PARENT_ID_NEEDLES_MAX
+      ? ["contentInstanceId"]
+      : contentInstanceIds;
+  const candidates = await findContentInstancesContaining(tx, branchId, needles);
+  for (const c of candidates) {
+    const refs = collectNestedRefs(JSON.parse(c.valuesText) as Record<string, unknown>);
+    for (const childId of new Set(refs.map((r) => r.contentInstanceId))) {
+      if (childId === c.contentInstanceId || !wanted.has(childId)) continue;
+      const parents = out.get(childId) ?? [];
+      parents.push(c.contentInstanceId);
+      out.set(childId, parents);
+    }
+  }
+  return out;
 }
 
 export const setContentInstanceValuesOp = defineOperation({
@@ -997,7 +1133,7 @@ export const setContentInstanceValuesOp = defineOperation({
 
     // v0.12.1 — validate nested-module-ref shapes against the owning
     // module's fields[] so bad refs fail at write time, not render time.
-    const refValidation = await validateNestedRefs(tx, prev.moduleId, input.values);
+    const refValidation = await validateNestedRefs(tx, branchId, prev.moduleId, input.values);
     if (!refValidation.ok) {
       await recordAudit(tx, {
         actorId: ctx.actorId,
@@ -1043,8 +1179,10 @@ export const setContentInstanceValuesOp = defineOperation({
     // For branched writes, the snapshot below carries the new state;
     // live row stays untouched until chat.publish merges.
 
-    const placementCount = await countPlacements(tx, input.id);
-    const nestedParentCount = await countNestedParents(tx, branchId, input.id);
+    const placementCount =
+      (await countPlacementsInView(tx, [input.id], branchId)).get(input.id) ?? 0;
+    const nestedParentCount =
+      (await nestedParentsInView(tx, branchId, [input.id])).get(input.id)?.length ?? 0;
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -1106,26 +1244,6 @@ export const setContentInstanceValuesOp = defineOperation({
   },
 });
 
-/**
- * How many content instances (live + the caller's branch view) reference
- * `contentInstanceId` from a `module` / `module-list` field. The substring
- * prefilter is confirmed against the parsed refs.
- */
-async function countNestedParents(
-  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
-  chatBranchId: string | null,
-  contentInstanceId: string,
-): Promise<number> {
-  const candidates = await findContentInstancesContaining(tx, chatBranchId, [contentInstanceId]);
-  return candidates.filter(
-    (c) =>
-      c.contentInstanceId !== contentInstanceId &&
-      collectNestedRefs(JSON.parse(c.valuesText) as Record<string, unknown>).some(
-        (r) => r.contentInstanceId === contentInstanceId,
-      ),
-  ).length;
-}
-
 // ─── content_instances.delete ────────────────────────────────────────
 
 export const deleteContentInstanceOp = defineOperation({
@@ -1180,7 +1298,7 @@ export const deleteContentInstanceOp = defineOperation({
       return ok({});
     }
 
-    const placements = await listPlacementsInView(tx, input.id, branchId);
+    const placements = await listPlacementsInView(tx, [input.id], branchId);
     if (placements.length > 0) {
       // Refuse instead of cascading: the AI detaches each placement via
       // fork_placement_content (content survives as a private copy),
@@ -1214,6 +1332,35 @@ export const deleteContentInstanceOp = defineOperation({
           args: {},
           reason:
             "detach each referencing placement into its own private content_instance before deleting",
+        },
+      });
+    }
+
+    // #1067 — an instance with no placement of its own can still render
+    // inside a parent's `module` / `module-list` field. Deleting it would
+    // leave that parent pointing at a deleted instance (the next write of
+    // the parent fails nested-ref validation, the render loses the item).
+    const parents = (await nestedParentsInView(tx, branchId, [input.id])).get(input.id) ?? [];
+    if (parents.length > 0) {
+      const shown = parents.slice(0, 10).join(", ");
+      const more = parents.length > 10 ? ` and ${parents.length - 10} more` : "";
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "content_instances.delete",
+        input,
+        succeeded: false,
+        entityId: input.id,
+        resultSummary: `blocked: nestedParentCount=${parents.length}`,
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "content_instances.delete",
+        message: `cannot delete: ${parents.length} content_instance(s) show this one inside a module / module-list field: ${shown}${more}. It renders wherever they render, so it is not an orphan. To delete it, first remove it from each parent's field with set_content_instance_values on the parent (get_content_instance shows the parent's values), then retry the delete.`,
+        nextAction: {
+          tool: "get_content_instance",
+          args: { id: parents[0] },
+          reason: "read the parent's values, then drop this instance's ref from its field",
         },
       });
     }

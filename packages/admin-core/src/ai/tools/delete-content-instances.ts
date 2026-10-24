@@ -14,8 +14,8 @@ export const deleteContentInstancesTool = makeBulkTool({
   name: "delete_content_instances",
   description:
     "Soft-delete SEVERAL content_instances in ONE transaction — prefer this over multiple `delete_content_instance` calls whenever you prune more than one (§11 bulk-first). " +
-    "Only ORPHAN instances (placementCount=0) can be deleted: if ANY item still has placements the op refuses and the WHOLE batch rolls back (nothing deleted) — detach those placements via `fork_placement_content` first. " +
-    "Use `list_content_instances` to find orphans (placementCount=0). Each item is `{id}`.",
+    "Only ORPHAN instances (placements=0 and parents=0) can be deleted: if ANY item still has placements or a parent instance the op refuses and the WHOLE batch rolls back (nothing deleted) — detach those placements via `fork_placement_content` first. " +
+    "Use `list_content_instances` to find orphans (placements=0, parents=0). Each item is `{id}`.",
   itemInputSchema: deleteContentInstanceToolInput,
   itemJsonSchema: {
     type: "object",

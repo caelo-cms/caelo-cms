@@ -29,7 +29,7 @@
   const filtered = $derived(
     data.instances.filter((i) => {
       if (filter === "shared") return i.placementCount >= 2;
-      if (filter === "orphan") return i.placementCount === 0;
+      if (filter === "orphan") return i.placementCount === 0 && i.nestedParentCount === 0;
       return true;
     }),
   );
@@ -37,7 +37,7 @@
   const counts = $derived({
     all: data.instances.length,
     shared: data.instances.filter((i) => i.placementCount >= 2).length,
-    orphan: data.instances.filter((i) => i.placementCount === 0).length,
+    orphan: data.instances.filter((i) => i.placementCount === 0 && i.nestedParentCount === 0).length,
   });
 </script>
 

@@ -952,6 +952,13 @@ export const deleteModulesManyOp = defineOperation({
  * Each item carries the same shape as modules.update (moduleId + optional
  * displayName/html/css/js). Per-item failures are reported in the
  * result; the rest of the batch still applies.
+ *
+ * #1038 — a failed item carries the singular op's message verbatim (a
+ * draft conflict names the other chat, a validation error names the
+ * field), so the AI can act on it without re-running the item alone.
+ * "Not found" is decided up front from the module rows as the caller
+ * sees them, not by matching words in an error message (any failure
+ * whose message mentioned "deleted" used to be counted as not found).
  */
 export const updateModulesManyOp = defineOperation({
   name: "modules.update_many",
@@ -961,18 +968,35 @@ export const updateModulesManyOp = defineOperation({
   output: z.object({
     updated: z.number().int(),
     notFound: z.number().int(),
-    failed: z.array(z.string()),
+    failed: z.array(z.object({ moduleId: z.string(), message: z.string() })),
   }),
   handler: async (ctx, input, tx) => {
     let updated = 0;
     let notFound = 0;
-    const failed: string[] = [];
+    const failed: { moduleId: string; message: string }[] = [];
+    const ids = [...new Set(input.updates.map((u) => u.moduleId))];
+    const liveRows = (await tx.execute(sql`
+      SELECT id::text AS id FROM modules
+      WHERE id IN (${sql.join(
+        ids.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      )}) AND deleted_at IS NULL
+    `)) as unknown as { id: string }[];
+    const existing = new Set(liveRows.map((r) => r.id));
+    if (ctx.chatBranchId) {
+      for (const [id, state] of await loadBranchedModuleStates(tx, ctx.chatBranchId, ids)) {
+        if (state.deletedAt !== null) existing.delete(id);
+      }
+    }
     for (const upd of input.updates) {
+      if (!existing.has(upd.moduleId)) {
+        notFound += 1;
+        continue;
+      }
       const r = await updateModuleOp.handler(ctx, upd, tx);
       if (!r.ok) {
-        const msg = (r.error as { message?: string }).message ?? "";
-        if (msg.includes("not found") || msg.includes("deleted")) notFound += 1;
-        else failed.push(upd.moduleId);
+        const message = "message" in r.error ? r.error.message : r.error.kind;
+        failed.push({ moduleId: upd.moduleId, message });
         continue;
       }
       updated += 1;
