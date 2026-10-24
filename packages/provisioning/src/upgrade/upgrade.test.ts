@@ -906,7 +906,7 @@ const INSTALL: AppRollInstall = {
 };
 
 async function plannedRoll(run: GcloudRunner): Promise<AppRollPlan> {
-  const planned = await planAppRoll(INSTALL, IMAGES, run);
+  const planned = await planAppRoll(INSTALL, IMAGES, run, { secretVolumes: true });
   if (!planned.ok) throw new Error(planned.error);
   return planned.plan;
 }

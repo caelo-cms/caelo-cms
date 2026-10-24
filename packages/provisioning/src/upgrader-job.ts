@@ -519,6 +519,9 @@ export async function runUpgraderJob(deps: UpgraderJobDeps): Promise<UpgraderRun
       },
       images,
       deps.run,
+      // Holds no Secret Manager permission (upgrader-setup.ts); the
+      // converge — operator or converge job — runs the #954 volume check.
+      { secretVolumes: false },
     );
     if (!planned.ok) {
       return stopWith("failed", ["plan"], `Nothing was changed: ${planned.error}.`);
