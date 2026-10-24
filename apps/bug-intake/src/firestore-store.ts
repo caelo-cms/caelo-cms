@@ -9,7 +9,7 @@
  *   fingerprints/<fingerprint>    { clusterId }
  *   issues/<number>               { clusterId }
  *   clusters/<clusterId>          ClusterRecord
- *   candidates/t_<toolKey>        { items: ClusterSummary[] }
+ *   candidates/pool               { items: ClusterSummary[] }
  *   issueSlots/<YYYY-MM-DD>       { used }
  *   pendingIssues/<clusterId>     { since }
  *
@@ -30,6 +30,13 @@
  * promises (`conflict` → re-read and retry). A precondition write is one
  * RPC and never blocks.
  *
+ * The candidate pool (#1049) replaced per-tool lists (`candidates/t_<tool>`),
+ * which held AI clusters only. A database without `candidates/pool` has
+ * never had one: the first `candidates()` / `addCandidate()` deletes the old
+ * per-tool documents, builds the pool from the clusters (`poolFromClusters`)
+ * and creates it first-writer-wins. A build that stops halfway runs again on
+ * the next request, because the pool document is written last.
+ *
  * Credentials: the client authenticates with Application Default
  * Credentials (the Cloud Run service account). There is no key-file path on
  * purpose. With `FIRESTORE_EMULATOR_HOST` set, the SDK talks to the emulator.
@@ -40,9 +47,11 @@ import {
   type ClusterRecord,
   type ClusterSummary,
   type IntakeStore,
-  MAX_CANDIDATES_PER_TOOL,
+  MAX_CANDIDATES,
+  poolFromClusters,
   type StoredReport,
   type Versioned,
+  withCandidate,
 } from "./store.js";
 
 /** gRPC status the server answers `create()` with when the document exists. */
@@ -72,13 +81,12 @@ function timestampOf(version: string): Timestamp | null {
   return m ? new Timestamp(Number(m[1]), Number(m[2])) : null;
 }
 
-/**
- * Tool keys may be `.` or `..`, which Firestore refuses as document ids;
- * the prefix makes every key a valid id without changing what it groups.
- */
-function candidateDocId(toolKey: string): string {
-  return `t_${toolKey}`;
-}
+/** The one candidate-pool document. */
+const POOL_DOC = "pool";
+/** Prefix of the per-tool candidate documents the pool replaced. */
+const LEGACY_CANDIDATE_PREFIX = "t_";
+/** Clusters read per page while building the pool. */
+const POOL_BUILD_PAGE = 100;
 
 export class FirestoreStore implements IntakeStore {
   constructor(readonly db: Firestore) {}
@@ -210,24 +218,56 @@ export class FirestoreStore implements IntakeStore {
     }
   }
 
-  async candidates(toolKey: string) {
-    const snap = await this.#doc("candidates", candidateDocId(toolKey)).get();
-    return snap.exists ? (snap.get("items") as ClusterSummary[]) : [];
+  async candidates() {
+    return this.#ensurePool();
   }
 
-  async addCandidate(toolKey: string, summary: ClusterSummary) {
-    await this.#compareAndSet<{ items: ClusterSummary[] }, void>(
-      this.#doc("candidates", candidateDocId(toolKey)),
-      (cur) => ({
-        write: {
-          items: [summary, ...(cur?.items ?? []).filter((x) => x.id !== summary.id)].slice(
-            0,
-            MAX_CANDIDATES_PER_TOOL,
-          ),
-        },
-        result: undefined,
-      }),
+  async addCandidate(summary: ClusterSummary) {
+    await this.#ensurePool();
+    const ref = this.#doc("candidates", POOL_DOC);
+    await this.#compareAndSet<{ items: ClusterSummary[] }, void>(ref, (cur) => {
+      if (!cur) throw new Error(`${ref.path} vanished after it was built`);
+      return { write: { items: withCandidate(cur.items, summary) }, result: undefined };
+    });
+  }
+
+  /** The pool, built from the clusters if this database has none yet (see the file header). */
+  async #ensurePool(): Promise<ClusterSummary[]> {
+    const ref = this.#doc("candidates", POOL_DOC);
+    const snap = await ref.get();
+    if (snap.exists) return snap.get("items") as ClusterSummary[];
+    // The per-tool lists go first: the pool is built from the clusters, not
+    // from them, so they are dead either way, and a build that stops after
+    // this point simply runs again on the next request.
+    const legacy = await this.db.collection("candidates").listDocuments();
+    await Promise.all(
+      legacy.filter((d) => d.id.startsWith(LEGACY_CANDIDATE_PREFIX)).map((d) => d.delete()),
     );
+    const items = poolFromClusters(await this.#recentUnmergedClusters());
+    try {
+      await ref.create({ items });
+    } catch (e) {
+      if (!isAlreadyExists(e)) throw e;
+      // A concurrent build won; its pool is as good as this one.
+      return (await ref.get()).get("items") as ClusterSummary[];
+    }
+    return items;
+  }
+
+  /** Up to `MAX_CANDIDATES` unmerged clusters, most recently reported first. */
+  async #recentUnmergedClusters(): Promise<ClusterRecord[]> {
+    const out: ClusterRecord[] = [];
+    let query = this.db.collection("clusters").orderBy("lastSeen", "desc").limit(POOL_BUILD_PAGE);
+    for (;;) {
+      const page = await query.get();
+      for (const d of page.docs) {
+        const c = d.data() as ClusterRecord;
+        if (c.mergedInto === null) out.push(c);
+      }
+      const last = page.docs.at(-1);
+      if (out.length >= MAX_CANDIDATES || page.size < POOL_BUILD_PAGE || !last) return out;
+      query = query.startAfter(last);
+    }
   }
 
   async takeIssueSlot(day: string, limit: number) {

@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Epic #901 (#906) — the semantic matcher merges only when the model is
- * sure AND names one of the offered clusters; any other answer opens a new
- * cluster, because a wrong merge hides a defect.
+ * Epic #901 (#906, #1049) — the semantic matcher merges only when the model
+ * is sure AND names one of the offered clusters; any other answer opens a
+ * new cluster, because a wrong merge hides a defect. The prompt carries each
+ * candidate's tool and source as hints and stays bounded.
  */
 
 import { describe, expect, it } from "bun:test";
-import type { BugIntakeReport } from "@caelo-cms/shared";
+import { BUG_INTAKE_LIMITS, type BugIntakeReport } from "@caelo-cms/shared";
 import { MockLanguageModelV3 } from "ai/test";
 import { LlmClusterMatcher, matchPrompt } from "./matcher.js";
+import { CANDIDATE_TEXT_CHARS, type ClusterSummary, MAX_CANDIDATES } from "./store.js";
 
 const report: BugIntakeReport = {
   protocolVersion: 1,
@@ -25,10 +27,25 @@ const report: BugIntakeReport = {
   expected: "a crop",
   evidence: null,
 };
-const candidates = [
-  { id: "c_1", title: "Selector crop ignored", whatHappened: "full page instead of the element" },
-  { id: "c_2", title: "Screenshot times out", whatHappened: "no image after 30s" },
+const candidates: ClusterSummary[] = [
+  {
+    id: "c_1",
+    title: "Selector crop ignored",
+    whatHappened: "full page instead of the element",
+    suspectedTool: "screenshot_page (selector crop)",
+    source: "ai",
+  },
+  {
+    id: "c_2",
+    title: "Tool screenshot_page returned an error",
+    whatHappened: "no image after 30s",
+    suspectedTool: "screenshot_page",
+    source: "auto",
+  },
 ];
+
+/** `suspectedTool` length cap of the report contract (packages/shared/src/bug-intake.ts). */
+const MAX_TOOL_CHARS = 200;
 
 function modelAnswering(answer: unknown) {
   return new MockLanguageModelV3({
@@ -65,10 +82,34 @@ describe("LlmClusterMatcher", () => {
     expect(model.doGenerateCalls.length).toBe(0);
   });
 
-  it("tells the model what the new report and every candidate say", () => {
+  it("tells the model what the new report and every candidate say, tool and source included", () => {
     const p = matchPrompt(report, candidates);
     expect(p).toContain("screenshot ignores selector");
     expect(p).toContain('<candidate id="c_2">');
+    expect(p).toContain("Tool: screenshot_page (selector crop)");
+    expect(p).toContain("Source: captured automatically from a failing tool call");
+    expect(p).toContain("Source: filed by the AI assistant");
+    expect(p).toContain("may be named differently for the same defect");
     expect(p).toContain("When unsure, answer null.");
+  });
+
+  it("keeps the prompt bounded for a full pool of maximal candidates and a maximal report", () => {
+    const big = (n: number) => "x".repeat(n);
+    const worst: BugIntakeReport = {
+      ...report,
+      suspectedTool: big(MAX_TOOL_CHARS),
+      title: big(BUG_INTAKE_LIMITS.title),
+      whatHappened: big(BUG_INTAKE_LIMITS.whatHappened),
+      expected: big(BUG_INTAKE_LIMITS.expected),
+    };
+    const pool: ClusterSummary[] = Array.from({ length: MAX_CANDIDATES }, (_, i) => ({
+      id: `c_${String(i).padStart(20, "0")}`,
+      title: big(BUG_INTAKE_LIMITS.title),
+      whatHappened: big(CANDIDATE_TEXT_CHARS),
+      suspectedTool: big(MAX_TOOL_CHARS),
+      source: "auto",
+    }));
+    // About 13k tokens at most: one cheap model call per new fingerprint.
+    expect(matchPrompt(worst, pool).length).toBeLessThan(55_000);
   });
 });

@@ -43,11 +43,18 @@ export interface ClusterRecord {
   milestonesCommented: number[];
 }
 
-/** What the semantic matcher sees about a candidate cluster. */
+/**
+ * What the semantic matcher sees about a candidate cluster. The tool and
+ * source are hints for the model, never a partition: the AI words one tool
+ * differently from one chat to the next (#1049).
+ */
 export interface ClusterSummary {
   id: string;
   title: string;
+  /** Cut to `CANDIDATE_TEXT_CHARS`, so the matcher prompt stays bounded. */
   whatHappened: string;
+  suspectedTool: string | null;
+  source: "ai" | "auto";
 }
 
 export interface StoredReport {
@@ -79,9 +86,14 @@ export interface IntakeStore {
   getCluster(id: string): Promise<Versioned<ClusterRecord> | null>;
   /** Create (version null) or replace the version read. */
   putCluster(cluster: ClusterRecord, version: string | null): Promise<"ok" | "conflict">;
-  /** Recent AI-filed clusters for one suspected tool: the matcher's candidates. */
-  candidates(toolKey: string): Promise<ClusterSummary[]>;
-  addCandidate(toolKey: string, summary: ClusterSummary): Promise<void>;
+  /**
+   * The matcher's candidate pool: at most `MAX_CANDIDATES` clusters of any
+   * tool and source, newest first. A store that has never held a pool builds
+   * it from its clusters on first use (#1049).
+   */
+  candidates(): Promise<ClusterSummary[]>;
+  /** Put a cluster at the front of the pool (once), dropping the oldest beyond the cap. */
+  addCandidate(summary: ClusterSummary): Promise<void>;
   /**
    * Take one of `limit` new-issue slots for a UTC day (`YYYY-MM-DD`); false
    * when the day's slots are used up. Atomic: concurrent takers never exceed
@@ -101,16 +113,45 @@ export interface IntakeStore {
   pendingIssueClusters(limit: number): Promise<string[]>;
 }
 
-/** Candidate lists keep the newest entries only; older defects rarely recur in new wording. */
-export const MAX_CANDIDATES_PER_TOOL = 30;
+/**
+ * Size of the candidate pool. Every candidate goes into one matcher prompt,
+ * so this and `CANDIDATE_TEXT_CHARS` bound the prompt (about 40 x 1 kB);
+ * the pool keeps the newest clusters because older defects rarely recur in
+ * new wording.
+ */
+export const MAX_CANDIDATES = 40;
 
-/** Index key for a suspected tool (`_none` when the report named none). */
-export function toolKey(suspectedTool: string | null): string {
-  const k = (suspectedTool ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_.-]/g, "_");
-  return k === "" ? "_none" : k.slice(0, 80);
+/** `whatHappened` characters a candidate carries into the matcher prompt. */
+export const CANDIDATE_TEXT_CHARS = 600;
+
+/** The pool entry for a cluster. */
+export function clusterSummary(c: ClusterRecord): ClusterSummary {
+  return {
+    id: c.id,
+    title: c.title,
+    whatHappened: c.whatHappened.slice(0, CANDIDATE_TEXT_CHARS),
+    suspectedTool: c.suspectedTool,
+    source: c.source,
+  };
+}
+
+/**
+ * The pool a store builds when it has none yet (the first run after #1049
+ * replaced the per-tool lists): the most recently reported clusters, AI and
+ * auto alike. Merged clusters are left out; their reports belong to the
+ * cluster they were merged into, which is a candidate of its own.
+ */
+export function poolFromClusters(clusters: ClusterRecord[]): ClusterSummary[] {
+  return clusters
+    .filter((c) => c.mergedInto === null)
+    .sort((a, b) => b.lastSeen.localeCompare(a.lastSeen) || a.id.localeCompare(b.id))
+    .slice(0, MAX_CANDIDATES)
+    .map(clusterSummary);
+}
+
+/** `summary` at the front of `pool`, without its older entry, capped at `MAX_CANDIDATES`. */
+export function withCandidate(pool: ClusterSummary[], summary: ClusterSummary): ClusterSummary[] {
+  return [summary, ...pool.filter((x) => x.id !== summary.id)].slice(0, MAX_CANDIDATES);
 }
 
 /** In-memory store for tests and local runs. */
@@ -120,7 +161,8 @@ export class MemoryStore implements IntakeStore {
   fingerprints = new Map<string, string>();
   issues = new Map<number, string>();
   clusters = new Map<string, Versioned<ClusterRecord>>();
-  tools = new Map<string, ClusterSummary[]>();
+  /** null until first use, like a database that predates the pool. */
+  pool: ClusterSummary[] | null = null;
   issueSlots = new Map<string, number>();
   pending = new Map<string, string>();
   #v = 0;
@@ -166,12 +208,15 @@ export class MemoryStore implements IntakeStore {
     this.clusters.set(c.id, { value: structuredClone(c), version: String(++this.#v) });
     return "ok" as const;
   }
-  async candidates(key: string) {
-    return this.tools.get(key) ?? [];
+  #ensurePool(): ClusterSummary[] {
+    this.pool ??= poolFromClusters([...this.clusters.values()].map((c) => c.value));
+    return this.pool;
   }
-  async addCandidate(key: string, s: ClusterSummary) {
-    const rest = (this.tools.get(key) ?? []).filter((x) => x.id !== s.id);
-    this.tools.set(key, [s, ...rest].slice(0, MAX_CANDIDATES_PER_TOOL));
+  async candidates() {
+    return structuredClone(this.#ensurePool());
+  }
+  async addCandidate(s: ClusterSummary) {
+    this.pool = withCandidate(this.#ensurePool(), structuredClone(s));
   }
   async takeIssueSlot(day: string, limit: number) {
     const used = this.issueSlots.get(day) ?? 0;
