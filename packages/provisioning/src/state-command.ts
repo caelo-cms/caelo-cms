@@ -14,7 +14,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { confirm, isCancel, log, note } from "@clack/prompts";
 import { bold, red } from "kleur/colors";
-import { checkGcloudAuth } from "./gcloud.js";
+import { adoptionCandidates, existingCandidates } from "./adopt-existing.js";
+import { checkGcloudAuth, gcloud } from "./gcloud.js";
 import {
   adoptStateBackend,
   currentMetadata,
@@ -260,6 +261,10 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
         return moved;
       },
       writePlan: (label, steps) => writePlanFile(root, label, steps),
+      existingInProject: async (steps) =>
+        (await existingCandidates(adoptionCandidates(steps, projectId), gcloud)).map(
+          (c) => `${c.label} ${c.display}`,
+        ),
     },
   );
   if (!result.ok) {

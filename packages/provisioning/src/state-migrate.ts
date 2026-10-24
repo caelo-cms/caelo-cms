@@ -117,6 +117,13 @@ export interface MigrateDeps {
    * writePlanFile); returns its path.
    */
   writePlan(label: string, steps: readonly PlannedStep[]): string;
+  /**
+   * #1079 — the planned creates whose resource exists in the project already
+   * (adopt-existing.ts: made by `upgrade` through gcloud), one
+   * `<kind> <name>` each. The installer adopts these into the stack before it
+   * applies anything. Throws when it can't tell.
+   */
+  existingInProject(steps: readonly PlannedStep[]): Promise<readonly string[]>;
 }
 
 export interface MigrateOptions {
@@ -165,6 +172,22 @@ function planReport(deps: MigrateDeps, label: string, steps: readonly PlannedSte
     where = `(The full diff could not be written: ${errorText(e)})`;
   }
   return [...formatPlan(steps).map((l) => `  ${l}`), where].join("\n");
+}
+
+/**
+ * The refusal's line about planned creates the installer adopts instead
+ * (#1079), or "" when there are none. A failed check is said, not fatal: the
+ * installer checks again before it applies anything.
+ */
+async function adoptionNote(deps: MigrateDeps, steps: readonly PlannedStep[]): Promise<string> {
+  let existing: readonly string[];
+  try {
+    existing = await deps.existingInProject(steps);
+  } catch (e) {
+    return `(Could not check which planned creates exist in the project already: ${errorText(e)}. The installer checks again.)\n`;
+  }
+  if (existing.length === 0) return "";
+  return `${existing.length} of the planned creates exist in the project already (${existing.join(", ")}): upgrade made them without Pulumi. The installer adopts them into the stack first instead of creating them again, then shows what is left.\n`;
 }
 
 /**
@@ -264,7 +287,7 @@ export async function migrateState(
       pre.failed(`A preview shows ${sourcePlan.length} change(s)`);
       return {
         ok: false,
-        error: `The stack is not converged (a preview shows ${sourcePlan.length} change(s)), so a copy can't be proven identical. Nothing was changed. The planned changes:\n${planReport(deps, "state-migrate", sourcePlan)}\nRun upgrade first, then re-run the installer (${selfCommand()}, pick this install): it shows this list again and asks before it replaces or deletes anything. Migrate once it reports no changes.`,
+        error: `The stack is not converged (a preview shows ${sourcePlan.length} change(s)), so a copy can't be proven identical. Nothing was changed. The planned changes:\n${planReport(deps, "state-migrate", sourcePlan)}\n${await adoptionNote(deps, sourcePlan)}Run upgrade first, then re-run the installer (${selfCommand()}, pick this install): it shows this list again and asks before it replaces or deletes anything. Migrate once it reports no changes.`,
       };
     }
     sourceDigest = await pulumi.outputsDigest(from);

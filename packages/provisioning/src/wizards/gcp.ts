@@ -33,6 +33,7 @@ import { join } from "node:path";
 import { cancel, confirm, isCancel, log, note, select, spinner } from "@clack/prompts";
 import { bold, cyan, dim, green, red, yellow } from "kleur/colors";
 import { checkAdcImpersonation } from "../adc-impersonation.js";
+import { type AdoptionCandidate, AdoptionError, formatAdopted } from "../adopt-existing.js";
 import { ensureAuditJob, resolveAdminImage } from "../audit-job-setup.js";
 import { CERT_WAIT_TIMEOUT_MS, lbCertProbe, waitForCert } from "../cert-wait.js";
 import { redactCredentials } from "../checkpoint-secrets.js";
@@ -1486,16 +1487,21 @@ interface PulumiUpOpts {
  * The installer's review of a deployed stack's plan before `pulumi up`
  * (#737): the grouped list, the full diff in the install dir, and a y/N
  * for any replace or delete. A data-bearing one is asked about by name and
- * defaults to No; without a terminal it is refused (planGate).
+ * defaults to No; without a terminal it is refused (planGate). Resources
+ * adopted into the stack before this preview (adopt-existing.ts, #1079) are
+ * listed first; they are no longer in the plan.
  *
  * @returns whether `pulumi up` may apply the plan
  */
 async function reviewPulumiPlan(
   installId: string,
   steps: readonly PlannedStep[],
+  adopted: readonly AdoptionCandidate[],
   nonInteractive: boolean,
 ): Promise<boolean> {
   const gate = planGate(steps, { interactive: !nonInteractive && process.stdin.isTTY === true });
+  const adoptedLines = formatAdopted(adopted);
+  if (adoptedLines.length > 0) log.info(adoptedLines.join("\n"));
   if (steps.length === 0) {
     log.info(dim("Preview: no changes planned."));
     return true;
@@ -1601,11 +1607,12 @@ async function stepPulumiUp(installId: string, opts: PulumiUpOpts): Promise<void
         // logs: silent — too noisy for a live progress UI; pulumi
         // diagnostics will print on failure via the SDK's onOutput.
       },
-      (steps) => reviewPulumiPlan(installId, steps, opts.nonInteractive),
+      (steps, adopted) => reviewPulumiPlan(installId, steps, adopted, opts.nonInteractive),
     );
   } catch (e) {
-    if (!(e instanceof PulumiUpDeclinedError)) throw e;
-    declined = e.message;
+    if (e instanceof AdoptionError) declined = `pulumi up was not run: ${e.message}`;
+    else if (e instanceof PulumiUpDeclinedError) declined = e.message;
+    else throw e;
   } finally {
     releaseLock();
   }

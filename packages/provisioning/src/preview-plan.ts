@@ -31,6 +31,13 @@ export interface PlannedStep {
   readonly diffs: readonly string[];
   /** Properties that force the replace (replace steps only). */
   readonly replaceReasons: readonly string[];
+  /**
+   * The inputs the program declares, for create steps only (#1079: they name
+   * the cloud resource a create would make, e.g. a service account's
+   * `accountId`, so adopt-existing.ts can tell whether it exists already).
+   * Secret values arrive masked by the engine. Never written to a plan file.
+   */
+  readonly inputs?: Readonly<Record<string, unknown>>;
 }
 
 /**
@@ -116,6 +123,7 @@ export function collectPreviewSteps(): PreviewCollector {
         urn: m.urn,
         diffs: [...(m.diffs ?? [])],
         replaceReasons: op === "replace" ? [...(m.keys ?? [])] : [],
+        ...(op === "create" && m.new?.inputs ? { inputs: { ...m.new.inputs } } : {}),
       });
     },
     steps: () => [...byUrn.values()],
