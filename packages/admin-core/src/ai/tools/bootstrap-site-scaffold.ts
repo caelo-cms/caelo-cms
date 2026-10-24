@@ -40,6 +40,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { bootstrapSiteScaffoldToolInput } from "@caelo-cms/shared";
+import { blockPlacementGuide } from "./_block-roles.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -57,6 +58,13 @@ const DEFAULT_LAYOUT_HTML = `<!doctype html>
 </html>`;
 
 const DEFAULT_TEMPLATE_HTML = `<caelo-slot name="content"></caelo-slot>`;
+
+/** The slice of a layouts.list / templates.list row this tool reads. */
+interface ScaffoldEntity {
+  id: string;
+  slug: string;
+  blocks: { name: string }[];
+}
 
 const DEFAULT_LAYOUT_BLOCKS = [
   { name: "header", displayName: "Header", position: 0 },
@@ -138,7 +146,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     if (!layoutsR.ok) {
       return { ok: false, content: `layouts.list failed: ${describeError(layoutsR.error)}` };
     }
-    const layouts = (layoutsR.value as { layouts: { id: string; slug: string }[] }).layouts;
+    const layouts = (layoutsR.value as { layouts: ScaffoldEntity[] }).layouts;
     if (layouts.length === 0) {
       // STAGE 0 — propose the layout. Owner-gated.
       const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "layouts.propose_create", {
@@ -171,7 +179,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     if (!templatesR.ok) {
       return { ok: false, content: `templates.list failed: ${describeError(templatesR.error)}` };
     }
-    const templates = (templatesR.value as { templates: { id: string; slug: string }[] }).templates;
+    const templates = (templatesR.value as { templates: ScaffoldEntity[] }).templates;
     // layouts.length > 0 was checked above (STAGE 0 returned early when
     // empty); first-element access here is safe.
     const targetLayout = layouts.find((l) => l.slug === layoutSlug) ?? layouts[0];
@@ -231,8 +239,10 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     ).defaults;
 
     // Refresh templates list (we may have just created one).
-    const finalTemplates: { id: string; slug: string }[] = createdTemplateId
-      ? [...templates, { id: createdTemplateId, slug: templateSlug }]
+    // The template this call created has the single `content` block of
+    // DEFAULT_TEMPLATE_HTML.
+    const finalTemplates: ScaffoldEntity[] = createdTemplateId
+      ? [...templates, { id: createdTemplateId, slug: templateSlug, blocks: [{ name: "content" }] }]
       : templates;
     const targetTemplate = finalTemplates.find((t) => t.slug === templateSlug) ?? finalTemplates[0];
     if (!targetTemplate) {
@@ -240,9 +250,24 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     }
 
     if (existingDefaults) {
+      // Name what the defaults really point at (not the slug-matched
+      // target above), plus which blocks a page may use — #1076: this is
+      // the first scaffold read of a page-building chat.
+      const defLayout = layouts.find((l) => l.id === existingDefaults.defaultLayoutId);
+      const defTemplate = templates.find((t) => t.id === existingDefaults.defaultTemplateId);
+      if (!defLayout || !defTemplate) {
+        return {
+          ok: false,
+          content:
+            `site_defaults points at layout=${existingDefaults.defaultLayoutId}, template=${existingDefaults.defaultTemplateId}, ` +
+            "but that layout or template is not visible (deleted?). Call list_layouts + list_templates and repoint the defaults with set_site_defaults.",
+        };
+      }
       return {
         ok: true,
-        content: `Bootstrap already complete — site_defaults points at layout=${targetLayout.slug}, template=${targetTemplate.slug}. No action taken.`,
+        content:
+          `Bootstrap already complete — site_defaults points at layout=${defLayout.slug}, template=${defTemplate.slug}. No action taken. ` +
+          blockPlacementGuide(defTemplate, defLayout),
       };
     }
 
@@ -261,16 +286,17 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     // AI consistently read as "task done" and stopped, even when the
     // user's original request was a multi-step "build me a site" ask.
     // The new wording makes it explicit that bootstrap is the SETUP,
-    // not the goal — continue with create_page for whatever the user
+    // not the goal — continue with build_page for whatever the user
     // described.
     return {
       ok: true,
       content:
         `Site scaffold ready — layout ${targetLayout.slug} (id=${targetLayout.id}), template ${targetTemplate.slug} (id=${targetTemplate.id}), site_defaults pinned. ` +
-        `This was the SETUP step, not the deliverable. Continue with the user's original ask now: call create_page for each page they described (omit templateId — it's pinned), then add_module / set_page_module_content to fill them in. ` +
+        `This was the SETUP step, not the deliverable. Continue with the user's original ask now: call build_page for each page they described (omit templateId — it's pinned; one call creates the page with its modules and content). ` +
+        `${blockPlacementGuide(targetTemplate, targetLayout)} ` +
         `Do not stop here unless the user only asked for the scaffold.`,
       nextAction: {
-        tool: "create_page",
+        tool: "build_page",
         reason:
           "bootstrap finished the SETUP; the user's deliverable usually starts with creating at least one page. Use the slug/title they described in the original message. Skip ONLY if the user explicitly asked for the scaffold alone.",
       },
