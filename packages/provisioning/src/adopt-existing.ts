@@ -77,8 +77,12 @@ export const ADOPTABLE_KINDS: Readonly<Record<string, AdoptableKind>> = {
   "gcp:serviceaccount/account:Account": {
     label: "service account",
     target(inputs, projectId) {
+      // GCP's account-id format; also keeps out the engine's placeholder
+      // for a value only known after apply.
       const accountId = inputs.accountId;
-      if (typeof accountId !== "string" || accountId === "") return null;
+      if (typeof accountId !== "string" || !/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(accountId)) {
+        return null;
+      }
       // Unset means the provider's project, which is the install's
       // (assertStackProject). Another project is never adopted.
       const project = inputs.project ?? projectId;

@@ -314,21 +314,30 @@ describe("adoptionCandidates — only declared creates of an adoptable kind", ()
       step({ type: "gcp:cloudrunv2/job:Job", name: "job", inputs: { name: "j" } }),
       step({ type: "gcp:projects/iAMMember:IAMMember", name: "m", inputs: { role: "r" } }),
       step({ type: "acme:widget:Widget", name: "w", inputs: { accountId: "a" } }),
-      step({ type: SA, name: "updated", op: "update", inputs: { accountId: "a" } }),
+      step({ type: SA, name: "updated", op: "update", inputs: { accountId: "caelo-run" } }),
       step({ type: SA, name: "no-inputs", inputs: undefined }),
       step({ type: SA, name: "computed-id", inputs: { accountId: undefined } }),
-      step({ type: SA, name: "elsewhere", inputs: { accountId: "a", project: "other-project" } }),
+      step({
+        type: SA,
+        name: "unknown-id",
+        inputs: { accountId: "04da6b54-80e4-46f7-96ec-b56ff0331ba9" },
+      }),
+      step({
+        type: SA,
+        name: "elsewhere",
+        inputs: { accountId: "caelo-run", project: "other-project" },
+      }),
     ];
     expect(adoptionCandidates(steps, PROJECT)).toEqual([]);
   });
 
   it("names a service account by its accountId in the install's project", () => {
     const [c] = adoptionCandidates(
-      [step({ type: SA, name: "run", inputs: { accountId: "r" } })],
+      [step({ type: SA, name: "run", inputs: { accountId: "caelo-run" } })],
       PROJECT,
     );
     expect(c?.importId).toBe(
-      `projects/${PROJECT}/serviceAccounts/r@${PROJECT}.iam.gserviceaccount.com`,
+      `projects/${PROJECT}/serviceAccounts/caelo-run@${PROJECT}.iam.gserviceaccount.com`,
     );
     expect(c?.label).toBe("service account");
   });
