@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "0.10.68",
   "tools": [
     {
       "name": "edit_module",
@@ -216,7 +216,7 @@
     },
     {
       "name": "edit_content",
-      "description": "Surgically edit a module's, template's or layout's body (html/css/js) by string replacement — the cheap, minimal-diff way to change existing code. Pass `entityKind` + `entityId` + `field` + an `edits` array of {oldString, newString, replaceAll?}. Each `oldString` must be UNIQUE in the body (add surrounding context if not) unless `replaceAll:true`; edits apply in order, atomically (all-or-nothing). Read the body first with read_content and copy exact text (incl. whitespace) into `oldString`; optionally pass its `sha=` as `expectedSha` to guard against a concurrent change. On success it returns the NEW `sha=` plus a line-numbered snippet of each changed region — chain another edit_content in the same turn using that sha and the fresh line numbers, WITHOUT re-reading. PREFER this over edit_module for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. Use edit_module instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. TEMPLATES AND LAYOUTS ARE GATED: an edit_content on a template or layout is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim such an edit was applied. **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Surgically edit a module's, template's or layout's body (html/css/js) by string replacement — the cheap, minimal-diff way to change existing code. Pass `entityKind` + `entityId` + `field` + an `edits` array of {oldString, newString, replaceAll?}. Each `oldString` must be UNIQUE in the body (add surrounding context if not) unless `replaceAll:true`; edits apply in order, atomically (all-or-nothing). Read the body first with read_content and copy exact text (incl. whitespace) into `oldString`; optionally pass its `sha=` as `expectedSha` to guard against a concurrent change. To fill an EMPTY field (e.g. a module with no js yet), pass one edit with `oldString: \"\"` and the new content as `newString`; an empty oldString on a field that has content is refused. On success it returns the NEW `sha=` plus a line-numbered snippet of each changed region — chain another edit_content in the same turn using that sha and the fresh line numbers, WITHOUT re-reading. PREFER this over edit_module for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. Use edit_module instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. TEMPLATES AND LAYOUTS ARE GATED: an edit_content on a template or layout is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim such an edit was applied. **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -247,8 +247,7 @@
               "type": "object",
               "properties": {
                 "oldString": {
-                  "type": "string",
-                  "minLength": 1
+                  "type": "string"
                 },
                 "newString": {
                   "type": "string"
@@ -439,7 +438,7 @@
           "page": {
             "type": "object",
             "additionalProperties": false,
-            "description": "EITHER { pageId } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
+            "description": "EITHER { pageId, metaDescription? } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
             "properties": {
               "pageId": {
                 "type": "string",
@@ -477,7 +476,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 320,
-                "description": "Create mode: the new page's meta description (150–160 characters, written from the page's content; in a migration, the source page's). A Stage refuses a published page without one — pass it here so the page is Stage-ready from this call (fill-once, same as autofill_page_seo)."
+                "description": "The page's meta description (150–160 characters, written from the page's content; in a migration, the source page's). A Stage refuses a published page without one — pass it here so the page is Stage-ready from this call. Fill-once, same as autofill_page_seo: with pageId it is written only when the page has no description yet; an existing one is kept and the result says so."
               },
               "parentPageId": {
                 "type": "string",
@@ -1282,7 +1281,7 @@
     },
     {
       "name": "list_plugins",
-      "description": "List the plugins installed on this site with their activation status. `active` means the plugin is running and its tools and skills are available to you right now; `awaiting_activation` means it is installed and verified but NOTHING of it is loaded — you cannot call its tools and its skills are not in your skills index. Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
+      "description": "List the plugins installed on this site: their status (the Owner's decision) and their health (what the running servers make of it). `status`: `active` = the Owner wants it running; `awaiting_activation` = installed and verified, but nothing of it is loaded; `disabled` = the Owner stopped it. Availability comes from `health`, not from `status`: only `health = running` means its tools and skills are usable right now. `failing` = an active plugin failed to load on a server (`problem` says why) — it is NOT switched off, tell the operator, get_plugin has the details; `unreported` = active, but no server has reported it yet (just activated or starting); `not_running` = not active. Never tell the operator a capability works while its plugin is failing. Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. Plugins found on disk that failed verification are listed after the table: they are NOT installed — explain why and the fix. Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1430,7 +1429,7 @@
           "slugs": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 5,
+            "maxItems": 20,
             "items": {
               "type": "string",
               "pattern": "^[a-z0-9-]+$",
@@ -3888,7 +3887,8 @@
               "1K",
               "2K",
               "4K"
-            ]
+            ],
+            "description": "Native resolution. 2K / 4K only on models whose get_image_capabilities lists them; omit it otherwise. 1K is accepted on every model."
           },
           "references": {
             "type": "array",
@@ -3951,7 +3951,8 @@
               "1K",
               "2K",
               "4K"
-            ]
+            ],
+            "description": "Native resolution. 2K / 4K only on models whose get_image_capabilities lists them; omit it otherwise. 1K is accepted on every model."
           },
           "altText": {
             "type": "string"
@@ -5758,7 +5759,7 @@
     },
     {
       "name": "revalidate_plugin",
-      "description": "Re-run the plugin validator over a submitted plugin that is NOT running (draft, awaiting activation or rejected) — after a Caelo upgrade, or to re-file a rejected submission. Passing moves it to awaiting activation (activate_plugin then proposes turning it on); failing returns the validator errors to fix. Refused for running, disabled or failed plugins — those are the Owner's call.",
+      "description": "Re-run the plugin validator over a submitted plugin that is NOT running (draft, awaiting activation or rejected) — after a Caelo upgrade, or to re-file a rejected submission. Passing moves it to awaiting activation (activate_plugin then proposes turning it on); failing returns the validator errors to fix. Refused for running or disabled plugins — those are the Owner's call; for an active plugin that fails to load use reload_plugin.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5766,6 +5767,25 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "reload_plugin",
+      "description": "Retry loading an ACTIVE plugin on every server — the fix for a plugin whose health is `failing` (it stays active; servers do not retry on their own). Use after the cause was addressed, or when the problem looks transient, and when the operator asks to reload it. Returns this server's result right away; other servers follow within seconds — check get_plugin for their state. Not for a plugin that is awaiting activation or disabled (activating is the Owner's decision: activate_plugin).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "Plugin slug as list_plugins shows it."
           }
         },
         "required": [
@@ -7665,7 +7685,7 @@
     },
     {
       "name": "get_plugin",
-      "description": "Read one plugin in detail: version, tier, status, signature, the validator's findings, the tools / skills / capabilities its manifest declares, and its AI spend over the last 24h against its AI cost cap. Use when list_plugins' one-line summary is not enough — e.g. why a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. Never returns the plugin's source.",
+      "description": "Read one plugin in detail: version, tier, status, signature, health (whether the running servers have it loaded, and why not), its recent errors, the validator's findings, the tools / skills / capabilities its manifest declares, and its AI spend over the last 24h against its AI cost cap. Use when list_plugins' one-line summary is not enough — e.g. why a plugin is failing or a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. A `core` error is Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team — repeat that exactly, never say the team knows unless it says sent; a `plugin` error comes from the plugin's own code; `transient` ones were retried. Errors never switch a plugin off. Never returns the plugin's source.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",

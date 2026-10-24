@@ -1,0 +1,1934 @@
+# Changelog
+
+## v0.10.68
+
+### Features
+- 90784bb5 every instance follows the plugin rows; reload, loud preview, Publish-live gate (#1008) (#1023)
+- d1d3e667 a load failure never switches a plugin off; record and surface it instead (#1008) (#1014)
+- 4941db93 record where every Stage and Publish live spends its time (#1003) (#1004)
+
+### Fixes
+- 2ce393ee match reports against one candidate pool, not per-tool buckets (#1049) (#1051)
+- c11af0e1 bell counts only current deploy failures (#1024)
+- b7f2c8d5 six first-call tool refusals the real-AI gate files on every branch (#1040)
+- c3eef0e2 show running builds with their progress; one progress write per second instead of per page (#1003) (#1015)
+- ad0c2e75 close idle pooled connections before the network forgets them; Bun 1.4.4 (#1036)
+- 373c7dbb build_page labels results by input index; edit_content fills an empty field (#1011)
+
+### Other
+- f5380a29 bump zod from 4.6.5 to 4.6.6 in /apps/api-gateway (#1050)
+- 8baa446a skip the current/ mirror on cloud publishers, batch build file I/O (#1003) (#1005)
+
+## v0.10.67
+
+### Features
+- 456886d1 release stamps live on the tag only — no merge-back, no pinned install links (#1035)
+
+### Fixes
+- 1028fc8b judge the awaited real-AI run by its id (#1033)
+
+## v0.10.66
+
+### Features
+- 5b03256b Live edit first — drop the ramp-up wizard, group content, status dashboard (#1026)
+
+### Fixes
+- 75d0c064 stop the structure check reading sub-modules and classless template markup as free HTML (#1031)
+- 74f3f86b match serving platform digests to a release by its signed index (#1025) (#1030)
+- 74ed3c2a serialise plugin schema provisioning across instances (#1008) (#1009)
+
+### Other
+- 57137c9a release from the release branch, keep main open, check the release commit before tagging (#1032)
+
+## v0.10.65
+
+### Features
+- ff3f4121 Claude Code plugin "caelo" (MCP server + skills) and marketplace (#975)
+- 1e926def verify the Google sign-in client before IAP switches; name users without a Google account (#967, #970) (#979)
+- e21021b5 MCP access as one concept — per-app connections, state-aware Settings → MCP (#968) (#977)
+
+### Fixes
+- 106903e1 renumber 0335 and 0337 above the shipped 0338 (#1007)
+- 29a36f23 PR #947 review follow-ups + set_locales guard; CLAUDE.md PR-ownership rule (#990)
+- 7f12b7fc credentials never reach the AI or an MCP client (#971) (#978)
+- cd080786 harden rate-limit refill, PoW verification, and signed cookies (#985)
+- 8f059816 harden MCP RBAC, cost caps, turn approvals, and credential revocation (#996)
+- 8d78607f confirm every destructive action before it runs (#974)
+- 60a8afc0 root-cause every e2e-livedit detected bug and gate on new ones (#993)
+- 946dcd72 outline the right-clicked text, not the whole module (#1002)
+- c48b3eaf lock down egress on own-origin preview screenshots (#973)
+- af4e5fd4 harden script/CSS/SEO composition and SVG link sanitization (#976)
+- 8be71c3e harden tx rollback, RLS drift audit, and storage filters (#987)
+- d17dd29d harden AST validation, consent host scanner, and built-in plugins (#997)
+
+### Docs
+- 895edf4c generic bug-intake operator guide; /health for Cloud Run (#983, #1000) (#998)
+
+### Other
+- a95ef034 install Playwright system packages from actions/cache, not the apt mirror (#1006)
+
+## v0.10.64
+
+### Features
+- f29f25fc Firestore store, Issues-only GitHub App, daily issue cap + kill switch (#980) (#989)
+- 5ef6801b let the Owner re-send reports that ended in failed (#982) (#988)
+
+### Fixes
+- e9a73338 keep the served Firebase preview alive by TTL refresh, not an expireTime clear (#969) (#972)
+
+### Chores
+- fc9c6636 v0.10.63 (#999)
+
+### Other
+- 53d26749 publish a signed bug-intake image on every merge to main (#981) (#986)
+
+## v0.10.63
+
+### Fixes
+- e9a73338 keep the served Firebase preview alive by TTL refresh, not an expireTime clear (#969) (#972)
+
+## v0.10.62
+
+### Features
+- d5381070 skip a scheduled install, ownerAction in the release manifest, converge IAM self-check (#868, #884, #759) (#960)
+- 4674c3d5 owner-reset on self-hosted and gcp (#770) (#959)
+- 3c587f5f deploy-time minify, CSS scope check and interaction kit (#158, #160) (#958)
+
+### Fixes
+- 6a3065de serve uploaded SVGs with a restrictive CSP from the edge on every provider (#891) (#950)
+- 7f66e9f1 name the GCP project after the install's domain (#963)
+- e7f02366 stop/resume/remove plugins in the running host only after commit (#585) (#951)
+- c1f1a276 honest upgrade errors, planned-change list and a verified break-glass upgrade (#630, #804, #737, #816) (#961)
+- 3216359a run page previews in an opaque-origin sandbox (#946) (#957)
+- 9b72e538 delete-refusal dead end (#63), sitemap toggle (#567), URL-migration gate (#586) (#947)
+- a96f01e7 payload matches the consent text, saves show the real error (#949)
+- fa1fbdc4 upgrade survives pre-#650 gateways, fresh IAM grants and parallel installs (#948)
+
+### Tests
+- 6a10f046 rendered design assertions + two-page consistency scenario + design judge (#161) (#956)
+
+## v0.10.61
+
+### Fixes
+- b1378886 mask the IAP oauthSettings PATCH leaf by leaf (#914) (#964)
+
+## v0.10.60
+
+### Fixes
+- 9fe68d5e a user without a Google account no longer blocks the IAP sync (#597) (#955)
+
+## v0.10.59
+
+### Features
+- ed4edb8c Caelo-operated intake that files one GitHub issue per defect (#903, #906) (#911)
+- 8710edf0 forward AI bug reports to the Caelo team on the Owner's opt-in (#904, #905, #906) (#910)
+- 677fd881 edit links, replace images and change shared content in place (#918) (#933)
+- a5ab24d4 edit text in place in the preview, no AI round-trip (#917) (#931)
+
+### Refactors
+- 056e10fa delete the text-rewrite-on-move path (#724, rollout G) (#878)
+
+## v0.10.58
+
+### Features
+- 1d7cb69b select text / right-click → Ask AI with a precise reference (#916) (#929)
+- 9aaf55cc reference integrity blocks Stage and Publish live (#724, rollout F) (#893)
+- de808516 migrate literal internal links to references (#724, rollout E) (#880)
+- 84d6984f one Google sign-in client for IAP login, IAP programmatic access and remote MCP (#914) (#932)
+- 5e1407c2 link-resolve composition point; links resolve per language (#724, rollout D) (#877)
+- 7ccd8dd2 canonicalise internal links at write time (#724, rollout C) (#873)
+
+### Fixes
+- b77ce4b5 pin digests without listing the stack config; create a missing audit job (#938)
+- 99ff5c8f bug_report says honestly where a report went (#902) (#907)
+- 1a58cae3 keep serving the published build after Publish live; served channel never expires (#908) (#909)
+- db5268ad store each tool result once so a mixed invalid-call step cannot wedge the chat (#915)
+- b8e8eb64 capture desktop at the operator's live preview size (#913)
+- d02e46bd wrap numeric typography sub-fields and merge siblings (#912)
+- 9ffda1da build the notification bell's name from its content (#934)
+
+## v0.10.57
+
+### Fixes
+- 757e624f let UPGRADER_SMOKE=off pass the release gate (#936)
+
+## v0.10.56
+
+### Features
+- fdd97978 remote MCP infra + guided Owner setup (#806, part D) (#894)
+- d3712a38 contract-bumping releases install from Caelo via a signed converge job (#819) (#883)
+- 1ffe7a6f IAM self-check + real-GCP upgrader smoke test per release (#818) (#879)
+- cc0340ce make the package listable in MCP directories (#841) (#886)
+- 67036cbf remote Streamable HTTP endpoints behind IAP + remote connections (#806, part B) (#892)
+- 79067cb1 one derived state and one primary action on Settings → Updates (#861, #817) (#867)
+
+### Fixes
+- 0c4c7c43 renumber unreleased cms_admin migrations above the shipped 0315 (#930)
+- 5b428d27 tag only a release PR merged onto the commit it was cut from (#900)
+- 08cfe272 decide before taking the state lock, lease-break dead locks, refresh the DB token (#815) (#872)
+- 8118b38d harden the remote-MCP OAuth broker and proxy (#806, part C follow-up) (#899)
+- 07ce7b15 heal install.json drift from signed releases; compare serving images by their deployed digest (#860) (#865)
+
+## v0.10.55
+
+### Features
+- f04cfd58 resolve internal references in preview, live-edit and the static build (#724, rollout B) (#871)
+- 30332d2a OAuth broker + streaming proxy for remote MCP (#806, part C) (#890)
+
+### Fixes
+- cd69f096 install Chromium in the release gate; poll the real-AI run instead of gh run watch (#897)
+- 905646c0 scope mcp_tokens to their owner unless the viewer is an Owner (#895)
+
+## v0.10.54
+
+### Features
+- ad32fa3a run Lighthouse in a parallel Cloud Run audit job, one task per run (#875) (#882)
+- 797941a6 setup for every MCP client on /settings/mcp, not just Claude Code (#885)
+- 61e7fa0d internal reference grammar, parser and render-time resolver (#724, rollout A) (#870)
+- ab82ea9f release notes in Owner language + auto-update policy as one choice (#864)
+
+### Fixes
+- bdd44276 prevent head/style/template breakouts, $-replacement injection, and output path traversal (#866)
+- ba2eb4c4 harden tar restore parser, secret file permissions, Caddyfile validation, and release workflow (#888)
+- 09973f62 prevent DNS-rebinding SSRF in screenshot capture and block special-use IPv6 ranges (#869)
+- 3612074e refuse tokens of deleted or role-less users; revoke on users.delete (#889)
+- b7d906a4 score Performance by the best of 3 runs instead of the median of 5 (#874) (#876)
+- 3e4a6937 enforce chat RBAC, harden SVG/preview sanitization, and revoke MCP tokens on user delete (#863)
+- b27ce6a1 tie gateway op events to active published plugins at the DB layer (#856) (#859)
+- 72fa33e0 parameterize plugin_id, redact credential fields in audit hashes, and guard visitor-only redeploy ticks (#844)
+
+### Chores
+- 16b00585 Bump the minor-and-patch group across 1 directory with 16 updates (#858)
+- 3c3250a6 allow PSF-2.0 alongside Python-2.0 (#887)
+- 4ff1a01f Bump the minor-and-patch group across 2 directories with 2 updates (#857)
+
+## v0.10.53
+
+### Features
+- 373107af core links check on the staged build (#849) (#851)
+- 99ae9e02 drop the gateway's former cms_admin login — contract (#635, 4/4, release after #767) (#775) ⚠ BREAKING
+- 3b1785fb core structure check + write-time hints for repeated free markup (#820) (#833)
+- 60410665 release docs-sync prepare step + developer reference generator (#832)
+
+### Fixes
+- 31d3c091 favicon 64px rendition (LCP) + no auto fix round after an operator decision (#685) (#853)
+- 4404da9f staged GCS reads fall back to live only for files the build contains (#842) (#848)
+- 32272c75 enforce auth_config, server-side captcha/honeypots, HTML escaping, and ai_moderate archival (#847)
+- 09a1ef25 prevent X-Forwarded-For spoofing, bind PoW challenges, rate-limit challenge minting, and guard cross-site POSTs (#845)
+- 4387310d scan content values for internal links by declared field kind (#846) (#850)
+- e199ee99 harden AST validator, sandbox bootstrap, and schema UUID checks (#839)
+- 92c1f67c GCS publish deletes live files the build no longer contains (#842) (#843)
+- 2398af1c name a Caelo upgrade in the parity refusal and always offer Stage again (#834, #835) (#836)
+
+### Docs
+- 2ce399a7 Claude Code Power-MCP example, good-first-issue and Discussions links (#840)
+- 3fd78e88 fix the local dev loop (root .env, Bun 1.4.2, staging URL, importer allowlist) (#838)
+- 8ca727d9 split developer docs (repo) from end-user docs (CMS seed), PR template + user-facing label (#826, #829) (#830)
+
+## v0.10.52
+
+### Features
+- ae460745 ship the site's own 404 page on every provider (#802) (#805)
+- fcd8f022 one "Fix all with AI" fixes until the target (#795)
+- 0e319c8d coral decide for Publish live + Approve, Draft/Preview/Live state dots (#791)
+- 2f82428e sky + relief plate on arrival screens and installer page (#781) (#790)
+- 1b831323 live-edit overlay in Caelo blue, no emoji label (#780) (#785)
+- d52f753d Caelatum tokens, night-blue dark mode, self-hosted Schibsted + Plex Mono (OFL for fonts only) (#789)
+- c8fda6c9 Caelatum brand mark for favicon, touch icon and sidebar (#777) (#786)
+
+### Fixes
+- 50b40c3f PWD is the working directory, not a database password (#821)
+- 74228ff2 unblock v0.10.52 real-AI suite (pinned-font preview 404s, 404-page detour in homepage turn) (#823)
+- 0ccd78b5 bump INFRA_CONTRACT_VERSION to 6 for the upgrader's ops-bucket list role (#799) (#812)
+- 219bbdef stop annotating site-data tool results on the Power-MCP surface (#801)
+- c4feb701 license gate checks the full tree; LGPL only for sharp-libvips, notice shipped in images (#796)
+- f80afe0b Caelatum epic follow-ups (docs links, admin manifest) (#800)
+- de26cfd1 let the upgrader list its ops bucket; stop reporting access failures as "busy" (#799)
+- b717c173 stop installing the AWS and Azure Pulumi SDKs with the CLI (#798)
+
+### Docs
+- 6fff9c71 repo front door with the new positioning, brand assets, retire docs-site/ (#782) (#787)
+
+### Other
+- 6b2f28a4 operator-configurable variable-axis delivery for pinned fonts (#793)
+
+## v0.10.51
+
+### Features
+- e5a979a3 public → admin data is untrusted — boundary audit and fixes (#635, 3/4) (#768)
+- 02fdf744 no cms_admin login in any adapter + guardrails (#635, 2/4) (#767)
+- 03ea174d serve /api/* from cms_public only — published projection (#635, 1/4) (#766)
+- df200ddd the shim pins itself to the admin's release (#764) (#765)
+- 7d56284a recover a locked-out Owner without email — cms-provision owner-reset + honest /forgot (#769) (#774)
+
+### Fixes
+- 30f61e37 owner-reset hardening follow-ups (#769) (#784)
+- e1306edb audits survive long finding lists; agents fix problems instead of reporting them (#771)
+- 0ade6b87 an accepted quality finding never reappears on the card; typecheck the e2e suites (#788)
+- 4a281c3b calibrate Lighthouse's CPU slowdown to the audit host (#773)
+- f968d247 quality-gate accept loop no longer hangs when the gate opens mid-loop (#783)
+
+## v0.10.50
+
+### Features
+- 88f75435 confirm update actions with the Caelo password, not a Google OAuth client (#757) (#760)
+- b72310b8 keep AI work in the Power-MCP agent — hand back work items instead of spending the install's AI (#741) (#744)
+- eeb4f392 optimum target, no grandfathering, bulk Owner decisions (#727) (#743)
+- 4ea3bfa8 show when the release check ran and add "Check now" (#742)
+- e8606814 store Lighthouse Performance metrics per page and expose them to the AI and MCP (#738)
+
+### Fixes
+- e69b7168 serve the redirects table on every provider (#587) (#756)
+- a96b3310 one-command Compose install that actually comes up (#566, #707) (#755)
+- 3f003311 take public_role out of cloudsqlsuperuser on GCP (#633) (#752)
+- 518e581a set caelo_visitor_id only with analytics consent (#677) (#753)
+- 1814cb1c footer scenario primes a branded theme; cold-start gate stops inviting a question when identity is on record (#740)
+
+## v0.10.49
+
+### Features
+- 5781a627 check framework — page checks on every Stage, Lighthouse as one registered check (#727 PR A) (#731)
+- 0327be2f automatic Caelo updates — policy UI, scheduler, Owner emails (#696 Phase 5) (#726)
+
+### Fixes
+- 1c0bea0e no page reaches staging or production without a meta description (#730)
+
+### Other
+- 0d657062 ship pinned registry faces as WOFF2 unicode-range slices (#728)
+
+## v0.10.48
+
+### Features
+- d340cec7 caelo-agent — Install update for self-hosted installs (#696) (#721)
+- 3ee152f1 Install update with Google step-up and a live timeline (#696) (#719)
+- 2d4c4f48 set up the upgrader job with scoped grants (#696) (#717)
+- 573cdb6b the in-cloud upgrader job (caelo-ops upgrader) (#696) (#714)
+- 2d2bd691 platform update requests, policy + Google step-up ops (#696) (#713)
+- 77feebae install-job mode — GCP install runs as a Cloud Run job, terminal tails it (#696) (#715)
+
+### Fixes
+- 59b6ed5b fail fast on a refused AI provider key (#720)
+- 9de79095 root-cause the quality-fix-offer and live-edit click flakes (#722)
+
+### Docs
+- 35bdda41 "Open in Cloud Shell" install buttons, pinned per release (#696) (#716)
+
+## v0.10.47
+
+### Features
+- 42f01856 nested variants under the parent's counterpart; same-slug variants (#690, part 4) (#698)
+- 0a3fe3dc page tree, parent picker and path display for nested pages (#690, part 3) (#697)
+- 6727689a page identity is the id, the URL path is unique (#690, part 2) (#695)
+- f858aef8 `state migrate` + `attach` for existing installs (#696) (#708)
+- 0d82af73 nested page URLs via parent pages — subtree moves (#690, part 1) (#694)
+
+### Fixes
+- cc198c22 impersonate the service account IAM confirms, not one built from install.json (CodeQL #195) (#711)
+
+## v0.10.46
+
+### Features
+- ca2e8abb self-hosted runs signed prebuilt images + real upgrade (#696 phase 4) (#704)
+
+### Fixes
+- a6741e48 sort applied migrations in code, not by database collation (#710)
+
+## v0.10.45
+
+### Features
+- efd62229 Settings → Caelo updates with the pinned upgrade command (#696 Phase 0) (#705)
+- 7cfa9b04 caelo-ops image + signed release manifest (#696) (#702)
+- 67452354 keyless provisioner — impersonate caelo-provisioner instead of a JSON key (#700)
+
+### Refactors
+- 12189a50 split upgrade into converge + app-roll, pre-upgrade backup, deep health check (#703)
+
+## v0.10.44
+
+### Features
+- 8c4aaf40 rename Security to Settings, list every page, group by intent (#688)
+
+### Fixes
+- f5453e28 approval-gated plugin tools (set_locales, …) work over the Power-MCP (#693)
+- 0345d752 close the open CodeQL clear-text-logging and http-to-file-access alerts (#691)
+- 3b1b2c92 ask before the AI fixes quality findings after a Stage (#685) (#692)
+
+## v0.10.43
+
+### Fixes
+- dc6e8879 approvals continue whoever asked — Live Edit AI after Stop; caelo_chat approvals surfaced and handed back (#658) (#682)
+
+## v0.10.42
+
+### Features
+- 288ae418 also remove GCP's default-allow-icmp and default-allow-internal rules (#675)
+
+### Fixes
+- 991f1007 staging-domain enable configures the admin, password on by default, 'stage once' hints (#681)
+
+### Refactors
+- 45e30893 cut A/B testing out of core (#676 PR-B) (#680)
+
+### Chores
+- 835b3f9e remove the A/B edge routers (#676 PR-A) (#679)
+- a4e1ed0f bump node from 24.21.0-bookworm-slim to 26.11.1-bookworm-slim in /apps/admin (#668)
+- bb61fa55 bump @pulumi/gcp from 9.37.0 to 10.1.0 (#670)
+- a382716d bump the minor-and-patch group across 1 directory with 21 updates (#669)
+
+## v0.10.41
+
+### Fixes
+- 6bb3c29c authoritative Stop + one agent per chat, with a running-agents view (#672)
+- fbe88902 root-cause platform Lighthouse findings; the AI no longer pushes acceptances (#667) (#671)
+
+## v0.10.40
+
+### Fixes
+- 3ff6acbd hand approval decisions back to the external agent instead of the Live Edit AI (#661)
+- 673c53ae keep secrets out of ~/.caelo-<id>/progress.json (#659)
+
+## v0.10.39
+
+### Features
+- 5cd4ffb4 operator guidance — cert waits, go-live DNS split, MCP next steps, policy-safe secrets (#655)
+- 3f637e27 protected, configurable staging host on gcp-firebase — host as build variable, parity guard, gated proxy (#650) (#652)
+
+### Fixes
+- 72cef4b5 never block on a hidden gcloud prompt; install beta up front (#654)
+- 314b819b assign A/B variants from the HttpOnly visitor cookie server-side (#653)
+
+## v0.10.38
+
+### Fixes
+- 6ca2e606 serve /api/variant/assign, comments list_approved and plugin captcha as gateway_role (#648)
+- 51cd6463 validate plugin tool-call args; refuse undefined storage values (#644) (#647)
+- 0c1a5314 detect and self-heal stuck Firebase Hosting custom domains (#646)
+
+## v0.10.37
+
+### Fixes
+- 27da81e1 homepage scenario isolation — leaked consent plugin, embed false positive, console findings, gate settle (#643)
+- af63674e GCP stacks export the gateway's database URL; CI typechecks the stacks (#642)
+
+### Other
+- 5d6247b6 give the release gate the superuser password (#641)
+- cf799fb9 give the release gate the gateway_role env (#613 follow-up) (#640)
+
+## v0.10.36
+
+### Fixes
+- 504cb7f8 remove GCP's default SSH/RDP-from-anywhere firewall rules (#638)
+- c48e2843 lifecycle commands never guess the install — ask, or take --install (#637)
+- 692e2948 the API gateway no longer holds admin_role credentials (#613) (#636)
+- 56fd5883 serialize a chat's turns across admin instances and heal interleaved histories (#628) (#631)
+- 5d1122c3 authorize every named chat branch against the caller (#569) (#632)
+
+## v0.10.35
+
+### Features
+- 580aab81 shared site draft, per-chat undo and AI Stage (#620 parts A+B) (#624)
+
+### Fixes
+- ab82bb82 published pages lost nested modules (card grids, pricing plans, FAQ items) — render them like the preview and fail the build on render markers (#626)
+
+### Other
+- 92b8bf32 real-AI suite on main only once per release (release-cut gate) (#625)
+
+## v0.10.34
+
+### Features
+- 837bff65 lock takeover, Open changes overview, MCP session resume (#620 part C) (#622)
+
+### Fixes
+- a6091320 persist GCP media in the media bucket instead of the container disk (data loss) (#619)
+
+## v0.10.33
+
+### Features
+- 2bfa2b63 close the agent-tool parity gaps — 23 tools, two Owner proposals, every human-only op justified (#615)
+
+## v0.10.32
+
+### Other
+- 0c8fd45e region-catalogue checklist; poll npm up to 15 min after publishing (#612)
+
+## v0.10.31
+
+### Fixes
+- c0603647 the operator chooses the cloud region; fixed after install (#607) (#609)
+
+## v0.10.30
+
+### Features
+- 546e92ba fix-quality-findings skill, Owner quality view, gated production builds, admin memory (#553, PR 3/3) (#599)
+- 2b3aec24 menus and footer per language (#592) (#600)
+- 5f926d72 configurable translation model, default = the chat model (#593) (#595)
+- f13e7f83 keep Google IAP operator access in sync + admin-domain enable (#577)
+- 363ab3a2 gate Publish live on the staged build's audit (#553, PR 2/3) (#584)
+- cf61951d let the agent set the site SEO settings via propose_set_site_seo (#580)
+- f941b437 agent-tool parity — tools for operator buttons the AI could not press + CI guard (#581)
+- e3e2775e optionally prefix the default locale, home stays at "/" (#575)
+- 9f397a04 agent paths for plugin grants, reject/revalidate and plugin owner panels (§11.A) (#582)
+- cdea1463 AI-proposable AI budgets, AI pricing and gateway settings (§11.A) (#578)
+- a0763a34 Lighthouse audit engine after substantial Stages (#553, PR 1/3) (#583)
+
+### Fixes
+- b1318cf5 published builds carry every plugin's output (#605) (#606)
+- c8917fae an interrupted approval resume no longer wedges the chat; quality findings name their elements (#604)
+- d705257c approver permission on every §11.A gate; fail-closed needsApproval; redact email secrets for AI (#589, #588) (#598)
+- 3874c21c translate the meta description with the SEO fill-once rule (#591) (#596)
+- 10dab598 one public URL builder for canonical, sitemap, hreflang and switcher (#590) (#594)
+- 35451f66 upgrade converges existing installs to what the stack declares (#576)
+
+### Docs
+- 3311c4c0 gated executors declare an approver permission (#589) (#602)
+
+### Other
+- 4d3e55f5 retry npm view in the publish verification (#574)
+
+## v0.10.29
+
+### Features
+- 42695556 accept .ico uploads so the theme favicon can be an ICO (#571)
+- ca2c0ff4 session-protocol instructions on both servers; pin the mcp-server version in the generated command (#552) (#565)
+- 861f1c66 bundle Chromium in the admin image for server-side screenshots (#428) (#563)
+
+### Fixes
+- 1a68a806 site language has no default; unset is NULL, never a silent en (#572)
+- 6a7422ad emit the bound theme favicon as <link rel="icon"> in <head> (#562)
+- 6cacb828 Publish live ships production robots semantics, not staging's (#561)
+- d6a22bd4 read modules branch-effective inside a chat branch (#557)
+- 13fa80a8 emit <html lang> on every rendered page (#559)
+- d7561067 serve content-hashed static assets with immutable caching (#555)
+- 6a4e2fe2 no localhost site URL in production builds; provisioning seeds it (#551) (#560)
+- 105b51e1 exit on adapter-node's sveltekit:shutdown (#549)
+
+### Chores
+- b8006bd4 migrate the admin to SvelteKit 3 (#550)
+- 91994bc8 serve the admin with @sveltejs/adapter-node on Bun (#548)
+
+### Other
+- 1fd2c8c8 run the AI review and the real-AI suite once per PR until they pass (#568)
+- ea2d857d retry the screenshot-branch push with a rebase (#564)
+
+## v0.10.28
+
+### Features
+- 2d06ef39 reach IAP-protected admins via a service-account JWT (#37) (#546)
+
+### Fixes
+- b910c4ee model check sees dated-only models; clearer agent tasks (#545)
+
+### Chores
+- cdb727c4 update model catalog to GPT-5.5 (#544)
+- 35b42101 bump the minor-and-patch group across 1 directory with 17 updates (#540)
+- c0d430d3 bump the minor-and-patch group across 2 directories with 1 update (#538)
+- ddf0131a bump oras-project/setup-oras (#539)
+
+## v0.10.27
+
+### Features
+- 153de29f site media as image references for granted plugins (#537)
+- f186a664 edit images with an optional mask, for chat and plugins (#536)
+- e34eadb7 one image lifecycle for chat and plugins (#527, #532, #529) (#534)
+- 649bf3db reference images that guide generation and never publish (#531) (#533)
+- 244cc08a single model catalog + weekly update via Copilot coding agent (#505)
+- 6a5ee42e upload images from the composer and connected MCP clients (#526)
+
+### Fixes
+- 18e8e15f re-uploading content whose asset was deleted saves a new asset (#535)
+- 72f66d13 keep Secret Manager secrets in the install region (#500)
+
+### Docs
+- c8324501 propose shared media services for chat and plugins (#472)
+
+### Chores
+- 0f8ce875 bump the minor-and-patch group across 1 directory with 40 updates (#501)
+- 7f86fa23 bump js-yaml from 4.3.0 to 5.4.2 (#491)
+- 51b28f23 bump @google-cloud/storage from 7.21.0 to 8.2.0 (#503)
+- a69e8821 bump file-type from 21.3.4 to 22.1.1 (#502)
+
+## v0.10.26
+
+### Features
+- 6c13b207 plugin previews beside the chat in Live Edit (#523)
+- 88b29148 central font library for themes and plugins (#522)
+- f18cde8e private image generation and local derivatives (#521)
+- c4896b03 private immutable files and raster previews (#520)
+- 3f9786e5 current Google chat and image models with shared credentials (#480)
+- ff32955f private read-only author previews and plugin workflow entry (#519)
+- 6423a2a5 reviewed companion skills for installed plugins (#479, ported to the plugin model) (#518)
+
+### Fixes
+- bdf1d48d raw-inserted home pages default to the site root (#524)
+- a123e122 bun.lock follows the version bump; the release gate installs Deno (#517)
+
+## v0.10.25
+
+### Features
+- 9fd55b25 Owner-approved private storage and chat tools for installed plugins (#515)
+- 620815e2 atomic compare-and-swap for plugin storage (#474, rebuilt on the plugin model) (#514)
+- 8a5548bc execute approved external plugins in isolated Deno runtime (#473)
+- 2be476ae branch-aware plugin storage + render branch (§14.7, steps 3–4) (#511)
+- 1c38e4ce plugin storage through named Query API operations (§14.7, step 2) (#510)
+- ad2304a4 every plugin call carries its invocation context (§14.7, step 1) (#509)
+- f25cba3c consent and tracking management (#448) — plugin client assets, deferred modules, and two fixes found on the way (#456)
+- 0bcf119c data lists — plugins supply the data, modules own the markup (#447)
+- 6d4d2dd9 plugin-system v2 foundation + international-site plugin (#387–#400) (#445)
+- 64307ad2 migrate the chat-runner onto the AI SDK multi-step loop (issue #442) (#444)
+- c0767e41 surface AI-detected bugs in the PR comment (#440)
+- f0772cbf capture the design system as a by-product of the theme + module writes (#436)
+- 26f874c0 get_import_page content-only mode — strip layout-owned chrome, consent noise and preset-token dump (#433)
+- ed269fc1 server-side screenshot_page backend — visual self-verification on headless surfaces (Power-MCP, send_chat, subagents) (#427)
+- 0d40c4b2 default-on boilerplate cleanup in inspect_external_page (#431)
+
+### Fixes
+- 2425bf76 extract-fields reads the branch overlay; moduleize failure names the copy-safe retry (#504)
+- be6fb7f0 withhold only what loads with the page, and never blank a page for a missing placeholder (#506)
+- ce0d1c11 retry transient IAM errors when granting provisioner roles (#497)
+- 155cc580 route cloud init and flags-only invocations to the wizard (#496)
+- 976b10c8 visitor-facing plugin dispatch is default deny (#499)
+- 9a60ed1a locale-aware crawl scope + final-URL persistence (#425) (#435)
+- fa9e51ea emit the media UUID from find_media and import_media_from_urls (#421)
+- dc06df2b mirror signatures with oras, and gate on the AR copy verifying (#429)
+- ac206834 honest nav-menu binding guidance + {{#module-list}} semantics (#419)
+- 019e94a3 verify module-list authoring path + reject numbered-scalar fanout (#417) (#426)
+- 47177da1 Power-MCP prose must never recommend an excluded tool — per-surface playbook, serve-time annotation, consistency tests (#420)
+- 305dd79e attributable input-token breakdown, re-derived ceilings, loud attempt-1 breaches + CDATA write-guard (#432, #438) (#439)
+- ddfacf03 LIST-mode/discovery crawls capture screenshots + design tokens in-session (#423) (#434)
+- 989f8a29 AI can obtain import-page ids — list surface, dual-id notes, overlay-aware inventory (#437)
+
+### Refactors
+- 311649e5 list_embeds is read-only (§14.7, step 5) (#513)
+- 1dedaed7 page identity without locale (#384) (#407)
+
+### Docs
+- 67fc3dec design — branch-aware plugin storage (§14.7) (#508)
+- fffd8bcb one plugin model — grants, data zones and never-live writes for every plugin (#507)
+- a1a57b31 spec and docs follow the cut (#386) (#443)
+
+### Chores
+- 5bbdd85d align Bun 1.4.2 across CI and stop duplicate Dependabot PRs (#498)
+- 555f8815 bump actions/setup-node from 6 to 7 (#341)
+- 6793ba72 bump tailwind-variants from 1.0.0 to 3.3.1 (#462)
+- 5e15d94e bump tailwind-merge from 2.6.1 to 3.7.0 (#492)
+- 5e384be5 bump google-auth-library from 10.9.0 to 11.1.0 (#490)
+- b4c7137d bump the minor-and-patch group across 2 directories with 1 update (#475)
+- c97c53d1 bump the minor-and-patch group across 1 directory with 3 updates (#488)
+- 72ce30f6 bump the AI SDK stack to latest stable (#441)
+
+## v0.10.24
+
+### Features
+- 13016b2f growth-time design variants — draft → present → select → materialise (#375) (#378)
+
+### Fixes
+- eedb9a7f edge-router must ship — provisioning depends on it (#408)
+- 555c6bfd claude mcp add snippets use the current CLI syntax
+
+### Chores
+- 3b022e6c batch the safe minor/patch dependabot updates (#374)
+- e18bab65 remove the translation feature end-to-end (#381) (#401)
+
+## v0.10.23
+
+### Features
+- 3c5ecc87 Power-MCP — admin-scoped surface exposing the chat-runner tool catalogue to external agents (#376)
+- f6017683 one-button release from the Actions UI
+- 5e226ad7 images live in the chat history until compaction (#356)
+- d6541c89 per-loop prompt trace so a cache miss can be located
+- 384b1a97 load_skill takes a list of slugs
+- 518c1891 rendered-first import tooling, tolerant build_page, draft-safe chips
+- 2385f0c6 auto-capture every failed tool result into Detected Bugs + source badge
+- ffbff51b Stop button to abort the AI's current action mid-stream
+- 7d3d6cc0 ask the design direction (1:1 / refresh / optimize) up front
+- 1d37424a password change, self-service reset, owner reset + strength policy
+- 49d48bf5 subagent controls, inspect redesign, caching+compaction, e2e token metrics, detected-bugs UI, image-gen coverage (#348)
+- d11b2908 progressive-disclosure skills + per-workflow skill catalogue
+- 9bee65e0 production in-chat approval resume + Approve/Reject card (plan B, slice 1c)
+- ac27d162 fan out SDK approval gate to all propose_* tools (plan B, slice 2)
+- 5a19ddd6 SDK tool-approval gate — chat-runner + layouts end-to-end (plan B, slice 1b)
+- 485ac78a SDK tool-approval gate — provider layer (plan B, slice 1a)
+- 6dec13d2 structured output via SDK generateObject, retire forced-tool pattern (option, plan A)
+- 32f3be3e persist + replay the SDK's canonical turn messages as history (option C, stage 2)
+- ab9cbcb7 provider emits the SDK's canonical turn messages (option C, stage 1)
+- 22f27b93 live-e2e forensics hardening — branch overlays, static tool defs, minimal seed layout, bug_report, e2e auto-approve (#335)
+- 2654de4e Tool Search on by default — defer the long tail, add the tool playbook (#334)
+- e052ac7c Epic #307 wave 2 — budget-derived subagent caps + multi-model tier routing (#311)
+- b01b58e8 Epic #307 wave 1 — cost gate auto-arm, calibrated estimator, bulk build_page, context diet, allowlist fix, media forensics, empty-status fix, mock-pollution fix (#309)
+- d47fa2d1 migration cost gate — operator budget + live spend roll-up (#280) (#294)
+- 8db37c81 per-entity task leases guard concurrent same-branch subagent writers (#264, #268) (#295)
+- 3abe6641 durable per-page edit log — engine (refs #264) (#293)
+- 9bcae3a6 parallel fan-out with batch cost cap + n-of-m progress (#268) (#291)
+- 479773d4 rebuild-quality checks — content inventory + boilerplate detection (refs #248 #252) (#287)
+- 5d719921 homepage-first, fail-fast site-migrate flow (#278) (#292)
+- 8bd161af list-mode site import — fetch an exact URL set, no BFS (#229) (#296)
+- e9b58d62 migration verification gate — source-vs-rebuilt fidelity diff + verdict tool (#250, #244) (#285)
+- e706d238 facet-selectable inspect_external_page + page-type map (#278) (#284)
+- e7ac82e9 add_module_to_template places an existing module (refs #243) (#282)
+- 108c9347 site-migrate rebuilds fan out to subagents (#264) (#266)
+- 308ae5ac site-migrate calls migrate_media right after compose (#249) (#259)
+- 5b6caea3 WS3 media migration — download crawled assets into the media library, rewrite URLs, report the unmigratable (#249) (#258)
+- adb4aebf always-on source screenshots + computed-style design tokens (WS1, #247) (#257)
+- 75040f9b WS2 — rebuild contract replaces the body-freeze (#248) (#256)
+- 4707ffa5 default Anthropic model is claude-sonnet-5, thinking maps to adaptive on Claude 4.6+ (#246)
+- 1561ef28 live crawl progress strip + AI continues on its own (#228) (#230)
+- 31ecb7b7 clickable choice buttons + URL-only migrate opener (#227)
+- 642e0838 first-run AI wizard — pick provider, paste key, land in chat (#222)
+- c9c7e84b login lands in the live editor (#216)
+- 03c33302 bring-your-own-design — mockup image or HTML becomes a draft (#199) (#213)
+- 1409bad4 migration report — rebuild notes + run rollup (#197) (#212)
+- a6b42126 preserve old URLs — source_url → 301 redirects in the compose tx (#196) (#211)
+- 959dffdd compose_from_run v2 — per-cluster templates, real chrome, preserved css, design inventory (#195) (#210)
+- 623ff187 persist crawl screenshots + side-by-side review + model-visible pixels (#198) (#209)
+- 45888bc9 page-type clustering — deterministic signatures, cluster ops + tools (#194) (#208)
+- 81e25d26 scope + cost estimate in the crawl proposal preview (#193) (#207)
+- d52fb6b4 crawler hardening — sitemap, robots.txt, resumable checkpointed crawls, 1000+ pages (#192) (#206)
+- d967594a true image attachments — uploads reach the model as image parts (#190) (#204)
+- 49ca1bbb site-migrate — chat-driven migration workflow with keep-design fork (#188) (#205)
+- 35062ff0 single-page external-site sensing — inspect + screenshot (#189) (#203)
+- 09fa44e5 first-run chat welcome + entry-point routing (#187) (#202)
+- 64d4a95d compiler slice 3 — the screenshot-parity gate (#164) (#184)
+- 42cb14d9 responsive nav menu with vetted toggle behaviour (#160) (#180)
+- 3bac30a7 growth-time consistency gate, static tier (#166) (#181)
+- 7b722da7 invisible technical baseline (#151, re-scoped) (#178)
+- cab8e1ef production-parity responsive image markup (#162) (#179)
+- 3d833834 compiler slice 2 — mechanical token binding (#164) (#176)
+- dc5baf50 Design Manifest — per-site design language as first-class context (#165) (#175)
+- 61a3d26b compiler stage 1 — deterministic draft inventory + inspect_genesis_draft (#164) (#174)
+- 9f424728 design-quality base skill + screenshot self-review loop (#154, #155) (#173)
+- dc6f4e89 Site Genesis slice 1 — design brief, freeform draft storage, selection surface (#163) (#172)
+- 524fc871 first-class gradients, elevation ramp, surface roles + per-category leaf enforcement (#153) (#171)
+- 9d8c13e1 validate var() references against the active theme at write time (#156) (#170)
+- 78c3623b self-hosted web-font delivery for theme typography (#150) (#169)
+- a321a6d7 AI composes the theme itself — remove predefined theme presets (#123)
+- 695682a1 enforce coverage thresholds per CLAUDE.md §6 (#99)
+- d2c435db v0.11.1+ admin UI + AI ergonomics + OKLCh ramp + default seed (closes #76) (#79)
+- e9cb6e32 theme as a first-class primitive — v0.11.0 slice (#45) (#77)
+- 4781f577 shared Mustache template engine (closes #71) (#72)
+- 5bbd8bb6 separate module structure from content — content instances + nested modules (#61)
+- b832bb91 real-AI e2e Live Edit suite (issue #47, v0.13.0) (#60)
+- 4a91de89 run release-images on PRs and make it a required check (#57)
+- ba5eab42 add AI security review on every PR (#24) (#50)
+- 6653a431 protect main branch via GitHub ruleset (#23) (#48)
+
+### Fixes
+- 1922849a inject the signing key via env, not run-block interpolation
+- 3824a3b2 release-cut needs the Tier-1 signing key in CI
+- 69039f97 address PR #379 review findings
+- fda22116 fresh installs deploy the latest release, not a dev image
+- 8aa9d1b2 clear both open Dependabot advisories
+- 7bba155a validate a gated payload before spending the operator's click
+- f46d1512 label what each spend figure counts, so they stop contradicting
+- 0fc41a13 put the migration budget behind an operator click
+- b7c476f0 stream the price actually billed, not a cache-blind estimate
+- 8c736bbc give the check job real headroom (10 -> 20 min)
+- aa23f83e a preference is not a reason to end a turn
+- e70417c1 keep the AI spend readout current without a server round-trip
+- 875e12b9 return the argument structure on rejection, not just key names
+- 1708945d the finishing-a-turn block prescribes no tool
+- 783d9eae recover a narration that ran no tools — the originally reported shape
+- d95a2490 judge turn completeness with a small model before forcing a tool call
+- ead9b4ca author the off-page inspect module explicitly + widen its wipe
+- 29952fda seed gated-misc actors + track the bulk-build call model
+- 96df01b1 same-block move reorders in place instead of erroring
+- 73cc46bf resolve a moduleId that lives on the layout/template (or is reusable)
+- c3eaf113 make edit-content-tool seedModule idempotent (dup-slug)
+- 6b2883a2 protect `pages` from cascade-truncate in test-preload (#0184 FK)
+- 730463c2 clear CodeQL clear-text-logging + 2 latent test failures
+- d1f07b4b drop dead direct-build loaders (knip) + redact session id in chat-runner logs (codeql)
+- 9b2632a6 get_import_page_screenshot resolves composed/#278 page ids + de-dupe error prefix
+- 93194941 calibrate cost estimate to the bulk-build path + ceiling = the max
+- cc4c57b8 password field says min 10 (matches the strength policy)
+- dcc30e33 teach moduleize Caelo's list-iteration syntax (was emitting Handlebars {{this}})
+- 17c04460 link-list default schema — concrete {label,href} shape (was [{}], lost nav values)
+- c37ab0e0 moduleize — drop the unused `type` field + vary retry temperature (root cause)
+- 606d0915 log the real NoObjectGenerated cause in generateObject (diagnose moduleize misses)
+- 3e341079 warn the model that html2canvas screenshots mis-render text spacing + flex-wrap
+- f701a7a9 moduleize schema — replace empty {} default with a concrete union (plan A regression)
+- b79b2dc9 finish the tool-rename cleanup — skill allowlists + update_modules_many parity (#331)
+- 23765c75 locale proposals never rendered an Approve card — migrate 5 tools onto makeProposeTool (#328)
+- 66b42025 cap AI substring-deletes — matches:'/' could wipe every 301 (#329)
+- 70cb8c25 slug changes always redirect + fold page setters into update_pages_many (audit #3, #B) (#323)
+- b9a1471c streamed cost uses the active model's ai_pricing rate, not the Opus default (#320)
+- b0ce4031 stabilize CI + real-AI e2e — green main, kill screenshot-thrash, publish bootstrap homepage (#319)
+- ebec3969 retire compose_page_from_spec for build_page + accept literal CSS shadow tokens (#313)
+- 7853b41b run-15 session fixes rollup — zero-red error classes, media direct-build, error ledger, test-preload guard (#308)
+- f3541474 don't send temperature to Claude 4.6+ models — they 400 on it (#289)
+- 421d2dd4 make page-facets extractors linear (js/polynomial-redos) (#288)
+- 0a393cb3 root-cause #245 SDK arg stringification + generate inputSchema from zod (#251 WS5) (#286)
+- 12b6647c stop bun:SQL jsonb double-encoding — systemic write-site audit (#68) (#283)
+- 0b4d7f2c add_page_notes accepts the composed CMS page id, not only the staging id (#281)
+- f5a4f07a run #10 D1/D2/D5 — orphan tool_result wedge, forced subagent results, first-turn timing (#273)
+- 4afe156f run #10 D3/D4/D6 — strip WP comment threads, regenerate media variants, publish no-op (#274)
+- 56ee8d33 staging pipeline no longer success-lies — serve verification, zero-page guard, bulk publish (run #9 R10) (#272)
+- 1c95871d run #9 blockers — orchestrator keeps spawn tools, slug-safe crawl, all-or-nothing compose, deletes read back (R7-R9) (#271)
+- e8e4d660 run #8 chat-runner + subagent regressions — schema drift, blind reads, empty turns (#270)
+- 94736c86 failed staging builds no longer consume the chat branch + run #8 hardening (#269)
+- fc87794c Stage no longer 200-no-ops in dev + pre-run foreign-lock guard (#262) (#267)
+- 3fdbcf11 history compaction so the runner survives the model token ceiling (#265)
+- d1437d53 drop empty Sonnet-5 thinking blocks — they 400 on replay and kill the session (#260)
+- 551fc2fd tolerant tool-arg boundary — schema-guided coercion at dispatch + DTCG envelope unwrap (#251, #242) (#255)
+- bea9a406 WS0 — chrome binds at the layout, imported pages are content-only (#253) (#254)
+- 7c14c7b9 set_theme_tokens carries the composite token shapes too (F10) (#240)
+- da1ef451 strip approvals pass the raw proposal kind — import auto-continue arms again (#239)
+- e1674917 strip cookie-consent banners at extraction (#238)
+- 44d27e7a light refresh gets a contract — theme + chrome only, bodies stay (#237)
+- 7f35f809 the migrate chip actually engages the site-migrate skill (#234)
+- 33ff7115 composite token shapes in the shared theme guidance (#235)
+- bc340750 sticky per-chat auto-engagement — mid-flow answers keep the skill (#233)
+- bed7bed1 crawl proposals join the pending inbox so the chat strip shows them (#232)
+- a088e200 junk crawl vars dropped, not mis-binned — compose_from_run no longer aborts (#231)
+- d4b8ffa4 loading state for every POST submit button via one global observer (#226)
+- 00b5900e pending strip pinned above the composer + migrate skill asks one plan question (#225)
+- 335db4cb inviting empty states — canvas points at the chat, chips on every empty chat (#224)
+- 6f472671 signed-in visits to /login and /setup no longer strand on the setup form (#223)
+- ce53a0bd label the owner name field "Your name", not "Display name" (#221)
+- 5c387ec9 crawl approval happens ON the chat card — no admin-page detour (#220)
+- 0be431f1 collapse long tool results; honest chromium install hint (#219)
+- 72a234c7 first-contact UX — one scroller, real lists, quick replies, side-column default (#218)
+- 22a7c8dc keep the playwright import dynamic for bundlers (#215)
+- 3b12e07a SSRF guard for operator/AI-supplied external URLs (#191) (#201)
+- 2ac20400 cold-start gate checks the primary's CHROMA, not just origin+description (#183)
+- bc5eb848 dedupe module CSS/JS by moduleId in both compose paths (#158) (#177)
+- e7af6537 register list_modules, add place-existing mode to add_module_to_page, pin prompt-registry drift (#159) (#167)
+- d98b5b95 seed layout CSS bound chrome to nonexistent theme vars (#157) (#168)
+- f54d0aee resolve the 55 open CodeQL code-scanning alerts on main (#114)
+- 279279db stable module type + generation-time block enum — stop invalid live-edit tool calls (#106) (#107)
+- 97c8a557 restore release-images admin Docker build via inlined oxc-parser dispatcher (#53) (#56)
+- ebc93b76 build @caelo-cms/shared before e2e Playwright smoke (#36, partial — AC #3 deferred to #52) (#51)
+
+### Refactors
+- cb1d3be5 report the canonical spend, stop deriving it in the client
+- 6839af15 state the missing definition, don't instruct the model
+- 92abee02 replace the prose-matching passive nudge with a three-layer guard
+- d669e481 stop computing dropped blocks; static subagents; §11 rewrite
+- 47457063 static system prompt; current page rides the user message
+- 345e7f8a consolidate page creation into build_page, remove create_page (dedup)
+- 5b030830 unify status/remove pairs + tests for the untested write tools (#332)
+- c0362f59 fold delete_page into delete_pages_many + move dead-URL redirect into the op (audit #4) (#330)
+- d29bdbde consolidate add_module_to_{page,layout,template} into one add_module (audit #2) (#322)
+- f67f9b62 split chat-runner.ts into a chat-runner/ directory (#15) (#120)
+- 07fae19d centralize ProposalStatus enum + describeError in @caelo-cms/shared (#20) (#115)
+
+### Docs
+- c501ae7d SDK in-chat approval is the gate; propose/execute is the engine (plan B, slices 3-4)
+- 20ae2bbf CLAUDE.md §12 — the AI provider SDK is the boundary, use its shapes
+- 97534d83 point the publicPathFor FIXME at issue #326, not PR #323 (#327)
+
+### Chores
+- 7dedad99 bump marked from 14.1.4 to 18.0.7
+- 796b8b61 prune per-merge dev images after 7 days; releases live forever
+- 48c543d4 git-ignore local e2e-livedit run-logs
+- f4fff895 bump the minor-and-patch group across 1 directory with 2 updates
+- 24fb9e17 green the Lint/Test CI job — format 16 files, retire a stale test (#324)
+- b3e0132b upgrade ai 6→7 + @ai-sdk/{anthropic,openai,google} 3→4 (latest) (#321)
+- 86602eb7 bump license-checker-rseidelsohn from 4.4.2 to 5.0.1 (#130)
+- 6b161959 bump the minor-and-patch group across 10 directories with 34 updates (#148)
+- 4602edb6 bump js-yaml from 4.1.1 to 4.2.0 (#146)
+- d429a406 bump vite from 8.0.10 to 8.0.16 in /apps/admin (#125)
+- 56d3c006 bump the minor-and-patch group across 1 directory with 5 updates (#147)
+- 57faceb9 bump actions/checkout from 6 to 7 (#127)
+- e54465a3 bump sigstore/cosign-installer from 3.9.1 to 4.1.2 (#119)
+- 385e9cdb bump svelte from 5.55.5 to 5.55.7 in /apps/admin (#102)
+- 72b27fb5 bump @sveltejs/kit from 2.58.0 to 2.60.1 in /apps/admin (#101)
+- d1882ca1 bump github/codeql-action from 3 to 4 (#111)
+- d8d482a9 bump actions/upload-artifact from 4 to 7 (#110)
+- f24e7df9 bump docker/login-action from 3 to 4 (#88)
+- c9d7375a bump docker/metadata-action from 5 to 6 (#87)
+- 039c89f4 bump actions/setup-node from 4 to 6 (#89)
+- c776a87e bump softprops/action-gh-release from 2 to 3 (#90)
+- 7eb6b43e bump docker/setup-buildx-action from 3 to 4 (#91)
+- dd2ed77a bump google-github-actions/auth from 2 to 3 (#92)
+- dacb7a2d bump the minor-and-patch group across 2 directories with 1 update (#86)
+- ae714a73 bump actions/upload-artifact from 4 to 7 (#93)
+- 60f97573 bump docker/build-push-action from 6 to 7 (#94)
+- 6927118d bump actions/checkout from 4 to 6 (#95)
+- 3315d4e4 add project-scoped Playwright MCP server config (#58)
+
+### Tests
+- 89dc132c footer smoke uses add_module (target=layout), not the removed alias
+- 5c812afc cover the 22 red-flagged AI tools (#333)
+- 4cf6b66b run the real-AI suite against claude-sonnet-5 (#279)
+- bb862feb stage harness — recorded searchviu crawl through the real pipeline in <1s (#236)
+- 6313e1fa onboarding routing + keep-design migration scenarios, opt-in (#200) (#214)
+- c6be13ae Genesis scenario — divergent drafts + selection (#163) (#185)
+- 15ab787e design-floor assertion + design-report warnings (#161) (#182)
+
+### Other
+- c06e758f apply the repo formatter to the spend read-back
+- cc514a3e cache the conversation history — rolling last-message breakpoint
+- 065aed5e biome import-order autofix in chat-runner/index (plan B)
+- 41107ffe stop gating PRs on the real-AI suite (temporary) (#325)
+- 3d887147 base prompt steers multi-section page creation to build_page, not add_module chains (#315)
+- 6c19218d capture real AI cost per run as an optimization metric (#310)
+- 1f5400dd remove the auto-integration-branch workflow (#290)
+- b63d683c set -e-safe reporting (branch push already worked) (#277)
+- 5aadc690 only fold fix/** + feat/** PRs, pin workflows to main (#276)
+- 8a1b2e9f auto-rebuilt integration branch (main + open non-draft PRs) (#275)
+- c32a9d9f Extract shared Query API op boilerplate helpers and apply to high-churn ops (#124)
+- 859f656d Enable CodeQL + secret scanning + push protection (#103)
+- f7b01780 add madge gate for circular-dependency detection (#98)
+- 33634b2b Add knip dead-code gate to CI (unused exports / files / deps) (#96)
+- d733d730 enable Dependabot auto-PRs for workspace JS, Actions, and Docker (closes #25) (#84)
+- a1fabb8c add admin-prod-image boot smoke gate to PR CI (closes #55) (#59)
+
+## v0.10.22
+
+### Refactors
+- 02561c3 consolidate structured-sets to one unified CRUD surface
+
+## v0.10.21
+
+### Features
+- 3a8441c teach the AI structured-data sets as a first-class concept
+
+## v0.10.20
+
+### Fixes
+- 034ad9d set_nav_menu — full per-item JSON Schema + inline items in system prompt
+
+## v0.10.19
+
+### Fixes
+- 682d14e release per-entity locks at chat.merge_to_main (Stage), not just publish
+
+## v0.10.18
+
+### Tests
+- 9b61050 align provider-fixture-replay with v0.10.17 done-event shape
+
+## v0.10.17
+
+### Other
+- 6e9e47d capture provider stop_reason + warnings on empty-response (root-cause hunt)
+
+## v0.10.16
+
+### Fixes
+- f5ace73 drop false-positive passive-response warning on legitimate question-asking turns
+
+## v0.10.15
+
+### Fixes
+- a51389a cross-chat banner counted already-merged work as pending
+
+## v0.10.14
+
+### Tests
+- c6fdf06 seed template_blocks in chained-branched-page-layout test
+
+## v0.10.13
+
+### Fixes
+- 563c796 branched page-layout overlay — chained add_module_to_page → reorder_module no longer fails
+
+## v0.10.12
+
+### Features
+- f5f132a "Publish live" + persistent staging link + live-matches-staging indicator
+
+## v0.10.11
+
+### Fixes
+- 9e95e83 Firebase promote now patches robots.txt with destination env's robotsDefault
+
+## v0.10.10
+
+### Fixes
+- 2aadb32 post-Stage modal showed phantom layout-chrome + "Promote staging" opened Stage modal
+
+## v0.10.9
+
+### Fixes
+- da19491 Promote button hidden after Stage — use chat.last_staged_at as 'has staged' signal
+
+## v0.10.8
+
+### Fixes
+- 90da798 pending-changes badge resets to 0 after Stage (last_staged_at on chat_sessions)
+
+## v0.10.7
+
+### Fixes
+- 3508186 pages.set_status — bypass jsonb_set; write whole jsonb blob via ::jsonb cast
+
+## v0.10.6
+
+### Fixes
+- ec3063e pages.set_status — split CTE+UPDATE into two simple queries (bun-sql workaround)
+
+## v0.10.5
+
+### Fixes
+- d7c78d1 pages.set_status — rewrite snapshot UPDATE as CTE so bun-sql parses it
+
+## v0.10.4
+
+### Chores
+- 331ec5d log full pages.set_status error to stderr for Cloud Run diagnosis
+
+## v0.10.3
+
+### Fixes
+- 6f1e766 pages.set_status referenced non-existent updated_by column
+
+## v0.10.2
+
+### Tests
+- ac1714a use the seeded test-AI actor id so audit FK resolves
+
+## v0.10.1
+
+### Tests
+- a57dce0 surface modules.update error in chained-edits regression test
+
+## v0.10.0
+
+### Features
+- f30e3b9 chained branched edits compose without losing intermediate state
+
+## v0.9.13
+
+### Features
+- 02d107c AI status-flip tools (singular + bulk) wrapping pages.set_status
+
+## v0.9.12
+
+### Fixes
+- 40d0b81 status toggle reverts on Stage — branched page_snapshot was never patched
+
+## v0.9.11
+
+### Fixes
+- 83bed9a status toggle badge didn't update — pages.update with branch ctx skips the live row
+
+## v0.9.10
+
+### Chores
+- 2457a38 biome auto-format on v0.9.9 changes
+
+## v0.9.9
+
+### Features
+- 99daa4f Stage ≡ Production + per-page status toggle + AI status policy
+
+## v0.9.8
+
+### Fixes
+- c34defb staging deploys were shipping zero pages because static-gen filtered out drafts
+
+## v0.9.7
+
+### Fixes
+- adac131 iframe click-through dropped ?branch= → branched pages 404'd
+
+## v0.9.6
+
+### Fixes
+- 3543608 /edit preview iframe was 404ing for AI-branched pages
+
+## v0.9.5
+
+### Fixes
+- af76687 /edit seen-set effect looped forever when data.pages was empty
+
+## v0.9.4
+
+### Fixes
+- 6d1af8e floating overlay drag/resize/Send broken — iframe ate the pointer-up
+
+## v0.9.3
+
+### Fixes
+- a1a6fe5 /edit page-load is now branch-aware — AI's branched-create pages were invisible
+
+## v0.9.2
+
+### Fixes
+- d3b60fd upgrade lifecycle ran migrations against the OLD image
+
+## v0.9.1
+
+### Chores
+- 57c0d38 biome lint cleanup (exclude claude-workflow + auto-fixes)
+
+## v0.9.0
+
+### Features
+- 6425bff branched-create with same-chat visibility + cross-chat write-block
+
+## v0.8.1
+
+### Fixes
+- 2edc572 StageDeployButton popover dismissal + Promote-only fallback
+
+## v0.8.0
+
+### Features
+- 8cec2ca Stage to toolbar, accurate counter, cross-chat awareness, lock humanization
+
+## v0.7.5
+
+### Fixes
+- bd1162f restore add_module_to_layout to bootstrap-site + compose-page skill allowlists
+
+## v0.7.4
+
+### Fixes
+- 0fb163f bootstrap_site_scaffold told AI to stop when it should continue
+
+## v0.7.3
+
+### Fixes
+- 3a1d0cb StageDeployButton stayed hidden when chat had branch edits
+
+## v0.7.2
+
+### Chores
+- 3c75862 remove orphaned stage_change AI tools + polish StageDeployButton error UX
+
+## v0.7.1
+
+### Chores
+- 1fcb65a clean up legacy Stage UI + polish StageDeployButton
+
+## v0.7.0
+
+### Features
+- 90b8158 Stage / Publish UX redesign — 1:1 staging preview + selective production publish
+
+## v0.6.6
+
+### Fixes
+- db7f53f Pulumi IAM hardening — telemetry roles + drop dead resend secret + stale comment
+
+## v0.6.5
+
+### Fixes
+- 6385c65 grant admin SA roles/run.viewer on gateway for Firebase Hosting deploy
+
+## v0.6.4
+
+### Fixes
+- ba8c2d6 queue approve-during-stream nudges + flush when streaming ends
+
+## v0.6.3
+
+### Fixes
+- eebd339 Firebase Hosting headers REST shape — map<string,string>, not array-of-{key,value}
+
+## v0.6.2
+
+### Fixes
+- f3d7efb position string-number coercion + chrome-block redirect + ToolCardRouter heuristic
+
+## v0.6.1
+
+### Features
+- 55a2fcc branch-aware placement check + SEO tools in allowlists + composite SEO auto-fill
+
+## v0.6.0
+
+### Features
+- f098a0e deferred topics — compose_page_from_spec, revert_chat_changes, delete_pages_many needsApproval reference
+- 15691cd state-aware AI tools — describe(state), Tool Search, nextAction, composite bootstrap, needsApproval gate
+- b54d1e1 upgrade to AI SDK 6 + provider v3
+
+### Fixes
+- 49e4be3 close all alpha.3 loose ends — dispatch result propagation, retry helper extraction, cross-actor test
+- 5ef5256 close all alpha.2 loose ends — chat.get_branch_id, schema-validated retry, integration tests
+- 453cc8e close all alpha.1 loose ends — W5 persistence, raw-SQL fix, real W3 retry, nextAction coverage, skill bodies
+
+### Chores
+- 93bc715 v0.6.0-alpha.2
+- 103fd9c v0.6.0-alpha.1
+- ca5c723 v0.6.0-alpha.0
+
+## v0.6.0-alpha.4
+
+### Fixes
+- **T (high):** Approve route now appends the dispatched tool's actual result to the chat as a `role: "tool"` message via `chat.append_message`. AI sees the real outcome (e.g., for `delete_pages_many`: how many actually deleted, what was already-deleted, what was not-found) on its next turn — was: only saw a generic "proposal applied" client-side notification.
+- **X (high):** Integration-test wipe broadened from `chat_session_id = SESSION_ID` to `tool_name = 'integration_test_gated_tool'` — catches rows the first test inserts without a chatSessionId. Prevents dev-DB pollution.
+- **R:** Approve route documents the actor-scope constraint: Owner-ctx dispatch means tools with `actorScope` excluding "human" would fail at approve-time. Every currently-shipped gated tool has `["human", "ai", "system"]`; future ai-only gated tools would need scope widened.
+- **V:** `docs/propose-execute-pattern.md` extended with a "v0.6.0 alternative — `needsApproval` predicate" section + a "when to use which" table + the three documented constraints (built-in-tools-only, Owner-ctx dispatch, live-commit semantics).
+- **W:** W3 auto-recovery logic lifted from `chat-runner.ts` (135 lines, 5 nesting levels) to `auto-recovery.ts` (focused module with helper functions, 2 nesting levels). chat-runner call site is now ~15 lines.
+
+### Features
+- **U:** New `chat-get-branch-id.integration.test.ts` — 3 tests covering cross-actor lookup (AI ctx reading a human-owned chat's branch id), missing-session graceful return, and regression guard pinning that `chat.get_session` DOES still filter by `created_by` (so the separate op stays justified).
+- New `auto-recovery.test.ts` — 13 unit tests for `tryAutoRecover` + `extractAtPath`: happy path, non-read-only recovery rejection, missing-from-catalogue, no-retry-spec fold, path-doesn't-resolve fold, schema-validation skip, retry-also-failed both-attempts surfacing, plus 6 `extractAtPath` edge cases.
+
+## v0.6.0-alpha.3
+
+### Fixes
+- **A (critical):** Fix #2's `revert_chat_changes` migration to `chat.get_session` silently broke the tool for AI callers — that op filters by `created_by = ctx.actorId`, and the AI actor is never the chat's creator. New `chat.get_branch_id` op (AI scope, no creator filter) returns just the branch id + creator. Restored revert_chat_changes works against chats the human user owns.
+- **B (contract):** Approve route explicitly documents live-commit semantics — `chatSessionId` carries through to the audit log but `chatBranchId` is deliberately omitted so approved gated tools commit directly to main, not to the proposing chat's branch.
+- **C (constraint):** Approve route documents the built-in-tools-only constraint — `createDefaultToolRegistry()` doesn't include Tier-1 plugin tools, so any future plugin tool with `needsApproval` would queue fine but the Approve dispatch would 400. Plain comment, no behavior change.
+- **D:** Dispatcher out-of-chat fallback now emits a NON-canonical `[needs-approval, non-persisted] <tool> would queue …` string so ProposeCard's regex skips it. Prevents a confusing "click Approve → 400" UX in the (currently theoretical) case where the fallback ever reaches a chat surface.
+- **G:** Chat-runner validates the rewritten args against the original tool's Zod schema BEFORE re-dispatching. Misconfigured `nextAction.retryWithArgs` falls through to fold-into-content with a clear "[retry skipped — rewritten args failed schema]" marker instead of confusing the AI with an "invalid arguments" error.
+
+### Features
+- **F+H:** `list_pages`, `find_media`, `find_redirects` now populate `ToolResult.value` so the W3 retry path works for any `nextAction.retryWithArgs` pointing at them, not just `list_layouts` / `list_templates`.
+- **E:** New `tool-approvals.integration.test.ts` — 5 tests against real Postgres covering queue + atomic claim + result tracking + list-pending filter + reject. Locks in the contract that the W5 persistence layer actually works.
+- **I:** `/security/tool-approvals/pending` now linked from the Security control panel under "Tool approvals (queue)".
+- **K (skill body):** Migration 0084 appends a one-paragraph nudge to compose-page + bootstrap-site skills explaining the "Queued proposal <uuid>: ... needs Owner approval" pattern so the AI doesn't claim success on a gated tool.
+
+### Docs
+- `ToolDescribeState.actor` + `fetchedAt` now have explicit "future extension point" comments rather than appearing unused.
+
+## v0.6.0-alpha.2
+
+### Fixes
+- W5 persistence layer wired end-to-end: new `tool_approval_actions` table + `tool_approvals.{queue, read_for_execute, mark_result, reject_proposal, list_pending}` ops + `/security/tool-approvals/pending` route. Gated tools now emit canonical `Queued proposal <uuid>:` content; ChatPanel's ProposeCard renders the inline Approve / Reject buttons; Approve atomically claims the row and dispatches the tool with the persisted args via `createDefaultToolRegistry()`.
+- `revert_chat_changes` no longer uses raw `new SQL()` (CLAUDE.md §2 violation) — switched to `chat.get_session` op.
+- W3 auto-recovery now actually retries the original call. New `nextAction.retryWithArgs: {argName, fromValuePath}` declarative spec; tools populate `ToolResult.value` with structured payload; chat-runner extracts at the path and re-dispatches the original tool with corrected args. AI never sees the original failure when retry succeeds. Bounded to one retry per call.
+- `nextAction` extended to 4 more ops: `add_module_to_page` block-not-found (suggests `inspect_page_render`), `add_module_to_layout` layout/block-not-found (suggests `list_layouts`, autoExecute on layout-not-found), `add_module_to_template` no-pages-bound (suggests `list_templates`), `set_page_module_content` placement-not-found (suggests `inspect_page_render`).
+- Skill bodies updated: `bootstrap-site` now describes the idempotent `bootstrap_site_scaffold` flow; `compose-page` recommends `compose_page_from_spec` for multi-section pages.
+- Tool Search threshold tunable via `CAELO_ANTHROPIC_TOOL_SEARCH_THRESHOLD` env (default 10); `CAELO_DEBUG_TOOL_SEARCH=1` logs whether the transform engaged each turn.
+- `ToolDescribeStateLayout.blocks` now carries `position` (was dropped previously).
+- `revert_chat_changes` cap message clarified — counts entity-snapshot ROWS (each is a revert operation), not unique entities.
+
+## v0.6.0-alpha.1
+
+### Features
+- Composite tools: `compose_page_from_spec` (page + N section modules in one call), `revert_chat_changes` (one Approve undoes a whole chat).
+- W5 reference: `delete_pages_many` gates at 5+ pages via `needsApproval` predicate.
+
+## v0.6.0-alpha.0
+
+### Features
+- AI SDK 5 → 6 upgrade (`ai@6.0.183`, `@ai-sdk/anthropic@3.0.78`, `@ai-sdk/google@3.0.74`, `@ai-sdk/openai@3.0.64`).
+- W1: state-aware tool descriptions via `describe(state)` callback on `ToolDefinitionWithHandler`. 6 high-value tools migrated.
+- W2: Anthropic Tool Search (BM25 / regex) opt-in via `CAELO_ANTHROPIC_TOOL_SEARCH={bm25,regex}`.
+- W3: structured recovery via `HandlerError.nextAction`; chat-runner auto-executes read-only recoveries.
+- W4: `bootstrap_site_scaffold` composite — idempotent forward-progress across the Owner-approval gap.
+- W5 (foundation): `needsApproval` + `buildApprovalPreview` predicate on tool definitions; dispatcher gate.
+
+## v0.3.6
+
+### Fixes
+- 5a2f81e Firebase project init + admin roles for gcp-firebase (v0.3.6)
+
+## v0.3.5
+
+### Fixes
+- 717d44c gcp-firebase stack type errors + stack-level tsconfig (v0.3.5)
+
+## v0.3.4
+
+### Fixes
+- 74b7fbc bundle ts-node so Pulumi can load stack .ts files (v0.3.4)
+
+## v0.3.3
+
+### Fixes
+- 7a90f5b gcp-firebase cost preview drops LB/CDN/Armor lines (v0.3.3)
+
+## v0.3.2
+
+### Chores
+- bfeb572 drop dead anthropic-api-key wizard path (v0.3.2)
+
+## v0.3.1
+
+### Fixes
+- fdd69ca gcp-firebase launch-readiness (v0.3.1)
+
+## v0.3.0
+
+### Features
+- 2aacedf gcp-firebase provider (v0.3.0)
+
+## v0.2.85
+
+### Features
+- c2aaab3 page_url_style 'no-extension' for clean URLs (v0.2.85)
+
+## v0.2.84
+
+### Fixes
+- 2ab2083 staging-preview path + drop v0.2.83 override (v0.2.84)
+
+## v0.2.83
+
+### Fixes
+- c387d45 config-pinned secret override preserves KEK across v0.2.81 transition (v0.2.83)
+
+## v0.2.82
+
+### Features
+- 267b772 surface KEK-mismatch on /security/ai (v0.2.82)
+
+## v0.2.81
+
+### Fixes
+- 984d98a KEK no longer rotates on every pulumi up (v0.2.81)
+
+## v0.2.80
+
+### Fixes
+- 8dfe693 incremental Stage no longer crashes (v0.2.80)
+
+## v0.2.79
+
+### Features
+- 1458a0a cascade-expansion + inspect_built_page + staging GC (v0.2.79)
+
+## v0.2.78
+
+### Features
+- fde3ce7 cloud-portable Stage / Confirm-publish via GCS (v0.2.78)
+
+## v0.2.77
+
+### Fixes
+- 02ccc8c surface real generator error in Stage button (v0.2.77)
+
+## v0.2.76
+
+### Fixes
+- e73421d pending-changes badge survives page reload (v0.2.76)
+
+## v0.2.75
+
+### Features
+- a9f98b8 post-approval auto-reload + auto-continue (v0.2.75)
+
+## v0.2.74
+
+### Features
+- 7317d29 multimodal pipeline + screenshot_page tool — operator-browser capture (v0.2.74)
+
+## v0.2.73
+
+### Refactors
+- 5419a2a port OpenAI / Gemini / local-OpenAI-compat to AI SDK; extract shared helpers (v0.2.73)
+
+## v0.2.72
+
+### Refactors
+- 1073ebf Anthropic provider rewritten on Vercel AI SDK; same public shape (v0.2.72)
+
+## v0.2.71
+
+### Tests
+- 3aa4732 SDK migration preflight spikes — all three checks PASS (v0.2.71)
+
+## v0.2.70
+
+### Fixes
+- 8370476 inspect-page-render typecheck + add AI SDK deps for v0.3.0 spike (v0.2.70)
+
+## v0.2.69
+
+### Features
+- 27df92c inspect_page_render tool — give the AI eyes on the rendered cascade (v0.2.69)
+
+## v0.2.68
+
+### Fixes
+- 549bd7d expose verdict/tree/freeform schemas to the AI in tool descriptions (v0.2.68)
+
+## v0.2.67
+
+### Fixes
+- 50a33d9 surface raw output + observed keys when verdict shape parse fails (v0.2.67)
+
+## v0.2.66
+
+### Fixes
+- bf4ef84 teach the AI that template render slots are <caelo-slot>, not HTML comments (v0.2.66)
+
+## v0.2.65
+
+### Fixes
+- f4bc74b pages.get_with_modules surfaces empty template_blocks; templates.update accepts blocks (v0.2.65)
+
+## v0.2.64
+
+### Fixes
+- 7b95f0d teach the AI about the in-chat approval strip + tool-card buttons (v0.2.64)
+
+## v0.2.63
+
+### Features
+- ec6b0df pending-proposals strip — sticky inline approval UI for queued propose_* (v0.2.63)
+
+## v0.2.62
+
+### Features
+- b9d56a0 inline Approve / Reject buttons on propose tool-cards (v0.2.62)
+
+## v0.2.61
+
+### Fixes
+- 1781f91 resolveChatSessionId queries chat_sessions, not the nonexistent chat_branches table (v0.2.61)
+
+## v0.2.60
+
+### Features
+- c19bd33 live activity pill — show what the agent is doing during streaming (v0.2.60)
+
+## v0.2.59
+
+### Fixes
+- d7f916f SSE keep-alive ping + X-Accel-Buffering: no — fix proxy idle-timeout aborts (v0.2.59)
+
+## v0.2.58
+
+### Fixes
+- 733377e surface stream-abort to the chat UI + abort-source forensics (v0.2.58)
+
+## v0.2.57
+
+### Fixes
+- 402526e switch chat-runner traces console.info → console.error so they actually reach Cloud Run logs (v0.2.57)
+
+## v0.2.56
+
+### Fixes
+- bb10210 replace silent /edit→/content/chat redirect with explicit error + breadcrumbs (v0.2.56)
+
+## v0.2.55
+
+### Features
+- 723f702 per-chat debug toggle + per-loop runner logging + manifest CORS fix (v0.2.55)
+
+## v0.2.54
+
+### Features
+- 3aeed98 extended-thinking toggle + 32k default max_tokens (v0.2.54)
+
+## v0.2.53
+
+### Features
+- 22c2916 bump max output tokens 4096 → 16384, add per-provider config knob (v0.2.53)
+
+## v0.2.52
+
+### Fixes
+- 3a18f71 tool exceptions become recoverable failures + persist-fail surfaces (v0.2.52)
+
+## v0.2.51
+
+### Fixes
+- baae7c9 SSR-safe markdown + Cloud Run admin SSE timeout (v0.2.51)
+
+## v0.2.50
+
+### Fixes
+- 0ce0b14 clear compose-page allowlist to fix silent chat stall (v0.2.50)
+
+## v0.2.49
+
+### Fixes
+- 5b83c5a bake post-incident defaults to prevent SQL conn exhaustion (v0.2.49)
+
+## v0.2.48
+
+### Fixes
+- 382d1b0 alwaysOn skills no longer narrow tool catalogue (v0.2.48)
+
+## v0.2.47
+
+### Features
+- 6106f7d composer affordances — slash / @-mention / drag-drop (v0.2.47)
+
+## v0.2.46
+
+### Features
+- 379883b tool-result cards + inline diff + debug panel (v0.2.46)
+
+## v0.2.45
+
+### Features
+- 6fa7572 smooth UI — autoscroll + markdown + typing indicator (v0.2.45)
+
+## v0.2.44
+
+### Tests
+- 5f6cedc Playwright propose → approve flow (v0.2.44)
+
+## v0.2.43
+
+### Docs
+- 90680c1 pattern reference + CLAUDE.md cross-link (v0.2.43)
+
+## v0.2.42
+
+### Features
+- c743032 plugin_rate_limit_proposals 'superseded' status (v0.2.42)
+
+## v0.2.41
+
+### Fixes
+- 1e07fe9 /security/pending Review button uses anchor + buttonVariants
+
+## v0.2.40
+
+### Features
+- af7bfa1 per-domain AI activity aggregator (v0.2.40)
+
+## v0.2.39
+
+### Other
+- 48941d2 test+fix(propose): integration test fixture + jsonb-payload parse fix (v0.2.39)
+
+## v0.2.38
+
+### Features
+- d33a052 per-domain context blocks + AI-self-filtered pending block (v0.2.38)
+
+## v0.2.37
+
+### Features
+- 8b6d91c GC worker + cancel_proposal AI tool (v0.2.37)
+
+## v0.2.36
+
+### Features
+- 98f7ed4 unified /security/pending Owner inbox + chat origin per row (v0.2.36)
+
+## v0.2.35
+
+### Features
+- 1cd9f93 schema foundation — chat origin + dedup + cancelled status (v0.2.35)
+
+## v0.2.34
+
+### Chores
+- ce6ce5e tool-description sweep — bulk routing pointers (v0.2.34)
+
+## v0.2.33
+
+### Features
+- 2249f14 bulk variants for pages + modules (v0.2.33)
+
+## v0.2.32
+
+### Features
+- d56a0ea cross-domain pending-proposals aggregator + chat-runner block
+
+## v0.2.31
+
+### Features
+- d3fd2e1 wire v0.2.20-v0.2.30 propose ops as AI tools (v0.2.31)
+
+## v0.2.30
+
+### Features
+- 3828bbe propose/execute pairs for add/remove + widen verify
+
+## v0.2.29
+
+### Chores
+- c676050 strip unused biome-ignore comments + fix useOptionalChain
+
+## v0.2.28
+
+### Features
+- e1f391f propose/execute pairs for update/delete
+
+## v0.2.27
+
+### Features
+- 1efe3c1 propose/execute pairs for create/revoke
+
+## v0.2.26
+
+### Features
+- e1ac279 propose/execute pairs for set/clear_key
+
+## v0.2.25
+
+### Features
+- 45eb5a5 propose/execute pair + Owner-supplies-secret pattern
+
+## v0.2.24
+
+### Features
+- b55db8f propose/execute pairs for activate/complete
+
+## v0.2.23
+
+### Features
+- 92200fc propose/execute pairs for site/page/template/module revert
+
+## v0.2.22
+
+### Features
+- ea4c973 propose/execute pairs for create/update_permissions/delete
+
+## v0.2.21
+
+### Features
+- 28609dc propose/execute pairs for create/set_roles/delete
+
+## v0.2.20
+
+### Features
+- 8a9cf0b propose/execute pairs for create/update/delete/set_blocks
+
+## v0.2.19
+
+### Features
+- b412660 widen Category C ops + first deploy propose/execute pair
+
+## v0.2.18
+
+### Features
+- cd67933 comments drain to cms_admin archive (Fix D)
+
+## v0.2.17
+
+### Other
+- 0b12d9c biome autofix on dispatch.ts
+
+## v0.2.16
+
+### Features
+- afdc7ad Tier-2 DB-load on bootstrap + add_plugin_to_page AI tool + plugin-op auto-redeploy
+
+## v0.2.15
+
+### Features
+- 898f0fe add Step 0 preferences capture so site_ai_memory is non-empty before first chat
+
+## v0.2.14
+
+### Fixes
+- f3992ad site-defaults visibility, AI-set-defaults, /edit chat picker
+
+## v0.2.13
+
+### Fixes
+- 7001018 force traffic to latest after upgrade roll
+
+## v0.2.12
+
+### Fixes
+- 8a37b05 build @caelo-cms/shared in Docker so runtime resolver finds dist/
+
+## v0.2.11
+
+### Fixes
+- 978b909 drop /_caelo/health HTTP probe in upgrade — always 403'd
+
+## v0.2.10
+
+### Fixes
+- d984668 mirror cosign signatures to GCP AR via cosign copy
+
+## v0.2.9
+
+### Features
+- cb4e13e offer to brew-install cosign when missing on macOS
+
+## v0.2.8
+
+### Fixes
+- a4128be catch cosign-not-installed ENOENT throw with clean hint
+
+## v0.2.7
+
+### Fixes
+- cbc3278 resolve image digest via public Docker V2 API in upgrade
+
+## v0.2.6
+
+### Fixes
+- e42311d install Bun in verify-published so cms-provision --version runs
+
+## v0.2.5
+
+### Other
+- 7b3bdc7 biome autofix on npm-publish-idempotent.ts
+
+## v0.2.4
+
+### Fixes
+- 14040e9 idempotent npm publish wrapper absorbs npm 11.x --provenance race
+
+## v0.2.3
+
+_no changes since last tag_
+
+## v0.2.2
+
+### Fixes
+- 9b050e7 publish @caelo-cms/shared + rewrite workspace deps in CI
+
+## v0.2.1
+
+### Features
+- febb974 release-check sidecar — no network in DB transactions
+- 82371d5 cosign verify in upgrade pre-flight
+- a2fdb44 run DB migrations during upgrade (idempotent)
+- 2a49399 two-phase upgrade with health probe + auto-rollback
+- 6f78a6a in-admin upgrade notifier via notification bell
+- 55e5421 versioned upgrade + status latest-release check
+- b1ff6ea compose_from_import + /ramp-up wizard + dashboard hero
+- f1a0984 create_template tool + UUID context + create_page templateId optional
+- edfc48b drain legacy caelo_admin user before pulumi-up
+- f331ca4 wire CAELO_SECRET_KEK + drop required Anthropic key
+- b98baa2 /security/ai password input + clear-key + first-run redirect
+- 18ef4e3 ProviderResolver + rewire 4 callsites to DB-backed keys
+- 46fe0d3 encrypted at-rest API keys + clear_key + any_configured
+- e53de0b AES-GCM secret-box helper + dev KEK auto-gen
+- 65b29f3 wizard runs DB migrations via one-shot Cloud Run Job
+- abc06e7 wizard uploads animated welcome page to static bucket
+- 0b92526 caelo-cms lifecycle commands (§11.C commit 5/6)
+- e5deb77 wizard DNS auto-create adapters (§11.C commit 4/6)
+- aa8c80c wizard cost-estimate + Pulumi automation + IAP enable (§11.C commit 3/6)
+- a2712d4 cms-provision wizard — GCP bootstrap automation (§11.C commit 2/6)
+- f2cb1f5 cms-provision wizard scaffold (§11.C commit 1/6)
+- ef743f8 pre-built admin + gateway images via GHCR — first §11.C deliverable
+- d3200a8 docs-site/ content tree + sync script (PR 2A)
+- a03b046 plugin host, gateway hardening, provisioning, multi-provider AI, OSS launch hygiene
+- 9c7ef9d subagents — same chat-runner, called recursively via spawn_subagent
+- 15f67c6 skills system + auto-engagement + base skills
+- 8364f00 AI translation Mode 1 + Mode 2 + bulk dashboard + glossary + style guide
+- e607b0e i18n foundation — locale registry, URL strategies, propose/execute gate
+- 48394a0 SEO sidecar + sitemap.xml + multi-format redirects + slug-change link rewriter + fill-once/optimize AI tools
+- 64abae0 five optimizations — responsive srcset+LCP preload, focal/crops, storage-plugin seam, processing status, AI alt proposals
+- eef6a9b media library — upload pipeline, sharp variants, AI awareness, deploy-time asset copy, CDN-copy toggle
+- b69d086 layout block editor + drag-and-drop on page editor + side-by-side iframe diff
+- 8a074fd admin UX interactivity — deploy polling, Cmd-K palette, vim shortcuts, notification bell, onboarding tour
+- 1344511 admin UX foundation — empty states, skeleton, inline Zod, axe-core AA gate, brand, motion-reduce
+- 27ae90e content ops — duplicate, change-template, reorder/move modules, structured-sets editor
+- d247852 layouts (site-wide chrome) + multi-layout + site_defaults + no-fallbacks invariant
+- a464e34 pages lifecycle (name/title/slug split) + structured-data sets + redirects scaffold
+- 3f4feee live-edit UX polish — page-bound chats, in-toolbar publish, markdown page context
+- 0249399 add_module_to_template — site-wide module fan-out
+- f759dc9 edit-mode toggle, page-aware AI, add_module_to_page tool, error surfacing
+- e464da1 chrome-less live-edit, latest-snapshot picker, modifier-gated clicks
+- 95e5ad4 close 7 live-edit overlay gaps surfaced in P6.7 audit
+- dcd3081 live-edit overlay — flagship UX with branch-aware iframe + element-click chips
+- 9ed456c admin UI follow-up — typed ChatPanel, toasts,  Select wrapper, clickable breadcrumbs, EmptyState
+- 38f8c14 admin UI framework — Tailwind 4 + shadcn-svelte
+- 41f2938 deploy hardening — subprocess generator, content-addressed  builds, async progress, preview/confirm publish, rollback
+- 201622e Caddy hosts + staging gate + chained MVP spec
+- 9f3cd0b chat-runner hardening — provider injection, abort,  idempotency, prompt-cache, partial publish
+- 075fafc static generator + Publish + Ops dashboard — MVP complete
+- c97ce8b chips + visual diff + fixture-replay + missing tests
+- f7957da admin chat UI + SSE endpoint + filled security panels
+- 6e424a1 chat + memory + provider config + ai_calls Query API ops
+- 0e70876 AIProvider abstraction + tools + chat-runner
+- 033c5fb AI chat schema + Zod tool surface + ctx.chatBranchId
+- a66309c Advanced History drawer + per-entity history routes
+- b1b5f52 snapshot Query API ops + op_kind + archival hook
+- b3cc8e3 snapshot helpers + emit wiring on every P3 mutation
+- 9547a10 snapshot schema (5 tables + RLS + cascade)
+- cc828ec follow-up — version + soft-delete cascade + htmlparser2
+- 92e05a4 content admin UI under /content
+- 66c8ff6 content Query API ops + preview composer
+- 564a701 content schema + Zod validators
+- f9c0ad4 admin shell + session auth + Owner/Editor/Reviewer + custom roles
+- f8e4e53 database + Query API foundation with RLS
+
+### Fixes
+- ca0f01b tag-prefix bug + lockstep CI gate + RELEASING.md docs
+- 6d66e5d lifecycle commands resolve Pulumi-suffixed names + bump 0.1.2
+- f7ca4c1 wire correct DB URLs per service
+- aaa914a drain script async-IIFE wrapper + proven SQL
+- 5900ca9 resolve VPC from network-interfaces annotation
+- 99f1f26 drain step grants role membership + aborts on fail
+- efb2492 SecretIamMember tracks Secret resource (depends-on)
+- 3a81c37 create admin_role + public_role SQL users (not caelo_admin)
+- 6c3ddb1 build-time bun shim re-exports globalThis.Bun (not throws)
+- 83b0eea apply globalThis.Bun pattern to migrate.ts + gateway server
+- 7d9182e read SQL/Glob from globalThis.Bun, drop bun stub package
+- bab6b06 externalize 'bun' at the rollup layer, not just ssr.external
+- f151bbd exact-tag match without gcloud filter
+- 868e374 pin Cloud Run images by sha256 digest, not floating tag
+- 0aba809 drop the build-time bun stub from runtime image
+- 12924ec provision IAP service identity + grant run.invoker
+- bdf7c83 wizard polls managed TLS cert until ACTIVE
+- f857b79 add HTTP→HTTPS redirect on the LB
+- ae87575 use Google-managed IAP, drop deprecated Brand+Client
+- 9a0117b grant compute.admin + logging.configWriter to provisioner
+- 4c3b883 IAP role on iap.web (not Cloud Run); domain verify pre-flight
+- a34361d include apps/<service>/node_modules in runtime images + read PORT
+- 23b4815 copy GHCR images via local docker pull/tag/push
+- 271f2a1 copy GHCR images via wizard gcloud step, not Pulumi Command
+- 15f0cdb copy public GHCR images into operator-owned AR
+- 8f9be6b proxy ghcr.io via Artifact Registry remote repo
+- 0a5b713 make captcha PoW wrong-nonce test deterministic
+- 54de983 xargs-driven scan for ALL linux-x64 native bindings
+- 8fd5a25 pin @rolldown/binding-linux-x64-gnu to actual version 1.0.0-rc.17
+- 49135b2 hardcode native-binding list in one npm install
+- fe7a950 batch all native-binding installs into one npm call
+- e41d270 install ALL linux-x64 native bindings via bun.lock scan
+- a062427 stub node_modules/bun + use bun x (no JIT) for vite build
+- eb4e28a rm Bun's wrong-platform symlink before copying real binding
+- f576de4 npm install rollup binding in /tmp, copy into apps/admin
+- 950c359 use npm to patch the Rollup native binding install
+- 193bd12 apt-install curl in oven/bun:1.3 builder
+- 5690f0b grep the resolved rollup version, not the spec
+- be44a48 build admin in Docker (oven/bun:1.3) with manual Rollup binding
+- 03ea19d install rollup + native binding directly into apps/admin/node_modules
+- 1ad9a77 manual Rollup native fetch + drop bun --bun from build script
+- cf01e57 pre-build admin natively on the runner instead of inside Docker
+- 597463c root-install Rollup native + bypass bun --bun for vite build
+- 648d75e single-arch (amd64) + explicit Rollup linux-x64 binding
+- 198f150 declare @caelo-cms/shared as a workspace dependency
+- 3bf8694 clear remaining biome lint errors + pin Rollup native binaries for cross-arch admin builds
+- ddfba93 drop --frozen-lockfile in admin Dockerfile (multi-arch Rollup binding)
+- b726a3d GCP stack defaults to ghcr.io/caelo-cms images (§11.C contract)
+- f002cc3 CI uses @caelo-cms/admin filter, not the pre-rename @caelo/admin
+- 2b9afb6 expired-bucket conflict resets window + count atomically
+- 6b718ab widen variant type to string for cropped variants
+- 6e39c8e declare @caelo/admin-core as static-generator devDep for media-pass test
+- e9a2784 self-seeding site_defaults migration for CI
+- 933c338 use:enhance on publish forms — refresh no longer re-fires confirmPublish
+- 2537c61 make Playwright smoke a real setup → login → dashboard flow
+- f6ef54e exclude build artifacts from Biome includes
+- b8d3e9a build under Bun + lazy DB-adapter init
+- 0a08ef2 start adapter-bun output under Bun, not `vite preview`
+- a29699b rename Playwright spec to *.browser.ts so `bun test` ignores it
+- 59ff4b1 split CREATE DATABASE into separate psql invocations
+
+### Refactors
+- 68a7adc admin via LB BackendService + IAP, drop DomainMapping
+- 854b78d images live in Caelo-team public AR; drop wizard copy
+- 8e74f86 provisioning contract — CLAUDE.md §11.B + §11.C, 3-tier GCP rewrite
+- 2fae5db rename @caelo/* → @caelo-cms/* (npm scope)
+- 2d8007a optimization pass — live event streaming, bounded concurrency, in-loop cost cap, ephemeral session GC, subagents prompt hint
+- 85dd6e0 review pass — AI-managed glossary, ai_calls integration, module snapshots in Mode 2, job revert + publish-completed, missing tests
+- 5d0c2d9 optimization pass — trailing-slash align, bulk hreflang, translation_status_matrix, language-selector
+- 75acba4 review pass — translation_status enum align, hreflang published filter, locale-aware output path, redirect creation on execute
+- d047b40 AI-first cross-phase pass 2 — open content-curation ops, justify narrow scopes
+- a89404f cross-phase AI-first audit — open list/get to AI, add modules.delete_many + media.delete_many, chat session search
+- d7fbc20 AI-first review pass — bulk ops, broader filters, redirects AI surface, system-prompt block
+- 386dd48 review pass — preview SEO parity, chat ?prompt= consumer, toPath regex, drop dead op_kind, collapse pages_seo.set
+- e99e8ed review pass — orig EXIF strip, dedupe audit, /edit Cmd+M, duplicate-page usage delta, 5 verification tests
+- e587c6c polish — version-conflict dialog, branch-edited modules, deferred-load streaming, aria-live, ? shortcut
+- e79de01 closing pass — forced-colors, brand assets, Zod on 3 forms, diff guard, seed onboarded_at, Skeleton usage
+- 3c57d2b review pass — duplicate filters dead modules, system-prompt guidance for 5 new tools, structured-editor form-state preservation
+- 4af3723 review pass — narrow AI template scope, parser-based layout validation, owner UIs
+
+### Docs
+- 2c8c5c8 explain why Node-20 advisory persists despite force-flag
+- b0cf2b5 add §11.A human-confirmation gate for hard-to-revert ops
+- a44f869 replace inline §1 diagram with dedicated ARCHITECTURE.md
+- 101bd82 focus the §1 diagram on content-layer wiring
+- f723448 add architecture-at-a-glance diagram to §1
+- 162e1c4 finalize phase plan to mirror what shipped
+- aca47b6 finalize phase plan to mirror what shipped
+- fe0b9ee finalize phase plan to mirror what shipped
+- 9900038 mark phase complete with remote CI run reference
+- 0f19592 mark phase complete with remote CI run reference
+
+### Chores
+- d7bceeb align everything to v0.2.0 + improve release script
+- a2fdc7f opt all JS-based actions into Node 24 runtime now
+- 6923bab trigger release-images for new GCP AR mirror
+- f5f0e12 biome auto-format — collapse stepCopyImages signature + gcloud array
+- 8d15ebd biome auto-fix sweep — import sort + useLiteralKeys (CI lint repair)
+- 7d8b332 npm-publish-ready packaging for @caelo-cms/{mcp-server,provisioning}
+- 119f952 follow-up 2 — explicit init, audit shape, rotating CSRF, Postgres rate-limit, soft delete
+- 97827ba follow-up — security panel stubs, user mgmt, audit, CSRF, rate-limit, Playwright, svelte-check
+- a774e92 follow-up 2 — typed tx, role verify, committed RLS SQL, parameterised set_config, reusable adversarial matrix
+- ba2c58f follow-up — rollback test, RateLimiter stub, public_role coverage, CI bootstrap.sh, meta-table RLS
+- 287699f hardening — secrets, project refs, license check, TS 6, bun-native test runner
+
+### Tests
+- 6fb87fb update mcp.integration.test.ts to new resolveProvider shape
+- 8b21882 Playwright history-drawer flow
+- 351b554 Playwright E2E + dev-owner seed + globalSetup
+
+### Other
+- 8118d2c atomicity — release.yml chains docker + npm + verify
+- 3c618c8 npm publish + GitHub Release on v* tag push
+- 59a8584 mark Playwright job continue-on-error pending server-side smoke fix
+- 07f7113 first commit
+
+All notable changes to this project are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Pre-1.0 releases follow the **no-fallbacks invariant** documented in `CLAUDE.md` §2 — code paths fail loudly with structured errors when expected data is missing rather than silently substituting defaults. This rule is relaxed deliberately at 1.0.0.
+
+## [Unreleased]
+
+### Added
+- P17 PR4 — `caelo_chat` MCP server (`packages/mcp-server`). Single-tool MCP server lets Claude Code (or any MCP-aware client) drive a Caelo install from outside the browser. Owner UI at `/security/mcp` mints + revokes bearer tokens; the bridge dispatches every call into the existing chat-runner with the resolved Owner identity. Per-token AI cost cap enforced via P10.5's `costCapMicrocents` surface.
+- P17 PR1 — project hygiene for OSS launch: `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, this `CHANGELOG.md`, `.github/PULL_REQUEST_TEMPLATE.md`, three issue templates, SPDX-header lint wired into root `lint`, version bump to 0.1.0 across every workspace.
+
+## [0.1.0] — first OSS release
+
+### P0 — Repo bootstrap
+Bun monorepo (`apps/admin`, `apps/static-generator`, `apps/api-gateway`, `packages/*`), TypeScript strict, Biome, Zod, Postgres via Docker Compose, GitHub Actions CI (lint + typecheck + test + license-check), `CLAUDE.md` engineering principles. Bun-native test runner.
+
+### P1 — Database + Query API foundation
+Two databases (`cms_admin`, `cms_public`) with two isolated PostgreSQL roles, RLS `FORCE`d on every table both ways, Query API → Validator → Database Adapter → Postgres chain. Undefined operations fail closed; cross-database / cross-actor / cross-plugin reads fail closed. `RateLimiter` interface plumbed through the executor. CI runs `bootstrap.sh` directly + integration tests against the production-shape `public_role`.
+
+### P2 — Admin shell + auth + security control panel
+SvelteKit + `svelte-adapter-bun` admin app. Session-based email/password login; built-in Owner / Editor / Reviewer roles + Owner-defined custom roles enforced via a fixed permission catalog. CSRF double-submit at the form layer. Login rate-limit (5 / 5 min per IP). System actor seed for pre-auth audit FK. Setup-race hardening via Postgres advisory lock. Security control panel scaffold.
+
+### P3 — Module / Template / Page content model
+Three content primitives via Query API only: `modules` (HTML+CSS+JS, live-referenced), `templates` (named blocks), `pages` (ordered list of module references — no raw HTML field, enforced at the Validator). Admin CRUD + preview composition.
+
+### P4 — Snapshot versioning + revert
+Every Query API write emits a snapshot. Chat-keyed Undo/Redo as the primary surface; per-module + per-site revert in the Advanced History drawer. Module A/B variants land as sibling `module_snapshots` tagged with `experiment_id` — no new versioning concept.
+
+### P5 — AI provider abstraction + first AI module edit
+Provider Abstraction Layer (Anthropic Claude Opus 4.7 first), token accounting, admin AI chat UI. Site-AI-memory store (Owner-curated brand voice / tone / banned phrases) prepended to every AI call. Chat sessions + ephemeral chat-branches + click-to-chat element references + visual content diff overlay.
+
+### P6 — Static generator + local deploy (MVP complete)
+Astro-based static generator reads `cms_admin` via the Query API and emits `dist/` of plain HTML/CSS/JS. Three-environment model (dev / staging / production); editors see Draft → Live, Ops users see the full pipeline. Reserves hooks for A/B variant emission consumed at the edge.
+
+### P6.5 — Admin UI framework
+Tailwind CSS 4 + shadcn-svelte. AppShell with persistent sidebar nav, breadcrumbs, top bar. Dark mode + design-token theming. shadcn primitives copied into `apps/admin/src/lib/components/ui/` — owned outright, no runtime dep.
+
+### P6.7 — Live-edit overlay (the flagship UX)
+Editor lands on `/edit` → rendered website in an iframe + floating draggable chat overlay. Click-to-chat references the actual element; chips accumulate so multi-element edits run in one AI turn. Branch-aware preview via `pages.render_preview(chatBranchId=...)`. Stage + Confirm-publish strip in the toolbar.
+
+### P6.6 — Admin UX polish
+Skeleton loaders, empty-state component upgrades, inline Zod validation on high-traffic forms, microcopy sweep, brand assets, `prefers-reduced-motion` + `forced-colors` honoured everywhere, axe-core AA gating in CI. Deploy-progress polling, drag-and-drop module reordering, side-by-side iframe diff, Cmd-K command palette, keyboard shortcuts, first-login onboarding tour, notification bell.
+
+### P7 — Media library
+Object-storage abstraction (local volume adapter for self-hosted), upload endpoint with MIME / size validation, sharp-driven optimisation pipeline (resize variants + WebP), media browser. AI references media by URL via Query API; never touches storage directly. Optional CDN copy at deploy for frequently-used assets.
+
+### P8 — SEO + Redirects + sitemap / robots
+Per-page structured SEO fields (no raw `<head>` HTML). Fill-once via `seo-autofill`; explicit cross-page `seo-optimize` for re-runs. Redirect manager + admin UI. `sitemap.xml`, `robots.txt`, provider-specific redirect file generators.
+
+### P9 — i18n foundation + locale URL strategies
+Per-locale `(slug, locale)` page rows + `content_hash` / `translated_from_hash` / `translation_status` fields. Locale config table supports per-locale URL strategy (subdirectory default, subdomain, separate domain). Admin-only — every locale-config Query API op rejects AI actors. Auto hreflang generation. Built-in language selector module.
+
+### P10 — AI translation (Mode 1 + Mode 2) + dashboard
+Block-level structured diff. Glossary + style guide. Translation dashboard with single-action "Bring up to date" per row + top-level "Auto-translate everything stale" bulk action. Mode 1 = new locale variant from source; Mode 2 = update existing translation with the structured diff. All translations land as drafts; user confirms via the standard publish flow.
+
+### P10A — Skills system + auto-engagement + base skills
+Claude-style skills in `cms_admin.skills`. Two-level activation: site-wide (Owner-required) and per-chat engagement (auto-matcher + manual override). Per-chat Engaged Skills panel, manual engage/disengage persists for chat life, pinned defaults per user. Base skills shipped: `compose-page`, `explain-page`, `brand-voice-guard`, `translation-mode-1`/`-mode-2`, `seo-autofill`, `seo-optimize`, `summarize-plugin-data`, `scoped-edit`, `import-site`, `site-memory-learner`.
+
+### P10.5 — Subagents (AI spawns AI for parallel reasoning)
+`spawn_subagent` + `spawn_subagents` AI tools. Each subagent runs its own `runChatTurn` invocation (same chat-runner, no special runtime) with parent attribution + cost cap + timeout. Depth cap of 1, read-only by default, no-publish defence by actor scope. `subagent_runs` table for observability.
+
+### P11 — Two-tier plugin host
+`@caelo-cms/plugin-sdk` + `@caelo-cms/plugin-sandbox` (oxc-parser validator + Ed25519 manifest verifier + Deno subprocess wrapper) + `@caelo-cms/plugin-host` (Tier 1 in-process loader + capability factory). Tier 1 = core plugins, signed, in-process, full SDK; Tier 2 = AI-authored / Owner-installed at runtime, Deno-sandboxed, locked SDK (only `cms_public.<slug>` schema, no AI provider, no chat-runner tool registration). Activation: Tier 1 auto on signature verify; Tier 2 Owner-click per `active` transition.
+
+### P11.5 — Translation port + plugin-host runtime
+Plugin host bootstrap + capability runtime (cms / ai / snapshots / tools / workers). Croner-backed worker scheduler. Dynamic AI-tool registry. Translation ops moved to a Tier 1 plugin (`packages/plugins/translation/`) as the SDK proof-of-concept.
+
+### P12 — Five core Tier 1 plugins + minimal API gateway
+`packages/plugins/{forms,comments,newsletter,ratings,auth}`, each ~3-4 hr of mechanical SDK work. `apps/api-gateway/` Bun HTTP server routing public POSTs to `plugins.run_operation`. New SDK handles: `ctx.query` (real cms_public dispatch), `ctx.api`, `ctx.email`, `ctx.visitor`, `ctx.captcha`. Owner UIs per plugin under `/security/plugins/<slug>`.
+
+### P12A — Extended built-ins
+Scheduled publish, component kits, typed content, edge-log analytics + A/B experiments dashboard. All Tier 1 plugins.
+
+### P13 — Static + delta + auto-redeploy + gateway hardening + A/B edge split
+Static generator bakes approved plugin data; Web Components fetch deltas via `since=<deploy-timestamp>`. Gateway: per-(plugin, op, visitor) rate limiting, CAPTCHA / PoW on public writes, honeypot fields, 10-15s debounced auto-redeploy. Stable-hash A/B edge router selects per-visitor variants and emits assignment logs into the analytics plugin.
+
+### P14 — Pulumi self-hosted provisioning + Site Import Wizard
+`bunx cms-provision --provider self-hosted` stands up Docker Compose with Postgres + pgBackRest + Caddy (Let's Encrypt) + MinIO + the CMS services. Three-environment stacks. Site Import Wizard: scrape an existing URL, draft modules + content, screenshot-diff per page, Owner reviews + publishes to staging.
+
+### P15 — Cloud provisioning adapters (GCP, AWS, Azure)
+Provider-specific Pulumi adapters: GCP (Cloud SQL HA + Cloud Storage + CDN + Cloud Run + Secret Manager), AWS (RDS Multi-AZ + S3 + CloudFront + Lambda + Secrets Manager), Azure (Azure DB + Blob + Front Door + API Management + Key Vault). Per-provider redirect file generators + edge A/B split rules.
+
+### P16 — Multi-provider AI + cost dashboard + telemetry
+Anthropic / OpenAI / Google / local-OpenAI-compat adapters behind the P5 abstraction. Operation-type budgets (text + image enforce independently). Owner-editable `ai_pricing` table — rate changes flow without redeploy via in-process LRU + `pg_notify` invalidation. `/security/costs` five-panel dashboard. Per-plugin cost cap with fail-closed enforcement after sustained lookup failures. `request_id` propagated through every audit row + AI call; `/security/audit/[requestId]` correlation view. Opt-in telemetry with payload preview before transmission.
+
+### P16 hardening
+Fail-closed cap-lookup tracking (`packages/shared/src/cap-failures.ts`), pricing LRU + invalidation, unified spend attribution view (plugin / user / subagent / system), telemetry payload preview moved off the SvelteKit form-action surface, mechanical `requestId` sweep across 150 audit callsites + lint to keep them honest.
+
+[Unreleased]: https://github.com/caelo-cms/caelo-cms/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/caelo-cms/caelo-cms/releases/tag/v0.1.0

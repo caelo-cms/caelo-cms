@@ -1,7 +1,7 @@
 {
   "name": "caelo",
   "displayName": "Caelo CMS",
-  "version": "0.0.0",
+  "version": "0.10.68",
   "description": "Edit a self-hosted Caelo CMS site from Claude Code: the Caelo MCP server (Power-MCP) plus skills to connect, edit safely (draft, stage, a person publishes) and hand a prototype over to Caelo.",
   "author": {
     "name": "searchVIU GmbH",
