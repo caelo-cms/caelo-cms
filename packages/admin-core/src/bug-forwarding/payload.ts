@@ -11,7 +11,6 @@ import {
   BUG_INTAKE_PROTOCOL_VERSION,
   type BugIntakeReport,
   bugIntakeReport,
-  CAELO_VERSION,
   computeBugFingerprint,
   redactBugReportFields,
 } from "@caelo-cms/shared";
@@ -28,12 +27,24 @@ export interface ForwardableBugReport {
   whatHappened: string;
   expected: string;
   evidence: string | null;
+  /** The release that filed the row; null for rows filed before migration 0348. */
+  caeloVersion: string | null;
 }
+
+/**
+ * What a report filed before migration 0348 forwards as its version. Its
+ * filing version was never recorded, and stamping the release that sends it
+ * would claim the defect was seen on a release that may contain its fix
+ * (#1072). The intake never reads an unparseable version as a regression.
+ */
+export const UNKNOWN_FILING_VERSION = "unknown";
 
 /**
  * Build the redacted, schema-checked intake payload for one report. Rows
  * filed before migration 0330 have no stored fingerprint; it is computed
- * here from the same fields, so they forward like any other row.
+ * here from the same fields, so they forward like any other row. The
+ * version is the one stored when the report was filed, not the release
+ * that sends it.
  */
 export async function buildIntakeReport(row: ForwardableBugReport): Promise<BugIntakeReport> {
   const source = row.source === "auto" ? "auto" : "ai";
@@ -54,7 +65,7 @@ export async function buildIntakeReport(row: ForwardableBugReport): Promise<BugI
   return bugIntakeReport.parse({
     protocolVersion: BUG_INTAKE_PROTOCOL_VERSION,
     reportId: row.id,
-    caeloVersion: CAELO_VERSION,
+    caeloVersion: row.caeloVersion ?? UNKNOWN_FILING_VERSION,
     fingerprint,
     source,
     severity: row.severity,

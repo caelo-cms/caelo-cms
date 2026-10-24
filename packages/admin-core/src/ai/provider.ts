@@ -243,17 +243,12 @@ export interface ProviderStepSummary {
  * Per-step slice delivered to `ProviderLoopConfig.onStepFinish`. The
  * `responseMessages` are the SDK's OWN per-step assembly
  * (`StepResult.response.messages`) — the Option-C canonical lane, now per
- * step. `initialResponseMessages` are non-empty only on step 0 of an
- * approval-resume run: the SDK executes the approved gated tool BEFORE the
- * first model step and delivers its tool_result as leading messages that
- * belong to no step (captured from `prepareStep(stepNumber=0)`'s
- * accumulated `responseMessages`, which at step 0 contain exactly them).
+ * step.
  */
 export interface ProviderStepFinish {
   readonly stepIndex: number;
   readonly finishReason: string;
   readonly responseMessages: readonly ProviderResponseMessage[];
-  readonly initialResponseMessages: readonly ProviderResponseMessage[];
 }
 
 /**
@@ -286,6 +281,16 @@ export interface ProviderLoopConfig {
    * step's prepareStep/model call.
    */
   onStepFinish(info: ProviderStepFinish): Promise<void>;
+  /**
+   * Approval-resume hook. The SDK executes (or denies) the approved gated
+   * tools BEFORE the first model step and delivers their tool results as
+   * leading messages that belong to no step. They are handed over here, as
+   * soon as they exist and before step 0's model call (#1075): an effect
+   * that already happened must be recorded even when step 0 then fails, or
+   * a retry run would find the approval unanswered and apply it again.
+   * Called at most once per run, only with a non-empty list.
+   */
+  onInitialResponseMessages(messages: readonly ProviderResponseMessage[]): Promise<void>;
   /** Post-step stop policy — `true` ends the run cleanly after this step. */
   stopWhen(info: { readonly steps: readonly ProviderStepSummary[] }): Promise<boolean> | boolean;
 }

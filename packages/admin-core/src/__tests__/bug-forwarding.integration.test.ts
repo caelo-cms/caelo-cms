@@ -26,6 +26,7 @@ import {
   bugIntakeRegisterRequest,
   bugIntakeReport,
   bugIntakeSigningString,
+  CAELO_VERSION,
   type ExecutionContext,
 } from "@caelo-cms/shared";
 import { SQL } from "bun";
@@ -255,12 +256,38 @@ describe("bug forwarding", () => {
     expect(intake.reports.length).toBe(3);
   });
 
+  it("forwards the version that filed the report, and 'unknown' for rows from before 0348 (#1072)", async () => {
+    await op(HUMAN, "bug_forwarding.set", { enabled: true });
+    const filed = await file("BF filed on an older release");
+    const legacy = await file("BF filed before the version column");
+    let stored: string | null = null;
+    await admin(async (tx) => {
+      const [row] =
+        (await tx`SELECT caelo_version FROM ai_bug_reports WHERE id = ${filed.id}::uuid`) as Array<{
+          caelo_version: string | null;
+        }>;
+      stored = row?.caelo_version ?? null;
+      // The install has since been upgraded: the row keeps the release it was filed on.
+      await tx`UPDATE ai_bug_reports SET caelo_version = '0.10.1' WHERE id = ${filed.id}::uuid`;
+      await tx`UPDATE ai_bug_reports SET caelo_version = NULL WHERE id = ${legacy.id}::uuid`;
+    });
+    expect(stored).toBe(CAELO_VERSION);
+
+    expect(await forwardDueReports(worker())).toBe(2);
+    expect(intake.reports.find((r) => r.reportId === filed.id)?.caeloVersion).toBe("0.10.1");
+    expect(intake.reports.find((r) => r.reportId === legacy.id)?.caeloVersion).toBe("unknown");
+  });
+
   it("the bug_report result tells the AI a queued report will reach the Caelo team", async () => {
     await op(HUMAN, "bug_forwarding.set", { enabled: true });
     const { bugReportTool, bugReportToolInput } = await import("../ai/tools/bug-report.js");
     const r = await bugReportTool.handler(
       SYSTEM,
-      bugReportToolInput.parse({ title: "BF tool", whatHappened: "x", expected: "y" }),
+      bugReportToolInput.parse({
+        title: "BF tool report",
+        whatHappened: "screenshot_page ignored the selector.",
+        expected: "A cropped screenshot.",
+      }),
       { adapter, registry } as Parameters<typeof bugReportTool.handler>[2],
     );
     expect(r.content).toContain("will be sent to the Caelo team");

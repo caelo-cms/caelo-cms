@@ -16,13 +16,14 @@
  * team (bug_forwarding.set), otherwise `local_only`. The tool result says
  * which, instead of implying the Caelo team was told. The row also stores
  * its defect fingerprint (shared/bug-intake.ts) so the intake can merge the
- * same defect across installs.
+ * same defect across installs, and the Caelo version that filed it (#1072):
+ * a report sent after an upgrade still names the release it was seen on.
  *
  * Not audited: internal AI telemetry, same stance as ai_moduleize_attempts.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { computeBugFingerprint, ok } from "@caelo-cms/shared";
+import { CAELO_VERSION, computeBugFingerprint, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 
@@ -78,7 +79,7 @@ export const createBugReportOp = defineOperation({
       INSERT INTO ai_bug_reports
         (chat_session_id, actor_id, title, what_happened, expected,
          suspected_tool, evidence, severity, blocked_task, source,
-         fingerprint, forwarding_state, next_forward_at)
+         fingerprint, caelo_version, forwarding_state, next_forward_at)
       VALUES (
         ${input.chatSessionId ?? null}::uuid,
         ${ctx.actorId}::uuid,
@@ -91,6 +92,7 @@ export const createBugReportOp = defineOperation({
         ${input.blockedTask},
         ${input.source},
         ${fingerprint},
+        ${CAELO_VERSION},
         CASE WHEN (SELECT bug_forwarding_enabled FROM telemetry_settings WHERE id = 1)
              THEN 'queued' ELSE 'local_only' END,
         CASE WHEN (SELECT bug_forwarding_enabled FROM telemetry_settings WHERE id = 1)

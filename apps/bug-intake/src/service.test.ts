@@ -227,6 +227,20 @@ describe("IntakeService", () => {
     expect(tracker.comments.get(100)?.at(-1)).toContain("regression");
   });
 
+  it("a report whose filing version is unknown never reopens a fixed issue (#1072)", async () => {
+    const s = service();
+    const first = await s.ingest(INSTALL_A, report({ caeloVersion: "0.10.55" }));
+    tracker.close(100, "completed", "2026-10-21T00:00:00Z");
+    tracker.releasesList = [{ version: "0.11.0", publishedAt: "2026-10-25T00:00:00Z" }];
+    clock = new Date("2026-10-26T00:00:00Z");
+    expect((await s.status([first.clusterId]))[0]).toMatchObject({ status: "fixed" });
+
+    clock = new Date("2026-10-27T00:00:00Z");
+    const again = await s.ingest(INSTALL_B, report({ caeloVersion: "unknown" }));
+    expect(again.status).toBe("fixed");
+    expect(tracker.issues.get(100)?.state).not.toBe("open");
+  });
+
   it("honours a fixed-in label and maps not-planned to wontfix", async () => {
     const s = service();
     const a = await s.ingest(INSTALL_A, report());

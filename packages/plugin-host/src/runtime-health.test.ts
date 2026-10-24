@@ -5,6 +5,7 @@ import {
   classifyPluginError,
   inPhase,
   PluginLoadError,
+  PluginNotInReleaseError,
   phaseOf,
   pluginErrorFingerprint,
 } from "./runtime-health.js";
@@ -45,6 +46,18 @@ describe("classifyPluginError", () => {
     expect(classifyPluginError("provision", pg("23505", 'violates "plugins_slug_key"'))).toBe(
       "core",
     );
+  });
+});
+
+describe("a plugin this release does not ship (#1052)", () => {
+  it("is the plugin's problem, not a core verify failure, and names the Owner's step", () => {
+    const e = new PluginLoadError(
+      "verify",
+      new PluginNotInReleaseError("translation", "/app/packages/plugins/translation"),
+    );
+    expect(classifyPluginError("verify", e)).toBe("plugin");
+    expect(e.message).toContain("not part of this release");
+    expect(e.message).toContain("uninstall it at /settings/plugins");
   });
 });
 
