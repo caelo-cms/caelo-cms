@@ -362,4 +362,20 @@ describe("approval answers the SDK can read", () => {
     expect(JSON.stringify(applied[0]?.responseMessages)).toContain("toolu_X");
     for (const prompt of p.seenPrompts) expect(duplicateResults(prompt)).toEqual([]);
   });
+
+  it("#1070 — a gated call on a max_tokens stop is left to its approval, never answered twice", async () => {
+    gatedRuns = 0;
+    const p = new LateApprovalEvents([
+      [call("toolu_Y", "read_thing"), call("toolu_X", "propose_thing"), ...maxTokens],
+      [call("toolu_W", "read_thing"), ...toolUse],
+      endTurn,
+    ]);
+    const { result, fixture } = await withAutoApprove(true, () =>
+      run(p, [{ role: "user", content: "go" }], catalogue()),
+    );
+    expect(fixture.appended.some((m) => m.toolCallId === "toolu_X")).toBe(false);
+    expect(gatedRuns).toBe(1);
+    expect(result.stopReason).toBe("end_turn");
+    for (const prompt of p.seenPrompts) expect(duplicateResults(prompt)).toEqual([]);
+  });
 });

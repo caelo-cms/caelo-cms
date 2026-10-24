@@ -263,6 +263,36 @@ function stripOwnClientToolResults(
 }
 
 /**
+ * #1070 — the tool calls a step asked approval for, read from the SDK's own
+ * step assembly (`tool-approval-request` parts of its assistant message).
+ * The runner's `approvalRequests` come from the event stream, which can
+ * trail the SDK's step bookkeeping; deciding from the event stream let a
+ * gated call on a max_tokens stop be answered "not executed" while the SDK
+ * had asked for its approval, and the resume then sent two results for it.
+ */
+function sdkApprovalRequestedCallIds(slice: readonly ProviderResponseMessage[]): Set<string> {
+  const ids = new Set<string>();
+  for (const msg of slice) {
+    const m = msg as { role?: unknown; content?: unknown } | null;
+    if (
+      m === null ||
+      typeof m !== "object" ||
+      m.role !== "assistant" ||
+      !Array.isArray(m.content)
+    ) {
+      continue;
+    }
+    for (const part of m.content) {
+      const p = part as { type?: unknown; toolCallId?: unknown } | null;
+      if (p?.type === "tool-approval-request" && typeof p.toolCallId === "string") {
+        ids.add(p.toolCallId);
+      }
+    }
+  }
+  return ids;
+}
+
+/**
  * Client tool calls the SDK already answered inside the step's own messages
  * — the error results of calls it rejected at parse time. They must not be
  * answered a second time by our skipped-call dispatch.
@@ -543,9 +573,13 @@ export async function* streamProviderTurn(
     s: StepState,
     finishReason: string,
     sdkAnswered: ReadonlySet<string>,
+    sdkApprovalRequested: ReadonlySet<string>,
   ) => {
     if (finishReason === "stop" || finishReason === "tool-calls") return;
-    const awaitingApproval = new Set(result.approvalRequests.map((r) => r.toolCallId));
+    const awaitingApproval = new Set([
+      ...sdkApprovalRequested,
+      ...result.approvalRequests.map((r) => r.toolCallId),
+    ]);
     for (const call of s.clientCalls) {
       if (s.executedIds.has(call.id) || awaitingApproval.has(call.id) || sdkAnswered.has(call.id)) {
         continue;
@@ -623,6 +657,7 @@ export async function* streamProviderTurn(
       s,
       info.finishReason,
       sdkAnsweredClientCallIds(info.responseMessages),
+      sdkApprovalRequestedCallIds(info.responseMessages),
     );
     const text = s.text.join("");
     const slice = stripOwnClientToolResults(info.responseMessages, s.executedIds);
