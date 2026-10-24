@@ -47,6 +47,7 @@
  *     homepage. Once the homepage exists, `/` canonicalises as usual.
  */
 
+import { blankNonMarkup } from "./html-blank.js";
 import {
   findMalformedLinkRefs,
   formatLinkRef,
@@ -54,7 +55,6 @@ import {
   type LinkRef,
   parseLinkRef,
 } from "./link-refs.js";
-import { blankNonMarkup } from "./html-blank.js";
 import { MEDIA_URL_PREFIX } from "./media.js";
 
 /** What the canonicaliser needs to know about the site. */
