@@ -24,6 +24,7 @@
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
   import { onMount } from "svelte";
+  import { pinChatParam, unpinChatParam } from "#lib/components/edit/chat-pin.js";
   import CrossChatBanner from "#lib/components/edit/CrossChatBanner.svelte";
   import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
   import PluginPreview from "#lib/components/edit/PluginPreview.svelte";
@@ -357,31 +358,24 @@
   }
 
   /**
-   * #965 — re-run the server load without letting it pick another chat.
-   * Without `?chat=` the load picks "the most recent unpublished chat" again,
-   * and another chat (an experiment on its own branch, say) can have become
-   * that since this page loaded: the preview then switched to that branch
-   * and showed the old text right after an in-place save landed on this
-   * one. So the first refresh pins the active chat into the URL. Only this
-   * editor's own pin is dropped again on a page switch, where the load picks
-   * the destination page's chat as before.
+   * #965 — re-run the server load without letting it pick another chat
+   * (`chat-pin.ts` says why). The id is the chat this editor wrote into
+   * `?chat=`, so a page switch drops only that, never a chat the operator
+   * picked in the overlay since.
    */
-  let pinnedChat = false;
+  let pinnedChatId: string | null = null;
   function refreshPinned(): Promise<void> {
     const url = new URL(window.location.href);
-    if (url.searchParams.get("chat") === data.activeChat.id) return refreshAll();
-    url.searchParams.set("chat", data.activeChat.id);
-    pinnedChat = true;
+    if (!pinChatParam(url, data.activeChat.id)) return refreshAll();
+    pinnedChatId = data.activeChat.id;
     return goto(url.toString(), { replace: true, reset: false, refreshAll: true });
   }
 
   /** The editor's URL for a page switch: without the chat this editor pinned. */
   function pageSwitchUrl(): URL {
     const url = new URL(window.location.href);
-    if (pinnedChat) {
-      url.searchParams.delete("chat");
-      pinnedChat = false;
-    }
+    unpinChatParam(url, pinnedChatId);
+    pinnedChatId = null;
     return url;
   }
 
