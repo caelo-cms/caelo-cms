@@ -441,9 +441,26 @@ export const listContentInstancesOp = withHumanisedLinks(
       const searchFilter = input.search
         ? sql`AND (ci.display_name ILIKE ${`%${input.search}%`} OR ci.slug ILIKE ${`%${input.search}%`})`
         : sql``;
-      const pageFilter = input.pageId
-        ? sql`AND EXISTS (SELECT 1 FROM page_modules pm WHERE pm.content_instance_id = ci.id AND pm.page_id = ${input.pageId}::uuid)`
-        : sql``;
+      // #1045 — "instances used on this page" as the caller's branch sees
+      // the page (the live `page_modules` join listed main's placements).
+      let pageFilter = sql``;
+      if (input.pageId) {
+        const layout = await loadPageLayoutStateWithBranchOverlay(
+          tx,
+          input.pageId,
+          ctx.chatBranchId ?? null,
+        );
+        const onPage = [
+          ...new Set(
+            layout.blocks.flatMap((b) => (b.placements ?? []).map((p) => p.contentInstanceId)),
+          ),
+        ];
+        if (onPage.length === 0) return ok({ instances: [] });
+        pageFilter = sql`AND ci.id IN (${sql.join(
+          onPage.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})`;
+      }
       const deletedFilter = input.includeDeleted ? sql`` : sql`AND ci.deleted_at IS NULL`;
 
       const rows = (await tx.execute(sql`

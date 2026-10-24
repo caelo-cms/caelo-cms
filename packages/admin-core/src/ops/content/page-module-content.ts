@@ -15,8 +15,12 @@ import { err, ok, pageModuleContentSetManySchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
-import { pendingSnapshotSql } from "../../draft.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
+import {
+  loadBranchedModuleStates,
+  loadContentInstanceBranchStates,
+  loadPageLayoutStateWithBranchOverlay,
+} from "../../snapshots/index.js";
 import { setContentInstanceValuesOp } from "./content-instances.js";
 
 const pageModuleContentRowSchema = z.object({
@@ -134,65 +138,23 @@ export const setPageModuleContentOp = defineOperation({
     // set_content_instance_values OR fork_placement_content so the
     // operator's "edit this hero on /home" intent doesn't silently
     // propagate to every other page that binds to the same instance.
-    const placementRows = (await tx.execute(sql`
-      SELECT pm.content_instance_id::text AS content_instance_id, pm.sync_mode,
-             ci.version
-      FROM page_modules pm
-      JOIN content_instances ci ON ci.id = pm.content_instance_id
-      WHERE pm.page_id = ${input.pageId}::uuid
-        AND pm.block_name = ${input.blockName}
-        AND pm.position = ${input.position}
-      LIMIT 1
-    `)) as unknown as {
-      content_instance_id: string;
-      sync_mode: "synced" | "unsynced";
-      version: number | string;
-    }[];
-    let placement = placementRows[0];
-    // v0.12.0 — branch-aware placement-exists fallback. The chat
-    // branched-create flow writes the placement only to
-    // page_layout_snapshots and skips live page_modules (see
-    // pages.set_modules). When the AI follows up with
-    // set_page_module_content on the SAME chat branch, the live join
-    // above misses the placement. Consult the latest branched layout
-    // snapshot for the placement's content_instance_id + sync_mode
-    // when ctx.chatBranchId is set. Mirrors the v0.6.1 fix shape on
-    // the pre-v0.12 branchAwarePlacementExists helper.
-    if (!placement && ctx.chatBranchId) {
-      const snap = (await tx.execute(sql`
-        SELECT pls.state
-        FROM page_layout_snapshots pls
-        JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
-        WHERE pls.page_id = ${input.pageId}::uuid
-          AND ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
-        ORDER BY ss.created_at DESC
-        LIMIT 1
-      `)) as unknown as { state: unknown }[];
-      const raw = snap[0]?.state;
-      if (raw) {
-        const parsed = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
-          blocks?: {
-            blockName: string;
-            placements?: { contentInstanceId: string; syncMode: "synced" | "unsynced" }[];
-          }[];
-        };
-        const block = parsed.blocks?.find((b) => b.blockName === input.blockName);
-        const p = block?.placements?.[input.position];
-        if (p) {
-          // Branched-placement found. Look up its version to satisfy the
-          // type shape — branched content_instances exist in the DB
-          // tagged with chat_branch_id, so this join works.
-          const branchedCiRows = (await tx.execute(sql`
-            SELECT version FROM content_instances WHERE id = ${p.contentInstanceId}::uuid LIMIT 1
-          `)) as unknown as { version: number | string }[];
-          placement = {
-            content_instance_id: p.contentInstanceId,
-            sync_mode: p.syncMode,
-            version: branchedCiRows[0]?.version ?? 0,
-          };
-        }
-      }
-    }
+    //
+    // #1045 — the placement is resolved through the caller's
+    // branch-overlaid layout (the same view the preview renders and
+    // `patch_fields` uses). Reading live `page_modules` first and the
+    // branch snapshot only as a fallback made every write on the shared
+    // draft hit MAIN's placement at that position as soon as the branch
+    // had reshaped the page (add_module, fork, remove + build_page):
+    // positions shift on the branch, main still has a row there, and the
+    // edit landed on the wrong (or a stale) content instance.
+    const layout = await loadPageLayoutStateWithBranchOverlay(
+      tx,
+      input.pageId,
+      ctx.chatBranchId ?? null,
+    );
+    const placement = layout.blocks.find((b) => b.blockName === input.blockName)?.placements?.[
+      input.position
+    ];
     if (!placement) {
       return err({
         kind: "HandlerError",
@@ -207,15 +169,15 @@ export const setPageModuleContentOp = defineOperation({
       });
     }
 
-    if (placement.sync_mode === "synced") {
+    if (placement.syncMode === "synced") {
       return err({
         kind: "HandlerError",
         operation: "page_module_content.set",
         message:
-          `placement at (${input.blockName}, ${input.position}) on page ${input.pageId} is SYNCED to content_instance ${placement.content_instance_id}. ` +
+          `placement at (${input.blockName}, ${input.position}) on page ${input.pageId} is SYNCED to content_instance ${placement.contentInstanceId}. ` +
           `Editing via set_page_module_content would propagate to every page bound to the same instance, ` +
           `which is rarely the intent of "set the content on this page". ` +
-          `Either (a) call set_content_instance_values({ id: "${placement.content_instance_id}", values: ... }) to commit to the blast radius, or ` +
+          `Either (a) call set_content_instance_values({ id: "${placement.contentInstanceId}", values: ... }) to commit to the blast radius, or ` +
           `(b) call fork_placement_content first to detach this placement into a private instance, then retry.`,
         nextAction: {
           tool: "fork_placement_content",
@@ -235,7 +197,7 @@ export const setPageModuleContentOp = defineOperation({
     const setValuesResult = await setContentInstanceValuesOp.handler(
       ctx,
       {
-        id: placement.content_instance_id,
+        id: placement.contentInstanceId,
         values: input.contentValues,
       },
       tx,
@@ -261,11 +223,11 @@ export const setPageModuleContentOp = defineOperation({
       operation: "page_module_content.set",
       input,
       succeeded: true,
-      entityId: placement.content_instance_id,
+      entityId: placement.contentInstanceId,
       resultSummary: `routed=content_instances.set_values fields=${Object.keys(input.contentValues).length}`,
     });
 
-    return ok({ pageModuleContentId: placement.content_instance_id });
+    return ok({ pageModuleContentId: placement.contentInstanceId });
   },
 });
 
@@ -344,33 +306,77 @@ export const listPageModuleContentOp = withHumanisedLinks(
         }),
       ),
     }),
-    handler: async (_ctx, input, tx) => {
-      const rows = (await tx.execute(sql`
-      SELECT pm.block_name, pm.position, m.slug AS module_slug,
-             ci."values" AS instance_values
-      FROM page_modules pm
-      JOIN modules m ON m.id = pm.module_id AND m.deleted_at IS NULL
-      LEFT JOIN content_instances ci ON ci.id = pm.content_instance_id
-      WHERE pm.page_id = ${input.pageId}::uuid
-      ORDER BY pm.block_name ASC, pm.position ASC
-    `)) as unknown as {
-        block_name: string;
-        position: number;
-        module_slug: string;
-        instance_values: unknown;
-      }[];
+    handler: async (ctx, input, tx) => {
+      // #1045 — the caller's view of the page: the branch-overlaid layout,
+      // each instance's branch state, each module's branch state. Reading
+      // live `page_modules` / `content_instances` handed a chat main's
+      // placements and pre-edit values, so a translation (or any reader)
+      // built on it overwrote the draft with stale content.
+      const branchId = ctx.chatBranchId ?? null;
+      const layout = await loadPageLayoutStateWithBranchOverlay(tx, input.pageId, branchId);
+      const placed = layout.blocks
+        .flatMap((b) => {
+          if (!b.placements) {
+            throw new Error(
+              `page_module_content.list_for_page: layout of page ${input.pageId} block ${b.blockName} has no placements — the snapshot predates v0.12; undo that chat's layout change and redo it`,
+            );
+          }
+          return b.placements.map((p, position) => ({ blockName: b.blockName, position, ...p }));
+        })
+        .sort((a, b) => a.blockName.localeCompare(b.blockName) || a.position - b.position);
+      if (placed.length === 0) return ok({ placements: [] });
+
+      const moduleIds = [...new Set(placed.map((p) => p.moduleId))];
+      const instanceIds = [...new Set(placed.map((p) => p.contentInstanceId))];
+      const moduleRows = (await tx.execute(sql`
+        SELECT id::text AS id, slug, deleted_at FROM modules
+        WHERE id IN (${sql.join(
+          moduleIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})
+      `)) as unknown as { id: string; slug: string; deleted_at: string | Date | null }[];
+      const modules = new Map(
+        moduleRows.map((m) => [m.id, { slug: m.slug, deleted: m.deleted_at !== null }]),
+      );
+      const instanceRows = (await tx.execute(sql`
+        SELECT id::text AS id, "values" FROM content_instances
+        WHERE id IN (${sql.join(
+          instanceIds.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )})
+      `)) as unknown as { id: string; values: unknown }[];
+      const values = new Map<string, Record<string, unknown>>(
+        instanceRows.map((r) => [
+          r.id,
+          ((typeof r.values === "string" ? JSON.parse(r.values) : r.values) ?? {}) as Record<
+            string,
+            unknown
+          >,
+        ]),
+      );
+      if (branchId) {
+        for (const [id, state] of await loadBranchedModuleStates(tx, branchId, moduleIds)) {
+          modules.set(id, { slug: state.slug, deleted: state.deletedAt !== null });
+        }
+        for (const [id, state] of await loadContentInstanceBranchStates(
+          tx,
+          instanceIds,
+          branchId,
+        )) {
+          values.set(id, state.values);
+        }
+      }
       return ok({
-        placements: rows.map((r) => {
-          const raw =
-            typeof r.instance_values === "string"
-              ? JSON.parse(r.instance_values)
-              : r.instance_values;
-          return {
-            blockName: r.block_name,
-            position: r.position,
-            moduleSlug: r.module_slug,
-            values: (raw ?? {}) as Record<string, unknown>,
-          };
+        placements: placed.flatMap((p) => {
+          const m = modules.get(p.moduleId);
+          if (!m || m.deleted) return [];
+          const v = values.get(p.contentInstanceId);
+          if (v === undefined) {
+            throw new Error(
+              `page_module_content.list_for_page: placement ${p.blockName}#${p.position} of page ${input.pageId} binds content_instance ${p.contentInstanceId}, which does not exist`,
+            );
+          }
+          return [{ blockName: p.blockName, position: p.position, moduleSlug: m.slug, values: v }];
         }),
       });
     },
