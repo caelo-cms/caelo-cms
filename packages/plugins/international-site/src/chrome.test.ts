@@ -4,6 +4,8 @@ import { describe, expect, it } from "bun:test";
 import {
   applyStrings,
   buildChromeTranslationPrompt,
+  chromeTranslationJsonSchema,
+  chromeTranslationPayload,
   sourceFingerprint,
   translatableStrings,
   validateChromeTranslation,
@@ -113,5 +115,55 @@ describe("chrome translation contract", () => {
         targets,
       ),
     ).toThrow(/missing path/);
+  });
+
+  it("builds the structured-output schema from exactly the offered targets and paths (#992)", () => {
+    const schema = chromeTranslationJsonSchema(targets) as {
+      required: string[];
+      additionalProperties: boolean;
+      properties: { targets: { items: { anyOf: Record<string, unknown>[] } } };
+    };
+    expect(schema.required).toEqual(["targets"]);
+    expect(schema.additionalProperties).toBe(false);
+    const variants = schema.properties.targets.items.anyOf as Array<{
+      additionalProperties: boolean;
+      required: string[];
+      properties: {
+        target: { enum: string[] };
+        strings: { required: string[]; additionalProperties: boolean; properties: object };
+      };
+    }>;
+    expect(variants.map((v) => v.properties.target.enum)).toEqual([["c0"], ["c1"]]);
+    expect(variants.map((v) => v.properties.strings.required)).toEqual([
+      ["tagline"],
+      ["nav[0].label"],
+    ]);
+    for (const v of variants) {
+      expect(v.additionalProperties).toBe(false);
+      expect(v.required).toEqual(["target", "strings"]);
+      expect(v.properties.strings.additionalProperties).toBe(false);
+    }
+    // Every object the decoder sees closes its properties.
+    const walk = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      const o = node as Record<string, unknown>;
+      if (o.type === "object") expect(o.additionalProperties).toBe(false);
+      for (const child of Object.values(o)) {
+        if (Array.isArray(child)) child.forEach(walk);
+        else walk(child);
+      }
+    };
+    walk(schema);
+  });
+
+  it("an answer that fits the schema passes the same Zod contract and validator", () => {
+    const answer = {
+      targets: [
+        { target: "c0", strings: { tagline: "Mit Sorgfalt" } },
+        { target: "c1", strings: { "nav[0].label": "Über uns" } },
+      ],
+    };
+    const parsed = chromeTranslationPayload.parse(answer);
+    expect(() => validateChromeTranslation(parsed, targets)).not.toThrow();
   });
 });

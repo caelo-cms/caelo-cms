@@ -171,6 +171,53 @@ export const chromeTranslationPayload = z
 export type ChromeTranslationPayload = z.infer<typeof chromeTranslationPayload>;
 
 /**
+ * #992 — the JSON Schema `ctx.ai.generateObject` constrains a chrome answer
+ * to (CLAUDE.md §12), built per call from what is offered: each answered
+ * target is one of the offered ids with exactly its own paths, all
+ * required, nothing else. The wire shape is {@link chromeTranslationPayload}
+ * unchanged, so the same Zod parse and {@link validateChromeTranslation}
+ * check every answer — the install's model and a Power-MCP agent's alike.
+ * That every offered target is answered stays the validator's job:
+ * structured-output decoders do not enforce `minItems` above 1.
+ */
+export function chromeTranslationJsonSchema(
+  targets: readonly ChromeTranslationTarget[],
+): Record<string, unknown> {
+  const answerFor = (t: ChromeTranslationTarget) => ({
+    type: "object",
+    additionalProperties: false,
+    required: ["target", "strings"],
+    properties: {
+      target: {
+        type: "string",
+        enum: [t.id],
+        description: `The target id from the "### Target ${t.id}" heading.`,
+      },
+      strings: {
+        type: "object",
+        additionalProperties: false,
+        required: t.strings.map((s) => s.path),
+        properties: Object.fromEntries(
+          t.strings.map((s) => [s.path, { type: "string", description: "The translated string." }]),
+        ),
+      },
+    },
+  });
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["targets"],
+    properties: {
+      targets: {
+        type: "array",
+        description: "One entry per offered target, each target once.",
+        items: { anyOf: targets.map(answerFor) },
+      },
+    },
+  };
+}
+
+/**
  * The whole chrome of the site in one call — header, footer and menus
  * share vocabulary ("Pricing" in the menu and in the footer must agree),
  * which is the same reason a page is never translated sentence by
