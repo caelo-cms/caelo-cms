@@ -325,6 +325,71 @@ describe("#1008 — syncPluginHost follows the plugin rows", () => {
   });
 });
 
+describe("#1052 — an active plugin this release does not ship", () => {
+  const GONE = `${PREFIX}gone`;
+
+  async function seedOrphanRow(): Promise<void> {
+    // The shape pre-0.10.24 boots left behind: an `active` tier-1 row for a
+    // built-in plugin whose directory a later release deleted.
+    await sqlSystem(
+      async (tx) => tx`
+        INSERT INTO plugins (slug, version, tier, status, manifest_json, source_path,
+                             manifest_signature, submitted_by)
+        VALUES (${GONE}, '0.1.0', 1, 'active', '{}'::jsonb, ${`packages/plugins/${GONE}`},
+                'unknown', ${SYSTEM_ACTOR_ID}::uuid)`,
+    );
+  }
+
+  async function bugReportsFor(slug: string): Promise<number> {
+    const rows = await sqlSystem(
+      async (tx) =>
+        (await tx`SELECT count(*)::int AS n FROM ai_bug_reports WHERE title LIKE ${`%${slug}%`}`) as {
+          n: number;
+        }[],
+    );
+    return rows[0]?.n ?? 0;
+  }
+
+  it("is recorded as not part of this release, never filed as a core bug, and stays active", async () => {
+    const root = mkdtempSync(join(tmpdir(), "t1052-"));
+    try {
+      await sqlSystem(async (tx) => tx`DELETE FROM ai_bug_reports WHERE title LIKE ${`%${GONE}%`}`);
+      await seedOrphanRow();
+      // Two instances in a row (the second is a fresh host on the same DB).
+      for (let instance = 0; instance < 2; instance++) {
+        resetPluginHost();
+        resetPluginHostSync();
+        await bootstrap({ infra, pluginsRoot: root, systemActorId: SYSTEM_ACTOR_ID });
+        await syncPluginHost(true);
+        const notRunning = pluginsNotRunningHere().find((p) => p.slug === GONE);
+        expect(notRunning?.reason).toContain("is not part of this release");
+        expect(notRunning?.reason).toContain("uninstall it at /settings/plugins");
+      }
+
+      const errors = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT error_class, occurrences, bug_report_id FROM plugin_errors
+                    WHERE plugin_slug = ${GONE}`) as {
+            error_class: string;
+            occurrences: number;
+            bug_report_id: string | null;
+          }[],
+      );
+      // One folded record, the plugin's problem, not linked to a bug report.
+      expect(errors).toEqual([{ error_class: "plugin", occurrences: 2, bug_report_id: null }]);
+      expect(await bugReportsFor(GONE)).toBe(0);
+      // Never switched off by the host: the status is the Owner's.
+      const status = await sqlSystem(
+        async (tx) =>
+          (await tx`SELECT status FROM plugins WHERE slug = ${GONE}`) as { status: string }[],
+      );
+      expect(status[0]?.status).toBe("active");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("#1008 — loads of one plugin never overlap", () => {
   it("an activation and a reconcile at the same time load it once, with one set of workers", async () => {
     // Active but not running here: its first load failed.

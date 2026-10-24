@@ -76,6 +76,7 @@ import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import {
   inPhase,
   PluginLoadError,
+  PluginNotInReleaseError,
   startRuntimeHeartbeat,
   stopRuntimeHeartbeat,
 } from "./runtime-health.js";
@@ -670,6 +671,17 @@ async function loadActivatedPluginOnce(
     }
   }
   const pluginDir = resolvePath(bootOpts.pluginsRoot, slug);
+  // #1052 — a tier-1 row with no built-in directory: a plugin Caelo no
+  // longer ships. Recorded as the plugin's problem with the Owner's next
+  // step, never filed as a blocking core bug from every instance.
+  if (!existsSync(pluginDir)) {
+    const notInRelease = new PluginNotInReleaseError(slug, pluginDir);
+    await reportLoadFailure(
+      { infra: bootOpts.infra, systemActorId: bootOpts.systemActorId, slug },
+      new PluginLoadError("verify", notInRelease),
+    );
+    return { loaded: false, reason: notInRelease.message };
+  }
   let rawManifest: unknown;
   try {
     rawManifest = JSON.parse(readFileSync(resolvePath(pluginDir, "manifest.json"), "utf8"));

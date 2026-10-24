@@ -58,6 +58,35 @@ export class PluginLoadError extends Error {
 }
 
 /**
+ * #1052 — an active release-signed plugin row whose built-in directory this
+ * release does not ship. Not a Caelo crash and not the plugin's code: the
+ * plugin was removed from Caelo (the `translation` plugin in #401), and a
+ * row for it came back afterwards — pre-0.10.24 code re-inserted every
+ * discovered plugin as `active` on each boot, so an old-revision instance
+ * booting after migration 0198 deleted the row wrote it again. The host
+ * never switches it off (CLAUDE.md §2: the status is the Owner's); the
+ * message names the Owner's one step instead.
+ */
+export class PluginNotInReleaseError extends Error {
+  constructor(slug: string, pluginDir: string) {
+    super(
+      `"${slug}" is not part of this release (no built-in plugin directory ${pluginDir}) — uninstall it at /settings/plugins`,
+    );
+    this.name = "PluginNotInReleaseError";
+  }
+}
+
+/** True when `error` or one of its causes is a {@link PluginNotInReleaseError}. */
+function isNotInRelease(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 6 && current instanceof Error; depth++) {
+    if (current instanceof PluginNotInReleaseError) return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+/**
  * Run `fn`, tagging anything it throws with `phase`. A failure already
  * tagged by an inner phase keeps the inner (more precise) tag.
  */
@@ -104,13 +133,17 @@ function isTransient(error: unknown): boolean {
 
 /**
  * Whose fault `error` is. Infrastructure hiccups are transient wherever
- * they happen. Otherwise the phase decides: a definition the host refuses
+ * they happen; a plugin row this release has no code for is not a core
+ * problem (it is uninstalled, not reported). Otherwise the phase decides: a definition the host refuses
  * to register, an `onActivate` that throws, and anything the plugin's own
  * operations, workers or render hooks throw are the plugin's; verifying a
  * release and provisioning its schema are Caelo's.
  */
 export function classifyPluginError(phase: PluginPhase, error: unknown): PluginErrorClass {
   if (isTransient(error)) return "transient";
+  // A plugin this release does not ship is the install's state, not a
+  // defect to report to the bug intake (#1052).
+  if (isNotInRelease(error)) return "plugin";
   switch (phase) {
     case "register":
     case "activate":
