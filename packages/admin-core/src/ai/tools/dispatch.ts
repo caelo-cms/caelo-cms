@@ -535,12 +535,12 @@ function nestingIntentHint(
   return (
     `You passed ${keyList} to nest repeating or sub-content — this tool has no such argument. ` +
     `Nesting is expressed as an entry in the \`fields\` array, NOT a top-level key:\n` +
-    `- a nav / menu / list of links → one \`link-list\` field, e.g. ` +
-    `\`{name:"nav_links",kind:"link-list",label:"Navigation",default:[{label:"Home",href:"/"},{label:"About",href:"/about"}]}\` (each internal \`href\` must be the path of a page that exists), ` +
-    `rendered in the HTML with \`{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}\`;\n` +
-    `- a list of plain strings (tags, bullets) → one \`text-list\` field with a \`default\` array, rendered with \`{{#name}}…{{.}}…{{/name}}\`;\n` +
+    `- a nav / menu / list of links → one \`list\` field, e.g. ` +
+    `\`{name:"nav_links",kind:"list",listType:"links",label:"Navigation",default:[{node:"link",values:{label:"Home",link:{href:"/"}}}]}\` (each internal \`href\` must be the path of a page that exists; site navigation is a shared list: \`bind:"shared"\`), ` +
+    `rendered in the HTML with \`{{#nav_links}}<a href="{{link}}">{{label}}</a>{{/nav_links}}\`;\n` +
+    `- a list of plain strings (tags, bullets) → one \`list\` field with \`listType:"texts"\` and a \`default\` of entries, rendered with \`{{#name}}…{{text}}…{{/name}}\`;\n` +
     `- repeating rich sub-modules (cards with image + title + body) → one \`module-list\` field ` +
-    `(note: \`module\`/\`module-list\` need a content_instance to fill them, so they do NOT render on layout/template chrome — use \`link-list\`/\`text-list\` with a \`default\` there).\n` +
+    `(note: \`module\`/\`module-list\` need a content_instance to fill them, so they do NOT render on layout/template chrome — use a \`list\` field there).\n` +
     `Re-call with the nesting moved into a \`fields\` entry; drop ${keyList}.`
   );
 }

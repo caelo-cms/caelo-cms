@@ -421,14 +421,19 @@ export const upsertListsManyOp = defineOperation({
       chatBranchId: branchId,
       entities,
     });
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: op,
-      input,
-      succeeded: true,
-      resultSummary: `lists=${out.length}${branchId ? " (branch)" : ""}`,
-    });
+    // One audit row per list, naming it: the redeploy trigger reads the
+    // entity id to rebuild exactly the pages that show the list.
+    for (const o of out) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: op,
+        input,
+        succeeded: true,
+        entityId: o.id,
+        resultSummary: `${o.slug} v${o.version}${branchId ? " (branch)" : ""}`,
+      });
+    }
     return ok({ lists: out });
   },
 });
@@ -593,14 +598,19 @@ export const patchListItemsManyOp = defineOperation({
       chatBranchId: branchId,
       entities,
     });
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: op,
-      input,
-      succeeded: true,
-      resultSummary: `lists=${out.length}${branchId ? " (branch)" : ""}`,
-    });
+    // One audit row per list, naming it: the redeploy trigger reads the
+    // entity id to rebuild exactly the pages that show the list.
+    for (const o of out) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: op,
+        input,
+        succeeded: true,
+        entityId: o.id,
+        resultSummary: `${o.slug} v${o.version}${branchId ? " (branch)" : ""}`,
+      });
+    }
     return ok({ lists: out });
   },
 });
@@ -691,14 +701,17 @@ export const deleteListsManyOp = defineOperation({
       chatBranchId: branchId,
       entities,
     });
-    await recordAudit(tx, {
-      actorId: ctx.actorId,
-      requestId: ctx.requestId,
-      operation: op,
-      input,
-      succeeded: true,
-      resultSummary: `deleted=${deleted.length}${branchId ? " (branch)" : ""}`,
-    });
+    for (const e of entities) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: op,
+        input,
+        succeeded: true,
+        entityId: e.entityId,
+        resultSummary: `deleted ${e.state.slug}${branchId ? " (branch)" : ""}`,
+      });
+    }
     return ok({ deleted });
   },
 });

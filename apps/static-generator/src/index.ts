@@ -21,6 +21,13 @@ export {
   manifestBakesEnvNoindex,
   pageOutputPath,
 } from "./generate.js";
+// Epic #1107 — the list render data assembler the preview loader shares
+// with the build (admin-core `lists/load.ts`).
+export {
+  assembleListRenderData,
+  ListRenderDataError,
+  type ListRenderSources,
+} from "./list-data.js";
 // #802 — the file the designated 404 page ships as (the quality audit
 // loads it there, not at the page's own path).
 export { NOT_FOUND_PAGE_FILE } from "./not-found-page.js";

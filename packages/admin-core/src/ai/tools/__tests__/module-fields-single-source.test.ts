@@ -40,11 +40,11 @@ const NO_INLINE_ENUM_TOOLS = [...FIELD_AUTHORING_TOOLS] as const;
  * `enum: [...]` array carrying the list/nested field kinds (rather than the
  * module-`kind` chrome/hero/... enum, which legitimately appears as a separate
  * property). Keyed on the enum construct, not on any quoted occurrence of the
- * kind names: tool DESCRIPTIONS legitimately show `kind:"link-list"` in
+ * kind names: tool DESCRIPTIONS legitimately show `kind:"list"` in
  * copyable examples for the AI (CLAUDE.md §1A nesting steering) — only a
  * schema enum array re-introduces the drift.
  */
-const INLINE_FIELD_ENUM = /enum:\s*\[[^\]]*"(?:text-list|link-list|module-list)"/;
+const INLINE_FIELD_ENUM = /enum:\s*\[[^\]]*"(?:list|module-list)"/;
 
 describe("MODULE_FIELDS_JSON_SCHEMA stays the single source of truth", () => {
   for (const file of FIELD_AUTHORING_TOOLS) {

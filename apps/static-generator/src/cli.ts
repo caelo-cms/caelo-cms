@@ -53,6 +53,9 @@ interface CliInput {
   /** P13 ideas-pass — incremental rebuild whitelist (page ids).
    *  Empty/missing = full-site rebuild. */
   changedPageIds?: string[];
+  /** Epic #1107 — shared lists / list types changed since the last build. */
+  changedListIds?: string[];
+  changedListTypeIds?: string[];
   /** #650 — see generateSite's `siteBaseUrlOverride`. */
   siteBaseUrlOverride?: string;
   /** #650 — see generateSite's `syncCurrent`. */
@@ -137,6 +140,8 @@ async function main(): Promise<void> {
           runId: input.runId,
           repoRoot: input.repoRoot,
           changedPageIds: input.changedPageIds,
+          changedListIds: input.changedListIds,
+          changedListTypeIds: input.changedListTypeIds,
           siteBaseUrlOverride: input.siteBaseUrlOverride,
           syncCurrent: input.syncCurrent,
           onProgress: (p) => emit({ kind: "progress", ...p }),

@@ -384,11 +384,11 @@ function seed(): Seed {
       const deUeber = await mk(P + "-ueber", "/de/" + P + "-ueber");
       const fields = JSON.stringify([
         { name: "tagline", kind: "text", label: "Tagline", default: "Made with care" },
-        { name: "nav", kind: "link-list", label: "Menu", default: [{ label: "About", href: "caelo:page/" + enAbout }] },
+        { name: "nav", kind: "list", listType: "links", label: "Menu", default: [{ id: "00000000-0000-4000-9000-000000000001", node: "link", values: { label: "About", link: { href: "caelo:page/" + enAbout } } }] },
       ]);
       const mod = await tx\`INSERT INTO modules (slug, display_name, type, kind, html, fields)
         VALUES (\${P + "-footer"}, 'Site footer', 'footer', 'chrome',
-                '<footer><p class="tag">{{tagline}}</p>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}</footer>',
+                '<footer><p class="tag">{{tagline}}</p>{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}</footer>',
                 (\${fields}::text)::jsonb) RETURNING id\`;
       await tx\`INSERT INTO layout_modules (layout_id, block_name, position, module_id)
         VALUES (\${lay[0].id}, 'footer', 0, \${mod[0].id})\`;

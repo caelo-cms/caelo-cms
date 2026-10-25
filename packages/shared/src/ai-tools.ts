@@ -450,7 +450,8 @@ export const CHAT_MAX_ATTACHMENTS = 4;
  * `context` come from a right-click / text selection in the live-edit
  * preview (#916): what the operator selected and the text of the block
  * around it, so the AI knows exactly what was meant. `blockName` /
- * `position` / `field` / `index` (#917) name the placement field the text
+ * `position` / `field` (#917) — plus `item` / `key` for an entry of a
+ * local list field (epic #1107) — name the placement field the text
  * comes from when the preview marked it, so the AI can address it in
  * `set_page_module_content` without inspecting the page first.
  */
@@ -464,7 +465,11 @@ export const chatChipSchema = z
     blockName: z.string().min(1).max(80).optional(),
     position: z.number().int().nonnegative().optional(),
     field: z.string().min(1).max(200).optional(),
-    index: z.number().int().nonnegative().optional(),
+    item: z.string().uuid().optional(),
+    key: z
+      .string()
+      .regex(/^[a-z][a-z0-9_]{0,63}$/)
+      .optional(),
   })
   .strict();
 export type ChatChip = z.infer<typeof chatChipSchema>;

@@ -100,11 +100,11 @@ test("link text + target, shared content scope, and image replace", async ({ pag
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${tpl[0].id}::uuid, 'content', 'Content', 0)\`;
       const fields = JSON.stringify([
         { name: "title", kind: "text", label: "Title" },
-        { name: "links", kind: "link-list", label: "Links" },
+        { name: "links", kind: "list", listType: "links", label: "Links" },
         { name: "photo", kind: "image", label: "Photo" },
         { name: "photo_alt", kind: "text", label: "Photo alt text" },
       ]);
-      const html = '<section class="card"><h1>{{title}}</h1><nav>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav><img src="{{photo}}" alt="{{photo_alt}}" width="48" height="48"></section>';
+      const html = '<section class="card"><h1>{{title}}</h1><nav>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</nav><img src="{{photo}}" alt="{{photo_alt}}" width="48" height="48"></section>';
       const mod = await tx\`
         INSERT INTO modules (slug, display_name, type, html, fields)
         VALUES (\${process.env.MOD_SLUG}, 'shared mod', \${process.env.MOD_SLUG}, \${html}, \${fields}::text::jsonb)
@@ -113,7 +113,7 @@ test("link text + target, shared content scope, and image replace", async ({ pag
       // so the seed links nowhere internal; the picked image is a real asset.
       const values = JSON.stringify({
         title: "SHARED_TITLE",
-        links: [{ label: "Docs", href: "https://example.com/docs" }],
+        links: [{ id: "00000000-0000-4000-9000-000000000001", node: "link", values: { label: "Docs", link: { href: "https://example.com/docs" } } }],
         photo: "https://example.com/old-photo.png",
         photo_alt: "Old photo",
       });
@@ -190,7 +190,11 @@ test("link text + target, shared content scope, and image replace", async ({ pag
   // Stored as a page reference (#724), rendered as the page's path.
   await expect(card.locator("nav a")).toHaveAttribute("href", `/${TWIN_SLUG}/`);
   expect(branchValues(ids.ci)?.links).toEqual([
-    { label: "Handbook", href: `caelo:page/${ids.twin}` },
+    {
+      id: "00000000-0000-4000-9000-000000000001",
+      node: "link",
+      values: { label: "Handbook", link: { href: `caelo:page/${ids.twin}` } },
+    },
   ]);
 
   // 2. Shared title → "only on this page": this page detaches, the shared

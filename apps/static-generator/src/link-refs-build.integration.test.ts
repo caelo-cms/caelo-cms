@@ -162,14 +162,20 @@ describe("static build — internal references", () => {
     const home = await buildPage(
       `${PFX}-links`,
       "published",
-      '<nav><a href="{{about_href}}">About</a>{{#more}}<a href="{{href}}">{{label}}</a>{{/more}}</nav>',
+      '<nav><a href="{{about_href}}">About</a>{{#more}}<a href="{{link}}">{{label}}</a>{{/more}}</nav>',
       {
         about_href: `caelo:page/${about}#team`,
-        more: [{ label: "Soon", href: `caelo:page/${draft}` }],
+        more: [
+          {
+            id: "00000000-0000-4000-9000-000000000001",
+            node: "link",
+            values: { label: "Soon", link: { href: `caelo:page/${draft}` } },
+          },
+        ],
       },
       [
         { name: "about_href", kind: "url", label: "About link" },
-        { name: "more", kind: "link-list", label: "More" },
+        { name: "more", kind: "list", listType: "links", label: "More" },
       ],
     );
 
@@ -191,7 +197,9 @@ describe("static build — internal references", () => {
       "utf8",
     );
     expect(html).toContain(`<a href="/${PFX}-about/#team">About</a>`);
-    expect(html).toContain(`<a href="/${PFX}-soon/">Soon</a>`);
+    expect(html.replace(/ data-caelo-list-item="[^"]*"/g, "")).toContain(
+      `<a href="/${PFX}-soon/">Soon</a>`,
+    );
     expect(html).not.toContain("caelo:page/");
     expect(result.unpublishedLinkTargets).toEqual([
       {

@@ -38,6 +38,12 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
 
+/** The chrome nav's one list entry (epic #1107), linking `href`. */
+const navEntry = (href: string) => ({
+  id: "00000000-0000-4000-9000-000000000001",
+  node: "link",
+  values: { label: "Pricing", link: { href } },
+});
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -280,13 +286,13 @@ beforeAll(async () => {
   ids.media = media.assetId;
   mediaSlug = media.slug;
 
-  // Layout chrome: links in the HTML and in a link-list field default.
+  // Layout chrome: links in the HTML and in a list field default.
   ids.nav = (
     await run<{ moduleId: string }>("modules.create", {
       slug: `${PFX}-nav`,
       displayName: `${PFX} Nav`,
-      html: '<nav><a href="https://example.com/">Home</a>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav>',
-      fields: [{ name: "links", kind: "link-list", label: "Links", default: [] }],
+      html: '<nav><a href="https://example.com/">Home</a>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</nav>',
+      fields: [{ name: "links", kind: "list", listType: "links", label: "Links", default: [] }],
     })
   ).moduleId;
   ids.card = (
@@ -334,8 +340,8 @@ beforeAll(async () => {
 
   // The pre-#724 state: literal paths everywhere.
   await asSystem(async (tx) => {
-    await tx`UPDATE modules SET html = ${`<nav><img src="/_caelo/media/${mediaSlug}" alt=""><a href="${ABOUT}">About</a><a href="${GONE}">Old</a>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav>`},
-             fields = ${JSON.stringify([{ name: "links", kind: "link-list", label: "Links", default: [{ label: "Pricing", href: `${PRICING}#plans` }] }])}::jsonb
+    await tx`UPDATE modules SET html = ${`<nav><img src="/_caelo/media/${mediaSlug}" alt=""><a href="${ABOUT}">About</a><a href="${GONE}">Old</a>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</nav>`},
+             fields = ${JSON.stringify([{ name: "links", kind: "list", listType: "links", label: "Links", default: [navEntry(`${PRICING}#plans`)] }])}::jsonb
              WHERE id = ${ids.nav}::uuid`;
     await tx`UPDATE content_instances SET "values" = ${JSON.stringify({
       cta_label: "Buy",
@@ -431,9 +437,7 @@ describe("links.migrate_to_references", () => {
     expect(nav.html).toContain(`href="caelo:page/${ids.about}"`);
     expect(nav.html).toContain(`<img src="caelo:media/${ids.media}" alt="">`);
     expect(nav.html).toContain(`href="${GONE}"`); // never guessed
-    expect(nav.fields[0]?.default).toEqual([
-      { label: "Pricing", href: `caelo:page/${ids.pricing}#plans` },
-    ]);
+    expect(nav.fields[0]?.default).toEqual([navEntry(`caelo:page/${ids.pricing}#plans`)]);
 
     const values = await instanceValues(ids.instance);
     expect(values.cta_href).toBe(`caelo:page/${ids.pricing}`);
@@ -585,9 +589,7 @@ describe("links.migrate_to_references", () => {
     expect(out.skippedConflicts).toBe(1);
     expect((await moduleRow(ids.nav)).html).toContain(`href="${ABOUT}"`);
     expect((await moduleRow(ids.nav)).html).toContain(`src="/_caelo/media/${mediaSlug}"`);
-    expect((await moduleRow(ids.nav)).fields[0]?.default).toEqual([
-      { label: "Pricing", href: `${PRICING}#plans` },
-    ]);
+    expect((await moduleRow(ids.nav)).fields[0]?.default).toEqual([navEntry(`${PRICING}#plans`)]);
     expect((await instanceValues(ids.instance)).cta_href).toBe(PRICING);
     expect(await layoutHtml(ids.layout)).toBe(EDITED_LAYOUT); // the edit was kept
     const row = (await pluginRows()).find((r) => r.id === ids.pluginRow);

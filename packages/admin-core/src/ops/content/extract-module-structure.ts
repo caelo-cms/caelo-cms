@@ -425,13 +425,14 @@ export function validateTemplatizedModule(
   const declared = new Set(fields.map((f) => f.name));
   const referenced = new Set<string>();
   // List-loop scoping: placeholders INSIDE a `{{#listField}}…{{/listField}}`
-  // block are the list's ITEM sub-fields — for a link-list `{{label}}`/`{{href}}`,
-  // for a text-list the item scalar, for a module-list the nested `{{>child}}`.
+  // block are the list's ENTRY keys — for a `list` field its entry fields
+  // (`{{label}}`/`{{link}}`), system keys and children loops, for a
+  // module-list the nested `{{>child}}`.
   // They are NOT top-level module fields, so strip each loop BODY (keeping the
   // `{{#X}}{{/X}}` markers, which reference the list field X itself) before
-  // collecting top-level references. Without this, a valid nav/link-list module
-  // — `{{#nav_links}}<a href="{{href}}">…{{/nav_links}}` — was rejected with
-  // 'placeholder {{href}} references undeclared field "href"' (found via the
+  // collecting top-level references. Without this, a valid nav list module
+  // — `{{#nav_links}}<a href="{{link}}">…{{/nav_links}}` — was rejected with
+  // 'placeholder {{link}} references undeclared field "link"' (found via the
   // ai_moduleize_attempts telemetry: moduleize failed every list module).
   const topLevelHtml = html.replace(
     /\{\{\s*#\s*([a-z][a-z0-9_]*)\s*\}\}[\s\S]*?\{\{\s*\/\s*\1\s*\}\}/g,

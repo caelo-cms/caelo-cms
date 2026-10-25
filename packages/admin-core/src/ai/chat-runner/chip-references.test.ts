@@ -37,11 +37,12 @@ describe("element references in the persisted user message (#916)", () => {
         blockName: "header",
         position: 0,
         field: "links",
-        index: 2,
+        item: "00000000-0000-4000-9000-000000000002",
+        key: "label",
       },
     ]);
     expect(text).toContain(
-      `(module=${MODULE_ID}, element=nav > a, placement=(blockName=header, position=0), field=links[2])`,
+      `(module=${MODULE_ID}, element=nav > a, placement=(blockName=header, position=0), field=links, entry=00000000-0000-4000-9000-000000000002, key=label)`,
     );
   });
 

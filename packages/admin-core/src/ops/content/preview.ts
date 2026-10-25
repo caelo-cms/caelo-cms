@@ -38,8 +38,10 @@ import {
   type ComposeFonts,
   type ComposeTheme,
   type ComposeThemeAsset,
+  collectListModuleRefs,
   collectNestedRefs,
   composePageWithLayout,
+  createListRenderContext,
   enrichResponsiveImages,
   err,
   extractMediaRefs,
@@ -47,19 +49,22 @@ import {
   fontUnresolvableMarker,
   type ImageVariantInfo,
   injectSeoIntoHead,
+  isListFailureMarker,
   linkMarkersOf,
   listThemeCssVarNames,
-  type ModuleFieldKind,
   type NestedContentInstanceResource,
   type NestedModuleResource,
   type NestedRenderResolver,
   ok,
+  pluginSourcesFromDataLists,
   renderModuleWithContent,
   renderSeoHead,
   resolveDocumentLanguage,
   type SiteSeoSettings,
   scanCssVars,
+  type TemplateField,
   type ThemeDocument,
+  templateFieldsFromJson,
   themeFaviconRendition,
   unknownCssVarMarker,
   wrapEditableValues,
@@ -73,6 +78,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { pendingSnapshotSql } from "../../draft.js";
 import { loadPreviewLinkIndex } from "../../links/link-targets.js";
+import { loadListRenderData } from "../../lists/load.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 import { resolvePreviewContentVariants } from "./preview-variants.js";
 import { loadPublishPageUrlStyle } from "./public-urls.js";
@@ -93,29 +99,15 @@ interface ModuleSourceRow {
 // v0.12.1 — `substituteFields` was replaced by the recursive renderer
 // shared with the static generator (`@caelo-cms/shared` nested-module-render.ts). The new renderer subsumes the v0.4.0 flat
 // behaviour AND handles {{>field}} / {{#field}}…{{/field}} slots for
-// nested module / module-list field kinds.
+// nested module / module-list / list field kinds.
 
-function parseFields(raw: unknown): { name: string; kind: ModuleFieldKind; default?: unknown }[] {
-  const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
-  if (!Array.isArray(arr)) return [];
-  return arr
-    .filter((f): f is { name: string; kind?: unknown; default?: unknown } => {
-      return (
-        typeof f === "object" && f !== null && typeof (f as { name: unknown }).name === "string"
-      );
-    })
-    .map((f) => ({
-      name: f.name,
-      // jsonb may carry a typo'd or unknown kind; the cast preserves
-      // today's runtime fail-loud (engine emits kind-mismatch when
-      // dispatch can't find a branch). Compile-time safety lives at
-      // typed authoring tools, not at the raw-jsonb boundary.
-      kind:
-        typeof (f as { kind?: unknown }).kind === "string"
-          ? ((f as { kind: string }).kind as ModuleFieldKind)
-          : ("text" as const),
-      default: (f as { default?: unknown }).default,
-    }));
+/**
+ * The module's field schema as the template engine renders it. jsonb may
+ * carry a typo'd or unknown kind; it passes through so the engine emits
+ * kind-mismatch loudly (compile-time safety lives at the authoring tools).
+ */
+function parseFields(raw: unknown): TemplateField[] {
+  return templateFieldsFromJson(raw);
 }
 
 export const renderPagePreviewOp = defineOperation({
@@ -364,7 +356,7 @@ export const renderPagePreviewOp = defineOperation({
           js: string;
           displayName: string;
           slug: string;
-          // A branch edit_module can ADD/RENAME fields (e.g. a new link-list).
+          // A branch edit_module can ADD/RENAME fields (e.g. a new list field).
           // The overlay MUST carry the branch schema or the render context uses
           // the stale live `modules.fields`, and a `{{#field}}` section over the
           // new field renders as literal `{{#field}}` text (field-not-declared).
@@ -577,17 +569,84 @@ export const renderPagePreviewOp = defineOperation({
         html: m.html,
         css: m.css,
         js: m.js,
-        fields: parseFields(m.fields).map((f) => ({
-          name: f.name,
-          kind: f.kind,
-          default: f.default,
-        })),
+        fields: parseFields(m.fields),
       });
     }
     for (const [id, values] of valuesByInstance) {
       const moduleId = instanceModuleIdById.get(id) ?? "";
       instanceByIdResource.set(id, { id, moduleId, values, deletedAt: null });
     }
+
+    // P6.7.6 — load layout modules (chrome) for every layout block
+    // except `content` (which is filled by the rendered template).
+    // issue #106 — load `m.fields` for layout/chrome modules too. A
+    // layout module (footer/header/nav) has NO content_instance binding
+    // (the `layout_modules` table carries no content_instance_id), so its
+    // content lives in the authored field `default`s. The composer's
+    // applyFieldSubstitution renders those defaults — but only if it
+    // receives the fields. Omitting them shipped raw `{{nav_links}}` /
+    // `{{copyright}}` placeholders to the live-edit preview iframe while
+    // page-content modules (bound to content_instances) interpolated
+    // fine. The static generator already loads fields here; the preview
+    // op was the lone divergence. See CLAUDE.md §1A (repeating content is
+    // a list field) — the footer nav is a `list` field.
+    const layoutModRows = (await tx.execute(sql`
+      SELECT lm.block_name AS block_name,
+             lm.position   AS position,
+             m.id::text    AS module_id,
+             m.slug        AS slug,
+             m.display_name AS display_name,
+             m.html        AS html,
+             m.css         AS css,
+             m.js          AS js,
+             m.fields      AS fields
+      FROM (${effectiveLayoutModulesSql(chatBranchId)}) lm JOIN modules m ON m.id = lm.module_id
+      WHERE lm.layout_id = ${pageRow.layout_id}::uuid AND m.deleted_at IS NULL
+      ORDER BY lm.block_name ASC, lm.position ASC
+    `)) as unknown as ModuleSourceRow[];
+    // Caller-branch module-code overlay for LAYOUT (chrome) modules —
+    // same class as the run-#8-R3 page-module overlay above. A branched
+    // `edit_module` on a footer/header writes module_snapshots only; the
+    // live `modules` row stays published. Without this overlay the
+    // preview (and inspect_page_render / screenshot_page riding on it)
+    // kept rendering the STALE chrome, sending the AI into an
+    // "my edits don't land" re-edit loop (live-edit footer turn burned
+    // ~8 recovery rounds). Fields ride along because chrome renders from
+    // field DEFAULTS — a default edit must show up too.
+    if (chatBranchId && layoutModRows.length > 0) {
+      const layoutModuleIds = layoutModRows.map((r) => sql`${r.module_id}::uuid`);
+      const chromeBranchRows = (await tx.execute(sql`
+        SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
+        FROM module_snapshots ms
+        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
+        WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
+          AND ms.module_id IN (${sql.join(layoutModuleIds, sql`, `)})
+        ORDER BY ms.module_id, ss.created_at DESC
+      `)) as unknown as { module_id: string; state: unknown }[];
+      const chromeOverlay = new Map<string, Record<string, unknown>>();
+      for (const r of chromeBranchRows) {
+        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
+        chromeOverlay.set(r.module_id, raw as Record<string, unknown>);
+      }
+      for (const m of layoutModRows) {
+        const s = chromeOverlay.get(m.module_id);
+        if (!s || s.deletedAt) continue;
+        m.html = (s.html as string) ?? m.html;
+        m.css = (s.css as string) ?? m.css;
+        m.js = (s.js as string) ?? m.js;
+        m.display_name = (s.displayName as string) ?? m.display_name;
+        if (Array.isArray(s.fields)) m.fields = s.fields as ModuleSourceRow["fields"];
+      }
+    }
+    // Epic #1107 — the lists this render resolves (draft view of the
+    // chat's branch). Loaded before the nested-module batch load so the
+    // modules embedded in list entries are loaded with the rest.
+    const listData = await loadListRenderData(tx, {
+      chatBranchId: chatBranchId ?? null,
+      scope: "preview",
+      env: "preview",
+      renderScope,
+    });
 
     // BFS expand transitively referenced (moduleId, contentInstanceId)
     // pairs. Bounded by the depth limit baked into the renderer; the
@@ -603,6 +662,16 @@ export const renderPagePreviewOp = defineOperation({
         }
       };
       for (const r of instanceByIdResource.values()) enqueueRefs(r.values);
+      // Chrome renders from field defaults, and shared list entries can
+      // embed modules: both are reachable from no placement's instance.
+      for (const m of layoutModRows) {
+        const defaults: Record<string, unknown> = {};
+        for (const f of parseFields(m.fields)) {
+          if (f.default !== undefined) defaults[f.name] = f.default;
+        }
+        enqueueRefs(defaults);
+      }
+      enqueueRefs({ listRefs: collectListModuleRefs(listData) });
 
       // Cap BFS rounds; the renderer enforces depth at substitute time
       // and 8 levels is the absolute max so 8 rounds is the ceiling.
@@ -664,11 +733,7 @@ export const renderPagePreviewOp = defineOperation({
               html: f.html,
               css: f.css,
               js: f.js,
-              fields: parseFields(f.fields).map((p) => ({
-                name: p.name,
-                kind: p.kind,
-                default: p.default,
-              })),
+              fields: parseFields(f.fields),
             });
           }
           pendingModuleIds = new Set();
@@ -776,73 +841,18 @@ export const renderPagePreviewOp = defineOperation({
     const linkResolver = (
       await loadPreviewLinkIndex(tx, chatBranchId ?? null, "preview", pageUrlStyle, renderScope)
     ).forPage(input.pageId);
+    // Plugin list sources for THIS page: the editor preview must show the
+    // same thing the deploy will, including the loud marker when a plugin
+    // whose source a module iterates has been switched off.
     const resolvedLists = await resolveDataLists([input.pageId], renderScope, pageUrlStyle);
-    const pluginLists = {
-      dataLists: resolvedLists.get(input.pageId) ?? {},
-      dormantDataLists: dormantDataListNames(),
-    };
+    const listContext = createListRenderContext(listData, {
+      dormantPluginSources: dormantDataListNames(),
+    });
+    const lists = listContext.forPage(input.pageId, {
+      linkResolver,
+      pluginSources: pluginSourcesFromDataLists(resolvedLists.get(input.pageId) ?? {}),
+    });
 
-    // P6.7.6 — load layout modules (chrome) for every layout block
-    // except `content` (which is filled by the rendered template).
-    // issue #106 — load `m.fields` for layout/chrome modules too. A
-    // layout module (footer/header/nav) has NO content_instance binding
-    // (the `layout_modules` table carries no content_instance_id), so its
-    // content lives in the authored field `default`s. The composer's
-    // applyFieldSubstitution renders those defaults — but only if it
-    // receives the fields. Omitting them shipped raw `{{nav_links}}` /
-    // `{{copyright}}` placeholders to the live-edit preview iframe while
-    // page-content modules (bound to content_instances) interpolated
-    // fine. The static generator already loads fields here; the preview
-    // op was the lone divergence. See CLAUDE.md §1A (repeating content is
-    // a list field) — the footer nav is a `link-list` default.
-    const layoutModRows = (await tx.execute(sql`
-      SELECT lm.block_name AS block_name,
-             lm.position   AS position,
-             m.id::text    AS module_id,
-             m.slug        AS slug,
-             m.display_name AS display_name,
-             m.html        AS html,
-             m.css         AS css,
-             m.js          AS js,
-             m.fields      AS fields
-      FROM (${effectiveLayoutModulesSql(chatBranchId)}) lm JOIN modules m ON m.id = lm.module_id
-      WHERE lm.layout_id = ${pageRow.layout_id}::uuid AND m.deleted_at IS NULL
-      ORDER BY lm.block_name ASC, lm.position ASC
-    `)) as unknown as ModuleSourceRow[];
-    // Caller-branch module-code overlay for LAYOUT (chrome) modules —
-    // same class as the run-#8-R3 page-module overlay above. A branched
-    // `edit_module` on a footer/header writes module_snapshots only; the
-    // live `modules` row stays published. Without this overlay the
-    // preview (and inspect_page_render / screenshot_page riding on it)
-    // kept rendering the STALE chrome, sending the AI into an
-    // "my edits don't land" re-edit loop (live-edit footer turn burned
-    // ~8 recovery rounds). Fields ride along because chrome renders from
-    // field DEFAULTS — a default edit must show up too.
-    if (chatBranchId && layoutModRows.length > 0) {
-      const layoutModuleIds = layoutModRows.map((r) => sql`${r.module_id}::uuid`);
-      const chromeBranchRows = (await tx.execute(sql`
-        SELECT DISTINCT ON (ms.module_id) ms.module_id::text AS module_id, ms.state
-        FROM module_snapshots ms
-        JOIN site_snapshots ss ON ss.id = ms.site_snapshot_id
-        WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-          AND ms.module_id IN (${sql.join(layoutModuleIds, sql`, `)})
-        ORDER BY ms.module_id, ss.created_at DESC
-      `)) as unknown as { module_id: string; state: unknown }[];
-      const chromeOverlay = new Map<string, Record<string, unknown>>();
-      for (const r of chromeBranchRows) {
-        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-        chromeOverlay.set(r.module_id, raw as Record<string, unknown>);
-      }
-      for (const m of layoutModRows) {
-        const s = chromeOverlay.get(m.module_id);
-        if (!s || s.deletedAt) continue;
-        m.html = (s.html as string) ?? m.html;
-        m.css = (s.css as string) ?? m.css;
-        m.js = (s.js as string) ?? m.js;
-        m.display_name = (s.displayName as string) ?? m.display_name;
-        if (Array.isArray(s.fields)) m.fields = s.fields as ModuleSourceRow["fields"];
-      }
-    }
     // #592 — content variants: which chrome and which shared content this
     // page shows (e.g. the footer in the page's language). Same keys and
     // payload as the static generator's pass, so both surfaces agree;
@@ -885,7 +895,12 @@ export const renderPagePreviewOp = defineOperation({
       instanceByIdResource.set(id, {
         ...ci,
         id,
-        values: wrapEditableValues(ci.values, mod.fields),
+        listHolderId: ci.listHolderId ?? ci.id,
+        values: wrapEditableValues(
+          ci.values,
+          mod.fields,
+          (slug) => listData.listTypes.get(slug)?.def,
+        ),
       });
       return id;
     }
@@ -913,6 +928,9 @@ export const renderPagePreviewOp = defineOperation({
     // Epic #724 — broken internal references of the page's modules; the
     // layout modules' and nav menus' join from the composer's failures.
     const pageLinkMarkers: string[] = [];
+    // Epic #1107 — an unbound / deleted / malformed list of a page module
+    // or of the chrome: loud on the missing-content surface too.
+    const pageListMarkers: string[] = [];
     for (const m of modRows) {
       const key = `${m.block_name}#${m.position}`;
       const binding = placementBindings.get(key);
@@ -927,7 +945,7 @@ export const renderPagePreviewOp = defineOperation({
         markers ?? binding.contentInstanceId,
         resolver,
         renderThemeAssets,
-        pluginLists,
+        lists,
         linkResolver,
       );
       m.html = markers
@@ -940,6 +958,7 @@ export const renderPagePreviewOp = defineOperation({
           )
         : result.html;
       pageLinkMarkers.push(...linkMarkersOf(result.missingSlots));
+      pageListMarkers.push(...result.missingSlots.filter(isListFailureMarker));
       // CSS/JS dedup: emit CSS/JS for every module the recursion touched
       // (in addition to this top-level module). The existing composer
       // dedupes by slug, so we just need to ensure every nested module's
@@ -1014,7 +1033,7 @@ export const renderPagePreviewOp = defineOperation({
         html: string;
         css: string;
         js: string;
-        fields: { name: string; kind: ModuleFieldKind; default?: unknown }[];
+        fields: TemplateField[];
         contentValues?: Record<string, unknown>;
       }[]
     >();
@@ -1131,12 +1150,12 @@ export const renderPagePreviewOp = defineOperation({
         deferredModules,
         // Page-block modules already had their lists applied by
         // renderModuleWithContent; LAYOUT modules reach the composer
-        // raw, so without these a `{{#list}}` in site chrome renders
-        // literally in the editor and correctly on the deployed site —
-        // the two surfaces disagreeing in exactly the direction nobody
-        // checks. The generator has always passed them here.
-        dataLists: pluginLists.dataLists,
-        dormantDataLists: pluginLists.dormantDataLists,
+        // raw, so without the list context and the nested resolver a
+        // `{{#menu}}` (or a list entry's embedded module) in site chrome
+        // would render literally in the editor and correctly on the
+        // deployed site. The generator passes the same two.
+        lists,
+        nestedModules: resolver,
         templateHtml: pageRow.template_html,
         templateCss: pageRow.template_css,
         blocks,
@@ -1381,6 +1400,10 @@ export const renderPagePreviewOp = defineOperation({
         ...new Set([
           ...pageLinkMarkers,
           ...linkMarkersOf(composed.moduleFailures.map((f) => f.reason)),
+        ]),
+        ...new Set([
+          ...pageListMarkers,
+          ...composed.moduleFailures.map((f) => f.reason).filter(isListFailureMarker),
         ]),
       ],
       pluginFailures: pluginFailureSink.failures().map((f) => ({ slug: f.slug, reason: f.reason })),

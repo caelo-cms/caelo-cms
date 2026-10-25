@@ -1,51 +1,54 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Epic #1107 — the batch load behind every list render (docs/lists.md §10):
- * list types, shared lists, page types, the page index page queries and
- * system sources read, media metadata and the site language, as ONE
- * `ListRenderData` per preview or per build. Everything after this is
- * pure and synchronous (`createListRenderContext` in the shared resolver),
- * the same split as the link index.
+ * Epic #1107 — the batch load behind every list render in the editor
+ * preview (docs/lists.md §10): list types, shared lists, page types and
+ * the page index of the caller's DRAFT view (live rows plus the chat
+ * branch's pending changes; null = main), media metadata, the site
+ * language and the `link-resolve` page partition, as one
+ * `ListRenderData`. Everything after this is pure and synchronous
+ * (`createListRenderContext` in the shared resolver).
  *
- *   - `scope: "preview"` reads the caller's draft view: live rows plus the
- *     chat branch's pending changes (`chatBranchId`; null = main);
- *   - `scope: "build"` reads the published state: main rows only, the
- *     branch is ignored.
+ * The build has its twin in the generator (`apps/static-generator`
+ * `list-data.ts`, main line only — the generator runs as a subprocess and
+ * cannot import admin-core); both feed `assembleListRenderData`, so
+ * preview and build see the same shape. `scope: "build"` here reads the
+ * main line the same way, for callers inside admin-core.
  *
- * A page is `inBuild` when its status (in that view) is published — what
- * a query may return. `pageVariants` and `overlays` (the `link-resolve` /
- * `list-resolve` plugin answers) are filled by the plugin wiring, not here.
+ * A page is `inBuild` when its status (in that view) is published. The
+ * `list-resolve` overlays are the plugin wiring's (epic #1107 part G).
  */
 
+import {
+  hasLinkResolveContributors,
+  type RenderScope,
+  resolveLinkVariants,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import type {
-  LinkRenderEnv,
-  ListMediaRecord,
-  ListPageRecord,
-  ListRenderData,
-  LoadedList,
-  LoadedListType,
-  LoadedPageType,
-} from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import type { ListRenderData } from "@caelo-cms/shared";
+import { assembleListRenderData } from "@caelo-cms/static-generator";
 import { loadPagesInView } from "./pages-view.js";
 import { loadListEntities } from "./store.js";
 
-/** The site has no language set; dates cannot be formatted and builds refuse to run. */
-export class ListRenderDataError extends Error {
-  override readonly name = "ListRenderDataError";
-}
+export { ListRenderDataError } from "@caelo-cms/static-generator";
 
+/** Options of {@link loadListRenderData}. */
 export interface LoadListRenderDataOptions {
+  /** The chat branch whose draft view a preview renders; null = main line. */
   readonly chatBranchId: string | null;
   readonly scope: "preview" | "build";
   /**
-   * Where the render goes. Part of the loader contract (docs/lists.md §10)
-   * so preview and generator call it alike; `inBuild` is "published in
-   * this view" in every environment, so nothing here branches on it.
+   * Where the render goes. Part of the loader contract so preview and
+   * generator call it alike; `inBuild` is "published in this view" in
+   * every environment, so nothing here branches on it.
    */
-  readonly env: LinkRenderEnv;
+  readonly env: "preview" | "dev" | "staging" | "production";
+  /**
+   * The render's plugin scope (the preview's failure sink), so the
+   * `link-resolve` partition is asked exactly like the link index asks
+   * it. Defaults to the branch scope without a sink.
+   */
+  readonly renderScope?: RenderScope;
 }
 
 /** Load everything a list render needs, in one pass (see the file header). */
@@ -54,82 +57,41 @@ export async function loadListRenderData(
   opts: LoadListRenderDataOptions,
 ): Promise<ListRenderData> {
   const branchId = opts.scope === "build" ? null : opts.chatBranchId;
-
-  const listTypes = new Map<string, LoadedListType>();
-  const typeSlugById = new Map<string, string>();
-  for (const t of await loadListEntities(tx, "listType", branchId)) {
-    listTypes.set(t.state.slug, { id: t.id, def: t.state.definition });
-    typeSlugById.set(t.id, t.state.slug);
-  }
-
-  const lists = new Map<string, LoadedList>();
-  for (const l of await loadListEntities(tx, "list", branchId)) {
-    lists.set(l.id, {
+  const pages = await loadPagesInView(tx, branchId);
+  const pageVariants =
+    pages.length > 0 && hasLinkResolveContributors()
+      ? await resolveLinkVariants(
+          pages.map((p) => p.id),
+          opts.renderScope ?? { chatBranchId: branchId },
+        )
+      : undefined;
+  return assembleListRenderData(tx, {
+    listTypes: (await loadListEntities(tx, "listType", branchId)).map((t) => ({
+      id: t.id,
+      def: t.state.definition,
+    })),
+    lists: (await loadListEntities(tx, "list", branchId)).map((l) => ({
       id: l.id,
       slug: l.state.slug,
       name: l.state.name,
-      // A type deleted under a list cannot happen through the ops (the
-      // delete is refused while lists use it); should the data say
-      // otherwise, the id makes the resolver report `list-type-missing`
-      // loudly instead of rendering with a guessed type.
-      typeSlug: typeSlugById.get(l.state.listTypeId) ?? l.state.listTypeId,
+      listTypeId: l.state.listTypeId,
       items: l.state.items,
-    });
-  }
-
-  const pageTypes = new Map<string, LoadedPageType>();
-  const pageTypeSlugById = new Map<string, string>();
-  for (const t of await loadListEntities(tx, "pageType", branchId)) {
-    pageTypes.set(t.state.slug, { id: t.id, def: t.state.definition });
-    pageTypeSlugById.set(t.id, t.state.slug);
-  }
-
-  const seo = (await tx.execute(sql`
-    SELECT page_id::text AS page_id, meta_description, og_image_asset_id::text AS og_image
-    FROM pages_seo
-  `)) as unknown as { page_id: string; meta_description: string; og_image: string | null }[];
-  const seoByPage = new Map(seo.map((s) => [s.page_id, s]));
-
-  const pages = new Map<string, ListPageRecord>();
-  for (const p of await loadPagesInView(tx, branchId)) {
-    const s = seoByPage.get(p.id);
-    pages.set(p.id, {
+    })),
+    pageTypes: (await loadListEntities(tx, "pageType", branchId)).map((t) => ({
+      id: t.id,
+      def: t.state.definition,
+    })),
+    pages: pages.map((p) => ({
       id: p.id,
       title: p.title,
       parentId: p.parentPageId,
-      pageTypeSlug: pageTypeSlugById.get(p.pageTypeId) ?? p.pageTypeId,
+      pageTypeId: p.pageTypeId,
       properties: p.properties,
       terms: p.terms,
       firstPublishedAt: p.firstPublishedAt,
       updatedAt: p.updatedAt,
-      summary: s && s.meta_description.trim() !== "" ? s.meta_description : null,
-      image: s?.og_image ? `caelo:media/${s.og_image}` : null,
-      inBuild: p.status === "published",
-    });
-  }
-
-  const media = new Map<string, ListMediaRecord>();
-  const mediaRows = (await tx.execute(sql`
-    SELECT id::text AS id, alt, width, height FROM media_assets WHERE deleted_at IS NULL
-  `)) as unknown as { id: string; alt: string; width: number | null; height: number | null }[];
-  for (const m of mediaRows) {
-    media.set(m.id, {
-      id: m.id,
-      alt: m.alt.trim() === "" ? null : m.alt,
-      width: m.width,
-      height: m.height,
-    });
-  }
-
-  const lang = (await tx.execute(sql`
-    SELECT site_language FROM site_defaults WHERE id = 1
-  `)) as unknown as { site_language: string | null }[];
-  const siteLanguage = lang[0]?.site_language ?? null;
-  if (siteLanguage === null) {
-    throw new ListRenderDataError(
-      "site_defaults.site_language is not set — set the site language (set_site_identity siteLanguage) before lists can render dates",
-    );
-  }
-
-  return { listTypes, lists, pageTypes, pages, media, siteLanguage };
+      published: p.status === "published",
+    })),
+    ...(pageVariants ? { pageVariants } : {}),
+  });
 }

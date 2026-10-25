@@ -1243,7 +1243,7 @@
     },
     {
       "name": "list_layouts",
-      "description": "List every layout with UUID, slug, display name, and blocks INCLUDING the chrome modules placed in each (`header(nav-menu-main)|footer(site-footer)`). One read answers \"is module X already on the layout?\". Standard list params: `filter`, `limit`/`offset`, `full: true`. Use when you need a layout UUID that isn't in the context block (e.g. right after an Owner approved a layout-create proposal). DO NOT ask the operator to paste a UUID.",
+      "description": "List every layout with UUID, slug, display name, and blocks INCLUDING the chrome modules placed in each (`header(main-menu)|footer(site-footer)`). One read answers \"is module X already on the layout?\". Standard list params: `filter`, `limit`/`offset`, `full: true`. Use when you need a layout UUID that isn't in the context block (e.g. right after an Owner approved a layout-create proposal). DO NOT ask the operator to paste a UUID.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",

@@ -17,7 +17,12 @@
  */
 
 import AxeBuilder from "@axe-core/playwright";
-import { composePageWithLayout, INTERACTIONS } from "@caelo-cms/shared";
+import {
+  composePageWithLayout,
+  createListRenderContext,
+  DEFAULT_LIST_TYPES,
+  INTERACTIONS,
+} from "@caelo-cms/shared";
 import { expect, type Page, test } from "@playwright/test";
 
 const layoutHtml =
@@ -70,19 +75,43 @@ const quotes = mod(
     "</section>",
   ".quotes [data-caelo-carousel-track]{width:300px}",
 );
-// The kit is pulled in by markup alone: a menu module that iterates its
-// list carries the mobile-nav markup itself (rendered here as the
-// composer would hand it over, list already resolved).
-const nav = mod(
-  4,
-  "main-menu",
-  '<nav class="caelo-nav-menu" data-caelo-ui="mobile-nav" data-nav-open="false">' +
-    '<button type="button" class="caelo-nav-toggle" aria-expanded="false" aria-label="Menu">' +
-    '<span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span>' +
-    "</button>" +
-    '<ul><li><a href="/">Home</a></li><li><a href="/pricing">Pricing</a></li></ul>' +
-    "</nav>",
-);
+// The module owns the menu markup and iterates a links list (epic #1107);
+// the kit's `mobile-nav` only adds the behaviour.
+const nav = {
+  ...mod(
+    4,
+    "header-nav",
+    '<nav class="caelo-nav-menu" data-caelo-ui="mobile-nav" data-nav-open="false">' +
+      '<button type="button" class="caelo-nav-toggle" aria-expanded="false" aria-label="Menu">' +
+      '<span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span></button>' +
+      '<ul>{{#menu}}<li><a href="{{link}}">{{label}}</a></li>{{/menu}}</ul></nav>',
+  ),
+  fields: [
+    {
+      name: "menu",
+      kind: "list" as const,
+      listType: "links",
+      default: [
+        ["Home", "/"],
+        ["Pricing", "/pricing"],
+      ].map(([label, href], i) => ({
+        id: `00000000-0000-4000-9000-00000000000${i + 1}`,
+        node: "link",
+        values: { label, link: { href } },
+      })),
+    },
+  ],
+};
+
+/** Local lists of the shipped types need nothing but the types. */
+const lists = createListRenderContext({
+  listTypes: new Map(DEFAULT_LIST_TYPES.map((t) => [t.slug, { id: t.slug, def: t }])),
+  lists: new Map(),
+  pageTypes: new Map(),
+  pages: new Map(),
+  media: new Map(),
+  siteLanguage: "en",
+}).forPage(null);
 
 /** The composed page; `repeat` places the tabs module a second time. */
 function kitPage(repeat = false): string {
@@ -99,6 +128,7 @@ function kitPage(repeat = false): string {
     layoutCss: "",
     layoutBlocks: [{ blockName: "header", modules: [nav] }],
     layoutSlug: "kit",
+    lists,
   }).html;
 }
 

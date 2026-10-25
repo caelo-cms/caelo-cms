@@ -23,7 +23,7 @@ graph TD
   subgraph pkgs["packages/"]
     AdminCore["packages/admin-core<br/>ops registry · AI tools · chat-runner<br/>audit · snapshot emitter"]
     QueryApi["packages/query-api<br/>defineOperation · Validator · Adapter<br/>the chokepoint"]
-    Shared["packages/shared<br/>Zod schemas · two-pass composer<br/>structured-sets validators"]
+    Shared["packages/shared<br/>Zod schemas · two-pass composer<br/>list types · list resolver"]
     Migrations["packages/migrations<br/>SQL migrations · drizzle-kit"]
     Provisioning["packages/provisioning<br/>Pulumi + Compose<br/>self-hosted · GCP (AWS/Azure planned)"]
     PluginSdk["packages/plugin-sdk<br/>P11+ · definePlugin · sandbox SDK"]
@@ -101,13 +101,13 @@ flowchart LR
   Page -. composed by .-> Pass1
   Layout -. composed by .-> Pass2
 
-  subgraph sideband["Sideband · structured_sets"]
-    NavMenu["kind=nav-menu<br/>renders into modules slug 'nav-menu-*'"]
-    Theme["kind=theme<br/>emits :root{--token:value} into &lt;head&gt;"]
-    Tags["kind=taxonomy / tags / link-list<br/>future plugins"]
+  subgraph lists["Lists · packages/shared/lists"]
+    Resolver["list resolver<br/>shared / local lists, page queries,<br/>system + plugin sources"]
   end
+  Theme["active theme<br/>emits :root{--token:value} into &lt;head&gt;"]
 
-  Pass2 -. injects at render .-> NavMenu
+  Resolver -. list fields read entries .-> Pass1
+  Resolver -. list fields read entries .-> Pass2
   Pass2 -. injects at render .-> Theme
 
   Pass2 --> Output["composed HTML<br/>used by /edit preview AND apps/static-generator"]
@@ -117,7 +117,7 @@ flowchart LR
   SiteDefaults -. consulted at create-time only .-> Template
 ```
 
-**No-fallback rule** (see [CLAUDE.md §2](./CLAUDE.md#2-non-negotiable-invariants)): missing layout `content` slot, missing structured set referenced by name, missing template/layout where required → `ComposeError` / structured `HandlerError`. Never silent recovery. `site_defaults` is a *create-time* resolver, NOT a render-time fallback.
+**No-fallback rule** (see [CLAUDE.md §2](./CLAUDE.md#2-non-negotiable-invariants)): missing layout `content` slot, an unbound or missing list (`list-unbound` / `list-missing` markers), missing template/layout where required → `ComposeError` / structured `HandlerError`. Never silent recovery. `site_defaults` is a *create-time* resolver, NOT a render-time fallback.
 
 **Three "add module" paths, picked by intent:**
 
@@ -130,8 +130,8 @@ flowchart LR
 | "show testimonials before gallery" | `reorder_module` | same page, same block |
 | "duplicate this page" | `duplicate_page` | modules carry by reference |
 | "switch this page to landing-tpl" | `change_template` | modules migrate; orphan disposition required |
-| "edit the menu" | `set_nav_menu` | `structured_sets` kind=nav-menu |
-| "make the primary brighter" | `update_theme` | `structured_sets` kind=theme |
+| "add Careers under Company" | `patch_list_items_many` | the shared menu list; every module bound to it |
+| "make the primary brighter" | `set_theme_tokens` | the active theme |
 
 Mutations on layouts and site_defaults are Owner-only (`actorScope: ["human","system"]`); AI calls return `ActorScopeRejected` and the chat surfaces a permission message instead of retrying.
 
@@ -224,7 +224,10 @@ erDiagram
   deploy_targets ||--o{ deploy_runs : "has"
 
   %% Sideband
-  structured_sets }o--o{ pages : "links as caelo:page/<id> references"
+  list_types ||--o{ lists : "defines"
+  page_types ||--o{ pages : "types"
+  pages ||--o{ page_terms : "terms from vocabulary lists"
+  lists }o--o{ pages : "links as caelo:page/<id> references"
   pages ||--o{ pages : "parent_page_id (nested URLs)"
   redirects }o--o| pages : "from_path"
   audit_events }o--|| actors : "by"
@@ -240,7 +243,8 @@ erDiagram
 | **Snapshots** | `site_snapshots`, `page_snapshots`, `module_snapshots`, `template_snapshots`, `page_layout_snapshots`, `chat_branch_publish_marks` | Every write emits a snapshot. Reverting `site_snapshots` restores the full set atomically. |
 | **Chat** | `chat_sessions`, `chat_branches`, `site_draft`, `chat_messages`, `ai_calls`, `site_ai_memory`, `site_memory_proposals` | Sessions bind to the shared draft, or to an isolated branch for experiments and migrations. AI memory proposals queue for Owner review. |
 | **Deploy** | `deploy_targets`, `deploy_runs` | `deploy_runs.progress jsonb` updated by the static generator subprocess. |
-| **Sideband** | `structured_sets`, `redirects`, `site_defaults`, `audit_events`, `rate_limit_buckets`, `user_preferences` | `structured_sets` is the typed-list primitive (nav-menus, taxonomies, tags, link-lists). `site_defaults` is a singleton row. |
+| **Lists** (epic #1107) | `list_types`, `lists`, `page_types`, `page_terms` | Schema-free lists defined by list types; page types with properties and vocabularies. See [`docs/lists.md`](./docs/lists.md). |
+| **Sideband** | `redirects`, `site_defaults`, `audit_events`, `rate_limit_buckets`, `user_preferences` | `site_defaults` is a singleton row. |
 | **Themes** (v0.11.0, #45) | `themes`, `theme_snapshots`, `theme_pending_actions` | DTCG-shaped jsonb `tokens` (color / dimension / typography composite / shadow composite / motion / breakpoint, plus DTCG aliasing). Exactly one `is_active=true` row enforced by partial unique index. Four media FKs for logo / logo-dark / favicon / social-share. Create / activate / delete go through the §11.A propose/execute gate (`theme_pending_actions`). The renderer reads the active theme via `ComposeInput.theme` and emits Tailwind 4-namespaced CSS vars under `<style data-source="theme">`. Zod source of truth: `packages/shared/src/themes.ts`. |
 
 **Snapshot semantics.** A snapshot is a content-addressed copy of an entity at a point in time, grouped under a `site_snapshots` row tagged with the originating chat branch (or `NULL` for system / direct-admin writes). Reverting walks the group and restores every member in one transaction. Chat-keyed Undo (the primary history surface) drops the current chat's pending snapshots, plus any later pending snapshot built on them (`draft.ts`); the other chats affected are reported before the undo is confirmed.
@@ -256,7 +260,7 @@ erDiagram
 | `apps/api-gateway/` | Public `/api/*` endpoints for plugin writes (forms, comments, ratings, newsletter) with rate limits, proof-of-work captcha and honeypots; connects to cms_public only, as `public_role`, and holds no cms_admin login (#635). |
 | `packages/admin-core/` | Ops registry + AI tool dispatch + chat-runner + audit + snapshot emitter. The orchestrator. |
 | `packages/query-api/` | `defineOperation`, the Validator, the Database Adapter. Every DB call goes through here. |
-| `packages/shared/` | Zod schemas, the two-pass composer, the slot scanner, structured-sets validators. Shared between admin and static-gen. |
+| `packages/shared/` | Zod schemas, the two-pass composer, the slot scanner, list types and the list resolver. Shared between admin and static-gen. |
 | `packages/migrations/` | SQL migrations for both `cms_admin` and `cms_public`; applied in order at boot. |
 | `packages/plugin-sdk/` | P11+ — `definePlugin`, `defineComponent`, the Deno-sandbox SDK injected into plugin code. |
 | `packages/provisioning/` | The `cms-provision` CLI: self-hosted Docker Compose and the GCP stacks (`gcp`, `gcp-firebase`) via Pulumi, plus lifecycle commands (upgrade, backup, status, …). AWS and Azure stacks exist but their install wizard is not implemented yet. |

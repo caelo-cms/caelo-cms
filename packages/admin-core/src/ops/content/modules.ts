@@ -27,6 +27,7 @@ import { emitDomainEvent } from "../../domain-events.js";
 import { canonicaliseModuleCode } from "../../links/canonicalise-writes.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { recordPendingImportLinks } from "../../links/import-targets.js";
+import { normaliseListFieldDefaults } from "../../lists/field-values.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -405,7 +406,20 @@ export const createModuleOp = defineOperation({
       return err({ kind: "HandlerError", operation: "modules.create", message: linkCanon.message });
     }
     const persistedHtml = linkCanon.value.html as string;
-    const persistedFields = linkCanon.value.fields as ModuleField[];
+    // Epic #1107 — `list` field defaults: entries validated, ids assigned.
+    const listDefaults = await normaliseListFieldDefaults(
+      tx,
+      ctx.chatBranchId ?? null,
+      linkCanon.value.fields as ModuleField[],
+    );
+    if (!listDefaults.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "modules.create",
+        message: listDefaults.message,
+      });
+    }
+    const persistedFields = listDefaults.value;
     // v0.9.0 — branch-scoped uniqueness. Same-branch slug clash
     // surfaces as the unique-index violation at INSERT below; check
     // here narrows it to a clean error. We only check the caller's
@@ -662,7 +676,19 @@ export const updateModuleOp = defineOperation({
       return err({ kind: "HandlerError", operation: "modules.update", message: linkCanon.message });
     }
     const persistedHtml = linkCanon.value.html;
-    const persistedFields = linkCanon.value.fields;
+    let persistedFields = linkCanon.value.fields;
+    if (persistedFields !== undefined) {
+      // Epic #1107 — `list` field defaults: entries validated, ids assigned.
+      const listDefaults = await normaliseListFieldDefaults(tx, branchId, persistedFields);
+      if (!listDefaults.ok) {
+        return err({
+          kind: "HandlerError",
+          operation: "modules.update",
+          message: listDefaults.message,
+        });
+      }
+      persistedFields = listDefaults.value;
+    }
 
     // v0.5.1 — branched writes skip the live UPDATE. Module code stays
     // visible to other chats at its pre-edit state until publish merges

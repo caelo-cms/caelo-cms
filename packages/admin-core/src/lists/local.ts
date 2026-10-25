@@ -14,6 +14,7 @@
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
+import type { SourceDef } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
 import { loadBranchedModuleStates, loadContentInstanceBranchStates } from "../snapshots/index.js";
@@ -26,6 +27,7 @@ export interface ListFieldDef {
   readonly listType: string;
   readonly bind?: "local" | "shared" | "source";
   readonly list?: string;
+  readonly source?: SourceDef;
   readonly min?: number;
   readonly max?: number;
   readonly default?: unknown;
