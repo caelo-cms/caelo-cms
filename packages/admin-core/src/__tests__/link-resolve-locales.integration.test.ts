@@ -6,7 +6,7 @@
  *
  * One English page carries an internal link in every place a link can
  * live — module HTML `href`, a `link` field, a `link-list`, rich text —
- * and the layout carries a nav-menu set. All of them were written as
+ * and the layout carries a menu module whose links are field defaults. All of them were written as
  * paths and stored as page references (rollout C). Its German version
  * (create_variant copies the references verbatim) must link to the
  * GERMAN pages, identically in the editor preview (which live-edit
@@ -82,7 +82,6 @@ async function cleanup(): Promise<void> {
     await tx.unsafe('DROP SCHEMA IF EXISTS "plugin_international_site" CASCADE');
     await tx.unsafe("DELETE FROM plugins WHERE slug = 'international-site'");
     await tx.unsafe(`DELETE FROM redirects WHERE from_path LIKE '%${PFX}-%'`);
-    await tx.unsafe(`DELETE FROM structured_sets WHERE slug LIKE '${PFX}-%'`);
     await tx.unsafe(
       `DELETE FROM layout_modules WHERE layout_id IN (SELECT id FROM layouts WHERE slug LIKE '${PFX}-%')`,
     );
@@ -123,13 +122,25 @@ async function preview(pageId: string): Promise<{ html: string; missingSlots: st
   return sysOp("pages.render_preview", { pageId });
 }
 
+let navModuleId = "";
+
+/** The layout menu's code: one `url` field (default = the link) per item. */
+function navCode(items: { label: string; href: string }[]) {
+  return {
+    html: `<nav><ul>${items
+      .map((it, i) => `<li><a href="{{link_${i}}}">${it.label}</a></li>`)
+      .join("")}</ul></nav>`,
+    fields: items.map((it, i) => ({
+      name: `link_${i}`,
+      kind: "url",
+      label: it.label,
+      default: it.href,
+    })),
+  };
+}
+
 async function setNav(items: { label: string; href: string }[]): Promise<void> {
-  await sysOp("structured_sets.set", {
-    kind: "nav-menu",
-    slug: `${PFX}-main`,
-    displayName: "Main menu",
-    items,
-  });
+  await sysOp("modules.update", { moduleId: navModuleId, ...navCode(items) });
 }
 
 function stagingTarget(): DeployTarget {
@@ -242,16 +253,15 @@ beforeAll(async () => {
   });
   ids.enLinks = links.pageId;
 
-  // The layout's menu: a nav-menu set rendered by a `nav-menu-<slug>` module.
-  await setNav([{ label: "About", href: `/${PFX}-about` }]);
+  // The layout's menu: chrome content lives in the module's field defaults.
   const nav = await sysOp<{ moduleId: string }>("modules.create", {
-    slug: `nav-menu-${PFX}-main`,
+    slug: `${PFX}-main-menu`,
     displayName: "Main menu",
-    html: "<nav></nav>",
+    ...navCode([{ label: "About", href: `/${PFX}-about` }]),
     css: "",
     js: "",
-    fields: [],
   });
+  navModuleId = nav.moduleId;
   await sysOp("layout_modules.set", { layoutId, blockName: "header", moduleIds: [nav.moduleId] });
 
   await op("set_locales", {
@@ -317,7 +327,7 @@ describe("#724 D — internal links go to the rendering page's language", () => 
     expect(stored).toContain(`caelo:page/${ids.enAbout}?ref=body`);
   });
 
-  it("preview: HTML href, link field, link-list, rich text and nav-menu set resolve per language", async () => {
+  it("preview: HTML href, link field, link-list, rich text and layout menu resolve per language", async () => {
     const de = await preview(ids.deLinks);
     expect(de.missingSlots.filter((m) => m.startsWith("link-"))).toEqual([]);
     expectGermanLinks(de.html);

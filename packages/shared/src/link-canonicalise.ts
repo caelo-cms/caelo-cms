@@ -14,7 +14,7 @@
  *   - a WHOLE value that is a URL: `url` / `link` / `image` fields, any
  *     field or object key named `href` / `src` / `url` / `link` or ending
  *     in `_href` / `_url` / `_link` / `_src` (`primary_cta_href`), the
- *     `href` of `link-list` items and structured-set items (any depth);
+ *     `href` of list entry `link` values (any depth);
  *   - HTML anywhere (module HTML, rich text, any string value carrying
  *     markup): `href` (pages and media), `src` / `poster` / `srcset`
  *     (media only — a `src="/x"` that is not media is not a page link).
@@ -643,7 +643,7 @@ export function canonicaliseFieldDefaults<F extends CanonicaliseField>(
 }
 
 /**
- * Every link literal inside a stored state (values, defaults, set items,
+ * Every link literal inside a stored state (values, defaults, list entries,
  * module HTML) — the {@link LinkCanonicaliseRun.grandfathered} set of the
  * next write. Collected with a lookup that knows nothing, so every
  * candidate surfaces as an "issue" carrying its raw value.

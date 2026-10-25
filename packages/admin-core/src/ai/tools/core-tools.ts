@@ -60,9 +60,6 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "fork_placement_content",
   "list_content_instances",
   "get_content_instance",
-  // Structured sets (nav menus etc.)
-  "set_structured_set",
-  "get_structured_set",
   // Planning reads. (offer_choices is deliberately NOT core: keeping the
   // ask-the-operator button always loaded lowered the model's threshold
   // to stall on questions it can answer itself — clean-DB footer run

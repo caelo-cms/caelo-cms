@@ -359,8 +359,6 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
       expect(ok.content).toContain("manage-menu");
       // The actual body, verbatim — this is what lands in history.
       expect(ok.content).toContain("REPLACES the whole items list");
-      // The allowlisted tools are surfaced so the model knows what it can call.
-      expect(ok.content).toContain("set_structured_set");
     }
     const bad = await loadSkillTool.handler(aiCtx, { slugs: ["does-not-exist"] }, toolCtx);
     expect(bad.ok).toBe(false);
@@ -442,8 +440,6 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
       loadedSkillSlugs: ["manage-menu"],
     });
     expect(skills.engagedSkills.map((e) => e.slug)).toContain("manage-menu");
-    // manage-menu's allowlist preloads the structured-set tools.
-    expect(skills.allowedToolNames?.has("set_structured_set")).toBe(true);
   });
 });
 
@@ -475,7 +471,7 @@ describe("skill allowlist validation (issue #301)", () => {
       slug: "test-p10a-opnames",
       displayName: "Op notation",
       body: "Body",
-      allowlistedTools: ["pages.list", "structured_sets.get", "edit_module", "ai_memory.list"],
+      allowlistedTools: ["pages.list", "redirects.list", "edit_module", "ai_memory.list"],
     });
     expect(r.ok).toBe(true);
     const get = await execute(registry, adapter, systemCtx, "skills.get", {
@@ -484,7 +480,7 @@ describe("skill allowlist validation (issue #301)", () => {
     if (!get.ok) return;
     const skill = (get.value as { skill: { allowlistedTools: string[] } | null }).skill;
     // Translated + deduped; the context-served memory read drops.
-    expect(skill?.allowlistedTools).toEqual(["list_pages", "get_structured_set", "edit_module"]);
+    expect(skill?.allowlistedTools).toEqual(["list_pages", "find_redirects", "edit_module"]);
   });
 
   it("skills.propose rejects an unknown allowlist entry at proposal time (AI-actionable failure)", async () => {
@@ -509,19 +505,9 @@ describe("skill allowlist validation (issue #301)", () => {
     if (!r.ok) return;
     const skills = (r.value as { skills: { slug: string; allowlistedTools: string[] }[] }).skills;
     const bySlug = new Map(skills.map((s) => [s.slug, s.allowlistedTools]));
-    expect(bySlug.get("qa-check")).toEqual([
-      "inspect_page_render",
-      "list_pages",
-      "get_structured_set",
-      "list_structured_sets",
-    ]);
+    // qa-check and menu-auditor named menu tools that epic #1107 removed;
+    // their allowlists are rewritten with the list tools (epic #1107).
     expect(bySlug.get("legal-check")).toEqual(["inspect_page_render", "list_pages"]);
-    expect(bySlug.get("menu-auditor")).toEqual([
-      "list_structured_sets",
-      "get_structured_set",
-      "find_redirects",
-      "list_pages",
-    ]);
     expect(bySlug.get("page-categorizer")).toEqual(["list_pages"]);
     // No active skill may carry an op-notation entry at all.
     for (const s of skills) {

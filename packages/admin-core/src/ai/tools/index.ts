@@ -44,7 +44,6 @@ import { deleteContentInstanceTool } from "./delete-content-instance.js";
 import { deleteContentInstancesTool } from "./delete-content-instances.js";
 import { deleteMediaManyTool } from "./delete-media-many.js";
 import { deleteModulesManyTool } from "./delete-modules-many.js";
-import { deleteStructuredSetTool } from "./delete-structured-set.js";
 import { deployStagingTool } from "./deploy-staging.js";
 import {
   listDesignDraftsTool,
@@ -78,7 +77,6 @@ import { getImageCapabilitiesTool } from "./get-image-capabilities.js";
 import { getImportPageTool } from "./get-import-page.js";
 import { getImportPageScreenshotTool } from "./get-import-page-screenshot.js";
 import { getPageLogTool } from "./get-page-log.js";
-import { getStructuredSetTool } from "./get-structured-set.js";
 import { getThemeTool } from "./get-theme.js";
 import { grepContentTool } from "./grep-content.js";
 import {
@@ -108,7 +106,6 @@ import { listModulesTool } from "./list-modules.js";
 import { listPageAssetsTool } from "./list-page-assets.js";
 import { listPagesTool } from "./list-pages.js";
 import { listPluginsTool } from "./list-plugins.js";
-import { listStructuredSetsTool } from "./list-structured-sets.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
@@ -224,7 +221,6 @@ import { setPagesStatusManyTool } from "./set-pages-status-many.js";
 import { setPlacementContentTool } from "./set-placement-content.js";
 import { setSiteDefaultsTool } from "./set-site-defaults.js";
 import { setSiteIdentityTool } from "./set-site-identity.js";
-import { setStructuredSetTool } from "./set-structured-set.js";
 import { setTemplateLayoutTool } from "./set-template-layout.js";
 import { setThemeAssetTool } from "./set-theme-asset.js";
 import { setThemeMetaTool } from "./set-theme-meta.js";
@@ -441,15 +437,6 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // set_page_title / change_page_slug were thin single-field wrappers over
   // pages.update, and the slug side-effects now live in that op.
   registry.register(removeModuleFromTool);
-  // v0.10.22 — unified structured-sets CRUD surface. Replaces the
-  // kind-specific wrappers `set_nav_menu` and `update_theme`. The AI
-  // discriminates by `kind` argument; the per-kind JSON Schema on
-  // `set_structured_set` enforces the right item shape at the
-  // tool-call boundary.
-  registry.register(setStructuredSetTool);
-  registry.register(listStructuredSetsTool);
-  registry.register(getStructuredSetTool);
-  registry.register(deleteStructuredSetTool);
   // P6.7.6 — layout layer. (add_module target='layout' handles placement;
   // registered above alongside page/template.)
   registry.register(setTemplateLayoutTool);

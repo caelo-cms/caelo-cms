@@ -17,8 +17,17 @@
  * the latest shape.
  */
 
+import { listItemInputSchema, listTypeDefSchema, pageTypeDefSchema } from "@caelo-cms/shared";
 import { z } from "zod";
-import type { ModuleState, PageLayoutState, PageState, TemplateState } from "./state.js";
+import type {
+  ListState,
+  ListTypeState,
+  ModuleState,
+  PageLayoutState,
+  PageState,
+  PageTypeState,
+  TemplateState,
+} from "./state.js";
 
 const moduleStateV1 = z
   .object({
@@ -84,6 +93,11 @@ const pageStateV1 = z.preprocess(
       // see PageState.parentPageId for how writers treat that.
       parentPageId: z.string().uuid().nullable().optional(),
       pendingRedirects: z.literal("skip").optional(),
+      // Epic #1107 — migration 0351 backfilled every snapshot whose
+      // template still exists; one without is refused here, loudly.
+      pageTypeId: z.string().uuid(),
+      properties: z.record(z.string(), z.unknown()),
+      terms: z.array(z.string()),
     })
     .strict(),
 );
@@ -118,10 +132,50 @@ const pageLayoutStateV1 = z
   })
   .strict();
 
+const listTypeStateV1 = z
+  .object({
+    schemaVersion: z.literal(1),
+    slug: z.string(),
+    definition: listTypeDefSchema,
+    version: z.number().int().positive(),
+    deletedAt: z.string().nullable(),
+  })
+  .strict();
+
+const listStateV1 = z
+  .object({
+    schemaVersion: z.literal(1),
+    slug: z.string(),
+    name: z.string(),
+    purpose: z.string(),
+    listTypeId: z.string().uuid(),
+    items: z.array(listItemInputSchema),
+    version: z.number().int().positive(),
+    deletedAt: z.string().nullable(),
+  })
+  .strict();
+
+const pageTypeStateV1 = z
+  .object({
+    schemaVersion: z.literal(1),
+    slug: z.string(),
+    definition: pageTypeDefSchema,
+    version: z.number().int().positive(),
+    deletedAt: z.string().nullable(),
+  })
+  .strict();
+
 export class SnapshotSchemaError extends Error {
   readonly kind: "SnapshotSchemaError" = "SnapshotSchemaError";
   constructor(
-    readonly entity: "module" | "template" | "page" | "pageLayout",
+    readonly entity:
+      | "module"
+      | "template"
+      | "page"
+      | "pageLayout"
+      | "listType"
+      | "list"
+      | "pageType",
     readonly version: unknown,
     readonly issues: unknown,
   ) {
@@ -180,4 +234,37 @@ export function parseAndUpgradePageLayoutState(raw: unknown): PageLayoutState {
     return r.data;
   }
   throw new SnapshotSchemaError("pageLayout", v, "no upgrade path from this version");
+}
+
+/** Epic #1107 — validate a list type snapshot state at the snapshot ↔ live-row boundary. */
+export function parseAndUpgradeListTypeState(raw: unknown): ListTypeState {
+  const v = pickVersion(raw);
+  if (v === 1) {
+    const r = listTypeStateV1.safeParse(raw);
+    if (!r.success) throw new SnapshotSchemaError("listType", v, r.error.issues);
+    return r.data;
+  }
+  throw new SnapshotSchemaError("listType", v, "no upgrade path from this version");
+}
+
+/** Epic #1107 — validate a list snapshot state. Entry ids are always present in stored states. */
+export function parseAndUpgradeListState(raw: unknown): ListState {
+  const v = pickVersion(raw);
+  if (v === 1) {
+    const r = listStateV1.safeParse(raw);
+    if (!r.success) throw new SnapshotSchemaError("list", v, r.error.issues);
+    return r.data as ListState;
+  }
+  throw new SnapshotSchemaError("list", v, "no upgrade path from this version");
+}
+
+/** Epic #1107 — validate a page type snapshot state. */
+export function parseAndUpgradePageTypeState(raw: unknown): PageTypeState {
+  const v = pickVersion(raw);
+  if (v === 1) {
+    const r = pageTypeStateV1.safeParse(raw);
+    if (!r.success) throw new SnapshotSchemaError("pageType", v, r.error.issues);
+    return r.data;
+  }
+  throw new SnapshotSchemaError("pageType", v, "no upgrade path from this version");
 }

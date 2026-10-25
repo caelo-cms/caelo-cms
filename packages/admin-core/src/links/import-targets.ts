@@ -181,8 +181,12 @@ export interface PendingLinkRecord {
   readonly pending: readonly PendingLinkTarget[];
 }
 
-/** The entity kinds whose links an import run's finalisation rewrites. */
-export type ImportLinkEntityKind = "content_instance" | "module" | "structured_set";
+/**
+ * The entity kinds whose links an import run's finalisation rewrites.
+ * (The table's CHECK also admits `list`, for the list write path that
+ * records its links here — epic #1107.)
+ */
+export type ImportLinkEntityKind = "content_instance" | "module";
 
 /**
  * Record links a write kept literal because they point at a planned

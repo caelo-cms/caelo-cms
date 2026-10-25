@@ -51,7 +51,6 @@ function model(over: Partial<ReferenceSourceModel> = {}): ReferenceSourceModel {
     instances: new Map(),
     templates: new Map([[TPL, { id: TPL, name: "Tpl", html: "<main></main>", layoutId: LAYOUT }]]),
     layouts: new Map([[LAYOUT, { id: LAYOUT, name: "Main", html: "<body></body>", blocks: [] }]]),
-    sets: [],
     plugins: [],
     ...over,
   };
@@ -342,37 +341,6 @@ describe("reference integrity places", () => {
     expect(issues.find((i) => i.place.kind === "layout-html")?.fix.tool).toBe(
       "propose_update_layout",
     );
-  });
-
-  it("a nav set renders where its nav-menu module does; an unrendered set only warns", () => {
-    const nav = { ...mod(3, "<nav></nav>"), slug: "nav-menu-main" };
-    const set = (slug: string) => ({
-      id: id(300),
-      kind: "nav-menu",
-      slug,
-      name: "Main",
-      items: [{ label: "x", href: `caelo:page/${GONE}` }],
-    });
-    const rendered = scan(
-      model({
-        modules: new Map([[nav.id, nav]]),
-        placements: [
-          {
-            pageId: HOME,
-            blockName: "c",
-            moduleId: nav.id,
-            contentInstanceId: null,
-            syncMode: null,
-          },
-        ],
-        sets: [set("main")],
-      }),
-      "staging",
-    );
-    expect(rendered[0]).toMatchObject({ severity: "block", where: "items[0]" });
-    expect(rendered[0]?.fix.tool).toBe("set_structured_set");
-    const unrendered = scan(model({ sets: [set("other")] }), "staging");
-    expect(unrendered[0]?.severity).toBe("warning");
   });
 
   it("plugin data is site-wide and names the plugin", () => {

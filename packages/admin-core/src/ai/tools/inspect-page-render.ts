@@ -199,12 +199,9 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
       }
     }
 
-    // 4. Theme tokens. v0.11.0 (#45) — theme moved out of structured_sets
-    //    into its own `themes` table with DTCG-shaped jsonb tokens.
-    //    Pre-v0.11 this read structured_sets WHERE kind='theme' AND
-    //    slug='default'; that path is gone (the Zod enum rejects 'theme').
-    //    Read the active theme row instead and flatten the DTCG document
-    //    into a `{[canonicalPath]: string}` map for the inspector output.
+    // 4. Theme tokens (v0.11.0, #45): the active `themes` row's DTCG
+    //    document, flattened into a `{[canonicalPath]: string}` map for
+    //    the inspector output.
     let themeTokens: Record<string, string> = {};
     const themeR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "themes.get_active", {});
     if (themeR.ok) {
@@ -489,10 +486,8 @@ function sliceMatches(html: string, search: string, window = 400, maxSlices = 20
 
 /**
  * v0.11.0 (#45) — flatten the active theme's DTCG tokens jsonb into a
- * `{[canonicalPath]: stringValue}` map for the inspector output. The
- * inspector's old shape was a flat `{tokenName: value}` from the legacy
- * structured-set; the closest analogue on the DTCG tree is the leaf-path
- * → string-value form (e.g. `color.primary → "#ff6600"`). Composite
+ * `{[canonicalPath]: stringValue}` map for the inspector output: the
+ * leaf-path → string-value form (e.g. `color.primary → "#ff6600"`). Composite
  * leaves (`$value: {fontFamily, fontSize, ...}`) JSON-stringify into one
  * entry so the inspector keeps a flat shape.
  */

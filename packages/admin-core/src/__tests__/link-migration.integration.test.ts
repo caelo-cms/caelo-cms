@@ -9,7 +9,7 @@
  * upgraded install starts from. Covers:
  *   - every surface: module HTML, module field defaults, content values
  *     (by field kind: a `text` value that looks like a path stays),
- *     structured sets (submenus), plugin storage via the plugin hook;
+ *     layouts' own HTML, plugin storage via the plugin hook;
  *   - a dry run reports and writes nothing;
  *   - apply converts, emits ONE main-line snapshot, reports unresolved
  *     links with where they are, and is listed by the report op;
@@ -61,13 +61,16 @@ const ids = {
   nav: "",
   card: "",
   instance: "",
-  setId: "",
   branch: "",
   branchInstance: "",
   pluginRow: "",
   media: "",
   layout: "",
 };
+
+/** The layout frame as an Owner rewrote it after the migration (a revert conflict). */
+const EDITED_LAYOUT =
+  '<body><a class="frame" href="https://example.com/edited">x</a><caelo-slot name="content">_</caelo-slot></body>';
 
 async function layoutHtml(id: string): Promise<string> {
   const rows = (await asSystem((tx) => tx`SELECT html FROM layouts WHERE id = ${id}::uuid`)) as {
@@ -148,17 +151,6 @@ async function instanceValues(id: string): Promise<Record<string, unknown>> {
   return json(rows[0]?.values);
 }
 
-async function setItems(
-  id: string,
-): Promise<{ label: string; href: string; children?: { href: string }[] }[]> {
-  const rows = (await asSystem(
-    (tx) => tx`SELECT items FROM structured_sets WHERE id = ${id}::uuid`,
-  )) as {
-    items: unknown;
-  }[];
-  return json(rows[0]?.items);
-}
-
 async function pluginRows(): Promise<{ id: string; payload: { cta_href?: string } }[]> {
   const r = await runPluginOperation({
     invocation: { origin: "system", actorId: SYSTEM_ACTOR },
@@ -219,7 +211,6 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM plugins WHERE slug = ${PLUGIN_SLUG}`;
     await tx`DELETE FROM link_migration_runs`;
     await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${PFX}%`}`;
-    await tx`DELETE FROM structured_sets WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`%${PFX}%`}`;
     await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}%`}`;
@@ -324,14 +315,6 @@ beforeAll(async () => {
       },
     })
   ).contentInstanceId;
-  ids.setId = (
-    await run<{ setId: string }>("structured_sets.set", {
-      kind: "nav-menu",
-      slug: `${PFX}-menu`,
-      displayName: `${PFX} menu`,
-      items: [{ label: "Home", href: "https://example.com/" }],
-    })
-  ).setId;
   const put = await runPluginOperation({
     invocation: { origin: "system", actorId: SYSTEM_ACTOR },
     pluginSlug: PLUGIN_SLUG,
@@ -362,10 +345,6 @@ beforeAll(async () => {
     })}::jsonb WHERE id = ${ids.instance}::uuid`;
     await tx`UPDATE layouts SET html = ${`<body><a class="frame" href="${ABOUT}">About</a><caelo-slot name="content">_</caelo-slot></body>`}
              WHERE id = ${ids.layout}::uuid`;
-    await tx`UPDATE structured_sets SET items = ${JSON.stringify([
-      { label: "About", href: ABOUT, children: [{ label: "Pricing", href: PRICING }] },
-      { label: "Gone", href: GONE },
-    ])}::jsonb WHERE id = ${ids.setId}::uuid`;
     // Plugin tables are RLS-scoped to their plugin.
     await tx`SELECT set_config('caelo.plugin_id', (SELECT id::text FROM plugins WHERE slug = ${PLUGIN_SLUG}), true)`;
     const updated = await tx.unsafe(
@@ -463,15 +442,6 @@ describe("links.migrate_to_references", () => {
       `<p>See <a href="caelo:page/${ids.about}">about</a> and <a href="https://example.com/ext">ext</a></p>`,
     );
 
-    expect(await setItems(ids.setId)).toEqual([
-      {
-        label: "About",
-        href: `caelo:page/${ids.about}`,
-        children: [{ label: "Pricing", href: `caelo:page/${ids.pricing}` }],
-      },
-      { label: "Gone", href: GONE },
-    ]);
-
     // A layout's own HTML (the page frame) is converted too: the composer
     // resolves references there (rollout C).
     expect(await layoutHtml(ids.layout)).toContain(
@@ -484,7 +454,7 @@ describe("links.migrate_to_references", () => {
     expect(row?.payload.cta_href).toBe(`caelo:page/${ids.pricing}`);
 
     const mine = out.unresolved.filter((u) => u.value === GONE);
-    expect(mine.map((u) => u.surface).sort()).toEqual(["module_html", "structured_sets"]);
+    expect(mine.map((u) => u.surface).sort()).toEqual(["module_html"]);
     expect(mine.find((u) => u.surface === "module_html")?.label).toBe(`module "${PFX} Nav"`);
 
     // ONE main-line snapshot carries every changed entity, plugin row included.
@@ -492,7 +462,6 @@ describe("links.migrate_to_references", () => {
       (tx) => tx`SELECT op_kind, chat_branch_id,
                         (SELECT count(*) FROM module_snapshots WHERE site_snapshot_id = s.id)::int AS modules,
                         (SELECT count(*) FROM content_instance_snapshots WHERE site_snapshot_id = s.id)::int AS instances,
-                        (SELECT count(*) FROM structured_set_snapshots WHERE site_snapshot_id = s.id)::int AS sets,
                         (SELECT count(*) FROM plugin_row_snapshots WHERE site_snapshot_id = s.id)::int AS plugin_rows
                    FROM site_snapshots s WHERE id = ${out.run.siteSnapshotId}::uuid`,
     )) as {
@@ -500,13 +469,11 @@ describe("links.migrate_to_references", () => {
       chat_branch_id: string | null;
       modules: number;
       instances: number;
-      sets: number;
       plugin_rows: number;
     }[];
     expect(snap[0]).toMatchObject({ op_kind: "links.migrate_to_references", chat_branch_id: null });
     expect(snap[0]?.modules).toBeGreaterThanOrEqual(1);
     expect(snap[0]?.instances).toBeGreaterThanOrEqual(1);
-    expect(snap[0]?.sets).toBeGreaterThanOrEqual(1);
     expect(snap[0]?.plugin_rows).toBe(1);
   });
 
@@ -546,7 +513,7 @@ describe("links.migrate_to_references", () => {
     const again = await run<MigrateOut>("links.migrate_to_references", {});
     expect(again.run.counts).toEqual({});
     expect(again.run.siteSnapshotId).toBeNull();
-    expect(again.unresolved.filter((u) => u.value === GONE)).toHaveLength(2);
+    expect(again.unresolved.filter((u) => u.value === GONE)).toHaveLength(1);
     const boot = await run<MigrateOut>("links.migrate_to_references", {
       trigger: "boot",
       onlyIfNeverApplied: true,
@@ -562,7 +529,7 @@ describe("links.migrate_to_references", () => {
       recentRuns: unknown[];
     }>("links.get_migration_report", { runId: applyRunId, search: `${PFX}-gone` });
     expect(report.run.mode).toBe("apply");
-    expect(report.unresolvedTotal).toBe(2);
+    expect(report.unresolvedTotal).toBe(1);
     expect(report.recentRuns.length).toBeGreaterThanOrEqual(3);
     // The AI may read it, but not run the migration.
     const ai: ExecutionContext = {
@@ -594,19 +561,17 @@ describe("links.migrate_to_references", () => {
   });
 
   it("revert refuses while a converted part was edited since, then restores the rest on request", async () => {
-    await run("structured_sets.set", {
-      kind: "nav-menu",
-      slug: `${PFX}-menu`,
-      displayName: `${PFX} menu`,
-      items: [{ label: "About only", href: ABOUT }],
-    });
+    // An Owner edit of the layout frame after the migration.
+    await asSystem(
+      (tx) => tx`UPDATE layouts SET html = ${EDITED_LAYOUT} WHERE id = ${ids.layout}::uuid`,
+    );
     const refused = await run<{
       reverted: boolean;
       conflicts: { entityKind: string; entityId: string }[];
     }>("links.revert_migration", { runId: applyRunId });
     expect(refused.reverted).toBe(false);
     expect(refused.conflicts).toEqual([
-      expect.objectContaining({ entityKind: "structuredSet", entityId: ids.setId }),
+      expect.objectContaining({ entityKind: "layout", entityId: ids.layout }),
     ]);
     expect((await moduleRow(ids.nav)).html).toContain(`caelo:page/${ids.about}`); // nothing reverted
 
@@ -624,8 +589,7 @@ describe("links.migrate_to_references", () => {
       { label: "Pricing", href: `${PRICING}#plans` },
     ]);
     expect((await instanceValues(ids.instance)).cta_href).toBe(PRICING);
-    expect((await setItems(ids.setId))[0]?.label).toBe("About only"); // the edit was kept
-    expect(await layoutHtml(ids.layout)).toContain(`<a class="frame" href="${ABOUT}">About</a>`);
+    expect(await layoutHtml(ids.layout)).toBe(EDITED_LAYOUT); // the edit was kept
     const row = (await pluginRows()).find((r) => r.id === ids.pluginRow);
     expect(row?.payload.cta_href).toBe(PRICING);
     const branchState = (await asSystem(

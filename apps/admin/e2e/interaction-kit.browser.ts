@@ -70,7 +70,19 @@ const quotes = mod(
     "</section>",
   ".quotes [data-caelo-carousel-track]{width:300px}",
 );
-const nav = mod(4, "nav-menu-header", "<nav>replaced by the renderer</nav>");
+// The kit is pulled in by markup alone: a menu module that iterates its
+// list carries the mobile-nav markup itself (rendered here as the
+// composer would hand it over, list already resolved).
+const nav = mod(
+  4,
+  "main-menu",
+  '<nav class="caelo-nav-menu" data-caelo-ui="mobile-nav" data-nav-open="false">' +
+    '<button type="button" class="caelo-nav-toggle" aria-expanded="false" aria-label="Menu">' +
+    '<span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span>' +
+    "</button>" +
+    '<ul><li><a href="/">Home</a></li><li><a href="/pricing">Pricing</a></li></ul>' +
+    "</nav>",
+);
 
 /** The composed page; `repeat` places the tabs module a second time. */
 function kitPage(repeat = false): string {
@@ -87,14 +99,6 @@ function kitPage(repeat = false): string {
     layoutCss: "",
     layoutBlocks: [{ blockName: "header", modules: [nav] }],
     layoutSlug: "kit",
-    structuredSets: {
-      byKindSlug: {
-        "nav-menu/header": [
-          { label: "Home", href: "/" },
-          { label: "Pricing", href: "/pricing" },
-        ],
-      },
-    },
   }).html;
 }
 

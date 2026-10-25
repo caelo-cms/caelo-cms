@@ -32,10 +32,9 @@ interface ReportedIssue {
 
 /**
  * What renders a stored link (reference-fix.ts `ReferencePlace`), in the
- * terms the staged HTML carries. A set that is not a nav menu renders
- * nowhere: null.
+ * terms the staged HTML carries.
  */
-function originOf(place: ReportedIssue["place"]): ReportedDraftLinkOrigin | null {
+function originOf(place: ReportedIssue["place"]): ReportedDraftLinkOrigin {
   switch (place.kind) {
     case "content":
     case "module-html":
@@ -44,12 +43,6 @@ function originOf(place: ReportedIssue["place"]): ReportedDraftLinkOrigin | null
     case "layout-html":
     case "template-html":
       return { kind: "chrome" };
-    case "structured-set": {
-      const [kind, slug] = String(place.set).split("/");
-      return kind === "nav-menu" && slug
-        ? { kind: "nav-menu", moduleSlug: `nav-menu-${slug}` }
-        : null;
-    }
     case "plugin":
       return { kind: "plugin", pluginSlug: String(place.pluginSlug) };
     default:
@@ -101,7 +94,7 @@ export function linkSourcesFromOps(
       })) as { issues: ReportedIssue[] };
       return r.issues.flatMap((i): ReportedDraftLink[] => {
         const origin = originOf(i.place);
-        return i.targetPath !== null && origin !== null
+        return i.targetPath !== null
           ? [{ targetPath: i.targetPath, pageIds: i.pageIds, origin }]
           : [];
       });

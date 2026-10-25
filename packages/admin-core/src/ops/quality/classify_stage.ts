@@ -26,9 +26,6 @@ import { classifyStageChanges, type StageChange } from "../../quality/classify.j
 import { stageClassificationSchema, uuidList } from "./_shared.js";
 import { lastPageMetrics, lastPageMetricsSchema } from "./page-metrics.js";
 
-/** Structured-set kinds that are content lists, not theme/design data. */
-const LIST_KINDS = new Set(["nav-menu", "taxonomy", "link-list"]);
-
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
 
 /**
@@ -127,36 +124,51 @@ async function pageChanges(tx: Tx, w: Window): Promise<StageChange[]> {
   }));
 }
 
-/** Entities whose kind alone decides (templates, themes, structured sets,
- *  placements, content instances, plugin rows, layout chrome). */
+/** Entities whose kind alone decides (templates, themes, lists, list types,
+ *  page types, placements, content instances, plugin rows, layout chrome). */
 async function kindOnlyChanges(tx: Tx, w: Window): Promise<StageChange[]> {
   const f = sinceFilter(w);
   const rows = (await tx.execute(sql`
     SELECT 'template' AS entity, ts.template_id::text AS id,
-           COALESCE(max(t.display_name), ts.template_id::text) AS label, NULL::text AS kind
+           COALESCE(max(t.display_name), ts.template_id::text) AS label
     FROM template_snapshots ts
     JOIN site_snapshots ss ON ss.id = ts.site_snapshot_id
     LEFT JOIN templates t ON t.id = ts.template_id
     WHERE ss.chat_branch_id = ${w.branchId}::uuid${f}
     GROUP BY ts.template_id
     UNION ALL
-    SELECT 'theme', th.theme_id::text, COALESCE(max(t.display_name), th.theme_id::text), NULL
+    SELECT 'theme', th.theme_id::text, COALESCE(max(t.display_name), th.theme_id::text)
     FROM theme_snapshots th
     JOIN site_snapshots ss ON ss.id = th.site_snapshot_id
     LEFT JOIN themes t ON t.id = th.theme_id
     WHERE ss.chat_branch_id = ${w.branchId}::uuid${f}
     GROUP BY th.theme_id
     UNION ALL
-    SELECT 'structuredSet', sss.structured_set_id::text,
-           COALESCE(max(s.display_name), sss.structured_set_id::text),
-           COALESCE(max(s.kind), max(sss.state->>'kind'))
-    FROM structured_set_snapshots sss
-    JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-    LEFT JOIN structured_sets s ON s.id = sss.structured_set_id
+    SELECT 'list', lsn.list_id::text,
+           COALESCE(max(l.name), max(lsn.state->>'name'), lsn.list_id::text)
+    FROM list_snapshots lsn
+    JOIN site_snapshots ss ON ss.id = lsn.site_snapshot_id
+    LEFT JOIN lists l ON l.id = lsn.list_id
     WHERE ss.chat_branch_id = ${w.branchId}::uuid${f}
-    GROUP BY sss.structured_set_id
+    GROUP BY lsn.list_id
     UNION ALL
-    SELECT 'placement', pls.page_id::text, COALESCE(max(p.title), pls.page_id::text), NULL
+    SELECT 'list', lts.list_type_id::text,
+           'list type ' || COALESCE(max(lt.slug), max(lts.state->>'slug'), lts.list_type_id::text)
+    FROM list_type_snapshots lts
+    JOIN site_snapshots ss ON ss.id = lts.site_snapshot_id
+    LEFT JOIN list_types lt ON lt.id = lts.list_type_id
+    WHERE ss.chat_branch_id = ${w.branchId}::uuid${f}
+    GROUP BY lts.list_type_id
+    UNION ALL
+    SELECT 'list', pts.page_type_id::text,
+           'page type ' || COALESCE(max(pt.slug), max(pts.state->>'slug'), pts.page_type_id::text)
+    FROM page_type_snapshots pts
+    JOIN site_snapshots ss ON ss.id = pts.site_snapshot_id
+    LEFT JOIN page_types pt ON pt.id = pts.page_type_id
+    WHERE ss.chat_branch_id = ${w.branchId}::uuid${f}
+    GROUP BY pts.page_type_id
+    UNION ALL
+    SELECT 'placement', pls.page_id::text, COALESCE(max(p.title), pls.page_id::text)
     FROM page_layout_snapshots pls
     JOIN site_snapshots ss ON ss.id = pls.site_snapshot_id
     LEFT JOIN pages p ON p.id = pls.page_id
@@ -164,7 +176,7 @@ async function kindOnlyChanges(tx: Tx, w: Window): Promise<StageChange[]> {
     GROUP BY pls.page_id
     UNION ALL
     SELECT 'content', cis.content_instance_id::text,
-           COALESCE(max(ci.display_name), max(ci.slug), cis.content_instance_id::text), NULL
+           COALESCE(max(ci.display_name), max(ci.slug), cis.content_instance_id::text)
     FROM content_instance_snapshots cis
     JOIN site_snapshots ss ON ss.id = cis.site_snapshot_id
     LEFT JOIN content_instances ci ON ci.id = cis.content_instance_id
@@ -172,18 +184,17 @@ async function kindOnlyChanges(tx: Tx, w: Window): Promise<StageChange[]> {
     GROUP BY cis.content_instance_id
     UNION ALL
     SELECT 'pluginConfig', prs.plugin_id::text,
-           COALESCE(max(pl.slug), prs.plugin_id::text) || ' · ' || string_agg(DISTINCT prs.table_name, ', '),
-           NULL
+           COALESCE(max(pl.slug), prs.plugin_id::text) || ' · ' || string_agg(DISTINCT prs.table_name, ', ')
     FROM plugin_row_snapshots prs
     JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
     LEFT JOIN plugins pl ON pl.id = prs.plugin_id
     WHERE ss.chat_branch_id = ${w.branchId}::uuid${f}
     GROUP BY prs.plugin_id
     UNION ALL
-    SELECT 'layout', ss.id::text, COALESCE(ss.description, 'layout chrome'), NULL
+    SELECT 'layout', ss.id::text, COALESCE(ss.description, 'layout chrome')
     FROM site_snapshots ss
     WHERE ss.chat_branch_id = ${w.branchId}::uuid AND ss.op_kind = 'layout_modules.set'${f}
-  `)) as unknown as { entity: string; id: string; label: string; kind: string | null }[];
+  `)) as unknown as { entity: string; id: string; label: string }[];
   const out: StageChange[] = [];
   for (const r of rows) {
     switch (r.entity) {
@@ -193,14 +204,8 @@ async function kindOnlyChanges(tx: Tx, w: Window): Promise<StageChange[]> {
       case "content":
       case "pluginConfig":
       case "layout":
+      case "list":
         out.push({ entity: r.entity, entityId: r.id, label: r.label });
-        break;
-      case "structuredSet":
-        out.push({
-          entity: r.kind !== null && LIST_KINDS.has(r.kind) ? "list" : "theme",
-          entityId: r.id,
-          label: r.label,
-        });
         break;
     }
   }

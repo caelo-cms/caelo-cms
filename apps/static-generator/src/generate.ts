@@ -576,8 +576,8 @@ export async function generateSite(args: {
   timer.lap("load-pages");
 
   // P6.7.6 — load layout modules once for the whole build, keyed by
-  // layout_id. Per-page composition picks its layout's set; same
-  // rationale as structured sets above.
+  // layout_id. Per-page composition picks its layout's set — loaded
+  // once so every page of the build sees the same chrome.
   const layoutModRows = (await tx.execute(sql`
     SELECT lm.layout_id::text AS layout_id,
            lm.block_name AS block_name,
@@ -638,24 +638,6 @@ export async function generateSite(args: {
       fields: parseModuleFields(r.fields),
     });
     perLayout.set(r.block_name, arr);
-  }
-
-  // P6.7.5 — load structured sets once for the whole build so each
-  // page's composer gets the same nav-menu state. Re-querying per-page
-  // would be wasteful and could surface rebuild-mid-deploy races where
-  // some pages saw the old menu and some the new.
-  // v0.11.0 (#45) — theme moved out of structured_sets into its own
-  // `themes` table; loaded separately below as a ComposeTheme.
-  const setRows = (await tx.execute(sql`
-    SELECT kind, slug, items::text AS items FROM structured_sets
-  `)) as unknown as { kind: string; slug: string; items: string }[];
-  const structuredSets = { byKindSlug: {} as Record<string, unknown[]> };
-  for (const r of setRows) {
-    try {
-      structuredSets.byKindSlug[`${r.kind}/${r.slug}`] = JSON.parse(r.items) as unknown[];
-    } catch {
-      // ignore malformed rows
-    }
   }
 
   // v0.11.0 — load the active theme once for the whole build. The
@@ -960,7 +942,6 @@ export async function generateSite(args: {
         templateHtml: page.template_html,
         templateCss: page.template_css,
         blocks,
-        structuredSets,
         theme: activeTheme,
         fonts: themeFonts,
         layoutHtml: page.layout_html,

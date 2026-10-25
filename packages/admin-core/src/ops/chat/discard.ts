@@ -35,8 +35,17 @@ import { loadChatBinding } from "../../draft.js";
 import { releaseChatLocks } from "../../locks.js";
 import { undoDraftChat } from "./draft-ops.js";
 
-/** Core tables whose rows can be created on a branch (migration 0089, 0093). */
-const BRANCHED_CREATE_TABLES = ["pages", "modules", "templates", "layouts", "content_instances"];
+/** Core tables whose rows can be created on a branch (migrations 0089, 0093, 0350). */
+const BRANCHED_CREATE_TABLES = [
+  "pages",
+  "modules",
+  "templates",
+  "layouts",
+  "content_instances",
+  "list_types",
+  "lists",
+  "page_types",
+];
 
 export const discardChatBranchOp = defineOperation({
   name: "chat.discard_branch",

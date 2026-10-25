@@ -9,7 +9,7 @@
  * (`data-caelo-module-id`), inside baked plugin output
  * (`data-caelo-plugin`), or in the page's chrome. The stored sources say
  * which layer holds it: a module's template, a content value of that
- * module, a navigation menu's structured set, a layout, or a template.
+ * module, a layout, or a template.
  */
 
 import { truncateKeepingIds } from "@caelo-cms/shared";
@@ -43,13 +43,9 @@ export interface OriginContext {
   readonly layouts: readonly LinkLayout[];
 }
 
-/** Navigation menus render from the `nav-menu/<slug>` set, not their template. */
-const NAV_MENU_PREFIX = "nav-menu-";
-
 type Origin =
   | { readonly kind: "theme-asset" }
   | { readonly kind: "plugin"; readonly slug: string }
-  | { readonly kind: "nav-menu"; readonly module: LinkModule; readonly set: string }
   | { readonly kind: "module-template"; readonly module: LinkModule }
   | { readonly kind: "module-value"; readonly module: LinkModule }
   | { readonly kind: "layout"; readonly layout: LinkLayout }
@@ -60,13 +56,6 @@ function originOf(place: LinkPlace, ctx: OriginContext): Origin {
   if (place.pluginSlug) return { kind: "plugin", slug: place.pluginSlug };
   const module = place.moduleId ? ctx.modules.get(place.moduleId) : undefined;
   if (module) {
-    if (module.slug.startsWith(NAV_MENU_PREFIX)) {
-      return {
-        kind: "nav-menu",
-        module,
-        set: `nav-menu/${module.slug.slice(NAV_MENU_PREFIX.length)}`,
-      };
-    }
     return module.html.includes(place.raw)
       ? { kind: "module-template", module }
       : { kind: "module-value", module };
@@ -83,8 +72,6 @@ export function describeOrigin(place: LinkPlace, ctx: OriginContext): string {
       return "(an unbound theme asset)";
     case "plugin":
       return `in the output of plugin "${o.slug}"`;
-    case "nav-menu":
-      return `in navigation menu "${o.module.displayName}" (structured set ${o.set})`;
     case "module-template":
       return `in the template of module "${o.module.displayName}" (${o.module.id})`;
     case "module-value":
@@ -134,11 +121,6 @@ export function fixFor(
         hint: clip(
           `plugin "${o.slug}" renders "${place.raw}": check its data and settings with get_plugin and change the URL there to ${to}; if the plugin builds the URL itself, report it with bug_report`,
         ),
-      };
-    case "nav-menu":
-      return {
-        tool: "set_structured_set",
-        hint: clip(`change the item whose href is "${place.raw}" in ${o.set} to ${to}`),
       };
     case "module-template":
       return {

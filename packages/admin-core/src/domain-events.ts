@@ -27,7 +27,16 @@ export type DomainEventKind =
   | "page.updated"
   | "page.deleted"
   | "page.published"
-  | "module.updated";
+  | "module.updated"
+  // Epic #1107 (docs/lists.md §9) — neutral hooks a translation plugin
+  // builds on. `list.items_changed` carries the per-entry diff
+  // (`diffListItems`); `list_type.changed` what the definition gained or
+  // lost; the page events which properties / terms moved.
+  | "list.items_changed"
+  | "list_type.changed"
+  | "list.deleted"
+  | "page.properties_changed"
+  | "page.terms_changed";
 
 export interface DomainEventInput {
   readonly kind: DomainEventKind;

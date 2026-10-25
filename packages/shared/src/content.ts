@@ -440,30 +440,25 @@ export const moduleUpdateSchema = z
   })
   .strict();
 
-/**
- * v0.12.0 — page-type tag pages inherit from their template.
- * Constrained by templates_kind_check in migration 0096. Surfaced
- * in the AI's `## Pages` block so the AI sees three modules-on-
- * product-pages as a pattern. See CLAUDE.md §1A.
- */
-export const TEMPLATE_KINDS = [
-  "home",
-  "landing",
-  "product",
-  "blog",
-  "doc",
-  "content",
-  "utility",
-] as const;
-export const templateKindSchema = z.enum(TEMPLATE_KINDS);
-export type TemplateKind = (typeof TEMPLATE_KINDS)[number];
+/** A page type slug (epic #1107, docs/lists.md §5). */
+export const pageTypeSlugSchema = z
+  .string()
+  .regex(
+    /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/,
+    "page type slug: lowercase letters, digits, hyphens",
+  );
 
 export const templateCreateSchema = z
   .object({
     slug: slugSchema,
     displayName: displayNameSchema,
-    /** v0.12.0 — what kind of page binds to this template. */
-    kind: templateKindSchema.default("content"),
+    /**
+     * Epic #1107 — the page type (slug) this template serves; the template
+     * is appended to that type's `templates`. Omit for the site's default
+     * page type (`site_defaults.default_page_type_id`, stored data — not a
+     * render-time fallback).
+     */
+    pageType: pageTypeSlugSchema.optional(),
     html: z.string().max(TEMPLATE_HTML_MAX, `html exceeds ${TEMPLATE_HTML_MAX} bytes`),
     css: z.string().max(TEMPLATE_CSS_MAX, `css exceeds ${TEMPLATE_CSS_MAX} bytes`).default(""),
     /**
@@ -505,8 +500,8 @@ export const templateUpdateSchema = z
   .object({
     templateId: z.string().uuid(),
     displayName: displayNameSchema.optional(),
-    /** v0.12.0 — re-classify the template's page-type kind. */
-    kind: templateKindSchema.optional(),
+    /** Epic #1107 — also allow this template for the page type (slug); appended to its `templates`. */
+    pageType: pageTypeSlugSchema.optional(),
     html: z.string().max(TEMPLATE_HTML_MAX).optional(),
     css: z.string().max(TEMPLATE_CSS_MAX).optional(),
     /** P6.7.6 — re-point the template to a different layout. */
@@ -568,6 +563,16 @@ export const pageCreateSchema = z
      * becomes "<parent's path>/<slug>". Omit (or null) for a top-level page.
      */
     parentPageId: z.string().uuid().nullable().optional(),
+    /**
+     * Epic #1107 — what the page IS (page type slug). Omit to take the type
+     * whose `templates` contain the template; with neither `pageType` nor
+     * `templateId`, the site's default page type and its default template.
+     */
+    pageType: pageTypeSlugSchema.optional(),
+    /** Property values, validated against the page type. */
+    properties: z.record(z.string(), z.unknown()).optional(),
+    /** Terms (`caelo:term/<listId>/<itemId>`) from the page type's vocabularies. */
+    terms: z.array(z.string().max(120)).max(100).optional(),
   })
   .strict();
 
@@ -620,6 +625,16 @@ export const pageUpdateSchema = z
      * every inbound link, which is never a safe default (CLAUDE.md §2).
      */
     redirectFromOld: z.enum(["auto", "skip"]).optional(),
+    /**
+     * Epic #1107 — switch the page type (slug). The template must be one of
+     * the type's templates (pass `templateId` too when it is not), and the
+     * page's properties and terms must fit the new type.
+     */
+    pageType: pageTypeSlugSchema.optional(),
+    /** Merged into the page's properties; `null` removes a property. */
+    properties: z.record(z.string(), z.unknown()).optional(),
+    /** Replaces the page's terms (`caelo:term/<listId>/<itemId>`). */
+    terms: z.array(z.string().max(120)).max(100).optional(),
   })
   .strict();
 

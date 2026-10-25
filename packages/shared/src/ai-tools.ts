@@ -355,7 +355,6 @@ export const AI_TOOLS = [
   "delete_pages_many",
   // one remove-module tool routed by target (page|layout).
   "remove_module_from",
-  "set_structured_set",
   "update_theme",
   "set_template_layout",
   "create_layout",
@@ -555,11 +554,8 @@ export const chatPublishInput = z
       .array(
         z
           .object({
-            // v0.9.0 — added "layout" + "structuredSet" to the enum so
-            // the Stage picker can include/exclude them. Pre-v0.9.0 the
-            // helper accepted "structuredSet" via the underlying SQL
-            // query but the input schema rejected it — minor gap closed
-            // alongside the branched-create work.
+            // v0.9.0 — "layout" joined the enum so the Stage picker can
+            // include/exclude it.
             kind: z.enum([
               "module",
               "template",
@@ -567,7 +563,10 @@ export const chatPublishInput = z
               "pageLayout",
               "pageModuleContent",
               "layout",
-              "structuredSet",
+              // Epic #1107 — shared lists, list types, page types.
+              "listType",
+              "list",
+              "pageType",
               // v0.11.0 (#45) — themes primitive joins the publish/Stage
               // surface so chat-branched theme edits replay into live
               // on chat.publish.
@@ -682,25 +681,9 @@ export const removeModuleFromToolInput = z
   .strict();
 export type RemoveModuleFromToolInput = z.infer<typeof removeModuleFromToolInput>;
 
-export const setStructuredSetToolInput = z
-  .object({
-    // structuredSetKind (the 6th kind that was previously unreachable
-    // from any AI tool — the kind-specific wrappers covered only
-    // nav-menu + theme).
-    kind: z.enum(["nav-menu", "taxonomy", "tags", "link-list"]),
-    slug: slugInputSchema,
-    displayName: z.string().min(1).max(200),
-    items: z.array(z.unknown()),
-  })
-  .strict();
-
-// v0.10.22 — `updateThemeToolInput` removed. The kind-specific `update_theme`
-// wrapper was replaced by the unified `set_structured_set` surface.
-// v0.11.0 (#45) — theme moved out of structured_sets entirely into its
-// own `themes` primitive (DTCG-shaped jsonb). Theme edits are now
-// `set_theme_tokens` (loose-name patch) / `propose_create_theme`
-// (gated mint) / `propose_activate_theme` (gated flip) — see
-// packages/admin-core/src/ai/tools/{update-theme-tokens,get-theme,…}.ts.
+// v0.11.0 (#45) — theme edits are `set_theme_tokens` (loose-name patch) /
+// `propose_create_theme` (gated mint) / `propose_activate_theme` (gated
+// flip) — see packages/admin-core/src/ai/tools/{update-theme-tokens,get-theme,…}.ts.
 
 export const setTemplateLayoutToolInput = z
   .object({
@@ -1037,7 +1020,6 @@ export type BulkOptimizeSeoToolInput = z.infer<typeof bulkOptimizeSeoToolInput>;
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
-export type SetStructuredSetToolInput = z.infer<typeof setStructuredSetToolInput>;
 // v0.10.22 — `UpdateThemeToolInput` removed alongside `update_theme` tool.
 export type ChatCreateSessionInput = z.infer<typeof chatCreateSessionInput>;
 export type ChatSendMessageInput = z.infer<typeof chatSendMessageInput>;

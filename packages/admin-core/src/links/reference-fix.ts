@@ -32,13 +32,6 @@ export type ReferencePlace =
     }
   | { readonly kind: "layout-html"; readonly layoutId: string; readonly layoutName: string }
   | { readonly kind: "template-html"; readonly templateId: string; readonly templateName: string }
-  | {
-      readonly kind: "structured-set";
-      readonly setId: string;
-      /** `<kind>/<slug>`, the name set_structured_set takes. */
-      readonly set: string;
-      readonly setName: string;
-    }
   | { readonly kind: "plugin"; readonly pluginSlug: string; readonly label: string };
 
 /**
@@ -89,8 +82,6 @@ export function describePlace(place: ReferencePlace, pagePaths: readonly string[
       return `in layout "${place.layoutName}" (${place.layoutId})`;
     case "template-html":
       return `in template "${place.templateName}" (${place.templateId})`;
-    case "structured-set":
-      return `in navigation/structured set "${place.setName}" (${place.set})`;
     case "plugin":
       return `in data of plugin "${place.pluginSlug}": ${place.label}`;
   }
@@ -166,11 +157,6 @@ export function fixFor(
       return {
         tool: "edit_content",
         hint: clip(`template ${place.templateId} html (entityKind template): ${what}`),
-      };
-    case "structured-set":
-      return {
-        tool: "set_structured_set",
-        hint: clip(`set ${place.set}, ${where}: ${what}`),
       };
     case "plugin":
       return {

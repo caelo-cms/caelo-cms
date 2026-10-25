@@ -23,8 +23,8 @@
  *
  * Only what renders is checked: page placements (and the field defaults a
  * value-less field shows), nested modules, the layouts and templates of
- * live pages with their chrome modules, structured sets, and plugin data
- * named through the plugins' link-locations hook.
+ * live pages with their chrome modules, and plugin data named through the
+ * plugins' link-locations hook.
  */
 
 import {
@@ -331,31 +331,6 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     level = nestedQueue.splice(0);
   }
 
-  // ── Structured sets: a nav menu renders where its module does. ──
-  const pagesByModuleSlug = new Map<string, Set<string>>();
-  for (const [key, acc] of places) {
-    if (!key.startsWith("module-html:")) continue;
-    const m = model.modules.get((acc.place as { moduleId: string }).moduleId);
-    if (m) pagesByModuleSlug.set(m.slug, acc.pages);
-  }
-  for (const s of model.sets) {
-    const key = `set:${s.id}`;
-    const acc = placeOf(key, {
-      kind: "structured-set",
-      setId: s.id,
-      set: `${s.kind}/${s.slug}`,
-      setName: s.name,
-    });
-    const navPages =
-      s.kind === "nav-menu" ? pagesByModuleSlug.get(`nav-menu-${s.slug}`) : undefined;
-    // Only nav menus render (through their `nav-menu-<slug>` module, see
-    // preview-compose); a set nothing renders ships nowhere: warnings only.
-    if (navPages) for (const p of navPages) acc.pages.add(p);
-    s.items.forEach((item, i) => {
-      addSlot(key, { kind: "json", value: item, where: `items[${i}]` }, `items[${i}]`);
-    });
-  }
-
   // ── Plugin data named by the plugins' link-locations hook. ──
   model.plugins.forEach((pv, i) => {
     const key = `plugin:${pv.pluginSlug}:${i}`;
@@ -402,7 +377,7 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
   for (const [placeKey, acc] of places) {
     const renderPages: (string | null)[] =
       acc.siteWide || acc.pages.size === 0 ? [null] : [...acc.pages];
-    if (!acc.siteWide && acc.pages.size === 0 && acc.place.kind !== "structured-set") continue;
+    if (!acc.siteWide && acc.pages.size === 0) continue;
     for (const slot of slots.get(placeKey) ?? []) {
       const found = scanSlot(slot, input.lookup);
       for (const { ref, where } of found.refs) {

@@ -98,6 +98,7 @@ import {
   openAiStageHoldIds,
   releaseAiStageHolds,
 } from "../stage/ai-stage-hold.js";
+import { stampFirstPublished } from "./content/first-published.js";
 import { json } from "./quality/_shared.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 import {
@@ -1056,6 +1057,10 @@ export const triggerDeployOp = defineOperation({
       await releaseAiStageHolds(tx, { holdIds: coveredHolds, productionRunId: runId });
     }
 
+    // Epic #1107 — a production build is a Publish live: pages it ships
+    // for the first time get their first_published_at.
+    if (target.env === "production") await stampFirstPublished(tx, runId);
+
     timer.lap("finish");
     await tx.execute(sql`
       UPDATE deploy_runs
@@ -1349,6 +1354,10 @@ export const promoteDeployOp = defineOperation({
           productionRunId: toRunId,
         });
       }
+      // Epic #1107 — Publish live: the pages of the build it ships (the
+      // live rebuild's, or the staged build's when copied) get their
+      // first_published_at.
+      if (to.env === "production") await stampFirstPublished(tx, rebuilt ? toRunId : fromRunId);
       timer.lap("finish");
       await tx.execute(sql`
         UPDATE deploy_runs

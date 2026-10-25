@@ -33,6 +33,10 @@ import { branchVisibilityFilter, requireUsableEntity } from "../../branch.js";
 import { emitDomainEvent } from "../../domain-events.js";
 import { pendingSnapshotSql } from "../../draft.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
+import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
+import { replacePageTerms } from "../../lists/page-terms.js";
+import { resolvePageTypeForWrite } from "../../lists/page-type-resolve.js";
+import { loadListEntities } from "../../lists/store.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -42,9 +46,8 @@ import {
   loadPageStateWithBranchOverlay,
 } from "../../snapshots/index.js";
 import type { PageState } from "../../snapshots/state.js";
-import { buildPatchSet, buildWhere } from "../../sql-helpers.js";
+import { buildPatchSet, buildWhere, jsonbParam } from "../../sql-helpers.js";
 import { createRedirectOp } from "../redirects.js";
-import { readSiteDefaults } from "../site_defaults.js";
 import {
   composePaths,
   recomputeCurrentPaths,
@@ -70,12 +73,18 @@ const pageRowSchema = z.object({
   title: z.string(),
   templateId: z.string(),
   /**
-   * v0.12.0 — page-type kind inherited from the page's template.
-   * Surfaced in `## Pages` so the AI sees three modules-on-product-
-   * pages as a pattern. Optional on the wire (templates predating
-   * migration 0096 don't have it).
+   * Epic #1107 — what the page IS (page type slug), in the caller's view.
+   * The AI reads three modules-on-News-pages as a pattern from it
+   * (CLAUDE.md §1A).
    */
-  kind: z.enum(["home", "landing", "product", "blog", "doc", "content", "utility"]).optional(),
+  pageType: z.string(),
+  pageTypeId: z.string(),
+  /** Property values, validated against the page type. */
+  properties: z.record(z.string(), z.unknown()),
+  /** Terms (`caelo:term/<listId>/<itemId>`). */
+  terms: z.array(z.string()),
+  /** Set by the first Publish live; null before. */
+  firstPublishedAt: z.string().nullable(),
   status: z.enum(["draft", "published"]),
   version: z.number().int().nonnegative(),
   createdAt: z.string(),
@@ -129,8 +138,9 @@ type RawPageRow = {
   name: string | null;
   title: string;
   template_id: string;
-  /** v0.12.0 — joined from `templates.kind`. */
-  template_kind?: string | null;
+  page_type_id: string;
+  properties: unknown;
+  first_published_at: string | Date | null;
   status: "draft" | "published";
   version: number | string;
   created_at: string | Date;
@@ -142,24 +152,80 @@ function iso(v: string | Date): string {
   return v instanceof Date ? v.toISOString() : String(v);
 }
 
-function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
+/** The type-bound fields of a page row as the caller sees them. */
+interface TypeBound {
+  readonly pageTypeId: string;
+  readonly pageType: string;
+  readonly properties: Record<string, unknown>;
+  readonly terms: string[];
+}
+
+/**
+ * Epic #1107 — page type slug, properties and terms of `rows` in the
+ * caller's view: live terms from `page_terms`, superseded by the branch's
+ * newest pending page snapshot (a branched pages.update writes only the
+ * snapshot), so a read after a write in the same chat shows the write.
+ */
+async function loadTypeBound(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  rows: readonly RawPageRow[],
+): Promise<Map<string, TypeBound>> {
+  const out = new Map<string, TypeBound>();
+  if (rows.length === 0) return out;
+  const ids = sql.join(
+    rows.map((r) => sql`${r.id}::uuid`),
+    sql`, `,
+  );
+  const termRows = (await tx.execute(sql`
+    SELECT page_id::text AS page_id,
+           'caelo:term/' || list_id::text || '/' || item_id::text AS ref
+    FROM page_terms WHERE page_id IN (${ids})
+    ORDER BY created_at, list_id, item_id
+  `)) as unknown as { page_id: string; ref: string }[];
+  const terms = new Map<string, string[]>();
+  for (const t of termRows) terms.set(t.page_id, [...(terms.get(t.page_id) ?? []), t.ref]);
+  const overlay = new Map<string, PageState>();
+  if (ctx.chatBranchId) {
+    const snaps = (await tx.execute(sql`
+      SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
+        FROM page_snapshots ps JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+       WHERE ss.chat_branch_id = ${ctx.chatBranchId}::uuid AND ${pendingSnapshotSql()}
+         AND ps.page_id IN (${ids})
+       ORDER BY ps.page_id, ss.created_at DESC
+    `)) as unknown as { page_id: string; state: unknown }[];
+    for (const s of snaps) {
+      overlay.set(
+        s.page_id,
+        (typeof s.state === "string" ? JSON.parse(s.state) : s.state) as PageState,
+      );
+    }
+  }
+  const slugs = new Map(
+    (
+      await loadListEntities(tx, "pageType", ctx.chatBranchId ?? null, { includeDeleted: true })
+    ).map((t) => [t.id, t.state.slug]),
+  );
+  for (const r of rows) {
+    const o = overlay.get(r.id);
+    const liveProps = typeof r.properties === "string" ? JSON.parse(r.properties) : r.properties;
+    const pageTypeId = o?.pageTypeId ?? r.page_type_id;
+    out.set(r.id, {
+      pageTypeId,
+      pageType: slugs.get(pageTypeId) ?? pageTypeId,
+      properties: { ...(o?.properties ?? ((liveProps ?? {}) as Record<string, unknown>)) },
+      terms: [...(o?.terms ?? terms.get(r.id) ?? [])],
+    });
+  }
+  return out;
+}
+
+function rowToPage(r: RawPageRow, bound: TypeBound | undefined): z.infer<typeof pageRowSchema> {
   // Postgres bigint comes back as a string under bun-sql when the value would
   // overflow JS number — for our version counter (will not approach 2^53)
   // both shapes are safe to coerce.
   const version = typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version;
-  // v0.12.0 — template_kind comes from the LEFT JOIN; defaults to
-  // 'content' for templates that pre-date migration 0096.
-  const kindRaw = r.template_kind ?? null;
-  const kind: "home" | "landing" | "product" | "blog" | "doc" | "content" | "utility" | undefined =
-    kindRaw === "home" ||
-    kindRaw === "landing" ||
-    kindRaw === "product" ||
-    kindRaw === "blog" ||
-    kindRaw === "doc" ||
-    kindRaw === "content" ||
-    kindRaw === "utility"
-      ? kindRaw
-      : undefined;
+  const liveProps = typeof r.properties === "string" ? JSON.parse(r.properties) : r.properties;
   return {
     id: r.id,
     slug: r.slug,
@@ -172,7 +238,16 @@ function rowToPage(r: RawPageRow): z.infer<typeof pageRowSchema> {
     name: r.name ?? r.title,
     title: r.title,
     templateId: r.template_id,
-    ...(kind !== undefined ? { kind } : {}),
+    pageType: bound?.pageType ?? r.page_type_id,
+    pageTypeId: bound?.pageTypeId ?? r.page_type_id,
+    properties: bound?.properties ?? ((liveProps ?? {}) as Record<string, unknown>),
+    terms: bound?.terms ?? [],
+    firstPublishedAt:
+      r.first_published_at === null
+        ? null
+        : r.first_published_at instanceof Date
+          ? r.first_published_at.toISOString()
+          : String(r.first_published_at),
     status: r.status,
     version,
     createdAt: iso(r.created_at),
@@ -203,8 +278,6 @@ export const listPagesOp = defineOperation({
   output: z.object({ pages: z.array(pageListRowSchema) }),
   handler: async (ctx, input, tx) => {
     // v0.9.0 — branch-aware: chats see main + their own branched creates.
-    // Filters reference `pages` columns; the LEFT JOIN to templates
-    // adds template_kind for the AI's `## Pages` block.
     const filters = [];
     if (!input.includeDeleted) filters.push(sql`pages.deleted_at IS NULL`);
     if (ctx.chatBranchId) {
@@ -218,11 +291,10 @@ export const listPagesOp = defineOperation({
       SELECT pages.id::text AS id, pages.slug, pages.current_path,
              pages.parent_page_id::text AS parent_page_id, pages.name, pages.title,
              pages.template_id::text AS template_id,
-             templates.kind AS template_kind,
+             pages.page_type_id::text AS page_type_id, pages.properties, pages.first_published_at,
              pages.status, pages.version,
              pages.created_at, pages.updated_at, pages.deleted_at
       FROM pages
-      LEFT JOIN templates ON templates.id = pages.template_id
       ${buildWhere(filters)}
       ORDER BY pages.created_at ASC
     `)) as unknown as RawPageRow[];
@@ -256,6 +328,7 @@ export const listPagesOp = defineOperation({
             slug?: string;
             parentPageId?: string | null;
             title?: string;
+            templateId?: string;
             status?: "draft" | "published";
             version?: number;
             deletedAt?: string | null;
@@ -266,15 +339,32 @@ export const listPagesOp = defineOperation({
             slug: s.slug ?? row.slug,
             parent_page_id: s.parentPageId === undefined ? row.parent_page_id : s.parentPageId,
             title: s.title ?? row.title,
+            template_id: s.templateId ?? row.template_id,
             status: s.status ?? row.status,
             version: s.version ?? row.version,
             deleted_at: s.deletedAt ?? row.deleted_at,
           });
         }
-        return ok({ pages: await withTreeView(tx, ctx, merged.map(rowToPage), input.underPageId) });
+        const bound = await loadTypeBound(tx, ctx, merged);
+        return ok({
+          pages: await withTreeView(
+            tx,
+            ctx,
+            merged.map((r) => rowToPage(r, bound.get(r.id))),
+            input.underPageId,
+          ),
+        });
       }
     }
-    return ok({ pages: await withTreeView(tx, ctx, rows.map(rowToPage), input.underPageId) });
+    const bound = await loadTypeBound(tx, ctx, rows);
+    return ok({
+      pages: await withTreeView(
+        tx,
+        ctx,
+        rows.map((r) => rowToPage(r, bound.get(r.id))),
+        input.underPageId,
+      ),
+    });
   },
 });
 
@@ -329,6 +419,7 @@ export const getPageOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, current_path, parent_page_id::text AS parent_page_id,
              name, title, template_id::text AS template_id,
+             page_type_id::text AS page_type_id, properties, first_published_at,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -336,7 +427,8 @@ export const getPageOp = defineOperation({
     if (!row) {
       return err({ kind: "HandlerError", operation: "pages.get", message: "page not found" });
     }
-    return ok({ page: rowToPage(row) });
+    const bound = await loadTypeBound(tx, ctx, [row]);
+    return ok({ page: rowToPage(row, bound.get(row.id)) });
   },
 });
 
@@ -361,6 +453,7 @@ export const getPageWithModulesOp = withHumanisedLinks(
       const pageRows = (await tx.execute(sql`
       SELECT id::text AS id, slug, current_path, parent_page_id::text AS parent_page_id,
              name, title, template_id::text AS template_id,
+             page_type_id::text AS page_type_id, properties, first_published_at,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
     `)) as unknown as RawPageRow[];
@@ -592,9 +685,10 @@ export const getPageWithModulesOp = withHumanisedLinks(
     `)) as unknown as { is_home: boolean | null; is_not_found: boolean | null }[];
       const isHomePage = designationRows[0]?.is_home === true;
       const isNotFoundPage = designationRows[0]?.is_not_found === true;
+      const bound = await loadTypeBound(tx, ctx, [pageRow]);
       return ok({
         page: {
-          ...rowToPage(pageRow),
+          ...rowToPage(pageRow, bound.get(pageRow.id)),
           isHomePage,
           isNotFoundPage,
           blocks: orderedBlocks,
@@ -650,6 +744,46 @@ async function branchDeletedPageIds(
   return deleted;
 }
 
+/**
+ * Epic #1107 — `page.properties_changed` / `page.terms_changed` (docs/lists.md
+ * §9) for one page write, each only when something changed.
+ */
+async function emitTypeBoundEvents(
+  tx: TransactionRunner,
+  pageId: string,
+  before: {
+    readonly properties: Readonly<Record<string, unknown>>;
+    readonly terms: readonly string[];
+  },
+  after: {
+    readonly properties: Readonly<Record<string, unknown>>;
+    readonly terms: readonly string[];
+  },
+  chatBranchId: string | undefined,
+): Promise<void> {
+  const branch = chatBranchId ? { chatBranchId } : {};
+  const keys = new Set([...Object.keys(before.properties), ...Object.keys(after.properties)]);
+  const changed = [...keys]
+    .filter((k) => JSON.stringify(before.properties[k]) !== JSON.stringify(after.properties[k]))
+    .sort();
+  if (changed.length > 0) {
+    await emitDomainEvent(tx, {
+      kind: "page.properties_changed",
+      entityId: pageId,
+      payload: { changed, ...branch },
+    });
+  }
+  const added = after.terms.filter((t) => !before.terms.includes(t));
+  const removed = before.terms.filter((t) => !after.terms.includes(t));
+  if (added.length > 0 || removed.length > 0) {
+    await emitDomainEvent(tx, {
+      kind: "page.terms_changed",
+      entityId: pageId,
+      payload: { added, removed, ...branch },
+    });
+  }
+}
+
 export const createPageOp = defineOperation({
   name: "pages.create",
   // P6.7.5 — AI reaches this op via the `build_page` tool. Validator + audit
@@ -659,37 +793,71 @@ export const createPageOp = defineOperation({
   input: pageCreateSchema,
   output: z.object({ pageId: z.string() }),
   handler: async (ctx, input, tx) => {
-    // P6.7.6 — caller may omit templateId; resolve to site_defaults at
-    // create time. Failing to resolve = structured error, never a
-    // silent fallback (CLAUDE.md §2 no-fallbacks).
-    let templateId = input.templateId;
-    if (templateId === undefined) {
-      const defaults = await readSiteDefaults(tx);
-      if (!defaults) {
-        // v0.6.0 W3 — autoExecute read-only list_templates so the
-        // chat-runner can self-correct without bothering the AI for a
-        // round-trip. If no templates exist at all, the recovery
-        // surfaces an empty list and the second attempt's clean error
-        // tells the AI to bootstrap first.
+    // Epic #1107 — the page type and template, decided deterministically
+    // (lists/page-type-resolve.ts): `pageType` named, else the one type
+    // listing `templateId`, else the stored site defaults (P6.7.6 — never a
+    // silent fallback; a missing default is a structured error).
+    if (input.templateId !== undefined) {
+      const tplExists = (await tx.execute(sql`
+        SELECT 1 FROM templates WHERE id = ${input.templateId}::uuid AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as { exists: number }[];
+      if (tplExists.length === 0) {
+        await recordAudit(tx, {
+          actorId: ctx.actorId,
+          requestId: ctx.requestId,
+          operation: "pages.create",
+          input,
+          succeeded: false,
+          resultSummary: "template-not-found",
+        });
         return err({
           kind: "HandlerError",
           operation: "pages.create",
-          message:
-            "no templateId provided and site_defaults is empty — seed site_defaults via /settings/site-defaults or pass an explicit templateId",
+          message: "template not found or deleted",
           nextAction: {
             tool: "list_templates",
             reason:
-              "fetch the available templates so a UUID can be passed explicitly as templateId on the retry",
+              "fetch valid templateId values; the one you passed does not match a live template",
             autoExecute: true,
-            // v0.6.0 alpha.2 — declarative retry: chat-runner extracts
-            // templates[0].id from list_templates.value + re-dispatches
-            // pages.create with templateId set. AI never sees the
-            // original failure.
-            retryWithArgs: { argName: "templateId", fromValuePath: "templates.0.id" },
           },
         });
       }
-      templateId = defaults.defaultTemplateId;
+    }
+    const resolved = await resolvePageTypeForWrite(tx, ctx.chatBranchId ?? null, {
+      ...(input.pageType !== undefined ? { pageType: input.pageType } : {}),
+      ...(input.templateId !== undefined ? { templateId: input.templateId } : {}),
+    });
+    if (!resolved.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "pages.create",
+        input,
+        succeeded: false,
+        resultSummary: "page-type-unresolved",
+      });
+      return err({ kind: "HandlerError", operation: "pages.create", message: resolved.message });
+    }
+    const templateId = resolved.templateId;
+    const fit = fitPageToType(
+      resolved.def,
+      { templateId, properties: input.properties ?? {}, terms: input.terms ?? [] },
+      await loadVocabularyIndex(tx, ctx.chatBranchId ?? null, [resolved.def]),
+    );
+    if (fit.issues.length > 0) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "pages.create",
+        input,
+        succeeded: false,
+        resultSummary: "page-type-mismatch",
+      });
+      return err({
+        kind: "HandlerError",
+        operation: "pages.create",
+        message: `the page does not fit page type "${resolved.def.slug}": ${fit.issues.join(" ")}`,
+      });
     }
     // v0.9.0 — cross-chat write-block: the templateId must be usable
     // by the caller's branch (either main or branched to this chat).
@@ -707,29 +875,17 @@ export const createPageOp = defineOperation({
       });
       return err(tplUsable.error);
     }
-    const tplExists = (await tx.execute(sql`
-      SELECT 1 FROM templates WHERE id = ${templateId}::uuid AND deleted_at IS NULL LIMIT 1
-    `)) as unknown as { exists: number }[];
-    if (tplExists.length === 0) {
-      await recordAudit(tx, {
-        actorId: ctx.actorId,
-        requestId: ctx.requestId,
-        operation: "pages.create",
-        input,
-        succeeded: false,
-        resultSummary: "template-not-found",
-      });
-      return err({
-        kind: "HandlerError",
-        operation: "pages.create",
-        message: "template not found or deleted",
-        nextAction: {
-          tool: "list_templates",
-          reason:
-            "fetch valid templateId values; the one you passed does not match a live template",
-          autoExecute: true,
-        },
-      });
+    if (input.templateId === undefined) {
+      const resolvedTpl = (await tx.execute(sql`
+        SELECT 1 FROM templates WHERE id = ${templateId}::uuid AND deleted_at IS NULL LIMIT 1
+      `)) as unknown as { exists: number }[];
+      if (resolvedTpl.length === 0) {
+        return err({
+          kind: "HandlerError",
+          operation: "pages.create",
+          message: `template ${templateId} (the default of page type "${resolved.def.slug}" or the site default) is deleted — pass templateId, and repair the default with page_types.upsert_many / set_site_defaults.`,
+        });
+      }
     }
     // v0.9.0 + 1b/2b — same-branch public-URL uniqueness with
     // root-equivalence + branch-delete awareness. This subsumes the old
@@ -869,7 +1025,8 @@ export const createPageOp = defineOperation({
       resolvedStatus = pub[0]?.has_published ? "draft" : "published";
     }
     const rows = (await tx.execute(sql`
-      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id, current_path)
+      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id, current_path,
+                         page_type_id, properties)
       VALUES (
         ${input.slug},
         ${input.name ?? input.title},
@@ -878,7 +1035,9 @@ export const createPageOp = defineOperation({
         ${resolvedStatus},
         ${ctx.chatBranchId ?? null}::uuid,
         ${parentPageId}::uuid,
-        ${plannedPath}
+        ${plannedPath},
+        ${resolved.typeId}::uuid,
+        ${jsonbParam(fit.properties)}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -886,6 +1045,9 @@ export const createPageOp = defineOperation({
     if (!pageId) {
       return err({ kind: "HandlerError", operation: "pages.create", message: "no id returned" });
     }
+    // The page's row data — on a branch the row (and so its terms) is
+    // invisible to everyone else until the merge graduates it.
+    await replacePageTerms(tx, pageId, fit.terms);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -910,9 +1072,11 @@ export const createPageOp = defineOperation({
         entityId: pageId,
         payload: {
           slug: input.slug,
+          pageType: resolved.def.slug,
           ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
         },
       });
+      await emitTypeBoundEvents(tx, pageId, { properties: {}, terms: [] }, fit, ctx.chatBranchId);
     }
     // #390 — compose + materialize the public path (the INSERT trigger
     // wrote the plugin-free default; this accounts for designation +
@@ -1015,6 +1179,30 @@ export const updatePageOp = defineOperation({
       }
     }
 
+    // Epic #1107 — page type, properties, terms. The type stays unless
+    // `pageType` names another or the new template belongs to another
+    // type only; the result must fit the type (template allowed,
+    // properties valid, terms from its vocabularies).
+    const typeBase = branched
+      ? await loadPageStateWithBranchOverlay(tx, input.pageId, ctx.chatBranchId)
+      : await loadPageState(tx, input.pageId);
+    if (!typeBase) {
+      return err({ kind: "HandlerError", operation: "pages.update", message: "page not found" });
+    }
+    const typeBound = await nextTypeBound(tx, ctx, input, typeBase);
+    if (!typeBound.ok) {
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "pages.update",
+        input,
+        succeeded: false,
+        entityId: input.pageId,
+        resultSummary: "page-type-mismatch",
+      });
+      return err({ kind: "HandlerError", operation: "pages.update", message: typeBound.message });
+    }
+
     let state: import("../../snapshots/state.js").PageState | null;
     if (branched) {
       // v0.10.0 — read base state from the LATEST branched snapshot
@@ -1048,6 +1236,9 @@ export const updatePageOp = defineOperation({
         status: input.status ?? base.status,
         version: currentVersion + 1,
         deletedAt: null,
+        pageTypeId: typeBound.pageTypeId,
+        properties: typeBound.properties,
+        terms: typeBound.terms,
       };
     } else {
       const sets = buildPatchSet({
@@ -1056,11 +1247,16 @@ export const updatePageOp = defineOperation({
         slug: input.slug,
         template_id: input.templateId !== undefined ? sql`${input.templateId}::uuid` : undefined,
         status: input.status,
+        page_type_id: sql`${typeBound.pageTypeId}::uuid`,
+        properties: sql`${jsonbParam(typeBound.properties)}`,
         version: sql`version + 1`,
       });
       await tx.execute(sql`
         UPDATE pages SET ${sets} WHERE id = ${input.pageId}::uuid
       `);
+      if (JSON.stringify(typeBound.terms) !== JSON.stringify(typeBase.terms)) {
+        await replacePageTerms(tx, input.pageId, typeBound.terms);
+      }
       // The URL moved — for this page AND every page below it (a parent's
       // path prefixes its children's). Keep the old URLs alive and drag
       // every link along, in THIS transaction; every caller of
@@ -1101,10 +1297,54 @@ export const updatePageOp = defineOperation({
           ...(ctx.chatBranchId ? { chatBranchId: ctx.chatBranchId } : {}),
         },
       });
+      await emitTypeBoundEvents(tx, input.pageId, typeBase, typeBound, ctx.chatBranchId);
     }
     return ok({});
   },
 });
+
+/**
+ * Epic #1107 — the page type, properties and terms a pages.update leaves
+ * the page with, checked against the (possibly new) page type. Properties
+ * merge (`null` removes one); `terms` replaces.
+ */
+async function nextTypeBound(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  input: z.infer<typeof pageUpdateSchema>,
+  base: PageState,
+): Promise<
+  | { ok: true; pageTypeId: string; properties: Record<string, unknown>; terms: string[] }
+  | { ok: false; message: string }
+> {
+  const resolved = await resolvePageTypeForWrite(tx, ctx.chatBranchId ?? null, {
+    ...(input.pageType !== undefined ? { pageType: input.pageType } : {}),
+    ...(input.templateId !== undefined ? { templateId: input.templateId } : {}),
+    current: { pageTypeId: base.pageTypeId, templateId: base.templateId },
+  });
+  if (!resolved.ok) return resolved;
+  const properties: Record<string, unknown> = { ...base.properties };
+  for (const [k, v] of Object.entries(input.properties ?? {})) {
+    if (v === null) delete properties[k];
+    else properties[k] = v;
+  }
+  const fit = fitPageToType(
+    resolved.def,
+    {
+      templateId: input.templateId ?? base.templateId,
+      properties,
+      terms: input.terms ?? base.terms,
+    },
+    await loadVocabularyIndex(tx, ctx.chatBranchId ?? null, [resolved.def]),
+  );
+  if (fit.issues.length > 0) {
+    return {
+      ok: false,
+      message: `the page does not fit page type "${resolved.def.slug}": ${fit.issues.join(" ")}`,
+    };
+  }
+  return { ok: true, pageTypeId: resolved.typeId, properties: fit.properties, terms: fit.terms };
+}
 
 /**
  * v0.9.12 — Flip a page's `status` between `draft` and `published`.
@@ -1878,16 +2118,43 @@ export const duplicatePageOp = defineOperation({
     const dupPath = dupPlan.plan.pathsAfter.get(dupTempId) ?? null;
     const title = input.newTitle ?? source.title;
     const name = input.newName ?? title;
+    // Epic #1107 — the copy is the same kind of page (type, properties,
+    // terms as the caller sees the source); another template keeps the
+    // type when the type allows it, else takes the one type listing it.
+    const sourceState = await loadPageStateWithBranchOverlay(
+      tx,
+      input.sourcePageId,
+      ctx.chatBranchId,
+    );
+    if (!sourceState) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.duplicate",
+        message: "source page not found",
+      });
+    }
+    const dupType = await nextTypeBound(
+      tx,
+      ctx,
+      { pageId: input.sourcePageId, templateId: targetTemplateId },
+      sourceState,
+    );
+    if (!dupType.ok) {
+      return err({ kind: "HandlerError", operation: "pages.duplicate", message: dupType.message });
+    }
     // Branched like pages.create: a copy made in a chat is that chat's
     // page until publish, not a live draft other chats and the site see.
     const inserted = (await tx.execute(sql`
-      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id, current_path)
+      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id, current_path,
+                         page_type_id, properties)
       VALUES (
         ${input.newSlug}, ${name}, ${title},
         ${targetTemplateId}::uuid, 'draft',
         ${ctx.chatBranchId ?? null}::uuid,
         ${dupParent}::uuid,
-        ${dupPath}
+        ${dupPath},
+        ${dupType.pageTypeId}::uuid,
+        ${jsonbParam(dupType.properties)}
       )
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
@@ -1899,6 +2166,7 @@ export const duplicatePageOp = defineOperation({
         message: "no id returned",
       });
     }
+    await replacePageTerms(tx, newPageId, dupType.terms);
     // Modules carry over by reference — same module ids, same block
     // names, same positions. If the target template has different
     // block names, the migration is the caller's responsibility (use
@@ -2124,6 +2392,30 @@ export const changeTemplateOp = defineOperation({
         message: "new template not found or deleted",
       });
     }
+    // Epic #1107 — the page keeps its type when the type allows the new
+    // template; otherwise it takes the one type that lists it, and must
+    // fit that type.
+    const liveState = await loadPageState(tx, input.pageId);
+    if (!liveState) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.change_template",
+        message: "page not found",
+      });
+    }
+    const typeBound = await nextTypeBound(
+      tx,
+      { ...ctx, chatBranchId: undefined },
+      { pageId: input.pageId, templateId: input.newTemplateId },
+      liveState,
+    );
+    if (!typeBound.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages.change_template",
+        message: `${typeBound.message} To move the page to another page type together with the template, use pages.update with pageType and templateId.`,
+      });
+    }
     const newBlockRows = (await tx.execute(sql`
       SELECT name FROM template_blocks WHERE template_id = ${input.newTemplateId}::uuid
     `)) as unknown as { name: string }[];
@@ -2206,6 +2498,8 @@ export const changeTemplateOp = defineOperation({
     await tx.execute(sql`
       UPDATE pages
       SET template_id = ${input.newTemplateId}::uuid,
+          page_type_id = ${typeBound.pageTypeId}::uuid,
+          properties = ${jsonbParam(typeBound.properties)},
           updated_at = now(),
           version = version + 1
       WHERE id = ${input.pageId}::uuid

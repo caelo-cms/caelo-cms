@@ -116,6 +116,8 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   "email_config",
   "layout_blocks",
   "layouts",
+  // Seed-bearing since 0352 (epic #1107): the shipped list types.
+  "list_types",
   "permissions",
   // Seed-bearing since 0267 (#696): the automatic-update policy singleton.
   // Tests that change it restore it themselves
@@ -138,10 +140,13 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   // singleton settings row. Tests that change it restore it themselves
   // (staging-domain.integration.test.ts).
   "staging_access",
-  "structured_sets",
   "telemetry_settings",
   "template_blocks",
   "templates",
+  // Seed-bearing since 0351 (epic #1107): the page types derived from the
+  // seeded templates; `site_defaults.default_page_type_id` and every page
+  // reference them, so a TRUNCATE ... CASCADE would wipe site_defaults.
+  "page_types",
   // Seed-bearing since 0097/0099 (the `site-default` row + its tokens).
   // Truncating it left dev installs with NO active theme: the themes UI
   // showed an empty state, POST_CHAT_SEED's fast-forward UPDATE matched

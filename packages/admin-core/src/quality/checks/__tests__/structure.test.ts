@@ -44,13 +44,7 @@ const DIFF_COPY: StructureModule = {
   displayName: "Split with diff (pricing)",
   html: DIFF_TEMPLATE.replace("{{title}}", "Pricing"),
 };
-const NAV: StructureModule = {
-  id: id(104),
-  slug: "nav-menu-main",
-  displayName: "Main menu",
-  html: '<nav class="menu"><ul><li><a class="item">{{label}}</a></li></ul></nav>',
-};
-const MODULES = [TEXT, DIFF, DIFF_COPY, NAV];
+const MODULES = [TEXT, DIFF, DIFF_COPY];
 
 const chain = (steps: number, extra = "") =>
   `<div class="chain">${Array.from(
@@ -126,13 +120,6 @@ describe("structure/repeated-markup", () => {
     expect(findings[0]).toMatchObject({ ruleId: "structure/repeated-markup", severity: "error" });
     expect(findings[0]?.message).toContain(`module "Split with diff" (${DIFF.id})`);
     expect(findings[0]?.fix?.hint).toStartWith("place the existing module by moduleId");
-  });
-
-  it("a navigation menu (rendered from its set, not its template) is never attributed", () => {
-    const nav = `<nav data-caelo-module-id="${NAV.id}"><ul><li><a href="/">Home</a></li></ul></nav>`;
-    expect(structureFindings([page(1, "/a", nav), page(2, "/b", nav)], MODULES, noLayouts)).toEqual(
-      [],
-    );
   });
 });
 

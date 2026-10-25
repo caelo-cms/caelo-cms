@@ -36,9 +36,9 @@ const BASE = "http://127.0.0.1:4100";
 
 const NAV: LinkModule = {
   id: id(201),
-  slug: "nav-menu-main",
+  slug: "main-menu",
   displayName: "Main menu",
-  html: '<nav class="menu">{{#items}}<a href="{{href}}">{{label}}</a>{{/items}}</nav>',
+  html: '<nav class="menu">{{#items}}<a href="{{link}}">{{label}}</a>{{/items}}</nav>',
 };
 const CTA: LinkModule = {
   id: id(202),
@@ -422,7 +422,7 @@ describe("links/orphan-page", () => {
     const orphans = findings.filter((f) => f.ruleId === "links/orphan-page");
     expect(orphans.map((f) => f.pageId)).toEqual([lonely.pageId]);
     expect(orphans[0]).toMatchObject({ severity: "warning" });
-    expect(orphans[0]?.fix?.tool).toBe("set_structured_set");
+    expect(orphans[0]?.fix?.tool).toBe("set_page_module_content");
   });
 
   it("links in <link> or <img> do not make a page reachable", async () => {
@@ -435,7 +435,7 @@ describe("links/orphan-page", () => {
 });
 
 describe("where the fix goes", () => {
-  it("navigation, module template, layout and template chrome each name their tool", async () => {
+  it("module value, module template, layout and template chrome each name their tool", async () => {
     const home: StagedPage = {
       pageId: id(1),
       path: "/",
@@ -448,10 +448,8 @@ describe("where the fix goes", () => {
     const { findings } = await findingsOf([home, ABOUT, TEAM]);
     const toolOf = (href: string) =>
       findings.find((f) => f.message.includes(`"${href}"`))?.fix?.tool;
-    expect(toolOf("/blog/")).toBe("set_structured_set");
-    expect(findings.find((f) => f.message.includes('"/blog/"'))?.fix?.hint).toContain(
-      "nav-menu/main",
-    );
+    // A menu's links are content values of its module (a list field).
+    expect(toolOf("/blog/")).toBe("set_page_module_content");
     expect(toolOf("/contact-us")).toBe("edit_content");
     expect(toolOf("/imprint-old")).toBe("propose_update_layout");
     expect(toolOf("/mystery")).toBe("grep_content");

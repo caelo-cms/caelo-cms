@@ -16,7 +16,6 @@
  *                         set_values_many, page_module_content.*, build_page)
  *   - module HTML + field defaults   modules.create / .update (and update_many)
  *   - layout HTML         layouts.create / .update
- *   - structured sets     structured_sets.set
  *
  * NOT covered (deliberately, out of scope for rollout C): CSS `url(...)`
  * media references — in inline `style` attributes and in the module /
@@ -27,7 +26,7 @@
  * Inside a chat that rebuilds an active site import, a link to one of
  * that run's planned-but-unbuilt pages is kept literal and recorded
  * against the run (`import-targets.ts`) instead of refused, for the
- * content values, module code and structured sets the run's
+ * content values and module code the run's
  * finalisation (`imports.resolve_links`) can rewrite. Layout HTML and
  * plugin-owned values keep the strict refusal.
  *

@@ -1005,70 +1005,6 @@ export const renderPagePreviewOp = defineOperation({
       modules,
     }));
 
-    // P6.7.5 — load structured sets (theme + nav-menu + others) so the
-    // composer can render nav menus from typed items + inject theme
-    // tokens into <head>.
-    const setRows = (await tx.execute(sql`
-      SELECT kind, slug, items::text AS items FROM structured_sets
-    `)) as unknown as { kind: string; slug: string; items: string }[];
-    const byKindSlug: Record<string, unknown[]> = {};
-    for (const r of setRows) {
-      try {
-        byKindSlug[`${r.kind}/${r.slug}`] = JSON.parse(r.items) as unknown[];
-      } catch {
-        // ignore malformed rows
-      }
-    }
-
-    // v0.5.3 — structured_set overlay. Same shape as the module overlay:
-    //   main → all-staged-overlay → caller's-branch-overlay
-    // Theme stays whole-blob (replaces items[]); list kinds also overlay
-    // whole-blob here — per-item granularity in structured_set_operations
-    // is the picker's concern, not the renderer's.
-    if (setRows.length > 0) {
-      const overlayBySetId = new Map<string, { kind: string; slug: string; items: unknown[] }>();
-      const stagedSets = (await tx.execute(sql`
-        SELECT DISTINCT ON (sss.structured_set_id)
-          sss.structured_set_id::text AS set_id, sss.state
-        FROM structured_set_snapshots sss
-        JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-        JOIN chat_branch_publish_marks m
-          ON m.chat_branch_id = ss.chat_branch_id
-         AND m.entity_kind = 'structuredSet'
-         AND m.entity_id = sss.structured_set_id
-         AND m.stage_state = 'staged'
-        ${chatBranchId ? sql`WHERE ss.chat_branch_id <> ${chatBranchId}::uuid` : sql``}
-        ORDER BY sss.structured_set_id, ss.created_at DESC
-      `)) as unknown as { set_id: string; state: unknown }[];
-      for (const r of stagedSets) {
-        const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-        const s = raw as { kind?: string; slug?: string; items?: unknown[] };
-        if (s.kind && s.slug && Array.isArray(s.items)) {
-          overlayBySetId.set(r.set_id, { kind: s.kind, slug: s.slug, items: s.items });
-        }
-      }
-      if (chatBranchId) {
-        const branchSets = (await tx.execute(sql`
-          SELECT DISTINCT ON (sss.structured_set_id)
-            sss.structured_set_id::text AS set_id, sss.state
-          FROM structured_set_snapshots sss
-          JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-          WHERE ss.chat_branch_id = ${chatBranchId}::uuid AND ${pendingSnapshotSql()}
-          ORDER BY sss.structured_set_id, ss.created_at DESC
-        `)) as unknown as { set_id: string; state: unknown }[];
-        for (const r of branchSets) {
-          const raw = typeof r.state === "string" ? JSON.parse(r.state) : r.state;
-          const s = raw as { kind?: string; slug?: string; items?: unknown[] };
-          if (s.kind && s.slug && Array.isArray(s.items)) {
-            overlayBySetId.set(r.set_id, { kind: s.kind, slug: s.slug, items: s.items });
-          }
-        }
-      }
-      for (const { kind, slug, items } of overlayBySetId.values()) {
-        byKindSlug[`${kind}/${slug}`] = items;
-      }
-    }
-
     const layoutGrouped = new Map<
       string,
       {
@@ -1204,7 +1140,6 @@ export const renderPagePreviewOp = defineOperation({
         templateHtml: pageRow.template_html,
         templateCss: pageRow.template_css,
         blocks,
-        structuredSets: { byKindSlug },
         theme: composeTheme,
         fonts: previewFonts,
         layoutHtml: pageRow.layout_html,

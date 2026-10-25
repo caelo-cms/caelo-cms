@@ -2184,7 +2184,7 @@ export const getImportRunReportOp = defineOperation({
       unresolved: z.array(
         z.object({
           value: z.string(),
-          entityKind: z.enum(["content_instance", "module", "structured_set"]),
+          entityKind: z.enum(["content_instance", "module"]),
           entityId: z.string(),
           location: z.string(),
         }),
@@ -2382,7 +2382,7 @@ async function loadImportRunLinks(
   resolved: number;
   unresolved: {
     value: string;
-    entityKind: "content_instance" | "module" | "structured_set";
+    entityKind: "content_instance" | "module";
     entityId: string;
     location: string;
   }[];
@@ -2396,7 +2396,7 @@ async function loadImportRunLinks(
   `)) as unknown as {
     value: string;
     status: "pending" | "resolved" | "unresolved";
-    entity_kind: "content_instance" | "module" | "structured_set";
+    entity_kind: "content_instance" | "module";
     entity_id: string;
     location: string;
   }[];

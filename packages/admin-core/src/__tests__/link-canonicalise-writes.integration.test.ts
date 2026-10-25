@@ -10,7 +10,6 @@
  *     an own-domain absolute URL and an old URL behind a 301 both
  *     resolve to the page;
  *   - module HTML + field defaults (where layout chrome content lives);
- *   - structured sets, submenu `children` included;
  *   - media: `/_caelo/media/<slug>` in an image position → `caelo:media/<id>`;
  *   - the loud failure: a link to no page refuses the write with an
  *     AI-actionable message and writes nothing;
@@ -76,7 +75,6 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM templates WHERE slug = ${`${PFX}-framed-tpl`}`;
     await tx`DELETE FROM layout_blocks WHERE layout_id IN (SELECT id FROM layouts WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM layouts WHERE slug LIKE ${`${PFX}%`}`;
-    await tx`DELETE FROM structured_sets WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`%${PFX}%`} OR to_path LIKE ${`%${PFX}%`}`;
     await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}%`}`;
@@ -431,51 +429,6 @@ describe("module code", () => {
   });
 });
 
-describe("structured sets", () => {
-  it("stores every item href as a reference, submenus included", async () => {
-    await run("structured_sets.set", {
-      kind: "nav-menu",
-      slug: `${PFX}-main`,
-      displayName: `${PFX} main`,
-      items: [
-        {
-          label: "About",
-          href: `/${PFX}-about`,
-          children: [{ label: "Pricing", href: `/${PFX}-pricing#plans` }],
-        },
-        { label: "Docs", href: "https://docs.example.com/" },
-      ],
-    });
-    const rows = await asSystem(
-      (tx) => tx`SELECT items FROM structured_sets WHERE slug = ${`${PFX}-main`}`,
-    );
-    const raw = (rows as { items: unknown }[])[0]?.items;
-    const items = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
-      href: string;
-      children?: { href: string }[];
-    }[];
-    expect(items[0]?.href).toBe(`caelo:page/${aboutId}`);
-    expect(items[0]?.children?.[0]?.href).toBe(`caelo:page/${pricingId}#plans`);
-    expect(items[1]?.href).toBe("https://docs.example.com/");
-
-    const got = await run<{ set: { items: { href: string }[] } }>("structured_sets.get", {
-      kind: "nav-menu",
-      slug: `${PFX}-main`,
-    });
-    expect(got.set.items[0]?.href).toBe(`/${PFX}-about`);
-  });
-
-  it("refuses a set item linking to no page", async () => {
-    const message = await refused("structured_sets.set", {
-      kind: "link-list",
-      slug: `${PFX}-broken`,
-      displayName: `${PFX} broken`,
-      items: [{ label: "Nope", href: `/${PFX}-void` }],
-    });
-    expect(message).toContain(`items[0].href: "/${PFX}-void"`);
-  });
-});
-
 describe("review fixes (#873)", () => {
   it("canonicalises links padded with whitespace and media in a srcset candidate", async () => {
     const moduleId = await makeModule(
@@ -486,19 +439,6 @@ describe("review fixes (#873)", () => {
     const stored = await storedModule(moduleId);
     expect(stored.html).toContain(`href="caelo:page/${aboutId}"`);
     expect(stored.html).toContain(`srcset="hero.jpg 1x, caelo:media/${mediaId}/webp-800 2x"`);
-
-    await run("structured_sets.set", {
-      kind: "link-list",
-      slug: `${PFX}-padded`,
-      displayName: `${PFX} padded`,
-      items: [{ label: "About", href: ` /${PFX}-about` }],
-    });
-    const rows = await asSystem(
-      (tx) => tx`SELECT items FROM structured_sets WHERE slug = ${`${PFX}-padded`}`,
-    );
-    const raw = (rows as { items: unknown }[])[0]?.items;
-    const items = (typeof raw === "string" ? JSON.parse(raw) : raw) as { href: string }[];
-    expect(items[0]?.href).toBe(`caelo:page/${aboutId}`);
 
     // A padded link to no page is checked too (it used to slip through).
     const ctaModule = await makeModule("padded-cta", '<a href="{{cta_href}}">x</a>', CTA_FIELDS);

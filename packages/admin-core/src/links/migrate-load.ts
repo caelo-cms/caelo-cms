@@ -19,7 +19,7 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { type SQL, sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
-import type { ContentInstanceState, ModuleState, StructuredSetState } from "../snapshots/state.js";
+import type { ContentInstanceState, ModuleState } from "../snapshots/state.js";
 
 /**
  * Row locking for an applying run. The migration reads, converts in
@@ -127,16 +127,6 @@ export async function loadMainInstances(
   }));
 }
 
-/** A structured set as the migration reads it. */
-export interface MainSetRow {
-  readonly id: string;
-  readonly kind: string;
-  readonly slug: string;
-  readonly displayName: string;
-  readonly items: unknown[];
-}
-
-/** Every structured set; see {@link LoadOptions} for `lock`. */
 /** A layout as the migration reads it (main-only: layouts are not branched). */
 export interface MainLayoutRow {
   readonly id: string;
@@ -154,32 +144,6 @@ export async function loadMainLayouts(
      ${forUpdate(opts)}
   `)) as unknown as { id: string; display_name: string; html: string }[];
   return rows.map((r) => ({ id: r.id, displayName: r.display_name, html: r.html }));
-}
-
-export async function loadMainSets(
-  tx: TransactionRunner,
-  opts: LoadOptions,
-): Promise<MainSetRow[]> {
-  const rows = (await tx.execute(sql`
-    SELECT id::text AS id, kind, slug, display_name, items FROM structured_sets ORDER BY id
-     ${forUpdate(opts)}
-  `)) as unknown as {
-    id: string;
-    kind: string;
-    slug: string;
-    display_name: string;
-    items: unknown;
-  }[];
-  return rows.map((r) => {
-    const items = parse<unknown>(r.items);
-    return {
-      id: r.id,
-      kind: r.kind,
-      slug: r.slug,
-      displayName: r.display_name,
-      items: Array.isArray(items) ? items : [],
-    };
-  });
 }
 
 /**
@@ -213,7 +177,7 @@ export async function lockBranchEntities(tx: TransactionRunner, branchId: string
   await tx.execute(sql`
     SELECT 1 FROM chat_entity_locks
      WHERE chat_branch_id = ${branchId}::uuid
-       AND entity_kind IN ('module', 'contentInstance', 'structuredSet', 'pluginRow')
+       AND entity_kind IN ('module', 'contentInstance', 'pluginRow')
      ORDER BY entity_kind, entity_id
      FOR UPDATE
   `);
@@ -229,15 +193,10 @@ export interface BranchState<S> {
 const SNAPSHOT_TABLES = {
   module: { table: "module_snapshots", id: "module_id" },
   contentInstance: { table: "content_instance_snapshots", id: "content_instance_id" },
-  structuredSet: { table: "structured_set_snapshots", id: "structured_set_id" },
 } as const;
 
 type SnapshotKind = keyof typeof SNAPSHOT_TABLES;
-type StateOf<K extends SnapshotKind> = K extends "module"
-  ? ModuleState
-  : K extends "contentInstance"
-    ? ContentInstanceState
-    : StructuredSetState;
+type StateOf<K extends SnapshotKind> = K extends "module" ? ModuleState : ContentInstanceState;
 
 /**
  * The latest pending state per entity of `kind` on `branchId`.

@@ -7,7 +7,6 @@ import { googleToolSchema } from "../providers/google-tool-schema.js";
 import { bulkCreateRedirectsTool } from "../tools/bulk-create-redirects.js";
 import { findRedirectsTool } from "../tools/find-redirects.js";
 import { setSiteIdentityTool } from "../tools/set-site-identity.js";
-import { setStructuredSetTool } from "../tools/set-structured-set.js";
 
 test("Google tool schemas retain types without mutating canonical enum validation", () => {
   const schema = {
@@ -65,7 +64,7 @@ test("actual Google SDK sends redirect tools without non-string enums", async ()
       },
       { role: "tool", toolCallId: "call-1", content: "[]" },
     ],
-    tools: [findRedirectsTool, bulkCreateRedirectsTool, setStructuredSetTool, setSiteIdentityTool],
+    tools: [findRedirectsTool, bulkCreateRedirectsTool, setSiteIdentityTool],
   }))
     events.push(event);
   expect(
@@ -92,10 +91,6 @@ test("actual Google SDK sends redirect tools without non-string enums", async ()
   }
   check(body.tools);
   const declarations = body.tools[0].functionDeclarations;
-  const structured = declarations.find(
-    (tool: { name: string }) => tool.name === "set_structured_set",
-  );
-  expect(structured.parametersJsonSchema.properties.items.items).toEqual({ type: "object" });
   const identity = declarations.find((tool: { name: string }) => tool.name === "set_site_identity");
   // The SDK now sends JSON Schema as-is (parametersJsonSchema). A nullable
   // object stays an anyOf of the object and null, with its properties

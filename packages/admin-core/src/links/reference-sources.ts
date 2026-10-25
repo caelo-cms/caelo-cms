@@ -11,7 +11,6 @@
  *   - layouts: their HTML and their chrome modules (whose content lives in
  *     the field defaults — layout placements have no content instance);
  *   - templates: their HTML;
- *   - structured sets (navigation menus and friends);
  *   - plugin storage, through the plugins' `linkLocationsOperation` hook
  *     (the same hook the link migration, rollout E, uses).
  *
@@ -91,14 +90,6 @@ export interface SourceLayout {
   readonly blocks: readonly { readonly blockName: string; readonly moduleIds: readonly string[] }[];
 }
 
-export interface SourceSet {
-  readonly id: string;
-  readonly kind: string;
-  readonly slug: string;
-  readonly name: string;
-  readonly items: readonly unknown[];
-}
-
 /** One plugin-stored value that may carry links. */
 export interface SourcePluginValue {
   readonly pluginSlug: string;
@@ -118,7 +109,6 @@ export interface ReferenceSourceModel {
   readonly instances: ReadonlyMap<string, SourceInstance>;
   readonly templates: ReadonlyMap<string, SourceTemplate>;
   readonly layouts: ReadonlyMap<string, SourceLayout>;
-  readonly sets: readonly SourceSet[];
   readonly plugins: readonly SourcePluginValue[];
 }
 
@@ -161,7 +151,6 @@ type OverlayTable =
   | "module_snapshots"
   | "template_snapshots"
   | "content_instance_snapshots"
-  | "structured_set_snapshots"
   | "page_snapshots"
   | "page_layout_snapshots";
 
@@ -301,31 +290,6 @@ export async function loadReferenceSources(
     ]),
   );
 
-  const setRows = (await tx.execute(sql`
-    SELECT id::text AS id, kind, slug, display_name, items FROM structured_sets
-  `)) as unknown as {
-    id: string;
-    kind: string;
-    slug: string;
-    display_name: string;
-    items: unknown;
-  }[];
-  const sets = new Map<string, SourceSet>(
-    setRows.map((r) => {
-      const items = json(r.items);
-      return [
-        r.id,
-        {
-          id: r.id,
-          kind: r.kind,
-          slug: r.slug,
-          name: r.display_name,
-          items: Array.isArray(items) ? items : [],
-        },
-      ];
-    }),
-  );
-
   if (branchId) {
     placements = await overlayBranch(tx, branchId, {
       pageTemplates,
@@ -333,7 +297,6 @@ export async function loadReferenceSources(
       modules,
       instances,
       templates,
-      sets,
     });
   }
 
@@ -344,7 +307,6 @@ export async function loadReferenceSources(
     instances,
     templates,
     layouts,
-    sets: [...sets.values()],
     plugins: await loadPluginValues(
       tx,
       branchId,
@@ -368,7 +330,6 @@ async function overlayBranch(
     modules: Map<string, SourceModule>;
     instances: Map<string, SourceInstance>;
     templates: Map<string, SourceTemplate>;
-    sets: Map<string, SourceSet>;
   },
 ): Promise<SourcePlacement[]> {
   for (const [id, raw] of await overlay(tx, branchId, "module_snapshots", "module_id")) {
@@ -405,30 +366,6 @@ async function overlayBranch(
     const s = raw as { moduleId: string; values: unknown; deletedAt: string | null };
     if (s.deletedAt) m.instances.delete(id);
     else m.instances.set(id, { id, moduleId: s.moduleId, values: asRecord(s.values) });
-  }
-  for (const [id, raw] of await overlay(
-    tx,
-    branchId,
-    "structured_set_snapshots",
-    "structured_set_id",
-  )) {
-    const s = raw as {
-      kind: string;
-      slug: string;
-      displayName: string;
-      items: unknown;
-      deletedAt: string | null;
-    };
-    if (s.deletedAt) m.sets.delete(id);
-    else {
-      m.sets.set(id, {
-        id,
-        kind: s.kind,
-        slug: s.slug,
-        name: s.displayName,
-        items: Array.isArray(s.items) ? s.items : [],
-      });
-    }
   }
   for (const [id, raw] of await overlay(tx, branchId, "page_snapshots", "page_id")) {
     const s = raw as { templateId?: string; deletedAt?: string | null };

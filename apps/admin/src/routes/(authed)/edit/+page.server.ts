@@ -846,12 +846,11 @@ export const actions: Actions = {
    *                   layout + per-placement content edits
    *   - "modules"   — module HTML/CSS/JS/fields edits
    *   - "templates" — template body / block layout changes
-   *   - "lists"     — structured-set blob promotion (menu, taxonomy)
+   *   - "lists"     — shared lists, list types and page types
    *
-   * The "lists" kind today fans out to a full-site rebuild because
-   * templates reference menus implicitly (per snapshots.publish_impact_pages
-   * fast-path). That's the safe conservative behavior until we add a
-   * template_set_refs index — same posture as the existing Stage flow.
+   * The "lists" kind fans out to a full-site rebuild: a list renders
+   * wherever a module binds it or a page query reaches it (per the
+   * snapshots.publish_impact_pages fast-path).
    *
    * Resolution path:
    *   chat.branch_edited_entities (entity ids the chat touched)
@@ -924,7 +923,7 @@ export const actions: Actions = {
           const impact = impactR.value as { pageIds: string[]; fullSite: boolean };
           if (impact.fullSite) {
             // Defensive fallback — publish_impact_pages currently only
-            // returns fullSite for structured-set edits, which we routed
+            // returns fullSite for list-model edits, which we routed
             // through `fullRebuild` above. Reaching this branch means
             // the impact op gained another fan-out we don't know about;
             // skip the filter so the deploy is conservatively complete.

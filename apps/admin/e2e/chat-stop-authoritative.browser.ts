@@ -191,18 +191,14 @@ test("an external agent working in the chat is listed, keeps the Live Edit AI ou
   expect(sessionRes.ok()).toBe(true);
   const { chatSessionId } = (await sessionRes.json()) as { chatSessionId: string };
   const slug = `stop-e2e-${Date.now().toString(36)}`;
-  const nav = (s: string) => ({
-    kind: "nav-menu",
-    slug: s,
-    displayName: "stop e2e nav",
-    // An external URL: internal links must name an existing page
-    // (#724 write-time canonicalisation), and this spec is about Stop,
-    // not about which pages the fixture site has.
-    items: [{ label: "Home", href: "https://example.com/" }],
+  // Any routine write that needs no AI and no fixture page: a redirect to
+  // the site root (always a valid target). This spec is about Stop.
+  const write = (s: string) => ({
+    redirects: [{ fromPath: `/${s}`, toPath: "/", statusCode: 301 }],
   });
-  expect((await mcpTool(request, token, chatSessionId, "set_structured_set", nav(slug))).ok).toBe(
-    true,
-  );
+  expect(
+    (await mcpTool(request, token, chatSessionId, "bulk_create_redirects", write(slug))).ok,
+  ).toBe(true);
 
   await login(page);
   await page.goto(`/content/chat/${chatSessionId}`);
@@ -221,8 +217,8 @@ test("an external agent working in the chat is listed, keeps the Live Edit AI ou
     request,
     token,
     chatSessionId,
-    "set_structured_set",
-    nav(`${slug}-b`),
+    "bulk_create_redirects",
+    write(`${slug}-b`),
   );
   expect(refused.ok).toBe(false);
   expect(refused.content).toContain("stopped_by_operator");
@@ -230,6 +226,6 @@ test("an external agent working in the chat is listed, keeps the Live Edit AI ou
   await agent.getByTestId("chat-agent-allow").click();
   await expect(agent.getByTestId("chat-agent-allow")).toHaveCount(0, { timeout: 10_000 });
   expect(
-    (await mcpTool(request, token, chatSessionId, "set_structured_set", nav(`${slug}-c`))).ok,
+    (await mcpTool(request, token, chatSessionId, "bulk_create_redirects", write(`${slug}-c`))).ok,
   ).toBe(true);
 });
