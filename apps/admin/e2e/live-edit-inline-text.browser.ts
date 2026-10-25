@@ -9,47 +9,18 @@
 
 import { spawnSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
-import { clearLoginRateBucket, resetOverlayLayoutFor, runBunInline } from "./helpers.js";
+import {
+  archiveChat,
+  clearLoginRateBucket,
+  openOwnerChat,
+  resetOverlayLayoutFor,
+  runBunInline,
+} from "./helpers.js";
 
 const ts = Date.now();
 const TPL_SLUG = `e2e-le-inline-tpl-${ts}`;
 const MOD_SLUG = `e2e-le-inline-mod-${ts}`;
 const PAGE_SLUG = `e2e-le-inline-page-${ts}`;
-
-/**
- * #965 — open a chat for dev-owner through the real op and print its id.
- * Other specs do this in parallel all the time; this spec does it on
- * purpose so the race is deterministic instead of a 5 % CI flake.
- */
-function openOwnerChat(title: string, isolation?: "experiment"): string {
-  return runBunInlineCapture(
-    `
-    import { SQL } from "bun";
-    import { DatabaseAdapter, OperationRegistry, execute } from "@caelo-cms/query-api";
-    import { registerAdminOps } from "@caelo-cms/admin-core";
-    const db = new SQL(process.env.ADMIN_DATABASE_URL);
-    const ownerId = await db.begin(async (tx) => {
-      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      return (await tx\`SELECT id::text AS id FROM users WHERE email = 'dev-owner@example.com'\`)[0].id;
-    });
-    await db.end();
-    const adapter = new DatabaseAdapter({
-      adminDatabaseUrl: process.env.ADMIN_DATABASE_URL,
-      publicDatabaseUrl: process.env.PUBLIC_ADMIN_DATABASE_URL,
-    });
-    const registry = new OperationRegistry();
-    registerAdminOps(registry);
-    const r = await execute(registry, adapter, { actorId: ownerId, actorKind: "human", requestId: "e2e-965" }, "chat.create_session", {
-      title: process.env.CHAT_TITLE,
-      ...(process.env.CHAT_ISOLATION ? { isolation: process.env.CHAT_ISOLATION } : {}),
-    });
-    await adapter.close();
-    if (!r.ok) throw new Error(JSON.stringify(r.error));
-    process.stdout.write(r.value.chatSessionId);
-    `,
-    { CHAT_TITLE: title, CHAT_ISOLATION: isolation ?? "" },
-  ).trim();
-}
 
 let experimentChat: string | null = null;
 
@@ -68,20 +39,7 @@ test.beforeAll(() => {
 });
 
 test.afterAll(() => {
-  if (experimentChat) {
-    runBunInline(
-      `
-      import { SQL } from "bun";
-      const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-      await sql.begin(async (tx) => {
-        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-        await tx\`UPDATE chat_sessions SET archived_at = now() WHERE id = \${process.env.CHAT}::uuid\`;
-      });
-      await sql.end();
-      `,
-      { CHAT: experimentChat },
-    );
-  }
+  if (experimentChat) archiveChat(experimentChat);
   runBunInline(
     `
     import { SQL } from "bun";
