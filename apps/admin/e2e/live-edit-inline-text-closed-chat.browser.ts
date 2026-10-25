@@ -4,7 +4,8 @@
  * #1102 — an in-place save into a chat that was archived after Live Edit
  * loaded it (another tab, the chat list, an agent) is refused with what to
  * do next. Before the fix the save landed in the closed chat: "Saved.", but
- * the reload (which never resumes a closed chat) showed the old text.
+ * the reload (which never resumes a closed chat) showed the old text. A
+ * link to the closed chat now opens another one with a notice saying so.
  */
 
 import { expect, test } from "@playwright/test";
@@ -122,4 +123,14 @@ test("a save into a chat archived after the load is refused, not lost", async ({
     { CHAT: chat },
   );
   expect(stored).toBe("0");
+
+  // The link to the closed chat opens another chat, and says so (no silent
+  // switch); "Continue here" pins the chat that was opened.
+  await page.goto(`/edit?page=${ids.pg}&chat=${chat}`);
+  const notice = page.getByTestId("chat-notice");
+  await expect(notice).toContainText(`The chat “e2e-le-closed-${ts}” was closed`);
+  await expect(notice).toContainText("pick or start another chat");
+  await notice.getByTestId("chat-notice-continue").click();
+  await expect(page).not.toHaveURL(new RegExp(`chat=${chat}`));
+  await expect(page.getByTestId("chat-notice")).toHaveCount(0);
 });

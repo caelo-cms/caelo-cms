@@ -487,6 +487,21 @@
        under both, so the banner never pushes toolbar controls beneath it. -->
   <div class="shrink-0" bind:clientHeight={bannerHeight}>
     <CrossChatBanner chats={data.otherOpenChats ?? []} />
+    {#if data.chatNotice}
+      <!-- #1102 — the URL's chat could not be opened; never switch silently. -->
+      <div
+        class="z-30 flex min-h-9 shrink-0 items-center gap-2 border-b bg-amber-500/10 px-3 py-1 text-xs text-amber-900 dark:text-amber-200"
+        role="note"
+        data-testid="chat-notice"
+      >
+        <span>{data.chatNotice}</span>
+        <a
+          href={`/edit?${data.activePageId ? `page=${data.activePageId}&` : ""}chat=${data.activeChat.id}`}
+          class="shrink-0 underline underline-offset-2"
+          data-testid="chat-notice-continue">Continue here</a
+        >
+      </div>
+    {/if}
   </div>
 
   <!-- Slim toolbar — wordmark + URL + page picker + back-to-admin. No

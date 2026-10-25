@@ -31,7 +31,7 @@
  * next Stage would silently overwrite one of them.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { assertChatOpenForWrite, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "./draft.js";
 import { lockedEntityLabel } from "./entity-labels.js";
@@ -199,6 +199,9 @@ export async function takeOverEntity(
   },
 ): Promise<TakeoverOutcome> {
   const { holder, taker } = args;
+  // #1102 — a closed chat takes no more changes: adopting another chat's
+  // change into one would strand it in the draft. Checked before anything moves.
+  await assertChatOpenForWrite(tx, taker.chatSessionId, "chat.adopt_change");
   const holderInfo = await loadSession(tx, holder.chatSessionId);
   const takerInfo = await loadSession(tx, taker.chatSessionId);
 
