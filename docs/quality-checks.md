@@ -4,13 +4,17 @@ Every Stage gets a quality audit (epic #727). It runs against the **staged build
 
 ## Shape
 
-- **Registry** (`checks/registry.ts`): Lighthouse plus the *findings checks*. Core registers `structure` (#820), `links` (#849) and `references` (#724). Plugins add findings checks through the same `register` call with `{ kind: "plugin", slug }`.
+- **Registry** (`checks/registry.ts`): Lighthouse plus the *findings checks*. Core registers `structure` (#820), `links` (#849) and `references` (#724). Active plugins contribute through their `auditFindingsOperation` (see *Plugin contributions* below): one `plugin.<slug>` check each, registered with `{ kind: "plugin", slug }`.
 - **Findings check** (`checks/check.ts`): `{ id, title, scope: "page" | "site", timeoutMs?, run(ctx) }`. A page check gets one page's rendered HTML; a site check gets every page plus `build`, the staged build itself (`baseUrl`, `displayBaseUrl`, and `probe(path)`, which asks the staged origin whether it serves a path).
 - **Findings** (`checks/findings.ts`): `{ ruleId: "<checkId>/<rule>", severity, pageId?, message, fix?: { tool, hint } }`. The message leads with a short label before the first colon and says what to do next (CLAUDE.md §11). The runner validates every finding with Zod and allows at most `MAX_FINDINGS_PER_CALL` per call.
 - **Gate** (`checks/evaluate.ts`, `gate.ts`): every `error` finding blocks Publish live until it is fixed or the Owner accepts it (per rule and page, bulk acceptance included). Warnings and info are reported and never block.
 - **Fail loudly**: a check that throws, hangs or returns malformed findings fails the audit; it never counts as "no findings" (CLAUDE.md §2).
 
 Findings checks are cheap and run on every Stage (SEO-only Stages too) over all published pages. Lighthouse keeps its own Stage classification and page limit.
+
+## Plugin contributions (epic #1107)
+
+An active plugin adds Stage-audit findings by naming one of its operations as `auditFindingsOperation` (manifest field, so shipped and runtime-installed plugins alike; no capability needed). Per audit the worker reads the contributors from the plugin host (activation takes effect at the next Stage, no restart) and adds a site check `plugin.<slug>` per plugin (`checks/plugin-findings.ts`). The check calls the operation through the broker as a render (read-only) invocation on the main line (`plugin-host/src/audit-findings.ts`) with `{ pages: [{ pageId, path }] }` — the published pages of the staged build — and expects `{ findings: [{ rule, severity, pageId?, message, fix? }] }` (`pluginAuditFindings` in the plugin SDK; at most 499). Each finding is filed as `plugin.<slug>/<rule>` and goes through the runner's validation like any check's: a finding naming a page outside the build, a failing call or a malformed answer fails the plugin's check, and with it the audit. An `error` blocks Publish live like any finding and is accepted per rule and page by the Owner.
 
 ## Where Lighthouse runs (#875)
 

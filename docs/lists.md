@@ -347,8 +347,30 @@ provides five neutral hooks:
    (`added | updated {fields, before} | moved | removed` per entry),
    `list_type.changed` (`fieldsAdded/fieldsRemoved/nodesRemoved`),
    `list.deleted`, `page.properties_changed`, `page.terms_changed`.
-5. **Audit contributions**: a plugin may contribute Stage-audit findings
-   through the existing plugin findings path.
+5. **Audit contributions**: a plugin names one of its operations as
+   `auditFindingsOperation` (manifest field; shipped and runtime-installed
+   plugins alike, no capability). Each Stage audit calls it once through
+   the broker as a render (read-only) invocation on the main line — what
+   the staged build was rendered from:
+
+   ```ts
+   // args (PluginAuditFindingsArgs): the published pages of the staged build
+   { pages: { pageId: string; path: string }[] }
+   // returns (pluginAuditFindings, at most 499)
+   { findings: {
+       rule: string;                         // ^[a-z][a-z0-9-]{0,59}$, e.g. "translation-missing"
+       severity: "error" | "warning" | "info";
+       pageId?: string;                      // one of the pages passed in; absent = site-wide
+       message: string;                      // ≤ 1000, "Label: what is wrong — what to do"
+       fix?: { tool: string; hint: string }; // the AI tool that fixes it, ≤ 80 / ≤ 500
+     }[] }
+   ```
+
+   Core files each finding as `plugin.<slug>/<rule>` in the same report as
+   its own checks (`quality/checks/plugin-findings.ts`); an `error` blocks
+   Publish live until fixed or accepted by the Owner. A failing call, a
+   malformed answer or a page outside the staged build fails the audit
+   loudly. Details: `docs/quality-checks.md` → *Plugin contributions*.
 
 `international-site` builds on these: the `translate` attribute, its
 branch-aware storage, the change handling table (added → `missing`,
@@ -415,11 +437,28 @@ tools and the "Languages" tab in the list editor. See the plugin's README.
 List types, lists and page types are entities with draft overlay,
 snapshot, `version` for optimistic writes and entity locks, like content
 instances. Properties and terms are part of the page snapshot. Reference
-integrity (#724) covers `caelo:list/<id>` (module fields, placements),
-`caelo:term/<listId>/<itemId>` (pages, queries, term fields) and page /
-media references inside entries; a break blocks Stage and Publish live
-with a concrete fix. A list that is still bound cannot be deleted (the
-error names the modules). All writes are routine (no §11.A gate).
+integrity (#724, `links/reference-integrity.ts` + `reference-lists.ts`)
+follows lists the way they render — a module's `list` field renders its
+shared list (and that list type's source defaults) on the module's pages,
+an entry's `module` field renders that module there, a vocabulary renders
+on the pages carrying its terms — and checks there: `caelo:list/<id>`
+(field `list`, defaults, placement values, `page_terms` vocabularies →
+`references/missing-list`), `caelo:term/<listId>/<itemId>` (page terms,
+query `terms` in entries, list type source defaults and `source` field
+values, `term` field values in entries and page properties →
+`references/missing-term`), embedded modules (`references/missing-module`)
+and page / media references inside shared and local entries and page
+properties. A break blocks Stage and Publish live with a concrete fix
+(`patch_list_items_many`, `update_pages_many`, `set_page_module_content`,
+`edit_module`, `upsert_list_types_many`). A list nothing renders ships
+nowhere and is not reported. A list that is still bound cannot be deleted
+(the error names the modules); the integrity check catches what a race
+between branches lets through. In a migration chat a list write keeps a
+link to a page the import run will still build literal and records it
+against the list (`import_run_links`, entity kind `list`);
+`imports.resolve_links` rewrites the list once the page exists. The
+structure check reports two modules keeping the same links as their own
+copies (`structure/duplicate-navigation`, see `docs/quality-checks.md`). All writes are routine (no §11.A gate).
 Writing list or page types needs `content.structure`, granted by default
 to every role that holds `content.write`.
 
