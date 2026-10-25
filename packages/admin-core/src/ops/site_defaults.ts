@@ -24,6 +24,7 @@ import { type DesignBrief, designBriefSchema, err, languageTagSchema, ok } from 
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { loadListEntity } from "../lists/store.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { compositionRootPageId } from "./content/compose-paths.js";
@@ -212,7 +213,7 @@ export const setSiteDefaultsOp = defineOperation({
       });
     }
     // Epic #1107 — the default page type (stored data, CLAUDE.md §2): a
-    // live type that lists the default template, so a page created with
+    // type that lists the default template, so a page created with
     // neither template nor type is consistent.
     const current = (await tx.execute(sql`
       SELECT default_page_type_id::text AS id FROM site_defaults WHERE id = 1
@@ -226,27 +227,23 @@ export const setSiteDefaultsOp = defineOperation({
           "site defaults need a default page type — pass defaultPageTypeId (page_types.list shows the page types)",
       });
     }
-    const typeRows = (await tx.execute(sql`
-      SELECT slug, definition->'templates' AS templates FROM page_types
-      WHERE id = ${pageTypeId}::uuid AND deleted_at IS NULL AND chat_branch_id IS NULL
-    `)) as unknown as { slug: string; templates: unknown }[];
-    const type = typeRows[0];
-    if (!type) {
+    // In the caller's view: a chat that just created the template (and so
+    // added it to the page type on its branch) sets it as the default in
+    // the same breath; both reach main at its Stage.
+    const type = await loadListEntity(tx, "pageType", ctx.chatBranchId ?? null, pageTypeId);
+    if (!type || type.state.deletedAt !== null) {
       return err({
         kind: "HandlerError",
         operation: "site_defaults.set",
-        message:
-          "default page type not found, deleted, or not staged yet — a page type created in a chat becomes usable as the site default once that chat is staged",
+        message: "default page type not found or deleted — page_types.list shows the page types",
       });
     }
-    const typeTemplates = (
-      typeof type.templates === "string" ? JSON.parse(type.templates) : type.templates
-    ) as string[];
+    const typeTemplates = type.state.definition.templates;
     if (!typeTemplates.includes(input.defaultTemplateId)) {
       return err({
         kind: "HandlerError",
         operation: "site_defaults.set",
-        message: `the default template is not one of page type "${type.slug}"'s templates — pick one of ${typeTemplates.join(", ")} as defaultTemplateId, or add the template to the page type first (page_types.upsert_many)`,
+        message: `the default template is not one of page type "${type.state.slug}"'s templates — pick one of ${typeTemplates.join(", ")} as defaultTemplateId, or add the template to the page type first (page_types.upsert_many)`,
       });
     }
     // v0.5.16 — site_defaults.id is `int GENERATED ALWAYS AS IDENTITY`

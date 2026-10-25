@@ -17,6 +17,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { PENDING_TABLES } from "../ops/cancel_proposal.js";
 import { registerAdminOps } from "../register.js";
+import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -119,10 +120,11 @@ async function seedPage(slug: string): Promise<string> {
        RETURNING id::text AS id`,
     )) as { id: string }[];
     const tpl = (await tx.unsafe(
-      `INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
-       VALUES ('${slug}-tpl', 'T', 'content', '<main></main>', '', '${lay[0]?.id}')
+      `INSERT INTO templates (slug, display_name, html, css, layout_id)
+       VALUES ('${slug}-tpl', 'T', '<main></main>', '', '${lay[0]?.id}')
        RETURNING id::text AS id`,
     )) as { id: string }[];
+    await adoptTemplateIntoDefaultPageType(tx, tpl[0]?.id ?? "");
     const pg = (await tx.unsafe(
       `INSERT INTO pages (slug, name, title, template_id, status)
        VALUES ('${slug}', 'P', 'P', '${tpl[0]?.id}', 'published')

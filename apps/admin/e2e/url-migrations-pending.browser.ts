@@ -28,9 +28,10 @@ test.beforeAll(() => {
       const lay = (await tx\`INSERT INTO layouts (slug, display_name, html, css)
         VALUES (\${slug + "-lay"}, 'L', '<html><body><caelo-layout-content></caelo-layout-content></body></html>', '')
         RETURNING id\`)[0].id;
-      const tpl = (await tx\`INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
-        VALUES (\${slug + "-tpl"}, 'T', 'content', '<main></main>', '', \${lay})
+      const tpl = (await tx\`INSERT INTO templates (slug, display_name, html, css, layout_id)
+        VALUES (\${slug + "-tpl"}, 'T', '<main></main>', '', \${lay})
         RETURNING id\`)[0].id;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl}::text)\`;
       const page = (await tx\`INSERT INTO pages (slug, name, title, template_id, status)
         VALUES (\${slug}, 'P', 'P', \${tpl}, 'published') RETURNING id::text AS id\`)[0].id;
       const from = "/old/" + slug;

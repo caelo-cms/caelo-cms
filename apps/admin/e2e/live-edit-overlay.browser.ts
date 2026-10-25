@@ -79,6 +79,7 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
           VALUES (\${process.env.TPL_SLUG}, 'le', '<body><caelo-slot name="content">_</caelo-slot></body>', '', (SELECT id FROM layouts WHERE slug = 'site-default'))
           RETURNING id::text AS id\`;
         out.tpl = tpl[0].id;
+        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position) VALUES (\${out.tpl}::uuid, 'content', 'Content', 0)\`;
         // v0.12.2 — pre-declare a fields row so modules.update's
         // conservative extractor SKIPS extraction on the AI's edit

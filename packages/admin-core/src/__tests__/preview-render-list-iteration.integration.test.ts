@@ -21,6 +21,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -117,6 +118,7 @@ beforeAll(async () => {
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seeded.templateId = tpl[0]?.id ?? "";
+      await adoptTemplateIntoDefaultPageType(tx, seeded.templateId);
       await tx`
         INSERT INTO template_blocks (template_id, name, display_name, position)
         VALUES (${seeded.templateId}::uuid, 'content', 'Content', 0)

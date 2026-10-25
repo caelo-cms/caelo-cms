@@ -233,8 +233,8 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
         templateId = existingTpl[0].id;
       } else {
         const tpl = await tx\`
-          INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
-          VALUES ('home-template', 'Home template', 'home',
+          INSERT INTO templates (slug, display_name, html, css, layout_id)
+          VALUES ('home-template', 'Home template',
                   '<main><caelo-slot name="content"></caelo-slot></main>',
                   '', \${layoutId}::uuid)
           RETURNING id::text AS id
@@ -246,6 +246,14 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
           ON CONFLICT (template_id, name) DO NOTHING
         \`;
       }
+      // Epic #1107 — a page needs a page type that allows its template:
+      // the seeded template joins the site's default page type.
+      await tx\`
+        UPDATE page_types
+           SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${templateId}::text))
+         WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)
+           AND NOT (definition->'templates' ? \${templateId}::text)
+      \`;
 
       // Page: 'home' (matches the seed-dev-owner.ts convention +
       // every scenario helper that queries WHERE slug='home').
