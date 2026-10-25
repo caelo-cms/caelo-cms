@@ -20,9 +20,10 @@
  * (`loadContentInstanceBranchStates`), each "latest pending branch
  * snapshot wins over the live row". Without a branch: the live rows.
  *
- * Left out on purpose: theme asset URLs, plugin data lists, internal-link
- * resolution and content variants (#592) — they only change attributes or
- * plugin-fed lists, not the page's own words.
+ * Content variants (#592) apply as in the preview, so a page shows its own
+ * language's shared sections. Left out on purpose: theme asset URLs,
+ * plugin data lists and internal-link resolution — they change attributes
+ * or plugin-fed lists, not the page's own words.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
@@ -42,6 +43,7 @@ import {
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/load.js";
 import { capPlainText, htmlToPlainText } from "./plain-text.js";
+import { resolvePreviewContentVariants } from "./preview-variants.js";
 
 /** Characters of core text returned per page — enough for a 160-char description. */
 export const PAGE_CONTENT_TEXT_MAX = 1500;
@@ -95,6 +97,22 @@ interface PageRow {
   title: string;
   current_path: string;
   template_html: string;
+  layout_id: string;
+}
+
+/** A placement in render order, keyed like the preview's bindings. */
+interface Placement {
+  readonly blockName: string;
+  readonly position: number;
+  readonly moduleId: string;
+  readonly contentInstanceId: string;
+  readonly synced: boolean;
+}
+
+/** The module row fields content variants are matched on. */
+interface ModuleMeta {
+  readonly displayName: string;
+  readonly fields: unknown;
 }
 
 /** The visible pages with their template html; a branch's pending title / delete applied. */
@@ -108,7 +126,8 @@ async function loadPageRows(
           AND (t.chat_branch_id IS NULL OR t.chat_branch_id = ${chatBranchId}::uuid)`
     : sql`AND p.chat_branch_id IS NULL AND t.chat_branch_id IS NULL`;
   const rows = (await tx.execute(sql`
-    SELECT p.id::text AS id, p.title, p.current_path, t.html AS template_html
+    SELECT p.id::text AS id, p.title, p.current_path, t.html AS template_html,
+           t.layout_id::text AS layout_id
       FROM pages p JOIN templates t ON t.id = p.template_id
      WHERE p.id IN (${idList(pageIds)}) AND p.deleted_at IS NULL ${visibility}
   `)) as unknown as PageRow[];
@@ -140,18 +159,20 @@ async function loadModules(
   moduleIds: readonly string[],
   chatBranchId: string | null,
   out: Map<string, NestedModuleResource>,
+  meta: Map<string, ModuleMeta>,
 ): Promise<void> {
-  const ids = moduleIds.filter((id) => !out.has(id));
+  const ids = [...new Set(moduleIds)].filter((id) => !out.has(id));
   if (ids.length === 0) return;
   const visibility = chatBranchId
     ? sql`AND (chat_branch_id IS NULL OR chat_branch_id = ${chatBranchId}::uuid)`
     : sql`AND chat_branch_id IS NULL`;
   const rows = (await tx.execute(sql`
-    SELECT id::text AS id, slug, html, css, js, fields
+    SELECT id::text AS id, slug, display_name, html, css, js, fields
       FROM modules WHERE id IN (${idList(ids)}) AND deleted_at IS NULL ${visibility}
   `)) as unknown as {
     id: string;
     slug: string;
+    display_name: string;
     html: string;
     css: string;
     js: string;
@@ -169,6 +190,10 @@ async function loadModules(
       js: live?.js ?? r.js,
       fields: parseFields(live?.fields ?? r.fields),
     });
+    meta.set(r.id, {
+      displayName: live?.displayName ?? r.display_name,
+      fields: live?.fields ?? r.fields,
+    });
   }
 }
 
@@ -179,7 +204,7 @@ async function loadInstances(
   chatBranchId: string | null,
   out: Map<string, NestedContentInstanceResource>,
 ): Promise<void> {
-  const ids = instanceIds.filter((id) => !out.has(id));
+  const ids = [...new Set(instanceIds)].filter((id) => !out.has(id));
   if (ids.length === 0) return;
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, module_id::text AS module_id, "values" AS values
@@ -217,18 +242,27 @@ export async function loadPageContentTexts(
   // Each page's placements in render order: the template's slot order,
   // then each block's position. A block without a slot in the template
   // renders nowhere, so it contributes no text either.
-  const placementsByPage = new Map<string, { moduleId: string; contentInstanceId: string }[]>();
+  const placementsByPage = new Map<string, Placement[]>();
   for (const pageId of unique) {
     const layout = await loadPageLayoutStateWithBranchOverlay(tx, pageId, chatBranchId);
     const byBlock = new Map(layout.blocks.map((b) => [b.blockName, b.placements ?? []]));
     const template = pages.get(pageId)?.template_html ?? "";
     placementsByPage.set(
       pageId,
-      [...new Set(listSlotNames(template))].flatMap((name) => byBlock.get(name) ?? []),
+      [...new Set(listSlotNames(template))].flatMap((blockName) =>
+        (byBlock.get(blockName) ?? []).map((p, position) => ({
+          blockName,
+          position,
+          moduleId: p.moduleId,
+          contentInstanceId: p.contentInstanceId,
+          synced: p.syncMode === "synced",
+        })),
+      ),
     );
   }
 
   const modules = new Map<string, NestedModuleResource>();
+  const moduleMeta = new Map<string, ModuleMeta>();
   const instances = new Map<string, NestedContentInstanceResource>();
   let moduleIds = [...placementsByPage.values()].flat().map((p) => p.moduleId);
   let instanceIds = [...placementsByPage.values()].flat().map((p) => p.contentInstanceId);
@@ -236,7 +270,7 @@ export async function loadPageContentTexts(
   // so the renderer never waits on I/O; the renderer itself caps the depth
   // at 8, so 8 rounds load everything it can reach.
   for (let round = 0; round < 9 && (moduleIds.length > 0 || instanceIds.length > 0); round += 1) {
-    await loadModules(tx, moduleIds, chatBranchId, modules);
+    await loadModules(tx, moduleIds, chatBranchId, modules, moduleMeta);
     const before = new Set(instances.keys());
     await loadInstances(tx, instanceIds, chatBranchId, instances);
     const refs = [...instances.entries()]
@@ -250,22 +284,106 @@ export async function loadPageContentTexts(
     getModule: (id: string) => modules.get(id) ?? null,
     getContentInstance: (id: string) => instances.get(id) ?? null,
   };
-  const texts = unique.map((pageId) => {
+  const texts: PageContentText[] = [];
+  for (const pageId of unique) {
     const page = pages.get(pageId) as PageRow;
-    const html = (placementsByPage.get(pageId) ?? [])
-      .filter((p) => modules.has(p.moduleId) && instances.has(p.contentInstanceId))
-      .map((p) => renderModuleWithContent(p.moduleId, p.contentInstanceId, resolver).html)
+    const placements = (placementsByPage.get(pageId) ?? []).filter(
+      (p) => modules.has(p.moduleId) && instances.has(p.contentInstanceId),
+    );
+    const variantIds = await contentVariantInstances(tx, page, placements, {
+      modules,
+      moduleMeta,
+      instances,
+      chatBranchId,
+    });
+    const html = placements
+      .map((p) => {
+        const key = `${p.blockName}#${p.position}`;
+        return renderModuleWithContent(
+          p.moduleId,
+          variantIds.get(key) ?? p.contentInstanceId,
+          resolver,
+        ).html;
+      })
       .join("\n");
     const full = htmlToPlainText(html);
     const capped = capPlainText(full, PAGE_CONTENT_TEXT_MAX);
-    return {
+    texts.push({
       pageId,
       title: page.title,
       path: page.current_path,
       contentText: capped.text,
       contentTextTruncated: capped.truncated,
       contentTextLength: full.length,
+    });
+  }
+  return { pages: texts, missing: [] };
+}
+
+/**
+ * #592 — the content a plugin shows on this page instead of the stored
+ * values (e.g. a shared section in the page's language), registered as
+ * synthetic instances so the text matches what the page renders.
+ *
+ * @returns `${block}#${position}` → the instance id to render instead.
+ */
+async function contentVariantInstances(
+  tx: TransactionRunner,
+  page: PageRow,
+  placements: readonly Placement[],
+  loaded: {
+    readonly modules: ReadonlyMap<string, NestedModuleResource>;
+    readonly moduleMeta: ReadonlyMap<string, ModuleMeta>;
+    readonly instances: Map<string, NestedContentInstanceResource>;
+    readonly chatBranchId: string | null;
+  },
+): Promise<Map<string, string>> {
+  const modRows = placements.map((p) => {
+    const mod = loaded.modules.get(p.moduleId) as NestedModuleResource;
+    const meta = loaded.moduleMeta.get(p.moduleId);
+    return {
+      block_name: p.blockName,
+      position: p.position,
+      module_id: p.moduleId,
+      slug: mod.slug,
+      display_name: meta?.displayName ?? mod.slug,
+      html: mod.html,
+      css: mod.css,
+      js: mod.js,
+      fields: meta?.fields ?? [],
     };
   });
-  return { pages: texts, missing: [] };
+  const variants = await resolvePreviewContentVariants(tx, {
+    pageId: page.id,
+    layoutId: page.layout_id,
+    // Chrome is not part of the page's core text.
+    layoutModRows: [],
+    modRows,
+    placementBindings: new Map(
+      placements.map((p) => [
+        `${p.blockName}#${p.position}`,
+        { contentInstanceId: p.contentInstanceId, synced: p.synced },
+      ]),
+    ),
+    valuesByInstance: new Map(
+      placements.map((p) => [
+        p.contentInstanceId,
+        loaded.instances.get(p.contentInstanceId)?.values ?? {},
+      ]),
+    ),
+    chatBranchId: loaded.chatBranchId,
+    // An editor-side read, like the preview (#1087): a failing plugin's
+    // variant is left out and the stored text shows; the build is where a
+    // plugin error stops the site.
+    renderScope: { chatBranchId: loaded.chatBranchId, onPluginFailure: () => {} },
+  });
+  const ids = new Map<string, string>();
+  for (const [key, values] of variants.pageValues) {
+    const placement = placements.find((p) => `${p.blockName}#${p.position}` === key);
+    if (!placement) continue;
+    const id = `variant:${page.id}:${key}`;
+    loaded.instances.set(id, { id, moduleId: placement.moduleId, values, deletedAt: null });
+    ids.set(key, id);
+  }
+  return ids;
 }

@@ -383,6 +383,16 @@ describe("#592 — menus and footer per language", () => {
     const en = await preview(ids.enPricing);
     expect(en.html).toContain('<p class="tag">Made with care</p>');
     expect(en.html).toMatch(/<a class="cta" href="\/t592-about\/"[^>]*>Talk to us<\/a>/);
+    // The SEO read's core text shows the same per-language shared content
+    // and leaves the (translated) footer chrome out.
+    const seo = await sysOp<{ pages: { pageId: string; contentText: string }[] }>(
+      "pages_seo.get_many",
+      { pageIds: [ids.dePreise, ids.enPricing] },
+    );
+    expect(seo.pages[0]?.contentText).toContain("DE:Talk to us");
+    expect(seo.pages[0]?.contentText).not.toContain("Made with care");
+    expect(seo.pages[1]?.contentText).toContain("Talk to us");
+    expect(seo.pages[1]?.contentText).not.toContain("DE:");
 
     const status = await op<{ chrome: { targetKey: string; locales: Record<string, string> }[] }>(
       "intl_status",
