@@ -23,6 +23,9 @@
  *   - `references/missing-target`      (error)
  *   - `references/variant-missing`     (error)
  *   - `references/unpublished-target`  (error)
+ *   - `references/missing-list`        (error) — a bound shared list was deleted (epic #1107)
+ *   - `references/missing-term`        (error) — a page term / query term whose entry is gone
+ *   - `references/missing-module`      (error) — a list entry embeds a deleted module
  *   - `references/literal-link`        (warning) — converted by the link migration
  *   - `references/limit-reached`       (info)
  */
@@ -86,7 +89,8 @@ export function referenceFindings(
     // shared by several pages, or site-wide chrome, is one site finding. A
     // draft page is not in the staged build, so its issue (a warning — it
     // does not ship) is a site finding too: the message names the page.
-    const only = i.place.kind === "content" && i.pageIds.length === 1 ? i.pageIds[0] : undefined;
+    const pageBound = i.place.kind === "content" || i.place.kind === "page";
+    const only = pageBound && i.pageIds.length === 1 ? i.pageIds[0] : undefined;
     const pageId = only !== undefined && stagedPageIds.has(only) ? only : undefined;
     findings.push({
       ruleId: `${REFERENCES_CHECK_ID}/${i.problem}`,

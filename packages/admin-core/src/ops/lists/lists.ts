@@ -28,6 +28,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { emitDomainEvent } from "../../domain-events.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
+import { recordPendingImportLinks } from "../../links/import-targets.js";
 import {
   type ListEntityView,
   loadListEntities,
@@ -298,6 +299,9 @@ async function writeList(
     { kind: "list", entityId: id, state },
     args.found === null,
   );
+  // Links to pages the chat's import run will still build stay literal;
+  // the run's finalisation (imports.resolve_links) rewrites this list.
+  await recordPendingImportLinks(tx, canon.pending, { kind: "list", id });
   return { ok: true, id, state };
 }
 

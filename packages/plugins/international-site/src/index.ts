@@ -932,15 +932,36 @@ export default definePlugin<PluginContextTier1>({
       setListItemVisibility(await chromeDepsOf(ctx), args),
 
     /**
-     * Epic #1107 — Stage-audit findings for lists: texts missing in a
-     * language, entries hidden because their link target has no version
-     * in it. Read-only. Core's plugin audit-contribution path calls it
-     * once that path exists (docs/lists.md §9.5); intl_status carries the
-     * same findings meanwhile.
+     * Epic #1107 — this plugin's Stage-audit contribution (core's
+     * `auditFindingsOperation` hook, docs/quality-checks.md "Plugin
+     * contributions"): list texts missing in a language and entries
+     * hidden because their link target has no version in it. Read-only,
+     * main line. Findings are site-wide (a list shows on many pages), so
+     * none names a page.
      */
-    list_translation_findings: async (ctx) => {
+    audit_findings: async (ctx, args) => {
+      z.object({ pages: z.array(z.object({ pageId: z.string(), path: z.string() })) })
+        .strict()
+        .parse(args);
       const deps = await chromeDepsOf(ctx);
-      return { findings: listFindings(deps, await loadListTranslationState(deps)) };
+      const found = listFindings(deps, await loadListTranslationState(deps));
+      return {
+        findings: found.slice(0, 499).map((f) => ({
+          rule:
+            f.code === "list-link-variant-missing"
+              ? "list-link-target-missing"
+              : f.code === "page-property-missing"
+                ? "page-property-translation-missing"
+                : "list-translation-missing",
+          severity: "warning" as const,
+          message: `${f.code === "list-link-variant-missing" ? "Link target has no version" : "Translation missing"}: ${f.message}`.slice(0, 1000),
+          fix: {
+            tool:
+              f.code === "list-link-variant-missing" ? "create_variant" : "translate_chrome",
+            hint: f.nextStep.slice(0, 500),
+          },
+        })),
+      };
     },
 
     /**
@@ -2105,6 +2126,7 @@ export default definePlugin<PluginContextTier1>({
    */
   listExt: { field: LIST_EXT_FIELD_SCHEMA },
   listResolveOperation: "list_resolve",
+  auditFindingsOperation: "audit_findings",
   contributionsOperation: "head_contributions",
   contentVariantsOperation: "content_variants",
   linkResolveOperation: "link_resolve",

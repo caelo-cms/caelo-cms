@@ -39,7 +39,12 @@ function originOf(place: ReportedIssue["place"]): ReportedDraftLinkOrigin {
     case "content":
     case "module-html":
     case "module-default":
+    case "module-field":
       return { kind: "module", moduleId: String(place.moduleId) };
+    case "list":
+    case "list-type":
+    case "page":
+      return { kind: "list-data" };
     case "layout-html":
     case "template-html":
       return { kind: "chrome" };

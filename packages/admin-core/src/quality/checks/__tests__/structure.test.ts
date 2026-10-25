@@ -482,3 +482,132 @@ describe("structure/repeated-items (#1068)", () => {
     ]);
   });
 });
+
+describe("structure/duplicate-navigation (epic #1107)", () => {
+  const HEADER: StructureModule = {
+    id: id(110),
+    slug: "site-header",
+    displayName: "Site header",
+    html: '<header class="hd"><ul>{{#nav}}<li><a href="{{link}}">{{label}}</a></li>{{/nav}}</ul></header>',
+  };
+  const FOOTER: StructureModule = {
+    id: id(111),
+    slug: "site-footer",
+    displayName: "Site footer",
+    html: '<footer class="ft"><p>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</p></footer>',
+  };
+  const NAV_MODULES = [...MODULES, HEADER, FOOTER];
+  const SHARED = "00000000-0000-4000-8000-000000000900";
+  /** Entries stamped like the template engine stamps them. */
+  const entries = (paths: readonly string[], stamp: (n: number) => string, tag = "li") =>
+    paths
+      .map((p, n) =>
+        tag === "li"
+          ? `<li data-caelo-list-item="${stamp(n)}"><a href="${p}">${p}</a></li>`
+          : `<a data-caelo-list-item="${stamp(n)}" href="${p}">${p}</a>`,
+      )
+      .join("");
+  const localStamp = (field: string) => (n: number) =>
+    `local/${field}/00000000-0000-4000-9000-00000000010${n}`;
+  const sharedStamp = (n: number) => `${SHARED}/00000000-0000-4000-9000-00000000020${n}`;
+  const header = (paths: readonly string[], stamp = localStamp("nav")) =>
+    `<header class="hd" data-caelo-module-id="${HEADER.id}"><ul>${entries(paths, stamp)}</ul></header>`;
+  const footer = (paths: readonly string[], stamp = localStamp("links")) =>
+    `<footer class="ft" data-caelo-module-id="${FOOTER.id}"><p>${entries(paths, stamp, "a")}</p></footer>`;
+  const MENU = ["/", "/docs", "/pricing", "/blog", "/contact"];
+
+  it("two modules keeping the same links as local lists are one site-wide error", () => {
+    const findings = structureFindings(
+      [page(1, "/", header(MENU), footer(MENU)), page(2, "/docs", header(MENU), footer(MENU))],
+      NAV_MODULES,
+      noLayouts,
+    );
+    const nav = findings.filter((f) => f.ruleId.includes("navigation"));
+    expect(nav).toHaveLength(1);
+    expect(nav[0]).toMatchObject({ ruleId: "structure/duplicate-navigation", severity: "error" });
+    expect(nav[0]?.pageId).toBeUndefined();
+    expect(nav[0]?.message).toStartWith("Duplicate navigation: modules");
+    expect(nav[0]?.message).toContain(`"Site header" (${HEADER.id})`);
+    expect(nav[0]?.message).toContain(`"Site footer" (${FOOTER.id})`);
+    expect(nav[0]?.message).toContain("the same 5 links");
+    expect(nav[0]?.message).toContain("on 2 page(s)");
+    expect(nav[0]?.fix?.tool).toBe("promote_local_list");
+    expect(nav[0]?.fix?.hint).toContain("ONE shared list");
+    expect(() => findingSchema.parse(nav[0])).not.toThrow();
+  });
+
+  it("two modules showing one shared list are the goal: no finding", () => {
+    expect(
+      structureFindings(
+        [page(1, "/", header(MENU, sharedStamp), footer(MENU, sharedStamp))],
+        NAV_MODULES,
+        noLayouts,
+      ),
+    ).toEqual([]);
+  });
+
+  it("hand-written links in a field value count like a local list", () => {
+    const handWritten = text(`<p>${MENU.map((p) => `<a href="${p}">${p}</a>`).join(" ")}</p>`);
+    const findings = structureFindings(
+      [page(1, "/", header(MENU), handWritten)],
+      NAV_MODULES,
+      noLayouts,
+    );
+    expect(findings.map((f) => f.ruleId)).toEqual(["structure/duplicate-navigation"]);
+    expect(findings[0]?.message).toContain('"Text"');
+  });
+
+  it("nearly the same links in two modules warn", () => {
+    const findings = structureFindings(
+      [page(1, "/", header(MENU), footer([...MENU, "/imprint"]))],
+      NAV_MODULES,
+      noLayouts,
+    );
+    expect(findings.map((f) => [f.ruleId, f.severity])).toEqual([
+      ["structure/similar-navigation", "warning"],
+    ]);
+  });
+
+  it("one module on many pages, a different menu, or two links stay silent", () => {
+    expect(
+      structureFindings(
+        [page(1, "/", header(MENU)), page(2, "/docs", header(MENU))],
+        NAV_MODULES,
+        noLayouts,
+      ),
+    ).toEqual([]);
+    expect(
+      structureFindings(
+        [page(1, "/", header(MENU), footer(["/imprint", "/privacy", "/terms"]))],
+        NAV_MODULES,
+        noLayouts,
+      ),
+    ).toEqual([]);
+    expect(
+      structureFindings(
+        [page(1, "/", header(["/a", "/b"]), footer(["/a", "/b"]))],
+        NAV_MODULES,
+        noLayouts,
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("structure messages recommend a list field (epic #1107)", () => {
+  it("repeated items and repeated markup name the list field first", () => {
+    const card = (name: string) =>
+      `<article class="tc"><h3 class="tc__name">${name}</h3><dl class="tc__facts"><dt>Price</dt><dd>1 EUR</dd></dl></article>`;
+    const items = structureFindings(
+      [page(1, "/compare", text([1, 2, 3].map((n) => card(`T${n}`)).join("")))],
+      MODULES,
+      noLayouts,
+    );
+    expect(items[0]?.fix?.hint).toStartWith("give the host module a `list` field");
+    const repeated = structureFindings(
+      [page(1, "/a", text(chain(3))), page(2, "/b", text(chain(4)))],
+      MODULES,
+      noLayouts,
+    );
+    expect(repeated[0]?.fix?.hint).toContain("a `list` field for repeated entries");
+  });
+});

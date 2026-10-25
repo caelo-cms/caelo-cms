@@ -455,6 +455,29 @@ describe("where the fix goes", () => {
     expect(toolOf("/mystery")).toBe("grep_content");
   });
 
+  it("a URL in a rendered list entry is fixed in that entry (epic #1107)", async () => {
+    const LIST = id(900);
+    const ITEM = "00000000-0000-4000-9000-000000000001";
+    const home: StagedPage = {
+      pageId: id(1),
+      path: "/",
+      url: `${BASE}/`,
+      html: `<html><body>${mod(
+        NAV,
+        `<a data-caelo-list-item="${LIST}/${ITEM}" href="/gone-shared/">Gone</a><a data-caelo-list-item="local/items/${ITEM}" href="/gone-default/">Gone</a><a data-caelo-list-item="instance/${id(5)}/items/${ITEM}" href="/gone-value/">Gone</a>`,
+      )}${mod(TEXT, '<a href="/about/">About</a><a href="/team">Team</a>')}</body></html>`,
+    };
+    const { findings } = await findingsOf([home, ABOUT, TEAM]);
+    const fixOf = (href: string) => findings.find((f) => f.message.includes(`"${href}"`));
+    expect(fixOf("/gone-shared/")?.fix?.tool).toBe("patch_list_items_many");
+    expect(fixOf("/gone-shared/")?.fix?.hint).toContain(`entry ${ITEM} of shared list ${LIST}`);
+    expect(fixOf("/gone-shared/")?.message).toContain(`in entry ${ITEM} of shared list ${LIST}`);
+    expect(fixOf("/gone-default/")?.fix?.tool).toBe("edit_module");
+    expect(fixOf("/gone-default/")?.fix?.hint).toContain('list field "items"');
+    // A placement's local list is a content value of the module.
+    expect(fixOf("/gone-value/")?.fix?.tool).toBe("set_page_module_content");
+  });
+
   it("output of a plugin points at the plugin", async () => {
     const about = page(
       2,

@@ -98,7 +98,12 @@ export type ReportedDraftLinkOrigin =
   /** Plugin data named through the link-locations hook. */
   | { readonly kind: "plugin"; readonly pluginSlug: string }
   /** Layout or template markup: outside every module. */
-  | { readonly kind: "chrome" };
+  | { readonly kind: "chrome" }
+  /**
+   * Shared list entries, list type sources or page properties (epic
+   * #1107): data any module on the page may render, so inside some module.
+   */
+  | { readonly kind: "list-data" };
 
 /** What one same-site URL resolved to. */
 type Resolution =
@@ -122,6 +127,7 @@ interface Occurrence {
   readonly navigational: boolean;
   readonly moduleId: string | null;
   readonly pluginSlug: string | null;
+  readonly listItem: string | null;
   readonly target: SameSiteUrl;
 }
 
@@ -340,6 +346,8 @@ function reportedHere(d: ReportedDraftLink, o: Occurrence): boolean {
       return o.pluginSlug === null && o.moduleId === d.origin.moduleId;
     case "chrome":
       return o.pluginSlug === null && o.moduleId === null;
+    case "list-data":
+      return o.pluginSlug === null && o.moduleId !== null;
   }
 }
 

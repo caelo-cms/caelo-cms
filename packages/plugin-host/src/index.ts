@@ -13,6 +13,7 @@
 export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
 export type { ContentVariantPage, ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
 export { pluginManifest } from "@caelo-cms/plugin-sdk";
+export { auditFindingContributors, collectPluginAuditFindings } from "./audit-findings.js";
 export {
   BUILD_PLUGIN_METHODS,
   type BuildPluginMethod,
