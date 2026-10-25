@@ -39,6 +39,7 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
+import { reportPluginRenderFailure } from "./render-failures.js";
 
 /** pageId → its variant and variant group. A missing page maps nothing. */
 export type ResolvedLinkVariants = ReadonlyMap<string, LinkPageVariant>;
@@ -83,9 +84,13 @@ export async function resolveLinkVariants(
       args: { pageIds: [...pageIds] },
     });
     if (!r.ok) {
-      throw new Error(
-        `link-resolve: ${lp.slug}.${operationName} failed: ${r.error.kind}: ${r.error.message}`,
-      );
+      const reason = `link-resolve: ${lp.slug}.${operationName} failed: ${r.error.kind}: ${r.error.message}`;
+      // #1087 — a preview renders without this plugin's partition (links
+      // then resolve as on a single-variant site) and flags it.
+      if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "link-resolve", reason })) {
+        continue;
+      }
+      throw new Error(reason);
     }
     const pages = (r.value as { pages?: Record<string, unknown> } | null)?.pages ?? {};
     for (const [pageId, raw] of Object.entries(pages)) {

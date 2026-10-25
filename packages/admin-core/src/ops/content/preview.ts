@@ -19,9 +19,11 @@ import {
   collectBuildAssets,
   collectContributions,
   composeHeadBlock,
+  createPluginRenderFailureSink,
   dormantDataListNames,
   injectPluginAssets,
   pluginNotRunningMarker,
+  pluginRenderFailedMarker,
   pluginsNotRunningHere,
   resolveDataLists,
   resolveModuleDeferrals,
@@ -148,6 +150,12 @@ export const renderPagePreviewOp = defineOperation({
     html: z.string(),
     replacedSlots: z.array(z.string()),
     missingSlots: z.array(z.string()),
+    /**
+     * #1087 — plugins whose contribution this render left out because
+     * their call failed (each also flagged as `plugin-render-failed:<slug>`
+     * in missingSlots). The preview routes show them in the banner.
+     */
+    pluginFailures: z.array(z.object({ slug: z.string(), reason: z.string() })),
     pageSlug: z.string(),
   }),
   handler: async (ctx, input, tx) => {
@@ -162,7 +170,14 @@ export const renderPagePreviewOp = defineOperation({
     // AND drives the overlays, so the two can never disagree again.
     const chatBranchId = input.chatBranchId ?? ctx.chatBranchId;
     // Plugin render hooks show the same branch as the core rows below.
-    const renderScope = { chatBranchId: chatBranchId ?? null };
+    // #1087 — a plugin whose call fails is left out of THIS render and
+    // flagged, instead of aborting the preview: a plugin's errors block
+    // Publish live (the build throws), never the editor's view of a page.
+    const pluginFailureSink = createPluginRenderFailureSink();
+    const renderScope = {
+      chatBranchId: chatBranchId ?? null,
+      onPluginFailure: pluginFailureSink.onPluginFailure,
+    };
     // v0.9.0 — branch-aware preview. The iframe shows the caller's
     // branched-create pages / templates / layouts (in addition to
     // main). Without this filter, a brand-new chat that just created
@@ -1425,12 +1440,15 @@ export const renderPagePreviewOp = defineOperation({
         // #1008 — an active plugin this server could not load renders
         // without its contribution; loud here (and Publish live refuses).
         ...pluginsNotRunningHere().map((p) => pluginNotRunningMarker(p.slug)),
+        // #1087 — a plugin that runs here but failed during this render.
+        ...new Set(pluginFailureSink.failures().map((f) => pluginRenderFailedMarker(f.slug))),
         // Epic #724 — `link-target-missing:<kind>/<id>`, once per target.
         ...new Set([
           ...pageLinkMarkers,
           ...linkMarkersOf(composed.moduleFailures.map((f) => f.reason)),
         ]),
       ],
+      pluginFailures: pluginFailureSink.failures().map((f) => ({ slug: f.slug, reason: f.reason })),
       pageSlug: pageRow.slug,
     });
   },

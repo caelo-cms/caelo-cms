@@ -37,6 +37,7 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
+import { reportPluginRenderFailure } from "./render-failures.js";
 
 /** One placement's resolved answer; `problems` always present (maybe empty). */
 export interface ResolvedContentVariant {
@@ -94,9 +95,13 @@ export async function resolveContentVariants(
       args: { pages: [...pages] },
     });
     if (!r.ok) {
-      throw new Error(
-        `content-variants: ${lp.slug}.${operationName} failed: ${r.error.kind}: ${r.error.message}`,
-      );
+      const reason = `content-variants: ${lp.slug}.${operationName} failed: ${r.error.kind}: ${r.error.message}`;
+      // #1087 — a preview shows core's content for this plugin's
+      // placements and flags it; a build throws.
+      if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "content-variants", reason })) {
+        continue;
+      }
+      throw new Error(reason);
     }
     const resolutions =
       (r.value as { resolutions?: Record<string, Record<string, unknown>> }).resolutions ?? {};

@@ -160,6 +160,13 @@ export {
   syncPluginHost,
 } from "./reconcile.js";
 export {
+  createPluginRenderFailureSink,
+  type PluginRenderFailure,
+  pluginRenderFailedMarker,
+  pluginRenderFailedSlug,
+  reportPluginRenderFailure,
+} from "./render-failures.js";
+export {
   applyPluginRowState,
   discardBranchPluginRows,
   insertPluginRowSnapshot,

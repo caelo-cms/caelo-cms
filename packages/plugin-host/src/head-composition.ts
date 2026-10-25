@@ -33,6 +33,7 @@ import {
   runPluginOperation,
 } from "./dispatch.js";
 import type { PublicUrlContext } from "./public-urls.js";
+import { reportPluginRenderFailure } from "./render-failures.js";
 
 interface ContributionSource {
   readonly pluginSlug: string;
@@ -106,9 +107,19 @@ export async function collectContributions(
       },
     });
     if (!r.ok) {
-      throw new Error(
-        `head-composition: ${source.pluginSlug}.${source.operationName} failed: ${r.error.kind}: ${r.error.message}`,
-      );
+      const reason = `head-composition: ${source.pluginSlug}.${source.operationName} failed: ${r.error.kind}: ${r.error.message}`;
+      // #1087 — a preview renders the head without this plugin's entries
+      // and flags it; a build throws.
+      if (
+        reportPluginRenderFailure(opts, {
+          slug: source.pluginSlug,
+          point: "head-composition",
+          reason,
+        })
+      ) {
+        continue;
+      }
+      throw new Error(reason);
     }
     const value = r.value as {
       head?: Record<string, unknown[]>;
