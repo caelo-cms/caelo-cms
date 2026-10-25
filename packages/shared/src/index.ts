@@ -32,6 +32,7 @@ export * from "./image-capabilities.js";
 export * from "./interactions.js";
 export * from "./link-canonicalise.js";
 export * from "./link-refs.js";
+export * from "./lists/index.js";
 export {
   type LogContext,
   type Logger,
