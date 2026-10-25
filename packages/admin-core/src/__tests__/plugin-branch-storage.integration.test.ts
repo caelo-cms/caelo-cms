@@ -347,6 +347,22 @@ describe("branch-aware plugin storage", () => {
     if (!publish.ok) expect(JSON.stringify(publish.error)).toContain("discarded");
   });
 
+  it("refuses a write from an archived chat and keeps nothing of it (#1102)", async () => {
+    const closed = await newChat("closed");
+    const archived = await execute(registry, adapter, humanCtx, "chat.archive_session", {
+      chatSessionId: closed.chatSessionId,
+    });
+    if (!archived.ok) throw new Error(JSON.stringify(archived.error));
+    const before = (await liveRows()).length;
+    const added = await call(closed.invocation, "add", { label: "into-closed" });
+    expect(added.ok).toBe(false);
+    if (!added.ok) {
+      expect(added.error.message).toContain("this chat was archived, so the change was not saved");
+    }
+    expect((await liveRows()).length).toBe(before);
+    expect((await liveRows()).some((r) => r.label === "into-closed")).toBe(false);
+  });
+
   it("refuses private-storage writes from a render call", async () => {
     const r = await call({ origin: "render", actorId: SYSTEM_ACTOR_ID }, "add", { label: "x" });
     expect(r.ok).toBe(false);

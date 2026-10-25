@@ -368,6 +368,9 @@ export interface ToolDispatchResult {
   // ToolResult.value. Consumed by the W3 retry path to
   // extract a field at nextAction.retryWithArgs.fromValuePath.
   value?: unknown;
+  // #1091 — propagated from ToolResult.refusal: a guard refusal the
+  // automatic bug capture skips.
+  refusal?: true;
 }
 
 /**

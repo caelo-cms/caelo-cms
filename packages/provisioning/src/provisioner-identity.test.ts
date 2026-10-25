@@ -369,6 +369,31 @@ describe("checkAdcImpersonation", () => {
     expect(env.GOOGLE_OAUTH_ACCESS_TOKEN).toBeUndefined();
   });
 
+  it("expired ADC stop before IAM or the Credentials API is asked (#1078)", async () => {
+    const g = fakeGcloud({
+      "auth application-default print-access-token": [
+        fail(
+          "ERROR: (gcloud.auth.application-default.print-access-token) There was a problem refreshing your current auth tokens: ('invalid_grant: reauth related error (invalid_rapt)', {'error': 'invalid_grant'})",
+        ),
+      ],
+    });
+    const f = fakeFetch([]);
+    const r = await checkAdcImpersonation(
+      { projectId: PROJECT, operatorAccount: OPERATOR, freshGrant: false },
+      { run: g.run, sleep: noSleep, fetch: f.impl },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe("expired-adc");
+    expect(r.error).toContain("have expired");
+    expect(r.error).toContain("`gcloud auth application-default login`");
+    expect(r.error).not.toContain("\n");
+    expect(g.calls.map((c) => c.args.join(" "))).toEqual([
+      "auth application-default print-access-token",
+    ]);
+    expect(f.urls).toEqual([]);
+  });
+
   it("succeeds when ADC may mint a token for the provisioner, and keeps no token", async () => {
     const g = fakeGcloud({
       "auth application-default print-access-token": [ok(`${SOURCE}\n`)],

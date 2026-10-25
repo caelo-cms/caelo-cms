@@ -17,6 +17,7 @@ import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import {
   bootstrap,
+  createPluginRenderFailureSink,
   hasLinkResolveContributors,
   MAIN_RENDER,
   type PluginHostInfra,
@@ -139,6 +140,34 @@ describe("#724 D — link-resolve composition point", () => {
     await expect(resolveLinkVariants([EN], MAIN_RENDER)).rejects.toThrow(
       /t724d-throws\.resolve failed/,
     );
+  });
+
+  it("#1087 — a render with a failure sink skips the failing plugin and keeps the others", async () => {
+    await boot(
+      resolver("t724d-down", () => {
+        throw new Error("plugin_storage.list: the plugin is not active");
+      }),
+      resolver("t724d-up", { pages: { [EN]: { variant: "en", group: "g" } } }),
+    );
+    const sink = createPluginRenderFailureSink();
+    const r = await resolveLinkVariants([EN], {
+      chatBranchId: null,
+      onPluginFailure: sink.onPluginFailure,
+    });
+    expect(r.get(EN)).toEqual({ variant: "en", group: "g" });
+    expect(sink.failures()).toEqual([
+      {
+        slug: "t724d-down",
+        point: "link-resolve",
+        reason: expect.stringContaining("plugin_storage.list: the plugin is not active"),
+      },
+    ]);
+    // A contract violation is a bug in a running plugin: still loud.
+    await cleanup();
+    await boot(resolver("t724d-bad2", { pages: { [EN]: { variant: "", group: null } } }));
+    await expect(
+      resolveLinkVariants([EN], { chatBranchId: null, onPluginFailure: () => undefined }),
+    ).rejects.toThrow(/invalid answer/);
   });
 
   it("requires the link_resolve capability request in the manifest", () => {

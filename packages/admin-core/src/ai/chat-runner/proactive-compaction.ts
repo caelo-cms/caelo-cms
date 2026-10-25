@@ -36,6 +36,7 @@
  * rebuilds its history from the DB untouched.
  */
 
+import { idSafeCutIndex } from "@caelo-cms/shared";
 import type { ChatMessageInput } from "../provider.js";
 import { hasTruncationMarker, truncationMarker } from "./compaction.js";
 
@@ -135,7 +136,9 @@ function extractKeyIdentifiers(content: string, head: string): string[] {
 export function summarizeToolResult(content: string): string {
   const firstLine = content.split("\n", 1)[0] ?? "";
   const head =
-    firstLine.length > SUMMARY_HEAD_CHARS ? firstLine.slice(0, SUMMARY_HEAD_CHARS) : firstLine;
+    firstLine.length > SUMMARY_HEAD_CHARS
+      ? firstLine.slice(0, idSafeCutIndex(firstLine, SUMMARY_HEAD_CHARS))
+      : firstLine;
   const ids = extractKeyIdentifiers(content, head);
   const summary = ids.length > 0 ? `${head}\n[key ids: ${ids.join(", ")}]` : head;
   return `${summary}${truncationMarker(content.length - head.length)}`;

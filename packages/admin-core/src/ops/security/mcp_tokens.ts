@@ -22,6 +22,7 @@ import {
   err,
   ok,
   type Result,
+  truncateKeepingIds,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -592,7 +593,9 @@ export const mcpSendChatOp = defineOperation({
         // Truncate the result content to keep MCP responses lean — the
         // MCP client has the requestId for the full audit trail.
         const summary =
-          ev.content.length > 400 ? `${ev.content.slice(0, 400)}… (truncated)` : ev.content;
+          ev.content.length > 400
+            ? truncateKeepingIds(ev.content, 413, "… (truncated)")
+            : ev.content;
         toolCalls.push({ name, summary, succeeded: ev.ok });
       } else if (ev.kind === "tool-approval-request") {
         pendingApprovals.push({

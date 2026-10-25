@@ -559,4 +559,32 @@ describe("#620 review — attribution on the shared draft", () => {
     );
     expect(archived[0]?.a).toBe(true);
   });
+
+  it("refuses a write into an archived or discarded chat; nothing is left pending (#1102)", async () => {
+    const m = await seedModule("closed");
+    for (const close of ["chat.archive_session", "chat.discard_branch"] as const) {
+      const k = await chat(`Closed by ${close}`);
+      await op(OWNER, close, { chatSessionId: k.id });
+      const r = await execute(registry, adapter, k.ai, "modules.update", {
+        moduleId: m,
+        html: "<p>into a closed chat</p>",
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok && r.error.kind === "HandlerError") {
+        expect(r.error.message).toContain(
+          close === "chat.archive_session" ? "was archived" : "was discarded",
+        );
+        expect(r.error.message).toContain("the change was not saved");
+      } else {
+        throw new Error(`expected a HandlerError, got ${JSON.stringify(r)}`);
+      }
+      const pending = await withSql(
+        (tx) =>
+          tx`SELECT count(*)::int AS n FROM site_snapshots WHERE chat_task_id = ${k.id}::uuid AND staged_at IS NULL AND undone_at IS NULL` as Promise<
+            { n: number }[]
+          >,
+      );
+      expect(pending[0]?.n).toBe(0);
+    }
+  });
 });

@@ -258,6 +258,11 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     reason:
       "pre-v0.12 placement-content read kept for plugin actors (#397); the AI reads placement content through content_instances (get_content_instance / read_content)",
   },
+  "pages_seo.get": {
+    kind: "covered",
+    by: ["get_page_seo"],
+    note: "single-page SEO read kept for the panel and plugin actors (#591); get_page_seo reads the same fields plus each page's core text through the bulk pages_seo.get_many",
+  },
   "page_module_content.list_for_page": {
     kind: "internal",
     reason:

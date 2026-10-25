@@ -15,6 +15,7 @@
  * problem; `warning` and `info` are reported but never block.
  */
 
+import { truncateKeepingIds } from "@caelo-cms/shared";
 import { z } from "zod";
 
 /** How bad a finding is. Only `error` can block Publish live. */
@@ -86,5 +87,5 @@ export function checkIdOfRule(ruleId: string): string {
 export function findingLabel(message: string): string {
   const colon = message.indexOf(": ");
   const label = (colon === -1 ? message : message.slice(0, colon)).trim();
-  return label.length > 80 ? `${label.slice(0, 79)}…` : label;
+  return truncateKeepingIds(label, 80);
 }

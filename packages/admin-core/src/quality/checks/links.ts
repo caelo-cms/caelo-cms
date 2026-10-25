@@ -31,6 +31,7 @@
  * files). `/api/*` belongs to the gateway and is never checked.
  */
 
+import { truncateKeepingIds } from "@caelo-cms/shared";
 import type { SiteCheck, StagedBuild, StagedPage } from "./check.js";
 import type { Finding } from "./findings.js";
 import {
@@ -439,5 +440,5 @@ function capped(findings: Finding[]): Finding[] {
 }
 
 function clip(message: string): string {
-  return message.length > 1000 ? `${message.slice(0, 999)}…` : message;
+  return truncateKeepingIds(message, 1000);
 }

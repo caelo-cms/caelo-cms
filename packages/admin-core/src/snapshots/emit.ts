@@ -14,7 +14,7 @@
  * audit trail.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { assertChatOpenForWrite, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { jsonbParam } from "../sql-helpers.js";
 import type {
@@ -122,10 +122,26 @@ export interface SnapshotInput {
   readonly entities: readonly SnapshotEntity[];
 }
 
+/**
+ * Write kinds that close or rewind a chat and so may name a closed one;
+ * every other kind refuses a closed chat (#1102, assertChatOpenForWrite).
+ */
+const CLOSED_CHAT_EXEMPT: ReadonlySet<SnapshotOpKind> = new Set<SnapshotOpKind>([
+  "chat.publish",
+  "chat.merge_to_main",
+  "snapshots.revert_site",
+  "snapshots.revert_module",
+  "snapshots.revert_template",
+  "snapshots.revert_page",
+]);
+
 export async function emitSnapshot(
   tx: TransactionRunner,
   input: SnapshotInput,
 ): Promise<{ siteSnapshotId: string }> {
+  if (input.chatTaskId && !CLOSED_CHAT_EXEMPT.has(input.opKind)) {
+    await assertChatOpenForWrite(tx, input.chatTaskId, input.opKind);
+  }
   // created_at is the moment of THIS write (clock_timestamp), not the
   // transaction start (the column default now()): every branch overlay
   // picks an entity's latest state with `ORDER BY ss.created_at DESC`, and

@@ -35,6 +35,7 @@ import {
   isPublicSideHost,
   unpublishedRegistryError,
 } from "./published-state.js";
+import type { PluginRenderFailure } from "./render-failures.js";
 import { recordPluginError } from "./runtime-health.js";
 import { consumeExternalToolApproval } from "./tool-approval-binding.js";
 import type { AIProvider } from "./types.js";
@@ -400,6 +401,13 @@ export function hostSystemActorId(): string {
  */
 export interface RenderScope {
   readonly chatBranchId: string | null;
+  /**
+   * #1087 — set by a render that may show a degraded page (the editor
+   * preview): a plugin whose call fails is reported here and its
+   * contribution left out instead of failing the render. Builds leave it
+   * unset and fail loudly. See render-failures.ts.
+   */
+  readonly onPluginFailure?: (failure: PluginRenderFailure) => void;
 }
 
 /** A render of the deployed site / live state: no branch. */

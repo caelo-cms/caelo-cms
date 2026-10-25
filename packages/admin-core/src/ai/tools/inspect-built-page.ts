@@ -24,6 +24,9 @@
  * `static` target when verifying a Confirm-publish), and proactively
  * flag drift to the operator before they click Confirm.
  *
+ * Where the build is read from: plain gcp reads the staging / static
+ * GCS buckets; gcp-firebase (#1088) has no buckets and reads the run's
+ * preview channel or the live channel over HTTP (firebase-built-file.ts).
  * Off GCP the tool is not offered at all (install-availability.ts):
  * built HTML lives on the operator's local disk or another cloud's
  * storage, not behind a storage API the admin process can read
@@ -31,10 +34,12 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
+import type { ExecutionContext } from "@caelo-cms/shared";
 import { z } from "zod";
+import { firebaseLiveChannelUrl, readFirebaseBuiltFile } from "../../deploy/firebase-built-file.js";
 import { readStagedBuildFiles, readStagedObject } from "../../deploy/staged-build-files.js";
 import { describeError } from "./_describe-error.js";
-import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 import { isGcpInstall } from "./install-availability.js";
 
 const inspectBuiltInput = z
@@ -123,6 +128,20 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
       }
     }
 
+    // Standard (directory-style) generator output: the composed path
+    // (pages.current_path — parent chain + plugin prefixes included) +
+    // /index.html; the root is index.html.
+    const trimmedPath = page.currentPath.replace(/^\/+|\/+$/g, "");
+    const objectKey = trimmedPath.length === 0 ? "index.html" : `${trimmedPath}/index.html`;
+
+    // #1088 — a Firebase install has no buckets: its builds live on
+    // Firebase Hosting channels.
+    if (process.env.CAELO_PROVIDER?.trim() === "gcp-firebase") {
+      const read = await readFromFirebase(ctx, toolCtx, input.target, runId, objectKey);
+      if (!read.ok) return read;
+      return builtPageResult(input, page.slug, runId, read.location, read.body);
+    }
+
     const staticBucketName = process.env.CAELO_STATIC_BUCKET;
     const stagingBucketName = process.env.CAELO_STAGING_BUCKET;
     if (!staticBucketName || !stagingBucketName) {
@@ -132,12 +151,6 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
           "CAELO_STATIC_BUCKET / CAELO_STAGING_BUCKET not set. The GCP Pulumi stack should set these env vars on the admin Cloud Run service.",
       };
     }
-
-    // Standard (directory-style) generator output: the composed path
-    // (pages.current_path — parent chain + plugin prefixes included) +
-    // /index.html; the root is index.html.
-    const trimmedPath = page.currentPath.replace(/^\/+|\/+$/g, "");
-    const objectKey = trimmedPath.length === 0 ? "index.html" : `${trimmedPath}/index.html`;
     const stagingKey = `${runId}/${objectKey}`;
 
     // Lazy-load @google-cloud/storage so self-hosted runtimes don't
@@ -145,8 +158,7 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
     const { Storage } = await import("@google-cloud/storage");
     const storage = new Storage();
 
-    let html: string;
-    let contentLength: number;
+    let body: Buffer;
     let location: string;
     if (input.target === "staging") {
       // Resolved above (or returned); TS does not carry that narrowing here.
@@ -175,8 +187,7 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
           content: `Page not in staging build ${runId} (gs://${stagingBucketName}/${stagingKey}). The page was not published (still a draft) or not part of this build when it was staged — publish it and run Stage again.`,
         };
       }
-      html = object.body.toString("utf8");
-      contentLength = object.body.byteLength;
+      body = object.body;
       location = object.fromLive
         ? `${object.location} (hash-skipped from staging — file is identical to live)`
         : object.location;
@@ -190,26 +201,95 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
           content: `Page not in live bucket gs://${staticBucketName}/${objectKey}. Confirm-publish may not have included this page yet.`,
         };
       }
-      const [body] = await file.download();
-      html = body.toString("utf8");
-      contentLength = body.byteLength;
+      [body] = await file.download();
       location = `gs://${staticBucketName}/${objectKey}`;
     }
 
-    return {
-      ok: true,
-      content: JSON.stringify(
-        {
-          page: { id: input.pageId, slug: page.slug },
-          target: input.target,
-          runId: input.target === "staging" ? runId : undefined,
-          location,
-          contentLength,
-          html,
-        },
-        null,
-        2,
-      ),
-    };
+    return builtPageResult(input, page.slug, runId, location, body);
   },
 };
+
+/** The tool's success payload, the same on every provider. */
+function builtPageResult(
+  input: InspectBuiltPageInput,
+  slug: string,
+  runId: string | undefined,
+  location: string,
+  body: Buffer,
+): { ok: true; content: string } {
+  return {
+    ok: true,
+    content: JSON.stringify(
+      {
+        page: { id: input.pageId, slug },
+        target: input.target,
+        runId: input.target === "staging" ? runId : undefined,
+        location,
+        contentLength: body.byteLength,
+        html: body.toString("utf8"),
+      },
+      null,
+      2,
+    ),
+  };
+}
+
+/**
+ * Read a built page on a gcp-firebase install: a staging run from its
+ * preview channel, the live site from the live channel. The preview
+ * channel's own URL stays internal (#650) — the result names the staging
+ * host the build was rendered for.
+ */
+async function readFromFirebase(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  target: "staging" | "static",
+  runId: string | undefined,
+  objectKey: string,
+): Promise<{ ok: true; location: string; body: Buffer } | { ok: false; content: string }> {
+  if (target === "static") {
+    const origin = await firebaseLiveChannelUrl();
+    const file = await readFirebaseBuiltFile(origin, objectKey);
+    if (!file.found) {
+      return {
+        ok: false,
+        content: `Page not on the live site (${origin}/${objectKey} answered ${file.status}). Publish live may not have included this page yet — use target='staging' to read the staged build.`,
+      };
+    }
+    return { ok: true, location: `${origin}/${objectKey}`, body: file.body };
+  }
+  // Resolved by the caller (or it returned); TS does not carry that here.
+  if (!runId) throw new Error("inspect_built_page: staging runId unresolved");
+  const runR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "deploy.get_run_origin", {
+    runId,
+  });
+  if (!runR.ok) {
+    return { ok: false, content: `deploy.get_run_origin failed: ${describeError(runR.error)}` };
+  }
+  const run = runR.value as { env: string; previewUrl: string | null; siteUrl: string | null };
+  if (run.env !== "staging") {
+    return {
+      ok: false,
+      content: `deploy run ${runId} is a ${run.env} build, not a staged one. Pass a staging runId, omit runId for the newest staged build, or use target='static' for the live site.`,
+    };
+  }
+  if (!run.previewUrl) {
+    return {
+      ok: false,
+      content: `staged build ${runId} recorded no Firebase preview channel, so its files cannot be read back. Run Stage again, then call inspect_built_page.`,
+    };
+  }
+  const shownAs = run.siteUrl
+    ? `${run.siteUrl.replace(/\/+$/, "")}/${objectKey} (staged build ${runId})`
+    : `staged build ${runId}: ${objectKey}`;
+  const file = await readFirebaseBuiltFile(run.previewUrl, objectKey);
+  if (!file.found) {
+    return {
+      ok: false,
+      content:
+        `Page not in staging build ${runId} (${shownAs} answered ${file.status}). Either the page was not published (still a draft) or not part of this build when it was staged, ` +
+        "or this build's preview was retired because a newer Stage or a Publish live replaced it (only the build staging serves stays readable). Publish the page if needed and run Stage again.",
+    };
+  }
+  return { ok: true, location: shownAs, body: file.body };
+}

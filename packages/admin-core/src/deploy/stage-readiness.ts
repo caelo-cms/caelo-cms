@@ -154,7 +154,7 @@ export function describeStageReadiness(r: StageReadiness): string | null {
   }
   if (r.missingMetaDescription.count > 0) {
     steps.push(
-      `${r.missingMetaDescription.count} page(s) have no meta description: ${listed(r.missingMetaDescription, true)} — write each from the page's content (150–160 characters) with ONE autofill_page_seo_many call`,
+      `${r.missingMetaDescription.count} page(s) have no meta description: ${listed(r.missingMetaDescription, true)} — write each from the page's content (150–160 characters; ONE get_page_seo({pageIds}) call returns every page's core text) with ONE autofill_page_seo_many call`,
     );
   }
   return `A Stage would be refused right now: ${steps.map((s, i) => `(${i + 1}) ${s}`).join("; ")}. Fix these before stage_changes.`;

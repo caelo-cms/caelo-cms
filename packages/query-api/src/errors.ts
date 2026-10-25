@@ -17,6 +17,16 @@ export type QueryError =
       readonly operation: string;
       readonly message: string;
       /**
+       * #1091 — the operation worked as designed and said no: a
+       * precondition the caller can meet is not met (the module is still
+       * placed, the instance still referenced, the module type not
+       * allowed in that field), and `message` names the step that meets
+       * it. Not a defect: the chat's automatic bug capture skips it, while
+       * every failure without the flag is still filed. Set it only on a
+       * deliberate guard, never on a failure the caller cannot fix.
+       */
+      readonly refusal?: true;
+      /**
        * v0.5.17 — when the throw originated from a SQL driver (Bun.SQL,
        * drizzle, pg-postgres), the adapter walks `.cause` and lifts the
        * Postgres-specific fields here so downstream consumers (AI tool

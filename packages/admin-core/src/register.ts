@@ -220,6 +220,7 @@ import {
   rejectDeployProposalOp,
 } from "./ops/deploy_pending.js";
 import { beginDeployRunOp } from "./ops/deploy-run-lifecycle.js";
+import { getDeployRunOriginOp } from "./ops/deploy-run-origin.js";
 import { hostingStatusOp, reconnectHostingDomainOp } from "./ops/domain_hosting.js";
 import {
   executeDomainProposalOp,
@@ -521,6 +522,7 @@ import { getTelemetryOp, setTelemetryOp, testSendTelemetryOp } from "./ops/secur
 import {
   pagesSeoApplyTranslationOp,
   pagesSeoAutofillOp,
+  pagesSeoGetManyOp,
   pagesSeoGetOp,
   pagesSeoListStaleOp,
   pagesSeoOptimizeManyOp,
@@ -998,6 +1000,8 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(listDeployTargetsOp);
   registry.register(listDeployRunsOp);
   registry.register(stageReadinessOp);
+  // #1088 — a run's build origin for inspect_built_page on Firebase.
+  registry.register(getDeployRunOriginOp);
   registry.register(triggerDeployOp);
   registry.register(promoteDeployOp);
   registry.register(rollbackDeployOp);
@@ -1307,6 +1311,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(reviewAltProposalOp);
   // P8 — SEO sidecar + site SEO defaults.
   registry.register(pagesSeoGetOp);
+  registry.register(pagesSeoGetManyOp);
   registry.register(pagesSeoSetOp);
   // Bulk `_many` variant via the DRY defineBulkOp factory (CLAUDE.md §11).
   registry.register(pagesSeoSetManyOp);

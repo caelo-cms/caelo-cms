@@ -12,6 +12,7 @@
  * module, a navigation menu's structured set, a layout, or a template.
  */
 
+import { truncateKeepingIds } from "@caelo-cms/shared";
 import type { FindingFix } from "./findings.js";
 
 /** A module as the link check needs it. */
@@ -171,5 +172,5 @@ export function fixFor(
 }
 
 function clip(hint: string): string {
-  return hint.length > 500 ? `${hint.slice(0, 499)}…` : hint;
+  return truncateKeepingIds(hint, 500);
 }

@@ -43,11 +43,15 @@ describe("applySlotReplacements", () => {
     expect(result.replacedSlots).toEqual(["header", "footer"]);
   });
 
-  it("records slots without a replacement and preserves their original inner HTML", () => {
-    const html = `<caelo-slot name="missing">DEFAULT</caelo-slot>`;
+  // #1085 — the authored placeholder ("_" in many seeds) leaked into the
+  // composed page visitors get.
+  it("records slots without a replacement and renders them empty", () => {
+    const html = `<header><caelo-slot name="header">_</caelo-slot></header><caelo-slot name="missing">DEFAULT</caelo-slot>`;
     const result = applySlotReplacements(html, { contentByName: map([]) });
-    expect(result.html).toBe(`<caelo-slot name="missing">DEFAULT</caelo-slot>`);
-    expect(result.missingSlots).toEqual(["missing"]);
+    expect(result.html).toBe(
+      `<header><caelo-slot name="header"></caelo-slot></header><caelo-slot name="missing"></caelo-slot>`,
+    );
+    expect(result.missingSlots).toEqual(["header", "missing"]);
   });
 
   it("handles single-quoted name attributes", () => {

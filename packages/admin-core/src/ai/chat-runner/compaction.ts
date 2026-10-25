@@ -41,6 +41,7 @@
  * `*.propose_*` calls remain visible in the compacted trail.
  */
 
+import { idSafeCutIndex } from "@caelo-cms/shared";
 import type { ChatMessageInput } from "../provider.js";
 
 /** chars/4 — the standard rough heuristic for English + JSON + HTML. */
@@ -344,7 +345,9 @@ const DIGEST_LINE_CHARS = 100;
 function digestLine(m: ChatMessageInput): string {
   const firstLine = m.content.split("\n", 1)[0] ?? "";
   const excerpt =
-    firstLine.length > DIGEST_LINE_CHARS ? `${firstLine.slice(0, DIGEST_LINE_CHARS)}…` : firstLine;
+    firstLine.length > DIGEST_LINE_CHARS
+      ? `${firstLine.slice(0, idSafeCutIndex(firstLine, DIGEST_LINE_CHARS))}…`
+      : firstLine;
   if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
     const names = m.toolCalls.map((c) => c.name).join(", ");
     return `- assistant [tools: ${names}]: ${excerpt}`;
@@ -399,14 +402,17 @@ export function compactHistory(
   for (let i = 0; i < firstProtectedIdx && estimate > opts.targetTokens; i++) {
     const m = out[i];
     if (m?.role !== "tool") continue;
-    const removed = m.content.length - opts.toolResultHeadChars;
+    // #1094 — never cut an id in half: a fragment before the marker is
+    // what the model later "completes" into a malformed UUID.
+    const cut = idSafeCutIndex(m.content, opts.toolResultHeadChars);
+    const removed = m.content.length - cut;
     // Skip results at/near the head size — including previously
     // truncated ones, unless this pass uses a materially smaller head
     // (the harder retry pass re-cuts a 500-char head down to 200).
     if (removed <= MIN_TRUNCATION_SAVINGS_CHARS) continue;
     const truncated: ChatMessageInput = {
       ...m,
-      content: `${m.content.slice(0, opts.toolResultHeadChars)}${truncationMarker(removed)}`,
+      content: `${m.content.slice(0, cut)}${truncationMarker(removed)}`,
     };
     estimate -= estimateMessageTokens(m) - estimateMessageTokens(truncated);
     out[i] = truncated;

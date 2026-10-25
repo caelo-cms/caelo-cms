@@ -28,4 +28,16 @@ describe("adcNote (#816)", () => {
     expect(note).toContain("gcloud auth application-default login");
     expect(note).toContain("upgrade, status and backup don't need them");
   });
+
+  it("expired ADC say so instead of 'no ADC' (#1078)", () => {
+    const note = adcNote(() => ({
+      ok: false,
+      stdout: "",
+      stderr:
+        "ERROR: (gcloud.auth.application-default.print-access-token) Reauthentication failed. cannot prompt during non-interactive execution.",
+      exitCode: 1,
+    }));
+    expect(note).toContain("have expired");
+    expect(note).toContain("gcloud auth application-default login");
+  });
 });

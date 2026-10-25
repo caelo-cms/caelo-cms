@@ -11,7 +11,7 @@
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { type ExecutionContext, snapshotsListInput } from "@caelo-cms/shared";
+import { type ExecutionContext, idSafeCutIndex, snapshotsListInput } from "@caelo-cms/shared";
 import { z } from "zod";
 import type { listOpenChangesOp } from "../../ops/chat/open-changes.js";
 import type { listPendingChangesOp } from "../../ops/chat/stage.js";
@@ -85,7 +85,9 @@ function stateLabel(state: unknown): string {
 
 function statePreview(state: unknown): string {
   const json = JSON.stringify(state) ?? "null";
-  return json.length > STATE_PREVIEW_CHARS ? `${json.slice(0, STATE_PREVIEW_CHARS)}…` : json;
+  return json.length > STATE_PREVIEW_CHARS
+    ? `${json.slice(0, idSafeCutIndex(json, STATE_PREVIEW_CHARS))}…`
+    : json;
 }
 
 export const getSnapshotTool = makeReadTool({

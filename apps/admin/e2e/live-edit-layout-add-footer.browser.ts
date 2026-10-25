@@ -15,9 +15,11 @@
 import { spawnSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
 import {
+  archiveChat,
   attachTestProviderHeader,
   clearLoginRateBucket,
   clearTestProvider,
+  openOwnerChat,
   registerTestProvider,
   resetOverlayLayoutFor,
   runBunInline,
@@ -63,10 +65,13 @@ test.beforeAll(() => {
 const ts = Date.now();
 const PROVIDER = `add-footer-${ts}`;
 const FOOTER_TEXT = `LAYOUT_FOOTER_AI_${ts}`;
-const BASE = "http://localhost:4173";
+const BASE = `http://localhost:${process.env.CAELO_E2E_PORT ?? "4173"}`;
+/** Chats this spec opened; archived in afterAll. */
+const opened: string[] = [];
 
 test.afterAll(async () => {
   await clearTestProvider(BASE, PROVIDER);
+  for (const id of opened) archiveChat(id);
   // Clean up the AI-attached footer module so reruns are stable.
   runBunInline(
     `
@@ -138,7 +143,16 @@ test("add_module (target=layout) reaches every page on the layout", async ({ con
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
-  await page.goto("/edit");
+  // #1081 — Live Edit without `?chat=` resumes dev-owner's most recent
+  // chat, and parallel specs (live-edit-inline-text, open-changes) open
+  // experiment chats on their own branches: the footer then landed on that
+  // branch and the shared-draft read below found none. Pin a shared-draft
+  // chat of this spec's own, and make an experiment the most recent chat so
+  // the pin is what keeps the write on the draft (deterministic, not a race).
+  const chat = openOwnerChat(`e2e-add-footer-${ts}`);
+  opened.push(chat);
+  opened.push(openOwnerChat(`e2e-add-footer-experiment-${ts}`, "experiment"));
+  await page.goto(`/edit?chat=${chat}`);
   await page.locator("textarea").fill("add a footer to every page");
   await page.getByRole("button", { name: /^send$/i }).click();
   await expect(page.getByText("Footer added to every page.").first()).toBeVisible({

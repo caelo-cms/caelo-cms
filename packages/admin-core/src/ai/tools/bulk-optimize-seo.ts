@@ -23,6 +23,7 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
     "(keyword research, intent shift, branding update). " +
     "Use this — NOT multiple `optimize_page_seo` calls — when the user asks to optimize 2+ pages. " +
     "Each update is { pageId, metaDescription, ogImageAssetId? }. " +
+    "Read the pages' current descriptions and core text with ONE `get_page_seo({pageIds})` call first. " +
     "All-or-nothing: a single failed update rolls back the whole batch. " +
     "For a single page, use `optimize_page_seo`.",
   schema: bulkOptimizeSeoToolInput,

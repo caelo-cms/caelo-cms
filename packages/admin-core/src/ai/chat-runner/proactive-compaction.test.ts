@@ -89,6 +89,16 @@ describe("shouldCompactToolResult", () => {
 });
 
 describe("summarizeToolResult", () => {
+  // #1094 — the 300-char head could end inside a UUID.
+  it("does not end the head inside an id; the whole id is kept as a key id", () => {
+    const id = "c9c7ddcb-cc85-4747-84fa-90967da6f769";
+    const content = `${"x".repeat(290)}${id} rest\n${"z".repeat(5000)}`;
+    const summary = summarizeToolResult(content);
+    const head = summary.split("\n")[0] ?? "";
+    expect(head).toBe("x".repeat(290));
+    expect(summary).toContain(`[key ids: ${id}]`);
+  });
+
   it("keeps the leading line, appends key identifiers and the shared marker", () => {
     const uuid = "a1b2c3d4-e5f6-4a1b-8c2d-0123456789ab";
     const content = `ok: page built\n${"<section>filler</section>".repeat(200)}{"pageId":"${uuid}","slug":"pricing"}`;

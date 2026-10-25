@@ -152,12 +152,14 @@ export const buildPageOp = defineOperation({
     // rolls back (see OperationAbortError — `return err` would commit
     // the partial build).
     let wrote = false;
-    const fail = (message: string, nextAction?: BuildPageNextAction) => {
+    const fail = (message: string, nextAction?: BuildPageNextAction, refusal?: true) => {
       const queryError = {
         kind: "HandlerError" as const,
         operation: "pages.build_page",
         message,
         ...(nextAction ? { nextAction } : {}),
+        // #1091 — a guard refusal of a nested op stays one.
+        ...(refusal ? { refusal } : {}),
       };
       if (wrote) throw new OperationAbortError(queryError);
       return err(queryError);
@@ -401,7 +403,7 @@ export const buildPageOp = defineOperation({
         if (!mod) {
           return fail(
             `${moduleLabel(i, entry)}: module ${entry.moduleId} not found or deleted — ` +
-              "pass an id from `## Modules` / list_modules, or author displayName + html to mint a new module",
+              "pass an id from list_modules, or author displayName + html to mint a new module",
           );
         }
         moduleId = entry.moduleId;
@@ -553,12 +555,14 @@ export const buildPageOp = defineOperation({
         }
         const ciCreated = await createContentInstanceOp.handler(ctx, ciInput.data, tx);
         if (!ciCreated.ok) {
-          const inner = ciCreated.error as { message?: string };
+          const inner = ciCreated.error as { message?: string; refusal?: true };
           // content_instances.create's validator names the failing
           // field ("field \"hero_title\" (kind=number) expects …") —
           // forward it verbatim under the module index.
           return fail(
             `${moduleLabel(i, entry)}: content: ${inner.message ?? ciCreated.error.kind}`,
+            undefined,
+            inner.refusal,
           );
         }
         wrote = true;

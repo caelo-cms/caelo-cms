@@ -24,7 +24,7 @@
  * their own transaction.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { assertChatOpenForWrite, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 
 /** A plugin row's state as snapshotted. `values` holds every non-host column. */
@@ -118,6 +118,8 @@ export async function emitPluginRowSnapshot(
     readonly state: PluginRowState;
   },
 ): Promise<void> {
+  // #1102 — a closed chat takes no more changes; nothing of the write is kept.
+  if (input.chatTaskId) await assertChatOpenForWrite(tx, input.chatTaskId, input.opKind);
   const header = (await tx.execute(sql`
     INSERT INTO site_snapshots (actor_id, op_kind, description, chat_task_id, chat_branch_id)
     VALUES (

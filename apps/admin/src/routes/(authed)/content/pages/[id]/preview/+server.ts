@@ -4,7 +4,10 @@ import { pluginsNotRunningHere } from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { error } from "@sveltejs/kit";
 import { requirePermission } from "#lib/server/guards.js";
-import { withPluginProblemsBanner } from "#lib/server/plugin-problems-banner.js";
+import {
+  previewPluginProblems,
+  withPluginProblemsBanner,
+} from "#lib/server/plugin-problems-banner.js";
 import { previewDocumentResponse } from "#lib/server/preview-sandbox.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { RequestHandler } from "./$types";
@@ -32,8 +35,12 @@ export const GET: RequestHandler = async ({ params, locals, cookies }) => {
     if (message === "page not found") throw error(404, "Page not found");
     throw error(500, `Preview render failed: ${message}`);
   }
-  const { html } = result.value as { html: string };
-  return previewDocumentResponse(withPluginProblemsBanner(html, pluginsNotRunningHere()), {
+  const { html, pluginFailures } = result.value as {
+    html: string;
+    pluginFailures?: { slug: string; reason: string }[];
+  };
+  const problems = previewPluginProblems(pluginsNotRunningHere(), pluginFailures);
+  return previewDocumentResponse(withPluginProblemsBanner(html, problems), {
     cookies,
     userId: user.id,
   });

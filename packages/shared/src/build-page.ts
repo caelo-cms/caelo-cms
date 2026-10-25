@@ -133,7 +133,7 @@ export const buildPageModuleSchema = z
       .regex(/^[a-z][a-z0-9_-]{0,31}$/, "ref must be a short lowercase handle")
       .optional(),
     /**
-     * Place mode: an existing module from `## Modules` (UUID), or a
+     * Place mode: an existing module from `list_modules` (UUID), or a
      * module minted EARLIER IN THIS CALL via `{"$ref": "<handle>"}` —
      * the second-placement case (e.g. three feature cards reusing one
      * card module). Live-edit run A showed the model writing
@@ -145,7 +145,7 @@ export const buildPageModuleSchema = z
         z
           .string()
           .uuid(
-            'moduleId must be a UUID from ## Modules — to re-place a module minted earlier in THIS call, pass {"$ref": "<its ref>"} instead',
+            'moduleId must be a UUID from list_modules — to re-place a module minted earlier in THIS call, pass {"$ref": "<its ref>"} instead',
           ),
         z.object({ $ref: z.string() }).strict(),
       ])
@@ -195,7 +195,7 @@ export const buildPageModuleSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "Pass either `moduleId` (place an existing module from ## Modules) " +
+          "Pass either `moduleId` (place an existing module from list_modules) " +
           "or `displayName` + `html` (mint a new module).",
       });
     }

@@ -125,128 +125,6 @@ export function formatStructuredSetsBlock(
 }
 
 /**
- * v0.12.0 — `## Modules` decision-support catalog.
- *
- * Per CLAUDE.md §1A: the operator says "I need a pricing page", never
- * "add the product-header module". The AI translates intent → the
- * right module. This block gives the AI enough context to make that
- * call without round-tripping back to the operator:
- *
- *   - `description` — what this module is for + when to use it
- *   - `kind` — chrome | hero | content | cta | utility (grouping key)
- *   - `placements` — count + top sample slugs the module appears on
- *   - `fields` — short list of field names + kinds so the AI sees the
- *      content shape without an extra modules.get call
- *
- * Grouped by `kind` so the AI scans by intent ("which hero do I want?")
- * rather than slug-alphabetic. Capped at ~40 modules / <3 KB; the AI
- * calls `list_modules` for the full set.
- */
-export function formatModulesBlock(
-  modules: readonly {
-    id: string;
-    slug: string;
-    displayName: string;
-    description: string;
-    kind: "chrome" | "hero" | "content" | "cta" | "utility";
-    /** v0.12.3 (issue #106) — stable class the AI references when
-     *  satisfying a parent's `allowedModuleTypes`. */
-    type?: string;
-    fields: readonly { name: string; kind: string; allowedModuleTypes?: readonly string[] }[];
-  }[],
-  usageByModuleId: ReadonlyMap<string, { placementCount: number; sampleSlugs: readonly string[] }>,
-): string {
-  const primer = [
-    "## Modules",
-    "",
-    'The full module catalog on this install. Pick modules by **kind** + **description** — the operator describes outcomes ("add a footer to the blog"), you decide which module fits.',
-    "",
-    "Tools: `list_modules` (full catalog; filter by kind/search), `add_module` (one tool routed by `target`: 'page' | 'layout' | 'template'; pass `moduleId` to place an existing module — reuse first; or `displayName` + `html` + `fields` to mint new, REQUIRES `description` + `kind` + semantic snake_case field names), `edit_module` (modify HTML/fields/description).",
-    "",
-    "**Editing existing code (html/css/js) — work like a code editor:** `read_content` (Read: line-numbered, windowable body of a module/template), `edit_content` (Edit: surgical `oldString`→`newString` replacements — far cheaper than re-emitting the whole body via `edit_module`, and the diff is reviewable), `grep_content` (find a string/regex across every module + template body). The loop is read_content → edit_content, exactly like editing a file. Use `edit_module` only for a wholesale rewrite, a NEW module, or field-schema/metadata changes. Template edit_content is §11.A-gated (you propose, the Owner approves).",
-    "",
-    "**When the catalog has no fit:** mint a new module directly through `add_module` (pick `target`='page'/'template'/'layout') with a meaningful `description` (what the module is for, when to use it) — authoring and placement happen in one call; there is no separate create step. Don't ask the operator which module to use — pick the closest fit by kind, or mint a new one.",
-  ].join("\n");
-  if (modules.length === 0) {
-    return [
-      primer,
-      "",
-      "_0 modules on this install — every page composition starts by minting modules via `add_module` (target='page') (or `build_page` for a whole page)._",
-    ].join("\n");
-  }
-  // Group by kind so the AI scans by intent.
-  const KIND_ORDER = ["chrome", "hero", "content", "cta", "utility"] as const;
-  const byKind = new Map<(typeof KIND_ORDER)[number], typeof modules>();
-  for (const k of KIND_ORDER) byKind.set(k, [] as unknown as typeof modules);
-  for (const m of modules) {
-    const bucket = byKind.get(m.kind) as unknown as (typeof modules)[number][];
-    bucket.push(m);
-  }
-  const lines: string[] = [primer, ""];
-  let emitted = 0;
-  for (const k of KIND_ORDER) {
-    const bucket = byKind.get(k) as unknown as (typeof modules)[number][];
-    if (bucket.length === 0) continue;
-    if (emitted >= 40) break;
-    lines.push(`### kind=${k}`);
-    for (const m of bucket) {
-      if (emitted >= 40) {
-        lines.push(`    … (${bucket.length - (emitted - bucket.length)} more — call list_modules)`);
-        break;
-      }
-      const u = usageByModuleId.get(m.id);
-      const usage =
-        u && u.placementCount > 0
-          ? ` — placements=${u.placementCount}${
-              u.sampleSlugs.length > 0
-                ? ` (e.g. ${u.sampleSlugs
-                    .slice(0, 3)
-                    .map((s) => `/${s}`)
-                    .join(", ")})`
-                : ""
-            }`
-          : " — unplaced";
-      const desc = m.description.trim() === "" ? "(no description)" : m.description.trim();
-      // v0.12.3 (issue #106) — field summary. Primitive fields are capped
-      // at 5 (name:kind) to bound the prompt, but `module`/`module-list`
-      // fields are ALWAYS shown in full with their `allowedModuleTypes`
-      // whitelist: that constraint is exactly what the AI needs to pick a
-      // valid nested module without guessing (and then punting the
-      // validator failure to the operator).
-      const nestedFields = m.fields.filter((f) => f.kind === "module" || f.kind === "module-list");
-      const plainFields = m.fields.filter((f) => f.kind !== "module" && f.kind !== "module-list");
-      const plainSummary =
-        plainFields.length === 0
-          ? ""
-          : ` fields=[${plainFields
-              .slice(0, 5)
-              .map((f) => `${f.name}:${f.kind}`)
-              .join(", ")}${plainFields.length > 5 ? ", …" : ""}]`;
-      const nestedSummary =
-        nestedFields.length === 0
-          ? ""
-          : ` nested=[${nestedFields
-              .map((f) => {
-                const allow =
-                  f.allowedModuleTypes && f.allowedModuleTypes.length > 0
-                    ? ` allowedModuleTypes=[${f.allowedModuleTypes.join(", ")}]`
-                    : " (any type)";
-                return `${f.name}:${f.kind}${allow}`;
-              })
-              .join(", ")}]`;
-      // v0.12.3 — surface `type` (the reusable class) distinctly from the
-      // unique `slug`, so the AI references the right value in a parent's
-      // allowedModuleTypes.
-      const typeTag = m.type ? ` type=\`${m.type}\`` : "";
-      lines.push(`- \`${m.slug}\`${typeTag} "${m.displayName}"${usage}`);
-      lines.push(`    ${desc}${plainSummary}${nestedSummary}`);
-      emitted += 1;
-    }
-  }
-  return lines.join("\n");
-}
-
-/**
  * v0.12.0 — `## Content Library` decision-support block.
  *
  * Per CLAUDE.md §1A: the AI must be able to decide *reuse the synced
@@ -403,8 +281,8 @@ const MODULE_MODEL_BLOCK = [
   // v0.12.3 (issue #106) — the type-vs-slug distinction + nested-ref
   // contract, surfaced so the AI satisfies allowedModuleTypes without a
   // round-trip.
-  "- Every module has a stable **`type`** (its reusable class, e.g. `button`) separate from its unique **`slug`** (`button-mpqxq3ch`). The `## Modules` block shows both.",
-  "  A `module`/`module-list` field may declare **`allowedModuleTypes`** — a whitelist of `type`s permitted in that slot. To fill such a slot, reference an existing module whose `type` is in the list (check `## Modules`); REUSE one of that type rather than minting a near-duplicate. The whitelist matches the referenced module's `type`, NEVER its slug.",
+  "- Every module has a stable **`type`** (its reusable class, e.g. `button`) separate from its unique **`slug`** (`button-mpqxq3ch`). `list_modules` shows both.",
+  "  A `module`/`module-list` field may declare **`allowedModuleTypes`** — a whitelist of `type`s permitted in that slot. To fill such a slot, reference an existing module whose `type` is in the list (`list_modules` shows each module's `type` and, for every nested field, its `allowedModuleTypes`); REUSE one of that type rather than minting a near-duplicate. The whitelist matches the referenced module's `type`, NEVER its slug.",
   "  If no existing module of an allowed type fits, create one and pass `type: \"<an-allowed-type>\"` so it satisfies the whitelist. If a module SHOULD be allowed but isn't, widen the field's `allowedModuleTypes` via `edit_module` on the PARENT module.",
   // issues #158 / #160 — static facts about the page-wide CSS/JS bundles.
   "- Every module's CSS joins ONE page-wide stylesheet: scope it under the module's root class (`.pricing h2`, not `h2`). Accordions, tabs and carousels need no module JS — mark the markup with `data-caelo-ui=\"accordion|tabs|carousel\"` (contract in the module tools' `js` description).",
@@ -487,7 +365,7 @@ function buildToolPlaybookBlock(surface: PromptSurface, builtPageInspection: boo
     "Standard workflows (tool names are exact):",
     "- **Batching & parallelism:** for a multi-row WRITE, use the domain's bulk op — `set_page_module_content_many`, `update_pages_many`, `set_pages_status_many`, `delete_pages_many`, `create_content_instances`, `set_content_instance_values_many`, `bulk_create_redirects` — which applies every row in ONE atomic transaction with ONE snapshot; never loop the singular tool. For independent READS (get/list/inspect on different targets) you MAY emit several tool calls in the SAME turn — they run together in one round-trip. Between a bulk op and several parallel singular writes, always prefer the bulk op (atomicity + one snapshot + fewer tokens).",
     "- **Create a new page** → ONE `build_page` call (page + every section module + content, one transaction); pass `modules:[]` for an intentionally empty shell. `duplicate_page` to clone an existing page.",
-    "- **Modify a page** → what changes picks the tool: text/images on ONE page → `set_page_module_content` (batch: `set_page_module_content_many`); a TARGETED code tweak to a section's html/css/js → `read_content` then `edit_content` (surgical string-replace; cheaper than a full rewrite); a wholesale INSTRUCTED redesign of a section, or its field schema → `edit_module` (affects every page using that module); exploratory design proposals / \"show me options\" → the design-preview loop (`save_design_draft` → `present_design_variants` → operator picks → `select_design_draft` → materialise; the design-preview skill carries it — variants preview in the site's real theme before anything changes); find a string across all modules → `grep_content`; page name/title/slug → `update_pages_many`; put a page under another page / regroup sections / back to top level → `move_pages` (a page's URL is its parent's URL + its slug; subtrees move with 301s; create a page directly under a parent with `build_page` `page.parentPageId`); draft/published → `set_pages_status_many`; delete → `delete_pages_many`; SEO → a new page's first meta description `autofill_page_seo_many`, later changes `set_page_seo` / `optimize_page_seo`.",
+    "- **Modify a page** → what changes picks the tool: text/images on ONE page → `set_page_module_content` (batch: `set_page_module_content_many`); a TARGETED code tweak to a section's html/css/js → `read_content` then `edit_content` (surgical string-replace; cheaper than a full rewrite); a wholesale INSTRUCTED redesign of a section, or its field schema → `edit_module` (affects every page using that module); exploratory design proposals / \"show me options\" → the design-preview loop (`save_design_draft` → `present_design_variants` → operator picks → `select_design_draft` → materialise; the design-preview skill carries it — variants preview in the site's real theme before anything changes); find a string across all modules → `grep_content`; page name/title/slug → `update_pages_many`; put a page under another page / regroup sections / back to top level → `move_pages` (a page's URL is its parent's URL + its slug; subtrees move with 301s; create a page directly under a parent with `build_page` `page.parentPageId`); draft/published → `set_pages_status_many`; delete → `delete_pages_many`; SEO → read pages' stored SEO + core text with ONE `get_page_seo({pageIds})`, a new page's first meta description `autofill_page_seo_many`, later changes `set_page_seo` / `optimize_page_seo`.",
     "- **Extend a page** → `add_module` routed by `target`: 'page' (this page only), 'layout' (site-wide chrome — ONE call covers all pages), 'template' (every page of one type). Rearrange with `move_module` (across blocks) / `reorder_module` (within a block); detach with `remove_module_from`.",
     "- **Navigation / menus** → `set_structured_set({kind:'nav-menu'})` for the links (never hardcode them into module HTML); read current items first via `get_structured_set`.",
     "- **Same content on N pages** → `create_content_instance` + `set_placement_content({syncMode:'synced'})` per placement; edit everywhere at once with `set_content_instance_values` (several at once: `set_content_instance_values_many`); detach one page with `fork_placement_content`.",

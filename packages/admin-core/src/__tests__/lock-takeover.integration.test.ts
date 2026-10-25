@@ -193,6 +193,47 @@ describe("#620 lock takeover", () => {
     expect(live[0]).toEqual({ html: "<p>from A</p>", display_name: "Hero (B)" });
   });
 
+  it("an archived chat adopts nothing: the holder keeps its change and the lock (#1102)", async () => {
+    const moduleId = await seedModule("closed-taker", "<p>v0</p>");
+    const a = await chat("Holder");
+    const b = await chat("Closed taker");
+    const wA = await execute(registry, adapter, a.ctx, "modules.update", {
+      moduleId,
+      html: "<p>from A</p>",
+    });
+    expect(wA.ok).toBe(true);
+    const archived = await execute(registry, adapter, SYS, "chat.archive_session", {
+      chatSessionId: b.id,
+    });
+    if (!archived.ok) throw new Error(JSON.stringify(archived.error));
+
+    const wB = await execute(registry, adapter, b.ctx, "modules.update", {
+      moduleId,
+      displayName: "Hero (closed)",
+    });
+    expect(wB.ok).toBe(false);
+    if (wB.ok) return;
+    // Refused by the takeover itself, before anything moved.
+    expect(wB.error).toMatchObject({ kind: "HandlerError", operation: "chat.adopt_change" });
+    expect(JSON.stringify(wB.error)).toContain("this chat was archived");
+    expect(await pendingModuleIds(a.id)).toEqual([moduleId]);
+    const lock = await asSystem(
+      (tx) =>
+        tx`
+        SELECT chat_session_id::text AS holder FROM chat_entity_locks
+        WHERE entity_kind = 'module' AND entity_id = ${moduleId}::uuid
+      ` as Promise<{ holder: string }[]>,
+    );
+    expect(lock[0]?.holder).toBe(a.id);
+    const takeovers = await asSystem(
+      (tx) =>
+        tx`SELECT count(*)::int AS n FROM chat_lock_takeovers WHERE entity_id = ${moduleId}::uuid` as Promise<
+          { n: number }[]
+        >,
+    );
+    expect(takeovers[0]?.n).toBe(0);
+  });
+
   it("has no time-based expiry: an ancient lock still moves its change along", async () => {
     const moduleId = await seedModule("old", "<p>v0</p>");
     const a = await chat("Forgotten");

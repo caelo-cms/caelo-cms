@@ -27,6 +27,7 @@
  *   - `references/limit-reached`       (info)
  */
 
+import { truncateKeepingIds } from "@caelo-cms/shared";
 import type { SiteCheck } from "./check.js";
 import type { Finding } from "./findings.js";
 import { MAX_FINDINGS_PER_CALL } from "./runner.js";
@@ -91,7 +92,7 @@ export function referenceFindings(
       ruleId: `${REFERENCES_CHECK_ID}/${i.problem}`,
       severity: i.severity === "block" ? "error" : "warning",
       ...(pageId ? { pageId } : {}),
-      message: i.message.length > 1000 ? `${i.message.slice(0, 999)}…` : i.message,
+      message: truncateKeepingIds(i.message, 1000),
       fix: { tool: i.fix.tool, hint: i.fix.hint },
     });
   }

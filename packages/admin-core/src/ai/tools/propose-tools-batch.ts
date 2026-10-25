@@ -241,7 +241,7 @@ export const proposeUserSetRolesTool = makeProposeTool({
     },
   },
   summarize: (input) =>
-    `set roles to ${input.roleNames.join("+") || "(empty)"} for user ${input.userId.slice(0, 8)}`,
+    `set roles to ${input.roleNames.join("+") || "(empty)"} for user ${input.userId}`,
 });
 
 export const proposeUserDeleteTool = makeProposeTool({

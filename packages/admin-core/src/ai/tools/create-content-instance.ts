@@ -8,7 +8,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { createContentInstanceToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, forwardRefusal } from "./_describe-error.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -45,7 +45,11 @@ export const createContentInstanceTool: ToolDefinitionWithHandler<
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `content_instances.create failed: ${describeError(r.error)}` };
+      return {
+        ok: false,
+        content: `content_instances.create failed: ${describeError(r.error)}`,
+        ...forwardRefusal(r.error),
+      };
     }
     const { contentInstanceId } = r.value as { contentInstanceId: string };
     return {

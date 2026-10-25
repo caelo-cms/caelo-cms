@@ -30,6 +30,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { buildPatchSet } from "../sql-helpers.js";
+import { loadPageContentTexts } from "./content/page-content-text.js";
 
 const seoRowOutput = z.object({
   pageId: z.string(),
@@ -101,6 +102,62 @@ export const pagesSeoGetOp = defineOperation({
     const r = rows[0];
     if (!r) return ok({ seo: null });
     return ok({ seo: rowToSeo(r) });
+  },
+});
+
+// ---------------------------------------------------------------------
+// pages_seo.get_many — the AI's SEO read: stored fields + core text
+// ---------------------------------------------------------------------
+
+/** Most pages one `pages_seo.get_many` call reads (each renders its content). */
+export const SEO_GET_MANY_MAX = 50;
+
+export const pagesSeoGetManyOp = defineOperation({
+  name: "pages_seo.get_many",
+  // CLAUDE.md §11: reads are open — the AI reads a page's stored SEO and
+  // its core text before it writes or re-optimizes a description.
+  actorScope: ["human", "ai", "system"],
+  database: "cms_admin",
+  input: z.object({ pageIds: z.array(z.string().uuid()).min(1).max(SEO_GET_MANY_MAX) }).strict(),
+  output: z.object({
+    pages: z.array(
+      z.object({
+        pageId: z.string(),
+        title: z.string(),
+        path: z.string(),
+        seo: seoRowOutput.nullable(),
+        contentText: z.string(),
+        contentTextTruncated: z.boolean(),
+        contentTextLength: z.number().int(),
+      }),
+    ),
+  }),
+  handler: async (ctx, input, tx) => {
+    const texts = await loadPageContentTexts(tx, input.pageIds, ctx.chatBranchId ?? null);
+    if (texts.missing.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "pages_seo.get_many",
+        message:
+          `no page with id ${texts.missing.join(", ")} — take page ids from list_pages ` +
+          "(or the Stage-readiness note) and call again.",
+      });
+    }
+    const rows = (await tx.execute(sql`
+      SELECT
+        page_id::text AS page_id,
+        meta_description, og_image_asset_id::text AS og_image_asset_id,
+        canonical_url, noindex, changefreq, priority,
+        autofilled_at, optimized_at, updated_at
+      FROM pages_seo WHERE page_id IN (${sql.join(
+        texts.pages.map((p) => sql`${p.pageId}::uuid`),
+        sql`, `,
+      )})
+    `)) as unknown as SeoDbRow[];
+    const seoByPage = new Map(rows.map((r) => [r.page_id, rowToSeo(r)]));
+    return ok({
+      pages: texts.pages.map((p) => ({ ...p, seo: seoByPage.get(p.pageId) ?? null })),
+    });
   },
 });
 

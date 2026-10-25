@@ -156,6 +156,9 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
     planFiles: [] as { label: string; steps: number }[],
     /** What existingInProject answers (#1079); an Error is thrown. */
     existing: [] as readonly string[] | Error,
+    /** What checkAdc answers (#1078). */
+    adc: { ok: true } as { ok: true } | { ok: false; error: string },
+    adcChecks: 0,
   };
   const meta = (): MigrateInstall => ({
     installId: "gcp-firebase-acme",
@@ -169,6 +172,10 @@ function machine(initial: StateBackendRecord = { kind: "local" }) {
   const deps: MigrateDeps = {
     pulumi: p.ops,
     report,
+    checkAdc: async () => {
+      m.adcChecks++;
+      return m.adc;
+    },
     resolve: (record) =>
       resolveBackend(
         { installId: "gcp-firebase-acme", stateBackend: record },
@@ -564,5 +571,51 @@ describe("helpers", () => {
     expect(n).toContain("state migrate --install gcp-firebase-viu-one --dry-run");
     expect(localStateNotice({ installId: "x", provider: "gcp", stateBackend: GCS })).toBeNull();
     expect(localStateNotice({ installId: "x", provider: "self-hosted" })).toBeNull();
+  });
+});
+
+describe("migrateState — Application Default Credentials (#1078)", () => {
+  /** A Pulumi workspace that fails the test on any call. */
+  const untouchable = (): StatePulumiOps =>
+    new Proxy({} as StatePulumiOps, {
+      get: (_t, name) => () => {
+        throw new Error(`Pulumi ${String(name)} must not run without working ADC`);
+      },
+    });
+
+  for (const [what, error] of [
+    [
+      "missing",
+      "No Application Default Credentials on this machine; Pulumi needs them. Run `gcloud auth application-default login` and re-run this command.",
+    ],
+    [
+      "expired",
+      "The Application Default Credentials on this machine have expired (gcloud: invalid_grant: reauth related error (invalid_rapt)). Run `gcloud auth application-default login` and re-run this command.",
+    ],
+  ] as const) {
+    for (const dryRun of [false, true]) {
+      it(`${what} ADC stop the run before any Pulumi call${dryRun ? " (dry run)" : ""}`, async () => {
+        const t = machine();
+        t.m.adc = { ok: false, error };
+        const r = await migrateState(
+          t.meta(),
+          { to: "remote", dryRun },
+          { ...t.deps, pulumi: untouchable() },
+        );
+        expect(r).toEqual({ ok: false, error: `${error} Nothing was changed.` });
+        expect(t.m.adcChecks).toBe(1);
+        expect(t.m.backend).toEqual({ kind: "local" });
+        expect(t.m.backups).toBe(0);
+        expect(t.m.ensureRemoteCalls).toEqual([]);
+        expect(t.m.locked).toBe(false);
+      });
+    }
+  }
+
+  it("working ADC let the migration run", async () => {
+    const t = machine();
+    const r = await migrateState(t.meta(), { to: "remote", dryRun: false }, t.deps);
+    expect(r).toEqual({ ok: true, changed: true });
+    expect(t.m.adcChecks).toBe(1);
   });
 });

@@ -386,10 +386,10 @@ const moduleFieldsArray = z
   });
 
 /**
- * v0.12.0 — coarse role tag for the AI's `## Modules` catalog block.
+ * v0.12.0 — coarse role tag for the AI's `list_modules` catalog.
  * Constrained by `modules_kind_check` in migration 0095. Adding a
  * new kind means: (1) bump the SQL CHECK, (2) update this schema,
- * (3) update formatModulesBlock so the AI knows when to use it.
+ * (3) update the add_module / build_page kind guidance so the AI knows when to use it.
  */
 export const MODULE_KINDS = ["chrome", "hero", "content", "cta", "utility"] as const;
 export const moduleKindSchema = z.enum(MODULE_KINDS);
