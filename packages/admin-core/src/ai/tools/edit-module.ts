@@ -38,8 +38,8 @@ export const editModuleTool: ToolDefinitionWithHandler<
     "**Field kinds (v0.12.0):** `text`, `richtext`, `url`, `image`, `number`, `boolean`, `link` (primitives); `text-list` (array of strings, slot `{{#field}}…{{.}}…{{/field}}`); `link-list` (array of `{label, href}`, slot `{{#field}}…{{label}}…{{href}}…{{/field}}` — use for menus, footer columns); `module` (single nested module, slot `{{>field}}`); `module-list` (array of nested modules, slot `{{#field}}…{{/field}}`). " +
     '**Nested fields may declare `allowedModuleTypes`** — a whitelist of stable module `type`s (e.g. `["button"]`), NOT slugs. It matches the referenced module\'s `type`; set it to constrain what can nest in a `module`/`module-list` slot, and widen it here if a valid module is being wrongly rejected. ' +
     "**Lists are lists, not numbered scalars.** A menu with 10 items is ONE `link-list` field with 10 elements — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `text-list`. Cards with rich per-item structure use `module-list` pointing at a sub-module. " +
-    "**Update description + kind when the module's purpose drifts.** The `## Modules` block exposes them to your future self; stale descriptions hurt your own decision-making. " +
-    "**Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `## Modules` block. Treat it as a fallback, not the default path. " +
+    "**Update description + kind when the module's purpose drifts.** `list_modules` exposes them to your future self; stale descriptions hurt your own decision-making. " +
+    "**Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `list_modules` catalog. Treat it as a fallback, not the default path. " +
     "**Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158); the tool result flags unscoped selectors. " +
     "**Module JS shares ONE page-level script** - no implicit `root`/`el` binding exists; wrap in an IIFE and query via document.querySelectorAll scoped to your module's root class (see the `js` input description). " +
     '**Accordion, tabs, carousel need NO module JS** - mark the markup with `data-caelo-ui="accordion|tabs|carousel"` and Caelo ships vetted, accessible behaviour (markup contract in the `js` input description). ' +
@@ -127,10 +127,10 @@ export const editModuleTool: ToolDefinitionWithHandler<
           // v0.12.0 — AI-visible deprecation hint per CLAUDE.md §1A.
           // The extractor fired because the caller didn't supply
           // `fields[]`. Heuristic names like `spanText` or `cta2label2`
-          // pollute the `## Modules` block — the AI's future self
+          // pollute the `list_modules` catalog — the AI's future self
           // will struggle to pick the right module if the catalog is
           // full of garbage. Tell the AI to author next time.
-          content: `⚠️ Extractor fallback used — module ${input.moduleId} updated with heuristic field names: ${list}. **Next time, author HTML + fields together** with semantic snake_case names (e.g. \`hero_title\`, \`primary_cta_href\`) so the \`## Modules\` block stays useful. Rename via a follow-up edit_module with explicit \`fields\` if these names are confusing.${cssWarn}`,
+          content: `⚠️ Extractor fallback used — module ${input.moduleId} updated with heuristic field names: ${list}. **Next time, author HTML + fields together** with semantic snake_case names (e.g. \`hero_title\`, \`primary_cta_href\`) so the \`list_modules\` catalog stays useful. Rename via a follow-up edit_module with explicit \`fields\` if these names are confusing.${cssWarn}`,
         };
       }
       return {

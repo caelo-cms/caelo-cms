@@ -388,7 +388,7 @@ async function validateNestedRefs(
           // the implementation detail to a non-technical operator (§1A).
           message:
             `field "${where}" references module "${m.slug}" (type "${m.type}"), which is not in this field's allowedModuleTypes [${allowed}]. ` +
-            `Next step: reference an existing module whose type is one of [${allowed}] (see \`## Modules\` for each module's type), ` +
+            `Next step: reference an existing module whose type is one of [${allowed}] (\`list_modules\` shows each module's type and this field's allowedModuleTypes), ` +
             `or, if this module SHOULD be allowed here, add "${m.type}" to the field's allowedModuleTypes via edit_module on the parent module. ` +
             `Do not ask the operator to fix this — pick a valid module or widen the allowlist and retry.`,
         };

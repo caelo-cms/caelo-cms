@@ -401,7 +401,7 @@ export const buildPageOp = defineOperation({
         if (!mod) {
           return fail(
             `${moduleLabel(i, entry)}: module ${entry.moduleId} not found or deleted — ` +
-              "pass an id from `## Modules` / list_modules, or author displayName + html to mint a new module",
+              "pass an id from list_modules, or author displayName + html to mint a new module",
           );
         }
         moduleId = entry.moduleId;

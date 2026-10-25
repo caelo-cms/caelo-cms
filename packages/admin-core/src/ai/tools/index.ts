@@ -337,7 +337,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(listTemplatesTool);
   registry.register(listPagesTool);
   registry.register(loadSkillTool);
-  // issue #159 — the `## Modules` block's full-catalog escape hatch.
+  // issue #159 — the full module catalog (the system prompt carries none).
   registry.register(listModulesTool);
   // 2026-07-12 — clickable multiple-choice questions in the chat.
   registry.register(offerChoicesTool);

@@ -51,7 +51,7 @@ const moduleRowSchema = z.object({
   displayName: z.string(),
   /** v0.12.0 — operator/AI rationale; what this module is for. */
   description: z.string(),
-  /** v0.12.0 — coarse role tag for the AI's `## Modules` catalog. */
+  /** v0.12.0 — coarse role tag for the AI's `list_modules` catalog. */
   kind: z.enum(["chrome", "hero", "content", "cta", "utility"]),
   /** v0.12.3 (issue #106) — stable semantic class; what a parent's
    *  `allowedModuleTypes` whitelist matches against (not the unique slug). */
@@ -156,7 +156,7 @@ async function overlayBranchEdits(
 }
 
 /**
- * v0.12.0 — module usage signal for the AI's `## Modules`
+ * v0.12.0 — module usage signal for the AI's `list_modules`
  * decision-support block. Per CLAUDE.md §1A every domain object the
  * AI might reach for ships with usage context, not just identity —
  * so the AI sees "this header is on every product page" rather than
@@ -441,7 +441,7 @@ export const createModuleOp = defineOperation({
     // v0.12.0 — description + kind persisted alongside core columns.
     // Schema defaults ("" + "content") let the 82+ legacy callers keep
     // working; AI tool descriptions push the AI to pass them
-    // explicitly so the `## Modules` block can render decision-support
+    // explicitly so the `list_modules` block can render decision-support
     // context (CLAUDE.md §1A).
     // v0.12.3 (issue #106) — derive the stable `type` from displayName
     // when the caller didn't author one explicitly. Every minting path

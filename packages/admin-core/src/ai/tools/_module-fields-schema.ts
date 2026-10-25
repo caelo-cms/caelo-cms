@@ -124,7 +124,7 @@ export const MODULE_FIELDS_JSON_SCHEMA: Record<string, unknown> = {
 /**
  * The decision-support metadata properties every module-authoring tool
  * accepts: `description` (what the module is for + when to use it — surfaced
- * in `## Modules`), `kind` (coarse role tag), and the stable `type` (reusable
+ * in `list_modules`), `kind` (coarse role tag), and the stable `type` (reusable
  * class a parent's `allowedModuleTypes` matches against).
  *
  * Why shared (issue #106 — step-13 round-4 deviation): these three props lived

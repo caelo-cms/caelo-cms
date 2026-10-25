@@ -53,6 +53,20 @@ const FOOTER = {
   type: "site-footer",
   fields: [],
 };
+const GUIDE = {
+  ...HERO,
+  id: "11111111-1111-4111-8111-11111111be03",
+  slug: "guide-body-mvmh",
+  displayName: "Guide body",
+  description: "Guide article body built from blocks",
+  kind: "content" as const,
+  type: "guide-body",
+  fields: [
+    { name: "intro", kind: "text" },
+    { name: "bausteine", kind: "module-list", allowedModuleTypes: ["guide-prose", "guide-tldr"] },
+    { name: "aside", kind: "module" },
+  ],
+};
 
 /** Fake adapter satisfying the cold-start gate + the ops each tool chains. */
 function toolCtxWith(calls: string[]): ToolContext {
@@ -67,7 +81,7 @@ function toolCtxWith(calls: string[]): ToolContext {
         case "modules.get":
           return ok({ module: HERO });
         case "modules.list":
-          return ok({ modules: [HERO, FOOTER] });
+          return ok({ modules: [HERO, FOOTER, GUIDE] });
         case "modules.list_usage":
           return ok({
             usage: [{ moduleId: HERO.id, placementCount: 3, sampleSlugs: ["home", "pricing"] }],
@@ -132,6 +146,19 @@ describe("list_modules (issue #159)", () => {
     expect(payload).toContain(HERO.id);
     expect(payload).not.toContain("{{hero_title}}"); // html body must not leak
     expect(payload).not.toContain("var(--color-primary)"); // css body must not leak
+  });
+
+  // #1090 / #1093 — set_content_instance_values / build_page refused a
+  // child module whose type the parent field does not allow, and the
+  // allowlist was visible nowhere before the call.
+  it("shows each nested field's allowedModuleTypes before the AI picks a child", async () => {
+    const res = await listModulesTool.handler(AI, { filter: "guide" }, toolCtxWith([]));
+    expect(res.ok).toBe(true);
+    expect(res.content).toContain(
+      "intro:text|bausteine:module-list allowed=guide-prose/guide-tldr|aside:module allowed=any",
+    );
+    const payload = JSON.stringify((res as { value?: unknown }).value ?? {});
+    expect(payload).toContain('"allowedModuleTypes":["guide-prose","guide-tldr"]');
   });
 
   it("filters by kind and search", async () => {
