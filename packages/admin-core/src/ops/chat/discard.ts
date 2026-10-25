@@ -72,11 +72,14 @@ export const discardChatBranchOp = defineOperation({
     ),
   }),
   handler: async (ctx, input, tx) => {
+    // FOR UPDATE (#1102): a concurrent write into this chat finishes before
+    // the undo below, or runs after the discard and is refused (emit.ts).
     const sessions = (await tx.execute(sql`
       SELECT chat_branch_id::text AS chat_branch_id, published_at, discarded_at
       FROM chat_sessions
       WHERE id = ${input.chatSessionId}::uuid AND created_by = ${ctx.actorId}::uuid
       LIMIT 1
+      FOR UPDATE
     `)) as unknown as {
       chat_branch_id: string;
       published_at: unknown;

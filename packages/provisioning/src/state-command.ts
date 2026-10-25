@@ -14,6 +14,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { confirm, isCancel, log, note } from "@clack/prompts";
 import { bold, red } from "kleur/colors";
+import { ADC_LOGIN_COMMAND, ADC_PROBE_ARGS, adcProbeFromResult } from "./adc-check.js";
+import { checkAdcImpersonation } from "./adc-impersonation.js";
 import { adoptionCandidates, existingCandidates } from "./adopt-existing.js";
 import { checkGcloudAuth, gcloud } from "./gcloud.js";
 import { GCP_STACK_ENV } from "./gcp-names.js";
@@ -209,6 +211,8 @@ export async function stateCommand(argv: readonly string[]): Promise<void> {
           }),
       }),
       report: clackReporter(),
+      checkAdc: () =>
+        checkAdcImpersonation({ projectId, operatorAccount: operator, freshGrant: false }),
       resolve: (record) =>
         resolveBackend(
           { installId, stateBackend: record },
@@ -334,9 +338,13 @@ export function attachProject(projectId: string): string {
  * do not, so a note on every attach sent Owners on a detour (#816).
  */
 export function adcNote(run: SyncGcloud): string | null {
-  const r = run(["auth", "application-default", "print-access-token"]);
-  if (r.ok) return null;
-  return "No Application Default Credentials on this machine. upgrade, status and backup don't need them; re-running the installer or `state migrate` does: gcloud auth application-default login";
+  const probe = adcProbeFromResult(run([...ADC_PROBE_ARGS]));
+  if (probe.ok) return null;
+  const state =
+    probe.reason === "expired"
+      ? "The Application Default Credentials on this machine have expired."
+      : "No Application Default Credentials on this machine.";
+  return `${state} upgrade, status and backup don't need them; re-running the installer or \`state migrate\` does: ${ADC_LOGIN_COMMAND}`;
 }
 
 /**

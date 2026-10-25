@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { expect, test } from "@playwright/test";
-import { acceptConfirm, clearLoginRateBucket } from "./helpers.js";
+import { acceptConfirm, archiveChat, clearLoginRateBucket } from "./helpers.js";
 
 // Every spec logs in as dev-owner from the same IP; the login limiter
 // (5 per 5 min) would otherwise reject later specs in the batch.
 test.beforeAll(clearLoginRateBucket);
+/** The chat this spec opened (#1081); archived in afterAll. */
+let chat: string | null = null;
+test.afterAll(() => {
+  if (chat) archiveChat(chat);
+});
 test("plugin preview is authenticated, read-only and inert even when opened directly", async ({
   page,
   browser,
@@ -60,6 +65,7 @@ test("plugin preview is authenticated, read-only and inert even when opened dire
   await page.getByTestId("chat-picker-trigger").click();
   await page.getByTestId("new-global-chat-btn").click();
   await expect(page).toHaveURL(/[?&]chat=/);
+  chat = new URL(page.url()).searchParams.get("chat");
   await expect(
     page.getByRole("button", { name: `Create with ${slug}`, exact: true }),
   ).toBeVisible();
@@ -84,7 +90,10 @@ test("plugin preview is authenticated, read-only and inert even when opened dire
   await acceptConfirm(page);
   await expect(page.getByRole("status")).toContainText("Access revoked.");
   expect((await page.goto(previewPath))?.status()).toBe(404);
-  await page.goto("/edit");
+  // #1081 — back in the same empty chat: a resumed chat of a parallel spec
+  // has messages, shows no workflow entries, and would pass vacuously.
+  await page.goto(`/edit?chat=${chat}`);
+  await expect(page.getByTestId("chat-picker-trigger")).toBeVisible();
   await expect(page.getByRole("button", { name: `Create with ${slug}`, exact: true })).toHaveCount(
     0,
   );

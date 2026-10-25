@@ -602,6 +602,12 @@ export const archiveChatSessionOp = defineOperation({
     // the Open changes overview while they stay in the draft — in effect
     // for every other chat's preview and shipped by the next Stage that
     // touches the same things, with no chat left to stage or undo them.
+    // #1102 — lock the row first: a write into this chat (emit.ts
+    // assertChatOpenForWrite, FOR SHARE) either commits before the pending
+    // count below sees it, or runs after the archive and is refused.
+    await tx.execute(
+      sql`SELECT 1 FROM chat_sessions WHERE id = ${input.chatSessionId}::uuid FOR UPDATE`,
+    );
     const binding = await loadChatBinding(tx, input.chatSessionId);
     if (binding && binding.createdBy === ctx.actorId && binding.kind === "draft") {
       const pending = (await tx.execute(sql`

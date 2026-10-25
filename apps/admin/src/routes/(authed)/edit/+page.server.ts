@@ -66,6 +66,32 @@ const FIRST_RUN_SUGGESTIONS = [
   },
 ];
 
+/**
+ * #1102 — the notice for a `?chat=` Live Edit could not open: the chat was
+ * archived (a discard archives too) or is not one this operator can open.
+ * Names the chat that was opened instead.
+ */
+async function describeUnopenedChat(
+  chatSessionId: string,
+  openedTitle: string,
+  ctx: ExecutionContext,
+): Promise<string> {
+  const { adapter, registry } = getQueryContext();
+  const asked = UUID_RE.test(chatSessionId)
+    ? await execute(registry, adapter, ctx, "chat.get_session", { chatSessionId })
+    : null;
+  const session = asked?.ok
+    ? (asked.value as { session: { title: string; archivedAt: string | null } }).session
+    : null;
+  const opened = `opened “${openedTitle}” instead`;
+  if (session?.archivedAt) {
+    return `The chat “${session.title}” was closed, so it can take no more changes; Live Edit ${opened}. Continue here, or pick or start another chat in the chat list.`;
+  }
+  return `The chat in this link was not found; Live Edit ${opened}. Continue here, or pick or start another chat in the chat list.`;
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export const load: PageServerLoad = async ({ locals, url }) => {
   // Login lands everyone here (the chat IS the product). The rare
   // ops-only role without content.write gets the dashboard instead of
@@ -215,6 +241,16 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       "Could not start a live-edit session — the chat ops returned no usable row. Check Cloud Run logs for `[edit]` stderr lines, or visit /settings/audit.",
     );
   }
+
+  // #1102 — an explicit `?chat=` that names no open chat (archived,
+  // discarded, or not this operator's) is not resumed; the chat above was
+  // picked instead. Say so instead of silently showing another chat's
+  // branch (CLAUDE.md §2): a link or a pinned reload after the chat was
+  // closed elsewhere otherwise reads as "my change vanished".
+  const chatNotice =
+    queryChat && queryChat !== activeChat.id
+      ? await describeUnopenedChat(queryChat, activeChat.title, locals.ctx)
+      : null;
 
   // v0.9.3 — branch-aware ctx so every downstream entity read (pages,
   // modules, translation-source lookup) includes rows the AI created on
@@ -487,6 +523,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     })),
     activePageId,
     activeChat,
+    /** #1102 — why the `?chat=` in the URL was not opened, or null. */
+    chatNotice,
     messages,
     firstRunSuggestions,
     modules,

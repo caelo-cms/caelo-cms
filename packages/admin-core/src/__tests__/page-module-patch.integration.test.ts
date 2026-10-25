@@ -263,6 +263,42 @@ describe("page_module_content.patch_fields (#917)", () => {
   });
 });
 
+describe("a chat archived between load and save (#1102)", () => {
+  it("refuses the save with the next step and keeps nothing of it", async () => {
+    const { chatSessionId, chatBranchId } = await must<{
+      chatSessionId: string;
+      chatBranchId: string;
+    }>("chat.create_session", { title: "i1102 closed chat" });
+    // Live Edit loaded this chat; meanwhile another tab archives it.
+    await must("chat.archive_session", { chatSessionId });
+    const r = await execute(
+      registry,
+      adapter,
+      { ...ctx(chatBranchId), chatTaskId: chatSessionId },
+      "page_module_content.patch_fields",
+      { pageId, ...at, edits: [{ field: "title", text: "Lost save" }] },
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.kind).toBe("HandlerError");
+    if (r.error.kind === "HandlerError") {
+      expect(r.error.message).toContain("this chat was archived, so the change was not saved");
+      expect(r.error.message).toContain("open chat");
+    }
+    expect(await previewHtml(pageId, chatBranchId)).not.toContain("Lost save");
+    const sql = new SQL(ADMIN_URL!);
+    try {
+      const rows = await sql.begin(async (tx) => {
+        await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+        return tx`SELECT count(*)::int AS n FROM site_snapshots WHERE chat_task_id = ${chatSessionId}::uuid`;
+      });
+      expect(rows[0].n).toBe(0);
+    } finally {
+      await sql.end();
+    }
+  });
+});
+
 describe("links, images and shared content (#918)", () => {
   it("changes a link's label and target, a url field and an image in one call", async () => {
     await must("page_module_content.patch_fields", {

@@ -8,6 +8,7 @@ export {
   POOL_IDLE_TIMEOUT_SECONDS,
 } from "./adapter.js";
 export { recordAudit, recordAuditFromCtx, SYSTEM_ACTOR_ID } from "./audit.js";
+export { assertChatOpenForWrite } from "./chat-write-guard.js";
 export {
   isRlsDenial,
   OperationAbortError,

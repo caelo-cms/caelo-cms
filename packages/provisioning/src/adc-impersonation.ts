@@ -12,6 +12,7 @@
  * stay in local variables: never printed, logged, returned or written.
  */
 
+import { ADC_PROBE_ARGS, adcProbeFromResult } from "./adc-check.js";
 import { gcloud as defaultGcloud } from "./gcloud.js";
 import { type GcloudRunner, realSleep, type Sleep } from "./gcloud-retry.js";
 import {
@@ -30,8 +31,12 @@ export type AdcCheck =
   | { readonly ok: true }
   | {
       readonly ok: false;
-      /** `no-adc`: no Application Default Credentials; `denied`: they can't impersonate. */
-      readonly reason: "no-adc" | "denied" | "error";
+      /**
+       * `no-adc`: no Application Default Credentials; `expired-adc`: they
+       * exist but can no longer mint a token (#1078); `denied`: they can't
+       * impersonate.
+       */
+      readonly reason: "no-adc" | "expired-adc" | "denied" | "error";
       readonly error: string;
     };
 
@@ -53,19 +58,17 @@ export async function checkAdcImpersonation(
   const sa = provisionerServiceAccountEmail(target.projectId);
   const env = withoutAmbientGoogleCredentials(deps.env ?? process.env);
 
-  const adc = await run(["auth", "application-default", "print-access-token"], { env });
-  const sourceToken = adc.ok ? adc.stdout.trim() : "";
-  if (!sourceToken) {
+  const adc = await run([...ADC_PROBE_ARGS], { env });
+  const probe = adcProbeFromResult(adc);
+  if (!probe.ok) {
     return {
       ok: false,
-      reason: "no-adc",
-      error: [
-        "No Application Default Credentials on this machine.",
-        `Infrastructure runs authenticate with your own Google login and impersonate ${sa}; no key file is used.`,
-        `Run \`gcloud auth application-default login\` (sign in as ${target.operatorAccount}), then re-run.`,
-      ].join("\n"),
+      reason: probe.reason === "expired" ? "expired-adc" : "no-adc",
+      // One line (#1078): the login command must not drown in context.
+      error: `${probe.error} Sign in as ${target.operatorAccount}: Pulumi uses these credentials to impersonate ${sa}, no key file.`,
     };
   }
+  const sourceToken = adc.stdout.trim();
 
   // The account to impersonate is the one IAM reports, not a string
   // assembled from install.json: what goes into the request is an email

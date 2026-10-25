@@ -51,6 +51,7 @@ import type { DnsRecord } from "../dns/types.js";
 import {
   activeAccount,
   type BillingAccount,
+  checkGcloudAuth,
   createProject,
   createServiceAccount,
   enableApis,
@@ -639,19 +640,20 @@ async function resolveImageDigests(): Promise<ImageDigests> {
 // Per-step helpers
 // =========================================================================
 
+/**
+ * An active gcloud account that can mint a token now. `activeAccount` alone
+ * passes with an expired login (`auth list` reads local config), and the
+ * first real gcloud call of the run then failed with a reauth error deep in
+ * a later step (#630, #1078).
+ */
 async function stepActiveGcloud(): Promise<void> {
-  const stepName = "gcloud-active";
-  const account = await activeAccount();
-  if (!account) {
-    log.error(red("No active gcloud account."));
-    log.warn(
-      `Run ${bold("gcloud auth login")} in another terminal, then re-run ${bold(selfCommand())}.`,
-    );
-    cancel("Aborted — no gcloud auth.");
+  const auth = await checkGcloudAuth();
+  if (!auth.ok) {
+    log.error(red(auth.error));
+    cancel("Aborted — nothing was changed.");
     process.exit(2);
   }
-  log.success(`gcloud auth: ${bold(account)}`);
-  void stepName;
+  log.success(`gcloud auth: ${bold(auth.account)}`);
 }
 
 async function stepProjectId(opts: GcpWizardOpts): Promise<string> {
@@ -1385,8 +1387,18 @@ async function stepKeylessProvisioner(
   const sAdc = spinner();
   sAdc.start("Checking that your Application Default Credentials can impersonate it...");
   let adc = await check();
-  if (!adc.ok && adc.reason === "no-adc" && !opts.nonInteractive) {
-    sAdc.stop(yellow("No Application Default Credentials yet"));
+  if (
+    !adc.ok &&
+    (adc.reason === "no-adc" || adc.reason === "expired-adc") &&
+    !opts.nonInteractive
+  ) {
+    sAdc.stop(
+      yellow(
+        adc.reason === "expired-adc"
+          ? "Your Application Default Credentials have expired"
+          : "No Application Default Credentials yet",
+      ),
+    );
     const login = await confirm({
       message: `Run ${bold("gcloud auth application-default login")} now (opens your browser; sign in as ${account})?`,
       initialValue: true,
@@ -1403,7 +1415,7 @@ async function stepKeylessProvisioner(
   }
   if (!adc.ok) {
     sAdc.stop(red("Infrastructure credentials not ready"));
-    log.error(adc.error);
+    log.error(`${adc.error}\nPulumi was not started.`);
     cancel("Aborted.");
     process.exit(1);
   }

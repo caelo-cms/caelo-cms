@@ -82,6 +82,13 @@ export interface StatePulumiOps {
 export interface MigrateDeps {
   readonly pulumi: StatePulumiOps;
   readonly report: UpgradeReporter;
+  /**
+   * #1078 — whether this machine's Application Default Credentials (which
+   * every Pulumi call here uses) work now. Checked before the first Pulumi
+   * call, so missing or expired ones stop the run with the login command
+   * instead of a page of per-resource provider errors.
+   */
+  checkAdc(): Promise<{ readonly ok: true } | { readonly ok: false; readonly error: string }>;
   /** The install's backend resolved for Pulumi. */
   resolve(record: StateBackendRecord): ResolvedBackend;
   /** Ask the operator to accept the ops backend's cost; false = cancel. */
@@ -240,6 +247,10 @@ export async function migrateState(
         error: `gs://${remoteRecord.bucket}/install/install.json says this install's state already lives in the bucket — another machine migrated it, so the local state here is out of date. Nothing was changed. Use the bucket instead: ${selfCommand("attach", "--project", projectId)} (after moving ~/.caelo-${meta.installId} aside).`,
       };
     }
+  }
+  const adc = await deps.checkAdc();
+  if (!adc.ok) {
+    return { ok: false, error: `${adc.error} Nothing was changed.` };
   }
   const pre = report.step("Preflight: Pulumi CLI, source stack, pending operations, drift");
   let from: ResolvedBackend;
