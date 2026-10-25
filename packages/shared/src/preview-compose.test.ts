@@ -432,6 +432,25 @@ describe("composePageWithLayout", () => {
   const layoutHtml = `<!doctype html><html><head></head><body><header><caelo-slot name="header">_</caelo-slot></header><main><caelo-slot name="content">_</caelo-slot></main></body></html>`;
   const templateHtml = `<body><caelo-slot name="content">_</caelo-slot></body>`;
 
+  // #1085 — an empty header block and an empty content block showed the
+  // authored "_" placeholders on the composed page visitors get.
+  it("renders empty blocks empty, never the authored slot placeholder", () => {
+    const out = composePageWithLayout({
+      templateHtml,
+      templateCss: "",
+      blocks: [],
+      layoutHtml,
+      layoutCss: "",
+      layoutBlocks: [],
+      layoutSlug: "test",
+    });
+    const body = out.html.slice(out.html.indexOf("<body>"));
+    expect(body).toContain(`<caelo-slot name="header"></caelo-slot>`);
+    expect(body).toContain(`<caelo-slot name="content"></caelo-slot>`);
+    expect(body).not.toContain("_");
+    expect(out.missingSlots).toContain("header");
+  });
+
   it("aggregates CSS in layout → template → modules order", () => {
     const out = composePageWithLayout({
       templateHtml,

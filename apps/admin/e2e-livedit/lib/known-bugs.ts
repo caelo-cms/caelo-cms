@@ -34,8 +34,6 @@ export interface KnownBug {
 export const KNOWN_BUGS: readonly KnownBug[] = [
   // edit_content anchor wrapped in literal quotes reported as a stale body.
   { issue: 1084, tool: "edit_content", match: /^oldString not found\. It may be stale/ },
-  // A literal "_" inside empty caelo-slot blocks of the composed page.
-  { issue: 1085, tool: null, match: /caelo-slot[^\n]*renders a literal "_"/ },
 ];
 
 /**

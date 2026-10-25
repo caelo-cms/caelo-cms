@@ -107,7 +107,7 @@ try {
           VALUES (
             'home-template',
             'Home Template',
-            '<!doctype html><html><head><title>Home</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
+            '<!doctype html><html><head><title>Home</title></head><body><caelo-slot name="content"></caelo-slot></body></html>',
             '',
             (SELECT id FROM layouts WHERE slug = 'site-default')
           )

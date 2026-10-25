@@ -128,8 +128,11 @@ interface SlotRange {
 /**
  * Returns a copy of `templateHtml` where each `<caelo-slot name="X">…</caelo-slot>`
  * has its inner HTML replaced by `replacement.contentByName.get(X)`. Slots
- * with no entry render with their original inner HTML preserved (so a
- * template-author placeholder stays visible in the editor preview).
+ * with no entry render EMPTY and are reported in `missingSlots`: whatever
+ * the template author typed between the tags (a `_`, "…", sample markup)
+ * is authoring scaffolding, never page content, and this output is what
+ * visitors get (#1085). The editor learns about an empty block from
+ * `missingSlots`, not from a glyph on the page.
  *
  * Throws on nested or unbalanced slot markers — those are template-author
  * bugs and silently smoothing them over would just defer the discovery.
@@ -205,7 +208,6 @@ export function applySlotReplacements(
       replaced.push(range.name);
     } else {
       missing.push(range.name);
-      parts.push(templateHtml.slice(range.innerStart, range.innerEnd));
     }
     cursor = range.innerEnd;
   }
