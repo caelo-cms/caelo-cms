@@ -46,6 +46,7 @@ import {
   renderInvocation,
   runPluginBuildAssets,
 } from "./dispatch.js";
+import { reportPluginRenderFailure } from "./render-failures.js";
 
 /** Public directory every plugin's assets are written under. */
 export const PLUGIN_ASSET_DIR = "_caelo/plugin";
@@ -111,11 +112,22 @@ export async function collectBuildAssets(
     .sort((a, b) => a.slug.localeCompare(b.slug));
 
   for (const lp of contributors) {
-    const files = await runPluginBuildAssets({
-      pluginSlug: lp.slug,
-      pageIds,
-      invocation: renderInvocation(scope),
-    });
+    let files: Record<string, unknown>;
+    try {
+      files = await runPluginBuildAssets({
+        pluginSlug: lp.slug,
+        pageIds,
+        invocation: renderInvocation(scope),
+      });
+    } catch (e) {
+      // #1087 — a preview renders without this plugin's assets and flags
+      // it; a build throws.
+      const reason = `client-assets: ${lp.slug}.buildAssets failed: ${e instanceof Error ? e.message : String(e)}`;
+      if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "client-assets", reason })) {
+        continue;
+      }
+      throw e;
+    }
     let totalBytes = 0;
     for (const fileName of Object.keys(files).sort()) {
       const content = files[fileName];

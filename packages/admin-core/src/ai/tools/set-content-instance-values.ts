@@ -12,7 +12,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { setContentInstanceValuesToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, forwardRefusal } from "./_describe-error.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -42,6 +42,7 @@ export const setContentInstanceValuesTool: ToolDefinitionWithHandler<
       return {
         ok: false,
         content: `content_instances.set_values failed: ${describeError(r.error)}`,
+        ...forwardRefusal(r.error),
       };
     }
     const { placementCount, nestedParentCount, version } = r.value as {

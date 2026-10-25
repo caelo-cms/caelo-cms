@@ -32,7 +32,11 @@
  * 80% CSS-debug case until then.
  */
 
-import { pluginNotRunningSlug, pluginsNotRunningHere } from "@caelo-cms/plugin-host";
+import {
+  pluginNotRunningSlug,
+  pluginRenderFailedSlug,
+  pluginsNotRunningHere,
+} from "@caelo-cms/plugin-host";
 import { execute } from "@caelo-cms/query-api";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
@@ -115,6 +119,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
       pageSlug: string;
       replacedSlots: string[];
       missingSlots: string[];
+      pluginFailures: { slug: string; reason: string }[];
     };
 
     // 2. Per-layer view: page → template → layout, plus modules. We
@@ -335,7 +340,7 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
       slots: {
         replaced: rendered.replacedSlots,
         missing: rendered.missingSlots,
-        ...siteSettingNextSteps(rendered.missingSlots),
+        ...siteSettingNextSteps(rendered.missingSlots, rendered.pluginFailures),
       },
       hint:
         "SUMMARY only. For the visual impression call `screenshot_page`. For full bodies call inspect_page_render " +
@@ -418,15 +423,36 @@ function pluginNotRunningNextStep(marker: string): string | undefined {
   );
 }
 
+/** #1087 — what to do about a plugin whose call failed while this page rendered. */
+function pluginRenderFailedNextStep(
+  marker: string,
+  failures: ReadonlyArray<{ slug: string; reason: string }>,
+): string | undefined {
+  const slug = pluginRenderFailedSlug(marker);
+  if (!slug) return undefined;
+  const reasons = failures.filter((f) => f.slug === slug).map((f) => f.reason);
+  return (
+    `The plugin "${slug}" runs on this server but its call failed while this page rendered` +
+    `${reasons.length > 0 ? ` (${reasons.join("; ")})` : ""}, so this preview shows the page WITHOUT its ` +
+    "contribution. It is not switched off and this is not something your edits caused. Tell the operator; " +
+    "get_plugin shows its health and recent errors, and reload_plugin retries it on every server once the cause " +
+    "is addressed. Publish live fails while the plugin keeps failing."
+  );
+}
+
 /** `{ nextSteps }` for the flagged site-wide settings, or `{}` when none is flagged. */
-function siteSettingNextSteps(missing: readonly string[]): { nextSteps?: Record<string, string> } {
+function siteSettingNextSteps(
+  missing: readonly string[],
+  pluginFailures: ReadonlyArray<{ slug: string; reason: string }> = [],
+): { nextSteps?: Record<string, string> } {
   const steps = Object.fromEntries(
     missing.flatMap((m) => {
       const step =
         SITE_SETTING_NEXT_STEPS[m] ??
         brokenLinkNextStep(m) ??
         missingVariantLinkNextStep(m) ??
-        pluginNotRunningNextStep(m);
+        pluginNotRunningNextStep(m) ??
+        pluginRenderFailedNextStep(m, pluginFailures);
       return step ? [[m, step]] : [];
     }),
   );

@@ -23,6 +23,7 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
+import { reportPluginRenderFailure } from "./render-failures.js";
 
 /** pageId → listName → items. Missing page/list means "not offered". */
 export type ResolvedDataLists = ReadonlyMap<string, Readonly<Record<string, DataListItem[]>>>;
@@ -78,9 +79,15 @@ export async function resolveDataLists(
       args: { pageIds: [...pageIds], pageUrlStyle },
     });
     if (!r.ok) {
-      throw new Error(
-        `data-lists: ${source.pluginSlug}.${source.operationName} failed: ${r.error.kind}: ${r.error.message}`,
-      );
+      const reason = `data-lists: ${source.pluginSlug}.${source.operationName} failed: ${r.error.kind}: ${r.error.message}`;
+      // #1087 — a preview renders this plugin's lists as not offered and
+      // flags it; a build throws.
+      if (
+        reportPluginRenderFailure(scope, { slug: source.pluginSlug, point: "data-lists", reason })
+      ) {
+        continue;
+      }
+      throw new Error(reason);
     }
     const lists = (r.value as { lists?: Record<string, Record<string, unknown>> }).lists ?? {};
     const claimed = new Set(source.names);

@@ -151,6 +151,18 @@ export function forwardNextAction(error: unknown):
   return out;
 }
 
+/**
+ * #1091 — `{ refusal: true }` when `error` is an operation's deliberate
+ * guard refusal (`HandlerError.refusal`), else `{}`. Spread into the
+ * failed `ToolResult` so the chat's automatic bug capture can tell "the
+ * tool told the AI how to proceed" from a defect.
+ */
+export function forwardRefusal(error: unknown): { refusal?: true } {
+  if (!error || typeof error !== "object") return {};
+  const e = error as { kind?: unknown; refusal?: unknown };
+  return e.kind === "HandlerError" && e.refusal === true ? { refusal: true } : {};
+}
+
 function extractPgDetail(error: unknown, depth = 0): string | null {
   if (!error || typeof error !== "object" || depth > 4) return null;
   const e = error as {

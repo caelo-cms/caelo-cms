@@ -816,6 +816,8 @@ async function softDeleteModule(
         error: {
           kind: "HandlerError",
           operation,
+          // #1091 — the guard working as designed, not a defect.
+          refusal: true,
           message:
             `module "${slug}" is still placed on ${describePlacements(placements)} — deleting it would leave empty slots. ` +
             "Remove it from each page/layout with remove_module_from first (a nested use: drop it from the parent's module field with set_content_instance_values), or keep it; then delete.",
@@ -912,14 +914,18 @@ export const deleteModulesManyOp = defineOperation({
     deleted: z.number().int(),
     alreadyDeleted: z.number().int(),
     notFound: z.number().int(),
-    /** Ids not deleted because they are still placed (AI) or locked by another chat. */
-    refused: z.array(z.object({ moduleId: z.string(), reason: z.string() })),
+    /**
+     * Ids not deleted because they are still placed (AI) or locked by
+     * another chat. `refusal` marks the in-use guard (the caller unplaces
+     * the module first, #1091); a lock conflict carries false.
+     */
+    refused: z.array(z.object({ moduleId: z.string(), reason: z.string(), refusal: z.boolean() })),
   }),
   handler: async (ctx, input, tx) => {
     let deleted = 0;
     let alreadyDeleted = 0;
     let notFound = 0;
-    const refused: { moduleId: string; reason: string }[] = [];
+    const refused: { moduleId: string; reason: string; refusal: boolean }[] = [];
     const ids = [...new Set(input.moduleIds)];
     // One batched placement lookup for the whole list (AI guard only).
     const placements =
@@ -928,7 +934,8 @@ export const deleteModulesManyOp = defineOperation({
       const r = await softDeleteModule(ctx, id, tx, "modules.delete_many", placements);
       if (r.outcome === "refused") {
         const message = (r.error as { message?: string }).message ?? r.error.kind;
-        refused.push({ moduleId: id, reason: message });
+        const refusal = r.error.kind === "HandlerError" && r.error.refusal === true;
+        refused.push({ moduleId: id, reason: message, refusal });
       } else if (r.outcome === "deleted") deleted += 1;
       else if (r.outcome === "already-deleted") alreadyDeleted += 1;
       else notFound += 1;

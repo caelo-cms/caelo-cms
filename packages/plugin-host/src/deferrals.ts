@@ -47,6 +47,7 @@ import {
   renderInvocation,
   runPluginOperation,
 } from "./dispatch.js";
+import { reportPluginRenderFailure } from "./render-failures.js";
 
 /** What the composer needs to emit one withheld module. */
 export interface ResolvedDeferral {
@@ -109,9 +110,13 @@ export async function resolveModuleDeferrals(
       args: { moduleIds, modules: [...modules] },
     });
     if (!r.ok) {
-      throw new Error(
-        `deferrals: ${lp.slug}.${operationName} failed: ${r.error.kind}: ${r.error.message}`,
-      );
+      const reason = `deferrals: ${lp.slug}.${operationName} failed: ${r.error.kind}: ${r.error.message}`;
+      // #1087 — a preview shows the modules ungated and flags it; a build
+      // throws (it must never ship a gated module ungated).
+      if (reportPluginRenderFailure(scope, { slug: lp.slug, point: "deferrals", reason })) {
+        continue;
+      }
+      throw new Error(reason);
     }
     const value = (r.value as { deferrals?: Record<string, unknown> }).deferrals ?? {};
     for (const [moduleId, entry] of Object.entries(value)) {
