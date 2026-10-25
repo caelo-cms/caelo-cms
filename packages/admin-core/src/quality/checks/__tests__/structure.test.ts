@@ -46,9 +46,9 @@ const DIFF_COPY: StructureModule = {
 };
 const NAV: StructureModule = {
   id: id(104),
-  slug: "nav-menu-main",
+  slug: "main-menu",
   displayName: "Main menu",
-  html: '<nav class="menu"><ul><li><a class="item">{{label}}</a></li></ul></nav>',
+  html: '<nav class="menu"><ul>{{#menu}}<li><a class="item" href="{{link}}">{{label}}</a></li>{{/menu}}</ul></nav>',
 };
 const MODULES = [TEXT, DIFF, DIFF_COPY, NAV];
 
@@ -128,8 +128,10 @@ describe("structure/repeated-markup", () => {
     expect(findings[0]?.fix?.hint).toStartWith("place the existing module by moduleId");
   });
 
-  it("a navigation menu (rendered from its set, not its template) is never attributed", () => {
-    const nav = `<nav data-caelo-module-id="${NAV.id}"><ul><li><a href="/">Home</a></li></ul></nav>`;
+  it("a menu's list entries are module output, not repeated free markup (epic #1107)", () => {
+    const entry = (n: number, label: string) =>
+      `<li data-caelo-list-item="00000000-0000-4000-8000-000000000101/00000000-0000-4000-9000-00000000000${n}"><a class="item" href="/${label}">${label}</a></li>`;
+    const nav = `<nav class="menu" data-caelo-module-id="${NAV.id}"><ul>${entry(1, "home")}${entry(2, "about")}${entry(3, "news")}</ul></nav>`;
     expect(structureFindings([page(1, "/a", nav), page(2, "/b", nav)], MODULES, noLayouts)).toEqual(
       [],
     );

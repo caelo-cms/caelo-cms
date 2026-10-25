@@ -80,13 +80,6 @@ export interface StructureAnalysis {
   readonly templateShapes: ReadonlyMap<string, SubtreeShape>;
 }
 
-/**
- * Navigation menus are rendered from the `nav-menu/<slug>` structured set,
- * not from their template (preview-compose.ts lookupNavMenuItems), so
- * their output cannot be attributed to the template.
- */
-const NAV_MENU_SLUG_PREFIX = "nav-menu-";
-
 interface ParsedModule {
   readonly module: StructureModule;
   readonly template: MarkupNode[];
@@ -104,7 +97,7 @@ export function analyseStructure(
     parsed.set(m.id, { module: m, template });
     const root = template[0];
     const shape = root ? shapeTree(root).get(root) : undefined;
-    if (shape && !m.slug.startsWith(NAV_MENU_SLUG_PREFIX)) templateShapes.set(m.id, shape);
+    if (shape) templateShapes.set(m.id, shape);
   }
 
   const occurrences: PatternOccurrence[] = [];
@@ -135,9 +128,7 @@ export function analyseStructure(
       onPages.add(page.pageId);
       const mod = parsed.get(id);
       if (!mod) continue;
-      const free = mod.module.slug.startsWith(NAV_MENU_SLUG_PREFIX)
-        ? null
-        : freeRegions(root, mod.template);
+      const free = freeRegions(root, mod.template);
       const freeSet = new Set(free ?? []);
       walkModule(root, freeSet, (cls, inFree) => {
         if (inFree) use(cls).freeIn.add(id);
