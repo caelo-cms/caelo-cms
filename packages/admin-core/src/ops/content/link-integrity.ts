@@ -28,6 +28,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { loadLinkTargetLookup } from "../../links/canonicalise.js";
 import { type ActiveImportTargets, loadActiveImportTargets } from "../../links/import-targets.js";
+import { REFERENCE_PROBLEMS } from "../../links/reference-fix.js";
 import {
   type ReferenceCheckEnv,
   type ReferenceIssue,
@@ -201,7 +202,7 @@ export async function stageReferenceGate(
         : "";
     return {
       ok: false,
-      message: `Stage refused — ${blocking.length} stored link(s) point at a page or file that does not exist (or has no version in the page's language), so the build would ship broken links: ${listed}${more} Fix each one with the tool it names, then Stage again.`,
+      message: `Stage refused — ${blocking.length} stored reference(s) point at a page, file, list, vocabulary entry or module that does not exist (or a page without a version in the page's language), so the build would ship broken links or content: ${listed}${more} Fix each one with the tool it names, then Stage again.`,
     };
   }
   return {
@@ -212,14 +213,7 @@ export async function stageReferenceGate(
 
 const placeSchema = z.looseObject({ kind: z.string() });
 
-const problemSchema = z.enum([
-  "missing-target",
-  "variant-missing",
-  "unpublished-target",
-  "literal-link",
-  "broken-literal",
-  "pending-import-link",
-]);
+const problemSchema = z.enum(REFERENCE_PROBLEMS);
 
 const issueSchema = z.object({
   problem: problemSchema,
@@ -246,7 +240,7 @@ export const checkReferencesInput = z
      * `publish` (Publish live / promote: a draft target blocks).
      */
     for: z.enum(["stage", "publish"]).default("publish"),
-    /** Only issues on this page (plus site-wide chrome: sets, plugin data). */
+    /** Only issues on this page (plus site-wide places: plugin data). */
     pageId: z.string().uuid().optional(),
     /** Same as pageId, by the page's path (`/about`). */
     pagePath: z.string().min(1).max(2000).optional(),

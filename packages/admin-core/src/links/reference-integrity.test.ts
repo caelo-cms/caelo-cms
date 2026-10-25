@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { createSiteLinkIndex, type LinkTargetLookup } from "@caelo-cms/shared";
+import {
+  createSiteLinkIndex,
+  DEFAULT_LIST_TYPES,
+  type LinkTargetLookup,
+  type ListItem,
+} from "@caelo-cms/shared";
 import { referenceFindings } from "../quality/checks/references.js";
 import type { LinkTargets } from "./link-targets.js";
 import { type ReferenceCheckEnv, scanReferenceIntegrity } from "./reference-integrity.js";
-import type { ReferenceSourceModel, SourceModule } from "./reference-sources.js";
+import type { ReferenceSourceModel, SourceListType, SourceModule } from "./reference-sources.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const HOME = id(1);
@@ -34,6 +39,13 @@ const lookup: LinkTargetLookup = {
   isOwnHost: () => false,
 };
 
+/** The shipped list types, keyed by id like the loaded model. */
+const TYPES = new Map<string, SourceListType>(
+  DEFAULT_LIST_TYPES.map((def, i) => [id(500 + i), { id: id(500 + i), slug: def.slug, def }]),
+);
+const typeId = (slug: string) =>
+  [...TYPES.values()].find((t) => t.slug === slug)?.id ?? `no type ${slug}`;
+
 function mod(n: number, html: string, fields: SourceModule["fields"] = []): SourceModule {
   return { id: id(100 + n), slug: `m-${n}`, name: `Module ${n}`, html, fields };
 }
@@ -52,6 +64,9 @@ function model(over: Partial<ReferenceSourceModel> = {}): ReferenceSourceModel {
     templates: new Map([[TPL, { id: TPL, name: "Tpl", html: "<main></main>", layoutId: LAYOUT }]]),
     layouts: new Map([[LAYOUT, { id: LAYOUT, name: "Main", html: "<body></body>", blocks: [] }]]),
     plugins: [],
+    lists: new Map(),
+    listTypes: TYPES,
+    pageData: new Map(),
     ...over,
   };
 }
@@ -402,5 +417,342 @@ describe("references quality check findings", () => {
     expect(findings[0]).toMatchObject({ ruleId: "references/missing-target", severity: "warning" });
     expect(findings[0]?.pageId).toBeUndefined();
     expect(findings[0]?.message).toContain('"/soon"');
+  });
+});
+
+describe("list references (epic #1107)", () => {
+  const MENU = id(600);
+  const TAGS = id(601);
+  const TAG_A = id(610);
+  const GONE_ITEM = id(611);
+  const entry = (n: number, href: string): ListItem => ({
+    id: id(700 + n),
+    node: "entry",
+    values: { label: `E${n}`, link: { href } },
+  });
+  const lists = (menuItems: ListItem[] = [entry(1, `caelo:page/${HOME}`)]) =>
+    new Map([
+      [
+        MENU,
+        {
+          id: MENU,
+          slug: "main-nav",
+          name: "Main navigation",
+          listTypeId: typeId("menu"),
+          items: menuItems,
+        },
+      ],
+      [
+        TAGS,
+        {
+          id: TAGS,
+          slug: "tags",
+          name: "Tags",
+          listTypeId: typeId("tags"),
+          items: [{ id: TAG_A, node: "tag", values: { name: "A", slug: "a" } }],
+        },
+      ],
+    ]);
+  /** A header module with a shared `nav` field placed on `pageId`, bound via its value. */
+  const navPlaced = (pageId: string, listRef: string): Partial<ReferenceSourceModel> => {
+    const m = mod(1, '<nav>{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}</nav>', [
+      {
+        name: "nav",
+        kind: "list",
+        listType: "menu",
+        bind: "shared",
+      } as SourceModule["fields"][number],
+    ]);
+    const ci = id(201);
+    return {
+      modules: new Map([[m.id, m]]),
+      instances: new Map([[ci, { id: ci, moduleId: m.id, values: { nav: listRef } }]]),
+      placements: [
+        {
+          pageId,
+          blockName: "header",
+          moduleId: m.id,
+          contentInstanceId: ci,
+          syncMode: "unsynced",
+        },
+      ],
+    };
+  };
+
+  it("a deleted list still bound by a placement blocks, naming the module, field and page", () => {
+    for (const env of ["staging", "production"] as const) {
+      const issues = scan(
+        model({ ...navPlaced(ABOUT, `caelo:list/${GONE}`), lists: lists() }),
+        env,
+      );
+      expect(issues).toHaveLength(1);
+      expect(issues[0]).toMatchObject({
+        problem: "missing-list",
+        severity: "block",
+        where: "values.nav",
+      });
+      expect(issues[0]?.message).toContain('field "nav" of module "Module 1"');
+      expect(issues[0]?.message).toContain('"/about"');
+      expect(issues[0]?.message).toContain("list_lists");
+      expect(issues[0]?.fix.tool).toBe("set_page_module_content");
+    }
+  });
+
+  it("a bound shared list's entries are checked on the pages that render it", () => {
+    const issues = scan(
+      model({
+        ...navPlaced(ABOUT, `caelo:list/${MENU}`),
+        lists: lists([entry(1, `caelo:page/${HOME}`), entry(2, `caelo:page/${GONE}`)]),
+      }),
+      "staging",
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({
+      problem: "missing-target",
+      severity: "block",
+      pageIds: [ABOUT],
+      place: { kind: "list", listId: MENU },
+    });
+    expect(issues[0]?.where).toBe(`entry ${id(702)}`);
+    expect(issues[0]?.fix.tool).toBe("patch_list_items_many");
+    expect(issues[0]?.fix.hint).toContain(`entry ${id(702)}`);
+    // An unbound list renders nowhere: its broken entry ships nothing.
+    const unbound = scan(model({ lists: lists([entry(2, `caelo:page/${GONE}`)]) }), "staging");
+    expect(unbound).toEqual([]);
+  });
+
+  it("a dangling page term blocks on that page; a removed vocabulary is named", () => {
+    const issues = scan(
+      model({
+        lists: lists(),
+        pageData: new Map([
+          [
+            ABOUT,
+            {
+              properties: {},
+              terms: [`caelo:term/${TAGS}/${TAG_A}`, `caelo:term/${TAGS}/${GONE_ITEM}`],
+            },
+          ],
+          [HOME, { properties: {}, terms: [`caelo:term/${GONE}/${TAG_A}`] }],
+        ]),
+      }),
+      "staging",
+    );
+    expect(issues.map((i) => [i.problem, i.severity, i.pageIds[0]])).toEqual(
+      expect.arrayContaining([
+        ["missing-term", "block", ABOUT],
+        ["missing-term", "block", HOME],
+      ]),
+    );
+    expect(issues).toHaveLength(2);
+    const about = issues.find((i) => i.pageIds[0] === ABOUT);
+    expect(about?.target).toContain(`entry ${GONE_ITEM} of vocabulary "tags"`);
+    expect(about?.fix.tool).toBe("update_pages_many");
+    expect(about?.message).toContain('in the terms of page "/about"');
+    // On a draft page it does not ship: a warning.
+    const draft = scan(
+      model({
+        lists: lists(),
+        pageData: new Map([
+          [DRAFT, { properties: {}, terms: [`caelo:term/${TAGS}/${GONE_ITEM}`] }],
+        ]),
+      }),
+      "production",
+    );
+    expect(draft[0]).toMatchObject({ problem: "missing-term", severity: "warning" });
+  });
+
+  it("a dangling term in a query (entry query, source override, field source) blocks", () => {
+    const newsType: SourceListType = {
+      id: id(520),
+      slug: "news-feed",
+      def: {
+        slug: "news-feed",
+        name: "News feed",
+        purpose: "latest news",
+        role: "content",
+        root: { allow: ["feed"] },
+        nodes: {
+          feed: {
+            label: "Feed",
+            fields: [{ name: "title", label: "Title", type: "text" }],
+            source: {
+              kind: "query",
+              editable: ["terms", "limit"],
+              defaults: {
+                terms: [`caelo:term/${TAGS}/${GONE_ITEM}`],
+                order: "published_desc",
+                limit: 3,
+              },
+            },
+          },
+        },
+      },
+    };
+    const types = new Map([...TYPES, [newsType.id, newsType]]);
+    const feed = id(630);
+    const allLists = new Map([
+      ...lists(),
+      [
+        feed,
+        {
+          id: feed,
+          slug: "news",
+          name: "News",
+          listTypeId: newsType.id,
+          items: [
+            {
+              id: id(631),
+              node: "feed",
+              values: { title: "Latest" },
+              query: { terms: [`caelo:term/${TAGS}/${GONE_ITEM}`] },
+            },
+          ],
+        },
+      ],
+    ]);
+    const m = mod(
+      3,
+      "<div>{{#news}}{{#items}}{{title}}{{/items}}{{/news}}{{#q}}{{title}}{{/q}}</div>",
+      [
+        {
+          name: "news",
+          kind: "list",
+          listType: "news-feed",
+          bind: "shared",
+          list: `caelo:list/${feed}`,
+        },
+        {
+          name: "q",
+          kind: "list",
+          listType: "news-feed",
+          bind: "source",
+          source: {
+            kind: "query",
+            editable: ["terms"],
+            defaults: { order: "published_desc", limit: 3 },
+          },
+        },
+      ] as unknown as SourceModule["fields"],
+    );
+    const ci = id(232);
+    const issues = scan(
+      model({
+        modules: new Map([[m.id, m]]),
+        instances: new Map([
+          [
+            ci,
+            { id: ci, moduleId: m.id, values: { q: { terms: [`caelo:term/${GONE}/${TAG_A}`] } } },
+          ],
+        ]),
+        placements: [
+          {
+            pageId: ABOUT,
+            blockName: "c",
+            moduleId: m.id,
+            contentInstanceId: ci,
+            syncMode: "unsynced",
+          },
+        ],
+        lists: allLists,
+        listTypes: types,
+      }),
+      "staging",
+    );
+    const found = issues.map((i) => `${i.problem}@${i.place.kind}:${i.where}`).sort();
+    expect(found).toEqual([
+      `missing-term@content:values.q`,
+      `missing-term@list-type:nodes.feed.source`,
+      `missing-term@list:entry ${id(631)}`,
+    ]);
+    expect(issues.every((i) => i.severity === "block")).toBe(true);
+    expect(issues.find((i) => i.place.kind === "list-type")?.fix.tool).toBe(
+      "upsert_list_types_many",
+    );
+  });
+
+  it("a list entry embedding a deleted module blocks; a live one renders and is checked", () => {
+    const withModule: SourceListType = {
+      id: id(521),
+      slug: "promo-slots",
+      def: {
+        slug: "promo-slots",
+        name: "Promo slots",
+        purpose: "promos in the mega menu",
+        role: "content",
+        root: { allow: ["slot"] },
+        nodes: {
+          slot: { label: "Slot", fields: [{ name: "promo", label: "Promo", type: "module" }] },
+        },
+      },
+    };
+    const promo = mod(4, '<a href="{{cta}}">x</a>', [{ name: "cta", kind: "url" }]);
+    const promoCi = id(240);
+    const host = mod(5, "<div>{{#slots}}{{>promo}}{{/slots}}</div>", [
+      { name: "slots", kind: "list", listType: "promo-slots" },
+    ] as unknown as SourceModule["fields"]);
+    const hostCi = id(241);
+    const slots = [
+      {
+        id: id(750),
+        node: "slot",
+        values: { promo: { moduleId: promo.id, contentInstanceId: promoCi } },
+      },
+      {
+        id: id(751),
+        node: "slot",
+        values: { promo: { moduleId: GONE, contentInstanceId: id(242) } },
+      },
+    ];
+    const issues = scan(
+      model({
+        modules: new Map([
+          [promo.id, promo],
+          [host.id, host],
+        ]),
+        instances: new Map([
+          [promoCi, { id: promoCi, moduleId: promo.id, values: { cta: `caelo:page/${GONE}` } }],
+          [hostCi, { id: hostCi, moduleId: host.id, values: { slots } }],
+        ]),
+        placements: [
+          {
+            pageId: ABOUT,
+            blockName: "c",
+            moduleId: host.id,
+            contentInstanceId: hostCi,
+            syncMode: "unsynced",
+          },
+        ],
+        listTypes: new Map([...TYPES, [withModule.id, withModule]]),
+      }),
+      "staging",
+    );
+    const found = issues.map((i) => `${i.problem}@${i.place.kind}`).sort();
+    expect(found).toEqual(["missing-module@content", "missing-target@content"]);
+    const missing = issues.find((i) => i.problem === "missing-module");
+    expect(missing?.where).toBe(`values.slots entry ${id(751)}.values.promo`);
+    expect(missing?.target).toBe(`a deleted module (${GONE})`);
+    // The live embedded module's own link was checked as nested content.
+    expect(issues.find((i) => i.problem === "missing-target")?.place).toMatchObject({
+      kind: "content",
+      nested: true,
+      contentInstanceId: promoCi,
+    });
+  });
+
+  it("maps page-bound list findings onto their page in the references check", () => {
+    const issues = scan(
+      model({
+        lists: lists(),
+        pageData: new Map([
+          [ABOUT, { properties: {}, terms: [`caelo:term/${TAGS}/${GONE_ITEM}`] }],
+        ]),
+      }),
+      "production",
+    );
+    const findings = referenceFindings(issues, false, new Set([HOME, ABOUT]));
+    expect(findings.map((f) => [f.ruleId, f.severity, f.pageId])).toEqual([
+      ["references/missing-term", "error", ABOUT],
+    ]);
   });
 });

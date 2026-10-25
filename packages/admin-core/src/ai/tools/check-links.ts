@@ -43,8 +43,8 @@ interface Issue {
 export const checkLinksTool = makeReadTool<Input>({
   name: "check_links",
   description:
-    "Check the site's internal links (links between its own pages and media) in the draft you see — every place a link is stored: page content, module HTML, field defaults, layouts, templates, navigation menus and plugin data. " +
-    "Reports links to deleted pages or media and links without a page in the linking page's language (both BLOCK Stage and Publish live), links to unpublished pages (BLOCK Publish live, a warning at Stage), and old plain-path links (warnings). " +
+    "Check the site's internal links (links between its own pages and media) in the draft you see — every place a link is stored: page content, module HTML, field defaults, layouts, templates, lists (menus, vocabularies), page terms and properties, and plugin data. " +
+    "Reports links to deleted pages or media, links without a page in the linking page's language, and references to a deleted list, a removed vocabulary entry (term) or a deleted module embedded in a list entry (all BLOCK Stage and Publish live), links to unpublished pages (BLOCK Publish live, a warning at Stage), and old plain-path links (warnings). " +
     "Each problem names the page, where the link is stored and the tool that fixes it. " +
     "Use it before stage_changes when you deleted, unpublished or translated pages, when a Stage was refused for links, or when the operator asks about broken links. " +
     "Not for external links or what the built site serves (get_quality_audit has the staged-build link check).",

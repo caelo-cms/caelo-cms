@@ -23,6 +23,7 @@ import {
 import { sql } from "drizzle-orm";
 import { emitDomainEvent } from "../../domain-events.js";
 import { canonicaliseLinksForWrite } from "../../links/canonicalise.js";
+import type { PendingLinkRecord } from "../../links/import-targets.js";
 import { listFieldsOf, loadInstancesOfModules, loadModulesInView } from "../../lists/local.js";
 import { loadListEntities, loadListEntityBySlug } from "../../lists/store.js";
 
@@ -66,7 +67,10 @@ export function branchOf(ctx: ExecutionContext): string | null {
  * Store every link of an entry tree as a reference (epic #724): the href
  * of `link` fields, `media` values, links inside `richtext`. A link to a
  * page that does not exist refuses the write; links already in `previous`
- * are grandfathered.
+ * are grandfathered. Inside a chat that rebuilds a site import, a link to
+ * a page the run planned but has not built yet is kept literal and
+ * returned as `pending` — the caller records it against the list
+ * (`recordPendingImportLinks`) so the run's finalisation converts it.
  */
 export async function canonicaliseItemsForWrite(
   tx: Tx,
@@ -74,15 +78,18 @@ export async function canonicaliseItemsForWrite(
   def: ListTypeDef,
   items: readonly ListItem[],
   previous: readonly ListItem[] | undefined,
-): Promise<{ ok: true; items: ListItem[] } | { ok: false; message: string }> {
+): Promise<
+  | { ok: true; items: ListItem[]; pending: PendingLinkRecord | null }
+  | { ok: false; message: string }
+> {
   const outcome = await canonicaliseLinksForWrite(
     tx,
     ctx,
     (run) => canonicaliseEntries(def, items, run, "items"),
-    { previous },
+    { previous, pendingEntity: "list" },
   );
   if (!outcome.ok) return { ok: false, message: outcome.message };
-  return { ok: true, items: outcome.value };
+  return { ok: true, items: outcome.value, pending: outcome.pending };
 }
 
 function canonicaliseEntries(

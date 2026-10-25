@@ -16,7 +16,10 @@
  *   A one-off on one placement stays silent — that is allowed. One
  *   exception (#1068): a pattern written out three or more times side by
  *   side in one value is a list of items as hand-written HTML, on one
- *   placement too; the hint points at a module-list.
+ *   placement too; the hint points at a `list` field.
+ * - Either write (epic #1107): does it leave two modules keeping the same
+ *   links as their own lists (a header and a footer with one menu)? Then
+ *   keep them in ONE shared list (_shared-list-guard.ts).
  *
  * Exact structural matches only for field values: near matches are the
  * quality check's job (it sees the whole staged build); here a hint has
@@ -43,6 +46,7 @@ import {
   repeatedValueHints,
   type ValueInstance,
 } from "./_repeated-value-guard.js";
+import { carriersOf, listValueHrefs, sharedListHints } from "./_shared-list-guard.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 /** A module as the guard compares against it. */
@@ -50,6 +54,8 @@ export interface CatalogModule {
   readonly id: string;
   readonly displayName: string;
   readonly html: string;
+  /** Declared fields (`modules.list` returns them; list defaults live here). */
+  readonly fields?: readonly unknown[];
 }
 
 /** Most "contains module X" hints for one template. */
@@ -134,6 +140,7 @@ export function valuePatterns(values: Readonly<Record<string, unknown>>): ValueP
 /** A content instance as the field guard indexes it. */
 export interface IndexedInstance {
   readonly id: string;
+  readonly moduleId: string;
   readonly moduleDisplayName: string;
   readonly placementCount: number;
   readonly values: Readonly<Record<string, unknown>>;
@@ -181,7 +188,7 @@ export function fieldReuseHints(
     if (placements < 2) continue;
     const hosts = [...new Set(list.map((i) => `"${i.moduleDisplayName}"`))].join(", ");
     hints.push(
-      `field \`${p.field}\` carries the pattern \`${p.label}\`, which is now free HTML in ${placements} placements (in ${hosts}) — the second copy is the moment to make it a module: mint ONE module from this markup with semantic fields (a list / module-list field for the repeating items), place it wherever the copies are with their values, and remove the free HTML; repeated free markup blocks Publish live in the structure quality check`,
+      `field \`${p.field}\` carries the pattern \`${p.label}\`, which is now free HTML in ${placements} placements (in ${hosts}) — the second copy is the moment to make it a module: mint ONE module from this markup with semantic fields (a \`list\` field for repeated entries; a module-list only when each item is a module of its own), place it wherever the copies are with their values, and remove the free HTML; repeated free markup blocks Publish live in the structure quality check`,
     );
   }
   return hints;
@@ -199,7 +206,7 @@ export function repeatedItemHints(values: Readonly<Record<string, unknown>>): st
       if (typeof s !== "string" || !s.includes("class=")) continue;
       for (const r of repeatedSiblingPatterns(parseMarkup(s))) {
         hints.push(
-          `field \`${field}\` writes the pattern \`${patternLabel(r.node)}\` out ${r.count} times side by side — that is a list of items as hand-written HTML, and each copy will be edited on its own and drift: mint ONE module for the item with semantic fields, give the host module a module-list field (a list field for plain items) with one entry per item, and remove the copies from this value; the structure quality check warns about it`,
+          `field \`${field}\` writes the pattern \`${patternLabel(r.node)}\` out ${r.count} times side by side — that is a list of items as hand-written HTML, and each copy will be edited on its own and drift: give the host module a \`list\` field with one entry per item (list type links / menu / texts, or a list type with the item's fields) rendered with {{#field}}…{{/field}} — a module-list only when each item is a module of its own — and remove the copies from this value; the structure quality check warns about it`,
         );
       }
     }
@@ -228,6 +235,25 @@ async function loadCatalog(ctx: ExecutionContext, toolCtx: ToolContext): Promise
   return r.ok ? ((r.value as { modules?: CatalogModule[] }).modules ?? []) : [];
 }
 
+/** Instances whose values the guards compare (the caller's branch view); empty on a failed read. */
+async function loadInstances(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+): Promise<IndexedInstance[] | null> {
+  const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "content_instances.list", {});
+  // A failed read only loses the hint; the write it comments on succeeded.
+  return res.ok ? ((res.value as { instances?: IndexedInstance[] }).instances ?? []) : null;
+}
+
+/** List values with enough links to be navigation (see _shared-list-guard.ts). */
+function navigationValues(
+  values: Readonly<Record<string, unknown>>,
+): { field: string; value: unknown }[] {
+  return Object.entries(values)
+    .filter(([, v]) => (listValueHrefs(v)?.length ?? 0) >= 3)
+    .map(([field, value]) => ({ field, value }));
+}
+
 /** The design-guard findings for a module mint / html edit (empty when none). */
 export async function moduleMarkupFindings(
   ctx: ExecutionContext,
@@ -235,8 +261,33 @@ export async function moduleMarkupFindings(
   html: string,
   excludeModuleIds: readonly string[],
 ): Promise<string[]> {
-  if (!containsPattern(html)) return [];
-  return moduleReuseHints(html, await loadCatalog(ctx, toolCtx), excludeModuleIds);
+  const patterned = containsPattern(html);
+  // A list section may iterate a menu kept in a field default (chrome).
+  const iterates = excludeModuleIds.length > 0 && html.includes("{{#");
+  if (!patterned && !iterates) return [];
+  const catalog = await loadCatalog(ctx, toolCtx);
+  const hints = patterned ? moduleReuseHints(html, catalog, excludeModuleIds) : [];
+  if (iterates) {
+    const written = catalog
+      .filter((m) => excludeModuleIds.includes(m.id))
+      .flatMap((m) =>
+        navigationValues(
+          Object.fromEntries(
+            (m.fields ?? []).flatMap((f) => {
+              const field = f as { name?: unknown; kind?: unknown; default?: unknown };
+              return field.kind === "list" && typeof field.name === "string"
+                ? [[field.name, field.default]]
+                : [];
+            }),
+          ),
+        ),
+      );
+    if (written.length > 0) {
+      const instances = await loadInstances(ctx, toolCtx);
+      if (instances) hints.push(...sharedListHints(written, carriersOf(catalog, instances)));
+    }
+  }
+  return hints;
 }
 
 /**
@@ -255,13 +306,24 @@ export async function fieldMarkupSuffix(
   toolCtx: ToolContext,
   written: readonly Readonly<Record<string, unknown>>[],
 ): Promise<string> {
-  if (!written.some((v) => valuePatterns(v).length > 0)) return "";
-  const res = await execute(toolCtx.registry, toolCtx.adapter, ctx, "content_instances.list", {});
-  if (!res.ok) return "";
-  const instances = ((res.value as { instances?: IndexedInstance[] }).instances ?? []).filter((i) =>
-    Object.values(i.values).some((v) => JSON.stringify(v).includes("class=")),
-  );
-  const hints = fieldReuseHints(written, instances, await loadCatalog(ctx, toolCtx));
+  const patterned = written.some((v) => valuePatterns(v).length > 0);
+  const lists = written.flatMap(navigationValues);
+  if (!patterned && lists.length === 0) return "";
+  const all = await loadInstances(ctx, toolCtx);
+  if (!all) return "";
+  const catalog = await loadCatalog(ctx, toolCtx);
+  const hints = [
+    ...(patterned
+      ? fieldReuseHints(
+          written,
+          all.filter((i) =>
+            Object.values(i.values).some((v) => JSON.stringify(v).includes("class=")),
+          ),
+          catalog,
+        )
+      : []),
+    ...(lists.length > 0 ? sharedListHints(lists, carriersOf(catalog, all)) : []),
+  ];
   return hints.length === 0 ? "" : ` 🎯 markup-guard: ${hints.join(". ")}.`;
 }
 
