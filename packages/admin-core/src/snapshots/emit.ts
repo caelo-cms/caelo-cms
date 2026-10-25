@@ -14,7 +14,7 @@
  * audit trail.
  */
 
-import type { TransactionRunner } from "@caelo-cms/query-api";
+import { OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { jsonbParam } from "../sql-helpers.js";
 import type {
@@ -122,10 +122,52 @@ export interface SnapshotInput {
   readonly entities: readonly SnapshotEntity[];
 }
 
+/**
+ * #1102 — refuse a write tagged with a chat that was archived or discarded.
+ * Such a chat may own no pending change (chat.archive_session refuses while
+ * it has one; a discard undoes them): a write into it left a change in the
+ * shared draft that no chat lists, stages or undoes, and the editor said
+ * "Saved." while its reload — which never resumes a closed chat — showed
+ * another chat's state. `FOR SHARE` serialises with the archive/discard of
+ * the same chat, which lock the row before checking for pending changes.
+ * Aborts the whole operation, so nothing of the write is kept.
+ */
+async function assertChatOpenForWrite(
+  tx: TransactionRunner,
+  chatTaskId: string,
+  opKind: SnapshotOpKind,
+): Promise<void> {
+  const rows = (await tx.execute(sql`
+    SELECT archived_at IS NOT NULL AS archived, discarded_at IS NOT NULL AS discarded
+    FROM chat_sessions WHERE id = caelo_chat_owner(${chatTaskId}::uuid)
+    FOR SHARE
+  `)) as unknown as { archived: boolean; discarded: boolean }[];
+  const chat = rows[0];
+  if (!chat || (!chat.archived && !chat.discarded)) return;
+  throw new OperationAbortError({
+    kind: "HandlerError",
+    operation: opKind,
+    message: `this chat was ${chat.discarded ? "discarded" : "archived"}, so the change was not saved. Continue in an open chat: reload Live Edit (or pick or start a chat in the chat list) and make the change there.`,
+  });
+}
+
+/** Write kinds that close or rewind a chat and so may name a closed one. */
+const CLOSED_CHAT_EXEMPT: ReadonlySet<SnapshotOpKind> = new Set<SnapshotOpKind>([
+  "chat.publish",
+  "chat.merge_to_main",
+  "snapshots.revert_site",
+  "snapshots.revert_module",
+  "snapshots.revert_template",
+  "snapshots.revert_page",
+]);
+
 export async function emitSnapshot(
   tx: TransactionRunner,
   input: SnapshotInput,
 ): Promise<{ siteSnapshotId: string }> {
+  if (input.chatTaskId && !CLOSED_CHAT_EXEMPT.has(input.opKind)) {
+    await assertChatOpenForWrite(tx, input.chatTaskId, input.opKind);
+  }
   // created_at is the moment of THIS write (clock_timestamp), not the
   // transaction start (the column default now()): every branch overlay
   // picks an entity's latest state with `ORDER BY ss.created_at DESC`, and
