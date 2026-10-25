@@ -555,4 +555,54 @@ describe("#1107 lists on the shared draft", () => {
     expect(ev[0]?.payload.chatBranchId).toBe(a.branch);
     expect(ev[0]?.payload.changes.map((c) => c.kind)).toEqual(["added"]);
   });
+
+  it("validates list field values on module and content instance writes, assigning entry ids", async () => {
+    const created = await op<{ moduleId: string }>(SYS, "modules.create", {
+      slug: `${PFX}feature-list`,
+      displayName: "Feature list",
+      html: "<ul>{{#bullets}}<li>{{text}}</li>{{/bullets}}</ul>",
+      fields: [
+        {
+          name: "bullets",
+          label: "Bullets",
+          kind: "list",
+          listType: "texts",
+          max: 2,
+          default: [{ node: "text", values: { text: "Fast" } }],
+        },
+      ],
+    });
+    const mod = await asSystem(
+      (tx) =>
+        tx`SELECT fields FROM modules WHERE id = ${created.moduleId}::uuid` as Promise<
+          { fields: { default: ListItem[] }[] }[]
+        >,
+    );
+    expect(mod[0]?.fields[0]?.default[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
+
+    const ci = await op<{ contentInstanceId: string }>(SYS, "content_instances.create", {
+      moduleId: created.moduleId,
+      values: { bullets: [{ node: "text", values: { text: "One" } }] },
+    });
+    const stored = await asSystem(
+      (tx) =>
+        tx`SELECT "values" FROM content_instances WHERE id = ${ci.contentInstanceId}::uuid` as Promise<
+          { values: { bullets: ListItem[] } }[]
+        >,
+    );
+    expect(stored[0]?.values.bullets[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
+
+    const missing = await fail(SYS, "content_instances.create", {
+      moduleId: created.moduleId,
+      values: { bullets: [{ node: "text", values: {} }] },
+    });
+    expect(missing).toContain("values.bullets[0].values.text");
+    const tooMany = await fail(SYS, "content_instances.set_values", {
+      id: ci.contentInstanceId,
+      values: {
+        bullets: ["a", "b", "c"].map((text) => ({ node: "text", values: { text } })),
+      },
+    });
+    expect(tooMany).toContain("at most 2");
+  });
 });

@@ -93,5 +93,6 @@ export async function loadListRenderData(
       published: p.status === "published",
     })),
     ...(pageVariants ? { pageVariants } : {}),
+    languageUnset: opts.scope === "preview" ? "undetermined" : "refuse",
   });
 }

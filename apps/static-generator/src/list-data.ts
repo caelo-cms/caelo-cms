@@ -77,6 +77,12 @@ export interface ListRenderSources {
   readonly pages: readonly ListSourcePage[];
   /** The `link-resolve` partition — the same answer the link index got. */
   readonly pageVariants?: ReadonlyMap<string, LinkPageVariant>;
+  /**
+   * The editor preview renders a site whose language is not set yet (it
+   * flags `site-language-unset` itself): dates then format for `und`, the
+   * BCP 47 "undetermined" tag. A build refuses instead.
+   */
+  readonly languageUnset: "refuse" | "undetermined";
 }
 
 /** The thrown error when the site language is unset (builds refuse to run without it). */
@@ -161,7 +167,7 @@ export async function assembleListRenderData(
     SELECT site_language FROM site_defaults WHERE id = 1
   `)) as unknown as { site_language: string | null }[];
   const siteLanguage = lang[0]?.site_language ?? null;
-  if (siteLanguage === null) {
+  if (siteLanguage === null && src.languageUnset === "refuse") {
     throw new ListRenderDataError(
       "site_defaults.site_language is not set — set the site language (set_site_identity siteLanguage) before lists can render",
     );
@@ -172,7 +178,7 @@ export async function assembleListRenderData(
     pageTypes,
     pages,
     media,
-    siteLanguage,
+    siteLanguage: siteLanguage ?? "und",
     ...(src.pageVariants ? { pageVariants: src.pageVariants } : {}),
   };
 }
@@ -258,6 +264,7 @@ export async function loadBuildListRenderData(
       published: p.status === "published",
     })),
     ...(pageVariants ? { pageVariants } : {}),
+    languageUnset: "refuse",
   });
 }
 
