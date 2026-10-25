@@ -75,7 +75,7 @@ export function defineBulkOp<I, O>(
         const item = input.items[i] as I;
         const r = await singular.handler(ctx, item, tx);
         if (!r.ok) {
-          const inner = r.error as { message?: string; kind: string };
+          const inner = r.error as { message?: string; kind: string; refusal?: true };
           // THROW (never `return err`) so the framework rolls back every item
           // written so far — a partial batch would otherwise commit. The
           // message names the failing index so the AI can fix + resend.
@@ -83,6 +83,8 @@ export function defineBulkOp<I, O>(
             kind: "HandlerError",
             operation: name,
             message: `items[${i}]: ${inner.message ?? inner.kind}. The whole batch was rolled back — fix this item and resend all ${input.items.length}.`,
+            // #1091 — an item's guard refusal stays a refusal for the batch.
+            ...(inner.kind === "HandlerError" && inner.refusal ? { refusal: true as const } : {}),
           });
         }
         results.push(r.value);

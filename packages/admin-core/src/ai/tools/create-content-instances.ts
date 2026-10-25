@@ -9,7 +9,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { contentInstancesCreateManySchema } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, forwardRefusal } from "./_describe-error.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
@@ -61,6 +61,7 @@ export const createContentInstancesTool: ToolDefinitionWithHandler<
       return {
         ok: false,
         content: `content_instances.create_many failed (whole batch rolled back): ${describeError(r.error)}`,
+        ...forwardRefusal(r.error),
       };
     }
     const { contentInstanceIds } = r.value as { contentInstanceIds: string[] };

@@ -151,7 +151,7 @@ async function validateNestedRefs(
   chatBranchId: string | null,
   moduleId: string,
   values: Record<string, unknown>,
-): Promise<{ ok: true } | { ok: false; message: string }> {
+): Promise<{ ok: true } | { ok: false; message: string; refusal?: true }> {
   // Read the owning module's fields schema AS THE CALLER SEES IT (#1042):
   // a chat's `edit_module` lands only in its branch snapshot, so reading
   // live `modules.fields` validated the values against main's schema — a
@@ -387,6 +387,9 @@ async function validateNestedRefs(
         const allowed = declared.allowedModuleTypes.join(", ");
         return {
           ok: false,
+          // #1091 — the authored allowlist working as designed: the
+          // caller picks an allowed module or widens the list.
+          refusal: true,
           // AI-actionable per CLAUDE.md §11.A: name the valid set + the
           // exact next step so the AI self-corrects instead of punting
           // the implementation detail to a non-technical operator (§1A).
@@ -756,6 +759,7 @@ export const createContentInstanceOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.create",
         message: refValidation.message,
+        ...(refValidation.refusal ? { refusal: true as const } : {}),
       });
     }
 
@@ -1148,6 +1152,7 @@ export const setContentInstanceValuesOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.set_values",
         message: refValidation.message,
+        ...(refValidation.refusal ? { refusal: true as const } : {}),
       });
     }
 
@@ -1326,6 +1331,8 @@ export const deleteContentInstanceOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "content_instances.delete",
+        // #1091 — the orphan-only guard working as designed.
+        refusal: true,
         message: `cannot delete: ${placements.length} placement(s) reference this content_instance: ${list}${more}. Detach each one with fork_placement_content (those pageId/blockName/position values; the page keeps its content as a private copy), then retry the delete.`,
         nextAction: {
           tool: "fork_placement_content",
@@ -1356,6 +1363,7 @@ export const deleteContentInstanceOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "content_instances.delete",
+        refusal: true,
         message: `cannot delete: ${parents.length} content_instance(s) show this one inside a module / module-list field: ${shown}${more}. It renders wherever they render, so it is not an orphan. To delete it, first remove it from each parent's field with set_content_instance_values on the parent (get_content_instance shows the parent's values), then retry the delete.`,
         nextAction: {
           tool: "get_content_instance",

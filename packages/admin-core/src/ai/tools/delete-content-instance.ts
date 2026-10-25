@@ -8,7 +8,7 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { deleteContentInstanceToolInput } from "@caelo-cms/shared";
-import { describeError } from "./_describe-error.js";
+import { describeError, forwardRefusal } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const deleteContentInstanceTool: ToolDefinitionWithHandler<
@@ -38,7 +38,11 @@ export const deleteContentInstanceTool: ToolDefinitionWithHandler<
       input,
     );
     if (!r.ok) {
-      return { ok: false, content: `content_instances.delete failed: ${describeError(r.error)}` };
+      return {
+        ok: false,
+        content: `content_instances.delete failed: ${describeError(r.error)}`,
+        ...forwardRefusal(r.error),
+      };
     }
     return { ok: true, content: `content_instance ${input.id} soft-deleted.` };
   },

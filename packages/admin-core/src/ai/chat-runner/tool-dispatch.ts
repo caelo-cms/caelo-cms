@@ -463,7 +463,13 @@ export async function dispatchToolCall(
   // auto-recovery, so only a FINAL failure records. Best-effort — a failure to
   // record must never break the tool flow — and we skip the bug_report tool
   // itself so a broken bug channel can't recurse into filing about itself.
-  if (!result.ok && call.name !== "bug_report") {
+  // #1091 — a guard refusal (`result.refusal`: the op said no as designed and
+  // named the next step, e.g. "still placed — remove it first") is the tool
+  // working, not a defect; filing it buried real reports under noise.
+  // A cached hit replays a result this call id already produced (and that
+  // dispatch already went through this capture); the cache keeps only
+  // ok + content, so a replayed refusal would otherwise be filed after all.
+  if (!cachedHit && shouldAutoCaptureToolFailure(call.name, result)) {
     // Capture the tool INPUT alongside the failure so the detected-bug row is
     // REPRODUCIBLE — the exact arguments that triggered the error. Serialized
     // into `evidence` (already surfaced in the bugs UI + markdown export) and
@@ -541,4 +547,16 @@ export async function dispatchToolCall(
       ],
     });
   }
+}
+
+/**
+ * #1091 — whether a tool result is filed as an automatic bug report: every
+ * final failure except the bug channel itself and a deliberate guard
+ * refusal (`ToolResult.refusal`, set from `HandlerError.refusal`).
+ */
+export function shouldAutoCaptureToolFailure(
+  toolName: string,
+  result: Pick<ToolDispatchResult, "ok" | "refusal">,
+): boolean {
+  return !result.ok && toolName !== "bug_report" && result.refusal !== true;
 }

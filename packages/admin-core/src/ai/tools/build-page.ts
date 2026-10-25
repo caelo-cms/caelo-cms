@@ -17,7 +17,7 @@ import { execute } from "@caelo-cms/query-api";
 import { type BuildPageInput, buildPageInputSchema } from "@caelo-cms/shared";
 import { checkColdStartGate } from "./_cold-start-gate.js";
 import { cssVarWarnings } from "./_css-var-warnings.js";
-import { describeError, forwardNextAction } from "./_describe-error.js";
+import { describeError, forwardNextAction, forwardRefusal } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import {
@@ -257,6 +257,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
         ok: false,
         content: `pages.build_page failed (nothing was written — the whole call rolled back): ${describeError(r.error)}`,
         ...(next ? { nextAction: next } : {}),
+        ...forwardRefusal(r.error),
       };
     }
     const value = r.value as {

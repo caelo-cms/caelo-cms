@@ -49,7 +49,7 @@ export const deleteModulesManyTool: ToolDefinitionWithHandler<DeleteModulesManyI
       deleted: number;
       alreadyDeleted: number;
       notFound: number;
-      refused: { moduleId: string; reason: string }[];
+      refused: { moduleId: string; reason: string; refusal: boolean }[];
     };
     const parts = [`Deleted ${v.deleted} module(s).`];
     if (v.alreadyDeleted > 0) parts.push(`${v.alreadyDeleted} were already deleted.`);
@@ -61,6 +61,17 @@ export const deleteModulesManyTool: ToolDefinitionWithHandler<DeleteModulesManyI
         `Not deleted:\n${v.refused.map((x) => `  ${x.moduleId}: ${x.reason}`).join("\n")}`,
       );
     }
-    return { ok: v.deleted > 0 || v.alreadyDeleted > 0, content: parts.join("\n"), value: v };
+    const ok = v.deleted > 0 || v.alreadyDeleted > 0;
+    // #1091 — nothing deleted only because the in-use guard refused every
+    // id: the tool working as designed (the result names the fix), not a
+    // defect. A lock conflict or an unknown id still counts as a failure.
+    const onlyGuarded =
+      !ok && v.notFound === 0 && v.refused.length > 0 && v.refused.every((x) => x.refusal);
+    return {
+      ok,
+      content: parts.join("\n"),
+      value: v,
+      ...(onlyGuarded ? { refusal: true as const } : {}),
+    };
   },
 };
