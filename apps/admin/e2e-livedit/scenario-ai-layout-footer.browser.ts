@@ -6,9 +6,9 @@
  * The footer bug: asking the chat to "add a footer with nav links to every
  * page" reproducibly ended the assistant turn after a correct preamble
  * WITHOUT emitting add_module_to_layout, because that tool's JSON field
- * schema could not represent a `link-list` (a nav menu). The proof the path
+ * schema could not represent a list of links (a nav menu). The proof the path
  * works is a module placed in the layout's `footer` block whose repeating
- * nav is a single `link-list` field — not numbered label1/label2 scalars
+ * nav is a single `list` field (epic #1107) — not numbered label1/label2 scalars
  * (CLAUDE.md §1A) — and no operator-punt in the final assistant message.
  *
  * Self-contained like scenario-ai-nested-cta: it seeds its own `footer`
@@ -16,7 +16,7 @@
  * a `content` template block) and snapshots the DB via a bun subprocess.
  *
  * Coverage map:
- *   • issue #106 — add_module_to_layout emits a link-list footer (flavor #1/#2)
+ *   • issue #106 — add_module_to_layout emits a footer with a list field (flavor #1/#2)
  */
 
 import { spawnSync } from "node:child_process";
@@ -42,7 +42,7 @@ const PUNT_PATTERNS = [
 
 interface FooterSnap {
   footerModuleCount: number;
-  hasLinkListField: boolean;
+  hasListField: boolean;
   navLinksInHtml: boolean;
   lastAssistant: string;
 }
@@ -150,7 +150,7 @@ function snapshotFooter(): FooterSnap {
           }
           return Array.isArray(parsed) ? parsed : [];
         }
-        let payload = JSON.stringify({ footerModuleCount: 0, hasLinkListField: false, lastAssistant: "" });
+        let payload = JSON.stringify({ footerModuleCount: 0, hasListField: false, lastAssistant: "" });
         await sql.begin(async (tx) => {
           await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
           // Issue #620 — chrome placed in a chat is draft state until a
@@ -174,13 +174,13 @@ function snapshotFooter(): FooterSnap {
             JOIN modules m ON m.id = lm.module_id
             WHERE lm.block_name = 'footer'
           \`;
-          let hasLinkListField = false;
+          let hasListField = false;
           let navLinksInHtml = false;
           for (const r of rows) {
             const fields = parseFields(r.fields);
-            if (fields.some((f) => f.kind === 'list')) hasLinkListField = true;
+            if (fields.some((f) => f.kind === 'list')) hasListField = true;
             // Inline-anchor path: the model authored the fixed nav as literal
-            // <a> tags rather than a link-list field. The distinctive labels
+            // <a> tags rather than a list field. The distinctive labels
             // (About/Contact) appearing in the module HTML proves the nav is
             // really there (not numbered-scalar fields, whose labels would live
             // in the content_instance, not the HTML).
@@ -194,7 +194,7 @@ function snapshotFooter(): FooterSnap {
           \`;
           payload = JSON.stringify({
             footerModuleCount: rows.length,
-            hasLinkListField,
+            hasListField,
             navLinksInHtml,
             lastAssistant: msg[0]?.content ?? "",
           });
@@ -209,7 +209,7 @@ function snapshotFooter(): FooterSnap {
   return JSON.parse(raw.stdout) as FooterSnap;
 }
 
-test("issue #106: AI adds a footer nav to the layout via add_module_to_layout (link-list, no punt)", async ({
+test("issue #106: AI adds a footer nav to the layout via add_module_to_layout (list field, no punt)", async ({
   page,
 }) => {
   await resetLiveditFixtures();
@@ -233,15 +233,15 @@ test("issue #106: AI adds a footer nav to the layout via add_module_to_layout (l
   // block (the turn didn't narrate-then-drop the tool call). This is the core
   // #106 regression guard — the bug was the turn ending WITHOUT the tool call.
   expect(snap.footerModuleCount).toBeGreaterThan(0);
-  // The nav is really present, either as a `link-list` field (the §1A-ideal +
+  // The nav is really present, either as a `list` field (the §1A-ideal +
   // the field kind the old restricted layout schema could NOT represent — the
-  // schema's link-list capability is pinned deterministically in
+  // schema's list capability is pinned deterministically in
   // module-fields-schema.test.ts) OR as inline <a> tags carrying the labels.
   // Both are valid for a fixed nav and don't punt; this assertion stays robust
   // to the live model's choice while still rejecting the §1A numbered-scalar
   // anti-pattern (whose labels live in the content_instance, not the HTML, so
   // neither branch would be true) and the narrate-then-drop regression above.
-  expect(snap.hasLinkListField || snap.navLinksInHtml).toBe(true);
+  expect(snap.hasListField || snap.navLinksInHtml).toBe(true);
   // AC #5 — the assistant recovered/built valid rather than punting an
   // implementation detail to the operator.
   for (const re of PUNT_PATTERNS) {

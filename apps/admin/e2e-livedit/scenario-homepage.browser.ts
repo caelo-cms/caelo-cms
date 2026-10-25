@@ -474,7 +474,7 @@ test.describe("e2e-livedit Scenario 1 — homepage from scratch", () => {
     // #71 regression guard — the bug this scenario is meant to catch:
     // the static-gen compose path used to leak raw `{{#nav_items}}` /
     // `{{/nav_items}}` markers to visitors when the AI authored
-    // text-list / link-list fields, because the no-DB compose path
+    // repeating fields (today: `list` fields), because the no-DB compose path
     // didn't implement Mustache section iteration. After Plan B
     // (shared template engine), the published HTML must NEVER contain
     // `{{#` or `{{/` markers. Closes the open thread on #62.

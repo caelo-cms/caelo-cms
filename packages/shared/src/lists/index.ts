@@ -5,6 +5,7 @@
 export * from "./address.js";
 export * from "./default-types.js";
 export * from "./fields.js";
+export * from "./item-attr.js";
 export * from "./items.js";
 export * from "./list-type.js";
 export * from "./page-type.js";

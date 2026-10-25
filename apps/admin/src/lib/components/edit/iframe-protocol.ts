@@ -55,6 +55,7 @@
  * branch writes the operator sees and can undo.
  */
 
+import { LIST_ITEM_ATTR_RE } from "@caelo-cms/shared";
 import { z } from "zod";
 
 /** A fresh channel id (a v4 UUID — the runtime accepts `/^[0-9a-f-]{36}$/`) for one editor mount. */
@@ -94,6 +95,11 @@ const elementReferencedSchema = z.object({
     .string()
     .regex(/^[a-z][a-z0-9_]{0,63}$/)
     .optional(),
+  /**
+   * Epic #1107 — `data-caelo-list-item` of the list entry the element sits
+   * in, so the chip names the entry (shared list or a module's own list).
+   */
+  listItem: z.string().max(200).regex(LIST_ITEM_ATTR_RE).optional(),
   /** Ask AI: the parent focuses the chat composer for the operator's instruction. */
   ask: z.literal(true).optional(),
 });

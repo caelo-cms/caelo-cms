@@ -24,6 +24,7 @@ import {
   setPlacementContentSchema,
   slugSchema,
 } from "./content.js";
+import { LIST_ITEM_ATTR_RE } from "./lists/item-attr.js";
 import { pluginPreviewSelectionSchema } from "./plugin-preview.js";
 import { redirectTargetPathSchema } from "./redirect-target.js";
 import { unwrapCdataEnvelope } from "./strip-cdata.js";
@@ -454,6 +455,10 @@ export const CHAT_MAX_ATTACHMENTS = 4;
  * local list field (epic #1107) — name the placement field the text
  * comes from when the preview marked it, so the AI can address it in
  * `set_page_module_content` without inspecting the page first.
+ * `listItem` is the `data-caelo-list-item` of the list entry the element
+ * sits in (epic #1107, `docs/lists.md` §13): the chip then names that
+ * entry — of a shared list, or of a module's own list — not just the
+ * module around it.
  */
 export const chatChipSchema = z
   .object({
@@ -470,6 +475,7 @@ export const chatChipSchema = z
       .string()
       .regex(/^[a-z][a-z0-9_]{0,63}$/)
       .optional(),
+    listItem: z.string().max(200).regex(LIST_ITEM_ATTR_RE).optional(),
   })
   .strict();
 export type ChatChip = z.infer<typeof chatChipSchema>;
