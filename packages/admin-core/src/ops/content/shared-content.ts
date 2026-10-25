@@ -27,6 +27,13 @@ const fieldShape = z.object({
   name: z.string(),
   kind: z.string(),
   default: z.unknown().optional(),
+  /**
+   * Epic #1107 — a `list` field's list type and binding, so a plugin
+   * reads a local list's entries with their field definitions instead of
+   * guessing which keys hold text.
+   */
+  listType: z.string().optional(),
+  bind: z.enum(["local", "shared", "source"]).optional(),
 });
 
 function parseFields(raw: unknown): z.infer<typeof fieldShape>[] {
@@ -35,12 +42,20 @@ function parseFields(raw: unknown): z.infer<typeof fieldShape>[] {
   const out: z.infer<typeof fieldShape>[] = [];
   for (const f of parsed) {
     if (!f || typeof f !== "object") continue;
-    const o = f as { name?: unknown; kind?: unknown; default?: unknown };
+    const o = f as {
+      name?: unknown;
+      kind?: unknown;
+      default?: unknown;
+      listType?: unknown;
+      bind?: unknown;
+    };
     if (typeof o.name !== "string") continue;
     out.push({
       name: o.name,
       kind: typeof o.kind === "string" ? o.kind : "text",
       ...(o.default !== undefined ? { default: o.default } : {}),
+      ...(typeof o.listType === "string" ? { listType: o.listType } : {}),
+      ...(o.bind === "local" || o.bind === "shared" || o.bind === "source" ? { bind: o.bind } : {}),
     });
   }
   return out;
@@ -87,6 +102,16 @@ export const listSharedContentOp = defineOperation({
         values: z.record(z.string(), z.unknown()),
         pageIds: z.array(z.string()),
       }),
+    ),
+    /**
+     * Epic #1107 — every content instance holding a LOCAL list (a module
+     * field of kind `list`, bind local) with the pages it is placed on,
+     * synced or not: a translation plugin translates those entries by
+     * address (`instance/<id>/<field>/item/…`) for the languages of
+     * exactly these pages. Values come from content_instances.list.
+     */
+    listInstances: z.array(
+      z.object({ contentInstanceId: z.string(), pageIds: z.array(z.string()) }),
     ),
   }),
   handler: async (_ctx, _input, tx) => {
@@ -171,6 +196,31 @@ export const listSharedContentOp = defineOperation({
         pageIds,
       };
     });
-    return ok({ layoutPlacements, sharedInstances });
+    const listRows = (await tx.execute(sql`
+      SELECT pm.content_instance_id::text AS id,
+             array_agg(DISTINCT pm.page_id::text) AS page_ids
+      FROM page_modules pm
+      JOIN content_instances ci ON ci.id = pm.content_instance_id
+      JOIN modules m ON m.id = ci.module_id
+      JOIN pages p ON p.id = pm.page_id
+      WHERE ci.deleted_at IS NULL AND ci.chat_branch_id IS NULL
+        AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
+        AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(m.fields::jsonb) f
+          WHERE f->>'kind' = 'list' AND COALESCE(f->>'bind', 'local') = 'local'
+        )
+      GROUP BY pm.content_instance_id
+      ORDER BY pm.content_instance_id
+    `)) as unknown as { id: string; page_ids: string[] | string }[];
+    const listInstances = listRows.map((r) => ({
+      contentInstanceId: r.id,
+      pageIds: Array.isArray(r.page_ids)
+        ? r.page_ids
+        : String(r.page_ids)
+            .replace(/^\{|\}$/g, "")
+            .split(",")
+            .filter(Boolean),
+    }));
+    return ok({ layoutPlacements, sharedInstances, listInstances });
   },
 });

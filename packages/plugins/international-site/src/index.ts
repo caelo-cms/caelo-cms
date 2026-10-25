@@ -40,6 +40,7 @@ import {
   type AiWorkItem,
   definePlugin,
   isAiDelegated,
+  type ListTypeDef,
   type PageUrlStyle,
   type PluginAdminQuery,
   type PluginAi,
@@ -69,6 +70,16 @@ import {
   translateChrome,
 } from "./chrome-ops.js";
 import { chromeLinkLocations } from "./link-locations.js";
+import { LIST_EXT_FIELD_SCHEMA } from "./list-translation.js";
+import {
+  lastLiveBuildAt,
+  listFindings,
+  listStatus,
+  loadListTranslationState,
+  reconcileListTranslations,
+  resolveListOverlays,
+  setListItemVisibility,
+} from "./list-translation-ops.js";
 import {
   type GlossaryRow,
   pageTranslationBasis,
@@ -332,7 +343,19 @@ const linkResolveArgs = z.object({ pageIds: z.array(z.string().uuid()) }).strict
 async function chromeDepsOf(ctx: unknown): Promise<ChromeDeps> {
   const q = adminQueryOf(ctx);
   const reg = await refreshLocaleCache(q, ctx);
-  return { q, cms: cmsOf(ctx), locales: reg.byCode };
+  const cms = cmsOf(ctx);
+  // Epic #1107 — local lists in chrome are read with their list types
+  // (which entry fields are text is the type's to say).
+  const types = await cms.call<{ listTypes: { slug: string; definition: ListTypeDef }[] }>(
+    "list_types.list",
+    {},
+  );
+  return {
+    q,
+    cms,
+    locales: reg.byCode,
+    listTypes: new Map(types.listTypes.map((t) => [t.slug, t.definition])),
+  };
 }
 
 /**
@@ -757,6 +780,51 @@ export default definePlugin<PluginContextTier1>({
       source_hash: "text",
       created_at: "timestamp",
     },
+    // Epic #1107 — list translations by value address
+    // (`list/<listId>/item/<itemId>/<field>`,
+    // `instance/<ciId>/<field>/item/<itemId>/<itemField>`); `value` null =
+    // missing. Orphaned rows (address gone) are kept until the removal is
+    // live, so an undo restores them.
+    list_value_translations: {
+      locale_code: "string",
+      address: "text",
+      value: "text",
+      source_hash: "text",
+      status: "enum:translated,needs_update,missing,orphaned",
+      orphaned_at: "timestamp_nullable",
+      created_at: "timestamp",
+    },
+    // Entries hidden in one language by the operator (address of the entry).
+    list_item_visibility: {
+      locale_code: "string",
+      address: "text",
+      hidden: "bool",
+      created_at: "timestamp",
+    },
+    // Vocabulary entries (categories, tags) per language; the slug is
+    // unique per list and language (checked on write).
+    term_translations: {
+      locale_code: "string",
+      list_id: "uuid",
+      item_id: "uuid",
+      name: "text",
+      slug: "text",
+      source_hash: "text",
+      status: "enum:translated,needs_update,missing,orphaned",
+      orphaned_at: "timestamp_nullable",
+      created_at: "timestamp",
+    },
+    // Page properties of a language version (source: the group's source page).
+    page_prop_translations: {
+      locale_code: "string",
+      page_id: "uuid",
+      field: "string",
+      value: "text",
+      source_hash: "text",
+      status: "enum:translated,needs_update,missing,orphaned",
+      orphaned_at: "timestamp_nullable",
+      created_at: "timestamp",
+    },
   },
   requestedCapabilities: [
     "cms_admin",
@@ -768,6 +836,8 @@ export default definePlugin<PluginContextTier1>({
     "head_contributions",
     "content_variants",
     "link_resolve",
+    "list_sources",
+    "list_resolve",
   ],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
@@ -817,32 +887,87 @@ export default definePlugin<PluginContextTier1>({
     },
 
     /**
-     * Resolver for the `language_links` data list. Batched over the
+     * Resolver for the `language_links` list source. Batched over the
      * pages of one render pass, mirroring `head_contributions` — the
      * same published-variant matrix feeds both, so the visible switcher
      * and the hreflang tags can never disagree about what is published.
+     * The locale code is the entry id: stable across renders.
      */
     language_links: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
       const matrix = await publishedVariantMatrix(ctx, pageIds, pageUrlStyleOf(args));
-      const lists: Record<string, Record<string, Array<Record<string, string>>>> = {};
+      const sources: Record<
+        string,
+        Record<string, Array<{ id: string; values: Record<string, unknown> }>>
+      > = {};
       for (const pageId of pageIds) {
         const variants = matrix.get(pageId);
-        lists[pageId] = {
+        sources[pageId] = {
           // An absent group yields an empty list, not a missing one:
           // "this page has no alternates" is data the module should be
           // allowed to render nothing for.
           language_links: (variants ?? []).map((v) => ({
-            href: v.href,
-            label: v.displayName,
-            locale: v.localeCode,
-            // String, not boolean — data-list values are flat strings so
-            // they substitute cleanly; a module tests it with a section.
-            is_current: v.pageId === pageId ? "true" : "",
+            id: v.localeCode,
+            values: {
+              href: { href: v.href },
+              label: v.displayName,
+              locale: v.localeCode,
+              is_current: v.pageId === pageId,
+            },
           })),
         };
       }
-      return { lists };
+      return { sources };
+    },
+
+    /**
+     * Epic #1107 — the list-resolve composition point: per requested
+     * language, the translated list values (by address) and the entries
+     * hidden there. Read-only; a chat's preview sees the chat's rows.
+     */
+    list_resolve: async (ctx, args) => resolveListOverlays(await chromeDepsOf(ctx), args),
+
+    /** Epic #1107 — hide or show list entries in one language. */
+    set_list_item_visibility: async (ctx, args) =>
+      setListItemVisibility(await chromeDepsOf(ctx), args),
+
+    /**
+     * Epic #1107 — Stage-audit findings for lists: texts missing in a
+     * language, entries hidden because their link target has no version
+     * in it. Read-only. Core's plugin audit-contribution path calls it
+     * once that path exists (docs/lists.md §9.5); intl_status carries the
+     * same findings meanwhile.
+     */
+    list_translation_findings: async (ctx) => {
+      const deps = await chromeDepsOf(ctx);
+      return { findings: listFindings(deps, await loadListTranslationState(deps)) };
+    },
+
+    /**
+     * Epic #1107 — the "Languages" view of one list (or every list): per
+     * entry and language, what is translated, stale, missing or hidden.
+     * Read-only; the list editor's Languages tab renders it.
+     */
+    list_translation_status: async (ctx, args) => {
+      const { listId } = z
+        .object({ listId: z.string().uuid().optional() })
+        .strict()
+        .parse(args ?? {});
+      const deps = await chromeDepsOf(ctx);
+      const state = await loadListTranslationState(deps);
+      const target = listId ? `list:${listId}` : null;
+      return {
+        locales: [...deps.locales.values()]
+          .filter((l) => !l.is_default)
+          .map((l) => ({ code: l.code, displayName: l.display_name })),
+        lists: listStatus(deps, state).filter((t) => target === null || t.target === target),
+        findings: listFindings(deps, state).filter((f) => target === null || f.target === target),
+        hidden: state.visibility
+          .filter(
+            (r) => r.hidden && (listId === undefined || r.address.startsWith(`list/${listId}/`)),
+          )
+          .map((r) => ({ localeCode: r.locale_code, address: r.address })),
+      };
     },
 
     /**
@@ -1001,6 +1126,15 @@ export default definePlugin<PluginContextTier1>({
         // #592 — the shared chrome (layout header/footer/menus, content
         // synced across pages) and what each language has for it.
         chrome: await chromeStatus(await chromeDepsOf(ctx)),
+        // Epic #1107 — lists (menus, footer links, categories, local lists
+        // in shared content, page properties of language versions): per
+        // list and language how many texts are translated / stale /
+        // missing, and what keeps a language from showing them.
+        ...(await (async () => {
+          const deps = await chromeDepsOf(ctx);
+          const state = await loadListTranslationState(deps);
+          return { lists: listStatus(deps, state), listFindings: listFindings(deps, state) };
+        })()),
       };
     },
 
@@ -1495,10 +1629,30 @@ export default definePlugin<PluginContextTier1>({
       const q = adminQueryOf(ctx);
       const events = eventsOf(ctx);
       const batch = await events.poll({
-        kinds: ["page.updated", "page.published", "module.updated"],
+        kinds: [
+          "page.updated",
+          "page.published",
+          "module.updated",
+          "list.items_changed",
+          "list_type.changed",
+          "list.deleted",
+          "page.properties_changed",
+          "page.terms_changed",
+        ],
         limit: 200,
       });
       if (batch.events.length === 0) return { marked: 0, scanned: 0 };
+      // Epic #1107 — any live change a list translation depends on
+      // (entries, list types, deleted lists, page properties, content
+      // instances, modules, publishing) re-derives the stored statuses
+      // from the main line: added → missing, changed → needs_update,
+      // gone → orphaned (kept), back → restored. Idempotent, so
+      // at-least-once delivery is safe. Branch changes wait for their
+      // Stage, like page staleness below; a chat's preview computes the
+      // same from hashes meanwhile.
+      const listsTouched = batch.events.some(
+        (ev) => !(ev.payload as { chatBranchId?: string | null } | null)?.chatBranchId,
+      );
       const sourcePageIds = new Set<string>();
       // #592 — a live edit of a module (layout chrome renders its field
       // defaults) or of a shared content instance may change chrome a
@@ -1509,6 +1663,17 @@ export default definePlugin<PluginContextTier1>({
         if (payload?.chatBranchId) continue;
         if (ev.kind === "module.updated") {
           chromeTouched = true;
+          continue;
+        }
+        // List events are handled by the list reconciliation below; a
+        // page's own staleness is about its content, not its terms.
+        if (
+          ev.kind === "list.items_changed" ||
+          ev.kind === "list_type.changed" ||
+          ev.kind === "list.deleted" ||
+          ev.kind === "page.terms_changed" ||
+          ev.kind === "page.properties_changed"
+        ) {
           continue;
         }
         if (payload?.contentInstanceId) chromeTouched = true;
@@ -1536,8 +1701,13 @@ export default definePlugin<PluginContextTier1>({
         }
       }
       if (chromeTouched) marked += await refreshChromeStaleness(await chromeDepsOf(ctx));
+      let lists = { updated: 0, inserted: 0, collected: 0 };
+      if (listsTouched) {
+        const deps = await chromeDepsOf(ctx);
+        lists = await reconcileListTranslations(deps, await lastLiveBuildAt(deps));
+      }
       await events.commit(batch.nextCursor);
-      return { marked, scanned: batch.events.length };
+      return { marked, scanned: batch.events.length, lists };
     },
   },
   workers: [
@@ -1556,7 +1726,7 @@ export default definePlugin<PluginContextTier1>({
     {
       name: "intl_status",
       description:
-        "Fetch the FULL translation state in one call: registered locales (code, strategy, default flag), every variant group (which pages are language-counterparts of each other, with per-variant translation status and current path), pages not yet in any group (they belong to the default locale and have no translations), and per-locale stale counts. The site home carries `isSiteHome: true` (its create_variant takes no slug). " +
+        "Fetch the FULL translation state in one call: registered locales (code, strategy, default flag), every variant group (which pages are language-counterparts of each other, with per-variant translation status and current path), pages not yet in any group (they belong to the default locale and have no translations), per-locale stale counts, the shared chrome, and the lists (`lists`: per list and language translated / needs_update / missing counts; `listFindings`: texts missing and entries hidden because their link has no version in a language, each with its next step). The site home carries `isSiteHome: true` (its create_variant takes no slug). " +
         "Call this FIRST for any i18n question ('is X translated?', 'what is missing in German?') — never ask the operator. " +
         "NOT for changing anything: use create_variant / link_page_variants / set_locales to act.",
       operationName: "intl_status",
@@ -1712,9 +1882,10 @@ export default definePlugin<PluginContextTier1>({
     {
       name: "translate_chrome",
       description:
-        "Translate the site's shared CHROME into one language — navigation menus, header, footer and any content shared across pages — in ONE context-aware pass, so every page in that language shows its own menus and footer. " +
-        "Use when a language is added, when intl_status lists chrome entries as 'missing' or 'translated/needs_update' for a locale, or when the preview flags 'there is no <language> version of …'. Links inside menus need no work: they point at each page's same-language version automatically. " +
-        "Chrome a language runs independently (its own items) is never overwritten. translate_all_stale already includes this for every language — prefer it when pages are stale too." +
+        "Translate the site's shared CHROME and LISTS into one language — navigation menus, header, footer, content shared across pages, every list (menus, footer links, categories, tags, local lists in shared content) and the page properties of that language's pages — in ONE context-aware pass, so every page in that language shows its own menus and labels. " +
+        "List texts are offered by value address (list/<listId>/item/<itemId>/<field>, instance/…, page/<pageId>/props/<field>) and stored by it; only texts that are missing or whose source changed are offered. Until a list entry's required text is translated, that entry is HIDDEN on the language's pages (never shown in the source language). " +
+        "Use when a language is added, when intl_status lists chrome entries as 'missing'/'translated/needs_update' or lists with missing/needs_update counts, or when the preview flags 'there is no <language> version of …'. Links inside menus need no work: they point at each page's same-language version automatically (an entry whose link has no version in the language is hidden and listed in intl_status.listFindings). " +
+        'Chrome a language runs independently (its own items) is never overwritten. translate_all_stale already includes this for every language — prefer it when pages are stale too. For one wording the operator dictates, use apply_translations with kind "addresses" instead.' +
         MCP_TRANSLATE_CHROME,
       operationName: "translate_chrome",
       usesInstallAi: true,
@@ -1783,8 +1954,8 @@ export default definePlugin<PluginContextTier1>({
     {
       name: APPLY_TRANSLATIONS_TOOL,
       description:
-        "Write YOUR translations back: the answers to work items that translate_variant, translate_all_stale and translate_chrome return over the Power-MCP when the install's AI is not available to you. " +
-        "Each items[] entry is a work item's apply.args.items[0] copied unchanged (kind, variantPageId + mode or localeCode, basis) plus `result`: your answer to that item's instructions — the JSON object they ask for (or its text). " +
+        "Write translations back. (1) The answers to work items that translate_variant, translate_all_stale and translate_chrome return over the Power-MCP when the install's AI is not available to you: each items[] entry is a work item's apply.args.items[0] copied unchanged (kind, variantPageId + mode or localeCode, basis) plus `result`: your answer to that item's instructions — the JSON object they ask for (or its text). " +
+        "(2) List texts by ADDRESS, no work item needed: { kind: \"addresses\", localeCode, translations: [{ address, value }] } — use it when the operator dictates a wording ('in German the menu says Preise') or to fix one translated list text; addresses come from intl_status.lists / list_translation_status / translate_chrome (list/<listId>/item/<itemId>/<field>, instance/<ciId>/<field>/item/<itemId>/<itemField>, page/<pageId>/props/<field>). A category/tag slug must be unique per list and language. " +
         "Send every answer you have in ONE call (up to 100 items). All items are checked first — JSON contract, structural lock, and that the page/chrome did not change since the work item was issued (basis); if any item fails, NOTHING is written and the error lists every failing item with what to do (fix the answer, or fetch a fresh work item). " +
         'Applied pages stay DRAFTS; a result with seo "marked_stale" carries a nextStep. ' +
         "NOT for translating yourself without a work item — call translate_variant / translate_chrome first; the basis must come from them.",
@@ -1792,6 +1963,50 @@ export default definePlugin<PluginContextTier1>({
       // Content write on the chat's branch, like translate_variant.
       requiredPermission: "content.write",
       inputJsonSchema: applyTranslationsInputJsonSchema,
+    },
+    {
+      name: "set_list_item_visibility",
+      description:
+        "Hide list entries in ONE language (or show them again): 'the German menu has no Careers link', 'drop the US-only tag on the French site'. The entry stays in the list and in every other language; nothing is deleted. " +
+        "address is the ENTRY address — list/<listId>/item/<itemId> for a shared list, instance/<ciId>/<field>/item/<itemId> for a local list (intl_status.lists, list_translation_status and intl_status.listFindings name them). hidden: false removes your decision again (the entry then follows the normal rules: hidden only while its required text is untranslated or its link has no version in the language). " +
+        'Prefer one call with every entry over repeated calls. NOT for the default language — remove the entry from the list itself (patch_list_items_many) — and NOT for changing a wording (apply_translations with kind "addresses").',
+      operationName: "set_list_item_visibility",
+      // Content write on the chat's branch.
+      requiredPermission: "content.write",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["items"],
+        properties: {
+          items: {
+            type: "array",
+            minItems: 1,
+            maxItems: 200,
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["localeCode", "address", "hidden"],
+              properties: {
+                localeCode: { type: "string", minLength: 2, maxLength: 35 },
+                address: { type: "string", minLength: 1, maxLength: 400 },
+                hidden: { type: "boolean" },
+              },
+            },
+          },
+        },
+      },
+    },
+    {
+      name: "list_translation_status",
+      description:
+        "The Languages view of the site's lists in one call: per list (or local list / page) and language how many texts are translated, need an update (source changed) or are missing, which entries the operator hid per language, and the findings (texts missing, entries hidden because their link target has no version in that language). Pass listId for one list. " +
+        "Use for 'is the German menu translated?', 'why does the French footer miss an entry?'. NOT for translating (translate_chrome) or hiding (set_list_item_visibility); intl_status carries the same summary next to pages and chrome.",
+      operationName: "list_translation_status",
+      inputJsonSchema: {
+        type: "object",
+        additionalProperties: false,
+        properties: { listId: { type: "string", format: "uuid" } },
+      },
     },
     {
       name: "set_glossary_term",
@@ -1859,21 +2074,37 @@ export default definePlugin<PluginContextTier1>({
   contributes: ["head", "sitemap"],
   /**
    * The visible counterpart to the hreflang links: the same published
-   * variants, as DATA for a module to iterate. `staticRender` below
+   * variants, as DATA for a module to iterate. `staticRender` above
    * still ships a ready-made switcher for operators who want one
-   * without authoring markup, but a module using this list carries the
+   * without authoring markup, but a module using this source carries the
    * site's own design and — because it resolves per page — can live in
    * the LAYOUT and cover every page from one placement.
    */
-  dataLists: [
+  listSources: [
     {
       name: "language_links",
+      label: "Language versions of this page",
       description:
         "Every PUBLISHED language version of the current page, including the current one. Empty when the page has fewer than two published variants — a lone language needs no switcher.",
-      itemFields: ["href", "label", "locale", "is_current"],
+      node: {
+        label: "Language version",
+        fields: [
+          { name: "href", label: "Address", type: "link", required: true },
+          { name: "label", label: "Language name", type: "text", required: true },
+          { name: "locale", label: "Language code", type: "text", required: true, maxLength: 35 },
+          { name: "is_current", label: "Is this page", type: "boolean" },
+        ],
+      },
     },
   ],
-  dataListsOperation: "language_links",
+  listSourcesOperation: "language_links",
+  /**
+   * Epic #1107 — the `translate` attribute on list-type fields and page
+   * properties (`ext["international-site"].translate`). Core validates
+   * it against this schema and never reads it.
+   */
+  listExt: { field: LIST_EXT_FIELD_SCHEMA },
+  listResolveOperation: "list_resolve",
   contributionsOperation: "head_contributions",
   contentVariantsOperation: "content_variants",
   linkResolveOperation: "link_resolve",
@@ -1920,7 +2151,9 @@ export default definePlugin<PluginContextTier1>({
         "4. Seed the language: for each core page the operator cares about, create_variant with a localized slug (omit the slug for the home page — its counterpart is the locale root), then translate_variant. Do not mass-create variants for every page unprompted — ask which pages matter, or start with the pages the operator named.",
         "5. hreflang links and sitemap alternates appear automatically once variants are PUBLISHED (drafts are invisible to search engines by design — a missing translation is a clean 404, never a fallback).",
         "5b. Translate the shared chrome too — menus, header, footer and content shared across pages: call translate_chrome({localeCode}) once per new language (translate_all_stale also covers it). Until then the preview flags 'there is no <language> version of …' and publishing refuses: pages never fall back to another language. Menu links need no work — they point at each page's same-language version, and a link whose target has no version in that language is flagged. If the operator wants a language's menu or footer to DIFFER (other items, another footer module), use set_chrome_variants; switching it back to the translated version is reattach_chrome_variant (approval-gated, it overwrites).",
-        '6. To offer visitors a language switcher, add a module whose HTML iterates the plugin\'s list: `<nav>{{#language_links}}<a href="{{href}}" hreflang="{{locale}}">{{label}}</a>{{/language_links}}</nav>`. Each item carries href, label, locale and is_current. Write the markup to match the site\'s design — you own it, the plugin only supplies the data. Because it resolves per page, placing that module in the LAYOUT gives every page a switcher from one placement. The list is empty until a page has at least two PUBLISHED variants.',
+        "5c. Lists follow the language automatically by address: translate_chrome also translates every list (menus, footer links, categories and tags with their slugs, local lists in shared content) and the page properties of the language's pages. A list entry whose required text is not translated yet is HIDDEN on that language's pages — never shown in the source language — and so is an entry whose link points at a page without a version in that language (intl_status.listFindings names them: create the page's variant, or hide the entry on purpose with set_list_item_visibility). For a wording the operator dictates, apply_translations with kind \"addresses\".",
+        '5d. Which list fields are translated: text and rich text, unless the list type marks the field `ext: { "international-site": { translate: false } }` (SKUs, codes, brand names). When you create or change a list type with upsert_list_types_many, set that attribute in the same call for every text field whose value is the same in every language; leave it out (= translated) otherwise. Turning it off keeps existing translations but stops applying them; turning it on makes the texts "missing" until translated.',
+        '6. To offer visitors a language switcher, add a module whose HTML iterates the plugin\'s list source: `<nav>{{#language_links}}<a href="{{href}}" hreflang="{{locale}}"{{#is_current}} aria-current="page"{{/is_current}}>{{label}}</a>{{/language_links}}</nav>`. Each entry carries href (a link), label, locale and is_current (a boolean). Write the markup to match the site\'s design — you own it, the plugin only supplies the data. Because it resolves per page, placing that module in the LAYOUT gives every page a switcher from one placement. The list is empty until a page has at least two PUBLISHED variants.',
       ].join("\n"),
       autoEngagementHints: {
         keywords: [

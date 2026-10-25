@@ -287,8 +287,12 @@ export const listDeployTargetsOp = defineOperation({
 export const listDeployRunsOp = defineOperation({
   name: "deploy.list_runs",
   // CLAUDE.md §11: AI inspects deploy history when troubleshooting
-  // ("did the last build succeed?"). Read-only.
-  actorScope: ["human", "ai", "system"],
+  // ("did the last build succeed?"). Read-only. Plugin actors read it
+  // too (epic #1107): international-site garbage-collects a removed
+  // entry's translations only once a production build after the removal
+  // succeeded — "the removal is live", so an undo before that restores
+  // them.
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().min(1).max(200).default(50) }),
   output: z.object({ runs: z.array(runRow) }),

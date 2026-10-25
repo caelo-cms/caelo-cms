@@ -17,7 +17,7 @@
  * like the site behind it.
  *
  * So: the plugin ships a runtime (#449) that binds to documented
- * attributes, and a `consent_categories` data list (#447) the banner
+ * attributes, and a `consent_categories` list source (#447) the banner
  * module iterates. The AI writes the markup.
  *
  * ## Where the pieces live
@@ -360,6 +360,7 @@ export default definePlugin<PluginContextTier1>({
     "cms_admin",
     "domain_events",
     "background_workers",
+    "list_sources",
   ],
 
   /** Proof of consent. Written by the gateway on a visitor request. */
@@ -438,15 +439,24 @@ export default definePlugin<PluginContextTier1>({
    * plugin, so it looks like the site it lives on. Placing that module
    * in the LAYOUT covers every page from one placement.
    */
-  dataLists: [
+  listSources: [
     {
       name: "consent_categories",
+      label: "Consent categories",
       description:
         "The consent categories a visitor can accept or decline, in display order. Always non-empty while the plugin runs.",
-      itemFields: ["key", "label", "description", "required"],
+      node: {
+        label: "Consent category",
+        fields: [
+          { name: "key", label: "Key", type: "text", required: true, maxLength: 64 },
+          { name: "label", label: "Label", type: "text", required: true },
+          { name: "description", label: "Description", type: "text", maxLength: 2000 },
+          { name: "required", label: "Always on", type: "boolean" },
+        ],
+      },
     },
   ],
-  dataListsOperation: "consent_data_lists",
+  listSourcesOperation: "consent_data_lists",
 
   /**
    * Which modules core must withhold (#450). A module whose third-party
@@ -551,17 +561,22 @@ export default definePlugin<PluginContextTier1>({
     consent_data_lists: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
       const categories = await categoriesOf(adminQueryOf(ctx));
-      const items = categories.map((c) => ({
-        key: c.key,
-        label: c.display_name,
-        description: c.description,
-        required: c.required ? "true" : "false",
+      // The category key is the entry id: stable across renders, and the
+      // same thing the banner's data-consent-category hook names.
+      const entries = categories.map((c) => ({
+        id: c.key,
+        values: {
+          key: c.key,
+          label: c.display_name,
+          description: c.description,
+          required: c.required,
+        },
       }));
       // The same list on every page: the banner is site chrome, and a
       // per-page answer would invite placing it per page.
-      const lists: Record<string, Record<string, typeof items>> = {};
-      for (const id of pageIds) lists[id] = { consent_categories: items };
-      return { lists };
+      const sources: Record<string, Record<string, typeof entries>> = {};
+      for (const id of pageIds) sources[id] = { consent_categories: entries };
+      return { sources };
     },
 
     /** Everything the AI needs to set the banner up, in one call. */

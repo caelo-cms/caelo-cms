@@ -83,6 +83,8 @@ const listSummarySchema = z.object({
   version: z.number().int().positive(),
   updatedAt: z.string(),
   usage: usageSchema,
+  /** The entries, only with `includeItems` (one read for a plugin that plans over every list). */
+  items: z.array(z.unknown()).optional(),
 });
 
 function countItems(items: readonly ListItem[]): number {
@@ -98,7 +100,9 @@ function textOf(items: readonly ListItem[]): string {
 export const listListsOp = withHumanisedLinks(
   defineOperation({
     name: "lists.list",
-    actorScope: ["human", "ai", "system"],
+    // Why plugin: the `lists` read grant (docs/lists.md §9) — a plugin
+    // reaches list data only through named ops of the domain.
+    actorScope: ["human", "ai", "plugin", "system"],
     database: "cms_admin",
     input: z
       .object({
@@ -107,6 +111,12 @@ export const listListsOp = withHumanisedLinks(
         role: z.enum(LIST_TYPE_ROLES).optional(),
         /** Free-text match on slug, name, purpose and entry text. */
         query: z.string().min(1).max(128).optional(),
+        /**
+         * Return every list's entries too. For a translation plugin that
+         * resolves every list of a render in one read (docs/lists.md §9);
+         * the AI reads one list's entries with lists.get.
+         */
+        includeItems: z.boolean().optional(),
       })
       .strict(),
     output: z.object({ lists: z.array(listSummarySchema) }),
@@ -152,6 +162,7 @@ export const listListsOp = withHumanisedLinks(
               pageTypes: [...(u?.pageTypes ?? [])],
               taggedPageCount: u?.taggedPageCount ?? 0,
             },
+            ...(input.includeItems ? { items: [...l.state.items] } : {}),
           };
         }),
       });
@@ -164,7 +175,8 @@ export const listListsOp = withHumanisedLinks(
 export const getListOp = withHumanisedLinks(
   defineOperation({
     name: "lists.get",
-    actorScope: ["human", "ai", "system"],
+    // Why plugin: the `lists` read grant (see lists.list).
+    actorScope: ["human", "ai", "plugin", "system"],
     database: "cms_admin",
     input: z
       .object({ slug: z.string().min(1).max(64).optional(), id: z.string().uuid().optional() })

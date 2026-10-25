@@ -20,12 +20,13 @@ import {
   collectContributions,
   composeHeadBlock,
   createPluginRenderFailureSink,
-  dormantDataListNames,
+  dormantListSourceNames,
   injectPluginAssets,
   pluginNotRunningMarker,
   pluginRenderFailedMarker,
   pluginsNotRunningHere,
-  resolveDataLists,
+  reportListOverlayIssues,
+  resolveListSources,
   resolveModuleDeferrals,
   resolvePublicPageUrls,
 } from "@caelo-cms/plugin-host";
@@ -56,7 +57,6 @@ import {
   type NestedModuleResource,
   type NestedRenderResolver,
   ok,
-  pluginSourcesFromDataLists,
   renderModuleWithContent,
   renderSeoHead,
   resolveDocumentLanguage,
@@ -816,9 +816,6 @@ export const renderPagePreviewOp = defineOperation({
     // Collect CSS/JS from every nested module touched during recursion
     // so the page's <style>/<script> tags include them. Dedup by
     // moduleId; the composer dedupes by moduleId as well (issue #158).
-    // Plugin data lists for THIS page: the editor preview must show the
-    // same thing the deploy will, including the loud marker when a
-    // plugin whose list a module iterates has been switched off.
     // #590 — every URL the preview shows (canonical, plugin hreflang,
     // switcher links) follows the style of the target Publish serves, so
     // the editor shows the URLs the live site will carry.
@@ -844,13 +841,13 @@ export const renderPagePreviewOp = defineOperation({
     // Plugin list sources for THIS page: the editor preview must show the
     // same thing the deploy will, including the loud marker when a plugin
     // whose source a module iterates has been switched off.
-    const resolvedLists = await resolveDataLists([input.pageId], renderScope, pageUrlStyle);
+    const resolvedSources = await resolveListSources([input.pageId], renderScope, pageUrlStyle);
     const listContext = createListRenderContext(listData, {
-      dormantPluginSources: dormantDataListNames(),
+      dormantPluginSources: dormantListSourceNames(),
     });
     const lists = listContext.forPage(input.pageId, {
       linkResolver,
-      pluginSources: pluginSourcesFromDataLists(resolvedLists.get(input.pageId) ?? {}),
+      pluginSources: resolvedSources.get(input.pageId) ?? {},
     });
 
     // #592 — content variants: which chrome and which shared content this
@@ -1176,6 +1173,13 @@ export const renderPagePreviewOp = defineOperation({
         });
       }
       throw e;
+    }
+    // Epic #1107 — overlay entries this render refused are the plugin's
+    // fault: the stored value rendered, and the plugin's error channel
+    // (plugin_errors → list_plugins, Settings → Plugins) names them.
+    const refusedOverlays = lists.overlayIssues();
+    if (refusedOverlays.length > 0 && listData.overlaySources) {
+      await reportListOverlayIssues(listData.overlaySources, refusedOverlays);
     }
     // P8 review-pass — preview parity with the static deploy.
     // Without this, editors can't verify SEO meta / canonical /

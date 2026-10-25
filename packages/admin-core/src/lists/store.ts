@@ -65,12 +65,26 @@ export interface ListEntityView<K extends ListEntityKind> {
   readonly updatedAt: string;
   /** The live row is tagged with a branch (created there, not merged yet). */
   readonly createdOnBranch: boolean;
+  /**
+   * List types only: the slug of the plugin that ships this type
+   * (migration 0357), null for a site type. A plugin's type is written by
+   * the host from the plugin's manifest, never by a person or the AI.
+   */
+  readonly ownerPlugin: string | null;
 }
 
 export interface LoadListEntitiesOptions {
   readonly ids?: readonly string[];
   readonly slugs?: readonly string[];
   readonly includeDeleted?: boolean;
+  /**
+   * List types only: also return types of plugins that are not running
+   * (archived with their plugin, `plugin_list_type_available`). Off for
+   * every read that renders or edits lists — an inactive plugin's type
+   * does not exist for them — on for the upsert lookup, which must refuse
+   * reusing such a slug instead of colliding with the row.
+   */
+  readonly includeArchivedPluginTypes?: boolean;
 }
 
 function iso(v: string | Date | null): string | null {
@@ -104,6 +118,7 @@ type LiveRow = {
   updated_at: string | Date;
   deleted_at: string | Date | null;
   chat_branch_id: string | null;
+  owner_plugin?: string | null;
 };
 
 function liveState<K extends ListEntityKind>(kind: K, r: LiveRow): StateOf<K> {
@@ -166,14 +181,21 @@ export async function loadListEntities<K extends ListEntityKind>(
   const columns: SQL =
     kind === "list"
       ? sql`name, purpose, list_type_id::text AS list_type_id, items`
-      : sql`definition`;
+      : kind === "listType"
+        ? sql`definition,
+              (SELECT p.slug FROM plugins p WHERE p.id = ${sql.raw(spec.table)}.plugin_id) AS owner_plugin`
+        : sql`definition`;
+  const availability =
+    kind === "listType" && !opts.includeArchivedPluginTypes
+      ? sql` AND plugin_list_type_available(plugin_id)`
+      : sql``;
   // A soft-deleted live row is still loaded: a branch may have restored it
   // (an undo of the delete is a later snapshot).
   const rows = (await tx.execute(sql`
     SELECT id::text AS id, slug, ${columns}, version, updated_at, deleted_at,
            chat_branch_id::text AS chat_branch_id
     FROM ${sql.raw(spec.table)}
-    WHERE ${visible}${idFilter}${slugFilter}
+    WHERE ${visible}${idFilter}${slugFilter}${availability}
     ORDER BY slug, created_at
   `)) as unknown as LiveRow[];
   if (rows.length === 0) return [];
@@ -208,6 +230,7 @@ export async function loadListEntities<K extends ListEntityKind>(
       state,
       updatedAt: o ? o.at : (iso(r.updated_at) ?? ""),
       createdOnBranch: r.chat_branch_id !== null,
+      ownerPlugin: r.owner_plugin ?? null,
     });
   }
   return out;
@@ -247,7 +270,11 @@ export async function loadListEntityForUpsert<K extends ListEntityKind>(
   branchId: string | null,
   slug: string,
 ): Promise<ListEntityView<K> | null> {
-  const all = await loadListEntities(tx, kind, branchId, { slugs: [slug], includeDeleted: true });
+  const all = await loadListEntities(tx, kind, branchId, {
+    slugs: [slug],
+    includeDeleted: true,
+    includeArchivedPluginTypes: true,
+  });
   const live = all.find((e) => e.state.deletedAt === null);
   if (live) return live;
   return [...all].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null;

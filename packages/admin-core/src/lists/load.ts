@@ -16,17 +16,23 @@
  * main line the same way, for callers inside admin-core.
  *
  * A page is `inBuild` when its status (in that view) is published. The
- * `list-resolve` overlays are the plugin wiring's (epic #1107 part G).
+ * `list-resolve` overlays are asked for the partition's variants in the
+ * same render scope, so a chat's preview shows the chat's translations.
  */
 
 import {
   hasLinkResolveContributors,
+  hasListResolveContributors,
   type RenderScope,
   resolveLinkVariants,
+  resolveListOverlays,
 } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import type { ListRenderData } from "@caelo-cms/shared";
-import { assembleListRenderData } from "@caelo-cms/static-generator";
+import {
+  assembleListRenderData,
+  type LoadedListRenderData,
+  renderVariants,
+} from "@caelo-cms/static-generator";
 import { loadPagesInView } from "./pages-view.js";
 import { loadListEntities } from "./store.js";
 
@@ -55,7 +61,7 @@ export interface LoadListRenderDataOptions {
 export async function loadListRenderData(
   tx: TransactionRunner,
   opts: LoadListRenderDataOptions,
-): Promise<ListRenderData> {
+): Promise<LoadedListRenderData> {
   const branchId = opts.scope === "build" ? null : opts.chatBranchId;
   const pages = await loadPagesInView(tx, branchId);
   const pageVariants =
@@ -64,6 +70,11 @@ export async function loadListRenderData(
           pages.map((p) => p.id),
           opts.renderScope ?? { chatBranchId: branchId },
         )
+      : undefined;
+  const variants = renderVariants(pageVariants);
+  const overlaySources =
+    variants.length > 0 && hasListResolveContributors()
+      ? await resolveListOverlays(variants, opts.renderScope ?? { chatBranchId: branchId })
       : undefined;
   return assembleListRenderData(tx, {
     listTypes: (await loadListEntities(tx, "listType", branchId)).map((t) => ({
@@ -93,6 +104,7 @@ export async function loadListRenderData(
       published: p.status === "published",
     })),
     ...(pageVariants ? { pageVariants } : {}),
+    ...(overlaySources ? { overlaySources } : {}),
     languageUnset: opts.scope === "preview" ? "undetermined" : "refuse",
   });
 }

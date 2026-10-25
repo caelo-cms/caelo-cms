@@ -19,7 +19,7 @@ import {
   collectContributions,
   MAIN_RENDER,
   resetPluginHost,
-  resolveDataLists,
+  resolveListSources,
   runPluginOperation,
   runPluginStaticRender,
 } from "@caelo-cms/plugin-host";
@@ -28,7 +28,6 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import {
   createListRenderContext,
   type ExecutionContext,
-  pluginSourcesFromDataLists,
   renderTemplate,
   type SiteDefaultsSetSeoInput,
   siteDefaultsSetSeoInputSchema,
@@ -328,16 +327,16 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     await sysOp("pages.set_status", { pageId: sourceId, status: "published" });
     await sysOp("pages.set_status", { pageId: de.pageId, status: "published" });
 
-    const lists = await resolveDataLists([sourceId], MAIN_RENDER, "directory");
+    const lists = await resolveListSources([sourceId], MAIN_RENDER, "directory");
     const items = lists.get(sourceId)?.language_links ?? [];
-    expect(items.map((i) => i.locale).sort()).toEqual(["de", "en"]);
-    // Flat strings only — anything else would substitute as
-    // "[object Object]" into the page.
-    for (const item of items) {
-      for (const v of Object.values(item)) expect(typeof v).toBe("string");
-    }
-    expect(items.find((i) => i.locale === "de")?.label).toBe("Deutsch");
-    expect(items.find((i) => i.locale === "en")?.is_current).toBe("true");
+    // Entries are typed by the source's node definition (epic #1107):
+    // the locale code is the stable id, href a link, is_current a boolean.
+    expect(items.map((i) => i.id).sort()).toEqual(["de", "en"]);
+    expect(items.find((i) => i.id === "de")?.values.label).toBe("Deutsch");
+    expect(items.find((i) => i.id === "en")?.values.is_current).toBe(true);
+    expect(items.find((i) => i.id === "de")?.values.is_current).toBe(false);
+    const deHref = items.find((i) => i.id === "de")?.values.href as { href?: unknown } | undefined;
+    expect(typeof deHref?.href).toBe("string");
 
     // The whole point: the MODULE owns the markup. Nothing about this
     // shape comes from the plugin.
@@ -358,7 +357,7 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
       html: '<ul>{{#language_links}}<li class="lang"><a href="{{href}}">{{label}}</a></li>{{/language_links}}</ul>',
       fields: [],
       lists: listContext().forPage(sourceId, {
-        pluginSources: pluginSourcesFromDataLists(lists.get(sourceId) ?? {}),
+        pluginSources: lists.get(sourceId) ?? {},
       }),
     });
     expect(rendered.html).toContain('<li class="lang"><a href="');

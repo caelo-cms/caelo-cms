@@ -14,6 +14,7 @@
  * like any other draft change.
  */
 
+import { activeListExt } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   checkListTypeDef,
@@ -27,6 +28,7 @@ import {
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { emitDomainEvent } from "../../domain-events.js";
+import { checkDefinitionExt, inertExtPaths } from "../../lists/ext.js";
 import {
   describeLocalPlace,
   findLocalLists,
@@ -69,7 +71,55 @@ const listTypeRowSchema = z.object({
   listCount: z.number().int().nonnegative(),
   version: z.number().int().positive(),
   updatedAt: z.string(),
+  /**
+   * The plugin that ships this type (it is available while the plugin
+   * runs and is edited only through the plugin's releases), or null for
+   * a site type.
+   */
+  ownerPlugin: z.string().nullable(),
+  /**
+   * `ext.<plugin>` attributes no running plugin interprets — stored, but
+   * doing nothing until that plugin runs again (docs/lists.md §9.2).
+   */
+  inertExt: z.array(z.string()),
 });
+
+type ListTypeRow = z.infer<typeof listTypeRowSchema>;
+
+function listTypeRow(
+  t: { id: string; state: ListTypeState; updatedAt: string; ownerPlugin: string | null },
+  listCount: number,
+): ListTypeRow {
+  return {
+    id: t.id,
+    slug: t.state.slug,
+    name: t.state.definition.name,
+    purpose: t.state.definition.purpose,
+    role: t.state.definition.role,
+    nodes: summarizeNodes(t.state.definition),
+    definition: t.state.definition,
+    listCount,
+    version: t.state.version,
+    updatedAt: t.updatedAt,
+    ownerPlugin: t.ownerPlugin,
+    inertExt: inertExtPaths(t.state.definition, activeListExt),
+  };
+}
+
+/**
+ * The refusal for a person's or the AI's write to a type a plugin ships:
+ * the plugin's manifest is its definition, refreshed on every load, so an
+ * edit here would be overwritten silently.
+ */
+function pluginOwnedRefusal(
+  ctx: { actorKind: string },
+  at: string,
+  slug: string,
+  ownerPlugin: string | null,
+): string | null {
+  if (ownerPlugin === null || ctx.actorKind === "system") return null;
+  return `${at}: list type "${slug}" ships with plugin "${ownerPlugin}" — its definition comes from the plugin and cannot be changed or deleted here. Use it as it is, or create your own type under another slug (list_types.upsert_many).`;
+}
 
 function summarizeNodes(def: ListTypeDef): string[] {
   return Object.entries(def.nodes).map(([kind, n]) => `${kind} (${n.label})`);
@@ -79,7 +129,10 @@ function summarizeNodes(def: ListTypeDef): string[] {
 
 export const listListTypesOp = defineOperation({
   name: "list_types.list",
-  actorScope: ["human", "ai", "system"],
+  // Why plugin: the `lists` read grant (docs/lists.md §9) — a translation
+  // plugin reads the definitions (and its `ext` attributes) through named
+  // ops of the domain, never through a table.
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z
     .object({
@@ -107,18 +160,7 @@ export const listListTypesOp = defineOperation({
               .toLowerCase()
               .includes(q),
         )
-        .map((t) => ({
-          id: t.id,
-          slug: t.state.slug,
-          name: t.state.definition.name,
-          purpose: t.state.definition.purpose,
-          role: t.state.definition.role,
-          nodes: summarizeNodes(t.state.definition),
-          definition: t.state.definition,
-          listCount: counts.get(t.id) ?? 0,
-          version: t.state.version,
-          updatedAt: t.updatedAt,
-        })),
+        .map((t) => listTypeRow(t, counts.get(t.id) ?? 0)),
     });
   },
 });
@@ -127,7 +169,8 @@ export const listListTypesOp = defineOperation({
 
 export const getListTypeOp = defineOperation({
   name: "list_types.get",
-  actorScope: ["human", "ai", "system"],
+  // Why plugin: the `lists` read grant (see list_types.list).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({ slug: z.string().min(1).max(64) }).strict(),
   output: z.object({
@@ -154,18 +197,7 @@ export const getListTypeOp = defineOperation({
     );
     const local = await findLocalLists(tx, branchId, t.state.slug);
     return ok({
-      listType: {
-        id: t.id,
-        slug: t.state.slug,
-        name: t.state.definition.name,
-        purpose: t.state.definition.purpose,
-        role: t.state.definition.role,
-        nodes: summarizeNodes(t.state.definition),
-        definition: t.state.definition,
-        listCount: lists.length,
-        version: t.state.version,
-        updatedAt: t.updatedAt,
-      },
+      listType: listTypeRow(t, lists.length),
       lists: lists.map((l) => ({ id: l.id, slug: l.state.slug, name: l.state.name })),
       localLists: local.map((l) => describeLocalPlace(l.place)),
     });
@@ -250,6 +282,15 @@ export const upsertListTypesManyOp = defineOperation({
       }
       const found = await loadListEntityForUpsert(tx, "listType", branchId, def.slug);
       const existing = found && found.state.deletedAt === null ? found : null;
+      const owned = pluginOwnedRefusal(ctx, at, def.slug, found?.ownerPlugin ?? null);
+      if (owned) return failBatch(wrote, handlerError(op, owned, true));
+      const extIssues = checkDefinitionExt(def, existing?.state.definition ?? null, activeListExt);
+      if (extIssues.length > 0) {
+        return failBatch(
+          wrote,
+          handlerError(op, `${at}: ${extIssues.join(" ")} Resend the whole batch.`, true),
+        );
+      }
       if (expectedVersion !== undefined && (existing?.state.version ?? 0) !== expectedVersion) {
         return failBatch(
           wrote,
@@ -528,6 +569,8 @@ export const deleteListTypesManyOp = defineOperation({
           handlerError(op, `no list type "${slug}" — list_types.list shows the ones that exist.`),
         );
       }
+      const owned = pluginOwnedRefusal(ctx, `"${slug}"`, slug, t.ownerPlugin);
+      if (owned) return failBatch(wrote, handlerError(op, owned, true));
       const using = lists.filter((l) => l.state.listTypeId === t.id).map((l) => l.state.slug);
       const fields = modules.flatMap((m) =>
         listFieldsOf(m.fields)

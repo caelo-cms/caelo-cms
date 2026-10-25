@@ -20,7 +20,11 @@
 
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { BuildPluginServices } from "@caelo-cms/plugin-host";
+import {
+  type BuildPluginServices,
+  mergeListOverlays,
+  type ResolvedListOverlays,
+} from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   type LinkPageVariant,
@@ -77,12 +81,35 @@ export interface ListRenderSources {
   readonly pages: readonly ListSourcePage[];
   /** The `link-resolve` partition — the same answer the link index got. */
   readonly pageVariants?: ReadonlyMap<string, LinkPageVariant>;
+  /** The `list-resolve` answers per plugin (epic #1107 part G). */
+  readonly overlaySources?: ResolvedListOverlays;
   /**
    * The editor preview renders a site whose language is not set yet (it
    * flags `site-language-unset` itself): dates then format for `und`, the
    * BCP 47 "undetermined" tag. A build refuses instead.
    */
   readonly languageUnset: "refuse" | "undetermined";
+}
+
+/**
+ * `ListRenderData` plus where its overlays came from, so the caller can
+ * hand the entries the render refused to the plugin that sent them
+ * (`reportListOverlayIssues`).
+ */
+export interface LoadedListRenderData extends ListRenderData {
+  readonly overlaySources?: ResolvedListOverlays;
+}
+
+/**
+ * The output variants of a render: the distinct variants of the
+ * `link-resolve` partition, sorted (the `list-resolve` point is asked for
+ * exactly these).
+ */
+export function renderVariants(
+  pageVariants: ReadonlyMap<string, LinkPageVariant> | undefined,
+): string[] {
+  if (!pageVariants) return [];
+  return [...new Set([...pageVariants.values()].map((v) => v.variant))].sort();
 }
 
 /** The thrown error when the site language is unset (builds refuse to run without it). */
@@ -100,7 +127,7 @@ export class ListRenderDataError extends Error {
 export async function assembleListRenderData(
   tx: TransactionRunner,
   src: ListRenderSources,
-): Promise<ListRenderData> {
+): Promise<LoadedListRenderData> {
   const listTypes = new Map<string, LoadedListType>();
   const typeSlugById = new Map<string, string>();
   for (const t of src.listTypes) {
@@ -180,6 +207,9 @@ export async function assembleListRenderData(
     media,
     siteLanguage: siteLanguage ?? "und",
     ...(src.pageVariants ? { pageVariants: src.pageVariants } : {}),
+    ...(src.overlaySources && src.overlaySources.plugins.length > 0
+      ? { overlays: mergeListOverlays(src.overlaySources), overlaySources: src.overlaySources }
+      : {}),
   };
 }
 
@@ -191,16 +221,17 @@ function json<T>(v: unknown): T {
  * Load the list render data of a build: list types, lists, page types and
  * pages of the MAIN line (a chat's branch never ships; published =
  * `inBuild`), media metadata and the `link-resolve` page partition asked
- * of the same plugin services the link index asks. The `list-resolve`
- * overlays are the plugin wiring's (epic #1107 part G).
+ * of the same plugin services the link index asks, and the `list-resolve`
+ * overlays of that partition's variants.
  */
 export async function loadBuildListRenderData(
   tx: TransactionRunner,
   opts: { readonly env: "dev" | "staging" | "production"; readonly plugins: BuildPluginServices },
-): Promise<ListRenderData> {
+): Promise<LoadedListRenderData> {
   const live = sql`chat_branch_id IS NULL AND deleted_at IS NULL`;
   const listTypes = (await tx.execute(sql`
-    SELECT id::text AS id, definition FROM list_types WHERE ${live} ORDER BY slug
+    SELECT id::text AS id, definition FROM list_types
+    WHERE ${live} AND plugin_list_type_available(plugin_id) ORDER BY slug
   `)) as unknown as { id: string; definition: unknown }[];
   const lists = (await tx.execute(sql`
     SELECT id::text AS id, slug, name, list_type_id::text AS list_type_id, items
@@ -242,6 +273,11 @@ export async function loadBuildListRenderData(
     pages.length > 0 && (await opts.plugins.hasLinkResolveContributors())
       ? await opts.plugins.resolveLinkVariants(pages.map((p) => p.id))
       : undefined;
+  const variants = renderVariants(pageVariants);
+  const overlaySources =
+    variants.length > 0 && (await opts.plugins.hasListResolveContributors())
+      ? await opts.plugins.resolveListOverlays(variants)
+      : undefined;
   return assembleListRenderData(tx, {
     listTypes: listTypes.map((t) => ({ id: t.id, def: json<ListTypeDef>(t.definition) })),
     lists: lists.map((l) => ({
@@ -264,6 +300,7 @@ export async function loadBuildListRenderData(
       published: p.status === "published",
     })),
     ...(pageVariants ? { pageVariants } : {}),
+    ...(overlaySources ? { overlaySources } : {}),
     languageUnset: "refuse",
   });
 }

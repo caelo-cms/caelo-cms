@@ -126,8 +126,48 @@ function world() {
       switch (op) {
         case "pages.list":
           return {
-            pages: Object.entries(titles).map(([id, title]) => ({ id, title })),
+            pages: Object.entries(titles).map(([id, title]) => ({
+              id,
+              title,
+              currentPath: id === DE ? "/de/pricing" : "/pricing",
+              pageType: "page",
+              properties: {},
+            })),
           } as O;
+        // Epic #1107 — the list reads behind translate_chrome; this site
+        // has no shared lists, only the layout menu's local list.
+        case "list_types.list":
+          return {
+            listTypes: [
+              {
+                slug: "links",
+                definition: {
+                  slug: "links",
+                  name: "Links",
+                  purpose: "Links",
+                  role: "content",
+                  root: { allow: ["link"] },
+                  nodes: {
+                    link: {
+                      label: "Link",
+                      fields: [
+                        { name: "label", label: "Label", type: "text", required: true },
+                        { name: "link", label: "Link", type: "link", required: true },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          } as O;
+        case "lists.list":
+          return { lists: [] } as O;
+        case "modules.list":
+          return { modules: [] } as O;
+        case "content_instances.list":
+          return { instances: [] } as O;
+        case "page_types.list":
+          return { pageTypes: [] } as O;
         case "pages_seo.get": {
           const m = meta[i.pageId as string] ?? "";
           return { seo: m ? { metaDescription: m } : null } as O;
@@ -143,11 +183,12 @@ function world() {
                 blockName: "header",
                 index: 0,
                 moduleName: "Main menu",
-                fields: [{ name: "nav", kind: "list" }],
+                fields: [{ name: "nav", kind: "list", listType: "links" }],
                 values: structuredClone(nav),
               },
             ],
             sharedInstances: [],
+            listInstances: [],
           } as O;
         case "page_module_content.set":
         case "pages.update":

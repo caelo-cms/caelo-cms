@@ -41,6 +41,8 @@ function prepared(keys: string[]): PreparedChromeTranslation {
     skippedIndependent: 0,
     nothingToTranslate: 0,
     offered: keys.map(target),
+    offeredLists: [],
+    listState: null,
     variants: [],
     glossary: [],
     styleGuide: null,
