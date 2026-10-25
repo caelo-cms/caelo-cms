@@ -27,8 +27,80 @@ export interface ContentEdit {
 }
 
 export type ApplyEditsResult =
-  | { readonly ok: true; readonly content: string; readonly replacements: number }
+  | {
+      readonly ok: true;
+      readonly content: string;
+      readonly replacements: number;
+      /** The edits as applied — differs from the input only for a decoded anchor. */
+      readonly edits: readonly ContentEdit[];
+      /** One line per edit whose quoting was corrected, for the tool result. */
+      readonly notes: readonly string[];
+    }
   | { readonly ok: false; readonly error: string };
+
+/**
+ * The raw text a quote-wrapped value stands for, or null when `value` is
+ * not wrapped in `"…"`. A JSON string literal (`"<a class=\"x\">"`)
+ * decodes through JSON.parse; a value that is merely wrapped (raw newlines
+ * or a stray backslash make it invalid JSON) loses one pair of quotes.
+ *
+ * Why this exists (#1084): the model sometimes passes an anchor as the
+ * JSON-encoded string it saw in a tool result instead of the raw text, so
+ * a body that is perfectly current reads as "not found".
+ */
+function unquote(value: string): string | null {
+  if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed === "string") return parsed;
+  } catch {
+    // Not a JSON literal — fall through to stripping the one wrapping pair.
+  }
+  return value.slice(1, -1);
+}
+
+/**
+ * An oldString that is not in the body but whose unquoted form is: the
+ * edit to apply instead, or the precise refusal when the correction would
+ * be a guess. Returns null when unquoting does not explain the miss.
+ */
+function correctQuotedAnchor(
+  body: string,
+  edit: ContentEdit,
+  where: string,
+): { readonly edit: ContentEdit; readonly note: string } | { readonly error: string } | null {
+  const oldRaw = unquote(edit.oldString);
+  if (oldRaw === null || oldRaw === "") return null;
+  const count = countOccurrences(body, oldRaw);
+  if (count === 0) return null;
+  const cause =
+    `oldString${where} is wrapped in quotes (JSON-encoded text) and the field does not contain the quotes; ` +
+    "without them it matches";
+  // Only a newString encoded the same way is unambiguous: a raw newString
+  // next to an encoded oldString could mean either, and guessing would
+  // write stray quotes or backslashes into the page.
+  const newRaw = edit.newString === "" ? "" : unquote(edit.newString);
+  if (newRaw === null) {
+    return {
+      error:
+        `${cause} ${count === 1 ? "once" : `${count} times`}. ` +
+        'Pass the raw text exactly as read_content shows it, without the wrapping quotes and without \\" escapes, in both oldString and newString.',
+    };
+  }
+  if (count > 1 && edit.replaceAll !== true) {
+    return {
+      error:
+        `${cause} ${count} times (${matchLines(body, oldRaw).join("; ")}). ` +
+        'Resend it as raw text (no wrapping quotes, no \\" escapes) with enough surrounding context to match once, or pass replaceAll:true.',
+    };
+  }
+  return {
+    edit: { ...edit, oldString: oldRaw, newString: newRaw },
+    note:
+      `Note${where}: oldString/newString arrived wrapped in quotes (JSON-encoded); applied the unquoted text. ` +
+      "Pass raw text exactly as read_content shows it next time.",
+  };
+}
 
 /**
  * Where `needle` starts, as 1-based lines with that line's text — the
@@ -80,8 +152,10 @@ export function applyStringEdits(source: string, edits: readonly ContentEdit[]):
   }
   let current = source;
   let replacements = 0;
+  const applied: ContentEdit[] = [];
+  const notes: string[] = [];
   for (let i = 0; i < edits.length; i++) {
-    const edit = edits[i];
+    let edit = edits[i];
     if (!edit) continue;
     const where = edits.length > 1 ? ` (edit #${i + 1})` : "";
     if (edit.oldString === edit.newString) {
@@ -102,9 +176,19 @@ export function applyStringEdits(source: string, edits: readonly ContentEdit[]):
       }
       current = edit.newString;
       replacements += 1;
+      applied.push(edit);
       continue;
     }
-    const count = countOccurrences(current, edit.oldString);
+    let count = countOccurrences(current, edit.oldString);
+    if (count === 0) {
+      const corrected = correctQuotedAnchor(current, edit, where);
+      if (corrected !== null && "error" in corrected) return { ok: false, error: corrected.error };
+      if (corrected !== null) {
+        edit = corrected.edit;
+        notes.push(corrected.note);
+        count = countOccurrences(current, edit.oldString);
+      }
+    }
     if (count === 0) {
       return {
         ok: false,
@@ -129,8 +213,9 @@ export function applyStringEdits(source: string, edits: readonly ContentEdit[]):
           // in the operator's new text instead of inserting it verbatim.
           current.replace(edit.oldString, () => edit.newString);
     replacements += edit.replaceAll === true ? count : 1;
+    applied.push(edit);
   }
-  return { ok: true, content: current, replacements };
+  return { ok: true, content: current, replacements, edits: applied, notes };
 }
 
 /**

@@ -23,7 +23,7 @@ describe("applyStringEdits", () => {
   // through edit_module. An empty field has nothing to anchor on.
   it("fills an empty body from an empty oldString", () => {
     const r = applyStringEdits("", [{ oldString: "", newString: "console.log(1);" }]);
-    expect(r).toEqual({ ok: true, content: "console.log(1);", replacements: 1 });
+    expect(r).toMatchObject({ ok: true, content: "console.log(1);", replacements: 1 });
   });
 
   it("chains after filling an empty body", () => {
@@ -31,7 +31,7 @@ describe("applyStringEdits", () => {
       { oldString: "", newString: "a = 1;" },
       { oldString: "1", newString: "2" },
     ]);
-    expect(r).toEqual({ ok: true, content: "a = 2;", replacements: 2 });
+    expect(r).toMatchObject({ ok: true, content: "a = 2;", replacements: 2 });
   });
 
   // e2e-livedit run 39928246316: a blind CSS edit anchored on a selector
@@ -78,6 +78,57 @@ describe("applyStringEdits", () => {
     const r = applyStringEdits("abc", [{ oldString: "xyz", newString: "q" }]);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("not found");
+  });
+
+  // #1084 — the real-AI gate saw an anchor passed as its JSON-encoded form
+  // (`"<footer class=\"site-footer\">…</footer>"`) reported as a stale body.
+  describe("quote-wrapped anchors (#1084)", () => {
+    const body = '<main></main>\n<footer class="site-footer"><p>Old</p></footer>';
+
+    it("applies a JSON-encoded oldString + newString as their raw text, with a note", () => {
+      const r = applyStringEdits(body, [
+        {
+          oldString: JSON.stringify('<footer class="site-footer"><p>Old</p></footer>'),
+          newString: JSON.stringify('<footer class="site-footer"><p>New</p></footer>'),
+        },
+      ]);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.content).toBe('<main></main>\n<footer class="site-footer"><p>New</p></footer>');
+      expect(r.edits[0]?.newString).toBe('<footer class="site-footer"><p>New</p></footer>');
+      expect(r.notes[0]).toMatch(/wrapped in quotes/);
+    });
+
+    it("strips one wrapping pair from a non-JSON quoted anchor", () => {
+      const r = applyStringEdits("a\nb <p>x</p>", [
+        { oldString: '"b <p>x</p>"', newString: '"b <p>y</p>"' },
+      ]);
+      expect(r).toMatchObject({ ok: true, content: "a\nb <p>y</p>" });
+    });
+
+    it("names the quotes as the cause when newString is raw (ambiguous)", () => {
+      const r = applyStringEdits(body, [
+        { oldString: JSON.stringify("<p>Old</p>"), newString: "<p>New</p>" },
+      ]);
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error).toMatch(/wrapped in quotes/);
+      expect(r.error).not.toMatch(/stale/);
+    });
+
+    it("keeps the uniqueness rule for the unquoted anchor", () => {
+      const r = applyStringEdits("<b>x</b><b>x</b>", [
+        { oldString: '"<b>x</b>"', newString: '"<b>y</b>"' },
+      ]);
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.error).toMatch(/wrapped in quotes.*2 times/);
+    });
+
+    it("leaves a body that really contains the quotes alone", () => {
+      const r = applyStringEdits('say "hi" now', [{ oldString: '"hi"', newString: '"yo"' }]);
+      expect(r).toMatchObject({ ok: true, content: 'say "yo" now', notes: [] });
+    });
   });
 
   it("rejects a non-unique oldString unless replaceAll", () => {

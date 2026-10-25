@@ -136,7 +136,8 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
             `Queued proposal ${proposalId}: edit_content on ${input.entityKind} ${input.entityId} ` +
             `(${input.field}, ${applied.replacements} replacement${plural}) — needs Owner approval. ` +
             `Approve it on the proposal card in this chat${target.write.queuePath ? ` (queue: ${target.write.queuePath})` : ""}. ` +
-            "The change is NOT applied until approved.",
+            "The change is NOT applied until approved." +
+            applied.notes.map((n) => `\n${n}`).join(""),
         };
       }
       // Gated op returned ok but no proposalId — report honestly.
@@ -169,8 +170,9 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
     // Code's Edit-result trick): the model can chain a follow-up edit_content
     // — reusing `expectedSha` and the fresh line numbers — WITHOUT a re-read.
     const newSha = contentSha(applied.content);
-    const snippet = renderEditSnippet(applied.content, input.edits);
-    const summary = `${input.entityKind} ${input.entityId} ${input.field} edited — ${applied.replacements} replacement${plural} (new sha=${newSha}).`;
+    const snippet = renderEditSnippet(applied.content, applied.edits);
+    const notes = applied.notes.length > 0 ? `\n${applied.notes.join("\n")}` : "";
+    const summary = `${input.entityKind} ${input.entityId} ${input.field} edited — ${applied.replacements} replacement${plural} (new sha=${newSha}).${notes}`;
     return {
       ok: true,
       content: snippet ? `${summary}\n${snippet}${suffix}` : `${summary}${suffix}`,

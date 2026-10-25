@@ -31,10 +31,7 @@ export interface KnownBug {
 }
 
 /** Currently triaged-but-unfixed root causes. Empty means every report is new. */
-export const KNOWN_BUGS: readonly KnownBug[] = [
-  // edit_content anchor wrapped in literal quotes reported as a stale body.
-  { issue: 1084, tool: "edit_content", match: /^oldString not found\. It may be stale/ },
-];
+export const KNOWN_BUGS: readonly KnownBug[] = [];
 
 /**
  * Find the ledger entry a report belongs to.
