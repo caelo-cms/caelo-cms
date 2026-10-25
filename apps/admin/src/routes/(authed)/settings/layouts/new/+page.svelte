@@ -82,7 +82,7 @@
             required
             rows="10"
             class="block w-full rounded-md border bg-background p-2 font-mono text-xs"
-            placeholder={'<!doctype html><html><head><meta charset="utf-8"></head><body><caelo-slot name="content">_</caelo-slot></body></html>'}
+            placeholder={'<!doctype html><html><head><meta charset="utf-8"></head><body><caelo-slot name="content"></caelo-slot></body></html>'}
           ></textarea>
           <p class="text-xs text-muted-foreground">
             Must include <code>&lt;caelo-slot name="content"&gt;…&lt;/caelo-slot&gt;</code> — that's

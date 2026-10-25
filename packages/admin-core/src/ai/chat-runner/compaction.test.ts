@@ -253,6 +253,29 @@ describe("compactHistory — stage 1 (tool-result truncation)", () => {
     expect(r.estimatedTokensAfter).toBe(r.estimatedTokensBefore);
   });
 
+  // #1094 — a head cut at a fixed index left a UUID fragment before the
+  // marker; the model later sent it back one character short.
+  it("never cuts an id in half at the head boundary", () => {
+    const id = "c9c7ddcb-cc85-4747-84fa-90967da6f769";
+    // The id straddles char 500 (the head size).
+    const content = `${"x".repeat(480)} id=${id} ${"y".repeat(40_000)}`;
+    const msgs = [
+      user("go"),
+      assistant("calling", ["t-1"]),
+      toolResult("t-1", content),
+      ...Array.from({ length: 12 }, (_, i) => user(`later ${i}`)),
+    ];
+    const r = compactHistory(msgs, {
+      targetTokens: 100,
+      keepRecentMessages: 10,
+      toolResultHeadChars: 500,
+    });
+    const cut = r.messages[2]?.content ?? "";
+    expect(cut).toContain("[truncated:");
+    expect(cut).not.toContain("c9c7ddcb");
+    expect(cut.split("\n[truncated:")[0]).toBe(`${"x".repeat(480)} id=`);
+  });
+
   it("truncates the oldest tool result first, with the exact marker format", () => {
     const bigOld = "H".repeat(40_000);
     const bigNewer = "J".repeat(40_000);

@@ -27,11 +27,13 @@
 
 import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
 import {
+  COPY_ID_EXACTLY_HINT,
   collectNestedRefs,
   contentInstanceCreateSchema,
   contentInstanceDeleteSchema,
   contentInstancesCreateManySchema,
   contentInstanceUpdateSchema,
+  describeMalformedUuid,
   err,
   forkPlacementContentSchema,
   moduleRefSchema,
@@ -259,10 +261,7 @@ async function validateNestedRefs(
       if (v === undefined || v === null) continue; // optional — render emits comment
       const parsed = moduleRefSchema.safeParse(v);
       if (!parsed.success) {
-        return {
-          ok: false,
-          message: `field "${f.name}" (kind=module) expects { moduleId, contentInstanceId }; got ${JSON.stringify(v)}`,
-        };
+        return { ok: false, message: moduleRefMessage(`field "${f.name}" (kind=module)`, v) };
       }
       refsToCheck.push({ fieldName: f.name, index: null, ref: parsed.data });
     } else if (f.kind === "module-list") {
@@ -298,10 +297,7 @@ async function validateNestedRefs(
         const el = v[i];
         const parsed = moduleRefSchema.safeParse(el);
         if (!parsed.success) {
-          return {
-            ok: false,
-            message: `field "${f.name}"[${i}] expects { moduleId, contentInstanceId }; got ${JSON.stringify(el)}`,
-          };
+          return { ok: false, message: moduleRefMessage(`field "${f.name}"[${i}]`, el) };
         }
         refsToCheck.push({ fieldName: f.name, index: i, ref: parsed.data });
       }
@@ -392,7 +388,7 @@ async function validateNestedRefs(
           // the implementation detail to a non-technical operator (§1A).
           message:
             `field "${where}" references module "${m.slug}" (type "${m.type}"), which is not in this field's allowedModuleTypes [${allowed}]. ` +
-            `Next step: reference an existing module whose type is one of [${allowed}] (see \`## Modules\` for each module's type), ` +
+            `Next step: reference an existing module whose type is one of [${allowed}] (\`list_modules\` shows each module's type and this field's allowedModuleTypes), ` +
             `or, if this module SHOULD be allowed here, add "${m.type}" to the field's allowedModuleTypes via edit_module on the parent module. ` +
             `Do not ask the operator to fix this — pick a valid module or widen the allowlist and retry.`,
         };
@@ -1728,3 +1724,24 @@ export const forkPlacementContentOp = defineOperation({
     return ok({ contentInstanceId: newCiId });
   },
 });
+
+/**
+ * Why a nested module reference was refused. #1094 — a correctly shaped
+ * `{ moduleId, contentInstanceId }` whose id was one character short read
+ * as "expects { moduleId, contentInstanceId }", which sent the AI looking
+ * for a structural mistake; name the malformed id instead.
+ */
+function moduleRefMessage(where: string, value: unknown): string {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const ref = value as Record<string, unknown>;
+    const keys = Object.keys(ref);
+    const shapeOk = keys.length === 2 && "moduleId" in ref && "contentInstanceId" in ref;
+    if (shapeOk) {
+      for (const key of ["moduleId", "contentInstanceId"] as const) {
+        const problem = describeMalformedUuid(ref[key]);
+        if (problem) return `${where}: ${key} ${problem}. ${COPY_ID_EXACTLY_HINT}`;
+      }
+    }
+  }
+  return `${where} expects { moduleId, contentInstanceId }; got ${JSON.stringify(value)}`;
+}

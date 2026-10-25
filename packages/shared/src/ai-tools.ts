@@ -89,7 +89,7 @@ export const editModuleToolInput = z
     displayName: z.string().min(1).max(128).optional(),
     /**
      * v0.12.0 — rewrite the module's purpose. Optional; passing it
-     * updates the `## Modules` block your future self will read.
+     * updates the `list_modules` catalog your future self will read.
      */
     description: z.string().max(1000).optional(),
     /** v0.12.0 — re-classify the module's role tag. */
@@ -263,7 +263,7 @@ export const addModuleToolInput = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "Pass either `moduleId` (place an existing module from ## Modules) " +
+          "Pass either `moduleId` (place an existing module from list_modules) " +
           "or `displayName` + `html` (mint a new module).",
       });
     }

@@ -13,6 +13,8 @@
  * "approve this tool call".
  */
 
+import { truncateKeepingIds } from "@caelo-cms/shared";
+
 /** Tool name → human label for the approval card headline. */
 const TOOL_LABELS: Record<string, string> = {
   propose_update_layout: "Update the site layout",
@@ -88,5 +90,5 @@ function stringify(v: unknown): string {
 }
 
 function truncate(s: string, max = 160): string {
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+  return truncateKeepingIds(s, max);
 }

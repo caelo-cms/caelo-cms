@@ -4,13 +4,13 @@
  * issue #159 — `list_modules`. AI-callable wrapper around `modules.list`
  * + `modules.list_usage`.
  *
- * Why it exists: the `## Modules` system-prompt block caps at ~40
- * modules and told the AI to "call `list_modules` for the full set" —
- * but no such tool was registered, so on large catalogs the AI had no
- * escape hatch beyond the truncated block (and burned turns on failed
- * calls). This is the read surface CLAUDE.md §11 mandates: the full
- * decision-support catalog (description, kind, type, fields, usage) on
- * demand, filterable so the result stays scannable.
+ * The module catalog the AI picks from: the read surface CLAUDE.md §11
+ * mandates (the system prompt is static, so there is no catalog block).
+ * Carries the full decision-support metadata (description, kind, type,
+ * fields, usage) on demand, filterable so the result stays scannable.
+ * #1090 / #1093 — a nested field's `allowedModuleTypes` is part of the
+ * fields column: it is what the AI must know before it picks a child
+ * module, and it was visible nowhere before the call was refused.
  *
  * Deliberately returns metadata only — never html/css/js. Reading a
  * module's body is an editing concern (`edit_module` round-trips it);
@@ -25,7 +25,7 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listModulesInput = z
   .object({
-    /** Restrict to one catalog kind (the `## Modules` grouping key). */
+    /** Restrict to one catalog kind. */
     kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
   })
   // Uniform list surface: filter (substring), limit/offset, full.
@@ -40,15 +40,28 @@ interface ModuleMeta {
   description: string;
   kind: "chrome" | "hero" | "content" | "cta" | "utility";
   type?: string;
-  fields: { name: string; kind: string }[];
+  fields: { name: string; kind: string; allowedModuleTypes?: string[] }[];
+}
+
+/**
+ * One field as the catalog shows it: `name:kind`, and for a nested field
+ * the module types it accepts (`blocks:module-list allowed=faq/cta`, or
+ * `allowed=any`).
+ */
+export function catalogField(f: ModuleMeta["fields"][number]): string {
+  if (f.kind !== "module" && f.kind !== "module-list") return `${f.name}:${f.kind}`;
+  const allowed =
+    f.allowedModuleTypes && f.allowedModuleTypes.length > 0
+      ? f.allowedModuleTypes.join("/")
+      : "any";
+  return `${f.name}:${f.kind} allowed=${allowed}`;
 }
 
 export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
   name: "list_modules",
   description:
-    "List the FULL module catalog with decision-support metadata: id, slug, type, kind, description, field names, and placement usage. " +
-    "Use when the `## Modules` block is truncated (>40 modules), when you need to verify a reuse candidate before minting, or to find modules by `kind`/`filter` (plus `limit`/`offset`/`full` as in every list tool). " +
-    "Do NOT call when `## Modules` already shows a fitting module — the block carries the same data. " +
+    "List the FULL module catalog with decision-support metadata: id, slug, type, kind, description, fields, and placement usage. " +
+    "Call it before placing or nesting an existing module: to find a reuse candidate, to find modules by `kind`/`filter` (plus `limit`/`offset`/`full` as in every list tool), and before filling a `module`/`module-list` field — the fields column shows each nested field's accepted types (`blocks:module-list allowed=faq/cta`; `allowed=any` = no restriction), and a child's `type` must be one of them. " +
     "Returns metadata only (no HTML/CSS/JS bodies). Prefer placing an existing module (`add_module` with `moduleId`) over minting a near-duplicate.",
   schema: listModulesInput,
   inputSchema: z.toJSONSchema(listModulesInput) as Record<string, unknown>,
@@ -115,7 +128,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
         },
         {
           key: "fields",
-          value: (m) => m.fields.map((f) => `${f.name}:${f.kind}`).join("|"),
+          value: (m) => m.fields.map(catalogField).join("|"),
         },
         {
           key: "placements",
@@ -144,7 +157,11 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
         description: m.description,
         kind: m.kind,
         ...(m.type !== undefined ? { type: m.type } : {}),
-        fields: m.fields.map((f) => ({ name: f.name, kind: f.kind })),
+        fields: m.fields.map((f) => ({
+          name: f.name,
+          kind: f.kind,
+          ...(f.allowedModuleTypes ? { allowedModuleTypes: f.allowedModuleTypes } : {}),
+        })),
         placementCount: usage.get(m.id)?.placementCount ?? 0,
         sampleSlugs: usage.get(m.id)?.sampleSlugs ?? [],
       })),

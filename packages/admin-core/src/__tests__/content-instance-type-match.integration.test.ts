@@ -112,3 +112,31 @@ describe("nested-ref validator matches modules.type, not slug (issue #106)", () 
     expect(message).toContain("edit_module");
   });
 });
+
+// #1094 — a well-shaped ref whose contentInstanceId was one character short
+// read as "expects { moduleId, contentInstanceId }", hiding the real fault.
+describe("nested-ref validator names a malformed id (#1094)", () => {
+  it("says which id is malformed and how, for a module-list item", async () => {
+    const asideId = await seedModule({ slug: `aside-${sfx}-c`, type: "aside" });
+    const parentId = await seedModule({
+      slug: `article-${sfx}-c`,
+      type: "article",
+      fields: [{ name: "aside_blocks", kind: "module-list", label: "Asides" }],
+    });
+    const r = await execute(registry, adapter, aiCtx, "content_instances.create", {
+      moduleId: parentId,
+      values: {
+        aside_blocks: [
+          { moduleId: asideId, contentInstanceId: "c9c7ddcb-cc85-4747-84f-90967da6f769" },
+        ],
+      },
+    });
+    expect(r.ok).toBe(false);
+    const message = r.ok ? "" : ((r.error as { message?: string }).message ?? "");
+    expect(message).toContain(
+      'field "aside_blocks"[0]: contentInstanceId "c9c7ddcb-cc85-4747-84f-90967da6f769" is not a UUID: group 4 has 3 character(s)',
+    );
+    expect(message).not.toContain("expects { moduleId, contentInstanceId }");
+    expect(message).toContain("Copy the id character for character");
+  });
+});

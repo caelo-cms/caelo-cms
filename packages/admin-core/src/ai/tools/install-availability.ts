@@ -22,8 +22,8 @@ export type InstallEnv = Readonly<Record<string, string | undefined>>;
 
 /**
  * True on the GCP install kinds (`gcp`, `gcp-firebase`) — the ones whose
- * Stage and Confirm-publish write the built site to GCS buckets the admin can
- * read back.
+ * built site the admin can read back: plain gcp from its GCS buckets,
+ * gcp-firebase from the Firebase Hosting channels serving it (#1088).
  */
 export function isGcpInstall(env: InstallEnv): boolean {
   const provider = env.CAELO_PROVIDER?.trim();
@@ -32,8 +32,8 @@ export function isGcpInstall(env: InstallEnv): boolean {
 
 /**
  * Each install-dependent tool and the rule that says whether it can run here.
- * `inspect_built_page` reads the staged/live build from GCS; self-hosted,
- * AWS and Azure installs have no such bucket API.
+ * `inspect_built_page` reads the staged/live build from GCS or Firebase
+ * Hosting; self-hosted, AWS and Azure installs have no such read path.
  */
 const INSTALL_DEPENDENT_TOOLS: ReadonlyMap<string, (env: InstallEnv) => boolean> = new Map([
   ["inspect_built_page", isGcpInstall],

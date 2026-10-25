@@ -61,7 +61,7 @@ export const cancelProposalTool: ToolDefinitionWithHandler<Input> = {
     const v = r.value as { cancelled: boolean; domain: string | null };
     return {
       ok: true,
-      content: `Proposal ${input.proposalId.slice(0, 8)}… cancelled (domain=${v.domain ?? "?"}). Tell the user the proposal is withdrawn.`,
+      content: `Proposal ${input.proposalId} cancelled (domain=${v.domain ?? "?"}). Tell the user the proposal is withdrawn.`,
     };
   },
 };

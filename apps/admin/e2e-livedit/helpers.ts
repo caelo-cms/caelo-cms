@@ -235,7 +235,7 @@ export function seedMinimalSite(): { pageId: string; templateId: string } {
         const tpl = await tx\`
           INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
           VALUES ('home-template', 'Home template', 'home',
-                  '<main><caelo-slot name="content">_</caelo-slot></main>',
+                  '<main><caelo-slot name="content"></caelo-slot></main>',
                   '', \${layoutId}::uuid)
           RETURNING id::text AS id
         \`;
