@@ -33,6 +33,7 @@ const MODULE_ID = "11111111-1111-4111-8111-111111111111";
 const TEMPLATE_ID = "22222222-2222-4222-8222-222222222222";
 const LAYOUT_ID = "33333333-3333-4333-8333-333333333333";
 const UNKNOWN_ID = "44444444-4444-4444-8444-444444444444";
+const PAGE_ID = "55555555-5555-4555-8555-555555555555";
 
 function op(name: string, handler: (input: Record<string, string>) => unknown) {
   return defineOperation({
@@ -71,6 +72,13 @@ function harness(): ToolContext {
       }),
     ),
   );
+  registry.register(
+    op("pages.get", (i) =>
+      i.pageId === PAGE_ID
+        ? ok({ page: { id: PAGE_ID, slug: "kontakt" } })
+        : err({ kind: "HandlerError", operation: "pages.get", message: "page not found" }),
+    ),
+  );
   const adapter = {
     runOperation: (o: OperationDefinition, ctx: ExecutionContext, input: unknown) =>
       o.handler(ctx, input, {} as never),
@@ -90,6 +98,15 @@ describe("readContentRow", () => {
     if (!r.ok) expect(r.content).toContain(`is a layout, not a template`);
     const m = await readContentRow(AI, harness(), CONTENT_TARGETS.layout, MODULE_ID);
     if (!m.ok) expect(m.content).toContain(`entityKind:"module"`);
+  });
+
+  it("names a page id and the tool that reads a page (e2e-livedit 2026-10-25)", async () => {
+    const r = await readContentRow(AI, harness(), CONTENT_TARGETS.module, PAGE_ID);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.content).toContain(`${PAGE_ID} is a page, not a module`);
+      expect(r.content).toContain(`inspect_page_render({pageId:"${PAGE_ID}", target:"composed"})`);
+    }
   });
 
   it("says plainly when the id is no content row at all", async () => {

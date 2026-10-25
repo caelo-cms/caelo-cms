@@ -69,10 +69,26 @@ export async function readContentRow(
       };
     }
   }
+  // A page id is the other id the AI holds most often (Stage readiness and
+  // list_pages print them), but a page has no source body of its own: it is
+  // composed from modules (e2e-livedit 2026-10-25, a pageId read as a module
+  // to write its meta description).
+  const page = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.get", {
+    pageId: entityId,
+  });
+  if (page.ok) {
+    return {
+      ok: false,
+      content:
+        `${entityId} is a page, not a ${target.entityKind} — pages have no source body to read here. ` +
+        `Read what the page shows with inspect_page_render({pageId:"${entityId}", target:"composed"}); ` +
+        "read_content reads the html/css/js of a module, template or layout.",
+    };
+  }
   return {
     ok: false,
     content:
-      `no ${target.entityKind} with id ${entityId} (nor a ${CONTENT_ENTITY_KINDS.filter((k) => k !== target.entityKind).join(" or ")} with it). ` +
+      `no ${target.entityKind} with id ${entityId} (nor a ${CONTENT_ENTITY_KINDS.filter((k) => k !== target.entityKind).join(" or ")} or page with it). ` +
       "Take the id from list_modules / list_templates / list_layouts.",
   };
 }
