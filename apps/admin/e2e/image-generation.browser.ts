@@ -16,9 +16,11 @@
 import { spawnSync } from "node:child_process";
 import { expect, test } from "@playwright/test";
 import {
+  archiveChat,
   attachTestProviderHeader,
   clearLoginRateBucket,
   clearTestProvider,
+  openOwnerChat,
   registerTestProvider,
   runBunInline,
 } from "./helpers.js";
@@ -28,8 +30,10 @@ test.beforeAll(() => {
 });
 
 const ts = Date.now();
+/** This spec's own Live Edit chat (#1081); archived in afterAll. */
+let chat: string | null = null;
 const PROVIDER = `image-gen-${ts}`;
-const BASE = "http://localhost:4173";
+const BASE = `http://localhost:${process.env.CAELO_E2E_PORT ?? "4173"}`;
 
 /** Count persisted AI-generated media assets. */
 function aiImageCount(): number {
@@ -58,6 +62,7 @@ function aiImageCount(): number {
 }
 
 test.afterAll(async () => {
+  if (chat) archiveChat(chat);
   await clearTestProvider(BASE, PROVIDER);
   // Remove the assets this run generated so reruns stay clean.
   runBunInline(
@@ -110,7 +115,11 @@ test("AI generate_image persists a media asset via the fake image provider", asy
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
-  await page.goto("/edit");
+  // #1081 — a chat of this spec's own: without `chat=`, Live Edit resumes
+  // dev-owner's most recent chat, which a parallel spec may have opened on
+  // an experiment branch or be running a turn in.
+  chat = openOwnerChat(`e2e-image-gen-${ts}`);
+  await page.goto(`/edit?chat=${chat}`);
   await page.locator("textarea").fill("generate a hero image for the homepage");
   await page.getByRole("button", { name: /^send$/i }).click();
   await expect(page.getByText("saved it to your media library").first()).toBeVisible({

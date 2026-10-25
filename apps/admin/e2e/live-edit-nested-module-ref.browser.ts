@@ -12,9 +12,11 @@
 
 import { expect, test } from "@playwright/test";
 import {
+  archiveChat,
   attachTestProviderHeader,
   clearLoginRateBucket,
   clearTestProvider,
+  openOwnerChat,
   registerTestProvider,
   resetOverlayLayoutFor,
   runBunInline,
@@ -22,6 +24,8 @@ import {
 
 const BASE = `http://localhost:${process.env.CAELO_E2E_PORT ?? "4173"}`;
 const ts = Date.now();
+/** This spec's own Live Edit chat (#1081); archived in afterAll. */
+let chat: string | null = null;
 const PROVIDER = `le-nested-ref-${ts}`;
 const TPL_SLUG = `e2e-le-nested-tpl-${ts}`;
 const FAQ_SLUG = `e2e-le-nested-faq-${ts}`;
@@ -35,6 +39,7 @@ test.beforeAll(() => {
 });
 
 test.afterAll(async () => {
+  if (chat) archiveChat(chat);
   await clearTestProvider(BASE, PROVIDER);
   runBunInline(
     `
@@ -123,7 +128,11 @@ test("a right-click inside a sub-module references the sub-module, outside it th
   await page.getByLabel("Password").fill("dev owner password");
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
-  await page.goto(`/edit?page=${ids.pg}`);
+  // #1081 — a chat of this spec's own: without `chat=`, Live Edit resumes
+  // dev-owner's most recent chat, which a parallel spec may have opened on
+  // an experiment branch or be running a turn in.
+  chat = openOwnerChat(`e2e-le-nested-${ts}`);
+  await page.goto(`/edit?page=${ids.pg}&chat=${chat}`);
 
   const preview = page.frameLocator("iframe[title='Live preview']");
   const section = preview.locator(`section[data-caelo-module-id="${ids.faq}"]`);

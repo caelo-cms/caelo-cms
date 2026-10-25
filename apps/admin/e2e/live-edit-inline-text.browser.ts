@@ -12,12 +12,20 @@ import { expect, test } from "@playwright/test";
 import {
   archiveChat,
   clearLoginRateBucket,
+  ensureIsolatedOwner,
+  ISOLATED_OWNER_PASSWORD,
   openOwnerChat,
   resetOverlayLayoutFor,
   runBunInline,
 } from "./helpers.js";
 
 const ts = Date.now();
+/**
+ * #1081 — this spec tests which chat Live Edit RESUMES, so it needs an Owner
+ * no parallel spec opens (or archives) chats for: with the shared dev-owner,
+ * a parallel spec's newer chat was resumed and archived mid-save.
+ */
+const OWNER_EMAIL = "e2e-inline-text-owner@example.com";
 const TPL_SLUG = `e2e-le-inline-tpl-${ts}`;
 const MOD_SLUG = `e2e-le-inline-mod-${ts}`;
 const PAGE_SLUG = `e2e-le-inline-page-${ts}`;
@@ -35,7 +43,8 @@ function runBunInlineCapture(script: string, env: Record<string, string>): strin
 
 test.beforeAll(() => {
   clearLoginRateBucket();
-  resetOverlayLayoutFor("dev-owner@example.com");
+  ensureIsolatedOwner(OWNER_EMAIL);
+  resetOverlayLayoutFor(OWNER_EMAIL);
 });
 
 test.afterAll(() => {
@@ -99,13 +108,13 @@ test("right-click → Edit text saves one field in place; Escape restores", asyn
   const ids = JSON.parse(seed) as { pg: string; ci: string };
 
   await page.goto("/login");
-  await page.getByLabel("Email").fill("dev-owner@example.com");
-  await page.getByLabel("Password").fill("dev owner password");
+  await page.getByLabel("Email").fill(OWNER_EMAIL);
+  await page.getByLabel("Password").fill(ISOLATED_OWNER_PASSWORD);
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
   // The live-edit load resumes the operator's most recently active
   // unpublished chat; make that a shared-draft chat of ours.
-  openOwnerChat(`e2e-le-inline-draft-${ts}`);
+  openOwnerChat(`e2e-le-inline-draft-${ts}`, undefined, OWNER_EMAIL);
   await page.goto(`/edit?page=${ids.pg}`);
 
   const preview = page.frameLocator("iframe[title='Live preview']");
@@ -116,7 +125,7 @@ test("right-click → Edit text saves one field in place; Escape restores", asyn
   // (an experiment on its own branch, like open-changes.browser.ts opens in
   // parallel). The refresh after the save must stay on the chat the save
   // wrote to, not re-pick this one and show its branch.
-  experimentChat = openOwnerChat(`e2e-le-inline-experiment-${ts}`, "experiment");
+  experimentChat = openOwnerChat(`e2e-le-inline-experiment-${ts}`, "experiment", OWNER_EMAIL);
 
   // Escape restores the text and saves nothing.
   await p.click({ button: "right", position: { x: 8, y: 8 } });

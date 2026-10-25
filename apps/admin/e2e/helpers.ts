@@ -126,9 +126,14 @@ export async function attachTestProviderHeader(ctx: BrowserContext, name: string
  * branch. Live Edit without `?chat=` resumes dev-owner's most recently
  * active unpublished chat, and parallel specs open such chats all the time
  * (#965, #1081), so a spec that needs a specific binding opens its chat here
- * and loads `/edit?chat=<id>`.
+ * and loads `/edit?chat=<id>`. `email` names another Owner (e.g. one from
+ * {@link ensureIsolatedOwner}).
  */
-export function openOwnerChat(title: string, isolation?: "experiment"): string {
+export function openOwnerChat(
+  title: string,
+  isolation?: "experiment",
+  email = "dev-owner@example.com",
+): string {
   return runBunInline(
     `
     import { SQL } from "bun";
@@ -137,7 +142,7 @@ export function openOwnerChat(title: string, isolation?: "experiment"): string {
     const db = new SQL(process.env.ADMIN_DATABASE_URL);
     const ownerId = await db.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      return (await tx\`SELECT id::text AS id FROM users WHERE email = 'dev-owner@example.com'\`)[0].id;
+      return (await tx\`SELECT id::text AS id FROM users WHERE email = \${process.env.OWNER_EMAIL}\`)[0].id;
     });
     await db.end();
     const adapter = new DatabaseAdapter({
@@ -154,7 +159,7 @@ export function openOwnerChat(title: string, isolation?: "experiment"): string {
     if (!r.ok) throw new Error(JSON.stringify(r.error));
     process.stdout.write(r.value.chatSessionId);
     `,
-    { CHAT_TITLE: title, CHAT_ISOLATION: isolation ?? "" },
+    { CHAT_TITLE: title, CHAT_ISOLATION: isolation ?? "", OWNER_EMAIL: email },
   ).trim();
 }
 
