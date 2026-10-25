@@ -11,6 +11,9 @@
  *   - layouts: their HTML and their chrome modules (whose content lives in
  *     the field defaults — layout placements have no content instance);
  *   - templates: their HTML;
+ *   - lists (epic #1107): shared lists' entries, list types' source
+ *     defaults, and pages' terms and properties — what `list` fields,
+ *     queries and `{{page.*}}` render;
  *   - plugin storage, through the plugins' `linkLocationsOperation` hook
  *     (the same hook the link migration, rollout E, uses).
  *
@@ -27,9 +30,16 @@
 
 import { collectPluginLinkLocations, MAIN_RENDER, withPluginScope } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import { MODULE_FIELD_KINDS, type ModuleFieldKind } from "@caelo-cms/shared";
+import {
+  type ListItem,
+  type ListTypeDef,
+  MODULE_FIELD_KINDS,
+  type ModuleFieldKind,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
+import { loadPagesInView } from "../lists/pages-view.js";
+import { loadListEntities } from "../lists/store.js";
 import { effectiveLayoutModulesSql } from "../ops/content/layout-overlay.js";
 import { parseSnapshotState } from "../snapshots/index.js";
 import {
@@ -100,6 +110,29 @@ export interface SourcePluginValue {
   readonly fields: readonly SourceField[] | null;
 }
 
+/** A shared list (epic #1107) as the scope sees it. */
+export interface SourceList {
+  readonly id: string;
+  readonly slug: string;
+  readonly name: string;
+  readonly listTypeId: string;
+  readonly items: readonly ListItem[];
+}
+
+/** A list type as the scope sees it. */
+export interface SourceListType {
+  readonly id: string;
+  readonly slug: string;
+  readonly def: ListTypeDef;
+}
+
+/** A page's list data: what `{{page.props.*}}` and page queries read. */
+export interface SourcePageData {
+  readonly properties: Readonly<Record<string, unknown>>;
+  /** `caelo:term/<listId>/<itemId>` */
+  readonly terms: readonly string[];
+}
+
 /** Every link-carrying surface of one scope. */
 export interface ReferenceSourceModel {
   /** Page id → its template (live pages of the scope only). */
@@ -110,6 +143,12 @@ export interface ReferenceSourceModel {
   readonly templates: ReadonlyMap<string, SourceTemplate>;
   readonly layouts: ReadonlyMap<string, SourceLayout>;
   readonly plugins: readonly SourcePluginValue[];
+  /** Shared lists by id (deleted ones absent). */
+  readonly lists: ReadonlyMap<string, SourceList>;
+  /** List types by id (deleted ones absent). */
+  readonly listTypes: ReadonlyMap<string, SourceListType>;
+  /** Page id → its properties and terms (pages of the scope). */
+  readonly pageData: ReadonlyMap<string, SourcePageData>;
 }
 
 const IDENT_RE = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -300,6 +339,33 @@ export async function loadReferenceSources(
     });
   }
 
+  // Lists, list types and page data through the same overlay readers the
+  // preview uses (lists/store.ts, lists/pages-view.ts).
+  const lists = new Map<string, SourceList>(
+    (await loadListEntities(tx, "list", branchId)).map((l) => [
+      l.id,
+      {
+        id: l.id,
+        slug: l.state.slug,
+        name: l.state.name,
+        listTypeId: l.state.listTypeId,
+        items: l.state.items,
+      },
+    ]),
+  );
+  const listTypes = new Map<string, SourceListType>(
+    (await loadListEntities(tx, "listType", branchId)).map((t) => [
+      t.id,
+      { id: t.id, slug: t.state.slug, def: t.state.definition },
+    ]),
+  );
+  const pageData = new Map<string, SourcePageData>(
+    (await loadPagesInView(tx, branchId)).map((p) => [
+      p.id,
+      { properties: p.properties, terms: p.terms },
+    ]),
+  );
+
   return {
     pageTemplates,
     placements,
@@ -307,6 +373,9 @@ export async function loadReferenceSources(
     instances,
     templates,
     layouts,
+    lists,
+    listTypes,
+    pageData,
     plugins: await loadPluginValues(
       tx,
       branchId,

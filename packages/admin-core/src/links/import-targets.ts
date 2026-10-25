@@ -182,11 +182,14 @@ export interface PendingLinkRecord {
 }
 
 /**
- * The entity kinds whose links an import run's finalisation rewrites.
- * (The table's CHECK also admits `list`, for the list write path that
- * records its links here — epic #1107.)
+ * The entity kinds whose links an import run's finalisation rewrites:
+ * content instances, modules (HTML + field defaults) and shared lists
+ * (epic #1107 — a migrated menu links pages the run builds later).
  */
-export type ImportLinkEntityKind = "content_instance" | "module";
+export const IMPORT_LINK_ENTITY_KINDS = ["content_instance", "module", "list"] as const;
+
+/** One of {@link IMPORT_LINK_ENTITY_KINDS}. */
+export type ImportLinkEntityKind = (typeof IMPORT_LINK_ENTITY_KINDS)[number];
 
 /**
  * Record links a write kept literal because they point at a planned

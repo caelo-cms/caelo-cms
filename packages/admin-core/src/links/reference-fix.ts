@@ -4,9 +4,9 @@
  * Epic #724 (rollout F) — what a reference-integrity issue says and which
  * tool fixes it. Maintainer rule: every blocking finding is fixed by the
  * AI or decided by the Owner, so each message names the page, the place
- * (module / field / set / layout / template / default / plugin data) and
- * the tool — the AI fixes it without asking the operator anything
- * (CLAUDE.md §1A, §11).
+ * (module / field / list / page / layout / template / default / plugin
+ * data) and the tool — the AI fixes it without asking the operator
+ * anything (CLAUDE.md §1A, §11).
  */
 
 /** Where a stored link lives, in the operator's terms. */
@@ -32,7 +32,28 @@ export type ReferencePlace =
     }
   | { readonly kind: "layout-html"; readonly layoutId: string; readonly layoutName: string }
   | { readonly kind: "template-html"; readonly templateId: string; readonly templateName: string }
-  | { readonly kind: "plugin"; readonly pluginSlug: string; readonly label: string };
+  | { readonly kind: "plugin"; readonly pluginSlug: string; readonly label: string }
+  /**
+   * The definition of a module field (epic #1107): a `list` field's fixed
+   * `list` or its `source` (query defaults, vocabulary).
+   */
+  | {
+      readonly kind: "module-field";
+      readonly moduleId: string;
+      readonly moduleName: string;
+      readonly field: string;
+    }
+  /** A shared list's entries (epic #1107) — one fix for every module that shows it. */
+  | {
+      readonly kind: "list";
+      readonly listId: string;
+      readonly listSlug: string;
+      readonly listName: string;
+    }
+  /** A list type's source node defaults (epic #1107). */
+  | { readonly kind: "list-type"; readonly listTypeId: string; readonly listTypeSlug: string }
+  /** A page's terms or properties (epic #1107). */
+  | { readonly kind: "page"; readonly pageId: string; readonly pagePath: string };
 
 /**
  * What is wrong with a link:
@@ -47,6 +68,12 @@ export type ReferencePlace =
  * - `pending-import-link`: a link to a page an active site import has planned
  *   but not built yet — kept literal on purpose (`import_run_links`), it
  *   converts when the import finalises its links. Never blocks.
+ * - `missing-list`: a `caelo:list/<id>` (a module's shared list, a
+ *   vocabulary named by a source) whose list was deleted (epic #1107);
+ * - `missing-term`: a `caelo:term/<listId>/<itemId>` whose vocabulary list
+ *   or entry is gone (page terms, query `terms`, `term` field values);
+ * - `missing-module`: a list entry's `module` field embeds a module or
+ *   content instance that was deleted.
  */
 export type ReferenceProblem =
   | "missing-target"
@@ -54,7 +81,23 @@ export type ReferenceProblem =
   | "unpublished-target"
   | "literal-link"
   | "broken-literal"
-  | "pending-import-link";
+  | "pending-import-link"
+  | "missing-list"
+  | "missing-term"
+  | "missing-module";
+
+/** Every problem, in a stable order (op schemas enumerate them). */
+export const REFERENCE_PROBLEMS = [
+  "missing-target",
+  "variant-missing",
+  "unpublished-target",
+  "literal-link",
+  "broken-literal",
+  "pending-import-link",
+  "missing-list",
+  "missing-term",
+  "missing-module",
+] as const satisfies readonly ReferenceProblem[];
 
 /** Where a fix goes: the tool and one sentence in its terms. */
 export interface ReferenceFix {
@@ -62,8 +105,19 @@ export interface ReferenceFix {
   readonly hint: string;
 }
 
-/** The place, as a message names it ("in field cta_href of module "Hero""). */
-export function describePlace(place: ReferencePlace, pagePaths: readonly string[]): string {
+/**
+ * The place, as a message names it ("in field cta_href of module "Hero"").
+ *
+ * @param where the position inside the place; named for places whose
+ *   kind alone does not say which value it is (a list entry, a page's
+ *   terms or properties, a field definition).
+ */
+export function describePlace(
+  place: ReferencePlace,
+  pagePaths: readonly string[],
+  where = "",
+): string {
+  const at = where ? ` at ${where}` : "";
   const on =
     pagePaths.length === 0
       ? ""
@@ -84,6 +138,16 @@ export function describePlace(place: ReferencePlace, pagePaths: readonly string[
       return `in template "${place.templateName}" (${place.templateId})`;
     case "plugin":
       return `in data of plugin "${place.pluginSlug}": ${place.label}`;
+    case "module-field":
+      return `in the definition of field "${place.field}" of module "${place.moduleName}" (${place.moduleId})${at}${on}`;
+    case "list":
+      return `in shared list "${place.listName}" (${place.listSlug}, ${place.listId})${at}${on}`;
+    case "list-type":
+      return `in a source of list type "${place.listTypeSlug}" (${place.listTypeId})${at}${on}`;
+    case "page":
+      return where.startsWith("properties.")
+        ? `in property "${where.slice("properties.".length)}" of page "${place.pagePath}"`
+        : `in the terms of page "${place.pagePath}"`;
   }
 }
 
@@ -102,6 +166,12 @@ function remedy(problem: ReferenceProblem, target: string, variant: string | nul
       return `${target} is not the path of any page or media file (get_link_migration_report lists the links the migration could not convert): point it at an existing page (list_pages) or remove it`;
     case "pending-import-link":
       return `${target} is a page the running site import has planned but not built yet: build it; the import converts the link when it finishes (resolve_import_links), and only then does a still-unknown path count as broken`;
+    case "missing-list":
+      return `the reference points at ${target}, which was deleted while still in use: bind an existing list instead (list_lists shows them; store caelo:list/<id>), or remove the binding; if the deletion was a mistake, undo it (undo_this_chat)`;
+    case "missing-term":
+      return `the term points at ${target}: pick an existing entry of the vocabulary (get_list shows the entry ids; store caelo:term/<listId>/<entryId>) or remove the term; if the removal was a mistake, undo it (undo_this_chat)`;
+    case "missing-module":
+      return `the entry embeds ${target}: point the entry's module field at an existing module and one of its content instances (list_modules, list_content_instances) or remove the entry; if the deletion was a mistake, undo it (undo_this_chat)`;
   }
 }
 
@@ -165,6 +235,30 @@ export function fixFor(
           `plugin "${place.pluginSlug}" stores this link (${place.label}); change it with that plugin's tools (get_plugin lists them): ${what}`,
         ),
       };
+    case "module-field":
+      return {
+        tool: "edit_module",
+        hint: clip(
+          `module ${place.moduleId}, definition of field "${place.field}" (${where}): ${what}`,
+        ),
+      };
+    case "list":
+      return {
+        tool: "patch_list_items_many",
+        hint: clip(
+          `list "${place.listSlug}" (${place.listId}), ${where}: ${what} — change it with an update patch {op: "update", itemId, values | query} (or remove the entry); one fix for every module that shows the list`,
+        ),
+      };
+    case "list-type":
+      return {
+        tool: "upsert_list_types_many",
+        hint: clip(`list type "${place.listTypeSlug}" (${place.listTypeId}), ${where}: ${what}`),
+      };
+    case "page":
+      return {
+        tool: "update_pages_many",
+        hint: clip(`page ${place.pageId} ("${place.pagePath}"), ${where}: ${what}`),
+      };
   }
 }
 
@@ -175,6 +269,9 @@ const LABEL: Readonly<Record<ReferenceProblem, string>> = {
   "literal-link": "Legacy link path",
   "broken-literal": "Broken legacy link",
   "pending-import-link": "Link to a page the import has not built yet",
+  "missing-list": "Reference to a deleted list",
+  "missing-term": "Term of a removed vocabulary entry",
+  "missing-module": "List entry embeds a deleted module",
 };
 
 /** One AI-actionable message: label, the link, its place, the next step. */
@@ -185,9 +282,15 @@ export function issueMessage(
   target: string,
   variant: string | null,
   fix: ReferenceFix,
+  where = "",
 ): string {
+  const named =
+    place.kind === "list" ||
+    place.kind === "list-type" ||
+    place.kind === "page" ||
+    place.kind === "module-field";
   return clip(
-    `${LABEL[problem]}: ${describePlace(place, pagePaths)} — ${remedy(problem, target, variant)}. Fix with ${fix.tool}.`,
+    `${LABEL[problem]}: ${describePlace(place, pagePaths, named ? where : "")} — ${remedy(problem, target, variant)}. Fix with ${fix.tool}.`,
     1000,
   );
 }

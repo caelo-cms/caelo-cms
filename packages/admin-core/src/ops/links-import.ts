@@ -21,19 +21,22 @@ import {
   collectLinkLiterals,
   type ExecutionContext,
   err,
+  listItemInputSchema,
   moduleUpdateSchema,
   ok,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import type { ImportLinkEntityKind } from "../links/import-targets.js";
+import { IMPORT_LINK_ENTITY_KINDS, type ImportLinkEntityKind } from "../links/import-targets.js";
+import { loadListEntities, loadListEntity } from "../lists/store.js";
 import {
   loadContentInstanceStateWithBranchOverlay,
   loadModuleStateWithBranchOverlay,
 } from "../snapshots/load.js";
 import { setContentInstanceValuesOp } from "./content/content-instances.js";
 import { updateModuleOp } from "./content/modules.js";
+import { upsertListsManyOp } from "./lists/lists.js";
 
 /** One recorded link that still matches no page. */
 export interface ImportLinkFinding {
@@ -84,6 +87,10 @@ async function loadEntity(
     const s = await loadContentInstanceStateWithBranchOverlay(tx, id, branchId);
     return s === null || s.deletedAt !== null ? null : s.values;
   }
+  if (kind === "list") {
+    const l = await loadListEntity(tx, "list", branchId, id);
+    return l === null || l.state.deletedAt !== null ? null : l.state.items;
+  }
   const s = await loadModuleStateWithBranchOverlay(tx, id, branchId);
   return s === null || s.deletedAt !== null ? null : { html: s.html, fields: s.fields };
 }
@@ -106,6 +113,8 @@ async function rewriteEntity(
       { id, values: state as Record<string, unknown> },
       tx,
     );
+  } else if (kind === "list") {
+    r = await rewriteList(tx, ctx, id);
   } else {
     const m = state as { html: string; fields: unknown };
     const input = moduleUpdateSchema.safeParse({ moduleId: id, html: m.html, fields: m.fields });
@@ -124,6 +133,43 @@ async function rewriteEntity(
       `rewriting ${kind} ${id} failed: ${e.message ?? JSON.stringify(r.error)}`,
     );
   }
+}
+
+/**
+ * Rewrite a shared list with its stored entries through `lists.upsert_many`
+ * (the run's chat view): the write canonicalises each recorded link
+ * against the pages that exist now.
+ */
+async function rewriteList(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  id: string,
+): Promise<{ ok: true } | { ok: false; error: unknown }> {
+  const branchId = ctx.chatBranchId ?? null;
+  const list = await loadListEntity(tx, "list", branchId, id);
+  const type = list
+    ? (await loadListEntities(tx, "listType", branchId, { ids: [list.state.listTypeId] }))[0]
+    : undefined;
+  if (!list || !type) {
+    return { ok: false, error: { message: `list ${id} or its list type no longer exists` } };
+  }
+  const r = await upsertListsManyOp.handler(
+    ctx,
+    {
+      lists: [
+        {
+          slug: list.state.slug,
+          name: list.state.name,
+          purpose: list.state.purpose,
+          type: type.state.slug,
+          // Stored entries are entries of the input shape (ids kept).
+          items: z.array(listItemInputSchema).parse(list.state.items),
+        },
+      ],
+    },
+    tx,
+  );
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
 /**
@@ -206,7 +252,7 @@ export async function finaliseImportLinks(
 
 const unresolvedSchema = z.object({
   value: z.string(),
-  entityKind: z.enum(["content_instance", "module"]),
+  entityKind: z.enum(IMPORT_LINK_ENTITY_KINDS),
   entityId: z.string(),
   location: z.string(),
 });
