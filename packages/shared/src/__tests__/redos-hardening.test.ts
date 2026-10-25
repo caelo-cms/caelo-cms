@@ -12,6 +12,8 @@
 
 import { describe, expect, it } from "bun:test";
 import { fontFamilySlug, parseFontsCss } from "../fonts.js";
+import { DEFAULT_LIST_TYPES } from "../lists/default-types.js";
+import { createListRenderContext } from "../lists/resolve.js";
 import { renderTemplate } from "../template-engine.js";
 import { stripCssComments } from "../theme-importers/css-comments.js";
 import { trimSlashes, trimTrailingSlashes } from "../url.js";
@@ -59,36 +61,68 @@ describe("stripCssComments (S4)", () => {
   });
 });
 
-describe("renderTemplate SECTION_RE (S4)", () => {
+describe("renderTemplate sections (S4, epic #1107 tokenizer)", () => {
+  const lists = createListRenderContext({
+    listTypes: new Map(DEFAULT_LIST_TYPES.map((t) => [t.slug, { id: t.slug, def: t }])),
+    lists: new Map(),
+    pageTypes: new Map(),
+    pages: new Map(),
+    media: new Map(),
+    siteLanguage: "en",
+  }).forPage(null);
+  const navField = { name: "nav_items", kind: "list" as const, listType: "links" };
+  const entry = (n: number, label: string, href: string) => ({
+    id: `00000000-0000-4000-9000-${String(n).padStart(12, "0")}`,
+    node: "link",
+    values: { label, link: { href } },
+  });
+
   it("scans a large closed section body linearly (no quadratic backtracking)", () => {
-    // A closed section with a 100k-char literal body. The tempered-dot scans
-    // it in one linear pass; the old lazy [\s\S]*? + backreference close was
-    // the polynomial shape this guards against.
+    // A closed section with a 100k-char literal body: the section pass
+    // tokenizes once and pairs tags with a stack, no regex over the body.
     const big = "x".repeat(100_000);
-    const html = `<nav>{{#nav_items}}${big}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>`;
+    const html = `<nav>{{#nav_items}}${big}<a href="{{link}}">{{label}}</a>{{/nav_items}}</nav>`;
     expect(
       underBudget(() =>
         renderTemplate({
           html,
-          fields: [{ name: "nav_items", kind: "link-list" }],
-          contentValues: { nav_items: [{ label: "Docs", href: "/docs" }] },
+          fields: [navField],
+          contentValues: { nav_items: [entry(1, "Docs", "/docs")] },
+          lists,
         }),
       ),
     ).toBeLessThan(BUDGET_MS);
   });
 
+  it("thousands of unclosed sections cost one pass, not one scan each", () => {
+    // Unclosed opens stay unpaired (the later Mustache pass reports them);
+    // pairing must not rescan the rest of the document per open.
+    const html = "{{#a}}".repeat(5_000) + "x".repeat(50_000);
+    expect(
+      underBudget(() => {
+        try {
+          renderTemplate({
+            html,
+            fields: [{ name: "a", kind: "text" }],
+            contentValues: { a: "1" },
+          });
+        } catch {
+          // Mustache refuses the unclosed sections; only the cost matters here.
+        }
+      }),
+    ).toBeLessThan(BUDGET_MS);
+  });
+
   it("still iterates a closed section the same way", () => {
     const out = renderTemplate({
-      html: '<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>',
-      fields: [{ name: "nav_items", kind: "link-list" }],
-      contentValues: {
-        nav_items: [
-          { label: "Docs", href: "/docs" },
-          { label: "Blog", href: "/blog" },
-        ],
-      },
+      html: '<nav>{{#nav_items}}<a href="{{link}}">{{label}}</a>{{/nav_items}}</nav>',
+      fields: [navField],
+      contentValues: { nav_items: [entry(1, "Docs", "/docs"), entry(2, "Blog", "/blog")] },
+      lists,
     });
-    expect(out.html).toBe('<nav><a href="/docs">Docs</a><a href="/blog">Blog</a></nav>');
+    expect(out.html.replace(/ data-caelo-list-item="[^"]*"/g, "")).toBe(
+      '<nav><a href="/docs">Docs</a><a href="/blog">Blog</a></nav>',
+    );
   });
 });
 

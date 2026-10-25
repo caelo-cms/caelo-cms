@@ -25,9 +25,30 @@ import {
   parseLinkRef,
   resolveLinkRefsInHtml,
 } from "./link-refs.js";
+import { DEFAULT_LIST_TYPES } from "./lists/default-types.js";
+import { createListRenderContext } from "./lists/resolve.js";
 import { renderPlacedModule } from "./nested-module-render.js";
 import { composePageWithLayout } from "./preview-compose.js";
 import { renderTemplate } from "./template-engine.js";
+
+/** A list context that knows only the shipped list types (local lists need nothing else). */
+const lists = createListRenderContext({
+  listTypes: new Map(DEFAULT_LIST_TYPES.map((t, i) => [t.slug, { id: `t${i}`, def: t }])),
+  lists: new Map(),
+  pageTypes: new Map(),
+  pages: new Map(),
+  media: new Map(),
+  siteLanguage: "en",
+}).forPage(null);
+const uid = (n: number) => `00000000-0000-4000-9000-${String(n).padStart(12, "0")}`;
+const links = (...ls: [string, string][]) =>
+  ls.map(([label, href], i) => ({
+    id: uid(i + 1),
+    node: "link",
+    values: { label, link: { href } },
+  }));
+const unstamp = (html: string) => html.replace(/ data-caelo-list-item="[^"]*"/g, "");
+const NAV_HTML = '<nav>{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}</nav>';
 
 const PAGE = "11111111-1111-4111-8111-111111111111";
 const DRAFT = "22222222-2222-4222-8222-222222222222";
@@ -172,25 +193,26 @@ describe("resolution", () => {
 describe("template engine — references resolve wherever they come from", () => {
   const resolver = () => index().forPage(null);
 
-  it("resolves module HTML attributes, values, defaults and link-list items", () => {
+  it("resolves module HTML attributes, values, defaults and list entries", () => {
     const r = renderTemplate({
-      html: `<a href="caelo:page/${PAGE}">Home</a><a href="{{cta_href}}">{{cta_label}}</a><img src="{{hero}}">{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}<div>{{body}}</div>`,
+      html: `<a href="caelo:page/${PAGE}">Home</a><a href="{{cta_href}}">{{cta_label}}</a><img src="{{hero}}">{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}<div>{{body}}</div>`,
       fields: [
         { name: "cta_href", kind: "url", default: `caelo:page/${PAGE}#contact` },
         { name: "cta_label", kind: "text" },
         { name: "hero", kind: "image" },
-        { name: "nav", kind: "link-list" },
+        { name: "nav", kind: "list", listType: "links" },
         { name: "body", kind: "richtext" },
       ],
       contentValues: {
         cta_label: "Talk to us",
         hero: `caelo:media/${MEDIA}`,
-        nav: [{ label: "Pricing", href: `caelo:page/${DRAFT}` }],
+        nav: links(["Pricing", `caelo:page/${DRAFT}`]),
         body: `<p>See <a href="caelo:page/${PAGE}?x=1">about</a></p>`,
       },
+      lists,
       linkResolver: resolver(),
     });
-    expect(r.html).toBe(
+    expect(unstamp(r.html)).toBe(
       '<a href="/company/about/">Home</a><a href="/company/about/#contact">Talk to us</a>' +
         '<img src="/_caelo/media/hero-shot"><a href="/pricing/">Pricing</a>' +
         '<div><p>See <a href="/company/about/?x=1">about</a></p></div>',
@@ -241,8 +263,8 @@ describe("template engine — references resolve wherever they come from", () =>
   });
 });
 
-describe("composer — nav-menu sets and pre-rendered modules", () => {
-  it("resolves nav-menu item hrefs and attributes a broken one to the nav module", () => {
+describe("composer — chrome lists and pre-rendered modules", () => {
+  it("resolves a chrome module's list entries and attributes a broken one to the module", () => {
     const out = composePageWithLayout({
       layoutHtml:
         '<html><head></head><body><caelo-slot name="header"></caelo-slot><caelo-slot name="content"></caelo-slot></body></html>',
@@ -253,11 +275,19 @@ describe("composer — nav-menu sets and pre-rendered modules", () => {
           modules: [
             {
               moduleId: "m-nav",
-              slug: "nav-menu-main",
+              slug: "main-nav",
               displayName: "Nav",
-              html: "",
+              html: NAV_HTML,
               css: "",
               js: "",
+              fields: [
+                {
+                  name: "nav",
+                  kind: "list",
+                  listType: "links",
+                  default: links(["About", `caelo:page/${PAGE}`], ["Gone", `caelo:page/${GONE}`]),
+                },
+              ],
             },
           ],
         },
@@ -279,23 +309,16 @@ describe("composer — nav-menu sets and pre-rendered modules", () => {
           ],
         },
       ],
-      structuredSets: {
-        byKindSlug: {
-          "nav-menu/main": [
-            { label: "About", href: `caelo:page/${PAGE}` },
-            { label: "Gone", href: `caelo:page/${GONE}` },
-          ],
-        },
-      },
+      lists,
       linkResolver: index().forPage(PAGE),
     });
-    expect(out.html).toContain('<a href="/company/about/">About</a>');
+    expect(unstamp(out.html)).toContain('<a href="/company/about/">About</a>');
     expect(out.html).toContain(`href="caelo:page/${GONE}"`);
     expect(out.moduleFailures).toEqual([
       {
         blockName: "header",
         moduleId: "m-nav",
-        moduleSlug: "nav-menu-main",
+        moduleSlug: "main-nav",
         field: "",
         reason: `link-target-missing:page/${GONE}`,
       },
@@ -314,7 +337,6 @@ describe("composer — nav-menu sets and pre-rendered modules", () => {
       templateHtml: '<caelo-slot name="content"></caelo-slot>',
       templateCss: "",
       blocks: [],
-      structuredSets: { byKindSlug: {} },
       linkResolver: index().forPage(PAGE),
     });
     expect(out.html).toContain('<a class="home" href="/company/about/#top">Home</a>');
@@ -631,25 +653,23 @@ describe("page variants (link-resolve) — links go to the rendering page's vari
     });
   });
 
-  it("covers HTML href, rich text, link field and link-list in one render", () => {
+  it("covers HTML href, rich text, link field and list entries in one render", () => {
     const r = renderTemplate({
-      html: `<a href="caelo:page/${EN_HOME}">Home</a><a href="{{cta_href}}">Go</a>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}<div>{{body}}</div>`,
+      html: `<a href="caelo:page/${EN_HOME}">Home</a><a href="{{cta_href}}">Go</a>{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}<div>{{body}}</div>`,
       fields: [
         { name: "cta_href", kind: "link" },
-        { name: "nav", kind: "link-list" },
+        { name: "nav", kind: "list", listType: "links" },
         { name: "body", kind: "richtext" },
       ],
       contentValues: {
         cta_href: `caelo:page/${EN_PRICING}#plans`,
-        nav: [
-          { label: "About", href: `caelo:page/${EN_ABOUT}` },
-          { label: "Solo", href: `caelo:page/${EN_SOLO}` },
-        ],
+        nav: links(["About", `caelo:page/${EN_ABOUT}`], ["Solo", `caelo:page/${EN_SOLO}`]),
         body: `<p><a href="caelo:page/${EN_ABOUT}?x=1">about</a></p>`,
       },
+      lists,
       linkResolver: variantIndex("preview").forPage(DE_PRICING),
     });
-    expect(r.html).toBe(
+    expect(unstamp(r.html)).toBe(
       '<a href="/de/">Home</a><a href="/de/preise/#plans">Go</a>' +
         `<a href="/de/ueber/">About</a><a href="caelo:page/${EN_SOLO}">Solo</a>` +
         '<div><p><a href="/de/ueber/?x=1">about</a></p></div>',
@@ -657,7 +677,7 @@ describe("page variants (link-resolve) — links go to the rendering page's vari
     expect(r.missingSlots).toEqual([`link-variant-missing:page/${EN_SOLO}:de`]);
   });
 
-  it("covers nav-menu sets in the composer and attributes a missing sibling to the nav", () => {
+  it("covers chrome lists in the composer and attributes a missing sibling to the module", () => {
     const out = composePageWithLayout({
       layoutHtml:
         '<html><head></head><body><caelo-slot name="header"></caelo-slot><caelo-slot name="content"></caelo-slot></body></html>',
@@ -668,11 +688,22 @@ describe("page variants (link-resolve) — links go to the rendering page's vari
           modules: [
             {
               moduleId: "m-nav",
-              slug: "nav-menu-main",
+              slug: "main-nav",
               displayName: "Nav",
-              html: "",
+              html: NAV_HTML,
               css: "",
               js: "",
+              fields: [
+                {
+                  name: "nav",
+                  kind: "list",
+                  listType: "links",
+                  default: links(
+                    ["About", `caelo:page/${EN_ABOUT}`],
+                    ["Solo", `caelo:page/${EN_SOLO}`],
+                  ),
+                },
+              ],
             },
           ],
         },
@@ -680,22 +711,15 @@ describe("page variants (link-resolve) — links go to the rendering page's vari
       templateHtml: '<caelo-slot name="content"></caelo-slot>',
       templateCss: "",
       blocks: [],
-      structuredSets: {
-        byKindSlug: {
-          "nav-menu/main": [
-            { label: "About", href: `caelo:page/${EN_ABOUT}` },
-            { label: "Solo", href: `caelo:page/${EN_SOLO}` },
-          ],
-        },
-      },
+      lists,
       linkResolver: variantIndex().forPage(DE_ABOUT),
     });
-    expect(out.html).toContain('<a href="/de/ueber/">About</a>');
+    expect(unstamp(out.html)).toContain('<a href="/de/ueber/">About</a>');
     expect(out.moduleFailures).toEqual([
       {
         blockName: "header",
         moduleId: "m-nav",
-        moduleSlug: "nav-menu-main",
+        moduleSlug: "main-nav",
         field: "",
         reason: `link-variant-missing:page/${EN_SOLO}:de`,
       },

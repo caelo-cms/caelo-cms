@@ -11,6 +11,9 @@
  */
 
 import { z } from "zod";
+import { listItemInputSchema } from "./lists/items.js";
+import { LIST_MAX_ITEMS, sourceDefSchema } from "./lists/list-type.js";
+import { LIST_REF_RE } from "./lists/refs.js";
 
 /** Lowercase slug, hyphenated, 1–64 chars, no leading/trailing hyphen. */
 export const slugSchema = z
@@ -161,29 +164,29 @@ export const MODULE_FIELD_PRIMITIVE_KINDS = [
 ] as const;
 
 /**
- * v0.12.0 — list-of-primitive field kinds. The grammar mirrors
- * `module-list`'s `{{#field}}{{/field}}` iteration but the elements
- * are primitives (or a fixed {label,href} pair for link-list), not
- * `{moduleId, contentInstanceId}` refs.
+ * Epic #1107 — the data-list field kind (`docs/lists.md` §7). One kind
+ * for every repeated piece of data: feature bullets, a footer link group,
+ * a three-level menu, a mega dropdown, a "latest news" block. The entry
+ * shape comes from a LIST TYPE (`listType`, a slug); the entries come from
+ * the field's binding:
  *
- * Use `text-list` for "list of strings" — menu labels, tag chips,
- * bullet points where each item is just text. Inner template
- * references `{{.}}` (Mustache convention) or `{{item}}` to mean
- * the current element.
+ *   - `local`  (default) — entries stored in the placement's value
+ *                          (`ListItem[]`), only this module shows them;
+ *   - `shared` — a `caelo:list/<id>` list, fixed on the field (`list`) or
+ *                chosen per placement; navigation and anything needed in
+ *                more than one place;
+ *   - `source` — entries generated per page from `source` (a page query,
+ *                a system source like breadcrumbs, a plugin source).
  *
- * Use `link-list` for "list of links" — primary nav, footer columns,
- * sidebar menus. Each element is `{href, label}`. Inner template
- * uses `{{href}}` + `{{label}}` per iteration.
- *
- * For lists with richer per-item structure (cards with image + title
- * + body + CTA), use `module-list` pointing at a sub-module — that's
- * what nested modules are for.
+ * The template iterates `{{#field}}…{{/field}}` the same way for every
+ * binding. `module-list` stays: it composes modules, lists carry data.
+ * Replaces the `text-list` / `link-list` kinds.
  */
-export const MODULE_FIELD_LIST_KINDS = ["text-list", "link-list"] as const;
+export const MODULE_FIELD_LIST_KINDS = ["list"] as const;
 
 export const MODULE_FIELD_NESTED_KINDS = ["module", "module-list"] as const;
 
-/** All eleven v0.12.0 kinds. */
+/** Every module field kind. */
 export const MODULE_FIELD_KINDS = [
   ...MODULE_FIELD_PRIMITIVE_KINDS,
   ...MODULE_FIELD_LIST_KINDS,
@@ -200,10 +203,9 @@ export type ModuleFieldKind = (typeof MODULE_FIELD_KINDS)[number];
 
 /**
  * Field kinds the shared template engine iterates via the
- * `{{#name}}…{{/name}}` Mustache-section operator. Adding a new
- * list-shaped kind to MODULE_FIELD_LIST_KINDS / MODULE_FIELD_NESTED_KINDS
- * automatically extends this set; the engine's section-dispatch branch
- * keys off it (`packages/shared/src/template-engine.ts`).
+ * `{{#name}}…{{/name}}` Mustache-section operator (`list` and
+ * `module-list`); the engine's section-dispatch keys off it
+ * (`packages/shared/src/template-engine.ts`).
  */
 export const MODULE_FIELD_SECTION_KINDS = [...MODULE_FIELD_LIST_KINDS, "module-list"] as const;
 
@@ -255,43 +257,84 @@ const moduleFieldModuleListSchema = z
   .strict();
 
 /**
- * v0.12.0 — list-of-strings field. Inner template uses `{{.}}` (or
- * the alias `{{item}}`) to reference the current element. Default
- * is an optional array of strings rendered when the placement's
- * content_instance has no override.
+ * Epic #1107 — a `list` field (`docs/lists.md` §7). The static schema
+ * checks the SHAPE: the binding's parts fit together and a local default
+ * is well-formed entries. Whether those entries fit the named list type
+ * (nodes, fields, depth) needs the type, which is stored data — the op
+ * layer validates that with `validateListItems` when the module is
+ * written, and the renderer reports `list-type-missing:<slug>` for a type
+ * that is gone.
  */
-const moduleFieldTextListSchema = z
+const moduleFieldListSchema = z
   .object({
     name: moduleFieldName,
-    kind: z.literal("text-list"),
+    kind: z.literal("list"),
     label: moduleFieldLabel,
+    /** Slug of the list type that defines the entries. */
+    listType: slugSchema,
+    bind: z.enum(["local", "shared", "source"]).optional(),
+    /** `bind: "shared"` — fix the list for every placement (`caelo:list/<id>`). */
+    list: z.string().regex(LIST_REF_RE, "list must be caelo:list/<id>").optional(),
+    /** `bind: "source"` — where generated entries come from. */
+    source: sourceDefSchema.optional(),
     min: z.number().int().nonnegative().optional(),
-    max: z.number().int().positive().max(256).optional(),
-    default: z.array(z.string()).optional(),
+    max: z.number().int().positive().max(LIST_MAX_ITEMS).optional(),
+    /** `local`: entries; `shared`: `caelo:list/<id>`. */
+    default: z
+      .union([
+        z.array(listItemInputSchema),
+        z.string().regex(LIST_REF_RE, "a shared default must be caelo:list/<id>"),
+      ])
+      .optional(),
   })
   .strict();
 
-/**
- * v0.12.0 — list-of-{label,href} field. Inner template uses
- * `{{label}}` + `{{href}}` per iteration. Targets the common
- * primary-nav / footer-column / sidebar-menu pattern without
- * forcing a sub-module per link.
- */
-const moduleFieldLinkListSchema = z
-  .object({
-    name: moduleFieldName,
-    kind: z.literal("link-list"),
-    label: moduleFieldLabel,
-    min: z.number().int().nonnegative().optional(),
-    max: z.number().int().positive().max(256).optional(),
-    default: z.array(z.object({ label: z.string(), href: z.string() }).strict()).optional(),
-  })
-  .strict();
+/** Binding consistency of one `list` field; every problem, AI-actionable. */
+function listFieldIssues(f: z.infer<typeof moduleFieldListSchema>): string[] {
+  const bind = f.bind ?? "local";
+  const issues: string[] = [];
+  if (bind === "source" && f.source === undefined) {
+    issues.push(`list field "${f.name}": bind "source" needs a source (query, system or plugin).`);
+  }
+  if (bind !== "source" && f.source !== undefined) {
+    issues.push(`list field "${f.name}": source is only allowed with bind "source".`);
+  }
+  if (bind === "local" && f.list !== undefined) {
+    issues.push(
+      `list field "${f.name}": list is only allowed with bind "shared" — a local list stores its entries in the placement.`,
+    );
+  }
+  if (bind === "source" && f.list !== undefined && f.source?.kind !== "system") {
+    issues.push(
+      `list field "${f.name}": list on a source field names the vocabulary of a page_terms source only.`,
+    );
+  }
+  if (f.default !== undefined) {
+    if (bind === "local" && typeof f.default === "string") {
+      issues.push(
+        `list field "${f.name}": a local default is an array of entries, not a list reference.`,
+      );
+    }
+    if (bind === "shared" && Array.isArray(f.default)) {
+      issues.push(
+        `list field "${f.name}": a shared default is caelo:list/<id> — create the list with upsert_lists_many first.`,
+      );
+    }
+    if (bind === "source") {
+      issues.push(
+        `list field "${f.name}": a source field has no default; its entries are generated.`,
+      );
+    }
+  }
+  if (f.min !== undefined && f.max !== undefined && f.min > f.max) {
+    issues.push(`list field "${f.name}": min is greater than max.`);
+  }
+  return issues;
+}
 
 export const moduleFieldSchema = z.discriminatedUnion("kind", [
   moduleFieldPrimitiveSchema,
-  moduleFieldTextListSchema,
-  moduleFieldLinkListSchema,
+  moduleFieldListSchema,
   moduleFieldModuleSchema,
   moduleFieldModuleListSchema,
 ]);
@@ -368,6 +411,11 @@ const moduleFieldsArray = z
         return;
       }
       seen.add(f.name);
+      if (f.kind === "list") {
+        for (const message of listFieldIssues(f)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+        }
+      }
     }
     for (const run of findNumberedScalarFanoutRuns(arr)) {
       ctx.addIssue({
@@ -375,8 +423,9 @@ const moduleFieldsArray = z
         message:
           `numbered-scalar fanout: ${run.map((n) => `"${n}"`).join(", ")} repeat one role as ` +
           "numbered scalar fields — repeating content is ONE list field, never numbered scalars " +
-          '(CLAUDE.md §1A). Replace the run with a single field: kind "text-list" (list of ' +
-          'strings, inner template iterates {{.}}), "link-list" (list of {label, href}), or ' +
+          '(CLAUDE.md §1A). Replace the run with a single field: kind "list" with a list type ' +
+          '(listType "texts" for plain strings — the template iterates {{#f}}{{text}}{{/f}}; ' +
+          '"links" for label + link — {{#f}}<a href="{{link}}">{{label}}</a>{{/f}}), or ' +
           '"module-list" (rich per-item structure: mint a card sub-module and reference it per ' +
           "item — in build_page, author the card detached with `ref` and pass " +
           '[{"$ref": "<ref>"}, …] as the field value). A two-field split like col1/col2 is fine; ' +

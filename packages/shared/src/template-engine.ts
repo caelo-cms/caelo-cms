@@ -6,18 +6,27 @@
  * DB-aware `substituteWithRecursion` in `nested-module-render.ts` into a
  * single engine built on `mustache.js` (Plan B per issue #71).
  *
- * Grammar (a Mustache subset — see CMS_REQUIREMENTS §3.1 / §5):
+ * Grammar (a Mustache subset — see CMS_REQUIREMENTS §3.1 / §5, and
+ * `docs/lists.md` §8 for lists):
  *   {{name}}                  — primitive substitution
- *   {{#name}}…inner…{{/name}}  — section: ITERATES over a list field
- *                                 (text-list / link-list / module-list);
- *                                 for a SCALAR (text/image/…) or single
+ *   {{#name}}…inner…{{/name}}  — section: ITERATES over a `list` field
+ *                                 (any binding — local, shared, query,
+ *                                 system, plugin source) or a
+ *                                 `module-list`; for a SCALAR or single
  *                                 `module` field it is a CONDITIONAL —
  *                                 the block renders once when the field
  *                                 has a value, and is dropped when empty
  *                                 (never a kind-mismatch — that used to
  *                                 silently drop real scalar content)
+ *   {{^name}}…inner…{{/name}}  — inverted section: renders when the list
+ *                                 is empty or the value absent / false
  *   {{>name}}                 — single nested module reference
  *                                 (module field kind)
+ *   {{page.title}}, {{a.b}}   — dot access (`page.*`, compound entry
+ *                                 values); inside a list entry the
+ *                                 entry's keys, `{{>recurse}}`,
+ *                                 `{{>f}}` (embedded module) and the
+ *                                 system keys — see template-sections.ts
  *
  * Substitution priority for {{name}}:
  *   1. contentValues[name]    — per-placement value
@@ -34,13 +43,18 @@
  * Failure markers preserved verbatim from the legacy preview-render
  * for `missingSlots`: `field-not-declared:<name>`,
  * `kind-mismatch:<name> expected=<…> actual=<kind>`,
- * `text-list-malformed:<name>[<i>]`, `link-list-malformed:<name>[<i>]`,
  * `module-list-malformed:<name>[<i>]`, `module-ref-malformed:<name>`,
  * `nested-renderer-unavailable:<name>` / `…:<name>[<i>]` (a nested ref
  * rendered without the recursive renderer's partial).
  * v0.11.1 (issue #76): `theme-asset-unbound:<slot>` for the four
  * `{{theme_<slot>_url}}` placeholders when the active theme's asset
  * slot isn't bound.
+ * Epic #1107 (lists): `list-unbound:<field>`, `list-missing:<listId>`,
+ * `list-type-missing:<slug>`, `list-source-unavailable:<name> plugin=<slug>`,
+ * `list-malformed:<field>[<path>]`, `field-not-declared:<field>.<key>`
+ * for a key no entry, enclosing entry or module field has, and
+ * `list-context-unavailable:<field>` / `…:page` for a list rendered by a
+ * caller that gave the engine no list context (never legitimate output).
  * Epic #724: `link-target-missing:page/<id>` / `…:media/<id>` for an
  * internal reference (`caelo:page/<id>`, `caelo:media/<id>`) whose
  * target does not exist, `link-resolver-unavailable:<kind>/<id>` for
@@ -70,7 +84,10 @@
 import Mustache from "mustache";
 import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
+import type { SourceDef } from "./lists/list-type.js";
+import type { ListHolder, ListPageContext } from "./lists/resolve.js";
 import { stripCdataGuards } from "./strip-cdata.js";
+import { renderSections } from "./template-sections.js";
 
 // Override Mustache's default HTML escape — module HTML substitutes
 // raw. The engine module is the only workspace importer of mustache,
@@ -80,21 +97,32 @@ Mustache.escape = (s: unknown): string => (s === null || s === undefined ? "" : 
 
 /**
  * Subset of `modules.fields[]` the engine cares about. The full
- * schema lives in `content.ts`; the engine only needs `name`, `kind`,
- * and the optional `default`. Importers pass the full row through.
+ * schema lives in `content.ts`; the engine needs `name`, `kind`, the
+ * optional `default` and, for a `list` field, its binding
+ * (`listType`, `bind`, `list`, `source` — `docs/lists.md` §7).
+ * Importers pass the full row through.
  */
 export interface TemplateField {
   readonly name: string;
   readonly kind: ModuleFieldKind;
   readonly default?: unknown;
+  readonly listType?: string;
+  readonly bind?: "local" | "shared" | "source";
+  readonly list?: string;
+  readonly source?: SourceDef;
 }
 
 /**
  * Renders the nested-module partial for `key` (see
  * {@link RenderTemplateInput.partials}) on demand, or `undefined` when
- * the caller has no renderer for it.
+ * the caller has no renderer for it. `ref` is passed for the module
+ * field of a list entry (key `list:<field>/<itemId>/<entryField>`),
+ * whose value the caller cannot look up by field name.
  */
-export type PartialResolver = (key: string) => string | undefined;
+export type PartialResolver = (
+  key: string,
+  ref?: { readonly moduleId: string; readonly contentInstanceId: string },
+) => string | undefined;
 
 export interface RenderTemplateInput {
   readonly html: string;
@@ -105,6 +133,8 @@ export interface RenderTemplateInput {
    * Nested-module HTML keyed by:
    *   - `<name>`            for single `{{>name}}` (module field kind)
    *   - `<name>__<index>`   for each `{{#name}}` element (module-list)
+   *   - `list:<field>/<itemId>/<entryField>` for `{{>entryField}}`
+   *     inside an entry of list field `<field>` (resolver gets the ref)
    * Either pre-rendered, or a {@link PartialResolver} the engine calls
    * only for the refs the template actually dispatches — the recursive
    * renderer (nested-module-render.ts) passes a resolver so a declared
@@ -113,23 +143,17 @@ export interface RenderTemplateInput {
    */
   readonly partials?: Readonly<Record<string, string>> | PartialResolver;
   /**
-   * Plugin-provided lists for THIS page, keyed by the claimed name a
-   * module iterates as `{{#name}}`. The plugin supplies the data, the
-   * module owns the markup — so a language switcher looks like the site
-   * it lives on instead of carrying a plugin's fixed HTML.
-   *
-   * Resolved per page, which is what lets a module carrying one sit in
-   * a LAYOUT and cover every page. The `staticRender` placeholder can't:
-   * it needs the page's own id baked into its HTML.
+   * The list view of THIS page (`lists/resolve.ts`): resolves `list`
+   * fields, `{{page.*}}` and plugin list sources. Without it a `list`
+   * field renders raw with `list-context-unavailable:<field>`.
    */
-  readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
+  readonly lists?: ListPageContext;
   /**
-   * Names an INSTALLED plugin declares that are not live right now,
-   * mapped to the owning plugin. A module written while the plugin ran
-   * still says `{{#language_links}}`; this is what lets the render
-   * report "that plugin is switched off" instead of "unknown field".
+   * The content instance whose values are rendered — the address of
+   * local list entries for overlays and `data-caelo-list-item`. Absent
+   * for field defaults (site chrome).
    */
-  readonly dormantDataLists?: Readonly<Record<string, string>>;
+  readonly listHolder?: ListHolder;
   /**
    * v0.11.1 (issue #76) — active theme's resolved asset URLs. When
    * present, `{{theme_logo_url}}` / `{{theme_logo_dark_url}}` /
@@ -151,7 +175,7 @@ export interface RenderTemplateInput {
    * `caelo:media/<id>`) into URLs for the page being rendered. Applied
    * to the fully substituted output, so a reference resolves wherever it
    * came from: module HTML attributes, a field value, a field default, a
-   * link-list item, rich text. A missing target stays raw and pushes
+   * list entry, rich text. A missing target stays raw and pushes
    * `link-target-missing:<kind>/<id>`; with no resolver every reference
    * pushes `link-resolver-unavailable:<kind>/<id>` (loud, never empty).
    */
@@ -176,15 +200,6 @@ interface NestedRef {
 // between `{{` and the sigil (#, >, /) is permitted to match the
 // Mustache spec — an extractor that pretty-prints AI-authored HTML
 // shouldn't silently break section / partial dispatch.
-// The section body uses a "tempered dot" — `(?:(?!CLOSE)[\s\S])*` — instead
-// of a lazy `[\s\S]*?`. The lazy form makes the engine try, then backtrack,
-// the close-tag match at every interior position, which is O(n²) on
-// unclosed/large input (CodeQL js/polynomial-redos). The tempered form
-// consumes one character only when the close tag does not start there, so
-// there is a single unambiguous path. The capture stops at the first close
-// tag for the captured name, exactly as the lazy form did — same output.
-const SECTION_RE =
-  /\{\{\s*#\s*([a-z][a-z0-9_]*)\s*\}\}((?:(?!\{\{\s*\/\s*\1\s*\}\})[\s\S])*)\{\{\s*\/\s*\1\s*\}\}/g;
 const PARTIAL_RE = /\{\{\s*>\s*([a-z][a-z0-9_]*)\s*\}\}/g;
 const PRIMITIVE_RE = /\{\{\s*([a-zA-Z][a-zA-Z0-9_]*)\s*\}\}/g;
 // A plain tag (no Mustache sigil) of any name, and the identifier test
@@ -250,26 +265,22 @@ const NESTED_RENDERER_UNAVAILABLE = "nested-renderer-unavailable";
  * channel. Pure / sync / no IO.
  *
  * @example
- * // AC #1 fixture (issue #71). Iterates a link-list field per element.
+ * // A local list of the shipped `links` type; `lists` comes from
+ * // createListRenderContext(data).forPage(pageId, { linkResolver }).
  * renderTemplate({
- *   html: '<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>',
- *   fields: [{ name: 'nav_items', kind: 'link-list' }],
+ *   html: '<nav>{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}</nav>',
+ *   fields: [{ name: 'nav', kind: 'list', listType: 'links' }],
  *   contentValues: {
- *     nav_items: [
- *       { label: 'Docs', href: '/docs' },
- *       { label: 'Blog', href: '/blog' },
- *     ],
+ *     nav: [{ id: '<uuid>', node: 'link', values: { label: 'Docs', link: { href: '/docs' } } }],
  *   },
+ *   lists,
  * });
- * // → {
- * //     html: '<nav><a href="/docs">Docs</a><a href="/blog">Blog</a></nav>',
- * //     missingSlots: [],
- * //   }
+ * // → html: '<nav><a href="/docs" data-caelo-list-item="local/nav/<uuid>">Docs</a></nav>'
  *
  * @see {@link TemplateField} for the field shape (name + kind + optional default).
  * @see {@link ./content.js#MODULE_FIELD_KINDS} for the canonical kind union.
  * @see {@link ./content.js#MODULE_FIELD_SECTION_KINDS} for the kinds the engine
- *      iterates via `{{#name}}` (text-list / link-list / module-list).
+ *      iterates via `{{#name}}` (list / module-list).
  */
 export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput {
   const missing: string[] = [];
@@ -280,7 +291,7 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   const partials: PartialResolver =
     typeof partialSource === "function"
       ? partialSource
-      : (key) => (Object.hasOwn(partialSource, key) ? partialSource[key] : undefined);
+      : (key: string) => (Object.hasOwn(partialSource, key) ? partialSource[key] : undefined);
 
   // Sentinels survive Mustache.render untouched (they contain no
   // `{{` `}}`), then get restored to the original Mustache source
@@ -313,21 +324,20 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   //    modules; this covers any already-stored HTML + the deploy render.
   const sourceHtml = stripCdataGuards(input.html);
 
-  // 1. {{#name}}…{{/name}} sections.
-  let html = sourceHtml.replace(SECTION_RE, (match, name: string, inner: string) =>
-    renderSection(
-      match,
-      name,
-      inner,
-      fieldByName,
-      cvs,
-      partials,
-      missing,
-      mkSentinel,
-      input.dataLists ?? {},
-      input.dormantDataLists ?? {},
-    ),
-  );
+  // 1. {{#name}}…{{/name}} and {{^name}}…{{/name}} sections, list
+  //    entries and dot access (template-sections.ts).
+  let html = renderSections(sourceHtml, {
+    fields: fieldByName,
+    values: cvs,
+    partials,
+    missing,
+    mkSentinel,
+    lists: input.lists,
+    holder: input.listHolder ?? { contentInstanceId: null },
+    moduleLevelKeys: new Set(THEME_ASSET_KEYS),
+    renderModuleList: (name, field) =>
+      renderModuleList(name, field as TemplateField, cvs, partials, missing, mkSentinel),
+  });
 
   // 2. {{>name}} single partials.
   html = html.replace(PARTIAL_RE, (match, name: string) =>
@@ -424,189 +434,6 @@ export function renderTemplate(input: RenderTemplateInput): RenderTemplateOutput
   final = resolveLinkRefsInHtml(final, input.linkResolver, missing);
 
   return { html: final, missingSlots: missing };
-}
-
-function renderSection(
-  match: string,
-  name: string,
-  inner: string,
-  fields: Map<string, TemplateField>,
-  cvs: Readonly<Record<string, unknown>>,
-  partials: PartialResolver,
-  missing: string[],
-  mkSentinel: (original: string) => string,
-  dataLists: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>,
-  dormantLists: Readonly<Record<string, string>>,
-): string {
-  const field = fields.get(name);
-  if (!field) {
-    // No declared field — a plugin may still offer this name. Module
-    // fields are looked up FIRST by construction, so a plugin can never
-    // shadow something the module's author declared.
-    const items = dataLists[name];
-    if (items) return renderDataList(inner, items, mkSentinel);
-    // Declared by an installed plugin that is NOT running. Naming the
-    // plugin turns "unknown field" (hunt for a typo) into "switch that
-    // plugin back on", which is the actual fix.
-    const owner = dormantLists[name];
-    if (owner) {
-      missing.push(`plugin-list-unavailable:${name} plugin=${owner}`);
-      return mkSentinel(match);
-    }
-    missing.push(`field-not-declared:${name}`);
-    return mkSentinel(match);
-  }
-  if (field.kind === "module-list") {
-    return renderModuleList(name, field, cvs, partials, missing, mkSentinel);
-  }
-  if (field.kind === "text-list") {
-    return renderTextList(name, inner, field, cvs, missing, mkSentinel);
-  }
-  if (field.kind === "link-list") {
-    return renderLinkList(name, inner, field, cvs, missing, mkSentinel);
-  }
-  // Any NON-list field used as a `{{#name}}…{{/name}}` section is a
-  // CONDITIONAL (Mustache semantics): render the inner block once when the
-  // field has a present, non-empty value; drop it when empty. This is what
-  // makes `{{#subtitle}}<p>{{subtitle}}</p>{{/subtitle}}` wrap a scalar
-  // text/image field — previously a scalar in a section fell through to
-  // `kind-mismatch` and SILENTLY DROPPED real content (headings, body copy,
-  // an image, a single nested module). `{{name}}` inside the block resolves
-  // in the later primitive pass (a `module` field's `{{>name}}` in the
-  // partial pass); `{{.}}`/`{{item}}` are substituted here for parity with
-  // the *-list renderers. An empty conditional is intentional, not
-  // "missing" — nothing is pushed to `missing`.
-  return renderConditionalSection(name, inner, field, cvs, mkSentinel);
-}
-
-/**
- * Render a `{{#name}}…{{/name}}` section over a scalar/module field as a
- * Mustache conditional: the block once when the value is present, else "".
- */
-function renderConditionalSection(
-  name: string,
-  inner: string,
-  field: TemplateField,
-  cvs: Readonly<Record<string, unknown>>,
-  mkSentinel: (original: string) => string,
-): string {
-  const raw = Object.hasOwn(cvs, name) ? cvs[name] : field.default;
-  if (!isPresentSectionValue(raw)) return "";
-  const value = scalarSectionString(raw);
-  return value.length > 0
-    ? inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => mkSentinel(value))
-    : inner;
-}
-
-/**
- * Mustache-style truthiness for a conditional section value. Empty string,
- * null/undefined, `false`, and an empty array/object are absent; everything
- * else (incl. a numeric 0 — a real content value, not a control flag) is
- * present.
- */
-function isPresentSectionValue(raw: unknown): boolean {
-  if (raw === undefined || raw === null || raw === false) return false;
-  if (typeof raw === "string") return raw.trim().length > 0;
-  if (typeof raw === "number") return !Number.isNaN(raw);
-  if (Array.isArray(raw)) return raw.length > 0;
-  if (typeof raw === "object") return Object.keys(raw as object).length > 0;
-  return true;
-}
-
-/** String form for `{{.}}`/`{{item}}` inside a scalar conditional. Objects
- *  (module refs / image objects) render through `{{name}}`/`{{>name}}`, not
- *  `{{.}}`, so they stringify to "". */
-function scalarSectionString(raw: unknown): string {
-  if (typeof raw === "string") return raw;
-  if (typeof raw === "number" || typeof raw === "boolean") return String(raw);
-  return "";
-}
-
-function renderTextList(
-  name: string,
-  inner: string,
-  field: TemplateField,
-  cvs: Readonly<Record<string, unknown>>,
-  missing: string[],
-  mkSentinel: (original: string) => string,
-): string {
-  const raw = Object.hasOwn(cvs, name) ? cvs[name] : field.default;
-  if (!Array.isArray(raw)) return "";
-  const parts: string[] = [];
-  for (let i = 0; i < raw.length; i += 1) {
-    const el = raw[i];
-    if (typeof el !== "string" && typeof el !== "number" && typeof el !== "boolean") {
-      missing.push(`text-list-malformed:${name}[${i}]`);
-      parts.push(comment(`text-list-malformed ${name}[${i}]`));
-      continue;
-    }
-    const value = String(el);
-    parts.push(inner.replace(/\{\{\s*(?:\.|item)\s*\}\}/g, () => mkSentinel(value)));
-  }
-  return parts.join("");
-}
-
-/**
- * Iterate a plugin-provided list, substituting each item's keys inside
- * the section body.
- *
- * Unlike `link-list` no shape is imposed: the keys are whatever the
- * plugin declared in `itemFields`, so a language switcher uses
- * href/label/locale and a comment list something else entirely. A
- * `{{key}}` the item does not carry is left raw, matching the engine's
- * loud-raw rule everywhere else — a typo'd key stays visible instead of
- * quietly rendering as nothing.
- */
-function renderDataList(
-  inner: string,
-  items: ReadonlyArray<Readonly<Record<string, string>>>,
-  mkSentinel: (original: string) => string,
-): string {
-  const parts: string[] = [];
-  for (const item of items) {
-    let rendered = inner;
-    for (const [key, value] of Object.entries(item)) {
-      const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      rendered = rendered.replace(new RegExp(`\\{\\{\\s*${escaped}\\s*\\}\\}`, "g"), () =>
-        mkSentinel(value),
-      );
-    }
-    parts.push(rendered);
-  }
-  return parts.join("");
-}
-
-function renderLinkList(
-  name: string,
-  inner: string,
-  field: TemplateField,
-  cvs: Readonly<Record<string, unknown>>,
-  missing: string[],
-  mkSentinel: (original: string) => string,
-): string {
-  const raw = Object.hasOwn(cvs, name) ? cvs[name] : field.default;
-  if (!Array.isArray(raw)) return "";
-  const parts: string[] = [];
-  for (let i = 0; i < raw.length; i += 1) {
-    const el = raw[i];
-    if (
-      typeof el !== "object" ||
-      el === null ||
-      typeof (el as { label?: unknown }).label !== "string" ||
-      typeof (el as { href?: unknown }).href !== "string"
-    ) {
-      missing.push(`link-list-malformed:${name}[${i}]`);
-      parts.push(comment(`link-list-malformed ${name}[${i}]`));
-      continue;
-    }
-    const { label, href } = el as { label: string; href: string };
-    parts.push(
-      inner
-        .replace(/\{\{\s*label\s*\}\}/g, () => mkSentinel(label))
-        .replace(/\{\{\s*href\s*\}\}/g, () => mkSentinel(href)),
-    );
-  }
-  return parts.join("");
 }
 
 function renderModuleList(

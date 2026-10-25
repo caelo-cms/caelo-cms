@@ -120,8 +120,9 @@ describe("moduleFields numbered-scalar fanout guard (§1A)", () => {
       expect(msg).toContain("numbered-scalar fanout");
       expect(msg).toContain('"label", "label2", "label3"');
       // AI-actionable: the error names every list-kind fix.
-      expect(msg).toContain("text-list");
-      expect(msg).toContain("link-list");
+      expect(msg).toContain('kind "list"');
+      expect(msg).toContain('listType "texts"');
+      expect(msg).toContain('"links"');
       expect(msg).toContain("module-list");
       expect(msg).toContain("§1A");
     }
@@ -153,8 +154,80 @@ describe("moduleFields numbered-scalar fanout guard (§1A)", () => {
   });
 
   it("scopes to scalar kinds — numbered list fields are a modelling question, not fanout", () => {
-    const linkList = (name: string) => ({ name, kind: "link-list", label: name });
+    const linkList = (name: string) => ({ name, kind: "list", listType: "links", label: name });
     expect(mod([linkList("links1"), linkList("links2"), linkList("links3")]).success).toBe(true);
+  });
+});
+
+// Epic #1107 — the `list` field kind (docs/lists.md §7): the static
+// schema checks the binding's shape; fitting the type is the op's job.
+describe("moduleFields list kind", () => {
+  const mod = (fields: unknown) =>
+    moduleCreateSchema.safeParse({ slug: "m", displayName: "M", html: "<div></div>", fields });
+  const LIST = "caelo:list/00000000-0000-4000-8000-000000000101";
+  const messages = (r: ReturnType<typeof mod>) =>
+    r.success ? [] : r.error.issues.map((i) => i.message);
+
+  it("accepts every binding", () => {
+    const ok = mod([
+      {
+        name: "bullets",
+        label: "B",
+        kind: "list",
+        listType: "texts",
+        default: [{ node: "text", values: { text: "x" } }],
+      },
+      { name: "menu", label: "M", kind: "list", listType: "menu", bind: "shared", list: LIST },
+      {
+        name: "footer",
+        label: "F",
+        kind: "list",
+        listType: "links",
+        bind: "shared",
+        default: LIST,
+      },
+      {
+        name: "latest",
+        label: "L",
+        kind: "list",
+        listType: "links",
+        bind: "source",
+        source: {
+          kind: "query",
+          editable: ["limit"],
+          defaults: { page_type: "news", order: "published_desc", limit: 3 },
+        },
+      },
+      {
+        name: "crumbs",
+        label: "C",
+        kind: "list",
+        listType: "links",
+        bind: "source",
+        source: { kind: "system", name: "breadcrumbs" },
+      },
+    ]);
+    expect(ok.success).toBe(true);
+  });
+
+  it("refuses bindings whose parts do not fit together, naming the fix", () => {
+    const r = mod([
+      { name: "a", label: "A", kind: "list", listType: "menu", bind: "source" },
+      { name: "b", label: "B", kind: "list", listType: "menu", list: LIST },
+      { name: "c", label: "C", kind: "list", listType: "menu", bind: "shared", default: [] },
+      { name: "d", label: "D", kind: "list", listType: "texts", default: LIST },
+    ]);
+    expect(messages(r)).toEqual([
+      'list field "a": bind "source" needs a source (query, system or plugin).',
+      'list field "b": list is only allowed with bind "shared" — a local list stores its entries in the placement.',
+      'list field "c": a shared default is caelo:list/<id> — create the list with upsert_lists_many first.',
+      'list field "d": a local default is an array of entries, not a list reference.',
+    ]);
+  });
+
+  it("refuses the removed text-list / link-list kinds", () => {
+    expect(mod([{ name: "t", label: "T", kind: "text-list" }]).success).toBe(false);
+    expect(mod([{ name: "l", label: "L", kind: "link-list" }]).success).toBe(false);
   });
 });
 

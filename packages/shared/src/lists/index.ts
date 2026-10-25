@@ -8,4 +8,8 @@ export * from "./fields.js";
 export * from "./items.js";
 export * from "./list-type.js";
 export * from "./page-type.js";
+export * from "./refs.js";
 export * from "./render-data.js";
+export * from "./render-deps.js";
+export * from "./resolve.js";
+export * from "./scope.js";
