@@ -100,12 +100,14 @@ describe("readContentRow", () => {
     if (!m.ok) expect(m.content).toContain(`entityKind:"module"`);
   });
 
-  it("names a page id and the tool that reads a page (e2e-livedit 2026-10-25)", async () => {
+  it("names a page id and the tool that reads a page's text (e2e-livedit 2026-10-25)", async () => {
     const r = await readContentRow(AI, harness(), CONTENT_TARGETS.module, PAGE_ID);
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.content).toContain(`${PAGE_ID} is a page, not a module`);
-      expect(r.content).toContain(`inspect_page_render({pageId:"${PAGE_ID}", target:"composed"})`);
+      // The page's words come from the lean SEO read, not a full render.
+      expect(r.content).toContain(`get_page_seo({pageIds:["${PAGE_ID}"]})`);
+      expect(r.content).not.toContain(`target:"composed"`);
     }
   });
 

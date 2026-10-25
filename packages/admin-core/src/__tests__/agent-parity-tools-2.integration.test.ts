@@ -238,6 +238,11 @@ describe("operator dashboards", () => {
   });
 
   it("gateway, bug-report, media and SEO reads run as the AI actor", async () => {
+    const seoPage = await ok<{ pageId: string }>("pages.create", {
+      slug: `${P}-page-seo-read`,
+      title: "SEO read",
+      templateId,
+    });
     for (const [name, args] of [
       ["get_gateway_analytics", {}],
       ["list_gateway_requests", { onlyErrors: true }],
@@ -246,7 +251,7 @@ describe("operator dashboards", () => {
       ["get_media_settings", {}],
       ["list_stale_seo_pages", {}],
       ["list_media_usages", { assetId: "11111111-1111-4111-8111-111111111111" }],
-      ["get_page_seo", { pageId: "11111111-1111-4111-8111-111111111111" }],
+      ["get_page_seo", { pageId: seoPage.pageId }],
     ] as const) {
       const r = await dispatch(name, args, AI_NO_CHAT);
       expect(r.ok, `${name}: ${r.content}`).toBe(true);

@@ -91,6 +91,9 @@ describe("assessStageReadiness / describeStageReadiness", () => {
     const note = describeStageReadiness(r) ?? "";
     expect(note).toContain("2 page(s) have no meta description");
     expect(note).toContain("ONE autofill_page_seo_many call");
+    // The page's text comes from the lean SEO read, never a composed render.
+    expect(note).toContain("get_page_seo({pageIds})");
+    expect(note).not.toContain("inspect_page_render");
     // A draft is not built, so it does not block.
     expect(note).not.toContain("pageId d");
   });

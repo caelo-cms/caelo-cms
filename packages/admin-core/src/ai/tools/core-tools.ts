@@ -27,6 +27,9 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // every page build, not long-tail SEO work. Its singular sibling rides
   // along via BULK_TOOL_SIBLINGS.
   "autofill_page_seo_many",
+  // The read that step needs: each page's core text (+ stored SEO) in one
+  // call, so a description is written without rendering the page.
+  "get_page_seo",
   // Build + page lifecycle
   "build_page",
   "duplicate_page",

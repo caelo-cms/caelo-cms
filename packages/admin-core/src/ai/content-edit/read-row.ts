@@ -81,7 +81,7 @@ export async function readContentRow(
       ok: false,
       content:
         `${entityId} is a page, not a ${target.entityKind} — pages have no source body to read here. ` +
-        `Read what the page shows with inspect_page_render({pageId:"${entityId}", target:"composed"}); ` +
+        `Read its text (with its SEO fields) with get_page_seo({pageIds:["${entityId}"]}), how it looks with screenshot_page / inspect_page_render; ` +
         "read_content reads the html/css/js of a module, template or layout.",
     };
   }

@@ -452,7 +452,17 @@ describe("content maintenance tools", () => {
   it("list_media_usages and get_page_seo validate ids at the boundary", async () => {
     const h = harness({
       "media.list_usages": () => ({ modules: [{ id: U1, slug: "hero", displayName: "Hero" }] }),
-      "pages_seo.get": () => ({ seo: null }),
+      "pages_seo.get_many": (input: { pageIds: string[] }) => ({
+        pages: input.pageIds.map((pageId) => ({
+          pageId,
+          title: "Home",
+          path: "/",
+          seo: null,
+          contentText: "Welcome",
+          contentTextTruncated: false,
+          contentTextLength: 7,
+        })),
+      }),
     });
     expect((await run(listMediaUsagesTool, { assetId: "x" }, h.toolCtx)).ok).toBe(false);
     expect((await run(listMediaUsagesTool, { assetId: U1 }, h.toolCtx)).content).toContain(
@@ -461,6 +471,53 @@ describe("content maintenance tools", () => {
     expect((await run(getPageSeoTool, { pageId: U1 }, h.toolCtx)).content).toContain(
       "autofill_page_seo",
     );
+  });
+
+  it("get_page_seo reads one page or many in ONE op call, with each page's core text", async () => {
+    const h = harness({
+      "pages_seo.get_many": (input: { pageIds: string[] }) => ({
+        pages: input.pageIds.map((pageId, i) => ({
+          pageId,
+          title: `Page ${i}`,
+          path: `/p${i}`,
+          seo:
+            i === 0
+              ? {
+                  pageId,
+                  metaDescription: "Stored text.",
+                  ogImageAssetId: null,
+                  canonicalUrl: null,
+                  noindex: false,
+                  changefreq: "weekly",
+                  priority: 0.5,
+                  autofilledAt: "2026-10-01T00:00:00.000Z",
+                  optimizedAt: null,
+                  updatedAt: "2026-10-01T00:00:00.000Z",
+                }
+              : null,
+          contentText: i === 0 ? "Fast setup\nLive in minutes" : "Long text…",
+          contentTextTruncated: i === 1,
+          contentTextLength: i === 0 ? 26 : 4000,
+        })),
+      }),
+    });
+    const one = await run(getPageSeoTool, { pageId: U1 }, h.toolCtx);
+    expect(h.calls[0]?.input).toEqual({ pageIds: [U1] });
+    expect(one.content).toContain("metaDescription: Stored text.");
+    expect(one.content).toContain("Fast setup\nLive in minutes");
+
+    const many = await run(getPageSeoTool, { pageIds: [U1, U2] }, h.toolCtx);
+    expect(h.calls).toHaveLength(2);
+    expect(h.calls[1]?.input).toEqual({ pageIds: [U1, U2] });
+    expect(many.content).toContain(`pageId=${U2}`);
+    // A cut text says so, with the full length.
+    expect(many.content).toContain("the first 10 of 4000 characters");
+
+    // Exactly one of pageId / pageIds; ids are validated at the boundary.
+    expect((await run(getPageSeoTool, {}, h.toolCtx)).ok).toBe(false);
+    expect((await run(getPageSeoTool, { pageId: U1, pageIds: [U2] }, h.toolCtx)).ok).toBe(false);
+    expect((await run(getPageSeoTool, { pageIds: ["x"] }, h.toolCtx)).ok).toBe(false);
+    expect(h.calls).toHaveLength(2);
   });
 
   it("list_stale_seo_pages flags empty descriptions", async () => {

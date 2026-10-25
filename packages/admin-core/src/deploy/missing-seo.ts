@@ -98,7 +98,8 @@ export function describeMissingMetaDescriptions(missing: MissingMetaDescriptions
   return (
     `${missing.count} page(s) would go live without a meta description: ${listed}${more}. ` +
     "Every published page needs one before it is built. Write each from the page's content " +
-    "(150–160 characters; when migrating a site, carry over the source page's description) with " +
+    "(150–160 characters; ONE get_page_seo({pageIds}) call returns every page's core text; when " +
+    "migrating a site, carry over the source page's description) with " +
     "autofill_page_seo_many — one call for all of them (autofill_page_seo for a single page) — " +
     `then Stage again.${refilled}`
   );

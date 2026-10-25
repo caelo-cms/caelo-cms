@@ -522,6 +522,7 @@ import { getTelemetryOp, setTelemetryOp, testSendTelemetryOp } from "./ops/secur
 import {
   pagesSeoApplyTranslationOp,
   pagesSeoAutofillOp,
+  pagesSeoGetManyOp,
   pagesSeoGetOp,
   pagesSeoListStaleOp,
   pagesSeoOptimizeManyOp,
@@ -1310,6 +1311,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(reviewAltProposalOp);
   // P8 — SEO sidecar + site SEO defaults.
   registry.register(pagesSeoGetOp);
+  registry.register(pagesSeoGetManyOp);
   registry.register(pagesSeoSetOp);
   // Bulk `_many` variant via the DRY defineBulkOp factory (CLAUDE.md §11).
   registry.register(pagesSeoSetManyOp);

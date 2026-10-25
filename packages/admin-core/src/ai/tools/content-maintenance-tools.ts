@@ -19,7 +19,11 @@ import {
   type listImportRunsOp,
 } from "../../ops/imports.js";
 import type { mediaListUsagesOp } from "../../ops/media.js";
-import type { pagesSeoGetOp, pagesSeoListStaleOp } from "../../ops/seo.js";
+import {
+  type pagesSeoGetManyOp,
+  type pagesSeoListStaleOp,
+  SEO_GET_MANY_MAX,
+} from "../../ops/seo.js";
 import type { listPinDefaultsOp } from "../../ops/skills/engagement.js";
 import { describeError } from "./_describe-error.js";
 import { makeListReadTool, makeReadTool } from "./_make-read-tool.js";
@@ -50,26 +54,56 @@ export const listMediaUsagesTool = makeReadTool({
   },
 });
 
+type SeoPage = OpValue<typeof pagesSeoGetManyOp>["pages"][number];
+
+function formatSeoPage(p: SeoPage): string {
+  const seo = p.seo;
+  const fields = seo
+    ? [
+        `metaDescription: ${seo.metaDescription || "(empty)"}`,
+        `ogImageAssetId: ${seo.ogImageAssetId ?? "(none)"}`,
+        `canonicalUrl: ${seo.canonicalUrl ?? "(default)"}`,
+        `noindex: ${seo.noindex}`,
+        `sitemap: changefreq ${seo.changefreq}, priority ${seo.priority}`,
+        `autofilledAt: ${seo.autofilledAt ?? "never"}; optimizedAt: ${seo.optimizedAt ?? "never"}`,
+      ]
+    : ["No SEO row for this page yet — autofill_page_seo_many fills it before first publish."];
+  const textHead = p.contentTextTruncated
+    ? `contentText (the first ${p.contentText.length} of ${p.contentTextLength} characters — enough to write a description from):`
+    : "contentText:";
+  const text =
+    p.contentText.length > 0
+      ? p.contentText
+      : "(no text yet — the page's own blocks are empty; build its content before writing a description)";
+  return [`## ${p.title} (${p.path}) pageId=${p.pageId}`, ...fields, textHead, text].join("\n");
+}
+
+const getPageSeoInput = z
+  .object({
+    pageId: uuid.optional().describe("One page. Pass this OR pageIds."),
+    pageIds: z
+      .array(uuid)
+      .min(1)
+      .max(SEO_GET_MANY_MAX)
+      .optional()
+      .describe(`Several pages (up to ${SEO_GET_MANY_MAX}) in one call. Pass this OR pageId.`),
+  })
+  .strict()
+  .refine((v) => (v.pageId === undefined) !== (v.pageIds === undefined), {
+    message: "pass exactly one of pageId or pageIds",
+  });
+
 export const getPageSeoTool = makeReadTool({
   name: "get_page_seo",
   description:
-    "Read one page's stored SEO fields: meta description, OG image, canonical URL, noindex, sitemap changefreq/priority, and when it was autofilled / optimized. " +
-    "Use before set_page_seo or optimize_page_seo so you change what is there instead of guessing; null means the page has no SEO row yet (autofill_page_seo fills it).",
-  opName: "pages_seo.get",
-  input: z.object({ pageId: uuid }).strict(),
-  format: (value) => {
-    const seo = (value as OpValue<typeof pagesSeoGetOp>).seo;
-    if (!seo)
-      return "No SEO row for this page yet — autofill_page_seo fills it before first publish.";
-    return [
-      `metaDescription: ${seo.metaDescription || "(empty)"}`,
-      `ogImageAssetId: ${seo.ogImageAssetId ?? "(none)"}`,
-      `canonicalUrl: ${seo.canonicalUrl ?? "(default)"}`,
-      `noindex: ${seo.noindex}`,
-      `sitemap: changefreq ${seo.changefreq}, priority ${seo.priority}`,
-      `autofilledAt: ${seo.autofilledAt ?? "never"}; optimizedAt: ${seo.optimizedAt ?? "never"}`,
-    ].join("\n");
-  },
+    "Read pages' stored SEO fields (meta description, OG image, canonical URL, noindex, sitemap changefreq/priority, when autofilled / optimized) AND each page's core text: the plain text of the page's own content blocks (headings, paragraphs, list items, link labels; nested cards included; header/footer chrome left out), from THIS chat's draft, capped at ~1500 characters. " +
+    "Use it to read what a page already has AND its core text before writing or optimizing its description — one call for every page (`pageIds`, up to 50), then ONE autofill_page_seo_many (first description) or bulk_optimize_seo / set_page_seo_many. " +
+    "Don't render the page for this (inspect_page_render / screenshot_page are for layout and visual questions). A page without an SEO row shows that autofill_page_seo_many fills it.",
+  opName: "pages_seo.get_many",
+  input: getPageSeoInput,
+  buildOpInput: (input) => ({ pageIds: input.pageIds ?? [input.pageId] }),
+  format: (value) =>
+    (value as OpValue<typeof pagesSeoGetManyOp>).pages.map(formatSeoPage).join("\n\n"),
 });
 
 export const listStaleSeoPagesTool = makeListReadTool<
