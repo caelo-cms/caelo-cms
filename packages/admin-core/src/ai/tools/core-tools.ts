@@ -69,6 +69,13 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "list_pages",
   "list_modules",
   "find_media",
+  // Epic #1107 — "add Careers to the menu" / "fix the footer link" is an
+  // everyday edit: find the shared list, read its entry ids, patch it.
+  // Creating lists and types is rarer and stays deferred (the manage-menu
+  // and manage-page-types skills preload those).
+  "list_lists",
+  "get_list",
+  "patch_list_items_many",
   // Design self-review loop — the AI iterates screenshot -> inspect ->
   // edit_module -> screenshot many times per build (the #155 rounds).
   // These reads fire on every iteration, so deferring them made the

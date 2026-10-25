@@ -25,6 +25,7 @@ import {
   listPageTypesOp,
   upsertPageTypesManyOp,
 } from "./page-types.js";
+import { previewListSourceOp } from "./preview-source.js";
 import { promoteLocalListOp } from "./promote-local.js";
 
 /** Register every list-model op on `registry`. */
@@ -39,6 +40,7 @@ export function registerListOps(registry: OperationRegistry): void {
   registry.register(patchListItemsManyOp);
   registry.register(deleteListsManyOp);
   registry.register(promoteLocalListOp);
+  registry.register(previewListSourceOp);
   registry.register(listPageTypesOp);
   registry.register(getPageTypeOp);
   registry.register(upsertPageTypesManyOp);
@@ -56,6 +58,7 @@ export {
   listListTypesOp,
   listPageTypesOp,
   patchListItemsManyOp,
+  previewListSourceOp,
   promoteLocalListOp,
   upsertListsManyOp,
   upsertListTypesManyOp,

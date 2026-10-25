@@ -28,6 +28,7 @@ import {
   MODULE_JS_MAX,
   moduleFieldSchema,
   moduleKindSchema,
+  pageCreateSchema,
   pageStatusSchema,
   slugSchema,
   syncModeSchema,
@@ -226,6 +227,14 @@ export const buildPageTargetSchema = z
      */
     parentPageId: z.string().uuid().optional(),
     /**
+     * Epic #1107 — what the new page IS (page type slug), its properties
+     * and terms; same semantics as `pages.create` (create mode only — an
+     * existing page changes type with `pages.update`).
+     */
+    pageType: pageCreateSchema.shape.pageType,
+    properties: pageCreateSchema.shape.properties,
+    terms: pageCreateSchema.shape.terms,
+    /**
      * Migration linkage (issue #278 flow): the `import_pages` row this
      * page rebuilds. The op stamps `import_pages.accepted_page_id` with
      * the built page's id so fidelity / inventory / media-migration reads
@@ -252,7 +261,17 @@ export const buildPageTargetSchema = z
   .strict()
   .superRefine((page, ctx) => {
     const createKeys = (
-      ["slug", "title", "name", "templateId", "status", "parentPageId"] as const
+      [
+        "slug",
+        "title",
+        "name",
+        "templateId",
+        "status",
+        "parentPageId",
+        "pageType",
+        "properties",
+        "terms",
+      ] as const
     ).filter((k) => page[k] !== undefined);
     if (page.pageId !== undefined) {
       if (createKeys.length > 0) {

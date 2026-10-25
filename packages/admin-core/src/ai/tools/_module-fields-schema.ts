@@ -74,7 +74,7 @@ const STRICT_ENTRY_VALUES_SCHEMA = {
 const ENTRY_VALUES_SCHEMA = {
   type: "object",
   description:
-    "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}).",
+    "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
   additionalProperties: {
     anyOf: [
       { type: "string" },
@@ -86,18 +86,42 @@ const ENTRY_VALUES_SCHEMA = {
   },
 } as const;
 
-/** One local list entry, two levels deep (a menu entry and its children). */
-function listEntrySchema(values: Record<string, unknown>): Record<string, unknown> {
-  const leaf = {
-    type: "object",
-    additionalProperties: false,
-    required: ["node", "values"],
-    properties: { node: { type: "string" }, values },
+/**
+ * One local list entry, `depth` levels deep (an entry, its children, …).
+ * A fixed depth, not a `$ref` recursion: this schema is embedded as a
+ * property of many tools (and of moduleize's structured output), and a
+ * `$ref` must resolve against each document's root. Three levels cover
+ * the shipped `menu` (max_depth 3); deeper trees belong in a shared list,
+ * whose tools declare the recursive shape (`upsert_lists_many`).
+ *
+ * `withIds` lets the module tools echo an existing entry's `id` when they
+ * resend a default — ids are stable, and a changed id reads as a removed
+ * plus an added entry (a translation plugin would lose its work).
+ */
+function listEntrySchema(
+  values: Record<string, unknown>,
+  depth: number,
+  withIds: boolean,
+): Record<string, unknown> {
+  const properties: Record<string, unknown> = {
+    ...(withIds
+      ? {
+          id: {
+            type: "string",
+            description: "Keep the id of an existing entry; omit for a new one.",
+          },
+        }
+      : {}),
+    node: {
+      type: "string",
+      description: "The entry's node kind (texts: text; links: link; menu: entry).",
+    },
+    values,
   };
-  return {
-    ...leaf,
-    properties: { ...leaf.properties, children: { type: "array", items: leaf } },
-  };
+  if (depth > 1) {
+    properties.children = { type: "array", items: listEntrySchema(values, depth - 1, withIds) };
+  }
+  return { type: "object", additionalProperties: false, required: ["node", "values"], properties };
 }
 
 /** A page query (docs/lists.md §6) — mirrors `pageQueryPartialSchema`. */
@@ -138,7 +162,11 @@ const LIST_SOURCE_SCHEMA = {
 } as const;
 
 /** One field object — mirrors the Zod `moduleFieldSchema` (`.strict()`). */
-function moduleFieldItemSchema(entryValues: Record<string, unknown>): Record<string, unknown> {
+function moduleFieldItemSchema(
+  entryValues: Record<string, unknown>,
+  entryDepth: number,
+  withIds: boolean,
+): Record<string, unknown> {
   return {
     type: "object",
     additionalProperties: false,
@@ -172,7 +200,7 @@ function moduleFieldItemSchema(entryValues: Record<string, unknown>): Record<str
           { type: "string" },
           { type: "number" },
           { type: "boolean" },
-          { type: "array", items: listEntrySchema(entryValues) },
+          { type: "array", items: listEntrySchema(entryValues, entryDepth, withIds) },
           // Singular `link` kind: a single {label, href} default.
           {
             type: "object",
@@ -187,18 +215,19 @@ function moduleFieldItemSchema(entryValues: Record<string, unknown>): Record<str
         type: "string",
         pattern: SLUG_PATTERN,
         description:
-          'list: the list type slug (shipped: "texts", "links", "menu", "categories", "tags").',
+          'list fields: the list type slug — shipped "texts" (plain strings), "links" (label + link), "menu" (nested entries), "categories" / "tags" (vocabularies), or a custom type (list_list_types).',
       },
       bind: {
         type: "string",
         enum: ["local", "shared", "source"],
         description:
-          "list: local (default) = entries stored with this placement; shared = a list used in several places (menus, footer links); source = generated per page.",
+          "list fields: local (default) = the entries are the placement's value (chrome: the field default); shared = a site list (menus, navigation, footer links, categories, tags) — fix it with `list` or give each placement caelo:list/<id>; source = entries generated per page from `source` (a page query, breadcrumbs).",
       },
       list: {
         type: "string",
         pattern: LIST_REF_PATTERN,
-        description: "list, bind shared: fix the list for every placement (caelo:list/<id>).",
+        description:
+          "list fields with bind shared: the list every placement shows (caelo:list/<id> from upsert_lists_many / list_lists). With a page_terms source: the vocabulary to show.",
       },
       source: LIST_SOURCE_SCHEMA,
       // issue #106 — `module`/`module-list` fields constrain nested refs to
@@ -227,7 +256,7 @@ function moduleFieldItemSchema(entryValues: Record<string, unknown>): Record<str
 export const MODULE_FIELDS_JSON_SCHEMA: Record<string, unknown> = {
   type: "array",
   maxItems: 64,
-  items: moduleFieldItemSchema(ENTRY_VALUES_SCHEMA),
+  items: moduleFieldItemSchema(ENTRY_VALUES_SCHEMA, 3, true),
 };
 
 /**
@@ -238,7 +267,7 @@ export const MODULE_FIELDS_JSON_SCHEMA: Record<string, unknown> = {
 export const MODULE_FIELDS_STRUCTURED_JSON_SCHEMA: Record<string, unknown> = {
   type: "array",
   maxItems: 64,
-  items: moduleFieldItemSchema(STRICT_ENTRY_VALUES_SCHEMA),
+  items: moduleFieldItemSchema(STRICT_ENTRY_VALUES_SCHEMA, 2, false),
 };
 
 /**

@@ -38,6 +38,10 @@ export async function buildPageContext(
           title: string;
           status: string;
           templateId: string;
+          /** Epic #1107 — what the page IS, its properties and terms. */
+          pageType: string;
+          properties: Record<string, unknown>;
+          terms: string[];
           /** 0184 — this page is the designated site root. */
           isHomePage: boolean;
           /** 0284 (#802) — this page is the designated 404 page. */
@@ -68,6 +72,13 @@ export async function buildPageContext(
             ]
           : []),
         `Template id: ${v.page.templateId}`,
+        // Epic #1107 — the page type decides which queries find this page
+        // ("latest news") and which properties / terms it carries.
+        `Page type: ${v.page.pageType}${
+          Object.keys(v.page.properties).length > 0
+            ? `; properties ${JSON.stringify(v.page.properties)}`
+            : ""
+        }${v.page.terms.length > 0 ? `; terms ${v.page.terms.join(", ")}` : ""}`,
         // v0.12.3 (issue #106) — this list is AUTHORITATIVE + EXHAUSTIVE.
         // `blockName` for add_module_to_page / move_module MUST be one of
         // these exact strings — do not invent others. A block name is NOT
@@ -112,19 +123,21 @@ export async function buildPageContext(
         "  * `name`  — the editor's friendly label (page picker, breadcrumbs). Internal-only.",
         "  * `title` — the HTML <title> tag (browser tab, search-engine SERP). Public.",
         "  * `slug`  — the URL path component. Public, indexed, every link points at it.",
-        "- build_page({page:{name, title, slug, templateId, ...}, modules:[]}) — make a new page (empty shell; add modules in the same call for a full page).",
+        "- build_page({page:{name, title, slug, pageType, templateId, ...}, modules:[]}) — make a new page (empty shell; add modules in the same call for a full page). `pageType` says what the page IS (list_page_types) — an article is `news`, not a plain page.",
         "- update_pages_many({updates:[{pageId, …}]}) — the ONE tool for page metadata, for 1 page or many (single-item array for one page). Set exactly the identifier the user meant:",
         '  * `name` — internal label only. Use when the user says "rename" without mentioning URL or tab.',
         '  * `title` — HTML <title> only. Use when the user mentions "browser tab", "<title>", or "SERP".',
         "  * `slug` — URL only. Auto-creates a 301 from the old URL; links on the site follow the page automatically. Use only when the user explicitly mentions changing the URL / slug / path. `redirectFromOld:'skip'` suppresses the 301 — only on explicit request.",
+        "  * `pageType` / `properties` / `terms` — what the page is, its type's fields, its categories / tags. Use when the user says 'this is a news article' or 'file it under Guides'.",
         "- delete_pages_many({deletions:[{pageId, disposition:'404'|'redirect', redirectTo?}]}) — the ONE delete tool, for 1 page or many (single-item array for one page). ALWAYS confirm the dead-URL disposition per page; suggest a redirect target (parent section, sibling, or /) when proposing 'redirect'. 5+ pages needs one Owner click.",
         '- When a request is ambiguous (e.g. just "rename to About"), ASK: "Should I update only the internal name, the <title> tag, or the URL too?"',
         "",
         "Tool guidance (content ops, P6.7.7):",
         "- duplicate_page(sourcePageId, newSlug, newName?, newTitle?, targetTemplateId?) — clone a page including its module layout. Modules carry by reference (edits propagate to both pages). If targetTemplateId differs from the source's template, block names must align — otherwise modules in unmatched blocks orphan and you should follow with `repoint_page_template` to migrate or drop them.",
-        "- repoint_page_template(pageId, newTemplateId, orphanDisposition) — re-point a page to a different template (page-type). Modules in matching block names migrate; orphans drop or relocate per `orphanDisposition` (`{kind:'drop'}` or `{kind:'preserve-as-block', blockName}`). CONFIRM with the user before passing `{kind:'drop'}` if it would lose modules. The response carries `migratedBlocks` and `droppedModules` — surface both back in your reply.",
+        "- repoint_page_template(pageId, newTemplateId, orphanDisposition) — re-point a page to a different template (one its page type allows; to change the page type too, use update_pages_many with pageType + templateId). Modules in matching block names migrate; orphans drop or relocate per `orphanDisposition` (`{kind:'drop'}` or `{kind:'preserve-as-block', blockName}`). CONFIRM with the user before passing `{kind:'drop'}` if it would lose modules. The response carries `migratedBlocks` and `droppedModules` — surface both back in your reply.",
         "- move_module(pageId, moduleId, toBlockName, position) — move an EXISTING module across blocks (e.g. content → header). Use this, NOT `add_module`, when the module already exists on the page.",
         "- reorder_module(pageId, moduleId, direction) — change a module's position WITHIN its current block. Direction is 'up' / 'down' / a 0-based absolute index. Use this, NOT `move_module`, when the destination is the same block.",
+        "- Menus, footer links, categories and tags on this page are SHARED lists, not module content: list_lists (usedBy shows which module shows which list) → get_list → patch_list_items_many. A list only one module shows is that module's local `list` field (set_page_module_content).",
         "",
         'When the user asks for a copy change like "make the headline more meaningful" or "rewrite the welcome paragraph", read the surrounding modules in this block to keep the new copy coherent across the whole page.',
       );

@@ -172,6 +172,23 @@ export function resetLiveditFixtures(): void {
       await tx.unsafe(\`DELETE FROM template_pending_actions WHERE template_id NOT IN (\${keep})\`);
       await tx.unsafe(\`DELETE FROM template_blocks WHERE template_id NOT IN (\${keep})\`);
       await tx.unsafe(\`DELETE FROM templates WHERE id NOT IN (\${keep})\`);
+      // Epic #1107 — lists, list types and page types a scenario's AI
+      // created would otherwise steer the next scenario ("reuse the
+      // existing main-menu"). Keep the shipped list types (0352) and the
+      // site's default page type, whose template list drops the templates
+      // wiped above. Pages (the page_types referrers) are already gone.
+      await tx\`DELETE FROM lists\`;
+      await tx\`DELETE FROM list_types WHERE slug NOT IN ('texts', 'links', 'menu', 'categories', 'tags')\`;
+      await tx\`DELETE FROM page_types
+               WHERE id IS DISTINCT FROM (SELECT default_page_type_id FROM site_defaults WHERE id = 1)\`;
+      await tx\`
+        UPDATE page_types
+           SET definition = jsonb_set(definition, '{templates}', COALESCE((
+                 SELECT jsonb_agg(t) FROM jsonb_array_elements_text(definition->'templates') AS t
+                  WHERE EXISTS (SELECT 1 FROM templates WHERE id::text = t AND deleted_at IS NULL)
+               ), '[]'::jsonb))
+         WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)
+      \`;
       // Login bucket gets consumed by every loginAsDevOwner() call;
       // global-setup only clears it once at suite start, so after 5+
       // tests the rate limiter starts rejecting and loginAsDevOwner's
@@ -190,9 +207,8 @@ export function resetLiveditFixtures(): void {
  * templates intact, so we only re-create what's missing. Returns
  * the seeded page id so the spec can reference it in the AI prompt.
  *
- * Uses the `homepage` slug + `home` template kind so the AI's
- * `## Pages` block surfaces the page under `### kind=home` and the
- * AI knows which template to keep using on follow-up adds.
+ * The page is `home` on `home-template`, which joins the site's default
+ * page type (epic #1107: a page's template must belong to its page type).
  */
 export function seedMinimalSite(): { pageId: string; templateId: string } {
   const out = runBunInline(`
@@ -1203,5 +1219,143 @@ export function openAiStageHoldCount(): number {
       `,
     ).trim(),
     10,
+  );
+}
+
+/**
+ * Give the site-default layout the chrome blocks a scenario needs
+ * (`seedMinimalSite` only creates the template's `content` block).
+ * Idempotent.
+ */
+export function seedLayoutBlocks(names: readonly string[]): void {
+  runBunInline(
+    `
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    const names = JSON.parse(process.env.BLOCK_NAMES);
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      const lay = await tx\`SELECT id::text AS id FROM layouts WHERE slug='site-default' AND deleted_at IS NULL LIMIT 1\`;
+      if (!lay[0]) throw new Error("seedLayoutBlocks: no site-default layout — call seedMinimalSite first");
+      for (const [i, name] of names.entries()) {
+        const display = name.charAt(0).toUpperCase() + name.slice(1);
+        await tx\`
+          INSERT INTO layout_blocks (layout_id, name, display_name, position)
+          VALUES (\${lay[0].id}::uuid, \${name}, \${display}, \${i})
+          ON CONFLICT (layout_id, name) DO NOTHING
+        \`;
+      }
+    });
+    await sql.end();
+    `,
+    { BLOCK_NAMES: JSON.stringify(names) },
+  );
+}
+
+/**
+ * Move the site past cold-start: capture site identity, flip the active
+ * theme off `seed` origin, record a design rationale, AND give it a
+ * chromatic primary. The cold-start gate (`_cold-start-gate.ts`) clears
+ * only when all of those hold (the primary-chroma check is #149's
+ * follow-up); short of that it intercepts add_module and the AI spends the
+ * turn on theme setup instead of the requested chrome. Issue #735: the
+ * prime used to stop at the origin flip, so the gate fired on EVERY run
+ * (seed primary #171717) and the footer scenario silently tested gate
+ * recovery instead of the footer path. Scenarios that test chrome / lists
+ * on a real (post-onboarding) site call this; the cold-start onboarding
+ * path is covered by scenario-homepage. Mirrors apps/admin/e2e/_seed.ts's
+ * POST_CHAT_SEED_SCRIPT (indigo primary) plus a violet accent. Idempotent.
+ */
+export function primePostOnboarding(): void {
+  runBunInline(`
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      await tx\`
+        UPDATE site_defaults
+        SET site_name = COALESCE(NULLIF(site_name, ''), 'Caelo'),
+            site_purpose = COALESCE(NULLIF(site_purpose, ''),
+              'An AI-first CMS for developers — branched edits, instant previews, plugin sandbox.')
+        WHERE id = 1
+      \`;
+      await tx\`
+        UPDATE themes
+        SET origin = CASE WHEN origin = 'seed' THEN 'operator' ELSE origin END,
+            description = COALESCE(NULLIF(description, ''),
+              'Indigo primary with a violet accent for a modern, trustworthy developer product.'),
+            tokens = jsonb_set(
+              jsonb_set(tokens, '{color,primary}', '{"$type": "color", "$value": "#4f46e5"}'::jsonb),
+              '{color,accent}', '{"$type": "color", "$value": "#7c3aed"}'::jsonb
+            )
+        WHERE is_active = true
+      \`;
+    });
+    await sql.end();
+  `);
+}
+
+/**
+ * Seed a `news` page type (with its own `news-template`) plus `count`
+ * published news articles, so a "latest news" query in a menu has
+ * something to return (docs/lists.md §6: a query matches published
+ * pages, newest first by `first_published_at`). Idempotent per slug.
+ */
+export function seedNewsArticles(count: number): void {
+  runBunInline(
+    `
+    import { SQL } from "bun";
+    const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+    await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      // Its own template: a template listed by two page types would make
+      // every page the AI creates on the home template ambiguous.
+      let tpl = await tx\`SELECT id::text AS id FROM templates WHERE slug = 'news-template' AND deleted_at IS NULL LIMIT 1\`;
+      if (!tpl[0]) {
+        const lay = await tx\`SELECT id::text AS id FROM layouts WHERE slug = 'site-default' AND deleted_at IS NULL LIMIT 1\`;
+        if (!lay[0]) throw new Error("seedNewsArticles: no site-default layout — call seedMinimalSite first");
+        tpl = await tx\`
+          INSERT INTO templates (slug, display_name, html, css, layout_id)
+          VALUES ('news-template', 'News article', '<main><caelo-slot name="content"></caelo-slot></main>', '', \${lay[0].id}::uuid)
+          RETURNING id::text AS id
+        \`;
+        await tx\`
+          INSERT INTO template_blocks (template_id, name, display_name, position)
+          VALUES (\${tpl[0].id}::uuid, 'content', 'Content', 0)
+          ON CONFLICT (template_id, name) DO NOTHING
+        \`;
+      }
+      const purpose = "Company news and announcements, listed newest first in menus and on the news page.";
+      let pt = await tx\`SELECT id::text AS id FROM page_types WHERE slug = 'news' AND deleted_at IS NULL LIMIT 1\`;
+      if (!pt[0]) {
+        pt = await tx\`
+          INSERT INTO page_types (slug, definition)
+          VALUES ('news', jsonb_build_object(
+            'slug', 'news', 'name', 'News article', 'purpose', \${purpose}::text,
+            'templates', jsonb_build_array(\${tpl[0].id}::text), 'defaultTemplate', \${tpl[0].id}::text,
+            'properties', '[]'::jsonb, 'vocabularies', '[]'::jsonb))
+          RETURNING id::text AS id
+        \`;
+      }
+      const n = Number(process.env.NEWS_COUNT);
+      for (let i = 1; i <= n; i += 1) {
+        const slug = "news-" + i;
+        const exists = await tx\`SELECT 1 FROM pages WHERE slug = \${slug} AND deleted_at IS NULL LIMIT 1\`;
+        if (exists[0]) continue;
+        const pg = await tx\`
+          INSERT INTO pages (slug, name, title, template_id, status, page_type_id, first_published_at)
+          VALUES (\${slug}, \${"News " + i}, \${"Release notes " + i}, \${tpl[0].id}::uuid, 'published',
+                  \${pt[0].id}::uuid, now() - make_interval(days => \${n - i}::int))
+          RETURNING id::text AS id
+        \`;
+        await tx\`
+          INSERT INTO pages_seo (page_id, meta_description)
+          VALUES (\${pg[0].id}::uuid, 'Seeded news article of the live-edit lists scenario.')
+          ON CONFLICT (page_id) DO NOTHING\`;
+      }
+    });
+    await sql.end();
+    `,
+    { NEWS_COUNT: String(count) },
   );
 }

@@ -102,7 +102,7 @@ export function unrenderableLayoutFieldsError(
     problems.map((p) => `- ${p.reason}`).join("\n") +
     `\n\nRe-call \`${toolName}\` with each field carrying a \`default\` holding the real content, e.g. ` +
     `\`{name:"copyright",kind:"text",label:"Copyright",default:"© 2026 Acme. All rights reserved."}\` and ` +
-    `\`{name:"nav_links",kind:"list",listType:"menu",bind:"shared",list:"caelo:list/<id>",label:"Footer navigation"}\` for navigation (a shared list, written with upsert_lists_many — every internal \`href\` must be the path of a page that exists). ` +
+    `\`{name:"nav_links",kind:"list",listType:"menu",bind:"shared",list:"caelo:list/<id>",label:"Footer navigation"}\` for navigation — a shared list: reuse the site's menu from list_lists, or create it with upsert_lists_many (every internal \`href\` must be the path of a page that exists). A list only this module shows is a local list field whose \`default\` holds the entries. ` +
     `Do NOT call create_content_instance / set_placement_content for ${surface} chrome.`
   );
 }

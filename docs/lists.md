@@ -256,6 +256,23 @@ of the site, edited by people without module context, or assigning pages
 (vocabulary) → shared. `lists.promote_local` turns a local list into a
 shared one and rebinds the field in one call.
 
+Neither the HTML extractor (`ops/content/extract-module-lists.ts`, run by
+`modules.create` / `modules.update` when no fields are passed) nor
+moduleize (`ai/moduleize.ts`) ever mints a list type: types are
+site-wide stored data whose writes need `content.structure`, the
+extractor is a pure fallback and moduleize is a structured-output call
+without tools. Both make repeated siblings ONE local list field of a
+shipped type (moduleize by instruction, checked on its output; the
+extractor by rule) — plain-text `<li>` (or 3+ same-class `<p>` / `<span>`) →
+`texts`, link rows (3+ `<a>`, or `<li><a>`) → `links`, entries with one
+level of sub-lists → `menu` — and leave entry ids to the module op.
+A group no shipped type holds (cards of image + heading + text, entries
+whose markup differs) keeps scalar fields; moduleize keeps a hinted
+custom-type list field and takes its entries from the hint. The
+authoring AI that wants such a collection editable creates the type
+first (`upsert_list_types_many`) and authors the field, or makes the card
+its own module and the section a `module-list`.
+
 ## 8. Template syntax
 
 `packages/shared/src/template-engine.ts` keeps its Mustache-subset
@@ -427,19 +444,54 @@ to every role that holds `content.write`.
 
 | op | tool | notes |
 |---|---|---|
-| `list_types.list` | `list_list_types` | purpose, role, nodes, list count |
-| `list_types.get` | — | draft view |
+| `list_types.list` | `list_list_types` | purpose, role, nodes (compact: fields, children, sources), list count |
+| `list_types.get` | `list_list_types` with `slug` | + the shared lists and local lists of the type |
 | `list_types.upsert_many` | `upsert_list_types_many` | `dropValues` |
 | `list_types.delete_many` | `delete_list_types_many` | refused while lists use it |
-| `lists.list` | `list_lists` | filter `type`, `role`, `query`; usage: modules, placements, sample pages, `updatedAt` |
-| `lists.get` | `get_list` | draft view, humanised links |
-| `lists.upsert_many` | `upsert_lists_many` | create or replace |
-| `lists.patch_items_many` | `patch_list_items_many` | `add {parentId?, position?, item}`, `update {itemId, values}`, `move {itemId, parentId?, position}`, `remove {itemId}` |
+| `lists.list` | `list_lists` | filter `type`, `role`, `query`; usage: modules (`module.field`), placements, sample pages, vocabulary use, `updatedAt` |
+| `lists.get` | `get_list` | draft view, humanised links, entry tree with ids |
+| `lists.upsert_many` | `upsert_lists_many` | create or replace; returns `caelo:list/<id>` for binding |
+| `lists.patch_items_many` | `patch_list_items_many` | `add {parentId?, position?, item}`, `update {itemId, values}`, `move {itemId, parentId?, position}`, `remove {itemId}`; always loaded (core tool) |
 | `lists.delete_many` | `delete_lists_many` | refused while bound |
 | `lists.promote_local` | `promote_local_list` | module field → shared list + rebind |
-| `lists.preview_source` | `preview_list_source` | what a query / system source returns for a page |
-| `page_types.list` / `get` / `upsert_many` / `delete_many` | `list_page_types`, `upsert_page_types_many` | |
+| `lists.preview_source` | `preview_list_source` | what a query / system / plugin source returns for a page (below) |
+| `page_types.list` | `list_page_types` | templates, properties, vocabularies, page count |
+| `page_types.get` | `list_page_types` with `slug` | + sample pages |
+| `page_types.upsert_many` | `upsert_page_types_many` | `dropValues` |
+| `page_types.delete_many` | `delete_page_types_many` | refused while pages use it and for the site default; a tool because the AI creates page types (§11 parity) |
 | `pages.update_many` (extended) | `update_pages_many` | `pageType`, `properties`, `terms` |
+| `pages.build_page` (extended) | `build_page` | `page.pageType`, `page.properties`, `page.terms` (create mode) |
+| `templates.create` / `templates.propose_update` | `create_template` / `propose_update_template` | `pageType` (replaces `templates.kind`) |
+
+The tools take the op's own input schema (`ai/tools/_list-tool-kit.ts`),
+so the JSON Schema a provider sees is generated from the shared Zod
+definitions; the recursive entry tree comes out as `$defs` + `$ref`
+(docs/internal/google-models.md). Module authoring tools embed list entries
+inside the `fields` schema, where a root-relative `$ref` cannot resolve, so
+they declare three fixed levels instead (enough for `menu`). Op error hints
+that name ops are rewritten to tool names (`toolNamesIn`). Every list tool
+repeats the alias (menus, navigation, footer links, categories and tags are
+shared lists; a list only one module shows stays local); the module tools
+carry the list field contract (template keys, the three bindings and their
+values).
+
+`lists.preview_source` input, exactly one of:
+
+- `source` (a `SourceDef`) with optional `value` (the placement's overrides:
+  query knobs within `editable`, or `{terms}` for `term_pages`) and
+  `vocabulary` (`caelo:list/<id>` for `page_terms`);
+- `list` (slug) + `itemId`: a source node stored in a shared list, with its
+  saved `query`;
+- `moduleId` + `field` (+ `contentInstanceId`): a module's `bind: "source"`
+  field with that placement's value.
+
+`pageId` names the rendering page (breadcrumbs, children, siblings,
+page_terms need one; a query leaves it out by default). The answer is
+`{ source, count, entries }`, each entry `{id, title?, name?, label?, slug?,
+link?, published_at?, updated_at?, page_type?, summary?, is_current?}` with
+links as paths. It runs the render's own resolver over
+`loadListRenderData` in the caller's draft view; plugin sources are asked
+per page like in the preview.
 
 ## 13. Admin UI
 

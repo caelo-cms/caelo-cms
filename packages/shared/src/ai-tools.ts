@@ -21,6 +21,7 @@ import {
   MODULE_HTML_MAX,
   MODULE_JS_MAX,
   moduleFieldSchema,
+  pageTypeSlugSchema,
   setPlacementContentSchema,
   slugSchema,
 } from "./content.js";
@@ -654,6 +655,8 @@ export const createTemplateToolInput = z
     html: sourceTextArg(z.string().min(1).max(2_000_000)),
     css: sourceTextArg(z.string().max(2_000_000)).default(""),
     layoutId: z.string().uuid().optional(),
+    /** Epic #1107 — the page type (slug) this template serves; omit for the site default. */
+    pageType: pageTypeSlugSchema.optional(),
     // Optional block-set metadata, symmetric with create_layout. Omit to
     // auto-derive blocks from <caelo-slot> tags; pass to set displayName /
     // position (each name must match a slot). Enforced op-side in

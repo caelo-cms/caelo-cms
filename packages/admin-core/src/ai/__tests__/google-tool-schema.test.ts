@@ -6,6 +6,7 @@ import { GeminiProvider } from "../providers/gemini.js";
 import { googleToolSchema } from "../providers/google-tool-schema.js";
 import { bulkCreateRedirectsTool } from "../tools/bulk-create-redirects.js";
 import { findRedirectsTool } from "../tools/find-redirects.js";
+import { createDefaultToolRegistry } from "../tools/index.js";
 import { setSiteIdentityTool } from "../tools/set-site-identity.js";
 
 test("Google tool schemas retain types without mutating canonical enum validation", () => {
@@ -125,4 +126,56 @@ test("tool results resolve canonical SDK call names without rebuilding history",
   expect(() => toSDKMessages([{ role: "tool", toolCallId: "missing", content: "guide" }])).toThrow(
     "no matching call",
   );
+});
+
+test("list tools send their recursive entry shape ($defs + $ref) on the Google wire", async () => {
+  // Epic #1107: a list's entries nest (a menu entry's children, a mega
+  // menu's columns). The tools declare that as one recursive definition
+  // instead of a fixed depth, so it must reach Google intact.
+  const names = ["upsert_lists_many", "patch_list_items_many", "upsert_list_types_many"];
+  const tools = createDefaultToolRegistry()
+    .catalogue()
+    .filter((t) => names.includes(t.name));
+  expect(tools.map((t) => t.name).sort()).toEqual([...names].sort());
+  let captured = "";
+  const provider = new GeminiProvider({
+    apiKey: "test-key",
+    model: "gemini-3.8-flash",
+    fetchImpl: (async (_url, init) => {
+      captured = String(init?.body);
+      return new Response(
+        'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}\n\n',
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }) as typeof fetch,
+  });
+  for await (const _ of provider.generate({
+    systemPrompt: "Edit the menu",
+    messages: [{ role: "user", content: "Add Careers under Company" }],
+    tools,
+  }));
+  const body = JSON.parse(captured);
+  const declarations = body.tools[0].functionDeclarations as {
+    name: string;
+    parametersJsonSchema: Record<string, unknown>;
+  }[];
+  const upsert = declarations.find((d) => d.name === "upsert_lists_many");
+  const schema = upsert?.parametersJsonSchema as {
+    $defs: Record<string, { properties: { children: { items: { $ref: string } } } }>;
+    properties: { lists: { items: { properties: { items: { items: { $ref: string } } } } } };
+  };
+  const ref = schema.properties.lists.items.properties.items.items.$ref;
+  expect(ref).toMatch(/^#\/\$defs\//);
+  const def = schema.$defs[ref.replace("#/$defs/", "")];
+  // The entry refers to itself for its children: recursion, not a depth cap.
+  expect(def?.properties.children.items.$ref).toBe(ref);
+  function check(node: unknown) {
+    if (!node || typeof node !== "object") return;
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "enum")
+        expect((value as unknown[]).every((item) => typeof item === "string")).toBe(true);
+      else check(value);
+    }
+  }
+  check(body.tools);
 });

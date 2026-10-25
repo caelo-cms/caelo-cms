@@ -39,13 +39,6 @@ const PENDING_QUEUE: AiOpException = {
   note: "per-domain Owner-queue read; `pending_proposals.list` unions every *_pending_actions table (plus site-memory, skill, rate-limit and import-run proposals)",
 };
 
-/** Epic #1107: the list / list type / page type ops; part E (#1112) adds their tools. */
-const LISTS_TOOLS_GAP: AiOpException = {
-  kind: "gap",
-  reason: "the list ops ship before the AI tools that call them (one epic PR, parts B and E)",
-  followUp: "#1112: list_lists / get_list / upsert_lists_many / … tools (docs/lists.md §12)",
-};
-
 /** Focal point + named crops: wire the pipeline first, then the tools. */
 const MEDIA_CURATION_FOLLOW_UP =
   "#614: pass focal point + media_crops to runMediaPipeline, then add the curation tools";
@@ -404,22 +397,6 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
       "named crops are stored but no pipeline call emits their variants (no operator UI either)",
     followUp: MEDIA_CURATION_FOLLOW_UP,
   },
-  // Epic #1107 — the list ops land before their tools (part B before part E
-  // of the same epic PR).
-  "list_types.list": LISTS_TOOLS_GAP,
-  "list_types.get": LISTS_TOOLS_GAP,
-  "list_types.upsert_many": LISTS_TOOLS_GAP,
-  "list_types.delete_many": LISTS_TOOLS_GAP,
-  "lists.list": LISTS_TOOLS_GAP,
-  "lists.get": LISTS_TOOLS_GAP,
-  "lists.upsert_many": LISTS_TOOLS_GAP,
-  "lists.patch_items_many": LISTS_TOOLS_GAP,
-  "lists.delete_many": LISTS_TOOLS_GAP,
-  "lists.promote_local": LISTS_TOOLS_GAP,
-  "page_types.list": LISTS_TOOLS_GAP,
-  "page_types.get": LISTS_TOOLS_GAP,
-  "page_types.upsert_many": LISTS_TOOLS_GAP,
-  "page_types.delete_many": LISTS_TOOLS_GAP,
 };
 
 /**

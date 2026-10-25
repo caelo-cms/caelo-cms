@@ -238,3 +238,110 @@ describe("template syntax survives extraction", () => {
     });
   });
 });
+
+describe("extractModuleStructure — repeated siblings become one local list field", () => {
+  it("a <ul> of plain <li> becomes a `texts` list", () => {
+    const out = extractModuleStructure("<ul><li>Fast</li><li>Safe</li><li>Open</li></ul>");
+    expect(out.templatizedHtml).toBe("<ul>{{#items}}<li>{{text}}</li>{{/items}}</ul>");
+    expect(out.fields).toEqual([
+      {
+        name: "items",
+        kind: "list",
+        label: "Items",
+        listType: "texts",
+        default: [
+          { node: "text", values: { text: "Fast" } },
+          { node: "text", values: { text: "Safe" } },
+          { node: "text", values: { text: "Open" } },
+        ],
+      } as never,
+    ]);
+    expect(validateTemplatizedModule(out.templatizedHtml, out.fields).ok).toBe(true);
+  });
+
+  it("anchors in a <nav> become a `links` list named nav_links, keeping their attributes", () => {
+    const html =
+      '<nav><a class="n" href="/">Home</a> <a class="n" href="/about">About</a> <a class="n" href="/blog">Blog</a></nav>';
+    const out = extractModuleStructure(html);
+    expect(out.templatizedHtml).toBe(
+      '<nav>{{#nav_links}}<a class="n" href="{{link}}">{{label}}</a> {{/nav_links}}</nav>',
+    );
+    expect(out.fields).toHaveLength(1);
+    expect(out.fields[0]).toMatchObject({ name: "nav_links", kind: "list", listType: "links" });
+    expect(out.defaultValues.nav_links).toEqual([
+      { node: "link", values: { label: "Home", link: { href: "/" } } },
+      { node: "link", values: { label: "About", link: { href: "/about" } } },
+      { node: "link", values: { label: "Blog", link: { href: "/blog" } } },
+    ]);
+  });
+
+  it("<li><a></a></li> in a footer becomes footer_links", () => {
+    const out = extractModuleStructure(
+      '<footer><ul><li><a href="/imprint">Imprint</a></li><li><a href="/privacy">Privacy</a></li></ul></footer>',
+    );
+    expect(out.templatizedHtml).toBe(
+      '<footer><ul>{{#footer_links}}<li><a href="{{link}}">{{label}}</a></li>{{/footer_links}}</ul></footer>',
+    );
+    expect(out.fields[0]).toMatchObject({ name: "footer_links", listType: "links" });
+  });
+
+  it("entries with one level of sub-lists become a `menu` with children", () => {
+    const html =
+      '<nav><ul><li><a href="/products">Products</a><ul class="sub"><li><a href="/a">A</a></li><li><a href="/b">B</a></li></ul></li><li><a href="/about">About</a></li></ul></nav>';
+    const out = extractModuleStructure(html);
+    expect(out.templatizedHtml).toBe(
+      '<nav><ul>{{#nav_menu}}<li><a href="{{link}}">{{label}}</a>{{#has_children}}<ul class="sub">{{#children}}<li><a href="{{link}}">{{label}}</a></li>{{/children}}</ul>{{/has_children}}</li>{{/nav_menu}}</ul></nav>',
+    );
+    expect(out.fields[0]).toMatchObject({ name: "nav_menu", listType: "menu" });
+    expect(out.defaultValues.nav_menu).toEqual([
+      {
+        node: "entry",
+        values: { label: "Products", link: { href: "/products" } },
+        children: [
+          { node: "entry", values: { label: "A", link: { href: "/a" } } },
+          { node: "entry", values: { label: "B", link: { href: "/b" } } },
+        ],
+      },
+      { node: "entry", values: { label: "About", link: { href: "/about" } } },
+    ]);
+    expect(validateTemplatizedModule(out.templatizedHtml, out.fields).ok).toBe(true);
+  });
+
+  it("is idempotent on its own list output", () => {
+    const first = extractModuleStructure(
+      '<nav><a href="/">Home</a><a href="/a">A</a><a href="/b">B</a></nav><h1>Hi</h1>',
+    );
+    const second = extractModuleStructure(first.templatizedHtml, first.fields);
+    expect(second.fields).toHaveLength(0);
+    expect(second.templatizedHtml).toBe(first.templatizedHtml);
+  });
+
+  it("keeps scalar fields when members differ (an active class on one entry)", () => {
+    const out = extractModuleStructure(
+      '<ul><li class="on"><a href="/">Home</a></li><li><a href="/a">A</a></li></ul>',
+    );
+    expect(out.fields.some((f) => f.kind === "list")).toBe(false);
+  });
+
+  it("keeps scalar fields for multi-part cards no shipped type holds", () => {
+    const card = (n: string) =>
+      `<div class="card"><img src="/${n}.jpg" alt="${n}"><h3>${n}</h3><p>About ${n}</p></div>`;
+    const out = extractModuleStructure(`<section>${card("a")}${card("b")}${card("c")}</section>`);
+    expect(out.fields.some((f) => f.kind === "list")).toBe(false);
+    expect(out.fields.some((f) => f.kind === "image")).toBe(true);
+  });
+
+  it("two paragraphs and a CTA pair stay scalars (prose and buttons are no lists)", () => {
+    const out = extractModuleStructure(
+      '<p>Lead.</p><p>Body.</p><a class="b" href="/a">Start</a><a class="b" href="/b">More</a>',
+    );
+    expect(out.fields.some((f) => f.kind === "list")).toBe(false);
+  });
+
+  it("chips sharing a class become a `texts` list", () => {
+    const out = extractModuleStructure(
+      '<div><span class="chip">A</span><span class="chip">B</span><span class="chip">C</span></div>',
+    );
+    expect(out.fields[0]).toMatchObject({ kind: "list", listType: "texts" });
+  });
+});

@@ -34,10 +34,18 @@
  * Attribute-extraction whitelist: href, src, alt, aria-label, title,
  * placeholder, value-on-input. CSS classes, ids, data-* are NEVER
  * extracted (structural).
+ *
+ * Repeated sibling groups (menu entries, link rows, bullet lists) run
+ * first, through `extract-module-lists.ts`: each group a shipped list
+ * type fits becomes ONE local `list` field and a `{{#field}}…{{/field}}`
+ * section, never numbered scalars. Groups no shipped type holds (cards
+ * of image + heading + text) keep the scalar rules below — the extractor
+ * never mints list types (see that file's header).
  */
 
 import type { ModuleField } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
+import { extractRepeatedLists } from "./extract-module-lists.js";
 
 export interface ExtractResult {
   readonly templatizedHtml: string;
@@ -110,13 +118,19 @@ function mintName(base: string, used: Set<string>, preferred?: string): string {
  * otherwise net-new names get minted from the inference table.
  */
 export function extractModuleStructure(
-  html: string,
+  sourceHtml: string,
   existingFields?: readonly ModuleField[],
 ): ExtractResult {
   const extractions: Extraction[] = [];
-  const fields: ModuleField[] = [];
-  const defaultValues: Record<string, unknown> = {};
   const usedNames = new Set<string>((existingFields ?? []).map((f) => f.name));
+  // List groups first: their entry text and hrefs become section keys
+  // (`{{label}}`, `{{link}}`), which the scalar pass below skips.
+  const lists = extractRepeatedLists(sourceHtml, usedNames);
+  const html = lists.html;
+  const fields: ModuleField[] = [...lists.fields];
+  const defaultValues: Record<string, unknown> = Object.fromEntries(
+    lists.fields.map((f) => [f.name, "default" in f ? f.default : undefined]),
+  );
 
   // Walk the source HTML, tracking element stack so we can apply per-
   // tag inference rules.

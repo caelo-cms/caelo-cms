@@ -109,6 +109,20 @@ import { listPluginsTool } from "./list-plugins.js";
 import { listTemplatesTool } from "./list-templates.js";
 import { listThemeHistoryTool } from "./list-theme-history.js";
 import { listThemesTool } from "./list-themes.js";
+import {
+  deleteListsManyTool,
+  getListTool,
+  listListsTool,
+  patchListItemsManyTool,
+  previewListSourceTool,
+  promoteLocalListTool,
+  upsertListsManyTool,
+} from "./list-tools.js";
+import {
+  deleteListTypesManyTool,
+  listListTypesTool,
+  upsertListTypesManyTool,
+} from "./list-type-tools.js";
 import { loadSkillTool } from "./load-skill.js";
 import { logPageEditTool } from "./log-page-edit.js";
 import { mapExternalPageTypesTool } from "./map-external-page-types.js";
@@ -127,6 +141,11 @@ import {
   listRateLimitProfilesTool,
 } from "./operator-dashboard-tools.js";
 import { optimizePageSeoTool } from "./optimize-page-seo.js";
+import {
+  deletePageTypesManyTool,
+  listPageTypesTool,
+  upsertPageTypesManyTool,
+} from "./page-type-tools.js";
 import { patchPageModuleFieldsTool } from "./patch-page-module-fields.js";
 import {
   listPluginGrantsTool,
@@ -665,6 +684,21 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(logImportEventsTool);
   registry.register(listSkillPinDefaultsTool);
   registry.register(setSkillPinDefaultsTool);
+  // Epic #1107 — lists (menus, footer links, categories, tags and any
+  // repeated data), their types, and page types (docs/lists.md §12).
+  registry.register(listListTypesTool);
+  registry.register(upsertListTypesManyTool);
+  registry.register(deleteListTypesManyTool);
+  registry.register(listListsTool);
+  registry.register(getListTool);
+  registry.register(upsertListsManyTool);
+  registry.register(patchListItemsManyTool);
+  registry.register(deleteListsManyTool);
+  registry.register(promoteLocalListTool);
+  registry.register(previewListSourceTool);
+  registry.register(listPageTypesTool);
+  registry.register(upsertPageTypesManyTool);
+  registry.register(deletePageTypesManyTool);
   return registry;
 }
 

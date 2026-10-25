@@ -1,0 +1,150 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Epic #1107 — shared pieces of the list / list type / page type tools
+ * (docs/lists.md §12): the op-wrapping write-tool factory, the compact
+ * text form of a list type the AI reads instead of its JSON, and the
+ * "menus are lists" guidance every list tool repeats.
+ *
+ * Why the tools take the op's own input schema: the list ops validate
+ * nested definitions (list types, entry trees, page types) whose shape is
+ * owned by `@caelo-cms/shared`. A hand-copied tool schema would drift from
+ * it the way the module `fields` schema once did (issue #106); using the
+ * op's schema and generating the JSON Schema from it (`generateInputSchema`
+ * at registration) keeps one source of truth. The recursive entry tree
+ * comes out as `$defs` + `$ref` at the schema root, which every provider
+ * accepts (docs/internal/google-models.md).
+ */
+
+import { execute } from "@caelo-cms/query-api";
+import type { FieldDef, ListTypeDef, NodeDef } from "@caelo-cms/shared";
+import type { z } from "zod";
+import { describeError, forwardRefusal } from "./_describe-error.js";
+import type { ToolDefinitionWithHandler } from "./dispatch.js";
+
+/**
+ * The words the operator uses for lists, said once for every list tool:
+ * menus, navigation, footer links, categories and tags ARE lists. Without
+ * it the AI looks for a menu tool, or hardcodes links into module HTML.
+ */
+export const LISTS_ALIAS =
+  "Menus, navigation, footer links, categories and tags are SHARED LISTS of a fitting list type (menu, links, categories, tags, or a custom type such as a mega menu) — there are no menu-specific tools. " +
+  "A list only ONE module shows stays LOCAL (its entries live in that module's `list` field); a list needed in more than one place, the site navigation, or a vocabulary pages are assigned to is SHARED. promote_local_list switches a local list to shared in one call.";
+
+/**
+ * How a module's `list` field works, said identically by every tool that
+ * authors module fields or fills their values (add_module, edit_module,
+ * update_modules_many, the content-value tools): the template syntax, the
+ * three bindings and their value shapes, and when local vs shared.
+ */
+export const LIST_FIELD_CONTRACT =
+  " **List fields** (`kind:'list'`, `listType` = a list type slug, list_list_types): repeating content — menu entries, footer links, feature bullets, FAQ rows — is ONE list field iterated with `{{#field}}…{{/field}}`; inside, the entry's own fields are the keys (`texts`: `{{text}}`; `links`: `{{label}}` `{{link}}`; `menu`: also `{{#children}}…{{/children}}` and `{{#is_current}}`; a source node: `{{#items}}<a href='{{link}}'>{{title}}</a>{{/items}}`). " +
+  "Bindings: **local** (default) — the entries are this placement's value, e.g. `[{node:'link', values:{label:'Home', link:{href:'/'}}}]` (on layout chrome: the field `default`); **shared** — `bind:'shared'` with `list:'caelo:list/<id>'` on the field (fixed for every placement — the site menu) or the placement value `caelo:list/<id>`; **source** — `bind:'source'` with `source:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}` or `{kind:'system', name:'breadcrumbs'}`, and the placement value may override the editable knobs (`{limit:5}`). " +
+  "Menus, navigation, footer links, categories and tags are SHARED (list_lists first — reuse the site's list, create it with upsert_lists_many); a list only this module shows stays LOCAL; promote_local_list switches when a second place needs it. Entries of a shared list are edited with patch_list_items_many, never through the module.";
+
+/**
+ * The list ops write their AI-actionable hints with op names ("create it
+ * with lists.upsert_many"); the model calls tools, so the tool layer says
+ * the tool. Longest names first so `lists.get` never eats a longer name.
+ */
+const OP_TO_TOOL: readonly (readonly [string, string])[] = [
+  ["list_types.upsert_many", "upsert_list_types_many"],
+  ["list_types.delete_many", "delete_list_types_many"],
+  ["list_types.list", "list_list_types"],
+  ["list_types.get", "list_list_types (with slug)"],
+  ["lists.patch_items_many", "patch_list_items_many"],
+  ["lists.upsert_many", "upsert_lists_many"],
+  ["lists.delete_many", "delete_lists_many"],
+  ["lists.promote_local", "promote_local_list"],
+  ["lists.preview_source", "preview_list_source"],
+  ["lists.list", "list_lists"],
+  ["lists.get", "get_list"],
+  ["page_types.upsert_many", "upsert_page_types_many"],
+  ["page_types.delete_many", "delete_page_types_many"],
+  ["page_types.list", "list_page_types"],
+  ["page_types.get", "list_page_types (with slug)"],
+];
+
+/** `text` with list-model op names replaced by the tools that call them. */
+export function toolNamesIn(text: string): string {
+  let out = text;
+  for (const [op, tool] of OP_TO_TOOL) out = out.split(op).join(tool);
+  return out;
+}
+
+/** Configuration of {@link makeOpTool}. */
+export interface MakeOpToolArgs<I> {
+  readonly name: string;
+  readonly description: string;
+  /** The op name, as a string literal at the call site (the parity guard scans for it). */
+  readonly opName: string;
+  /** The op's own input schema — the tool takes exactly what the op takes. */
+  readonly input: z.ZodType<I>;
+  /** Render the op's ok-value as the tool's text result. */
+  readonly format: (value: unknown, input: I) => string;
+}
+
+/**
+ * Build a tool that dispatches one op with the tool input unchanged. The
+ * JSON Schema is generated from `input` at registration (no hand copy).
+ */
+export function makeOpTool<I>(args: MakeOpToolArgs<I>): ToolDefinitionWithHandler<I> {
+  return {
+    name: args.name,
+    description: args.description,
+    schema: args.input,
+    handler: async (ctx, input, toolCtx) => {
+      const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, args.opName, input);
+      if (!r.ok) {
+        return {
+          ok: false,
+          content: `${args.name} failed: ${toolNamesIn(describeError(r.error))}`,
+          ...forwardRefusal(r.error),
+        };
+      }
+      return { ok: true, content: args.format(r.value, input), value: r.value };
+    },
+  };
+}
+
+function describeField(f: FieldDef): string {
+  const req = f.required ? "*" : "";
+  if (f.type === "term") return `${f.name}${req}:term(${f.list}${f.multiple ? ", many" : ""})`;
+  if (f.type === "select") return `${f.name}${req}:select(${f.options.join("|")})`;
+  return `${f.name}${req}:${f.type}`;
+}
+
+function describeSource(n: NodeDef): string {
+  const s = n.source;
+  if (!s) return "";
+  if (s.kind === "query") {
+    const d = Object.entries(s.defaults)
+      .map(([k, v]) => `${k}=${Array.isArray(v) ? v.join("+") : String(v)}`)
+      .join(" ");
+    return ` source=query(${d}; editable: ${s.editable.join(", ") || "none"}) → {{#items}}`;
+  }
+  return ` source=${s.kind}:${s.name} → {{#items}}`;
+}
+
+/**
+ * One line per node kind: `entry "Menu entry" {label*:text, link*:link}
+ * children "children" → entry; current_from=link`. Fields marked `*` are
+ * required. This is what the AI needs to write entries and templates; the
+ * full JSON stays in the result value.
+ */
+export function describeListType(def: ListTypeDef): string {
+  const lines = [
+    `${def.slug} (${def.role}) — ${def.name}: ${def.purpose}`,
+    `  top level: ${def.root.allow.join(" | ")}${def.root.max ? ` (max ${def.root.max})` : ""}${def.max_depth ? `; max_depth ${def.max_depth}` : ""}`,
+  ];
+  for (const [kind, n] of Object.entries(def.nodes)) {
+    const kids = n.children
+      ? ` children "${n.children.name}" → ${n.children.allow.join(" | ")}`
+      : "";
+    const current = n.current_from ? `; current_from=${n.current_from}` : "";
+    lines.push(
+      `  node ${kind} "${n.label}" {${n.fields.map(describeField).join(", ")}}${kids}${describeSource(n)}${current}`,
+    );
+  }
+  return lines.join("\n");
+}

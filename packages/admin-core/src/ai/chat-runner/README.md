@@ -21,7 +21,7 @@ directory, so every existing import path keeps resolving.
 | `tool-dispatch.ts` | `dispatchToolCall`: dedup cache lookup, plugin-vs-builtin routing, live subagent-event streaming, auto-recovery, result caching, multimodal image append. |
 | `context-blocks.ts` | `buildSystemContextBlocks`: orchestrates the `context/*` builders into the pre-catalogue block set + skill-engagement results. |
 | `context/page.ts` | Current-page + all-pages blocks. |
-| `context/catalog.ts` | Theme, structured sets, modules (+ usage signal), content library, media blocks. |
+| `context/catalog.ts` | Theme, modules (+ usage signal), content library, media blocks. |
 | `context/site.ts` | Layouts, site defaults, site identity blocks. |
 | `context/domains.ts` | Redirects, locales, pending proposals, users, roles, AI providers, domains blocks. |
 | `context/skills.ts` | Skill engagement + allowlist resolution; the post-catalogue blocks (subagents, plugin submissions, plugin promptContext). |
