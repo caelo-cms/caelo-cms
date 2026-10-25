@@ -84,7 +84,7 @@
 import Mustache from "mustache";
 import { MODULE_FIELD_SECTION_KINDS, type ModuleFieldKind } from "./content.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
-import type { SourceDef } from "./lists/list-type.js";
+import { type SourceDef, sourceDefSchema } from "./lists/list-type.js";
 import type { ListHolder, ListPageContext } from "./lists/resolve.js";
 import { stripCdataGuards } from "./strip-cdata.js";
 import { renderSections } from "./template-sections.js";
@@ -110,6 +110,36 @@ export interface TemplateField {
   readonly bind?: "local" | "shared" | "source";
   readonly list?: string;
   readonly source?: SourceDef;
+}
+
+/**
+ * Parse a stored `modules.fields` jsonb (array or JSON text) into the
+ * fields the engine renders with: name, kind (absent = `text`), default,
+ * and a `list` field's binding. A typo'd kind passes through as is — the
+ * engine reports it loudly (kind-mismatch) instead of the parser hiding
+ * it. Entries without a string name are skipped; they cannot be rendered.
+ */
+export function templateFieldsFromJson(raw: unknown): TemplateField[] {
+  const parsed = typeof raw === "string" ? (JSON.parse(raw) as unknown) : raw;
+  if (!Array.isArray(parsed)) return [];
+  const out: TemplateField[] = [];
+  for (const f of parsed) {
+    if (!f || typeof f !== "object") continue;
+    const o = f as Record<string, unknown>;
+    if (typeof o.name !== "string") continue;
+    out.push({
+      name: o.name,
+      kind: (typeof o.kind === "string" ? o.kind : "text") as ModuleFieldKind,
+      ...(o.default !== undefined ? { default: o.default } : {}),
+      ...(typeof o.listType === "string" ? { listType: o.listType } : {}),
+      ...(o.bind === "local" || o.bind === "shared" || o.bind === "source" ? { bind: o.bind } : {}),
+      ...(typeof o.list === "string" ? { list: o.list } : {}),
+      // A source that fails its schema stays absent: the resolver then
+      // reports `list-malformed:<field>[source]` instead of guessing.
+      ...(sourceDefSchema.safeParse(o.source).success ? { source: o.source as SourceDef } : {}),
+    });
+  }
+  return out;
 }
 
 /**

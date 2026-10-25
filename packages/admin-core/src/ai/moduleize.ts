@@ -31,7 +31,7 @@ import { z } from "zod";
 import { validateTemplatizedModule } from "../ops/content/extract-module-structure.js";
 import type { AIProvider } from "./provider.js";
 import {
-  MODULE_FIELDS_JSON_SCHEMA,
+  MODULE_FIELDS_STRUCTURED_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./tools/_module-fields-schema.js";
 
@@ -93,7 +93,7 @@ const MODULEIZE_JSON_SCHEMA = {
   required: ["html", "fields", "displayName", "kind"],
   properties: {
     html: { type: "string", minLength: 1 },
-    fields: MODULE_FIELDS_JSON_SCHEMA,
+    fields: MODULE_FIELDS_STRUCTURED_JSON_SCHEMA,
     displayName: { type: "string", minLength: 1, maxLength: 128 },
     // ONLY the two META props moduleize actually parses (see
     // moduleizeOutputSchema below) — `description` + `kind`. The full
@@ -122,9 +122,9 @@ const moduleizeOutputSchema = z.object({
 const SYSTEM = [
   "You convert raw module HTML into a reusable Caelo module. Do ONE thing:",
   "1. Find every value a non-technical operator would want to edit (headings, body copy, button labels, hrefs, image srcs, list items) and replace it in the HTML with a `{{field_name}}` placeholder.",
-  "2. Emit a `fields[]` entry for each placeholder with a SEMANTIC snake_case name that describes the VALUE (`hero_title`, `primary_cta_href`, `nav_items`), never the tag. Pick the right kind: text, richtext, url, image, number, boolean, link; repeating content is a LIST field (`text-list`, `link-list`, `module-list`) — never numbered scalars (label, label2, ...).",
-  '   LIST fields render in the html with MUSTACHE SECTIONS, never Handlebars — do NOT use `{{this}}`. A `text-list` iterates as `{{#field}}…{{.}}…{{/field}}` (`{{.}}` is the current string item); a `link-list` as `{{#field}}<a href="{{href}}">{{label}}</a>{{/field}}` (`{{href}}`/`{{label}}` are the per-item keys). E.g. a nav becomes `<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>` with ONE `nav_items` link-list field. The `{{#field}}`/`{{/field}}` section names + the enclosing field are the ONLY declared fields; `{{.}}`, `{{href}}`, `{{label}}` inside a section are per-item locals, not separate fields.',
-  "   EVERY field MUST carry `default` = the ORIGINAL value you replaced in the input HTML (the exact heading text, the exact href, ...). The raw copy must never be lost — placements without custom content render these defaults. A `link-list` default is an array of `{label, href}` with the real link text + URL; a `text-list` default is an array of strings.",
+  '2. Emit a `fields[]` entry for each placeholder with a SEMANTIC snake_case name that describes the VALUE (`hero_title`, `primary_cta_href`, `nav_items`), never the tag. Pick the right kind: text, richtext, url, image, number, boolean, link; repeating content is ONE `list` field (with `listType` "texts" for plain strings, "links" for label + link, "menu" for a nested menu) or a `module-list` — never numbered scalars (label, label2, ...).',
+  '   LIST fields render in the html with MUSTACHE SECTIONS, never Handlebars — do NOT use `{{this}}`. Inside `{{#field}}…{{/field}}` the keys are the list type\'s entry fields: a "texts" list iterates as `{{#field}}<li>{{text}}</li>{{/field}}`; a "links" list as `{{#field}}<a href="{{link}}">{{label}}</a>{{/field}}`; a "menu" entry\'s sub-entries iterate with `{{#children}}…{{/children}}`. E.g. a nav becomes `<nav>{{#nav_items}}<a href="{{link}}">{{label}}</a>{{/nav_items}}</nav>` with ONE `nav_items` field `{kind:"list", listType:"links"}`. The section name is the ONLY declared field; `{{text}}`, `{{label}}`, `{{link}}` inside a section are entry keys, not separate fields.',
+  '   EVERY field MUST carry `default` = the ORIGINAL value you replaced in the input HTML (the exact heading text, the exact href, ...). The raw copy must never be lost — placements without custom content render these defaults. A list default is an array of entries with the real text + URLs: "links" → `[{"node":"link","values":{"label":"Home","link":{"href":"/"}}}]`, "texts" → `[{"node":"text","values":{"text":"Fast"}}]`.',
   "3. Give the module a short displayName, a kind (chrome|hero|content|cta|utility), and a one-line description (what it is + when to use it).",
   "Every `{{field}}` in html MUST have a matching fields[] entry and vice-versa. Return a single JSON object matching the schema (html, fields, displayName, kind, description) — do not reply with prose.",
 ].join("\n");

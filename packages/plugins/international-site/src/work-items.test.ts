@@ -79,7 +79,15 @@ function world() {
     ],
     [DE]: [{ blockName: "main", position: 0, moduleSlug: "hero", values: { hero_title: "Hello" } }],
   };
-  const nav = { nav: [{ label: "About", href: "/about" }] };
+  const nav = {
+    nav: [
+      {
+        id: "00000000-0000-4000-9000-000000000001",
+        node: "link",
+        values: { label: "About", link: { href: "/about" } },
+      },
+    ],
+  };
   /** Every write, in order — the equivalence check compares these. */
   const writes: unknown[] = [];
 
@@ -135,7 +143,7 @@ function world() {
                 blockName: "header",
                 index: 0,
                 moduleName: "Main menu",
-                fields: [{ name: "nav", kind: "link-list" }],
+                fields: [{ name: "nav", kind: "list" }],
                 values: structuredClone(nav),
               },
             ],
@@ -207,7 +215,11 @@ const PAGE_ANSWER = {
   metaDescription: "Faire Tarife für jedes Team",
   slots: [{ slot: "s0", values: [{ field: "hero_title", value: "Hallo" }] }],
 };
-const CHROME_ANSWER = { targets: [{ target: "c0", strings: { "nav[0].label": "Über uns" } }] };
+const CHROME_ANSWER = {
+  targets: [
+    { target: "c0", strings: { "nav[00000000-0000-4000-9000-000000000001].label": "Über uns" } },
+  ],
+};
 
 interface WorkItemResult {
   workItem: {
@@ -412,7 +424,9 @@ describe("delegated chrome", () => {
     expect(w.aiCalls()).toBe(0);
     expect(r.offered).toBe(1);
     expect(r.workItem.apply.args.items[0]).toMatchObject({ kind: "chrome", localeCode: "de" });
-    expect(r.workItem.instructions.user).toContain("nav[0].label");
+    expect(r.workItem.instructions.user).toContain(
+      "nav[00000000-0000-4000-9000-000000000001].label",
+    );
 
     const out = (await op("apply_translations")(w.ctx({ delegated: true }), {
       items: [answerFor(r, CHROME_ANSWER)],
@@ -427,7 +441,15 @@ describe("delegated chrome", () => {
       mode: "translated",
       module_id: null,
       translation_status: "up_to_date",
-      values: { nav: [{ label: "Über uns", href: "/about" }] },
+      values: {
+        nav: [
+          {
+            id: "00000000-0000-4000-9000-000000000001",
+            node: "link",
+            values: { label: "Über uns", link: { href: "/about" } },
+          },
+        ],
+      },
     });
 
     // Up to date now: nothing to hand out.
@@ -467,7 +489,9 @@ describe("delegated chrome", () => {
     expect(w.aiCalls()).toBe(1);
     // #992 — the call is constrained to exactly the offered target and path.
     expect(JSON.stringify(w.schemas[0])).toContain('"enum":["c0"]');
-    expect(JSON.stringify(w.schemas[0])).toContain('"required":["nav[0].label"]');
+    expect(JSON.stringify(w.schemas[0])).toContain(
+      '"required":["nav[00000000-0000-4000-9000-000000000001].label"]',
+    );
     expect(r).toEqual({ translated: 1, upToDate: 0, skippedIndependent: 0, nothingToTranslate: 0 });
   });
 
@@ -479,7 +503,15 @@ describe("delegated chrome", () => {
       locale_code: "de",
       mode: "independent",
       module_id: "44444444-4444-4444-8444-444444444444",
-      values: { nav: [{ label: "Firma", href: "/about" }] },
+      values: {
+        nav: [
+          {
+            id: "00000000-0000-4000-9000-000000000001",
+            node: "link",
+            values: { label: "Firma", link: { href: "/about" } },
+          },
+        ],
+      },
       translation_status: "up_to_date",
       source_hash: null,
     });
@@ -507,7 +539,15 @@ describe("delegated chrome", () => {
       mode: "translated",
       translation_status: "up_to_date",
       module_id: null,
-      values: { nav: [{ label: "Über uns", href: "/about" }] },
+      values: {
+        nav: [
+          {
+            id: "00000000-0000-4000-9000-000000000001",
+            node: "link",
+            values: { label: "Über uns", link: { href: "/about" } },
+          },
+        ],
+      },
     });
   });
 });

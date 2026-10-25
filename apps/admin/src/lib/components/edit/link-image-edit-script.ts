@@ -134,7 +134,7 @@ export const LINK_IMAGE_EDIT_SCRIPT = `
       if (!m) continue;
       var a = placementOf(m[1]);
       var p = parsePath(m[3]);
-      if (a.blockName === at.blockName && a.position === at.position && p.field === path.field && p.index === path.index) {
+      if (a.blockName === at.blockName && a.position === at.position && p.field === path.field && p.item === path.item && p.key === path.key) {
         return true;
       }
     }

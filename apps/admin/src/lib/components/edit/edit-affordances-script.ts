@@ -289,7 +289,8 @@ export const EDIT_AFFORDANCES_SCRIPT = `
       msg.blockName = ref.blockName;
       msg.position = ref.position;
       msg.field = ref.field;
-      if (ref.index !== undefined) msg.index = ref.index;
+      if (ref.item !== undefined) msg.item = ref.item;
+      if (ref.key !== undefined) msg.key = ref.key;
     }
     if (ask) msg.ask = true;
     postToEditor(msg);

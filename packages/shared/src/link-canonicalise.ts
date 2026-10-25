@@ -587,6 +587,11 @@ function canonicaliseFieldValue(
   urlNames: ReadonlySet<string> | undefined,
 ): unknown {
   if (field && NESTED_KINDS.has(field.kind)) return value;
+  // A list (epic #1107) is never a URL as a whole, whatever its name or
+  // where its section sits: its entries decide per value key — a `link`
+  // value's `href` canonicalises, a label stays text. A shared list's
+  // `caelo:list/<id>` is no link at all.
+  if (field?.kind === "list") return canonicaliseJsonLinks(value, run, where, false);
   const asUrl =
     (field !== undefined && URL_KINDS.has(field.kind)) ||
     isLinkKeyName(name) ||

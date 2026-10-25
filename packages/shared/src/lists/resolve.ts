@@ -62,6 +62,21 @@ import {
 } from "./resolve-values.js";
 import type { ScopeEntry, ScopeValue } from "./scope.js";
 
+/** Prefixes of the list failure markers (`docs/lists.md` §8). */
+const LIST_MARKER_PREFIXES = [
+  "list-unbound:",
+  "list-missing:",
+  "list-type-missing:",
+  "list-source-unavailable:",
+  "list-malformed:",
+  "list-context-unavailable:",
+] as const;
+
+/** True for a list failure marker — the editor's missing-content surface shows these. */
+export function isListFailureMarker(marker: string): boolean {
+  return LIST_MARKER_PREFIXES.some((p) => marker.startsWith(p));
+}
+
 /** What the resolver needs from a module `list` field (`docs/lists.md` §7). */
 export interface ListFieldSpec {
   readonly name: string;

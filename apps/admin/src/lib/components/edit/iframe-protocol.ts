@@ -88,8 +88,12 @@ const elementReferencedSchema = z.object({
   blockName: z.string().min(1).max(80).optional(),
   position: z.number().int().nonnegative().optional(),
   field: z.string().min(1).max(200).optional(),
-  /** List item index for a `text-list` / `link-list` field. */
-  index: z.number().int().nonnegative().optional(),
+  /** Entry id and entry field of a local `list` field (epic #1107). */
+  item: z.string().uuid().optional(),
+  key: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]{0,63}$/)
+    .optional(),
   /** Ask AI: the parent focuses the chat composer for the operator's instruction. */
   ask: z.literal(true).optional(),
 });
@@ -97,10 +101,14 @@ const elementReferencedSchema = z.object({
 /** One changed value of a placement, as `page_module_content.patch_fields` takes it. */
 const fieldEditSchema = z.object({
   field: z.string().min(1).max(200),
-  /** List item of a `text-list` / `link-list` field. */
-  index: z.number().int().nonnegative().optional(),
-  /** Part of a `link-list` item: its text (default) or its target. */
-  part: z.enum(["label", "href"]).optional(),
+  /** Entry id and entry field of a local `list` field (epic #1107). */
+  item: z.string().uuid().optional(),
+  key: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]{0,63}$/)
+    .optional(),
+  /** `href`: the target of a link value instead of its text. */
+  part: z.literal("href").optional(),
   text: z.string().max(100_000),
 });
 
