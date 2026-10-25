@@ -164,6 +164,27 @@ describe("lists — shared lists, children, {{>recurse}}", () => {
     );
   });
 
+  it("{{>recurse}} is bounded: entries deeper than the type's max_depth are refused, not drawn", () => {
+    const deep = (n: number): Record<string, unknown> => ({
+      id: uuid(100 + n),
+      node: "entry",
+      values: { label: `L${n}` },
+      ...(n < 4 ? { children: [deep(n + 1)] } : {}),
+    });
+    const fields: TemplateField[] = [{ name: "nav", kind: "list", listType: "menu" }];
+    const html = "{{#nav}}<li>{{label}}<ul>{{>recurse}}</ul></li>{{/nav}}";
+    // menu: max_depth 3 — three levels render, a fourth is data the type forbids.
+    const ok = render(html, fields, { nav: [deep(2)] });
+    expect(ok.html.replace(/ data-caelo-list-item="[^"]*"/g, "")).toBe(
+      "<li>L2<ul><li>L3<ul><li>L4<ul></ul></li></ul></li></ul></li>",
+    );
+    const tooDeep = render(html, fields, { nav: [deep(1)] });
+    expect(tooDeep.html).toBe(html);
+    expect(tooDeep.missingSlots).toEqual([
+      "list-malformed:nav[items[0].children[0].children[0].children[0]]",
+    ]);
+  });
+
   it("system keys: id node index depth first last", () => {
     const r = render(
       "{{#menu}}{{index}}:{{node}}:{{depth}}:{{#first}}F{{/first}}{{#last}}L{{/last}}{{#children}}/{{depth}}{{id}}{{/children}};{{/menu}}",
