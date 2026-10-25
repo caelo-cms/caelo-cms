@@ -39,7 +39,7 @@ nodes and page-type properties.
 | `boolean` | boolean | `{{#f}}…{{/f}}` | |
 | `number` | number | `{{f}}` | `min`, `max` |
 | `date` | ISO date `YYYY-MM-DD` | `{{f}}` = ISO, `{{f.formatted}}` (site language) | |
-| `icon` | icon name (`[a-z0-9-]+`) | `{{f}}` = name, `{{f.svg}}` (inline SVG from the theme icon set, else marker) | |
+| `icon` | icon name (`[a-z0-9-]+`) | `{{f}}` = name | the module maps names to its own sprite / icon font |
 | `module` | `{ moduleId, contentInstanceId }` | `{{>f}}` | `accepts?: string[]` module types; the entry is the content holder, so this works in site chrome |
 | `term` | `string[]` of `caelo:term/<listId>/<itemId>` | `{{#f}}{{name}}{{/f}}` iterates the referenced vocabulary entries | `list: <vocabulary list slug>`, `multiple: boolean` |
 
@@ -264,7 +264,7 @@ and pushes `field-not-declared:<f>.<key>`.
 
 New markers: `list-unbound:<field>`, `list-missing:<listId>`,
 `list-type-missing:<slug>`, `list-source-unavailable:<name> plugin=<slug>`,
-`list-malformed:<field>[<path>]`, `icon-missing:<name>`.
+`list-malformed:<field>[<path>]`.
 
 ## 9. Translation: core enables, the plugin translates
 
