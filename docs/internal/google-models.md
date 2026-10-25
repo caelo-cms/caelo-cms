@@ -47,7 +47,7 @@ allowed values described instead of an unsupported enum. String enums are
 preserved. Caelo's canonical schemas, coercion and strict dispatch validation
 are unchanged; an invalid redirect status still fails validation. Nullable type
 arrays are represented as schema branches so object properties stay attached
-to the object type. The structured-set tool declares its object item shape
+to the object type. The list tools declare their recursive entry shape
 without restoring a top-level discriminator union.
 
 The opt-in `e2e-livedit/google-pictbook.browser.ts` exercises the live Google
