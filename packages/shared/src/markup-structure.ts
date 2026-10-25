@@ -40,6 +40,14 @@ export interface MarkupNode {
   readonly classes: readonly string[];
   /** The `data-caelo-module-id` the composer stamps on every module root. */
   readonly moduleId: string | null;
+  /** The `href` attribute (links), as written. */
+  readonly href: string | null;
+  /**
+   * The `data-caelo-list-item` the template engine stamps on a rendered
+   * list entry (docs/lists.md §13): `<listId>/<itemId>` for a shared
+   * list, `instance/…` / `local/…` for a module's local list.
+   */
+  readonly listItem: string | null;
   readonly children: MarkupNode[];
   readonly parent: MarkupNode | null;
 }
@@ -76,6 +84,8 @@ export function parseMarkup(html: string): MarkupNode[] {
           tag,
           classes: splitClasses(attribs.class),
           moduleId: attribs["data-caelo-module-id"] ?? null,
+          href: attribs.href ?? null,
+          listItem: attribs["data-caelo-list-item"] ?? null,
           children: [],
           parent,
         };

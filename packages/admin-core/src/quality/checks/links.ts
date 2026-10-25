@@ -127,6 +127,7 @@ interface Occurrence {
   readonly navigational: boolean;
   readonly moduleId: string | null;
   readonly pluginSlug: string | null;
+  readonly listItem: string | null;
   readonly target: SameSiteUrl;
 }
 
