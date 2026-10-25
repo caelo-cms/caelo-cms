@@ -167,17 +167,24 @@ describe("reference integrity — covered surfaces", () => {
         },
       ],
     });
-    // Layout chrome: a header module whose link-list DEFAULT links the page.
+    // Layout chrome: a header module whose list DEFAULT links the page.
     const header = await run<{ moduleId: string }>(SYS, "modules.create", {
       slug: `${PFX}-header`,
       displayName: "RIF Header",
-      html: `<nav>{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}</nav>`,
+      html: `<nav>{{#nav_links}}<a href="{{link}}">{{label}}</a>{{/nav_links}}</nav>`,
       fields: [
         {
           name: "nav_links",
-          kind: "link-list",
+          kind: "list",
+          listType: "links",
           label: "Nav",
-          default: [{ label: "Gone", href: `/${PFX}-gone` }],
+          default: [
+            {
+              id: "00000000-0000-4000-9000-000000000001",
+              node: "link",
+              values: { label: "Gone", link: { href: `/${PFX}-gone` } },
+            },
+          ],
         },
       ],
     });

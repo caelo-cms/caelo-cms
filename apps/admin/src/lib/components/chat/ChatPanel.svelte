@@ -95,7 +95,9 @@
     blockName?: string;
     position?: number;
     field?: string;
-    index?: number;
+    /** Entry id + entry field, for a local list field (epic #1107). */
+    item?: string;
+    key?: string;
     /** When true the chip rides every send within this session (P6.7). */
     pinned?: boolean;
   }

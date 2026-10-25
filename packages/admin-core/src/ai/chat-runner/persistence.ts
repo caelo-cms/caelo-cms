@@ -80,7 +80,7 @@ function chipLines(c: ChatChip): string {
   // set_page_module_content takes.
   const field =
     c.field && c.blockName !== undefined && c.position !== undefined
-      ? `, placement=(blockName=${c.blockName}, position=${c.position}), field=${c.field}${c.index !== undefined ? `[${c.index}]` : ""}`
+      ? `, placement=(blockName=${c.blockName}, position=${c.position}), field=${c.field}${c.item !== undefined ? `, entry=${c.item}${c.key ? `, key=${c.key}` : ""}` : ""}`
       : "";
   return [
     `  - ${c.label} (module=${c.moduleId}${element}${field})`,

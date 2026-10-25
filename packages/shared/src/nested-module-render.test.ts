@@ -19,6 +19,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { fixtureData, INSTANCE, ITEM, LIST, MODULE, PAGE } from "./lists/list-fixtures.test.js";
+import { createListRenderContext } from "./lists/resolve.js";
 import {
   collectNestedRefs,
   type NestedContentInstanceResource,
@@ -288,148 +290,176 @@ describe("renderModuleWithContent — empty optional module field (#1041)", () =
   });
 });
 
-describe("renderModuleWithContent — list-of-primitive slots", () => {
-  it("text-list iterates {{.}} per string element", () => {
+describe("renderModuleWithContent — list fields (epic #1107)", () => {
+  const lists = createListRenderContext(fixtureData()).forPage(PAGE.home);
+  const T = (n: number) => `00000000-0000-4000-9000-${String(n).padStart(12, "0")}`;
+  const texts = (...t: string[]) =>
+    t.map((text, i) => ({ id: T(i + 1), node: "text", values: { text } }));
+  const PARENT_CI = "00000000-0000-4000-8000-00000000bbb1";
+
+  it("iterates a local list and addresses entries by the content instance", () => {
     const resolver = buildResolver(
       [
         {
           moduleId: PARENT_MOD_ID,
           slug: "tag-cloud",
-          html: "<div>{{#tags}}<span>{{.}}</span>{{/tags}}</div>",
+          html: "<div>{{#tags}}<span>{{text}}</span>{{/tags}}</div>",
           css: "",
           js: "",
-          fields: [{ name: "tags", kind: "text-list" }],
+          fields: [{ name: "tags", kind: "list", listType: "texts" }],
         },
       ],
       [
         {
-          id: PARENT_CI_ID,
+          id: PARENT_CI,
           moduleId: PARENT_MOD_ID,
-          values: { tags: ["alpha", "beta", "gamma"] },
+          values: { tags: texts("alpha", "beta") },
           deletedAt: null,
         },
       ],
     );
-    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
-    expect(r.html).toBe("<div><span>alpha</span><span>beta</span><span>gamma</span></div>");
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI, resolver, undefined, lists);
+    expect(r.html).toBe(
+      `<div><span data-caelo-list-item="instance/${PARENT_CI}/tags/${T(1)}">alpha</span>` +
+        `<span data-caelo-list-item="instance/${PARENT_CI}/tags/${T(2)}">beta</span></div>`,
+    );
     expect(r.missingSlots).toEqual([]);
   });
 
-  it("text-list also accepts the {{item}} alias", () => {
-    const resolver = buildResolver(
-      [
-        {
-          moduleId: PARENT_MOD_ID,
-          slug: "bullets",
-          html: "<ul>{{#bullets}}<li>{{item}}</li>{{/bullets}}</ul>",
-          css: "",
-          js: "",
-          fields: [{ name: "bullets", kind: "text-list" }],
-        },
-      ],
-      [
-        {
-          id: PARENT_CI_ID,
-          moduleId: PARENT_MOD_ID,
-          values: { bullets: ["one", "two"] },
-          deletedAt: null,
-        },
-      ],
-    );
-    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
-    expect(r.html).toBe("<ul><li>one</li><li>two</li></ul>");
-  });
-
-  it("text-list falls back to field.default when values entry is absent", () => {
+  it("an edit-marked copy keeps the real instance as the entries' address", () => {
     const resolver = buildResolver(
       [
         {
           moduleId: PARENT_MOD_ID,
           slug: "tag-cloud",
-          html: "<div>{{#tags}}<span>{{.}}</span>{{/tags}}</div>",
+          html: "{{#tags}}<i>{{text}}</i>{{/tags}}",
+          css: "",
+          js: "",
+          fields: [{ name: "tags", kind: "list", listType: "texts" }],
+        },
+      ],
+      [
+        {
+          id: "edit:content#0",
+          moduleId: PARENT_MOD_ID,
+          values: { tags: texts("a") },
+          deletedAt: null,
+          listHolderId: PARENT_CI,
+        },
+      ],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, "edit:content#0", resolver, undefined, lists);
+    expect(r.html).toContain(`instance/${PARENT_CI}/tags/`);
+  });
+
+  it("falls back to the field default when the values entry is absent", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "tag-cloud",
+          html: "<div>{{#tags}}{{text}};{{/tags}}</div>",
+          css: "",
+          js: "",
+          fields: [
+            { name: "tags", kind: "list", listType: "texts", default: texts("alpha", "beta") },
+          ],
+        },
+      ],
+      [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: {}, deletedAt: null }],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver, undefined, lists);
+    expect(r.html).toBe("<div>alpha;beta;</div>");
+  });
+
+  it("renders a list entry's embedded module through the recursion (depth + cycle guards apply)", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "mega",
+          html: "<nav>{{#mega}}{{#columns}}{{#is_promo}}<div>{{>teaser}}</div>{{/is_promo}}{{/columns}}{{/mega}}</nav>",
           css: "",
           js: "",
           fields: [
             {
-              name: "tags",
-              kind: "text-list",
-              default: ["alpha", "beta"],
+              name: "mega",
+              kind: "list",
+              listType: "mega-menu",
+              bind: "shared",
+              list: `caelo:list/${LIST.mega}`,
+            },
+          ],
+        },
+        {
+          moduleId: MODULE.teaser,
+          slug: "teaser",
+          html: "<p>{{title}}</p>",
+          css: "",
+          js: "",
+          fields: [{ name: "title", kind: "text" }],
+        },
+      ],
+      [
+        { id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: {}, deletedAt: null },
+        { id: INSTANCE.teaser, moduleId: MODULE.teaser, values: { title: "Try" }, deletedAt: null },
+      ],
+    );
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver, undefined, lists);
+    expect(r.html).toBe(
+      `<nav><div data-caelo-list-item="${LIST.mega}/${ITEM.promo}"><p ${tag(MODULE.teaser)}>Try</p></div></nav>`,
+    );
+    expect(r.touchedModuleIds.has(MODULE.teaser)).toBe(true);
+    expect(r.missingSlots).toEqual([]);
+  });
+
+  it("a broken embedded module is attributed to the list entry", () => {
+    const resolver = buildResolver(
+      [
+        {
+          moduleId: PARENT_MOD_ID,
+          slug: "mega",
+          html: "{{#mega}}{{#columns}}{{#is_promo}}{{>teaser}}{{/is_promo}}{{/columns}}{{/mega}}",
+          css: "",
+          js: "",
+          fields: [
+            {
+              name: "mega",
+              kind: "list",
+              listType: "mega-menu",
+              bind: "shared",
+              list: `caelo:list/${LIST.mega}`,
             },
           ],
         },
       ],
       [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: {}, deletedAt: null }],
     );
-    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
-    expect(r.html).toBe("<div><span>alpha</span><span>beta</span></div>");
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver, undefined, lists);
+    expect(r.failures).toEqual([
+      { field: `mega[${ITEM.promo}].teaser`, reason: `module-missing:${MODULE.teaser}` },
+    ]);
   });
 
-  it("link-list iterates {{label}} + {{href}} per element", () => {
-    const resolver = buildResolver(
-      [
-        {
-          moduleId: PARENT_MOD_ID,
-          slug: "primary-nav",
-          html: '<nav>{{#menu}}<a href="{{href}}">{{label}}</a>{{/menu}}</nav>',
-          css: "",
-          js: "",
-          fields: [{ name: "menu", kind: "link-list" }],
-        },
-      ],
-      [
-        {
-          id: PARENT_CI_ID,
-          moduleId: PARENT_MOD_ID,
-          values: {
-            menu: [
-              { label: "Home", href: "/" },
-              { label: "About", href: "/about" },
-              { label: "Contact", href: "/contact" },
+  it("collectNestedRefs finds module fields inside local list entries", () => {
+    expect(
+      collectNestedRefs({
+        mega: [
+          {
+            id: T(1),
+            node: "entry",
+            values: {},
+            children: [
+              {
+                id: T(2),
+                node: "promo",
+                values: { teaser: { moduleId: MODULE.teaser, contentInstanceId: INSTANCE.teaser } },
+              },
             ],
           },
-          deletedAt: null,
-        },
-      ],
-    );
-    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
-    expect(r.html).toBe(
-      '<nav><a href="/">Home</a><a href="/about">About</a><a href="/contact">Contact</a></nav>',
-    );
-    expect(r.missingSlots).toEqual([]);
-  });
-
-  it("link-list malformed element gets a per-element marker, others render", () => {
-    const resolver = buildResolver(
-      [
-        {
-          moduleId: PARENT_MOD_ID,
-          slug: "primary-nav",
-          html: '<nav>{{#menu}}<a href="{{href}}">{{label}}</a>{{/menu}}</nav>',
-          css: "",
-          js: "",
-          fields: [{ name: "menu", kind: "link-list" }],
-        },
-      ],
-      [
-        {
-          id: PARENT_CI_ID,
-          moduleId: PARENT_MOD_ID,
-          values: {
-            menu: [
-              { label: "Home", href: "/" },
-              { label: "missing-href" }, // malformed
-              { label: "About", href: "/about" },
-            ],
-          },
-          deletedAt: null,
-        },
-      ],
-    );
-    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
-    expect(r.html).toContain('<a href="/">Home</a>');
-    expect(r.html).toContain('<a href="/about">About</a>');
-    expect(r.html).toContain("link-list-malformed");
-    expect(r.missingSlots.some((s) => s.startsWith("link-list-malformed"))).toBe(true);
+        ],
+      }),
+    ).toEqual([{ moduleId: MODULE.teaser, contentInstanceId: INSTANCE.teaser }]);
   });
 });
 
@@ -668,7 +698,7 @@ describe("renderModuleWithContent — engine-routing parity (#71)", () => {
   });
 
   it("kind-mismatch on {{>name}} against a list field emits the exact legacy string", () => {
-    const expected = "kind-mismatch:items expected=module actual=text-list";
+    const expected = "kind-mismatch:items expected=module actual=list";
     const resolver = buildResolver(
       [
         {
@@ -677,7 +707,7 @@ describe("renderModuleWithContent — engine-routing parity (#71)", () => {
           html: "<aside>{{>items}}</aside>",
           css: "",
           js: "",
-          fields: [{ name: "items", kind: "text-list" }],
+          fields: [{ name: "items", kind: "list", listType: "texts" }],
         },
       ],
       [{ id: PARENT_CI_ID, moduleId: PARENT_MOD_ID, values: {}, deletedAt: null }],
@@ -713,32 +743,36 @@ describe("renderModuleWithContent — engine-routing parity (#71)", () => {
     expect(r.missingSlots).toContain("module-ref-malformed:hero");
   });
 
-  it("text-list-malformed per element preserves the exact legacy marker", () => {
+  it("list-malformed names the entry path and keeps the section raw", () => {
     const resolver = buildResolver(
       [
         {
           moduleId: PARENT_MOD_ID,
-          slug: "text-list-malformed",
-          html: "<ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>",
+          slug: "list-malformed",
+          html: "<ul>{{#items}}<li>{{text}}</li>{{/items}}</ul>",
           css: "",
           js: "",
-          fields: [{ name: "items", kind: "text-list" }],
+          fields: [{ name: "items", kind: "list", listType: "texts" }],
         },
       ],
       [
         {
           id: PARENT_CI_ID,
           moduleId: PARENT_MOD_ID,
-          values: { items: ["a", { bogus: true }, "c"] },
+          values: {
+            items: [
+              { id: "00000000-0000-4000-9000-000000000001", node: "text", values: { text: "a" } },
+              { bogus: true },
+            ],
+          },
           deletedAt: null,
         },
       ],
     );
-    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver);
-    expect(r.html).toContain("<li>a</li>");
-    expect(r.html).toContain("<li>c</li>");
-    expect(r.html).toContain("<!-- caelo:missing reason=text-list-malformed items[1] -->");
-    expect(r.missingSlots).toContain("text-list-malformed:items[1]");
+    const lists = createListRenderContext(fixtureData()).forPage(null);
+    const r = renderModuleWithContent(PARENT_MOD_ID, PARENT_CI_ID, resolver, undefined, lists);
+    expect(r.html).toBe("<ul>{{#items}}<li>{{text}}</li>{{/items}}</ul>");
+    expect(r.missingSlots).toContain("list-malformed:items[items[1]]");
   });
 
   it("module-list-malformed per element preserves the exact legacy marker", () => {

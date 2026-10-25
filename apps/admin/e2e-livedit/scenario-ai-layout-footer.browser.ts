@@ -178,7 +178,7 @@ function snapshotFooter(): FooterSnap {
           let navLinksInHtml = false;
           for (const r of rows) {
             const fields = parseFields(r.fields);
-            if (fields.some((f) => f.kind === 'link-list')) hasLinkListField = true;
+            if (fields.some((f) => f.kind === 'list')) hasLinkListField = true;
             // Inline-anchor path: the model authored the fixed nav as literal
             // <a> tags rather than a link-list field. The distinctive labels
             // (About/Contact) appearing in the module HTML proves the nav is

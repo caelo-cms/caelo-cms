@@ -423,6 +423,10 @@ async function runGenerator(
      *  static-generator filters its page query to these ids only,
      *  re-baking just the changed pages. */
     changedPageIds?: ReadonlyArray<string>;
+    /** Epic #1107 — changed shared lists / list types: the generator adds
+     *  every page whose render dependencies they reach. */
+    changedListIds?: ReadonlyArray<string>;
+    changedListTypeIds?: ReadonlyArray<string>;
     /** #650 — render this origin instead of the stored site URL. */
     siteBaseUrlOverride?: string;
     /**
@@ -474,6 +478,12 @@ async function runGenerator(
         repoRoot: args.repoRoot,
         ...(args.changedPageIds && args.changedPageIds.length > 0
           ? { changedPageIds: [...args.changedPageIds] }
+          : {}),
+        ...(args.changedListIds && args.changedListIds.length > 0
+          ? { changedListIds: [...args.changedListIds] }
+          : {}),
+        ...(args.changedListTypeIds && args.changedListTypeIds.length > 0
+          ? { changedListTypeIds: [...args.changedListTypeIds] }
           : {}),
         ...(args.siteBaseUrlOverride ? { siteBaseUrlOverride: args.siteBaseUrlOverride } : {}),
         ...(args.syncCurrent === false ? { syncCurrent: false } : {}),
@@ -587,6 +597,14 @@ export const triggerDeployOp = defineOperation({
      *  Auto-redeploy passes this from the audit_events tail; manual
      *  triggers omit it for full-site rebuild. */
     changedPageIds: z.array(z.string().uuid()).optional(),
+    /**
+     * Epic #1107 — shared lists and list types changed since the last
+     * build. With them (or changedPageIds) the build is incremental: the
+     * generator rebuilds the changed pages plus every page whose recorded
+     * render dependencies the change reaches (`render-deps.json`).
+     */
+    changedListIds: z.array(z.string().uuid()).optional(),
+    changedListTypeIds: z.array(z.string().uuid()).optional(),
     /**
      * #553 — a human's explicit decision to build PRODUCTION although the
      * staged build's quality check failed (no result). Recorded on the
@@ -886,6 +904,8 @@ export const triggerDeployOp = defineOperation({
       target: effectiveTarget,
       repoRoot,
       changedPageIds: input.changedPageIds,
+      changedListIds: input.changedListIds,
+      changedListTypeIds: input.changedListTypeIds,
       ...(stagingOrigin ? { siteBaseUrlOverride: stagingOrigin } : {}),
       syncCurrent: publisher.servesCurrentDir,
     });

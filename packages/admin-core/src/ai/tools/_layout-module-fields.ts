@@ -43,6 +43,9 @@ export interface UnrenderableLayoutField {
  *    `default` to fall back to either, so they can never render here.
  *  - any other field kind authored WITHOUT a `default` — chrome renders from
  *    defaults, so a missing default ships a raw `{{name}}` placeholder.
+ *    Except a `list` field that needs no stored value: `bind: "shared"` with
+ *    a fixed `list` (the site menu) and `bind: "source"` (breadcrumbs, a
+ *    page query) render on every page without one.
  *
  * A module with no fields (fully static HTML) or fields that all carry
  * defaults returns `[]`. Reserved theme placeholders (`{{theme_logo_url}}` …)
@@ -58,8 +61,14 @@ export function findUnrenderableLayoutFields(
     if (field.kind === "module" || field.kind === "module-list") {
       problems.push({
         name: field.name,
-        reason: `\`${field.name}\` (kind \`${field.kind}\`) needs a content_instance to fill it, and layout/template placements have NO content binding — model the sub-content as a \`link-list\`/\`text-list\` with a \`default\`, or inline it directly in the HTML`,
+        reason: `\`${field.name}\` (kind \`${field.kind}\`) needs a content_instance to fill it, and layout/template placements have NO content binding — model the sub-content as a \`list\` field (a shared list for navigation, or a local list with a \`default\`), or inline it directly in the HTML`,
       });
+      continue;
+    }
+    if (
+      field.kind === "list" &&
+      (field.bind === "source" || (field.bind === "shared" && field.list))
+    ) {
       continue;
     }
     // Every other kind supports a `default`. On chrome it is REQUIRED, because
@@ -93,7 +102,7 @@ export function unrenderableLayoutFieldsError(
     problems.map((p) => `- ${p.reason}`).join("\n") +
     `\n\nRe-call \`${toolName}\` with each field carrying a \`default\` holding the real content, e.g. ` +
     `\`{name:"copyright",kind:"text",label:"Copyright",default:"© 2026 Acme. All rights reserved."}\` and ` +
-    `\`{name:"nav_links",kind:"link-list",label:"Footer navigation",default:[{label:"Home",href:"/"},{label:"About",href:"/about"}]}\` (each internal \`href\` must be the path of a page that exists). ` +
+    `\`{name:"nav_links",kind:"list",listType:"menu",bind:"shared",list:"caelo:list/<id>",label:"Footer navigation"}\` for navigation (a shared list, written with upsert_lists_many — every internal \`href\` must be the path of a page that exists). ` +
     `Do NOT call create_content_instance / set_placement_content for ${surface} chrome.`
   );
 }

@@ -50,15 +50,41 @@ export function instanceTargetKey(contentInstanceId: string): string {
 
 /** One translatable string inside a values object, addressed by path. */
 export interface TranslatableString {
-  /** `field`, `field[2]` (text-list) or `field[2].label` (link-list). */
+  /** `field`, or `field[<entry id>].<key>` for a local list entry's text. */
   readonly path: string;
   readonly text: string;
 }
 
 /**
+ * Entry keys of a local `list` field that carry visible text. The values
+ * reach this module without their list type (a placement's values only),
+ * so the text keys of the shipped types and the common text names stand
+ * in until list values are translated by address through the
+ * `list-resolve` overlays (epic #1107 part F), which know every field's
+ * type.
+ */
+const LIST_TEXT_KEYS = new Set(["text", "label", "title", "heading", "name", "description"]);
+
+interface ListEntryLike {
+  readonly id?: unknown;
+  readonly values?: Readonly<Record<string, unknown>>;
+  readonly children?: unknown;
+}
+
+/** Depth-first visit of local list entries (`{ id, values, children }`). */
+function walkEntries(items: unknown, visit: (entry: ListEntryLike & { id: string }) => void): void {
+  if (!Array.isArray(items)) return;
+  for (const raw of items as ListEntryLike[]) {
+    if (!raw || typeof raw.id !== "string") continue;
+    visit(raw as ListEntryLike & { id: string });
+    walkEntries(raw.children, visit);
+  }
+}
+
+/**
  * Every human-readable string in a placement's values: text/richtext
- * fields, text-list items and link-list labels. Addresses, numbers and
- * nested module references are not text — a placement with none of
+ * fields and the text values of local list entries. Addresses, numbers
+ * and nested module references are not text — a placement with none of
  * these needs no locale variant.
  */
 export function translatableStrings(
@@ -70,17 +96,12 @@ export function translatableStrings(
     const v = values[f.name];
     if (TEXT_KINDS.has(f.kind) && typeof v === "string" && v.trim().length > 0) {
       out.push({ path: f.name, text: v });
-    } else if (f.kind === "text-list" && Array.isArray(v)) {
-      v.forEach((item, i) => {
-        if (typeof item === "string" && item.trim().length > 0) {
-          out.push({ path: `${f.name}[${i}]`, text: item });
-        }
-      });
-    } else if (f.kind === "link-list" && Array.isArray(v)) {
-      v.forEach((item, i) => {
-        const label = (item as { label?: unknown } | null)?.label;
-        if (typeof label === "string" && label.trim().length > 0) {
-          out.push({ path: `${f.name}[${i}].label`, text: label });
+    } else if (f.kind === "list") {
+      walkEntries(v, (entry) => {
+        for (const [key, text] of Object.entries(entry.values ?? {})) {
+          if (LIST_TEXT_KEYS.has(key) && typeof text === "string" && text.trim().length > 0) {
+            out.push({ path: `${f.name}[${entry.id}].${key}`, text });
+          }
         }
       });
     }
@@ -88,7 +109,7 @@ export function translatableStrings(
   return out;
 }
 
-const PATH_RE = /^([^[\]]+)(?:\[(\d+)\](?:\.(label))?)?$/;
+const PATH_RE = /^([^[\]]+)(?:\[([0-9a-f-]{36})\]\.([a-z][a-z0-9_]*))?$/;
 
 /**
  * Write translated strings back into a deep copy of the source values.
@@ -111,21 +132,18 @@ export function applyStrings(
       out[field] = text;
       continue;
     }
-    const list = out[field];
-    const i = Number(m[2]);
-    if (!Array.isArray(list) || i >= list.length) {
-      throw new Error(`chrome translation: no list item at "${path}"`);
+    const itemId = m[2];
+    const key = m[3] as string;
+    let hit: { values?: Record<string, unknown> } | null = null;
+    walkEntries(out[field], (entry) => {
+      if (entry.id === itemId) hit = entry as { values?: Record<string, unknown> };
+    });
+    const found = hit as { values?: Record<string, unknown> } | null;
+    if (!found?.values || !LIST_TEXT_KEYS.has(key) || typeof found.values[key] !== "string") {
+      throw new Error(`chrome translation: no list entry text at "${path}"`);
     }
-    if (m[3] === "label") {
-      const item = list[i] as Record<string, unknown> | null;
-      if (!item || typeof item.label !== "string") {
-        throw new Error(`chrome translation: no link label at "${path}"`);
-      }
-      list[i] = { ...item, label: text };
-    } else {
-      if (typeof list[i] !== "string") throw new Error(`chrome translation: no text at "${path}"`);
-      list[i] = text;
-    }
+    // `out` is a deep copy, so the entry can be written in place.
+    found.values[key] = text;
   }
   return out;
 }

@@ -181,7 +181,7 @@ export function fieldReuseHints(
     if (placements < 2) continue;
     const hosts = [...new Set(list.map((i) => `"${i.moduleDisplayName}"`))].join(", ");
     hints.push(
-      `field \`${p.field}\` carries the pattern \`${p.label}\`, which is now free HTML in ${placements} placements (in ${hosts}) — the second copy is the moment to make it a module: mint ONE module from this markup with semantic fields (text-list / module-list for the repeating items), place it wherever the copies are with their values, and remove the free HTML; repeated free markup blocks Publish live in the structure quality check`,
+      `field \`${p.field}\` carries the pattern \`${p.label}\`, which is now free HTML in ${placements} placements (in ${hosts}) — the second copy is the moment to make it a module: mint ONE module from this markup with semantic fields (a list / module-list field for the repeating items), place it wherever the copies are with their values, and remove the free HTML; repeated free markup blocks Publish live in the structure quality check`,
     );
   }
   return hints;
@@ -199,7 +199,7 @@ export function repeatedItemHints(values: Readonly<Record<string, unknown>>): st
       if (typeof s !== "string" || !s.includes("class=")) continue;
       for (const r of repeatedSiblingPatterns(parseMarkup(s))) {
         hints.push(
-          `field \`${field}\` writes the pattern \`${patternLabel(r.node)}\` out ${r.count} times side by side — that is a list of items as hand-written HTML, and each copy will be edited on its own and drift: mint ONE module for the item with semantic fields, give the host module a module-list field (text-list / link-list for plain items) with one entry per item, and remove the copies from this value; the structure quality check warns about it`,
+          `field \`${field}\` writes the pattern \`${patternLabel(r.node)}\` out ${r.count} times side by side — that is a list of items as hand-written HTML, and each copy will be edited on its own and drift: mint ONE module for the item with semantic fields, give the host module a module-list field (a list field for plain items) with one entry per item, and remove the copies from this value; the structure quality check warns about it`,
         );
       }
     }

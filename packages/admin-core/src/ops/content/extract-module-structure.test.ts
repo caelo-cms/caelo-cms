@@ -184,20 +184,20 @@ describe("validateTemplatizedModule", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("accepts a link-list whose loop references item sub-fields {{label}} / {{href}}", () => {
+  it("accepts a list whose loop references entry keys {{label}} / {{link}}", () => {
     // The exact shape moduleize emits for a nav/footer menu — previously
     // rejected with 'placeholder {{href}} references undeclared field "href"'.
-    const html = `<nav>{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}</nav>`;
+    const html = `<nav>{{#nav_links}}<a href="{{link}}">{{label}}</a>{{/nav_links}}</nav>`;
     const r = validateTemplatizedModule(html, [
-      { name: "nav_links", kind: "link-list", label: "Nav Links" } as never,
+      { name: "nav_links", kind: "list", listType: "links", label: "Nav Links" },
     ]);
     expect(r.ok).toBe(true);
   });
 
   it("still rejects an undeclared TOP-LEVEL placeholder (outside any loop)", () => {
-    const html = `<nav>{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}</nav><h1>{{ghost}}</h1>`;
+    const html = `<nav>{{#nav_links}}<a href="{{link}}">{{label}}</a>{{/nav_links}}</nav><h1>{{ghost}}</h1>`;
     const r = validateTemplatizedModule(html, [
-      { name: "nav_links", kind: "link-list", label: "Nav Links" } as never,
+      { name: "nav_links", kind: "list", listType: "links", label: "Nav Links" },
     ]);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.message).toContain("{{ghost}}");

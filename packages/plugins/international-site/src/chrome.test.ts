@@ -11,20 +11,28 @@ import {
   validateChromeTranslation,
 } from "./chrome.js";
 
+const E1 = "00000000-0000-4000-9000-000000000001";
+const E2 = "00000000-0000-4000-9000-000000000002";
+const T1 = "00000000-0000-4000-9000-000000000003";
+const T2 = "00000000-0000-4000-9000-000000000004";
+
 const fields = [
   { name: "tagline", kind: "text" },
-  { name: "nav", kind: "link-list" },
-  { name: "tags", kind: "text-list" },
+  { name: "nav", kind: "list" },
+  { name: "tags", kind: "list" },
   { name: "cta_href", kind: "url" },
   { name: "count", kind: "number" },
 ];
 const values = {
   tagline: "Made with care",
   nav: [
-    { label: "About", href: "/about" },
-    { label: "Pricing", href: "/pricing/?ref=nav#top" },
+    { id: E1, node: "link", values: { label: "About", link: { href: "/about" } } },
+    { id: E2, node: "link", values: { label: "Pricing", link: { href: "/pricing/?ref=nav#top" } } },
   ],
-  tags: ["fast", ""],
+  tags: [
+    { id: T1, node: "text", values: { text: "fast" } },
+    { id: T2, node: "text", values: { text: "" } },
+  ],
   cta_href: "/contact",
   count: 3,
 };
@@ -33,9 +41,9 @@ describe("translatableStrings", () => {
   it("collects text, list items and link labels — never addresses or numbers", () => {
     expect(translatableStrings(fields, values)).toEqual([
       { path: "tagline", text: "Made with care" },
-      { path: "nav[0].label", text: "About" },
-      { path: "nav[1].label", text: "Pricing" },
-      { path: "tags[0]", text: "fast" },
+      { path: `nav[${E1}].label`, text: "About" },
+      { path: `nav[${E2}].label`, text: "Pricing" },
+      { path: `tags[${T1}].text`, text: "fast" },
     ]);
     expect(translatableStrings([{ name: "logo", kind: "image" }], { logo: "x.png" })).toEqual([]);
   });
@@ -45,20 +53,29 @@ describe("applyStrings", () => {
   it("writes translations into a copy, keeping hrefs and other values", () => {
     const out = applyStrings(values, {
       tagline: "Mit Sorgfalt",
-      "nav[0].label": "Über uns",
-      "tags[0]": "schnell",
+      [`nav[${E1}].label`]: "Über uns",
+      [`tags[${T1}].text`]: "schnell",
     });
     expect(out.tagline).toBe("Mit Sorgfalt");
     expect(out.nav).toEqual([
-      { label: "Über uns", href: "/about" },
-      { label: "Pricing", href: "/pricing/?ref=nav#top" },
+      { id: E1, node: "link", values: { label: "Über uns", link: { href: "/about" } } },
+      {
+        id: E2,
+        node: "link",
+        values: { label: "Pricing", link: { href: "/pricing/?ref=nav#top" } },
+      },
     ]);
-    expect(out.tags).toEqual(["schnell", ""]);
+    expect((out.tags as { values: { text: string } }[]).map((t) => t.values.text)).toEqual([
+      "schnell",
+      "",
+    ]);
     expect(values.tagline).toBe("Made with care");
   });
 
   it("refuses paths the source does not have", () => {
-    expect(() => applyStrings(values, { "nav[9].label": "x" })).toThrow(/no list item/);
+    expect(() =>
+      applyStrings(values, { "nav[00000000-0000-4000-9000-000000000099].label": "x" }),
+    ).toThrow(/no list entry text/);
     expect(() => applyStrings(values, { count: "x" })).toThrow(/no text/);
     expect(() => applyStrings(values, { "a]b": "x" })).toThrow(/malformed/);
   });
@@ -75,7 +92,7 @@ describe("sourceFingerprint", () => {
 describe("chrome translation contract", () => {
   const targets = [
     { id: "c0", label: "Footer", strings: [{ path: "tagline", text: "Made with care" }] },
-    { id: "c1", label: "Menu", strings: [{ path: "nav[0].label", text: "About" }] },
+    { id: "c1", label: "Menu", strings: [{ path: `nav[${E1}].label`, text: "About" }] },
   ];
 
   it("prompts with every target and path", () => {
@@ -89,14 +106,14 @@ describe("chrome translation contract", () => {
     });
     expect(system).toContain("Target locale: de (Deutsch)");
     expect(user).toContain("### Target c0 (Footer)");
-    expect(user).toContain("nav[0].label:\n```\nAbout\n```");
+    expect(user).toContain(`nav[${E1}].label:\n\`\`\`\nAbout\n\`\`\``);
   });
 
   it("accepts exactly the offered targets and paths", () => {
     const ok = {
       targets: [
         { target: "c0", strings: { tagline: "Mit Sorgfalt" } },
-        { target: "c1", strings: { "nav[0].label": "Über uns" } },
+        { target: "c1", strings: { [`nav[${E1}].label`]: "Über uns" } },
       ],
     };
     expect(() => validateChromeTranslation(ok, targets)).not.toThrow();
@@ -136,7 +153,7 @@ describe("chrome translation contract", () => {
     expect(variants.map((v) => v.properties.target.enum)).toEqual([["c0"], ["c1"]]);
     expect(variants.map((v) => v.properties.strings.required)).toEqual([
       ["tagline"],
-      ["nav[0].label"],
+      [`nav[${E1}].label`],
     ]);
     for (const v of variants) {
       expect(v.additionalProperties).toBe(false);
@@ -160,7 +177,7 @@ describe("chrome translation contract", () => {
     const answer = {
       targets: [
         { target: "c0", strings: { tagline: "Mit Sorgfalt" } },
-        { target: "c1", strings: { "nav[0].label": "Über uns" } },
+        { target: "c1", strings: { [`nav[${E1}].label`]: "Über uns" } },
       ],
     };
     const parsed = chromeTranslationPayload.parse(answer);

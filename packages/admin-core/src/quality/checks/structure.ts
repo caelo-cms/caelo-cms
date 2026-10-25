@@ -208,7 +208,7 @@ function perPage(
         }
       : {
           tool: "add_module",
-          hint: "mint ONE module from this markup with semantic fields (text-list / link-list / module-list for the repeating items), place it on every listed page with that page's values, remove the free copies, and move the pattern's CSS from the layout into the module",
+          hint: "mint ONE module from this markup with semantic fields (a list / module-list field for the repeating items), place it on every listed page with that page's values, remove the free copies, and move the pattern's CSS from the layout into the module",
         },
   }));
 }
@@ -260,7 +260,7 @@ function repeatedItems(
     ),
     fix: {
       tool: "add_module",
-      hint: "mint ONE module for the item with semantic fields, give the host module a module-list field (text-list / link-list for plain items) holding one entry per item, and remove the hand-written copies from the field value",
+      hint: "mint ONE module for the item with semantic fields, give the host module a module-list field (a list field for plain items) holding one entry per item, and remove the hand-written copies from the field value",
     },
   }));
 }

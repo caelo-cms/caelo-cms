@@ -9,7 +9,7 @@
  * rendered for. Renaming or moving a page then changes no stored link.
  *
  * Grammar (one form for every place a link can live — `link` / `url`
- * fields, `link-list` items, `*_href` values, module HTML attributes,
+ * fields, list entry links, `*_href` values, module HTML attributes,
  * rich text, structured-set items, field defaults):
  *
  *   caelo:page/<pageId>[?query][#anchor]

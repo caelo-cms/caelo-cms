@@ -198,15 +198,25 @@ Every generated entry (query and the page-shaped system sources) exposes:
 `page_terms` and term-shaped entries expose the vocabulary entry's values
 (`name`, `slug`, …) plus `link` = its `landing_page` when set.
 
-`system` sources: `breadcrumbs` (root → current via `parent_page_id`),
-`children` / `siblings` of the current page (published, title order),
-`page_terms` (field `list` names the vocabulary), `term_pages` (pages
-carrying a given term; the term comes from the field value).
+`system` sources: `breadcrumbs` (root → current via `parent_page_id`,
+current page included), `children` / `siblings` of the current page
+(published, title order; `siblings` includes the current page, marked
+`is_current`, so a sub-navigation needs no special case), `page_terms`
+(on a module field, `list` names the vocabulary as `caelo:list/<id>`; on
+a source node, the vocabularies of the node's `term` fields; neither =
+all of the page's terms), `term_pages` (published pages of the rendering
+page's variant carrying any of the terms, title order, at most 50; the
+terms come from the placement value's `terms` on a module field, from
+the node's `term` field values on a source node).
 
 Plugin sources replace the plugin manifest's `dataLists`: a plugin
 declares `listSources: [{ name, label, node: NodeDef }]`; the host
 resolves them per page before rendering, exactly where `dataLists` were
-resolved.
+resolved, and passes them to `forPage` as `pluginSources` (entries
+`{ id, values }`; until the SDK change lands, `pluginSourcesFromDataLists`
+converts the `dataLists` answer, ids are positions). A section name no
+module field declares but an installed plugin does (`{{#language_links}}`)
+reads that plugin source too; module fields always win.
 
 ## 7. Module field kind `list`
 
@@ -229,6 +239,16 @@ Value per placement (content instance value or chrome placement default):
 not fix `list`; `source` → `Partial<PageQuery>` overrides within the
 source's `editable` knobs. A shared field with neither `list` nor a value
 renders the loud marker `list-unbound:<field>`.
+
+Validation is split: the module field schema (`content.ts`) checks the
+shape — the binding's parts fit together (`source` only with `bind:
+"source"`, `list` only on shared fields or as a `page_terms` vocabulary,
+a local default is entries, a shared default a list reference) — while
+whether entries fit the named list type needs the type, which is stored
+data: the module and content ops validate that with `validateListItems`
+(and assign entry ids) on write. Rendering reports a type that is gone
+as `list-type-missing:<slug>`; a `bind: "source"` field renders without
+reading its type.
 
 When the AI decides local vs shared (tool descriptions + skill carry it):
 only this module, flat → local; needed in more than one place, navigation
@@ -260,11 +280,45 @@ inside itself.
 
 Lookup inside an entry: the entry's own keys first, then the enclosing
 entries outwards, then the module's fields. A key found nowhere stays raw
-and pushes `field-not-declared:<f>.<key>`.
+and pushes `field-not-declared:<f>.<key>` (`<f>` = the module field the
+outermost section iterates). A declared but empty entry field is empty,
+never looked up further out.
 
-New markers: `list-unbound:<field>`, `list-missing:<listId>`,
-`list-type-missing:<slug>`, `list-source-unavailable:<name> plugin=<slug>`,
-`list-malformed:<field>[<path>]`.
+Details the table leaves open:
+
+- `items` is reserved: on a node without a source it is an empty list, so
+  a block shared by mixed node kinds needs no `{{#is_<node>}}` guard.
+- `is_current`: the entry's `current_from` link resolves to the rendering
+  page (same page id, or the same resolved URL without query / fragment
+  for literal hrefs). `is_ancestor`: some descendant entry is current or
+  an ancestor, or the entry links a page above the rendering page in the
+  page tree. Nodes without `current_from` (a column) are never current
+  but can be ancestors.
+- `{{>recurse}}` renders the innermost iterated entry's stored children
+  with the block of the section that iterates it, so one block draws a
+  tree of any depth; the depth is bounded by the stored data, which
+  validation bounds by `max_depth` (≤ 8).
+- `{{>f}}` for an entry's `module` field asks the caller's partial
+  resolver for key `list:<moduleField>/<itemId>/<f>` with the ref; the
+  nested renderer resolves it through its usual depth / cycle guards and
+  attributes failures to `<moduleField>[<itemId>].<f>`.
+- Media render as their reference (`caelo:media/<id>`); like page links,
+  references resolve in the finished HTML through the page's link
+  resolver. `{{f.formatted}}` uses `Intl.DateTimeFormat(siteLanguage,
+  { dateStyle: "long", timeZone: "UTC" })`.
+- Query and system entries expose `id`, `index`, `first`, `last`,
+  `depth` (always 1) and `is_ancestor` besides the page keys.
+- Values are data: every value the section pass pastes is wrapped in the
+  engine's sentinels (#1053), so `{{…}}` inside content stays literal.
+
+New markers: `list-unbound:<field>`, `list-missing:<listId>` (and
+`list-missing:<listId>/item/<itemId>` for a term whose vocabulary entry is
+gone), `list-type-missing:<slug>`, `list-source-unavailable:<name>
+plugin=<slug>` (`plugin=unknown` when no installed plugin declares the
+name), `list-malformed:<field>[<path>]`, and
+`list-context-unavailable:<field>` / `…:page` for a list or `{{page.*}}`
+rendered by a caller that passed the engine no list context (never
+legitimate output). The template keeps the section raw in each case.
 
 ## 9. Translation: core enables, the plugin translates
 
@@ -306,7 +360,14 @@ tools and the "Languages" tab in the list editor. See the plugin's README.
 ## 10. Rendering, preview, builds
 
 - `packages/shared/src/lists/resolve.ts` exports
-  `createListRenderContext(input)` and `resolveListField(field, value, ctx)`.
+  `createListRenderContext(data, { dormantPluginSources })` and
+  `resolveListField(field, value, pageCtx, holder)`.
+  `ctx.forPage(pageId | null, { linkResolver, pluginSources })` returns
+  the `ListPageContext` the template engine takes as
+  `RenderTemplateInput.lists` (with `listHolder: { contentInstanceId }`
+  naming the stored instance a local list belongs to); the composer takes
+  it as `ComposeInput.lists` and threads it to every placed, nested and
+  chrome module.
   The context is built once per preview / per build from batch-loaded
   data (`ListRenderData`: list types, lists, page index for queries,
   media index, vocabulary index, plugin sources per page, overlays per
@@ -316,16 +377,38 @@ tools and the "Languages" tab in the list editor. See the plugin's README.
   the preview loads the draft overlay of lists, list types, pages,
   properties and terms.
 - Render dependencies: the per-page context records `lists` (ids),
-  `listTypes` (slugs) and `queries` (normalised filters). The generator
-  writes them to the build manifest (`render-deps.json`). An incremental
-  build adds every page whose deps intersect the change: a changed list
-  or type, or a page that entered, left or changed inside a query's
-  filter.
+  `listTypes` (slugs), `queries` (normalised filters) and `pageTree`,
+  lazily — only what the render reached. The generator writes
+  `render-deps.json` (`lists/render-deps.ts`) into the build directory
+  and next to the target's builds (`<outDir>/render-deps.json`, merged
+  across incremental builds):
+
+  ```json
+  {
+    "version": 1,
+    "pages": { "<pageId>": { "lists": [], "listTypes": [], "queries": [{ "pageType": "news", "terms": [], "parent": null }], "pageTree": false } },
+    "index": { "<pageId>": { "pageType": "news", "terms": [], "parent": null, "title": "…", "inBuild": true } }
+  }
+  ```
+
+  An incremental build (`deploy.trigger` with `changedPageIds`,
+  `changedListIds`, `changedListTypeIds`; the redeploy orchestrator fills
+  them from `audit_events`) adds every page whose deps intersect the
+  change: a changed list or type, a page whose filter attributes before
+  (the file's `index`) or after match a recorded query, and every
+  page-tree reader when a changed page's title, parent or build
+  membership changed. Without a deps file the build renders every page.
+  A list-domain write whose audit row names no entity, and every page
+  type write, rebuild every page.
 - Limits: depth ≤ 8, ≤ 500 entries per list, ≤ 50 per query, embedded
   module recursion limited by the nested renderer's existing depth guard.
-- Interaction: modules use the interaction kit
-  (`data-caelo-ui="disclosure" | "nav-toggle"`); there is no built-in
-  menu renderer.
+- Interaction: modules use the interaction kit (`data-caelo-ui`, e.g.
+  `mobile-nav` with the markup in `INTERACTION_MARKUP_CONTRACT`); there
+  is no built-in menu renderer.
+- Overlays: refused overlay entries (unknown address, a structural
+  `module` / `term` value, a value failing its field) are collected on
+  the context (`overlayIssues`); the generator logs them, the plugin's
+  error channel takes them once the `list-resolve` point is wired.
 
 ## 11. Draft, snapshots, integrity
 
@@ -366,5 +449,21 @@ and media pickers, query preview, "Used in"), tab **Structure** (edit this
 list's type; shows how many lists share it) and tab **Types** (all list
 types and page types). Without `content.structure` both tabs are
 read-only. Page settings carry page type, properties and terms. Rendered
-entries carry `data-caelo-list-item="<listId>/<itemId>"` so click-to-chat
-attaches a chip for the list entry, not the module.
+entries carry `data-caelo-list-item` so click-to-chat attaches a chip for
+the list entry, not the module. The engine stamps it on the root element
+of each rendered stored entry — the first opening tag, when the entry's
+markup starts with one (an entry that starts with text has no root and
+stays unstamped), the same way the composer stamps `data-caelo-module-id`
+on a module root:
+
+- shared list entry: `<listId>/<itemId>`;
+- local list entry of a stored placement: `instance/<contentInstanceId>/<field>/<itemId>`;
+- local list entry rendered from a field default (site chrome):
+  `local/<field>/<itemId>` (the module root's `data-caelo-module-id`
+  names the module).
+
+Generated entries (queries, system and plugin sources) carry none — they
+are no stored entry. The Live Edit preview's in-place editing marks a
+local entry's text values as `<field>.<itemId>.<key>` (a link target
+`….<key>.href`), and `page_module_content.patch_fields` takes
+`{ field, item, key, part? }`.
