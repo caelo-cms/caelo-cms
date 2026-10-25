@@ -13,6 +13,8 @@
  * string-replace edit survives a stale read.
  */
 
+import { truncateKeepingIds } from "@caelo-cms/shared";
+
 /** One surgical string replacement, mirroring Claude Code's Edit tool. */
 export interface ContentEdit {
   /**
@@ -117,7 +119,7 @@ function matchLines(haystack: string, needle: string, max = 5): string[] {
     const lineStart = haystack.lastIndexOf("\n", at - 1) + 1;
     const lineEnd = haystack.indexOf("\n", at);
     const text = haystack.slice(lineStart, lineEnd === -1 ? undefined : lineEnd).trim();
-    out.push(`line ${lineNo}: ${text.length > 120 ? `${text.slice(0, 120)}…` : text}`);
+    out.push(`line ${lineNo}: ${truncateKeepingIds(text, 121)}`);
     from = at + needle.length;
   }
   return out;

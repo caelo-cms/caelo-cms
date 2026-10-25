@@ -37,6 +37,7 @@ import {
   type SubtreeShape,
   shapeSimilarity,
   stripMustache,
+  truncateKeepingIds,
 } from "@caelo-cms/shared";
 import type { SiteCheck, StagedPage } from "./check.js";
 import type { Finding } from "./findings.js";
@@ -345,5 +346,5 @@ function list(items: readonly (string | undefined)[]): string {
 }
 
 function clip(message: string): string {
-  return message.length > 1000 ? `${message.slice(0, 999)}…` : message;
+  return truncateKeepingIds(message, 1000);
 }

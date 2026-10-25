@@ -18,6 +18,7 @@ import type {
   ExecutionContext,
   ExpectedReturnShape,
 } from "@caelo-cms/shared";
+import { COPY_ID_EXACTLY_HINT, describeMalformedUuid } from "@caelo-cms/shared";
 import type { z } from "zod";
 
 import type { CredentialKind } from "../../ops/credential_handoffs.js";
@@ -589,6 +590,16 @@ function schemaRecoveryBlock(inputSchema: ToolInputSchema, calledEmpty: boolean)
   );
 }
 
+/** The value at a Zod issue path inside the raw tool arguments. */
+function valueAtPath(args: unknown, path: readonly PropertyKey[]): unknown {
+  let cur: unknown = args;
+  for (const key of path) {
+    if (cur === null || typeof cur !== "object") return undefined;
+    cur = (cur as Record<PropertyKey, unknown>)[key];
+  }
+  return cur;
+}
+
 function formatToolArgError(
   name: string,
   issues: readonly z.ZodIssue[],
@@ -615,6 +626,15 @@ function formatToolArgError(
         return forms
           ? `\`${path}\`: invalid value — expected ${forms}.`
           : `\`${path}\`: ${issue.message} (did not match any allowed form for this argument).`;
+      }
+      case "invalid_format": {
+        // #1089 — a bare "Invalid UUID" does not say which character is off,
+        // so the model re-sent the same reconstructed id.
+        const problem =
+          issue.format === "uuid" ? describeMalformedUuid(valueAtPath(args, issue.path)) : null;
+        return problem
+          ? `\`${path}\`: ${problem}. ${COPY_ID_EXACTLY_HINT}`
+          : `\`${path}\`: ${issue.message}`;
       }
       default:
         return `\`${path}\`: ${issue.message}`;
