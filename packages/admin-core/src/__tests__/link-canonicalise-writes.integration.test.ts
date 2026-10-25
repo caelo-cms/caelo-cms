@@ -397,9 +397,12 @@ describe("module code", () => {
       [
         {
           name: "footer_links",
-          kind: "link-list",
+          kind: "list",
+          listType: "links",
           label: "Footer links",
-          default: [{ label: "Pricing", href: `/${PFX}-pricing` }],
+          default: [
+            { node: "link", values: { label: "Pricing", link: { href: `/${PFX}-pricing` } } },
+          ],
         },
       ],
     );

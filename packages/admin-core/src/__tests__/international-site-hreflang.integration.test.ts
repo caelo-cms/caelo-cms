@@ -26,7 +26,9 @@ import {
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import {
+  createListRenderContext,
   type ExecutionContext,
+  pluginSourcesFromDataLists,
   renderTemplate,
   type SiteDefaultsSetSeoInput,
   siteDefaultsSetSeoInputSchema,
@@ -337,10 +339,25 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
 
     // The whole point: the MODULE owns the markup. Nothing about this
     // shape comes from the plugin.
+    // Plugin lists reach the engine as plugin list sources (epic #1107).
+    const listContext = (dormant: Record<string, string> = {}) =>
+      createListRenderContext(
+        {
+          listTypes: new Map(),
+          lists: new Map(),
+          pageTypes: new Map(),
+          pages: new Map(),
+          media: new Map(),
+          siteLanguage: "en",
+        },
+        { dormantPluginSources: dormant },
+      );
     const rendered = renderTemplate({
       html: '<ul>{{#language_links}}<li class="lang"><a href="{{href}}">{{label}}</a></li>{{/language_links}}</ul>',
       fields: [],
-      dataLists: lists.get(sourceId) ?? {},
+      lists: listContext().forPage(sourceId, {
+        pluginSources: pluginSourcesFromDataLists(lists.get(sourceId) ?? {}),
+      }),
     });
     expect(rendered.html).toContain('<li class="lang"><a href="');
     expect(rendered.html).toContain(">Deutsch</a>");
@@ -352,12 +369,11 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     const off = renderTemplate({
       html: "<ul>{{#language_links}}<li>{{label}}</li>{{/language_links}}</ul>",
       fields: [],
-      dataLists: {},
-      dormantDataLists: { language_links: "international-site" },
+      lists: listContext({ language_links: "international-site" }).forPage(sourceId),
     });
     expect(off.html).toContain("{{#language_links}}");
     expect(off.missingSlots).toContain(
-      "plugin-list-unavailable:language_links plugin=international-site",
+      "list-source-unavailable:language_links plugin=international-site",
     );
   }, 60_000);
 });

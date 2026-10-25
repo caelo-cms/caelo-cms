@@ -157,8 +157,19 @@ async function op<T>(operationName: string, args: unknown): Promise<T> {
 }
 
 async function preview(pageId: string): Promise<{ html: string; missingSlots: string[] }> {
-  return sysOp("pages.render_preview", { pageId });
+  const r = await sysOp<{ html: string; missingSlots: string[] }>("pages.render_preview", {
+    pageId,
+  });
+  // List entries carry their item address (epic #1107); these assertions read the markup.
+  return { ...r, html: r.html.replace(/ data-caelo-list-item="[^"]*"/g, "") };
 }
+
+/** A local `links` list entry (epic #1107). */
+const link = (n: number, label: string, href: string) => ({
+  id: `00000000-0000-4000-9000-${String(n).padStart(12, "0")}`,
+  node: "link",
+  values: { label, link: { href } },
+});
 
 const ids = {
   layoutId: "",
@@ -225,16 +236,17 @@ beforeAll(async () => {
     await sysOp<{ moduleId: string }>("modules.create", {
       slug: `${PFX}-footer`,
       displayName: "Site footer",
-      html: '<footer><p class="tag">{{tagline}}</p>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}</footer>',
+      html: '<footer><p class="tag">{{tagline}}</p>{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}</footer>',
       css: "",
       js: "",
       fields: [
         { name: "tagline", kind: "text", label: "Tagline", default: "Made with care" },
         {
           name: "nav",
-          kind: "link-list",
+          kind: "list",
+          listType: "links",
           label: "Footer menu",
-          default: [{ label: "About", href: "/t592-about" }],
+          default: [link(1, "About", "/t592-about")],
         },
       ],
     })
@@ -243,10 +255,10 @@ beforeAll(async () => {
     await sysOp<{ moduleId: string }>("modules.create", {
       slug: `${PFX}-footer-us`,
       displayName: "US footer",
-      html: '<footer class="us">{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}</footer>',
+      html: '<footer class="us">{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}</footer>',
       css: "",
       js: "",
-      fields: [{ name: "nav", kind: "link-list", label: "Menu", default: [] }],
+      fields: [{ name: "nav", kind: "list", listType: "links", label: "Menu", default: [] }],
     })
   ).moduleId;
   await sysOp("layout_modules.set", {
@@ -412,9 +424,9 @@ describe("#592 — menus and footer per language", () => {
           moduleId: ids.altFooterModuleId,
           values: {
             nav: [
-              { label: "Kontakt", href: "/t592-solo" },
+              link(2, "Kontakt", "/t592-solo"),
               // A stored reference (#724) is named by its page's path, never its id.
-              { label: "Team", href: `caelo:page/${ids.enSolo}#team` },
+              link(3, "Team", `caelo:page/${ids.enSolo}#team`),
             ],
           },
         },
@@ -501,7 +513,7 @@ describe("#592 — menus and footer per language", () => {
           {
             targetKey: footerKey(),
             localeCode: "de",
-            values: { nav: [{ label: "Nirgends", href: "/t592-nowhere" }] },
+            values: { nav: [link(4, "Nirgends", "/t592-nowhere")] },
           },
         ],
       }),

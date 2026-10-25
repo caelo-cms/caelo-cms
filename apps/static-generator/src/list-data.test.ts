@@ -87,9 +87,12 @@ describe("incrementalPageIds", () => {
     ).toEqual([HOME]);
   });
 
-  it("without recorded deps every page renders", () => {
+  it("without recorded deps a page change renders its pages, a list change every page", () => {
     expect(
       incrementalPageIds({ pageIds: [POST], listIds: [], listTypeIds: [] }, null, data(true)),
+    ).toEqual([POST]);
+    expect(
+      incrementalPageIds({ pageIds: [], listIds: [MENU], listTypeIds: [] }, null, data(true)),
     ).toBeNull();
   });
 

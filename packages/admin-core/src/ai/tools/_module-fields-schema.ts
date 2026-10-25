@@ -152,11 +152,11 @@ function moduleFieldItemSchema(entryValues: Record<string, unknown>): Record<str
       // a TOOL input (lenient), but the SDK-native structured-output path
       // (`generateObject` → Anthropic `output_config.format`) REJECTS an empty
       // `{}` subschema, and a too-generic union let the model emit shapes the
-      // Zod validator (`moduleFieldSchema`) then rejects: for a `link-list` it
+      // Zod validator (`moduleFieldSchema`) then rejects: for a link list it
       // produced `default:[{}]`, which Zod's strict `{label,href}[]` refused
       // ("expected string, received undefined") AND which lost the real nav
       // values. So each branch is CONCRETE — the object-array branch pins the
-      // link-list element shape to `{label,href}` so Anthropic's structure
+      // list entry shape (`{node, values}`) so Anthropic's structure
       // enforcement makes the model fill the actual link text + URL, not `[{}]`.
       // The description states the per-kind shape (Anthropic reads it) so the
       // JSON schema and the Zod validator can't diverge (issue #106 class).

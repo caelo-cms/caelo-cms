@@ -769,7 +769,7 @@ describe("link failure markers — what the build gate and the preview report", 
 
   it("leaves every other marker alone, in order", () => {
     expect(isLinkFailureMarker("field-not-declared:x")).toBe(false);
-    expect(isLinkFailureMarker("link-list-malformed:nav[0]")).toBe(false);
+    expect(isLinkFailureMarker("list-malformed:nav[items[0]]")).toBe(false);
     expect(
       linkMarkersOf([
         "theme-asset-unbound:logo",

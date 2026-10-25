@@ -76,7 +76,7 @@ afterAll(async () => {
 });
 
 describe("pages.render_preview — layout module field interpolation (issue #106)", () => {
-  it("interpolates a footer's link-list + scalar field defaults instead of shipping raw {{…}}", async () => {
+  it("interpolates a footer's list + scalar field defaults instead of shipping raw {{…}}", async () => {
     // Our own layout with content + footer slots (so we never touch the
     // shared site-default layout that other tests assert on).
     const layout = await execute(registry, adapter, systemCtx, "layouts.create", {
@@ -108,7 +108,7 @@ describe("pages.render_preview — layout module field interpolation (issue #106
       blocks: [{ name: "content", displayName: "Content", position: 0 }],
     });
 
-    // Footer module: a link-list nav + a scalar copyright, content carried
+    // Footer module: a local links list + a scalar copyright, content carried
     // entirely in the field `default`s (a chrome module has no
     // content_instance). HTML uses the Mustache section + scalar grammar.
     const footer = await execute(registry, adapter, systemCtx, "modules.create", {
@@ -116,22 +116,27 @@ describe("pages.render_preview — layout module field interpolation (issue #106
       displayName: "Site footer",
       html:
         '<footer class="site-footer"><nav aria-label="Footer">' +
-        '{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}' +
+        '{{#nav_links}}<a href="{{link}}">{{label}}</a>{{/nav_links}}' +
         "</nav><p>{{copyright}}</p></footer>",
       css: "",
       js: "",
       fields: [
         {
           name: "nav_links",
-          kind: "link-list",
+          kind: "list",
+          listType: "links",
           label: "Footer navigation",
           // External: an internal link must name an existing page (#724),
           // and this file seeds none.
           default: [
-            { label: "Home", href: "https://example.com/" },
-            { label: "About", href: "https://example.com/about" },
-            { label: "Contact", href: "https://example.com/contact" },
-          ],
+            ["Home", "https://example.com/"],
+            ["About", "https://example.com/about"],
+            ["Contact", "https://example.com/contact"],
+          ].map(([label, href], i) => ({
+            id: `00000000-0000-4000-9000-${String(i + 1).padStart(12, "0")}`,
+            node: "link",
+            values: { label, link: { href } },
+          })),
         },
         { name: "copyright", kind: "text", label: "Copyright", default: "© 2026 Caelo Test" },
       ],
@@ -160,11 +165,14 @@ describe("pages.render_preview — layout module field interpolation (issue #106
     if (!r.ok) return;
     const { html } = r.value as { html: string };
 
-    // The link-list section expanded to one <a> per item, with both href
+    // The list section expanded to one <a> per entry, with both link
     // and label bound from the field default.
-    expect(html).toContain('<a href="https://example.com/">Home</a>');
-    expect(html).toContain('<a href="https://example.com/about">About</a>');
-    expect(html).toContain('<a href="https://example.com/contact">Contact</a>');
+    const plain = html.replace(/ data-caelo-list-item="[^"]*"/g, "");
+    expect(plain).toContain('<a href="https://example.com/">Home</a>');
+    expect(plain).toContain('<a href="https://example.com/about">About</a>');
+    expect(plain).toContain('<a href="https://example.com/contact">Contact</a>');
+    // Chrome renders from defaults: entries carry the local address.
+    expect(html).toContain('data-caelo-list-item="local/nav_links/');
     // The scalar default substituted.
     expect(html).toContain("© 2026 Caelo Test");
 

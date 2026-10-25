@@ -72,9 +72,13 @@ export async function readTargetRenderDeps(outDir: string): Promise<RenderDepsFi
 
 /**
  * The pages an incremental build renders: the changed pages plus every
- * page whose recorded deps intersect the change. Without a deps file (the
- * target was never built with deps) dependents cannot be known, so the
- * build renders every page — a superset, never a stale page.
+ * page whose recorded deps intersect the change.
+ *
+ * Without a deps file (the target's builds predate render deps)
+ * dependents cannot be known: a change that names pages renders exactly
+ * those, as incremental builds always did, and the build writes the deps
+ * the next one reads; a change that names only lists or list types has
+ * nothing to narrow it and renders every page.
  *
  * @returns the page ids, or null for "every page".
  */
@@ -83,7 +87,7 @@ export function incrementalPageIds(
   deps: RenderDepsFile | null,
   data: ListRenderData,
 ): string[] | null {
-  if (deps === null) return null;
+  if (deps === null) return change.pageIds.length > 0 ? [...change.pageIds] : null;
   const typeSlugs: string[] = [];
   for (const t of data.listTypes.values()) {
     if (change.listTypeIds.includes(t.id)) typeSlugs.push(t.def.slug);

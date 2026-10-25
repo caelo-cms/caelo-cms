@@ -356,7 +356,7 @@ export const renderPagePreviewOp = defineOperation({
           js: string;
           displayName: string;
           slug: string;
-          // A branch edit_module can ADD/RENAME fields (e.g. a new link-list).
+          // A branch edit_module can ADD/RENAME fields (e.g. a new list field).
           // The overlay MUST carry the branch schema or the render context uses
           // the stale live `modules.fields`, and a `{{#field}}` section over the
           // new field renders as literal `{{#field}}` text (field-not-declared).

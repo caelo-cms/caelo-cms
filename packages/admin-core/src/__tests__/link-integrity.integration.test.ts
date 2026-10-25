@@ -17,6 +17,8 @@ import { SQL } from "bun";
 import { checkReferences } from "../ops/content/link-integrity.js";
 import { registerAdminOps } from "../register.js";
 
+/** Entry ids of the local lists (epic #1107). */
+const entry = (n: number) => `00000000-0000-4000-9000-${String(n).padStart(12, "0")}`;
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -122,8 +124,8 @@ beforeAll(async () => {
   }
 
   // #846 — a page whose content values exercise every field kind. Only the
-  // link-bearing kinds (link / url default / link-list / richtext / nested
-  // sub-module) may be reported; image + text + text-list paths never.
+  // link-bearing kinds (link / url default / a list entry's link / richtext /
+  // nested sub-module) may be reported; image + text + list text paths never.
   // The dead links and the legacy image paths are written as
   // `https://legacy.invalid/…` (#724 refuses an internal link to no page
   // and a file path nothing serves) and turned into the legacy literals
@@ -156,13 +158,13 @@ beforeAll(async () => {
         displayName: "LINT Kinds Body",
         html:
           `<section><img src="{{hero_image}}"><p>{{alert_text}}</p>` +
-          `{{#tags}}<span>{{.}}</span>{{/tags}}<a href="{{primary_link}}">x</a>` +
-          `<a href="{{fallback_href}}">y</a>{{#menu}}<a href="{{href}}">{{label}}</a>{{/menu}}` +
+          `{{#tags}}<span>{{text}}</span>{{/tags}}<a href="{{primary_link}}">x</a>` +
+          `<a href="{{fallback_href}}">y</a>{{#menu}}<a href="{{link}}">{{label}}</a>{{/menu}}` +
           `<div>{{body}}</div>{{#cards}}_{{/cards}}</section>`,
         fields: [
           { name: "hero_image", kind: "image", label: "Hero image" },
           { name: "alert_text", kind: "text", label: "Alert text" },
-          { name: "tags", kind: "text-list", label: "Tags" },
+          { name: "tags", kind: "list", listType: "texts", label: "Tags" },
           { name: "primary_link", kind: "link", label: "Primary link" },
           {
             name: "fallback_href",
@@ -170,7 +172,7 @@ beforeAll(async () => {
             label: "Fallback href",
             default: "https://legacy.invalid/missing-default-url",
           },
-          { name: "menu", kind: "link-list", label: "Menu" },
+          { name: "menu", kind: "list", listType: "links", label: "Menu" },
           { name: "body", kind: "richtext", label: "Body" },
           { name: "cards", kind: "module-list", label: "Cards" },
         ],
@@ -179,11 +181,22 @@ beforeAll(async () => {
           values: {
             hero_image: "https://legacy.invalid/media/foo.webp",
             alert_text: "/shop/xyz",
-            tags: ["/shop/tag-path"],
+            tags: [{ id: entry(1), node: "text", values: { text: "/shop/tag-path" } }],
             primary_link: "https://legacy.invalid/missing-link",
             menu: [
-              { label: "Good", href: `/${TARGET_SLUG}` },
-              { label: "Bad", href: "https://legacy.invalid/missing-link-list" },
+              {
+                id: entry(2),
+                node: "link",
+                values: { label: "Good", link: { href: `/${TARGET_SLUG}` } },
+              },
+              {
+                id: entry(3),
+                node: "link",
+                values: {
+                  label: "Bad",
+                  link: { href: "https://legacy.invalid/missing-link-list" },
+                },
+              },
             ],
             body: `<p>See <a href="https://legacy.invalid/missing-richtext">this</a> and <a href="/${TARGET_SLUG}">that</a>.</p>`,
             cards: [{ $ref: "card" }],
@@ -262,7 +275,7 @@ describe("reference integrity over legacy literal links (#846 field kinds)", () 
 
   it("#846: scans content values by declared field kind — text paths are never links", async () => {
     const broken = await brokenLiterals();
-    // Not links: plain text / text-list copy that starts with `/`, and a
+    // Not links: plain text / list entry text that starts with `/`, and a
     // stored value with no declared field.
     for (const notALink of [
       "/shop/xyz",
@@ -280,8 +293,8 @@ describe("reference integrity over legacy literal links (#846 field kinds)", () 
       expect(broken).toContain(deadFile);
     }
     // Still links, still reported when they point at no page: link value,
-    // url field default (what renders when no value is set), link-list
-    // href, richtext <a href>, and a nested sub-module's link value + its
+    // url field default (what renders when no value is set), a list
+    // entry's link href, richtext <a href>, and a nested sub-module's link value + its
     // hardcoded HTML href (nested modules have no placement of their own).
     for (const deadLink of [
       "/missing-link",
@@ -293,7 +306,7 @@ describe("reference integrity over legacy literal links (#846 field kinds)", () 
     ]) {
       expect(broken).toContain(deadLink);
     }
-    // Valid targets reached through link-list + richtext are not flagged.
+    // Valid targets reached through a list entry + richtext are not flagged.
     expect(broken).not.toContain(`/${TARGET_SLUG}`);
   });
 });

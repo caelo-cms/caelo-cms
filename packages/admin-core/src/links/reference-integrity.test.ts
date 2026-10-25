@@ -220,11 +220,11 @@ describe("reference integrity policy (#724 decisions)", () => {
   it("an href filled by a text-kind field or an undeclared stored key is checked (#852)", () => {
     const m = mod(
       1,
-      '<a href="{{target}}">{{label}}</a><a href="{{extra}}">more</a><ul>{{#links}}<li><a href="{{.}}">x</a></li>{{/links}}</ul><p>{{stale}}</p>',
+      '<a href="{{target}}">{{label}}</a><a href="{{extra}}">more</a><ul>{{#links}}<li><a href="{{link}}">{{label}}</a></li>{{/links}}</ul><p>{{stale}}</p>',
       [
         { name: "target", kind: "text" },
         { name: "label", kind: "text" },
-        { name: "links", kind: "text-list" },
+        { name: "links", kind: "list", listType: "links" },
       ],
     );
     const ci = id(201);
@@ -243,7 +243,14 @@ describe("reference integrity policy (#724 decisions)", () => {
                 label: "/nope",
                 // No field declares it, yet `{{extra}}` renders it into an href.
                 extra: `caelo:page/${GONE}`,
-                links: ["/gone-literal"],
+                // A list entry's link value is a link wherever it renders.
+                links: [
+                  {
+                    id: "00000000-0000-4000-9000-000000000001",
+                    node: "link",
+                    values: { label: "x", link: { href: "/gone-literal" } },
+                  },
+                ],
                 // Undeclared and rendered as text: a path-like string is no link.
                 stale: "/also-text",
                 // Undeclared and rendered nowhere: ships nothing.
@@ -266,7 +273,7 @@ describe("reference integrity policy (#724 decisions)", () => {
     );
     const found = issues.map((i) => `${i.problem}@${i.where}`).sort();
     expect(found).toEqual([
-      "broken-literal@values.links[0]",
+      "broken-literal@values.links[0].values.link.href",
       "literal-link@values.target",
       "missing-target@values.extra",
     ]);
@@ -317,7 +324,18 @@ describe("reference integrity places", () => {
 
   it("layout chrome renders its field defaults on every page of the layout", () => {
     const header = mod(2, "<nav></nav>", [
-      { name: "links", kind: "link-list", default: [{ label: "x", href: `caelo:page/${GONE}` }] },
+      {
+        name: "links",
+        kind: "list",
+        listType: "links",
+        default: [
+          {
+            id: "00000000-0000-4000-9000-000000000001",
+            node: "link",
+            values: { label: "x", link: { href: `caelo:page/${GONE}` } },
+          },
+        ],
+      },
     ]);
     const issues = scan(
       model({

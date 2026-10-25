@@ -9,6 +9,8 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  createListRenderContext,
+  DEFAULT_LIST_TYPES,
   type NestedModuleResource,
   type NestedRenderResolver,
   renderPlacedModule,
@@ -21,6 +23,15 @@ import { createStructureCheck, type StructureLayout, structureFindings } from ".
 import { type StructureModule, selectorClasses } from "../structure-analysis.js";
 import { NO_PROBE_BUILD } from "./fixtures/test-checks.js";
 
+/** Local lists of the shipped types need nothing but the types (epic #1107). */
+const LISTS = createListRenderContext({
+  listTypes: new Map(DEFAULT_LIST_TYPES.map((t) => [t.slug, { id: t.slug, def: t }])),
+  lists: new Map(),
+  pageTypes: new Map(),
+  pages: new Map(),
+  media: new Map(),
+  siteLanguage: "en",
+}).forPage(null);
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 
 const TEXT: StructureModule = {
@@ -170,14 +181,14 @@ describe("#1027 — nested modules are module output, not free markup", () => {
     slug: "tool-card",
     html:
       '<article class="tc" id="{{anchor}}"><div class="tc-head"><span class="ico"></span><h3>{{title}}</h3></div>' +
-      '<p>{{text}}</p><ul class="tc-pts">{{#points}}<li>{{.}}</li>{{/points}}</ul><a class="more" href="{{href}}">Mehr</a></article>',
+      '<p>{{text}}</p><ul class="tc-pts">{{#points}}<li>{{text}}</li>{{/points}}</ul><a class="more" href="{{href}}">Mehr</a></article>',
     css: "",
     js: "",
     fields: [
       { name: "anchor", kind: "text" },
       { name: "title", kind: "text" },
       { name: "text", kind: "text" },
-      { name: "points", kind: "text-list" },
+      { name: "points", kind: "list", listType: "texts" },
       { name: "href", kind: "text" },
     ],
   };
@@ -214,7 +225,11 @@ describe("#1027 — nested modules are module output, not free markup", () => {
             anchor: `t${i}`,
             title: `Tool ${i}`,
             text: "x",
-            points: ["a", "b"],
+            points: ["a", "b"].map((text, i) => ({
+              id: `00000000-0000-4000-9000-00000000000${i + 1}`,
+              node: "text",
+              values: { text },
+            })),
             href: "/t",
           },
         });
@@ -245,7 +260,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
         },
       },
       resolver,
-      {},
+      { lists: LISTS },
     );
     const tools = renderPlacedModule(
       {
@@ -257,7 +272,7 @@ describe("#1027 — nested modules are module output, not free markup", () => {
         },
       },
       resolver,
-      {},
+      { lists: LISTS },
     );
     expect([...faq.failures, ...tools.failures]).toEqual([]);
     return page(n, `/p${n}`, tagModuleId(faq.html, FAQ.id), tagModuleId(tools.html, TOOL_LIST.id));

@@ -522,7 +522,7 @@ function renderPartialRef(
   }
   const ref = Object.hasOwn(cvs, name) ? cvs[name] : undefined;
   // An unset or explicitly null single `module` field is an EMPTY slot,
-  // the same as an empty module-list / text-list: it renders nothing and
+  // the same as an empty module-list / list: it renders nothing and
   // is not a failure (#1041). The static generator refuses a Stage on any
   // marker, so flagging "empty" here made an optional nested slot
   // impossible to leave blank. A present value that is not a ref is still
