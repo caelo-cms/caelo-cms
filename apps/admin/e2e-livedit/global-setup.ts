@@ -84,7 +84,10 @@ const RESET_BUG_REPORTS_SCRIPT = `
  * GitHub issue the way a real install's would; the bug gate then blocks
  * only a run with more than a handful of new reports (`bug-gate.ts`). The
  * workflow sets CAELO_E2E_FORWARD_BUGS=1; a local run never files issues.
- * An install without its settings row is a broken seed: fail loudly.
+ * Mirrors `bug_forwarding.set`: the install id is minted on the first
+ * opt-in, and the worker cannot sign a report without it (run 40360756064
+ * queued its report and never sent it). An install without its settings
+ * row is a broken seed: fail loudly.
  */
 const ENABLE_BUG_FORWARDING_SCRIPT = `
   import { SQL } from "bun";
@@ -92,7 +95,8 @@ const ENABLE_BUG_FORWARDING_SCRIPT = `
   const rows = await sql.begin(async (tx) => {
     await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
     return await tx\`UPDATE telemetry_settings
-                     SET bug_forwarding_enabled = true, bug_forwarding_decided_at = now()
+                     SET bug_forwarding_enabled = true, bug_forwarding_decided_at = now(),
+                         install_id = COALESCE(install_id, gen_random_uuid())
                    WHERE id = 1 RETURNING id\`;
   });
   await sql.end();
