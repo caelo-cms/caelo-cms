@@ -8,7 +8,7 @@
 import { describe, expect, it } from "bun:test";
 import type { PluginQuery } from "@caelo-cms/plugin-sdk";
 import type { CategoryRow } from "./categories.js";
-import { consentStats, describeConsentLog } from "./consent-log.js";
+import { consentLogCsv, consentLogPage, consentStats, describeConsentLog } from "./consent-log.js";
 
 const CATEGORIES: CategoryRow[] = ["necessary", "functional", "analytics", "marketing"].map(
   (key, position) => ({
@@ -96,9 +96,70 @@ describe("describeConsentLog (#1132)", () => {
       "created_at",
       "granted",
       "policy_version",
-      "visitor_id",
-      "ip_hash",
+      "consent_id",
     ]);
     expect(d.notStored).toContain("user agent");
+    expect(d.notStored).toContain("IP address or any hash of it");
+  });
+});
+
+/**
+ * `created_at < before`, newest first — the host's semantics, at the
+ * column's microsecond precision (the strings below), while rows come back
+ * as millisecond Dates like the driver returns them.
+ */
+function newestFirst(rows: Array<{ id: string; at: string }>): PluginQuery {
+  const micros = (iso: string) => {
+    const [base, frac = ""] = iso.replace("Z", "").split(".");
+    return Date.parse(`${base}Z`) * 1000 + Number(frac.padEnd(6, "0"));
+  };
+  return {
+    list: async (_t: string, f: { before?: string; limit?: number } = {}) =>
+      rows
+        .filter((r) => !f.before || micros(r.at) < micros(f.before))
+        .sort((a, b) => micros(b.at) - micros(a.at))
+        .slice(0, f.limit ?? 100)
+        .map((r) => ({
+          id: r.id,
+          consent_id: "0b1c2d3e-4f50-4617-8899-aabbccddeeff",
+          granted: ["necessary"],
+          policy_version: 1,
+          created_at: new Date(Math.floor(micros(r.at) / 1000)),
+        })),
+  } as unknown as PluginQuery;
+}
+
+describe("consentLogPage", () => {
+  // Two rows share the millisecond .002 — the page must not end between them.
+  const rows = [
+    { id: "a", at: "2026-10-26T10:00:00.001000Z" },
+    { id: "b", at: "2026-10-26T10:00:00.002100Z" },
+    { id: "c", at: "2026-10-26T10:00:00.002500Z" },
+    { id: "d", at: "2026-10-26T10:00:00.003000Z" },
+  ];
+
+  it("never splits a millisecond across pages, so no row repeats or goes missing", async () => {
+    const q = newestFirst(rows);
+    const seen: string[] = [];
+    let before: string | undefined;
+    for (let i = 0; i < 10; i++) {
+      const page = await consentLogPage(q, { limit: 2, ...(before ? { before } : {}) });
+      seen.push(...page.rows.map((r) => r.id));
+      if (!page.hasMore) break;
+      before = page.nextBefore;
+    }
+    expect(seen).toEqual(["d", "c", "b", "a"]);
+  });
+
+  it("exports every record once, newest first, with formula-safe cells", async () => {
+    const { csv, rows: count } = await consentLogCsv(newestFirst(rows));
+    expect(count).toBe(4);
+    const lines = csv.split("\n");
+    expect(lines[0]).toBe("recorded_at,consent_id,policy_version,granted");
+    expect(lines).toHaveLength(5);
+  });
+
+  it("rejects arguments it does not know", async () => {
+    await expect(consentLogPage(newestFirst(rows), { since: "x" })).rejects.toThrow();
   });
 });

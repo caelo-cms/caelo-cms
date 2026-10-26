@@ -58,9 +58,11 @@ import {
   bootstrapDispatchOnly,
   ensureDevSignedManifests,
   loadedPlugins,
+  pluginDeclaresConsentPurpose,
   registerGatewayOperations,
   runPluginOperation,
   syncDispatchPlugins,
+  VISITOR_ID_PURPOSE,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, OperationRegistry, type TransactionRunner } from "@caelo-cms/query-api";
 // Read SQL via globalThis.Bun rather than a value-import of "bun".
@@ -805,13 +807,19 @@ export async function handleRequest(
       | { kind: "clear" };
   } = { current: { kind: "none" } };
 
+  // The visitor id reaches only a plugin that declared it as a consent
+  // purpose; the visitor agreed to that plugin's use of it, not to every
+  // plugin on the site reading it.
+  const visitorId = pluginDeclaresConsentPurpose(slug, VISITOR_ID_PURPOSE)
+    ? visitor.visitorId
+    : null;
   const result = await runPluginOperation({
     pluginSlug: slug,
     operationName,
     args: body,
-    invocation: { origin: "visitor", actorId: visitor.visitorId ?? ANONYMOUS_VISITOR_ACTOR },
+    invocation: { origin: "visitor", actorId: visitorId ?? ANONYMOUS_VISITOR_ACTOR },
     visitorContext: {
-      visitorId: visitor.visitorId,
+      visitorId,
       sessionToken: visitor.sessionToken,
       sessionMutation,
       // The plugin's ctx.captcha.requireProof answers from this (#634).

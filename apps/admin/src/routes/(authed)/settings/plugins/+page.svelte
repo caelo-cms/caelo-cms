@@ -52,6 +52,20 @@
     });
   }
 
+  /**
+   * The admin pages the manifest declares and who may open them, so the
+   * Owner sees what an activation adds to the admin before approving it.
+   */
+  function adminPanelsOf(manifestJson: unknown): string[] {
+    if (manifestJson === null || typeof manifestJson !== "object") return [];
+    const raw = (manifestJson as { adminPanels?: unknown }).adminPanels;
+    if (!Array.isArray(raw)) return [];
+    return raw.map(
+      (p: { title?: unknown; permission?: unknown }) =>
+        `${String(p.title)} (needs ${String(p.permission)})`,
+    );
+  }
+
   let { data, form } = $props();
 
   /** The required plugins of `p` that are not active yet, in manifest order. */
@@ -194,6 +208,9 @@
                   {/if}
                   {#each consentPurposesOf(p.manifestJson) as line (line)}
                     <p class="mt-1 text-xs text-muted-foreground">Asks visitors: {line}</p>
+                  {/each}
+                  {#each adminPanelsOf(p.manifestJson) as line (line)}
+                    <p class="mt-1 text-xs text-muted-foreground">Admin page: {line}</p>
                   {/each}
                 </TableCell>
                 <TableCell class="font-mono text-xs">{p.sourcePath ?? "—"}</TableCell>

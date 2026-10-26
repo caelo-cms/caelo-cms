@@ -398,7 +398,7 @@ function makeScopedQuery(
       filter?: PluginQueryFilter,
     ): Promise<T[]> => {
       const columns = tableColumns("list", table);
-      const reserved = new Set(["limit", "orderBy", "orderDir", "since"]);
+      const reserved = new Set(["limit", "orderBy", "orderDir", "since", "before"]);
       for (const [k, v] of Object.entries(filter ?? {})) {
         if (k === "limit" && (typeof v !== "number" || v <= 0 || v > 1000)) {
           throw new Error(`${scope.label}.list: limit must be 1..1000`);
@@ -412,12 +412,12 @@ function makeScopedQuery(
         if (k === "orderDir" && v !== "asc" && v !== "desc") {
           throw new Error(`${scope.label}.list: orderDir must be asc|desc`);
         }
-        if (k === "since") {
+        if (k === "since" || k === "before") {
           if (typeof v !== "string") {
-            throw new Error(`${scope.label}.list: since must be ISO timestamp string`);
+            throw new Error(`${scope.label}.list: ${k} must be ISO timestamp string`);
           }
           if (!("created_at" in columns)) {
-            throw new Error(`${scope.label}.list: \`since\` requires a created_at column`);
+            throw new Error(`${scope.label}.list: \`${k}\` requires a created_at column`);
           }
         }
         if (!reserved.has(k)) assertDeclared("list", table, columns, [k]);

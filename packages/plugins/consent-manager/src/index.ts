@@ -40,7 +40,7 @@ import {
   z,
 } from "@caelo-cms/plugin-sdk";
 import { DEFAULT_CATEGORIES } from "./categories.js";
-import { consentStats, describeConsentLog } from "./consent-log.js";
+import { consentLogCsv, consentLogPage, consentStats, describeConsentLog } from "./consent-log.js";
 import {
   CONSENT_VENDOR_FIELDS,
   consentPurposesOf,
@@ -60,7 +60,7 @@ import {
   settingsOf,
 } from "./storage.js";
 import { addTag, bakeTags, listTags, removeTag, updateTagsMany } from "./tag-ops.js";
-import { buildTagInjector, type TagRow } from "./tags.js";
+import { buildTagInjector, describeIssues, type TagRow } from "./tags.js";
 import { CONSENT_TOOLS } from "./tools.js";
 
 const SLUG = "consent-manager";
@@ -68,6 +68,7 @@ const RECORD_ENDPOINT = `/api/plugin/${SLUG}/record_consent`;
 
 /** A visitor's decision as the runtime posts it through the gateway. */
 const recordConsentArgs = z.object({
+  consentId: z.string().uuid(),
   granted: z
     .array(
       z
@@ -78,6 +79,22 @@ const recordConsentArgs = z.object({
     .max(32),
   policyVersion: z.number().int().positive(),
 });
+
+/**
+ * What the Owner may change in the consent panel. Retention has a floor
+ * because a decision stays valid for the consent cookie's year: proof of
+ * it must outlive it, or the log cannot demonstrate a consent still in use.
+ */
+const settingsArgs = z
+  .object({
+    retentionDays: z.number().int().min(365).max(3650),
+    placeholderModuleSlug: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z0-9][a-z0-9-]*$/, "must be a module slug"),
+  })
+  .strict();
 
 /** A module's third-party hosts now, next to the verdict stored for it (if any). */
 interface EmbedScan {
@@ -323,19 +340,6 @@ async function seedDefaults(q: PluginAdminQuery): Promise<void> {
   }
 }
 
-/**
- * One CSV cell of the consent export. The rows are visitor-written
- * cms_public data (#635), and the file is meant to be opened in a
- * spreadsheet: every cell is quoted with its quotes doubled, and a value a
- * spreadsheet would run as a formula (=, +, -, @, tab, CR) is prefixed with
- * an apostrophe so it stays text.
- */
-export function csvCell(value: string | null | undefined): string {
-  const text = value ?? "";
-  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
-  return `"${safe.replaceAll('"', '""')}"`;
-}
-
 export default definePlugin<PluginContextTier1>({
   slug: SLUG,
   version: "0.1.0",
@@ -353,8 +357,8 @@ export default definePlugin<PluginContextTier1>({
   /** Proof of consent. Written by the gateway on a visitor request. */
   schema: {
     consent_log: {
-      visitor_id: "string",
-      ip_hash: "string",
+      /** Random, from the consent cookie itself; see `describeConsentLog`. */
+      consent_id: "uuid",
       granted: "jsonb",
       policy_version: "int",
       created_at: "timestamp",
@@ -523,10 +527,10 @@ export default definePlugin<PluginContextTier1>({
       const parsed = recordConsentArgs.safeParse(args);
       if (!parsed.success) {
         throw new Error(
-          "record_consent: expected `granted` as an array of category keys (at most 32) and `policyVersion` as a positive integer",
+          "record_consent: expected `consentId` as a UUID, `granted` as an array of category keys (at most 32) and `policyVersion` as a positive integer",
         );
       }
-      const { granted, policyVersion } = parsed.data;
+      const { consentId, granted, policyVersion } = parsed.data;
       const q = adminQueryOf(ctx);
       const settings = await settingsOf(q);
       if (policyVersion !== settings.policy_version) {
@@ -539,14 +543,11 @@ export default definePlugin<PluginContextTier1>({
       if (unknown.length > 0) {
         throw new Error(`record_consent: unknown consent categories: ${unknown.join(", ")}`);
       }
-      // The visitor id is present only when this very decision grants
-      // the category that covers it (#677): the gateway reads the
-      // decision cookie the runtime wrote just before posting here. A
-      // rejection is recorded without one — the record is the policy
-      // version and the categories, and that is the proof needed.
+      // The record holds the decision and the consent cookie's own random
+      // id, nothing that identifies the visitor anywhere else: the visitor
+      // id belongs to the plugins that declared it (#1136 round).
       await ctx.query.insert("consent_log", {
-        visitor_id: ctx.visitor.id,
-        ip_hash: ctx.visitor.ipHash,
+        consent_id: consentId,
         granted: [...new Set(granted)],
         policy_version: policyVersion,
       });
@@ -831,50 +832,31 @@ export default definePlugin<PluginContextTier1>({
      * No AI tool reaches it: the rows are personal data, so only the
      * Owner exports them, from the admin panel.
      */
-    export_log: async (ctx, args) => {
-      const { since, limit } = args as { since?: unknown; limit?: unknown };
-      // One under the query handle's own ceiling, because the read asks
-      // for cap+1 to learn whether more exist.
-      const cap = typeof limit === "number" && limit > 0 ? Math.min(limit, 999) : 500;
-      const rows = (await ctx.query.list("consent_log", {
-        ...(typeof since === "string" ? { since } : {}),
-        limit: cap + 1,
-        orderBy: "created_at",
-        orderDir: "desc",
-      })) as unknown as Array<{
-        /** Null when the visitor had not granted `analytics` (#677). */
-        visitor_id: string | null;
-        ip_hash: string;
-        granted: unknown;
-        policy_version: number;
-        created_at: string | Date;
-      }>;
-      const truncated = rows.length > cap;
-      const page = truncated ? rows.slice(0, cap) : rows;
-      const csv = [
-        "recorded_at,visitor_id,ip_hash,policy_version,granted",
-        ...page.map((r) =>
-          [
-            r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
-            r.visitor_id,
-            r.ip_hash,
-            String(r.policy_version),
-            (Array.isArray(r.granted) ? r.granted : []).join(" "),
-          ]
-            .map(csvCell)
-            .join(","),
-        ),
-      ].join("\n");
+    export_log: async (ctx) => consentLogCsv(ctx.query),
+
+    /** One newest-first page of the log for the Owner's consent panel. */
+    list_log: async (ctx, args) => consentLogPage(ctx.query, args),
+
+    /** The settings the Owner edits in the consent panel. */
+    get_settings: async (ctx) => {
+      const settings = await settingsOf(adminQueryOf(ctx));
       return {
-        csv,
-        rows: page.length,
-        truncated,
-        ...(truncated
-          ? {
-              note: "More records exist. Narrow with `since` (the oldest row's recorded_at) and export again.",
-            }
-          : {}),
+        retentionDays: settings.retention_days,
+        placeholderModuleSlug: settings.placeholder_module_slug,
+        policyVersion: settings.policy_version,
       };
+    },
+
+    set_settings: async (ctx, args) => {
+      const parsed = settingsArgs.safeParse(args);
+      if (!parsed.success) throw new Error(describeIssues("set_settings", parsed.error));
+      const q = adminQueryOf(ctx);
+      const settings = await settingsOf(q);
+      await q.update("settings", settings.id, {
+        retention_days: parsed.data.retentionDays,
+        placeholder_module_slug: parsed.data.placeholderModuleSlug,
+      });
+      return { retentionDays: parsed.data.retentionDays };
     },
 
     /**
@@ -962,6 +944,108 @@ export default definePlugin<PluginContextTier1>({
       policyVersion: await bumpPolicyVersion(adminQueryOf(ctx)),
     }),
   },
+
+  /**
+   * The Owner's view of the consent log. `privacy.view`, which only the
+   * Owner role holds: the log is personal data, so editors and the AI see
+   * the aggregate `consent_stats` and nothing row by row.
+   */
+  adminPanels: [
+    {
+      slug: "consent",
+      title: "Consent",
+      description:
+        "How visitors answer the cookie banner, the record of every decision, and how long it is kept.",
+      icon: "shield-check",
+      permission: "privacy.view",
+      sections: [
+        {
+          kind: "stats",
+          id: "rates",
+          title: "Last 30 days",
+          description:
+            'Share of decisions; "accept all" means every optional category the banner offers now.',
+          operation: "consent_stats",
+          args: { days: 30 },
+          items: [
+            { key: "decisions", label: "Decisions", format: "number" },
+            { key: "acceptAll.percent", label: "Accept all (%)", format: "number", decimals: 1 },
+            { key: "rejectAll.percent", label: "Reject all (%)", format: "number", decimals: 1 },
+            { key: "custom.percent", label: "Custom choice (%)", format: "number", decimals: 1 },
+          ],
+        },
+        {
+          kind: "stats",
+          id: "categories",
+          title: "Per category, last 30 days",
+          operation: "consent_stats",
+          args: { days: 30 },
+          entriesKey: "categoryShares",
+        },
+        {
+          kind: "table",
+          id: "log",
+          title: "Consent log",
+          description:
+            "Every decision, newest first: the proof of consent an authority or a data protection officer asks for.",
+          operation: "list_log",
+          rowsKey: "rows",
+          rowKey: "id",
+          emptyMessage: "No decisions recorded yet.",
+          columns: [
+            { key: "recordedAt", label: "Recorded", format: "datetime" },
+            { key: "consentId", label: "Consent id", format: "code" },
+            { key: "policyVersion", label: "Policy version", format: "number" },
+            { key: "granted", label: "Granted", format: "list" },
+          ],
+          paging: {
+            pageSize: 50,
+            limitArg: "limit",
+            cursor: { arg: "before", key: "nextBefore" },
+            hasMoreKey: "hasMore",
+          },
+          download: {
+            label: "Download CSV",
+            operation: "export_log",
+            csvKey: "csv",
+            filename: "consent-log.csv",
+          },
+        },
+        {
+          kind: "settings",
+          id: "settings",
+          title: "Settings",
+          readOperation: "get_settings",
+          writeOperation: "set_settings",
+          submitLabel: "Save",
+          successMessage: "Saved. Records older than {retentionDays} days are deleted nightly.",
+          fields: [
+            {
+              arg: "retentionDays",
+              valueKey: "retentionDays",
+              label: "Keep records for (days)",
+              description:
+                "At least a year: a decision stays valid for a year, and its record has to prove it for that long.",
+              input: "number",
+              required: true,
+              integer: true,
+              min: 365,
+              max: 3650,
+            },
+            {
+              arg: "placeholderModuleSlug",
+              valueKey: "placeholderModuleSlug",
+              label: "Placeholder module",
+              description: "The module shown in place of an embed until the visitor agrees.",
+              input: "text",
+              required: true,
+              maxLength: 120,
+            },
+          ],
+        },
+      ],
+    },
+  ],
 
   tools: CONSENT_TOOLS,
 

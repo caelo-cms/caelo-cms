@@ -52,6 +52,7 @@ export interface ListPlan {
   readonly orderBy: string | null;
   readonly orderDir: "asc" | "desc";
   readonly since: string | null;
+  readonly before: string | null;
   readonly equals: ReadonlyArray<readonly [string, unknown]>;
 }
 
@@ -444,6 +445,7 @@ export async function privateList(
     );
   }
   if (plan.since !== null) wheres.push(sql`t."created_at" > ${plan.since}`);
+  if (plan.before !== null) wheres.push(sql`t."created_at" < ${plan.before}`);
   for (const [k, v] of plan.equals) {
     wheres.push(v === null ? sql`t.${col(k)} IS NULL` : sql`t.${col(k)} = ${v}`);
   }
@@ -471,6 +473,7 @@ export async function privateList(
 
 function matches(values: Readonly<Record<string, unknown>>, plan: ListPlan): boolean {
   if (plan.since !== null && !(compare(values.created_at, plan.since) > 0)) return false;
+  if (plan.before !== null && !(compare(values.created_at, plan.before) < 0)) return false;
   return plan.equals.every(([k, v]) => sameValue(values[k], v));
 }
 

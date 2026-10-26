@@ -527,3 +527,33 @@ describe("banner CSS (#1139)", () => {
     );
   });
 });
+
+describe("the consent id in the decision cookie", () => {
+  const idOf = (h: Harness) =>
+    (JSON.parse(decodeURIComponent(h.jar.get("caelo_consent") ?? "")) as { id?: string }).id;
+
+  it("is a random UUID created on the first decision and kept by later ones", () => {
+    const { banner, accept, opener } = bannerWithOpener();
+    const h = boot({ body: [banner, opener] });
+    accept.click();
+    const first = idOf(h);
+    expect(first).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    banner.querySelector("[data-consent-reject-all]")?.click();
+    expect(idOf(h)).toBe(first);
+  });
+
+  it("survives a new policy version, so one browser's history stays one history", () => {
+    const { banner, accept, opener } = bannerWithOpener();
+    const stored = "0b1c2d3e-4f50-4617-8899-aabbccddeeff";
+    const h = boot({
+      body: [banner, opener],
+      cookies: {
+        caelo_consent: encodeURIComponent(
+          JSON.stringify({ id: stored, granted: ["necessary"], policyVersion: 0, at: "x" }),
+        ),
+      },
+    });
+    accept.click();
+    expect(idOf(h)).toBe(stored);
+  });
+});

@@ -49,7 +49,7 @@ import { jsonForInlineScript } from "./tags.js";
 
 /**
  * The first-party cookie holding the visitor's decision, as URI-encoded
- * JSON `{granted: string[], policyVersion: number, at: string}`. The API
+ * JSON `{id: string, granted: string[], policyVersion: number, at: string}`. The API
  * gateway reads it too (via `visitor_consent_rule`, #677), so the server
  * never sets the visitor-id cookie on a decision the browser did not make.
  */
@@ -192,6 +192,32 @@ function somethingLoaded() {
   return doc.querySelector('[data-caelo-hydrated="1"]') !== null;
 }
 
+/**
+ * The id that ties this browser's decisions to their records in the
+ * consent log. It is random, lives only in the consent cookie itself and
+ * survives a new policy version, so the log can show one visitor's
+ * history without the site recognising the visitor for anything else.
+ */
+function consentId() {
+  var s = readCookie();
+  if (s && typeof s.id === "string" && /^[0-9a-f-]{36}$/.test(s.id)) return s.id;
+  // randomUUID exists only in secure contexts; a staging preview served
+  // over plain http still has getRandomValues.
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  var b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  b[6] = (b[6] & 15) | 64;
+  b[8] = (b[8] & 63) | 128;
+  var hex = "";
+  for (var i = 0; i < 16; i++) hex += (b[i] < 16 ? "0" : "") + b[i].toString(16);
+  return (
+    hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" +
+    hex.slice(16, 20) + "-" + hex.slice(20)
+  );
+}
+
 function record(keys) {
   var before = granted();
   var revoked = false;
@@ -199,6 +225,7 @@ function record(keys) {
     if (keys.indexOf(before[i]) === -1) revoked = true;
   }
   var state = {
+    id: consentId(),
     granted: keys,
     policyVersion: CONFIG.policyVersion,
     at: new Date().toISOString(),
@@ -217,7 +244,11 @@ function record(keys) {
   // browser needs to act. A failed post must not undo the visitor's
   // choice, so it is reported and not retried into a loop.
   try {
-    var body = JSON.stringify({ granted: keys, policyVersion: CONFIG.policyVersion });
+    var body = JSON.stringify({
+      consentId: state.id,
+      granted: keys,
+      policyVersion: CONFIG.policyVersion,
+    });
     if (navigator.sendBeacon) {
       navigator.sendBeacon(CONFIG.recordEndpoint, new Blob([body], { type: "application/json" }));
     } else {

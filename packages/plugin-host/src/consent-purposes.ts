@@ -52,6 +52,16 @@ export function consentPurposeDeclared(key: string): boolean {
   return declaredConsentPurposes().some((p) => p.key === key);
 }
 
+/**
+ * Whether `pluginSlug` itself declares the purpose `key`. The gateway
+ * hands a visitor-tracking value (the visitor id) only to the plugins that
+ * asked visitors for it; one plugin's declaration does not open the value
+ * to every other plugin on the site.
+ */
+export function pluginDeclaresConsentPurpose(pluginSlug: string, key: string): boolean {
+  return declaredConsentPurposes().some((p) => p.pluginSlug === pluginSlug && p.key === key);
+}
+
 /** The `ctx.consentPurposes` handle (capability `consent_provider`). */
 export function makePluginConsentPurposes(): PluginConsentPurposes {
   return Object.freeze({

@@ -61,6 +61,8 @@ if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !PUBLIC_URL) {
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 const SLUGS = ["consent-manager", "ratings"] as const;
 const RECORD = "/api/plugin/consent-manager/record_consent";
+/** The random id the banner keeps in caelo_consent and posts with every decision. */
+const CONSENT_ID = "0b1c2d3e-4f50-4617-8899-aabbccddeeff";
 const RATE = "/api/plugin/ratings/submit";
 
 let adminAdapter: DatabaseAdapter;
@@ -340,17 +342,17 @@ describe("no consent decision yet (#677)", () => {
 describe("rejected (#677)", () => {
   it("records the rejection without setting or storing a visitor id", async () => {
     const r = await handleRequest(
-      post(RECORD, { granted: ["necessary"], policyVersion: 1 }, [DECLINED]),
+      post(RECORD, { consentId: CONSENT_ID, granted: ["necessary"], policyVersion: 1 }, [DECLINED]),
     );
     await expectStatus(r, 200);
     expect(r.headers.getSetCookie()).toEqual([]);
-    const log = await publicRows<{ visitor_id: string | null; granted: string[] }>(
+    const log = await publicRows<{ consent_id: string; granted: string[] }>(
       "consent-manager",
       "consent_log",
     );
     const last = log.at(-1);
     expect(last?.granted).toEqual(["necessary"]);
-    expect(last?.visitor_id).toBeNull();
+    expectsOnlyTheConsentId(last);
   });
 
   it("keeps a rejecting visitor's ratings unlinked, one row per vote", async () => {
@@ -370,7 +372,11 @@ describe("accepted, then withdrawn (#677)", () => {
     const r = await handleRequest(
       post(
         RECORD,
-        { granted: ["necessary", "functional", "analytics", "marketing"], policyVersion: 1 },
+        {
+          consentId: CONSENT_ID,
+          granted: ["necessary", "functional", "analytics", "marketing"],
+          policyVersion: 1,
+        },
         [ACCEPTED],
       ),
     );
@@ -380,8 +386,10 @@ describe("accepted, then withdrawn (#677)", () => {
     const set = r.headers.getSetCookie().find((c) => c.startsWith("caelo_visitor_id="));
     expect(set).toContain("HttpOnly");
     expect(set).toContain("Max-Age=2592000");
-    const log = await publicRows<{ visitor_id: string | null }>("consent-manager", "consent_log");
-    expect(log.at(-1)?.visitor_id).toBe(visitorCookie.split(".")[0] ?? "");
+    // The visitor id is ratings' purpose, not proof of consent: the record
+    // keeps the banner's own id even when the decision mints the cookie.
+    const log = await publicRows<{ consent_id: string }>("consent-manager", "consent_log");
+    expectsOnlyTheConsentId(log.at(-1));
   });
 
   it("recognises the visitor afterwards: no new cookie, their vote is updated", async () => {
@@ -399,15 +407,15 @@ describe("accepted, then withdrawn (#677)", () => {
     // The banner rewrote caelo_consent; the HttpOnly id is still in the
     // browser until the gateway expires it — on the record_consent beacon.
     const r = await handleRequest(
-      post(RECORD, { granted: ["necessary"], policyVersion: 1 }, [
+      post(RECORD, { consentId: CONSENT_ID, granted: ["necessary"], policyVersion: 1 }, [
         DECLINED,
         `caelo_visitor_id=${visitorCookie}`,
       ]),
     );
     await expectStatus(r, 200);
     expectsVisitorCookieExpired(r);
-    const log = await publicRows<{ visitor_id: string | null }>("consent-manager", "consent_log");
-    expect(log.at(-1)?.visitor_id).toBeNull();
+    const log = await publicRows<{ consent_id: string }>("consent-manager", "consent_log");
+    expectsOnlyTheConsentId(log.at(-1));
 
     // A browser that still sends it (the expiry not applied yet) is not
     // recognised: the earlier vote is not found and updated.
@@ -492,12 +500,23 @@ describe("a consent provider that cannot answer (#677)", () => {
   });
 });
 
+/** A consent record holds the banner's consent id and no visitor or address data. */
+function expectsOnlyTheConsentId(row: Record<string, unknown> | undefined): void {
+  expect(row?.consent_id).toBe(CONSENT_ID);
+  expect(Object.keys(row ?? {})).not.toContain("visitor_id");
+  expect(Object.keys(row ?? {})).not.toContain("ip_hash");
+}
+
 /** A consented visitor's signed id cookie, minted on the consent beacon. */
 async function consentedVisitor(): Promise<string> {
   const r = await handleRequest(
     post(
       RECORD,
-      { granted: ["necessary", "functional", "analytics", "marketing"], policyVersion: 1 },
+      {
+        consentId: CONSENT_ID,
+        granted: ["necessary", "functional", "analytics", "marketing"],
+        policyVersion: 1,
+      },
       [ACCEPTED],
     ),
   );
@@ -593,19 +612,27 @@ describe("no active plugin declares the visitor-id purpose", () => {
       const fresh = await handleRequest(
         post(
           RECORD,
-          { granted: ["necessary", "functional", "analytics", "marketing"], policyVersion: 1 },
+          {
+            consentId: CONSENT_ID,
+            granted: ["necessary", "functional", "analytics", "marketing"],
+            policyVersion: 1,
+          },
           [ACCEPTED],
         ),
       );
       await expectStatus(fresh, 200);
       expect(fresh.headers.getSetCookie()).toEqual([]);
-      const log = await publicRows<{ visitor_id: string | null }>("consent-manager", "consent_log");
-      expect(log.at(-1)?.visitor_id).toBeNull();
+      const log = await publicRows<{ consent_id: string }>("consent-manager", "consent_log");
+      expectsOnlyTheConsentId(log.at(-1));
 
       const stale = await handleRequest(
         post(
           RECORD,
-          { granted: ["necessary", "functional", "analytics", "marketing"], policyVersion: 1 },
+          {
+            consentId: CONSENT_ID,
+            granted: ["necessary", "functional", "analytics", "marketing"],
+            policyVersion: 1,
+          },
           [ACCEPTED, held],
         ),
       );

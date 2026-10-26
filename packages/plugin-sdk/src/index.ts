@@ -973,7 +973,11 @@ export type PluginManifest = z.infer<typeof pluginManifest>;
  *   No raw SQL crosses the boundary — all values are parameterised.
  */
 export interface PluginQueryFilter {
+  /** Rows created strictly after this ISO timestamp. */
   readonly since?: string;
+  /** Rows created strictly before this ISO timestamp — the cursor for
+   *  paging a newest-first list (`orderBy: "created_at", orderDir: "desc"`). */
+  readonly before?: string;
   readonly limit?: number;
   readonly orderBy?: string;
   readonly orderDir?: "asc" | "desc";

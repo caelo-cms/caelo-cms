@@ -11,6 +11,7 @@ import {
   consentPurposeDeclared,
   declaredConsentPurposes,
   makePluginConsentPurposes,
+  pluginDeclaresConsentPurpose,
 } from "./consent-purposes.js";
 import {
   type LoadedPlugin,
@@ -63,6 +64,14 @@ describe("declaredConsentPurposes", () => {
       ["ratings", "visitor_id", "functional"],
     ]);
     expect(consentPurposeDeclared("visitor_id")).toBe(true);
+  });
+
+  it("answers per plugin: one plugin's declaration opens nothing to another", () => {
+    load("ratings", [VISITOR_ID]);
+    load("forms");
+    expect(pluginDeclaresConsentPurpose("ratings", "visitor_id")).toBe(true);
+    expect(pluginDeclaresConsentPurpose("forms", "visitor_id")).toBe(false);
+    expect(pluginDeclaresConsentPurpose("consent-manager", "visitor_id")).toBe(false);
   });
 
   it("drops a disabled plugin's purposes, and with them the visitor-id purpose", () => {

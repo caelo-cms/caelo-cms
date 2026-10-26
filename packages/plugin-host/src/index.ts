@@ -36,6 +36,7 @@ export {
 export {
   consentPurposeDeclared,
   declaredConsentPurposes,
+  pluginDeclaresConsentPurpose,
 } from "./consent-purposes.js";
 export {
   contentVariantProblemMarker,
