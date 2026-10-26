@@ -462,6 +462,8 @@ Every active plugin gets exactly this:
 - `ctx.theme` (read-only tokens), `ctx.visitor` (opaque visitor id, public user id, IP hash — **never** the session bearer token), `ctx.captcha` (proof verification), `ctx.api` (the plugin's own public read surface), `ctx.invocation` (who the call acts for — origin, actor, the chat's human, the chat branch).
 - Declaring `operations`, a Web Component, and `staticRender`.
 - **Visitor-facing operations** listed in `publicOperations` (default deny; §14.7).
+- **Plugin dependencies** (`requiresPlugins`): the plugin activates only while each listed plugin is active, and a required plugin cannot be disabled or uninstalled while a dependent runs. A dependency grants no access to the other plugin.
+- **Consent purposes** (`consentPurposes`): what the plugin needs the visitor's consent for, under which category (`functional`, `analytics` or `marketing` — never `necessary`, which would set a cookie unasked), and the cookies it sets. Declaring the `visitor_id` purpose is the only way the API gateway sets the `caelo_visitor_id` cookie, and it does so only for visitors who granted that category. Core itself keys nothing to the visitor cookie: rate limits use the client address, the captcha proof only its single use.
 
 ### 14.5 Grants — Owner-approved, per artifact
 
@@ -479,6 +481,7 @@ A plugin requests grants in its manifest; the Owner approves them at activation,
 | Email | Sending mail through the configured transport | Rate-limited; no transport credentials |
 | Private files | Immutable author-side files | Own files only; size quotas |
 | Client assets | A site-wide browser runtime on every page (§14.10) | Widest blast radius of any grant; shown as such at approval |
+| Consent provider | Reading the consent purposes every active plugin declares (`ctx.consentPurposes`), to ask visitors about them | Read-only, host-tagged with the declaring plugin; the provider decides what consent means for the whole site, so it is a conscious grant |
 | Contributions (head, sitemap, URL slots, data lists, domain events, deferrals) | Structured contributions core validates and renders | Never raw HTML into `<head>`; URL-shape changes are §11.A-gated (CLAUDE.md) |
 
 Hard-to-revert actions a plugin performs (e.g. a URL-strategy change) additionally go through the in-chat approval gate of CLAUDE.md §11.A, per call.
@@ -563,7 +566,7 @@ Each ships companion skills as its natural-language entry point.
 The model above is normative. Where the code does not meet it yet, this list is the source of truth, and each item is a tracked defect, not an accepted exception:
 
 - **Shipped plugins' chat tools still write their public tables live** (e.g. comment moderation from a chat). Installed plugins are refused that from a chat branch; public tables have no branch.
-- **Runtime-installed plugins can be granted only private storage, private files, image generation, read access to the font library (`font_assets`), read access to site media (`site_media_read`, #530), chat tools and companion skills so far.** Their grants are Owner receipts per artifact digest (`plugin_capability_grants`), checked inside every private-storage and private-file operation and every skill lookup; the other grants of §14.5 have no broker for them yet, and a plugin requesting one does not activate.
+- **Runtime-installed plugins can be granted only private storage, private files, image generation, read access to the font library (`font_assets`), read access to site media (`site_media_read`, #530), the consent provider's purpose list (`consent_provider`), chat tools and companion skills so far.** Their grants are Owner receipts per artifact digest (`plugin_capability_grants`), checked inside every private-storage and private-file operation and every skill lookup; the other grants of §14.5 have no broker for them yet, and a plugin requesting one does not activate.
 - **Shipped plugins run in-process and receive their capabilities at load** rather than through Owner-approved, per-artifact grants; `cms_admin` is a broad capability rather than per-domain read/write grants.
 - **A render call's `ctx.cms.call` is not refused for core writes.** Private storage refuses render and visitor writes; core operations carry no read/write marker the host could check.
 - **Host code still issues SQL directly** for plugin domain-event polling, AI cost accounting, the per-operation audit row and plugin registration in the loader. Plugin table storage itself goes through the `plugin_storage.*` / `plugin_public_storage.*` operations, which follow the branch model: chat writes land on the chat's branch with a `pluginRow` lock, Stage/publish applies them live, `chat.discard_branch` drops them, and main-line writes are snapshotted.

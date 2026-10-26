@@ -17,15 +17,17 @@
  * Each public-write request flows through (in order):
  *   1. Body-size cap (default 64 KB; 1 MB hard ceiling).
  *   2. Resolve signed visitor cookie + signed session cookie (HMAC-SHA256).
- *      The visitor id exists only with the visitor's consent to the
- *      category that covers it (#677, visitor.ts): no decision, "reject
- *      all" or no consent provider → no id, no Set-Cookie, and any id the
+ *      The visitor id exists only when an active plugin declares the
+ *      `visitor_id` consent purpose and the visitor granted its category
+ *      (#677, visitor.ts): otherwise no id, no Set-Cookie, and any id the
  *      browser still holds is expired. Tampered → a fresh id (consented).
  *   3. Honeypot edge-evict — bot-filled `hp_address` returns {ok:true}
- *      immediately, no DB writes, no audit, no rate-limit consumption.
- *   4. Per-(plugin, op, visitor) rate limit + token-bucket burst gate —
- *      keyed by client IP for every visitor the gateway does not
- *      recognise. 429 with Retry-After when exceeded.
+ *      immediately, no DB writes, no audit, only an IP-scoped rate-limit
+ *      token.
+ *   4. Per-(plugin, op, client address) rate limit + token-bucket burst
+ *      gate. Never keyed by the visitor cookie: a client sheds a cookie
+ *      at will, so a cookie-keyed budget is no limit. 429 with
+ *      Retry-After when exceeded.
  *   5. Captcha verify (when configured + plugin op opts in via
  *      `_caelo_captcha`). PoW provider in v1; Turnstile/hCaptcha later.
  *   6. Plugin host dispatch + sessionMutation cookie emission.
@@ -73,7 +75,12 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string) => SQLType } }).Bun
   url: string,
 ) => SQLType;
 
-import { ClientAddressError, clientAddress, trustedProxyHopsFromEnv } from "./client-ip.js";
+import {
+  ClientAddressError,
+  clientAddress,
+  hashClientAddress,
+  trustedProxyHopsFromEnv,
+} from "./client-ip.js";
 import {
   databaseIsolationProblems,
   GATEWAY_DATABASE_ROLES,
@@ -83,18 +90,12 @@ import { startGatewayStateGc } from "./gc.js";
 import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
 import { createMcpRouter, isMcpPath } from "./mcp/routes.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
-import {
-  type CaptchaConfig,
-  hashVisitorId,
-  issuePowChallenge,
-  verifyPowProof,
-} from "./middleware/captcha.js";
+import { type CaptchaConfig, issuePowChallenge, verifyPowProof } from "./middleware/captcha.js";
 import { checkHoneypot } from "./middleware/honeypot.js";
 import {
   consumeRateLimit,
   invalidateRateLimitSpecCache,
   ipScopedRateLimitKey,
-  rateLimitKey,
   resolveRateLimitSpec,
 } from "./middleware/rate-limit.js";
 import { signCookieValue } from "./middleware/signed-cookie.js";
@@ -111,6 +112,7 @@ import {
   type ResolvedVisitor,
   resolveVisitor,
   SESSION_COOKIE,
+  visitorIdDeclared,
 } from "./visitor.js";
 
 export {
@@ -352,6 +354,7 @@ async function resolveConsentedVisitor(
       req,
       secret: settings.cookieSecret,
       rule,
+      visitorIdDeclared: visitorIdDeclared(),
       sign: (value) => signCookieValue({ value, secret: settings.cookieSecret }),
     });
     return { ok: true, visitor };
@@ -381,7 +384,6 @@ async function resolveConsentedVisitor(
 interface RequestLogRow {
   pluginSlug: string;
   operation: string;
-  visitorIdHash: string;
   statusCode: number;
   durationMs: number;
   bodyBytes: number;
@@ -402,10 +404,10 @@ async function recordRequest(row: RequestLogRow): Promise<void> {
     await cachedAdapter.withPublicTransaction(SYSTEM_CTX, async (tx) => {
       await tx.execute(sql`
         INSERT INTO gateway_request_log (
-          plugin_slug, operation, visitor_id_hash, status_code, duration_ms,
+          plugin_slug, operation, status_code, duration_ms,
           body_bytes, was_rate_limited, was_honeypot_caught, captcha_passed, error_kind
         ) VALUES (
-          ${row.pluginSlug}, ${row.operation}, ${row.visitorIdHash}, ${row.statusCode},
+          ${row.pluginSlug}, ${row.operation}, ${row.statusCode},
           ${row.durationMs}, ${row.bodyBytes}, ${row.wasRateLimited},
           ${row.wasHoneypotCaught}, ${row.captchaPassed}, ${row.errorKind ?? null}
         )
@@ -423,7 +425,7 @@ async function recordRequest(row: RequestLogRow): Promise<void> {
 const PLUGIN_PATH_RE = /^\/api\/plugin\/([a-z][a-z0-9-]*)\/([a-z_][a-z0-9_]*)$/;
 
 /**
- * Captcha challenges one visitor (or one client address) may mint. A real
+ * Captcha challenges one client address may mint. A real
  * visitor needs one per form submission; the cap bounds the rows a flood
  * can insert into gateway_pow_challenges before the hourly GC.
  */
@@ -492,7 +494,7 @@ function resolveClientAddress<T>(lookup: () => T): Resolved<T> {
 /** The rate-limit bucket hash of `req`'s client address. */
 function clientIpHash(req: Request, conn: GatewayConnection): Resolved<string> {
   return resolveClientAddress(() =>
-    hashVisitorId(clientAddress(req, trustedProxyHopsFromEnv(process.env), conn.peerAddress)),
+    hashClientAddress(clientAddress(req, trustedProxyHopsFromEnv(process.env), conn.peerAddress)),
   );
 }
 
@@ -596,17 +598,11 @@ export async function handleRequest(
     if (!resolved.ok) return resolved.response;
     const { visitor } = resolved;
     // Each challenge is a row in gateway_pow_challenges: bound the minting
-    // per recognised visitor, else per client address (client-ip.ts).
-    let challengeKey: string;
-    if (visitor.recognised && visitor.visitorId) {
-      challengeKey = rateLimitKey("_captcha", "challenge", visitor.visitorId);
-    } else {
-      const ipHash = clientIpHash(req, conn);
-      if (!ipHash.ok) return ipHash.response;
-      challengeKey = ipScopedRateLimitKey("_captcha", "challenge", ipHash.value);
-    }
+    // per client address (client-ip.ts).
+    const ipHash = clientIpHash(req, conn);
+    if (!ipHash.ok) return ipHash.response;
     const challengeRl = await consumeRateLimit(cachedAdapter, {
-      key: challengeKey,
+      key: ipScopedRateLimitKey("_captcha", "challenge", ipHash.value),
       spec: CAPTCHA_CHALLENGE_RATE_LIMIT,
     });
     if (!challengeRl.allowed) {
@@ -625,10 +621,7 @@ export async function handleRequest(
         },
       );
     }
-    const challenge = await issuePowChallenge(cachedAdapter, {
-      config: settings.captcha,
-      visitorIdHash: visitor.visitorIdHash,
-    });
+    const challenge = await issuePowChallenge(cachedAdapter, { config: settings.captcha });
     return jsonResponse({ ok: true, data: challenge }, { setCookies: [...visitor.setCookies] });
   }
 
@@ -672,7 +665,6 @@ export async function handleRequest(
     void recordRequest({
       pluginSlug: slug,
       operation: operationName,
-      visitorIdHash: "",
       statusCode: 413,
       durationMs: Math.round(performance.now() - start),
       bodyBytes: cap.bytes,
@@ -708,31 +700,20 @@ export async function handleRequest(
   const { visitor } = resolved;
   const cookies: string[] = [...visitor.setCookies];
 
-  // P13 audit re-pass — derive an IP-scoped key once. Used on:
-  //   (a) the honeypot branch (so bots can't inflate gateway_rate_limit_buckets
-  //       by spinning fresh uuids — the IP pins the bucket),
-  //   (b) any request from a visitor the gateway does not recognise — no
-  //       signed cookie, a freshly minted one, or no consent to one
-  //       (#677) — so a single IP can't bypass throttling by rotating or
-  //       withholding cookies.
-  // Recognised visitors (a signed visitor cookie they already held, with
-  // consent) get the per-visitor key (fairer rate budgets when many users
-  // share an IP via NAT). The address is the one the deployment's proxies
-  // vouch for (client-ip.ts), never an entry the client wrote.
+  // Every rate limit is keyed by the client address the deployment's
+  // proxies vouch for (client-ip.ts), never by an entry the client wrote
+  // and never by the visitor cookie: a client can drop, rotate or withhold
+  // a cookie at will, so a cookie-keyed budget would be no limit at all.
+  // Visitors behind one NAT share a budget — the usual trade-off.
   const resolvedIp = clientIpHash(req, conn);
   if (!resolvedIp.ok) return resolvedIp.response;
   const ipHash = resolvedIp.value;
-  const visitorRateKey =
-    visitor.recognised && visitor.visitorId
-      ? rateLimitKey(slug, operationName, visitor.visitorId)
-      : ipScopedRateLimitKey(slug, operationName, ipHash);
+  const rateKey = ipScopedRateLimitKey(slug, operationName, ipHash);
 
   // 3. Honeypot edge-evict — lie to the bot, never touch the DB.
   // P13 audit fix #5 — DO NOT mint a fresh visitor cookie for caught
-  // bots. Issuing a stable Set-Cookie hands them a valid identity they
-  // can re-use to bypass per-visitor rate limits on real submission
-  // paths. Drop the cookies array on this branch; the bot pays a fresh
-  // PoW + rate-limit bucket on every retry.
+  // bots: nothing a bot does should hand it a stable identity. Drop the
+  // cookies array on this branch.
   // P13 audit re-pass — also consume an IP-scoped rate-limit token so
   // sustained spam from a single IP eventually gets throttled.
   const hp = checkHoneypot(body);
@@ -745,7 +726,6 @@ export async function handleRequest(
     void recordRequest({
       pluginSlug: slug,
       operation: operationName,
-      visitorIdHash: visitor.visitorIdHash,
       statusCode: 200,
       durationMs: Math.round(performance.now() - start),
       bodyBytes: cap.bytes,
@@ -762,14 +742,13 @@ export async function handleRequest(
   const plugin = loadedPlugins.bySlug(slug);
   const spec = await resolveRateLimitSpec(cachedAdapter, slug, operationName, plugin);
   const rl = await consumeRateLimit(cachedAdapter, {
-    key: visitorRateKey,
+    key: rateKey,
     spec,
   });
   if (!rl.allowed) {
     void recordRequest({
       pluginSlug: slug,
       operation: operationName,
-      visitorIdHash: visitor.visitorIdHash,
       statusCode: 429,
       durationMs: Math.round(performance.now() - start),
       bodyBytes: cap.bytes,
@@ -796,12 +775,11 @@ export async function handleRequest(
     const proof = (body as { _caelo_captcha?: { challenge: string; nonce: string } })
       ._caelo_captcha;
     if (proof) {
-      const verify = await verifyPowProof(cachedAdapter, proof, visitor.visitorIdHash);
+      const verify = await verifyPowProof(cachedAdapter, proof);
       if (!verify.ok) {
         void recordRequest({
           pluginSlug: slug,
           operation: operationName,
-          visitorIdHash: visitor.visitorIdHash,
           statusCode: 403,
           durationMs: Math.round(performance.now() - start),
           bodyBytes: cap.bytes,
@@ -872,7 +850,6 @@ export async function handleRequest(
     void recordRequest({
       pluginSlug: slug,
       operation: operationName,
-      visitorIdHash: visitor.visitorIdHash,
       statusCode: status,
       durationMs: Math.round(performance.now() - start),
       bodyBytes: cap.bytes,
@@ -886,7 +863,6 @@ export async function handleRequest(
   void recordRequest({
     pluginSlug: slug,
     operation: operationName,
-    visitorIdHash: visitor.visitorIdHash,
     statusCode: 200,
     durationMs: Math.round(performance.now() - start),
     bodyBytes: cap.bytes,

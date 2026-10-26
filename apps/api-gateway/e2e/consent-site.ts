@@ -8,18 +8,21 @@
  * Steps, in one Bun process (Playwright runs under Node and cannot):
  *
  *   1. Admin side (admin_role): activate the consent-manager plugin as an
- *      explicit hand-off (`testPlugins`), seed one published page whose
+ *      explicit hand-off (`testPlugins`) — with `CONSENT_SITE_RATINGS=1`
+ *      also the ratings plugin, which declares the `visitor_id` purpose
+ *      (`functional`) and so is what makes the gateway set
+ *      `caelo_visitor_id` at all — seed one published page whose
  *      module is a consent banner, and run the real static generator on it
  *      — the plugin's runtime is injected exactly as on a live build.
  *   2. Gateway side (public_role only, no cms_admin login, #635): the
  *      dispatch-only plugin host and `handleRequest`.
  *   3. Serve both on one port and print `READY <port> <pagePath>`.
  *
- * SIGTERM restores what it changed: the plugin's previous status, the site
+ * SIGTERM restores what it changed: the plugins' previous status, the site
  * language, and the seeded page.
  *
  * Env: ADMIN_DATABASE_URL, PUBLIC_ADMIN_DATABASE_URL,
- * PUBLIC_DATABASE_URL.
+ * PUBLIC_DATABASE_URL, optional CONSENT_SITE_RATINGS=1.
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -34,6 +37,7 @@ import {
   registerGatewayOperations,
   resetPluginHost,
 } from "@caelo-cms/plugin-host";
+import ratingsPlugin from "@caelo-cms/plugin-ratings";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { generateSite, pageOutputPath } from "@caelo-cms/static-generator";
@@ -62,12 +66,19 @@ const SYSTEM: ExecutionContext = {
   actorKind: "system",
   requestId: "e2e-677-consent-site",
 };
+const WITH_RATINGS = process.env.CONSENT_SITE_RATINGS === "1";
+// Consent-manager first: ratings requires it.
+const PLUGINS = WITH_RATINGS ? [consentPlugin, ratingsPlugin] : [consentPlugin];
+const SLUGS = PLUGINS.map((p) => p.slug);
 const PFX = `e2e677-${Date.now().toString(36)}`;
 const PAGE_PATH = `/${PFX}-page`;
 
 /** The banner as the AI authors one: the runtime binds to the attributes. */
 const BANNER_HTML = `<section data-consent-banner aria-label="Cookie consent">
   <p>We use cookies.</p>
+  <label><input type="checkbox" data-consent-category="functional"> Functional</label>
+  <label><input type="checkbox" data-consent-category="analytics"> Analytics</label>
+  <button type="button" data-consent-save>Save choice</button>
   <button type="button" data-consent-accept-all>Accept all</button>
   <button type="button" data-consent-reject-all>Reject all</button>
 </section>
@@ -86,7 +97,8 @@ async function asSystem<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
 }
 
 const before = await asSystem(async (tx) => {
-  const [plugin] = (await tx`SELECT status FROM plugins WHERE slug = 'consent-manager'`) as {
+  const plugins = (await tx`SELECT slug, status FROM plugins WHERE slug IN ${tx(SLUGS)}`) as {
+    slug: string;
     status: string;
   }[];
   const [site] =
@@ -95,9 +107,12 @@ const before = await asSystem(async (tx) => {
       site_base_url: string | null;
     }[];
   // An existing row keeps its status on load (discovery never promotes);
-  // this fixture is the Owner turning it on for the test.
-  if (plugin && plugin.status !== "active") {
-    await tx`UPDATE plugins SET status = 'active' WHERE slug = 'consent-manager'`;
+  // this fixture is the Owner turning them on for the test — dependency
+  // first, in one transaction.
+  for (const plugin of plugins) {
+    if (plugin.status !== "active") {
+      await tx`UPDATE plugins SET status = 'active' WHERE slug = ${plugin.slug}`;
+    }
   }
   // A build needs both (<html lang>, canonical origin).
   if (!site?.site_language) await tx`UPDATE site_defaults SET site_language = 'en' WHERE id = 1`;
@@ -105,7 +120,7 @@ const before = await asSystem(async (tx) => {
     await tx`UPDATE site_defaults SET site_base_url = 'http://localhost' WHERE id = 1`;
   }
   return {
-    pluginStatus: plugin?.status ?? null,
+    pluginStatus: new Map(plugins.map((p) => [p.slug, p.status])),
     siteLanguage: site?.site_language ?? null,
     siteBaseUrl: site?.site_base_url ?? null,
   };
@@ -119,7 +134,10 @@ async function restore(): Promise<void> {
     await tx`DELETE FROM modules WHERE display_name LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${`${PFX}-tpl`})`;
     await tx`DELETE FROM templates WHERE slug = ${`${PFX}-tpl`}`;
-    await tx`UPDATE plugins SET status = ${before.pluginStatus ?? "awaiting_activation"} WHERE slug = 'consent-manager'`;
+    // Dependents first: ratings requires consent-manager.
+    for (const slug of [...SLUGS].reverse()) {
+      await tx`UPDATE plugins SET status = ${before.pluginStatus.get(slug) ?? "awaiting_activation"} WHERE slug = ${slug}`;
+    }
     await tx`UPDATE site_defaults SET site_language = ${before.siteLanguage}, site_base_url = ${before.siteBaseUrl} WHERE id = 1`;
   });
 }
@@ -137,10 +155,10 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
     infra: { adapter: adminAdapter, registry: adminRegistry },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM.actorId,
-    testPlugins: [{ definition: consentPlugin }],
+    testPlugins: PLUGINS.map((definition) => ({ definition })),
   });
-  if (adminReport.loaded.length !== 1) {
-    throw new Error(`consent-manager did not load: ${JSON.stringify(adminReport)}`);
+  if (adminReport.loaded.length !== PLUGINS.length) {
+    throw new Error(`${SLUGS.join(" + ")} did not load: ${JSON.stringify(adminReport)}`);
   }
 
   const tpl = await execute(adminRegistry, adminAdapter, SYSTEM, "templates.create", {
@@ -218,10 +236,12 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
     infra: { adapter: gatewayAdapter, registry: gatewayRegistry },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM.actorId,
-    testPlugins: [{ definition: consentPlugin }],
+    testPlugins: PLUGINS.map((definition) => ({ definition })),
   });
-  if (gatewayReport.loaded.length !== 1) {
-    throw new Error(`gateway did not attach consent-manager: ${JSON.stringify(gatewayReport)}`);
+  if (gatewayReport.loaded.length !== PLUGINS.length) {
+    throw new Error(
+      `gateway did not attach ${SLUGS.join(" + ")}: ${JSON.stringify(gatewayReport)}`,
+    );
   }
   return { buildDir: built.buildDir, gatewayAdapter };
 }

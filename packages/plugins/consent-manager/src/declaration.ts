@@ -17,40 +17,32 @@
  * rules on it, so neither may the banner.
  */
 
-import type { PluginAdminQuery, PluginListSourceSpec } from "@caelo-cms/plugin-sdk";
+import type {
+  DeclaredConsentPurpose,
+  PluginAdminQuery,
+  PluginContextTier1,
+  PluginListSourceSpec,
+} from "@caelo-cms/plugin-sdk";
 import type { CategoryRow } from "./categories.js";
 import { CONSENT_COOKIE } from "./runtime.js";
 import { isoDate, type SettingsRow } from "./storage.js";
 import { type CookieDecl, cookieLabel, defaultLegalBasis, type TagRow } from "./tags.js";
 
 /**
- * A consent purpose another active plugin declared (part C of the
- * consent round adds the handle to the SDK). Declared here so this
- * plugin compiles against the shape it consumes; reconciled with the
- * SDK type on merge.
- */
-export interface DeclaredConsentPurpose {
-  readonly pluginSlug: string;
-  readonly key: string;
-  readonly category: string;
-  readonly purpose: string;
-  readonly cookies: ReadonlyArray<{ name: string; lifetime: string; purpose: string }>;
-}
-
-interface ConsentPurposesHandle {
-  list(): Promise<ReadonlyArray<DeclaredConsentPurpose>>;
-}
-
-/**
- * The purposes other plugins declared. A host without the handle (one
- * that predates plugin consent purposes) has none to declare, so the
- * answer is genuinely empty rather than substituted.
+ * The purposes the active plugins declared, read through the
+ * `consent_provider` grant. Missing means the grant was not given, and a
+ * consent provider that cannot see what the site asks visitors for would
+ * offer the wrong choices, so that fails loudly (CLAUDE.md §2).
  */
 export async function consentPurposesOf(
-  ctx: unknown,
+  ctx: PluginContextTier1,
 ): Promise<ReadonlyArray<DeclaredConsentPurpose>> {
-  const handle = (ctx as { consentPurposes?: ConsentPurposesHandle }).consentPurposes;
-  return handle ? handle.list() : [];
+  if (!ctx.consentPurposes) {
+    throw new Error(
+      "consent-manager: ctx.consentPurposes missing — the consent_provider capability was not granted. Approve that grant for consent-manager at /settings/plugins.",
+    );
+  }
+  return ctx.consentPurposes.list();
 }
 
 /**

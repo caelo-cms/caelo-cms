@@ -39,7 +39,28 @@
     return Array.isArray(caps) ? caps.filter((c): c is string => typeof c === "string") : [];
   }
 
+  /** What the manifest asks visitors to consent to, one line per purpose. */
+  function consentPurposesOf(manifestJson: unknown): string[] {
+    if (manifestJson === null || typeof manifestJson !== "object") return [];
+    const raw = (manifestJson as { consentPurposes?: unknown }).consentPurposes;
+    if (!Array.isArray(raw)) return [];
+    return raw.map((p: { key?: unknown; category?: unknown; cookies?: unknown }) => {
+      const cookies = Array.isArray(p.cookies)
+        ? p.cookies.map((c: { name?: unknown }) => String(c?.name ?? "")).join(", ")
+        : "";
+      return `${String(p.key)} — ${String(p.category)}${cookies ? ` (${cookies})` : ""}`;
+    });
+  }
+
   let { data, form } = $props();
+
+  /** The required plugins of `p` that are not active yet, in manifest order. */
+  function inactiveRequirements(p: { requiresPlugins: string[] }): string[] {
+    const active = new Set(
+      [...data.tier1, ...data.tier2Active].filter((x) => x.status === "active").map((x) => x.slug),
+    );
+    return p.requiresPlugins.filter((slug) => !active.has(slug));
+  }
 
   function fmtTime(s: string | null): string {
     if (!s) return "—";
@@ -161,6 +182,19 @@
                       {/each}
                     </div>
                   {/if}
+                  {#if p.requiresPlugins.length > 0}
+                    <p class="mt-1 text-xs" data-testid="requires-{p.slug}">
+                      Requires: <span class="font-mono">{p.requiresPlugins.join(", ")}</span>
+                    </p>
+                  {/if}
+                  {#if p.requiredBy.length > 0}
+                    <p class="mt-1 text-xs text-muted-foreground" data-testid="required-by-{p.slug}">
+                      Required by: <span class="font-mono">{p.requiredBy.join(", ")}</span>
+                    </p>
+                  {/if}
+                  {#each consentPurposesOf(p.manifestJson) as line (line)}
+                    <p class="mt-1 text-xs text-muted-foreground">Asks visitors: {line}</p>
+                  {/each}
                 </TableCell>
                 <TableCell class="font-mono text-xs">{p.sourcePath ?? "—"}</TableCell>
                 <TableCell>
@@ -201,6 +235,11 @@
                         Activate
                       </Button>
                     </form>
+                    {#if inactiveRequirements(p).length > 0}
+                      <p class="mt-1 text-xs text-muted-foreground">
+                        Activate {inactiveRequirements(p).join(", ")} first.
+                      </p>
+                    {/if}
                   {/if}
                 </TableCell>
               </TableRow>

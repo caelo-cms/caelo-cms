@@ -37,6 +37,7 @@ export function externalPluginDefinition(opts: {
         "private_files",
         "image_generation",
         "site_media_read",
+        "consent_provider",
       ].includes(capability)
     )
       throw new Error(`External capability broker unavailable: ${capability}`);
@@ -74,6 +75,8 @@ export function externalPluginDefinition(opts: {
     // Admin panels are reviewed manifest data: an installed plugin gets
     // the same admin pages a shipped one declares (one plugin model).
     ...(manifest.adminPanels ? { adminPanels: manifest.adminPanels } : {}),
+    requiresPlugins: manifest.requiresPlugins,
+    consentPurposes: manifest.consentPurposes,
     // Epic #1107 — the Stage-audit hook is a manifest field, so a
     // runtime-installed plugin contributes findings like a shipped one.
     ...(manifest.auditFindingsOperation

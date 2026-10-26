@@ -73,6 +73,7 @@ import { pluginListSourcesRegistry } from "./list-sources.js";
 import { describeLoadError } from "./load-error.js";
 import { loadReported, reportLoadFailure } from "./load-outcome.js";
 import { resetLocalLoadOutcomes } from "./local-availability.js";
+import { inactiveRequiredPlugins, requirementsMessage } from "./plugin-dependencies.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import {
   inPhase,
@@ -437,6 +438,7 @@ async function loadTier2Row(
     }
     return { approval, definition };
   });
+  await assertRequiredPluginsActive(opts.infra, opts.systemActorId, definition);
   // Both the registry and in-chat activation paths use this idempotent provisioning.
   const emitted = schemaFromSpec({
     pluginId: row.id,
@@ -756,6 +758,7 @@ export async function activateApprovedExternalPlugin(
       "private_files",
       "image_generation",
       "site_media_read",
+      "consent_provider",
     ]);
     for (const capability of manifest.requestedCapabilities ?? [])
       if (!supported.has(capability))
@@ -882,6 +885,35 @@ interface RegisterOpts {
 interface RegisterOutcome {
   readonly plugin: LoadedPlugin | null;
   readonly status: string;
+}
+
+/**
+ * Refuse to load an active plugin whose `requiresPlugins` are not all
+ * active. The activation ops already refuse that state, so reaching it
+ * means a row was changed around them; the plugin then does not run, and
+ * the failure is recorded on it (plugin_errors / plugin_runtime) for the
+ * Owner to see. Its status stays theirs to change (CLAUDE.md §2, #1008).
+ *
+ * @throws PluginLoadError (phase `register`) naming the dependency to activate.
+ */
+async function assertRequiredPluginsActive(
+  infra: PluginHostInfra,
+  systemActorId: string,
+  def: { readonly slug: string; readonly requiresPlugins?: ReadonlyArray<string> },
+): Promise<void> {
+  const required = def.requiresPlugins ?? [];
+  if (required.length === 0) return;
+  const missing = await infra.adapter.withAdminTransaction(
+    { actorId: systemActorId, actorKind: "system", requestId: `plugin-requires-${def.slug}` },
+    (tx) => inactiveRequiredPlugins(tx, required),
+  );
+  if (missing.length === 0) return;
+  throw new PluginLoadError(
+    "register",
+    new Error(
+      `${requirementsMessage(def.slug, missing)} It is active, so it was not loaded until then.`,
+    ),
+  );
 }
 
 /**
@@ -1087,6 +1119,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   if (persistedStatus !== "active") {
     return { plugin: null, status: persistedStatus };
   }
+  await assertRequiredPluginsActive(opts.infra, opts.systemActorId, def);
 
   // #390 — claim URL slots. Exclusive: a conflict throws here and
   // surfaces to the Owner as "conflicts with <holder>". Claimed only
