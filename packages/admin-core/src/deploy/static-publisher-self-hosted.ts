@@ -147,7 +147,7 @@ export const selfHostedStaticPublisher: StaticPublisher = {
    * rollback. The archive is a complete build, so the new one is too, and
    * a later rollback to this run finds it.
    */
-  async publishPluginData({ target, live, runId, files }) {
+  async publishPluginData({ target, live, runId, files, pruneBuildIds }) {
     if (!existsSync(join(live.localBuildDir, "routing-manifest.json"))) {
       throw new Error(
         `self-hosted publisher: the archive of the live build (${live.localBuildDir}) is missing, so there is nothing to publish plugin data on top of. Publish live again; the next plugin-data build then starts from that build.`,
@@ -168,6 +168,13 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     const currentDir = join(dirname(dirname(live.localBuildDir)), "current");
     await mkdir(currentDir, { recursive: true });
     await syncContentsInto(buildDir, currentDir);
+    // Each plugin-data build is a full copy of the site and the generator's
+    // retention never sees them (they bypass it): drop the older ones the
+    // caller named, so a busy comment section cannot fill the disk.
+    for (const id of pruneBuildIds) {
+      if (id === runId || id === live.buildId) continue;
+      await rm(insideBuild(dirname(live.localBuildDir), id), { recursive: true, force: true });
+    }
     return {
       provider: "self-hosted",
       uploadedCount: files.size,

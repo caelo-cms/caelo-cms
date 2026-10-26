@@ -298,7 +298,15 @@ export const listDeployRunsOp = defineOperation({
   // them.
   actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
-  input: z.object({ limit: z.number().int().min(1).max(200).default(50) }),
+  input: z.object({
+    limit: z.number().int().min(1).max(200).default(50),
+    /**
+     * #1155 — only runs of this kind. Readers of "what a human last staged
+     * and published" pass `site`: plugin-data builds run every tick and
+     * would otherwise push those runs out of the window.
+     */
+    buildKind: z.enum(["site", "plugin_data"]).optional(),
+  }),
   output: z.object({ runs: z.array(runRow) }),
   handler: async (_ctx, input, tx) => {
     const rows = (await tx.execute(sql`
@@ -312,6 +320,7 @@ export const listDeployRunsOp = defineOperation({
              r.page_count, r.file_count, r.error_message,
              r.build_id, r.progress, r.build_kind
       FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+      ${input.buildKind ? sql`WHERE r.build_kind = ${input.buildKind}` : sql``}
       ORDER BY r.started_at DESC
       LIMIT ${input.limit}
     `)) as unknown as RunDbRow[];
@@ -1604,13 +1613,13 @@ export const rollbackDeployOp = defineOperation({
       });
     }
     const priorRows = (await tx.execute(sql`
-      SELECT build_id, publish_summary->>'location' AS location FROM deploy_runs
+      SELECT build_id, publish_summary->>'location' AS location, caelo_version FROM deploy_runs
       WHERE id = ${input.runId}::uuid
         AND target_id = ${target.id}::uuid
         AND status = 'succeeded'
         AND build_id IS NOT NULL
       LIMIT 1
-    `)) as unknown as { build_id: string; location: string | null }[];
+    `)) as unknown as { build_id: string; location: string | null; caelo_version: string | null }[];
     const buildId = priorRows[0]?.build_id;
     if (!buildId) {
       return err({
@@ -1649,11 +1658,15 @@ export const rollbackDeployOp = defineOperation({
     // the Hosting version the rollback created). Recording it makes this
     // run itself a valid rollback source later — without it the Firebase
     // publisher refuses a run with no `publish_summary.location`.
+    // #1155 — and the Caelo version that rendered the restored build: it
+    // is what is live now, and a plugin-data build refreshes regions only
+    // while the running version rendered the live build.
     const newRunRows = (await tx.execute(sql`
       INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id,
-                               publish_summary)
+                               publish_summary, caelo_version)
       VALUES (${target.id}::uuid, ${ctx.actorId}::uuid, 'succeeded', ${startedAt}::timestamptz,
-              clock_timestamp(), ${buildId}, ${jsonbParam(summary)})
+              clock_timestamp(), ${buildId}, ${jsonbParam(summary)},
+              ${priorRows[0]?.caelo_version ?? null})
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const newRunId = newRunRows[0]?.id ?? "";

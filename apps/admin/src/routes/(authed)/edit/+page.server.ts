@@ -431,8 +431,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     null;
   let productionMatchesStaging: boolean | null = null;
   try {
+    // #1155 — site builds only: plugin-data builds run every tick and
+    // would push the last Stage and Publish live out of the window.
     const recentR = await execute(registry, adapter, locals.ctx, "deploy.list_runs", {
       limit: 20,
+      buildKind: "site",
     });
     if (recentR.ok) {
       const v = recentR.value as {
@@ -442,7 +445,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
           status: string;
           finishedAt: string | null;
           buildId: string | null;
-          buildKind: "site" | "plugin_data";
           publishSummary?: { previewUrl?: string };
         }[];
       };
@@ -465,14 +467,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       // for direct production triggers (rebake from main) it's a fresh
       // build_id. We compare against lastStaged.runId to decide whether
       // live is currently in sync with the latest staged build.
-      // #1155 — a plugin-data build republishes that build with fresher
-      // plugin data only; what a human last published is the run before it.
       const p = v.runs.find(
-        (row) =>
-          row.targetName === "production" &&
-          row.status === "succeeded" &&
-          row.finishedAt &&
-          row.buildKind !== "plugin_data",
+        (row) => row.targetName === "production" && row.status === "succeeded" && row.finishedAt,
       );
       if (p?.finishedAt) {
         lastPublishedLive = {

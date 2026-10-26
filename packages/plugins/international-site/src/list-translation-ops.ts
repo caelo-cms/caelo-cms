@@ -749,11 +749,9 @@ export async function reconcileListTranslations(
  */
 export async function lastLiveBuildAt(deps: ChromeDeps): Promise<string | null> {
   const r = await deps.cms.call<{
-    runs: { env: string; status: string; startedAt: string; buildKind: string }[];
-  }>("deploy.list_runs", { limit: 50 });
-  const live = r.runs.filter(
-    (x) => x.env === "production" && x.status === "succeeded" && x.buildKind !== "plugin_data",
-  );
+    runs: { env: string; status: string; startedAt: string }[];
+  }>("deploy.list_runs", { limit: 50, buildKind: "site" });
+  const live = r.runs.filter((x) => x.env === "production" && x.status === "succeeded");
   return live.length > 0
     ? (live
         .map((x) => x.startedAt)

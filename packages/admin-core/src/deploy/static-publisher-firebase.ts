@@ -1059,6 +1059,15 @@ export const firebaseHostingPublisher: StaticPublisher = {
     const out = new Map<string, Buffer | null>();
     await runBatched([...paths], PARALLEL_UPLOADS, async (path) => {
       const file = await readFirebaseBuiltFile(origin, path);
+      // Only "not there" means absent (a 404, or the redirect Hosting
+      // answers for a path the build lacks). Anything else — a 429, a 5xx —
+      // is a failed read: thrown, so the build fails and its marks stay
+      // pending for the next tick instead of being consumed unbaked.
+      if (!file.found && file.status !== 404 && !(file.status >= 300 && file.status < 400)) {
+        throw new Error(
+          `firebase publisher: reading ${path} from the live channel answered HTTP ${file.status}; try again on the next tick`,
+        );
+      }
       out.set(path, file.found ? file.body : null);
     });
     return out;

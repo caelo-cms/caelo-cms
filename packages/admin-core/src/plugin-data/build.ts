@@ -81,6 +81,13 @@ import { jsonbParam } from "../sql-helpers.js";
 /** At most this many stale (plugin, page) marks are baked per build. */
 export const MAX_MARKS_PER_BUILD = 2000;
 
+/**
+ * Older plugin-data archives kept per target besides the live one and the
+ * new one (self-hosted keeps a full copy of the site per build); the next
+ * plugin-data build drops the rest.
+ */
+export const PLUGIN_DATA_ARCHIVES_KEPT = 5;
+
 /** Advisory lock: one plugin-data build at a time across every admin instance. */
 const BUILD_LOCK_KEY = "caelo:plugin-data-build";
 
@@ -331,6 +338,8 @@ export const buildPluginDataOp = defineOperation({
     .object({
       /** Skip when the previous tick (any instance) ran this recently. */
       minIntervalSeconds: z.number().int().min(0).max(3600).default(240),
+      /** At most this many stale (plugin, page) marks per build (tests lower it). */
+      maxMarks: z.number().int().min(1).max(MAX_MARKS_PER_BUILD).default(MAX_MARKS_PER_BUILD),
       /** Tests: the root relative `deploy_targets.out_dir` values resolve against. */
       repoRoot: z.string().optional(),
     })
@@ -368,18 +377,20 @@ export const buildPluginDataOp = defineOperation({
     }
     if (due[0]?.due !== true) return ok(result("not_due", null));
 
-    const pending = (await tx.execute(sql`
-      SELECT plugin_id::text AS plugin_id, page_id::text AS page_id
+    // Which plugins have stale bakes — eligibility is decided per plugin
+    // BEFORE the batch is limited, so the marks of a plugin that cannot
+    // render now never take the whole batch from the ones that can.
+    const pendingPlugins = (await tx.execute(sql`
+      SELECT DISTINCT plugin_id::text AS plugin_id
       FROM plugin_data_stale_pages
       WHERE baked_through IS NULL OR last_marked_at > baked_through
-      ORDER BY last_marked_at
-      LIMIT ${MAX_MARKS_PER_BUILD}
-    `)) as unknown as { plugin_id: string; page_id: string }[];
-    if (pending.length === 0) {
+    `)) as unknown as { plugin_id: string }[];
+    if (pendingPlugins.length === 0) {
       await recordState(tx, "nothing_pending", null);
       return ok(result("nothing_pending", null));
     }
 
+    let markCount = 0;
     const finish = async (
       outcome: "unchanged" | "built" | "blocked" | "failed",
       message: string | null,
@@ -388,7 +399,7 @@ export const buildPluginDataOp = defineOperation({
       await recordState(tx, outcome, message);
       await recordAuditFromCtx(tx, ctx, {
         operation: "deploy.build_plugin_data",
-        input: { pending: pending.length },
+        input: { pendingPlugins: pendingPlugins.length, marks: markCount },
         succeeded: outcome === "unchanged" || outcome === "built",
         entityId: extra.runIds?.[0] ?? null,
         resultSummary: outcome,
@@ -411,15 +422,9 @@ export const buildPluginDataOp = defineOperation({
 
     // #1008 — re-render only plugins that run; their marks wait otherwise.
     const problems = new Map((await activePluginProblems(tx)).map((p) => [p.slug, p.reason]));
-    const byPlugin = new Map<string, Set<string>>();
-    for (const row of pending) {
-      const set = byPlugin.get(row.plugin_id) ?? new Set<string>();
-      set.add(row.page_id);
-      byPlugin.set(row.plugin_id, set);
-    }
-    const renderable: RenderablePlugin[] = [];
+    const eligible = new Map<string, Omit<RenderablePlugin, "pages">>();
     const waiting: string[] = [];
-    for (const [pluginId, pages] of byPlugin) {
+    for (const { plugin_id: pluginId } of pendingPlugins) {
       const plugin = bakedDataPlugin(pluginId);
       if (!plugin) {
         waiting.push(`plugin ${pluginId} (not running on this server, or declares no baked data)`);
@@ -430,14 +435,35 @@ export const buildPluginDataOp = defineOperation({
         waiting.push(`"${plugin.slug}" (${problem})`);
         continue;
       }
-      renderable.push({ ...plugin, pages });
+      eligible.set(pluginId, plugin);
     }
     const waitingNote =
       waiting.length > 0
         ? `Waiting for ${waiting.join("; ")} — their pages are baked once they run.`
         : null;
-    if (renderable.length === 0) {
+    if (eligible.size === 0) {
       return ok(await finish("blocked", waitingNote));
+    }
+
+    const pending = (await tx.execute(sql`
+      SELECT plugin_id::text AS plugin_id, page_id::text AS page_id
+      FROM plugin_data_stale_pages
+      WHERE (baked_through IS NULL OR last_marked_at > baked_through)
+        AND plugin_id = ANY(${uuidList([...eligible.keys()])})
+      ORDER BY last_marked_at
+      LIMIT ${input.maxMarks}
+    `)) as unknown as { plugin_id: string; page_id: string }[];
+    markCount = pending.length;
+    const byPlugin = new Map<string, Set<string>>();
+    for (const row of pending) {
+      const set = byPlugin.get(row.plugin_id) ?? new Set<string>();
+      set.add(row.page_id);
+      byPlugin.set(row.plugin_id, set);
+    }
+    const renderable: RenderablePlugin[] = [];
+    for (const [pluginId, pages] of byPlugin) {
+      const plugin = eligible.get(pluginId);
+      if (plugin) renderable.push({ ...plugin, pages });
     }
 
     // The bake's `data-baked-at`: the database clock BEFORE any plugin data
@@ -543,12 +569,21 @@ export const buildPluginDataOp = defineOperation({
         plugins: renderable.map((p) => ({ slug: p.slug, version: p.version, pages: p.pages.size })),
         dataAsOf: bakedAt,
       };
+      // The live build (which may itself be one) is never dropped.
+      const older = (await tx.execute(sql`
+        SELECT build_id FROM deploy_runs
+        WHERE target_id = ${t.id}::uuid AND build_kind = 'plugin_data' AND status = 'succeeded'
+          AND build_id IS NOT NULL AND build_id <> ${liveRow.build_id}
+        ORDER BY finished_at DESC NULLS LAST, started_at DESC
+        OFFSET ${PLUGIN_DATA_ARCHIVES_KEPT}
+      `)) as unknown as { build_id: string }[];
       try {
         const summary = await publisher.publishPluginData({
           target,
           live,
           runId,
           files: bake.files,
+          pruneBuildIds: older.map((r) => r.build_id),
         });
         timer.lap(`publish:${t.name}`);
         await tx.execute(sql`

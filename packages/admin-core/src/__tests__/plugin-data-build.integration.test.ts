@@ -40,6 +40,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { findBakeRegions, replaceBakeRegions } from "@caelo-cms/static-generator";
 import { SQL } from "bun";
 import { setDeployBridge } from "../ops/deploy.js";
+import { PLUGIN_DATA_ARCHIVES_KEPT } from "../plugin-data/build.js";
 import { runPluginDataBuildIfDue } from "../plugin-data/worker.js";
 import { publishProjectionOnce } from "../public-projection.js";
 import { registerAdminOps } from "../register.js";
@@ -65,6 +66,7 @@ const HOME_SLUG = "home";
 const ABOUT_SLUG = "t1155-about";
 const SECRET_SLUG = "t1155-unpublished";
 const UNKNOWN_PAGE = "11550000-0000-4000-8000-000000000001";
+const GHOST = "t1155-ghost";
 
 /** What the fixture plugin bakes; the test appends as "approvals" happen. */
 const entries: string[] = ["first entry"];
@@ -152,7 +154,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM audit_events WHERE actor_id IN (
       SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${PLUGIN}))`;
     await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${PLUGIN})`;
-    await tx`DELETE FROM plugins WHERE slug = ${PLUGIN}`;
+    await tx`DELETE FROM plugins WHERE slug IN (${PLUGIN}, ${GHOST})`;
   });
 }
 
@@ -644,5 +646,90 @@ describe("#1155 — plugin data reaches the HTML without publishing anything els
     expect(r.message).toContain(`${PLUGIN}@0.0.9`);
     const after = await readFile(archived, "utf8");
     expect(after).not.toContain("tenth entry");
+    // Back to the running version's region; the next tick bakes the entry.
+    await writeFile(archived, html, "utf8");
+    await approve("tenth entry, again");
+    expect((await tick()).outcome).toBe("built");
+  });
+
+  it("a plugin that cannot render does not take the batch from one that can (review #1170)", async () => {
+    // An active plugin this host does not run, with the OLDEST stale mark.
+    await sqlSystem(async (tx) => {
+      const [g] = (await tx`
+        INSERT INTO plugins (slug, version, tier, status, manifest_json, manifest_signature, submitted_by, activated_at)
+        VALUES (${GHOST}, '0.1.0', 1, 'active', '{}'::jsonb, 'sig', ${SYSTEM_ACTOR_ID}::uuid, now())
+        RETURNING id::text AS id`) as { id: string }[];
+      await tx`
+        INSERT INTO plugin_data_stale_pages (plugin_id, page_id, first_marked_at, last_marked_at, last_source)
+        VALUES (${g?.id ?? ""}::uuid, ${homeId}::uuid, now() - interval '1 day', now() - interval '1 day', 'operation')`;
+    });
+    try {
+      await approve("eleventh entry");
+      // A batch of one: before the fix it was always the ghost's mark.
+      const r = await runPluginDataBuildIfDue({
+        adapter,
+        registry,
+        minIntervalSeconds: 0,
+        maxMarks: 1,
+        repoRoot: testRoot,
+      });
+      expect(r.outcome).toBe("built");
+      expect(r.message).toContain("Waiting for");
+      const home = (await filesUnder(join(productionDir(), "current"))).get(
+        await homeOutputPath(join(productionDir(), "current")),
+      );
+      expect(home?.toString("utf8")).toContain("eleventh entry");
+    } finally {
+      await sqlSystem((tx) => tx`DELETE FROM plugins WHERE slug = ${GHOST}`);
+    }
+  });
+
+  it("keeps a bounded number of plugin-data archives (review #1170)", async () => {
+    for (let i = 0; i < PLUGIN_DATA_ARCHIVES_KEPT + 2; i += 1) {
+      await approve(`retention entry ${i}`);
+      expect((await tick()).outcome).toBe("built");
+    }
+    const runs = await pluginDataRuns();
+    expect(runs.length).toBeGreaterThan(PLUGIN_DATA_ARCHIVES_KEPT + 2);
+    const dirs = new Set(await readdir(join(productionDir(), "builds")));
+    const archived = runs.filter((r) => dirs.has(r.build_id));
+    // The live one, the newest and the kept older ones — nothing more.
+    expect(archived.length).toBeLessThanOrEqual(PLUGIN_DATA_ARCHIVES_KEPT + 2);
+    expect(dirs.has(runs.at(-1)?.build_id ?? "")).toBe(true);
+  });
+
+  it("publication history is not crowded out by plugin-data builds (review #1170)", async () => {
+    const all = await ok<{ runs: { buildKind: string }[] }>("deploy.list_runs", { limit: 1 });
+    expect(all.runs[0]?.buildKind).toBe("plugin_data");
+    const site = await ok<{ runs: { buildKind: string; targetName: string }[] }>(
+      "deploy.list_runs",
+      { limit: 2, buildKind: "site" },
+    );
+    expect(site.runs.map((r) => r.buildKind)).toEqual(["site", "site"]);
+  });
+
+  it("after a rollback, plugin data keeps reaching the HTML (review #1170)", async () => {
+    await ok("deploy.rollback", {
+      targetName: "production",
+      runId: published.id,
+      repoRoot: testRoot,
+    });
+    // The rollback run carries the restored build's Caelo version …
+    const rows = await sqlSystem(
+      async (tx) =>
+        (await tx`
+          SELECT r.caelo_version FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
+          WHERE t.env = 'production' AND r.status = 'succeeded'
+          ORDER BY r.finished_at DESC LIMIT 1
+        `) as { caelo_version: string | null }[],
+    );
+    expect(rows[0]?.caelo_version).not.toBeNull();
+    // … so the next tick re-bakes on top of it instead of blocking.
+    const r = await tick();
+    expect(r.outcome).toBe("built");
+    const home = (await filesUnder(join(productionDir(), "current"))).get(
+      await homeOutputPath(join(productionDir(), "current")),
+    );
+    expect(home?.toString("utf8")).toContain("eleventh entry");
   });
 });

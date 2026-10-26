@@ -74,6 +74,8 @@ class FakeFirebase {
   deletedChannels: string[] = [];
   /** When each channel expires, as the live API keeps it (#969). */
   lifetimes = new FakeChannelLifetimes();
+  /** Live-channel paths that answer 503, as a transient Hosting failure would (#1155). */
+  failLiveReads = new Set<string>();
   /** Channels whose DELETE answers 503, as a transient API failure would. */
   failDelete = new Set<string>();
   private seq = 0;
@@ -114,6 +116,7 @@ class FakeFirebase {
     // #1155 — the live channel serves the live version's files.
     if (url.startsWith(LIVE_ORIGIN)) {
       const key = `/${url.slice(LIVE_ORIGIN.length)}`;
+      if (this.failLiveReads.has(key)) return new Response("", { status: 503 });
       const name = this.live[0];
       const v = name ? this.versions.get(name.split("/").pop() ?? "") : undefined;
       const hash = v?.files[key];
@@ -804,5 +807,13 @@ describe("firebaseHostingPublisher — plugin-data release (#1155)", () => {
     await expect(
       publisher.readLiveFiles({ target: PRODUCTION, live, paths: ["about/index.html"] }),
     ).rejects.toThrow(/released outside Caelo/);
+  });
+
+  it("a transient read failure throws instead of reading as an absent page", async () => {
+    const { publisher, live } = await publishLive();
+    fake.failLiveReads.add("/about/index.html");
+    await expect(
+      publisher.readLiveFiles({ target: PRODUCTION, live, paths: ["about/index.html"] }),
+    ).rejects.toThrow(/HTTP 503/);
   });
 });

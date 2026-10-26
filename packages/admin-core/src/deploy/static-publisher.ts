@@ -203,6 +203,12 @@ export interface StaticPublisher {
     live: LiveBuildRef;
     runId: string;
     files: ReadonlyMap<string, Buffer>;
+    /**
+     * Archives of older plugin-data builds to drop once this one is live
+     * (never the live one). Only a publisher that keeps a full archive per
+     * build (self-hosted) has anything to drop; the others ignore it.
+     */
+    pruneBuildIds: readonly string[];
   }): Promise<PromoteSummary>;
 
   /**

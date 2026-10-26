@@ -58,11 +58,13 @@ export async function runPluginDataBuildIfDue(deps: {
   readonly adapter: DatabaseAdapter;
   readonly registry: OperationRegistry;
   readonly minIntervalSeconds?: number;
+  readonly maxMarks?: number;
   readonly repoRoot?: string;
 }): Promise<PluginDataTickResult> {
   const hints = await ingestVisitorHints(deps.adapter, deps.registry);
   const r = await execute(deps.registry, deps.adapter, SYSTEM_CTX, "deploy.build_plugin_data", {
     minIntervalSeconds: deps.minIntervalSeconds ?? Math.floor((PLUGIN_DATA_TICK_MS * 0.8) / 1000),
+    ...(deps.maxMarks ? { maxMarks: deps.maxMarks } : {}),
     ...(deps.repoRoot ? { repoRoot: deps.repoRoot } : {}),
   });
   if (!r.ok) {
