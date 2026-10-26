@@ -33,6 +33,16 @@ describe("editModuleToolInput", () => {
     });
     expect(r.success).toBe(false);
   });
+
+  // e2e-livedit run 40351690739 — `{moduleId}` alone reached the op.
+  it("refuses an edit that changes nothing, naming what to pass", () => {
+    for (const input of [{ moduleId: UUID }, { moduleId: UUID, bindThemeLiterals: false }]) {
+      const r = editModuleToolInput.safeParse(input);
+      expect(r.success).toBe(false);
+      if (!r.success) expect(r.error.issues[0]?.message).toContain("edit_module changes nothing");
+    }
+    expect(editModuleToolInput.safeParse({ moduleId: UUID, kind: "hero" }).success).toBe(true);
+  });
 });
 
 describe("siteMemoryProposeToolInput", () => {

@@ -164,15 +164,24 @@ export function validateListItems(
               message: `invalid query: ${q.error.issues[0]?.message ?? ""}`,
             });
           }
-          for (const k of Object.keys(it.query)) {
-            if (!(node.source.editable as readonly string[]).includes(k)) {
+          // A non-editable knob sent with exactly the type's default value
+          // restates the type; it is dropped, not refused (e2e-livedit run
+          // 40360756064: a news entry repeated `page_type: "news"` and
+          // `order` from the type's defaults and the whole list was refused).
+          // A different value is still refused: it would be ignored silently.
+          const defaults = (node.source.defaults ?? {}) as Record<string, unknown>;
+          const query: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(it.query)) {
+            if ((node.source.editable as readonly string[]).includes(k)) {
+              query[k] = v;
+            } else if (JSON.stringify(v) !== JSON.stringify(defaults[k])) {
               issues.push({
                 path: `${at}.query.${k}`,
                 message: `"${k}" is not editable on "${it.node}" — editable: ${node.source.editable.join(", ") || "none"}.`,
               });
             }
           }
-          out.query = it.query;
+          out.query = query;
         }
       }
       if (it.children !== undefined && it.children.length > 0) {
