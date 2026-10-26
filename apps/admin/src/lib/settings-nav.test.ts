@@ -157,6 +157,6 @@ describe("settingsCrumbLabel", () => {
   it("names the section and its pages in the operator's words", () => {
     expect(settingsCrumbLabel("/settings")).toBe("Settings");
     expect(settingsCrumbLabel("/settings/ai")).toBe("AI provider & models");
-    expect(settingsCrumbLabel("/settings/structured/menu")).toBeNull();
+    expect(settingsCrumbLabel("/settings/no-such-section/menu")).toBeNull();
   });
 });

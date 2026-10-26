@@ -82,7 +82,6 @@ async function wipe(): Promise<void> {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM redirects WHERE from_path LIKE ${`/${PFX}-%`} OR to_path LIKE ${`/${PFX}-%`}`;
-      await tx`DELETE FROM structured_sets WHERE slug LIKE ${`${PFX}-%`}`;
       await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}-%`})`;
       await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}-%`}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug LIKE ${`${PFX}-%`})`;
@@ -204,23 +203,21 @@ describe("pages.update_many — bulk slug changes create per-page 301s (the regr
   });
 });
 
-describe("pages.update — nav links follow a slug change", () => {
-  // Since #724 the nav item stores a reference to the page, so the read
-  // shows the new path without any text rewrite.
-  it("a nav-menu href that pointed at the old URL shows the new one", async () => {
+describe("pages.update — links follow a slug change", () => {
+  // Since #724 a link stores a reference to the page, so the read shows
+  // the new path without any text rewrite.
+  it("a module link that pointed at the old URL shows the new one", async () => {
     const pageId = await makePage(`${PFX}-nav-old`);
-    const setSlug = `${PFX}-menu`;
-    const seeded = await execute(registry, adapter, SYSTEM, "structured_sets.set", {
-      kind: "nav-menu",
-      slug: setSlug,
+    const seeded = await execute(registry, adapter, SYSTEM, "modules.create", {
+      slug: `${PFX}-menu`,
       displayName: "Main",
-      items: [
-        // External: this file seeds no homepage for "/" to name (#724).
-        { label: "Home", href: "https://example.com/" },
-        { label: "Target", href: `/${PFX}-nav-old` },
-      ],
+      // External: this file seeds no homepage for "/" to name (#724).
+      html: `<nav><a href="https://example.com/">Home</a><a href="/${PFX}-nav-old">Target</a>{{note}}</nav>`,
+      // Declared fields: the extractor would otherwise lift the links out.
+      fields: [{ name: "note", kind: "text", label: "Note" }],
     });
-    expect(seeded.ok).toBe(true);
+    if (!seeded.ok) throw new Error("seed module");
+    const moduleId = (seeded.value as { moduleId: string }).moduleId;
 
     const r = await execute(registry, adapter, SYSTEM, "pages.update", {
       pageId,
@@ -228,14 +225,11 @@ describe("pages.update — nav links follow a slug change", () => {
     });
     expect(r.ok).toBe(true);
 
-    const got = await execute(registry, adapter, SYSTEM, "structured_sets.get", {
-      kind: "nav-menu",
-      slug: setSlug,
-    });
-    if (!got.ok) throw new Error("get set");
-    const items = (got.value as { set: { items: { label: string; href: string }[] } }).set.items;
-    expect(items.find((i) => i.label === "Target")?.href).toBe(`/${PFX}-nav-new`);
+    const got = await execute(registry, adapter, SYSTEM, "modules.get", { moduleId });
+    if (!got.ok) throw new Error("get module");
+    const html = (got.value as { module: { html: string } }).module.html;
+    expect(html).toContain(`<a href="/${PFX}-nav-new">Target</a>`);
     // Untouched links stay untouched.
-    expect(items.find((i) => i.label === "Home")?.href).toBe("https://example.com/");
+    expect(html).toContain('<a href="https://example.com/">Home</a>');
   });
 });

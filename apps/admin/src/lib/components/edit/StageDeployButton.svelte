@@ -133,7 +133,11 @@
   // layout-the-entity edits + module placements on layout blocks. Operator
   // doesn't have to disambiguate two flavors of "layout-y" change.
   const layoutsCount = $derived(countByKind("globals", ["layout"]));
-  const listsCount = $derived(countByKind("lists", ["structuredSet"]));
+  // Epic #1107 — shared lists sit in the `lists` group; changes to their
+  // types and to page types restructure them, so they count here too.
+  const listsCount = $derived(
+    countByKind("lists", ["list"]) + countByKind("globals", ["listType", "pageType"]),
+  );
 
   let dialogOpen = $state(false);
   /**

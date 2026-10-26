@@ -41,90 +41,6 @@ export interface MemoryRow {
 }
 
 /**
- * v0.10.20 — Build the `## Structured-data sets you can edit` block from
- * the `structured_sets.list` result. Extracted from chat-runner.ts so
- * the formatter is unit-testable without spinning up a chat session.
- *
- * v0.10.21 — Always emits the **concept primer**, even when no sets
- * exist on this install. Pre-v0.10.21 this returned `undefined` on an
- * empty list, so the AI didn't know structured-data sets existed as a
- * concept and fell back to editing the header module's HTML directly
- * when asked to "update the navigation."
- *
- * v0.10.22 — primer rewritten to reference the unified CRUD surface
- * (`list_structured_sets` / `get_structured_set` / `set_structured_set`
- * / `delete_structured_set`). The kind-specific wrappers `set_nav_menu`
- * and `update_theme` were removed; the AI uses `kind` as a discriminator
- * argument and the per-kind JSON Schema on `set_structured_set`
- * enforces the right item shape at the tool-call boundary.
- *
- * For `kind === "nav-menu"` (and only that kind), inline each item as
- * `{ label, href[, target, children: N] }` so the AI can copy-modify
- * without a `structured_sets.get` round-trip. Other kinds carry
- * larger / less-frequently-edited shapes and stay summarized to
- * bound the prompt size. Cap nav-menu inlining at 30 items per menu;
- * outliers fall back to count-only.
- */
-export function formatStructuredSetsBlock(
-  sets: readonly { kind: string; slug: string; displayName: string; items: unknown }[],
-): string {
-  const primer = [
-    "# Structured-data sets you can edit",
-    "Caelo has typed named lists for **global repeated content**: navigation menus, tags, taxonomies, and link-lists. When the user asks about any of these, prefer creating or editing a structured set over hardcoding values in module HTML — that's what these lists are for.",
-    "",
-    "Kinds: `nav-menu`, `tags`, `taxonomy`, `link-list`. Item shape is per-kind and enforced by the JSON Schema on `set_structured_set` (a mismatch is rejected at the tool boundary with a structured error). " +
-      "**Theme tokens are NOT a structured-set kind anymore (v0.11.0)** — see the `## Theme` block below; use `set_theme_tokens` for token tweaks and `propose_create_theme` to mint a new theme.",
-    "",
-    "Tools (one unified CRUD surface — `kind` is a discriminator argument):",
-    "- `list_structured_sets({ kind? })` — list sets; omit `kind` for all. Existing sets are already inlined below at session start; call this only after writes or if the listing was truncated.",
-    "- `get_structured_set({ kind, slug })` — fetch one set's items. Use before a partial update so you can merge in JS.",
-    "- `set_structured_set({ kind, slug, displayName, items })` — UPSERT. Creates the set when the slug doesn't exist; REPLACES `items` if it does (NOT append — pass the full desired list).",
-    "- `delete_structured_set({ kind, slug })` — remove a set.",
-    "",
-    "Renderer convention: a module with slug `<kind>-<slug>` auto-renders the matching `<kind>/<slug>` set. Currently only `nav-menu-<slug>` auto-wires — for the other kinds, the rendering module's HTML/JS references the items directly via the structured-sets API. To wire a brand-new nav menu onto a layout: (1) `set_structured_set({ kind: 'nav-menu', slug: 'X', displayName: '…', items: [...] })` to create the items, (2) ensure a module named `nav-menu-X` is on the layout's header (or footer) block — use `add_module` (target='layout') if it doesn't exist yet.",
-    "",
-    'If the user mentions "navigation", "the nav", "the menu", "header links", "footer menu" — that\'s a nav-menu, NOT a module to edit. Reach for `set_structured_set` with `kind: "nav-menu"` first.',
-  ].join("\n");
-  if (sets.length === 0) {
-    return [
-      primer,
-      "",
-      "_No sets exist yet on this install — create one with the tool above._",
-    ].join("\n");
-  }
-  return [
-    primer,
-    "",
-    "Existing sets on this install:",
-    ...sets.map((s) => {
-      const items = Array.isArray(s.items) ? (s.items as unknown[]) : [];
-      const header = `- ${s.kind}/${s.slug} ("${s.displayName}") — ${items.length} item${items.length === 1 ? "" : "s"}`;
-      if (s.kind !== "nav-menu" || items.length === 0 || items.length > 30) {
-        return header;
-      }
-      const lines = (
-        items as Array<{
-          label?: unknown;
-          href?: unknown;
-          target?: unknown;
-          children?: unknown;
-        }>
-      ).map((it, i) => {
-        const label = typeof it.label === "string" ? it.label : "?";
-        const href = typeof it.href === "string" ? it.href : "?";
-        const target = it.target ? `, target: "${String(it.target)}"` : "";
-        const kids =
-          Array.isArray(it.children) && it.children.length > 0
-            ? `, children: ${it.children.length}`
-            : "";
-        return `    ${i + 1}. { label: ${JSON.stringify(label)}, href: ${JSON.stringify(href)}${target}${kids} }`;
-      });
-      return `${header}:\n${lines.join("\n")}`;
-    }),
-  ].join("\n");
-}
-
-/**
  * v0.12.0 — `## Content Library` decision-support block.
  *
  * Per CLAUDE.md §1A: the AI must be able to decide *reuse the synced
@@ -272,12 +188,19 @@ const MODULE_MODEL_BLOCK = [
   "Caelo separates STRUCTURE from CONTENT:",
   "",
   "- A **module** is reusable code (HTML template + CSS + JS) plus a declared **field schema** (an array of named slots).",
-  "  Module HTML references slots as `{{fieldName}}`. Field kinds: text, richtext, url, image, number, boolean, link, **module**, **module-list**.",
+  "  Module HTML references slots as `{{fieldName}}`. Field kinds: text, richtext, url, image, number, boolean, link, **list**, **module**, **module-list**.",
+  "  A **list** field holds repeating content (menu entries, footer links, feature bullets, FAQ rows) — ONE field, never numbered scalars. It iterates with `{{#fieldName}}…{{/fieldName}}`; inside, the entry's own fields are the keys (`{{label}}`, `{{link}}`, `{{text}}`), its children iterate by the type's children name (`{{#children}}…{{/children}}`, `{{>recurse}}` for any depth), and `{{#is_current}}` / `{{#is_ancestor}}` mark the page being viewed. `{{page.title}}` / `{{page.props.x}}` read the rendering page anywhere.",
   "  The last two are NESTED module references — use `{{>fieldName}}` for a single nested module, `{{#fieldName}}…{{/fieldName}}` for a list. Value shape: `{ moduleId, contentInstanceId }`.",
   // issue #414 — {{#module-list}} semantics were previously documented only
   // in code comments; the AI needs them to author list sections correctly.
-  "  A `{{#fieldName}}` section over a **module-list** DISCARDS its inner block — write `{{#slides}}{{/slides}}` as a pure insertion marker, never put markup inside (unlike text-list/link-list sections, the inner template is NOT iterated). Each element's referenced module renders its OWN HTML in place, recursively (depth cap 8). Module-list values need a content_instance, so they render on PAGES only — `module`/`module-list` fields are rejected on layout/template chrome; use a `link-list`/`text-list` field with a `default` there.",
+  "  A `{{#fieldName}}` section over a **module-list** DISCARDS its inner block — write `{{#slides}}{{/slides}}` as a pure insertion marker, never put markup inside (unlike `list` sections, the inner template is NOT iterated). Each element's referenced module renders its OWN HTML in place, recursively (depth cap 8). Module-list values need a content_instance, so they render on PAGES only — `module`/`module-list` fields are rejected on layout/template chrome; use a `list` field there (a shared list, or a local one with a `default`).",
   "  Module-code edits stay in the shared draft until staged.",
+  // Epic #1107 — lists, list types, page types (docs/lists.md). Static on
+  // purpose: the site's actual lists and types are read with the tools.
+  "- **Lists** are the site's structured data, and the words the operator uses map onto them: a menu, the navigation, footer links, categories and tags are each a SHARED list of a fitting **list type** — there are no menu tools. A list type (list_list_types) defines the node kinds, their fields and what may nest under what: shipped `texts`, `links`, `menu` (3 levels), `categories`, `tags`; create a custom type (upsert_list_types_many) when none fits — a mega menu with columns, a team list with photo + role.",
+  "  A module `list` field binds a list one of three ways: **local** (the entries are the placement's value; on layout chrome the field `default`) when only this module shows them; **shared** (`bind:'shared'`, `list:'caelo:list/<id>'`) for anything shown in more than one place, the site navigation, or a vocabulary; **source** (`bind:'source'`) for entries generated per page — a page query (`{kind:'query', defaults:{page_type:'news', order:'published_desc', limit:3}}` = the latest news), or breadcrumbs / children / siblings / page_terms / term_pages. A list type's node can carry a source too (the 'latest news' column of a mega menu, `{{#items}}…{{/items}}`).",
+  "  Find before you mint: list_lists shows each list's purpose and which module shows it. Edit entries with patch_list_items_many (by entry id — 'add Careers under Company' is one patch); every page showing the list follows. promote_local_list turns a local list into a shared one when a second place needs it. preview_list_source shows what a query returns before you bind it.",
+  "- **Page types** say what a page IS (e.g. `news`, `product`; list_page_types shows this site's): its properties, its vocabularies (the categories / tags its pages carry as terms) and the templates it may use. Give a typed page its type (`build_page` `page.pageType`, `update_pages_many` pageType / properties / terms) — queries find pages by type and terms; an ordinary page omits pageType and gets the site's default type, and a module that sits on three news pages is a news pattern. A new kind of content is a new page type (upsert_page_types_many); a category landing page is a normal page with a `term_pages` source field.",
   // v0.12.3 (issue #106) — the type-vs-slug distinction + nested-ref
   // contract, surfaced so the AI satisfies allowedModuleTypes without a
   // round-trip.
@@ -293,7 +216,7 @@ const MODULE_MODEL_BLOCK = [
   "Tool selection:",
   "",
   "- **Creating ANY page → use `build_page` (ONE call).** It is the single page-creation tool: `modules:[]` makes an empty page shell; a populated `modules` array creates the page + every section module (each with its own semantic `fields[]`) + their content in a single all-or-nothing transaction. Do NOT hand-orchestrate a page-create + `add_module`×N + `set_page_module_content`×N chain — that is the N+1 round-trip build_page exists to replace (§11 bulk-first). Reach for `add_module` (target='page') only to add ONE more module to an already-built page.",
-  "- **Site chrome (footer, header, nav) lives in the LAYOUT — it is ONE site-wide operation.** A single `add_module` with target='layout' places the module on the layout, and a layout is shared by every page bound to it, so the chrome appears on ALL those pages at once. When the operator says \"add a footer to every page\" / \"put a nav on the whole site\", that is one `add_module` (target='layout') call — NOT a per-page loop, NOT creating pages to host it, and NEVER a subagent. A footer/header nav is a `nav-menu` structured-set (see the structured-sets guidance): `set_structured_set({kind:'nav-menu', …})` for the links, then one `add_module` (target='layout') for the rendering module. Internal links (nav items, link fields, `href`s in module HTML) are written as the page's path (`/about`, `/about#team`) and must name a page that ALREADY exists — a link to a missing page is refused, so build the pages first and link them after. The site root `/` (and `/#section`) is the exception: always valid, so the header's brand link can be written before the homepage. Caelo stores each one as a link to the page itself, so links follow renames and moves (`update_pages_many` slug, `move_pages`) on their own: never update or re-check links after moving a page. (While you rebuild a site import, a link to a page of that run is kept and converted by `resolve_import_links` at the end.)",
+  "- **Site chrome (footer, header, nav) lives in the LAYOUT — it is ONE site-wide operation.** A single `add_module` with target='layout' places the module on the layout, and a layout is shared by every page bound to it, so the chrome appears on ALL those pages at once. When the operator says \"add a footer to every page\" / \"put a nav on the whole site\", that is one `add_module` (target='layout') call — NOT a per-page loop, NOT creating pages to host it, and NEVER a subagent. A footer/header menu is a module on the layout whose links are a list (a shared list when other places show the same menu); never hardcode the links into the module HTML. Internal links (nav items, link fields, `href`s in module HTML) are written as the page's path (`/about`, `/about#team`) and must name a page that ALREADY exists — a link to a missing page is refused, so build the pages first and link them after. The site root `/` (and `/#section`) is the exception: always valid, so the header's brand link can be written before the homepage. Caelo stores each one as a link to the page itself, so links follow renames and moves (`update_pages_many` slug, `move_pages`) on their own: never update or re-check links after moving a page. (While you rebuild a site import, a link to a page of that run is kept and converted by `resolve_import_links` at the end.)",
   "- Use `edit_module` to change structure / styling / layout / the list of fields a module exposes.",
   "  → Affects every page using the module (in the shared draft until staged).",
   "- For a TARGETED tweak to existing html/css/js (a colour, a class, a string, a broken tag) → `read_content` then `edit_content` (surgical string-replace) instead of re-emitting the whole body via `edit_module`. Cheaper, and the diff is minimal + reviewable. `grep_content` finds the text across the whole catalog first when you don't know which module holds it.",
@@ -367,7 +290,7 @@ function buildToolPlaybookBlock(surface: PromptSurface, builtPageInspection: boo
     "- **Create a new page** → ONE `build_page` call (page + every section module + content, one transaction); pass `modules:[]` for an intentionally empty shell. `duplicate_page` to clone an existing page.",
     "- **Modify a page** → what changes picks the tool: text/images on ONE page → `set_page_module_content` (batch: `set_page_module_content_many`); a TARGETED code tweak to a section's html/css/js → `read_content` then `edit_content` (surgical string-replace; cheaper than a full rewrite); a wholesale INSTRUCTED redesign of a section, or its field schema → `edit_module` (affects every page using that module); exploratory design proposals / \"show me options\" → the design-preview loop (`save_design_draft` → `present_design_variants` → operator picks → `select_design_draft` → materialise; the design-preview skill carries it — variants preview in the site's real theme before anything changes); find a string across all modules → `grep_content`; page name/title/slug → `update_pages_many`; put a page under another page / regroup sections / back to top level → `move_pages` (a page's URL is its parent's URL + its slug; subtrees move with 301s; create a page directly under a parent with `build_page` `page.parentPageId`); draft/published → `set_pages_status_many`; delete → `delete_pages_many`; SEO → read pages' stored SEO + core text with ONE `get_page_seo({pageIds})`, a new page's first meta description `autofill_page_seo_many`, later changes `set_page_seo` / `optimize_page_seo`.",
     "- **Extend a page** → `add_module` routed by `target`: 'page' (this page only), 'layout' (site-wide chrome — ONE call covers all pages), 'template' (every page of one type). Rearrange with `move_module` (across blocks) / `reorder_module` (within a block); detach with `remove_module_from`.",
-    "- **Navigation / menus** → `set_structured_set({kind:'nav-menu'})` for the links (never hardcode them into module HTML); read current items first via `get_structured_set`.",
+    "- **Navigation, menus, footer links, categories, tags** → shared lists: `list_lists` → `get_list` → `patch_list_items_many` to change entries; a new menu = `upsert_lists_many` + a header/footer module on the layout whose `list` field binds it (one layout placement covers the site); a new shape (mega menu) = `upsert_list_types_many` first. Never hardcode links into module HTML. **New kind of content** (news, products, jobs) → `upsert_page_types_many` (+ a vocabulary list), then pages with `pageType`, `properties`, `terms`; 'the latest news' anywhere = a `list` field with a query source (`preview_list_source` to check it).",
     "- **Same content on N pages** → `create_content_instance` + `set_placement_content({syncMode:'synced'})` per placement; edit everywhere at once with `set_content_instance_values` (several at once: `set_content_instance_values_many`); detach one page with `fork_placement_content`.",
     "- **Import / migrate an existing site** → `propose_site_import` (Owner approves the crawl) → wait for ready_for_review → REBUILD each page with `build_page`, reading the source content via `get_import_page` (Markdown + tokens, never raw HTML) and `get_import_page_screenshot`, and pulling the page's images into the media library with `import_media_from_urls` (name the exact source URLs from the image inventory) → per page: `check_page_content_inventory` plus a visual self-check with `get_import_page_screenshot`, record findings via `add_import_page_notes`, carry each page's source meta description over with `autofill_page_seo_many` before the Stage, link to not-yet-built pages of the run by their real paths (kept as written and recorded), call `resolve_import_links` once every page is built, close with `get_import_run_report`. The site-migrate skill carries the full staged flow (homepage first → key page types → mass import).",
     "- **Media** → `find_media` (search the library), `generate_image`, `set_media_alt`. **Redirects** → `bulk_create_redirects` / `find_redirects` / `bulk_delete_redirects`. **Theme & design** → `get_theme`, `set_theme_tokens` (values AND their roles in one call), `propose_create_theme`. " +

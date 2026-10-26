@@ -16,7 +16,7 @@ export const setContentInstanceValuesManyTool = makeBulkTool({
   description:
     "Edit SEVERAL content_instances in ONE transaction — prefer this over multiple `set_content_instance_values` calls whenever you change more than one (§11 bulk-first: one round-trip + one snapshot instead of N). All-or-nothing: any invalid item aborts the whole batch (the error names `items[i]`) and nothing is written. " +
     "**Same per-item BLAST RADIUS caveat as the singular tool:** each item propagates to EVERY placement bound to that instance with sync_mode='synced' — read `## Content Library` first. `values` fully replaces existing values (zero-merge) per item. " +
-    "Each item is the exact `set_content_instance_values` shape: `{id, values, expectedVersion?, slug?, displayName?, purpose?}`." +
+    "Each item is the exact `set_content_instance_values` shape: `{id, values, expectedVersion?, slug?, displayName?, purpose?}` (list field values as there: local entries, `caelo:list/<id>` for a shared field, editable knobs for a source field)." +
     INTERNAL_LINK_CONTRACT,
   itemInputSchema: setContentInstanceValuesToolInput,
   itemJsonSchema: {

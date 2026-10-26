@@ -2,19 +2,38 @@
 
 import { describe, expect, it } from "bun:test";
 import { finalizeEditMarkers, wrapEditableValues } from "./edit-markers.js";
-import { renderTemplate } from "./template-engine.js";
+import { DEFAULT_LIST_TYPES } from "./lists/default-types.js";
+import { fixtureData } from "./lists/list-fixtures.test.js";
+import { createListRenderContext } from "./lists/resolve.js";
+import { renderTemplate, type TemplateField } from "./template-engine.js";
 
-const FIELDS = [
+const FIELDS: TemplateField[] = [
   { name: "title", kind: "text" },
-  { name: "tags", kind: "text-list" },
-  { name: "links", kind: "link-list" },
+  { name: "tags", kind: "list", listType: "texts" },
+  { name: "links", kind: "list", listType: "links" },
   { name: "photo", kind: "image" },
-] as const;
+];
+const listTypes = (slug: string) => DEFAULT_LIST_TYPES.find((t) => t.slug === slug);
+const lists = createListRenderContext(fixtureData()).forPage(null);
+
+const T1 = "00000000-0000-4000-9000-000000000001";
+const T2 = "00000000-0000-4000-9000-000000000002";
+const L1 = "00000000-0000-4000-9000-000000000003";
+const tags = (...t: string[]) =>
+  t.map((text, i) => ({ id: [T1, T2][i], node: "text", values: { text } }));
+const links = (label: string, href: string) => [
+  { id: L1, node: "link", values: { label, link: { href } } },
+];
+/** A marker path as the comment encodes it (`-` → %2D). */
+const enc = (p: string) => encodeURIComponent(p).replace(/-/g, "%2D");
 
 function render(html: string, values: Record<string, unknown>, sharedPages = 0): string {
-  const wrapped = wrapEditableValues(values, FIELDS);
-  const rendered = renderTemplate({ html, fields: [...FIELDS], contentValues: wrapped }).html;
-  return finalizeEditMarkers(rendered, "content#2", sharedPages);
+  const wrapped = wrapEditableValues(values, FIELDS, listTypes);
+  const rendered = renderTemplate({ html, fields: FIELDS, contentValues: wrapped, lists }).html;
+  return finalizeEditMarkers(rendered, "content#2", sharedPages).replace(
+    / data-caelo-list-item="[^"]*"/g,
+    "",
+  );
 }
 
 const marked = (fields: string, shared = 0) =>
@@ -34,17 +53,14 @@ describe("edit markers (#917)", () => {
     expect(render("<h1>{{title}}</h1>", { title: "Hi" }, 4)).toContain(open("title", 4));
   });
 
-  it("marks text-list items and link-list labels with their index", () => {
+  it("marks local list entries' text and link targets by entry id", () => {
     const html = render(
-      '<ul>{{#tags}}<li>{{.}}</li>{{/tags}}</ul><nav>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav>',
-      {
-        tags: ["a", "b"],
-        links: [{ label: "Docs", href: "/docs" }],
-      },
+      '<ul>{{#tags}}<li>{{text}}</li>{{/tags}}</ul><nav>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</nav>',
+      { tags: tags("a", "b"), links: links("Docs", "/docs") },
     );
-    expect(html).toContain(`<li>${open("tags.1")}b${close}</li>`);
+    expect(html).toContain(`<li>${open(enc(`tags.${T2}.text`))}b${close}</li>`);
     expect(html).toContain(
-      `<a href="/docs"${marked("href=links.0.href")}>${open("links.0.label")}Docs${close}</a>`,
+      `<a href="/docs"${marked(`href=${enc(`links.${L1}.link.href`)}`)}>${open(enc(`links.${L1}.label`))}Docs${close}</a>`,
     );
   });
 
@@ -61,12 +77,12 @@ describe("edit markers (#917)", () => {
 
   it("marks link targets, images and alt text on their tag (#918)", () => {
     const html = render(
-      '{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}<img src="{{photo}}" alt="{{title}}"/>',
-      { links: [{ label: "Docs", href: "/docs" }], photo: "/m/cup.webp", title: "A cup" },
+      '{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}<img src="{{photo}}" alt="{{title}}"/>',
+      { links: links("Docs", "/docs"), photo: "/m/cup.webp", title: "A cup" },
       2,
     );
     expect(html).toContain(
-      `<a href="/docs"${marked("href=links.0.href", 2)}>${open("links.0.label", 2)}Docs${close}</a>`,
+      `<a href="/docs"${marked(`href=${enc(`links.${L1}.link.href`)}`, 2)}>${open(enc(`links.${L1}.label`), 2)}Docs${close}</a>`,
     );
     expect(html).toContain(
       `<img src="/m/cup.webp" alt="A cup"${marked("src=photo alt=title", 2)}/>`,
@@ -80,9 +96,9 @@ describe("edit markers (#917)", () => {
   });
 
   it("does not mark values that carry markup, empty values, or non-text kinds", () => {
-    const html = render("<h1>{{title}}</h1><p>{{#tags}}{{.}}{{/tags}}</p>", {
+    const html = render("<h1>{{title}}</h1><p>{{#tags}}{{text}}{{/tags}}</p>", {
       title: "<b>Bold</b>",
-      tags: [" "],
+      tags: tags(" "),
     });
     expect(html).toBe("<h1><b>Bold</b></h1><p> </p>");
     expect(wrapEditableValues({ n: 3 }, [{ name: "n", kind: "number" }])).toEqual({ n: 3 });

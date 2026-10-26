@@ -44,6 +44,7 @@ const NON_TOOL_TERMS = new Set<string>([
   "hero_title", // example semantic field name in authoring guidance
   "primary_cta_href", // example semantic field name
   "nav_items", // example semantic field name
+  "term_pages", // a list source name (docs/lists.md §6), not a tool
 ]);
 
 function backtickedSnakeCaseTokens(src: string): Set<string> {

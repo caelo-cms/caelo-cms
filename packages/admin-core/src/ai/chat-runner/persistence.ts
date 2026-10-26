@@ -14,6 +14,7 @@ import {
   type ChatSendMessageInput,
   type ExecutionContext,
   PLUGIN_PREVIEW_REFERENCE_MARKER,
+  parseListItemAttr,
 } from "@caelo-cms/shared";
 
 import { mcpAgentOpFields } from "../../ops/chat/mcp-agent.js";
@@ -80,13 +81,32 @@ function chipLines(c: ChatChip): string {
   // set_page_module_content takes.
   const field =
     c.field && c.blockName !== undefined && c.position !== undefined
-      ? `, placement=(blockName=${c.blockName}, position=${c.position}), field=${c.field}${c.index !== undefined ? `[${c.index}]` : ""}`
+      ? `, placement=(blockName=${c.blockName}, position=${c.position}), field=${c.field}${c.item !== undefined ? `, entry=${c.item}${c.key ? `, key=${c.key}` : ""}` : ""}`
       : "";
   return [
-    `  - ${c.label} (module=${c.moduleId}${element}${field})`,
+    `  - ${c.label} (module=${c.moduleId}${element}${field}${listEntryRef(c.listItem)})`,
     ...(c.selectedText ? [`    selected text: ${JSON.stringify(c.selectedText)}`] : []),
     ...(c.context ? [`    surrounding text: ${JSON.stringify(c.context)}`] : []),
   ].join("\n");
+}
+
+/**
+ * Epic #1107 — the list entry a reference sits in, in the coordinates the
+ * list tools take: a shared list's id + entry id (read it with get_list,
+ * change it with patch_list_items_many), or the content instance + list
+ * field of a module's own list.
+ */
+function listEntryRef(attr: string | undefined): string {
+  const e = attr ? parseListItemAttr(attr) : null;
+  if (!e) return "";
+  switch (e.kind) {
+    case "shared":
+      return `, list entry=(shared list=${e.listId}, entry=${e.itemId})`;
+    case "instance":
+      return `, list entry=(content instance=${e.contentInstanceId}, list field=${e.field}, entry=${e.itemId})`;
+    case "local":
+      return `, list entry=(default of list field=${e.field}, entry=${e.itemId})`;
+  }
 }
 
 /** A decision the resume turn appends as an SDK tool-approval-response. */

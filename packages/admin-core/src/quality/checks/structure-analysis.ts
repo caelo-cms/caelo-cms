@@ -14,6 +14,14 @@
  * nested renderer (#1027) — so the walk needs no other mapping: each root,
  * nested ones included, is checked against its own template, and a parent
  * skips its nested roots.
+ *
+ * Link groups (epic #1107): per module root, the links it carries as its
+ * own data — entries of its LOCAL lists (`data-caelo-list-item`
+ * `instance/…` / `local/…`) and links hand-written in free markup. Links
+ * of a SHARED list's entries (`<listId>/<itemId>`) are excluded: two
+ * modules showing one shared list is the goal, not a copy. Links of
+ * generated entries (queries, system sources) carry no stamp and sit in
+ * the template's own markup, so they never count either.
  */
 
 import {
@@ -60,6 +68,18 @@ export interface SiblingRepeat {
   readonly count: number;
 }
 
+/** The links one module root carries as its own data on one page (epic #1107). */
+export interface LinkGroup {
+  readonly pageId: string;
+  readonly path: string;
+  readonly moduleId: string;
+  /** Distinct hrefs as rendered, sorted. */
+  readonly hrefs: readonly string[];
+}
+
+/** Fewer links than this are no navigation worth sharing (a CTA pair, a logo link). */
+export const MIN_LINK_GROUP = 3;
+
 /** Where a CSS class is used across the staged pages. */
 export interface ClassUse {
   /** Modules whose TEMPLATE renders it. */
@@ -73,19 +93,13 @@ export interface ClassUse {
 export interface StructureAnalysis {
   readonly occurrences: readonly PatternOccurrence[];
   readonly siblingRepeats: readonly SiblingRepeat[];
+  readonly linkGroups: readonly LinkGroup[];
   readonly classUse: ReadonlyMap<string, ClassUse>;
   /** Module id → the pages it is rendered on. */
   readonly placements: ReadonlyMap<string, ReadonlySet<string>>;
   /** Module id → its template's root shape (patterns only matter). */
   readonly templateShapes: ReadonlyMap<string, SubtreeShape>;
 }
-
-/**
- * Navigation menus are rendered from the `nav-menu/<slug>` structured set,
- * not from their template (preview-compose.ts lookupNavMenuItems), so
- * their output cannot be attributed to the template.
- */
-const NAV_MENU_SLUG_PREFIX = "nav-menu-";
 
 interface ParsedModule {
   readonly module: StructureModule;
@@ -104,11 +118,12 @@ export function analyseStructure(
     parsed.set(m.id, { module: m, template });
     const root = template[0];
     const shape = root ? shapeTree(root).get(root) : undefined;
-    if (shape && !m.slug.startsWith(NAV_MENU_SLUG_PREFIX)) templateShapes.set(m.id, shape);
+    if (shape) templateShapes.set(m.id, shape);
   }
 
   const occurrences: PatternOccurrence[] = [];
   const siblingRepeats: SiblingRepeat[] = [];
+  const linkGroups: LinkGroup[] = [];
   const classUse = new Map<string, ClassUse>();
   const placements = new Map<string, Set<string>>();
   const use = (cls: string): ClassUse => {
@@ -135,9 +150,7 @@ export function analyseStructure(
       onPages.add(page.pageId);
       const mod = parsed.get(id);
       if (!mod) continue;
-      const free = mod.module.slug.startsWith(NAV_MENU_SLUG_PREFIX)
-        ? null
-        : freeRegions(root, mod.template);
+      const free = freeRegions(root, mod.template);
       const freeSet = new Set(free ?? []);
       walkModule(root, freeSet, (cls, inFree) => {
         if (inFree) use(cls).freeIn.add(id);
@@ -152,6 +165,10 @@ export function analyseStructure(
           shape: p.shape,
         });
       }
+      const hrefs = ownLinks(root, freeSet);
+      if (hrefs.length >= MIN_LINK_GROUP) {
+        linkGroups.push({ pageId: page.pageId, path: page.path, moduleId: id, hrefs });
+      }
       for (const r of repeatedSiblingPatterns(free ?? [])) {
         siblingRepeats.push({
           pageId: page.pageId,
@@ -163,7 +180,41 @@ export function analyseStructure(
       }
     }
   }
-  return { occurrences, siblingRepeats, classUse, placements, templateShapes };
+  return { occurrences, siblingRepeats, linkGroups, classUse, placements, templateShapes };
+}
+
+// `<listId>/<itemId>` — a shared list's entry stamp.
+const SHARED_ENTRY_RE = /^[0-9a-f-]{36}\/[0-9a-f-]{36}$/i;
+
+/**
+ * The hrefs a module root carries as its own data (see the file header):
+ * links inside its local list entries or its free markup, not inside a
+ * shared list's entry, nested module roots skipped.
+ */
+function ownLinks(root: MarkupNode, freeSet: ReadonlySet<MarkupNode>): string[] {
+  const out = new Set<string>();
+  const walk = (n: MarkupNode, local: boolean, free: boolean, shared: boolean) => {
+    if (n !== root && n.moduleId !== null) return;
+    const item = n.listItem;
+    const inShared = shared || (item !== null && SHARED_ENTRY_RE.test(item));
+    const inLocal =
+      local || (item !== null && (item.startsWith("instance/") || item.startsWith("local/")));
+    const inFree = free || freeSet.has(n);
+    const href = n.href?.trim() ?? "";
+    if (
+      n.tag === "a" &&
+      href.length > 0 &&
+      !href.startsWith("#") &&
+      !/^javascript:/i.test(href) &&
+      !inShared &&
+      (inLocal || inFree)
+    ) {
+      out.add(href);
+    }
+    for (const c of n.children) walk(c, inLocal, inFree, inShared);
+  };
+  walk(root, false, false, false);
+  return [...out].sort();
 }
 
 /** Classes on elements outside every module root (the layout's own markup). */

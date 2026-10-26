@@ -457,7 +457,7 @@ export const getLayoutBlockModulesOp = defineOperation({
 export const setLayoutModulesOp = defineOperation({
   name: "layout_modules.set",
   // Filling the chrome blocks is a content op — AI may call this so it
-  // can add a footer / nav-menu module to the site-wide layout.
+  // can add a footer / menu module to the site-wide layout.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z

@@ -14,6 +14,7 @@ interface TemplateRow {
   displayName: string;
   layoutId: string;
   blocks: { name: string }[];
+  pageTypes: string[];
 }
 
 const listTemplatesInput = z.object({ includeDeleted: z.boolean().default(false) }).strict();
@@ -21,7 +22,7 @@ const listTemplatesInput = z.object({ includeDeleted: z.boolean().default(false)
 export const listTemplatesTool = makeListReadTool<z.infer<typeof listTemplatesInput>, TemplateRow>({
   name: "list_templates",
   description:
-    "List every template with UUID, slug, display name, bound layout UUID, and `pageBlocks` (TOON rows). " +
+    "List every template with UUID, slug, display name, bound layout UUID, `pageBlocks` and `pageTypes` (the page types whose pages may use it — list_page_types) (TOON rows). " +
     "`pageBlocks` are the blocks a page on that template places modules into — the ONLY valid `blockName` values for build_page and add_module target='page' (usually just `content`). " +
     "Header / footer / nav are NOT page blocks: they are site chrome on the template's LAYOUT (list_layouts), placed once with add_module target='layout'. " +
     "Standard list params: `filter`, `limit`/`offset`, `full: true`. " +
@@ -39,6 +40,7 @@ export const listTemplatesTool = makeListReadTool<z.infer<typeof listTemplatesIn
     // the layout's `header|content|footer`, and it placed a header via
     // build_page. See _block-roles.ts.
     { key: "pageBlocks", value: (t) => t.blocks.map((b) => b.name).join("|") },
+    { key: "pageTypes", value: (t) => t.pageTypes.join("|") },
   ],
   emptyMessage:
     "No templates on this site yet. Call create_template (pass layoutId from list_layouts) to create one.",

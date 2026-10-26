@@ -117,6 +117,33 @@ describe("previewMessage (#946 — opaque-origin preview)", () => {
   });
 });
 
+describe("list entry references (epic #1107)", () => {
+  const preview = {} as Window;
+  const fromPreview = (data: Record<string, unknown>) => ({
+    source: preview,
+    origin: "null",
+    data: { ...data, channel: CHANNEL },
+  });
+  const base = { kind: "caelo:element-referenced", moduleId: "m", selector: "a", label: "Entry" };
+  const LIST = "11111111-1111-4111-8111-111111111111";
+  const ITEM = "22222222-2222-4222-8222-222222222222";
+
+  it("carries the entry's data-caelo-list-item", () => {
+    const msg = previewMessage(
+      fromPreview({ ...base, listItem: `${LIST}/${ITEM}` }),
+      preview,
+      CHANNEL,
+    );
+    expect(msg).toEqual({ ...base, listItem: `${LIST}/${ITEM}` } as never);
+  });
+
+  it("drops a message whose entry reference has another shape", () => {
+    expect(
+      previewMessage(fromPreview({ ...base, listItem: "list/../x" }), preview, CHANNEL),
+    ).toBeNull();
+  });
+});
+
 describe("previewNavigationTarget (#946)", () => {
   it("loads another preview page with the editor's own channel", () => {
     expect(

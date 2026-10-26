@@ -96,9 +96,18 @@ async function cleanup(): Promise<void> {
 /** A layout slot that does not exist: its variant is orphaned and never renders. */
 const ORPHAN_KEY = "layout:00000000-0000-4000-8000-0000000000e0:footer:0";
 
+/** A local `links` list entry (epic #1107). */
+function link(n: number, label: string, href: string) {
+  return {
+    id: `00000000-0000-4000-9000-${String(n).padStart(12, "0")}`,
+    node: "link",
+    values: { label, link: { href } },
+  };
+}
+
 async function variantValues(
   targetKey = `layout:${layoutId}:footer:0`,
-): Promise<{ nav: { label: string; href: string }[] }> {
+): Promise<{ nav: ReturnType<typeof link>[] }> {
   const rows = (await asPlugin(
     (tx) =>
       tx`SELECT "values"::text AS v FROM plugin_international_site.chrome_variants
@@ -150,10 +159,10 @@ beforeAll(async () => {
     await sysOp<{ moduleId: string }>("modules.create", {
       slug: `${PFX}-footer`,
       displayName: "T724E footer",
-      html: '<footer>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}</footer>',
+      html: '<footer>{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}</footer>',
       css: "",
       js: "",
-      fields: [{ name: "nav", kind: "link-list", label: "Menu", default: [] }],
+      fields: [{ name: "nav", kind: "list", listType: "links", label: "Menu", default: [] }],
     })
   ).moduleId;
   await sysOp("layout_modules.set", { layoutId, blockName: "footer", moduleIds: [footerModuleId] });
@@ -177,7 +186,7 @@ beforeAll(async () => {
       {
         targetKey: `layout:${layoutId}:footer:0`,
         localeCode: "de",
-        values: { nav: [{ label: "Kontakt", href: `/${PFX}-solo` }] },
+        values: { nav: [link(1, "Kontakt", `/${PFX}-solo`)] },
       },
     ],
   });
@@ -186,9 +195,9 @@ beforeAll(async () => {
     (tx) => tx`UPDATE plugin_international_site.chrome_variants
                   SET "values" = ${JSON.stringify({
                     nav: [
-                      { label: "Kontakt", href: `/${PFX}-solo` },
-                      { label: "Alt", href: `/${PFX}-gone` },
-                      { label: "Allein", href: `/de/${PFX}-solo-de` },
+                      link(1, "Kontakt", `/${PFX}-solo`),
+                      link(2, "Alt", `/${PFX}-gone`),
+                      link(3, "Allein", `/de/${PFX}-solo-de`),
                     ],
                   })}::text::jsonb
                 WHERE locale_code = 'de'`,
@@ -217,16 +226,16 @@ describe("international-site link hook", () => {
     }>("links.migrate_to_references", {});
     expect(out.run.counts["plugin:international-site"]).toBe(2);
     expect((await variantValues()).nav).toEqual([
-      { label: "Kontakt", href: `caelo:page/${soloId}` },
-      { label: "Alt", href: `/${PFX}-gone` },
+      link(1, "Kontakt", `caelo:page/${soloId}`),
+      link(2, "Alt", `/${PFX}-gone`),
       // The locale-prefixed public path of a translated page is that page.
-      { label: "Allein", href: `caelo:page/${deSoloId}` },
+      link(3, "Allein", `caelo:page/${deSoloId}`),
     ]);
     const gone = out.unresolved.find((u) => u.value === `/${PFX}-gone`);
     expect(gone?.surface).toBe("plugin:international-site");
     expect(gone?.label).toContain("de version of");
     // The orphan is left exactly as stored and not reported as converted.
-    expect((await variantValues(ORPHAN_KEY)).nav[0]?.href).toBe(`/${PFX}-solo`);
+    expect((await variantValues(ORPHAN_KEY)).nav[0]?.values.link.href).toBe(`/${PFX}-solo`);
     expect(out.unresolved.some((u) => u.label.includes(ORPHAN_KEY))).toBe(false);
 
     // The risk rollout D left for E: D removed the plugin's render-time
@@ -237,13 +246,15 @@ describe("international-site link hook", () => {
     const de = await sysOp<{ html: string; missingSlots: string[] }>("pages.render_preview", {
       pageId: deSoloId,
     });
-    const deFooter = de.html.slice(de.html.indexOf("<footer"));
+    const deFooter = de.html
+      .slice(de.html.indexOf("<footer"))
+      .replace(/ data-caelo-list-item="[^"]*"/g, "");
     expect(deFooter).toContain(`<a href="/de/${PFX}-solo-de/">Kontakt</a>`);
     expect(deFooter).toContain(`<a href="/de/${PFX}-solo-de/">Allein</a>`);
     expect(deFooter).not.toContain(`href="/${PFX}-solo/"`);
     expect(de.missingSlots.filter((m) => m.startsWith("link-variant-missing:"))).toEqual([]);
 
     await sysOp("links.revert_migration", { runId: out.run.runId });
-    expect((await variantValues()).nav[0]?.href).toBe(`/${PFX}-solo`);
+    expect((await variantValues()).nav[0]?.values.link.href).toBe(`/${PFX}-solo`);
   });
 });

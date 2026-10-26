@@ -9,8 +9,7 @@
  * Surfaces, each converted with the shared canonicaliser in REPORT mode
  * (`migrate-convert.ts`): module HTML, module field defaults (layout
  * chrome content lives there), content-instance values (by the module's
- * declared field kinds, as the write path reads them), structured-set
- * items, layouts' own HTML (main-only; rollout C stores it as references
+ * declared field kinds, as the write path reads them), layouts' own HTML (main-only; rollout C stores it as references
  * and the composer resolves them), and plugin storage the plugins name
  * through their `linkLocationsOperation` hook. Templates' own HTML is
  * page structure no write op canonicalises, so it is not touched.
@@ -49,7 +48,7 @@ import {
   loadModuleState,
   type SnapshotEntity,
 } from "../snapshots/index.js";
-import type { ContentInstanceState, ModuleState, StructuredSetState } from "../snapshots/state.js";
+import type { ContentInstanceState, ModuleState } from "../snapshots/state.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { loadLinkTargetLookup } from "./canonicalise.js";
 import {
@@ -58,7 +57,6 @@ import {
   convertFieldDefaults,
   convertModuleHtml,
   convertPluginValue,
-  convertSetItems,
   declaredFields,
   type LinkSurface,
   type PartOutcome,
@@ -69,7 +67,6 @@ import {
   loadMainInstances,
   loadMainLayouts,
   loadMainModules,
-  loadMainSets,
   loadPendingBranches,
   loadPluginRowTasks,
   lockBranchEntities,
@@ -79,11 +76,11 @@ import {
 /** One link the migration left literal. */
 export interface UnresolvedLink {
   readonly surface: LinkSurface;
-  readonly entityKind: "module" | "contentInstance" | "structuredSet" | "layout" | "pluginRow";
+  readonly entityKind: "module" | "contentInstance" | "layout" | "pluginRow";
   readonly entityId: string;
   /** Null on main; the chat branch whose pending work holds it otherwise. */
   readonly branchId: string | null;
-  /** Operator-facing: which module / content / menu / plugin row. */
+  /** Operator-facing: which module / content / layout / plugin row. */
   readonly label: string;
   readonly where: string;
   readonly value: string;
@@ -105,13 +102,6 @@ export type LinkMigrationChange =
       readonly branchId: string | null;
       readonly before: { readonly values: Record<string, unknown> };
       readonly after: { readonly values: Record<string, unknown> };
-    }
-  | {
-      readonly entityKind: "structuredSet";
-      readonly entityId: string;
-      readonly branchId: string | null;
-      readonly before: { readonly items: unknown[] };
-      readonly after: { readonly items: unknown[] };
     }
   | {
       /** Layouts are main-only (no chat branch writes them). */
@@ -262,7 +252,6 @@ export async function migrateLinksToReferences(
     const batch = new ScopeBatch();
     await migrateMainModules(tx, scope, cx, c, batch);
     await migrateMainInstances(tx, scope, cx, c, batch, moduleFields);
-    await migrateMainSets(tx, scope, cx, c, batch);
     await migrateMainLayouts(tx, scope, cx, c, batch);
     await migrateMainPluginRows(tx, scope, cx, c, batch, pluginMain, moduleFields);
     if (scope.apply && !batch.empty) {
@@ -389,35 +378,6 @@ export async function writeMainInstance(
   return { kind: "contentInstance", entityId: id, state };
 }
 
-async function migrateMainSets(
-  tx: TransactionRunner,
-  scope: LinkMigrationScope,
-  cx: ConvertContext,
-  c: Collector,
-  batch: ScopeBatch,
-): Promise<void> {
-  for (const s of await loadMainSets(tx, { lock: scope.apply })) {
-    const out = convertSetItems(s.items, cx);
-    c.record(out, "structured_sets", {
-      entityKind: "structuredSet",
-      entityId: s.id,
-      branchId: null,
-      label: `${s.kind} "${s.displayName}"`,
-    });
-    if (!out.changed) continue;
-    c.entitiesChanged += 1;
-    c.changes.push({
-      entityKind: "structuredSet",
-      entityId: s.id,
-      branchId: null,
-      before: { items: s.items },
-      after: { items: out.next },
-    });
-    if (!scope.apply) continue;
-    batch.addEntity(null, await writeMainSet(tx, s, out.next));
-  }
-}
-
 /**
  * Layouts' own HTML (the page frame): rollout C stores its links as
  * references and the composer resolves them, so legacy literals there
@@ -462,32 +422,6 @@ export async function writeMainLayout(
   await tx.execute(sql`
     UPDATE layouts SET html = ${html}, updated_at = now() WHERE id = ${id}::uuid
   `);
-}
-
-/** Write a main-line set's items; returns its snapshot entity. */
-export async function writeMainSet(
-  tx: TransactionRunner,
-  s: {
-    readonly id: string;
-    readonly kind: string;
-    readonly slug: string;
-    readonly displayName: string;
-  },
-  items: unknown[],
-): Promise<SnapshotEntity> {
-  await tx.execute(sql`
-    UPDATE structured_sets SET items = ${jsonbParam(JSON.stringify(items))}, updated_at = now()
-     WHERE id = ${s.id}::uuid
-  `);
-  const state: StructuredSetState = {
-    schemaVersion: 1,
-    kind: s.kind,
-    slug: s.slug,
-    displayName: s.displayName,
-    items,
-    deletedAt: null,
-  };
-  return { kind: "structuredSet", entityId: s.id, state };
 }
 
 function fieldsFor(
@@ -616,28 +550,6 @@ async function migrateBranch(
     });
     const state: ContentInstanceState = { ...ci.state, values: out.next };
     batch.addEntity(ci.chatTaskId, { kind: "contentInstance", entityId: ci.entityId, state });
-  }
-
-  for (const s of await loadBranchStates(tx, "structuredSet", branchId)) {
-    if (s.state.deletedAt) continue;
-    const out = convertSetItems(s.state.items, cx);
-    c.record(out, "structured_sets", {
-      entityKind: "structuredSet",
-      entityId: s.entityId,
-      branchId,
-      label: `${s.state.kind} "${s.state.displayName}"`,
-    });
-    if (!out.changed) continue;
-    c.entitiesChanged += 1;
-    c.changes.push({
-      entityKind: "structuredSet",
-      entityId: s.entityId,
-      branchId,
-      before: { items: [...s.state.items] },
-      after: { items: out.next },
-    });
-    const state: StructuredSetState = { ...s.state, items: out.next };
-    batch.addEntity(s.chatTaskId, { kind: "structuredSet", entityId: s.entityId, state });
   }
 
   for (const set of pluginSets) {

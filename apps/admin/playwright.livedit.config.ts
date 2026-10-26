@@ -17,10 +17,11 @@
  *     can grep the captured stderr after a turn finishes. Playwright's
  *     own `webServer` child stdio is not reachable from spec code.
  *
- *   - **Retries = 2** (vs 0 in the smoke suite). Real-AI calls have
- *     irreducible variance even at temperature=0; two retries keep the
- *     PR check meaningful while structural assertions defend against
- *     content drift.
+ *   - **No retries**, like the smoke suite. A retry let a second,
+ *     luckier attempt turn a breached token / loop ceiling or a failed
+ *     assertion green (v0.11.0 cut: 2230.8k breached, the retry passed),
+ *     so the ceilings were a display, not a gate. The suite has to be
+ *     stable on its first attempt; a failure is a bug to root-cause.
  */
 
 import { defineConfig } from "@playwright/test";
@@ -67,14 +68,10 @@ export default defineConfig({
   // tell.
   workers: 1,
   forbidOnly: !!process.env.CI,
-  // 1 retry = 2 attempts total. PR #61 follow-up — we ran the suite
-  // at retries=2 (3 attempts) while debugging Sonnet's variance; now
-  // on Opus 4.7 the assertions are tight enough that anything failing
-  // twice in a row is signal, not noise (real bug, prompt regression,
-  // process issue). More retries past 2 papers over real problems
-  // and burns API tokens — see CLAUDE.md §4 (root-cause bugs, no
-  // quick fixes).
-  retries: 1,
+  // No retry: the first attempt is the verdict (see the header). A
+  // retry papered over real problems and burned API tokens — CLAUDE.md
+  // §4 (root-cause bugs, no quick fixes).
+  retries: 0,
   // Playwright per-test artifact dir — kept SIBLING (not parent) of
   // the HTML reporter dir below so Playwright's "HTML reporter output
   // folder clashes with tests output folder" guard doesn't fire.

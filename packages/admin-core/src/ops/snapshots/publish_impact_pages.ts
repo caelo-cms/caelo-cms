@@ -9,9 +9,10 @@
  *   - Module edit → every page that uses the module (page_modules join).
  *   - Template edit → every page on that template.
  *   - Layout edit → every page on a template bound to that layout.
- *   - Structured-set edit → site-wide rebuild (templates reference
- *     menus implicitly today; v0.2.79+ adds a precise
- *     template_set_refs index, until then we stay conservative).
+ *   - List / list type / page type edit → site-wide rebuild: lists
+ *     render through module fields, page queries and system sources on
+ *     pages this op cannot enumerate; the generator's per-page render
+ *     dependencies (epic #1107) narrow it at build time.
  *
  * Returns `{pageIds, fullSite}`. `fullSite=true` is a signal to
  * triggerDeployOp that no `changedPageIds` filter should be passed
@@ -40,10 +41,12 @@ const inputSchema = z
     moduleIds: z.array(z.string().uuid()).default([]),
     templateIds: z.array(z.string().uuid()).default([]),
     layoutIds: z.array(z.string().uuid()).default([]),
-    /** Slugs of structured_sets touched on the chat branch. Each one
-     *  triggers a full-site rebuild because templates reference menus
-     *  / theme tokens implicitly today. */
-    structuredSetSlugs: z.array(z.string()).default([]),
+    /** Shared lists touched on the chat branch — each one triggers a full-site rebuild. */
+    listIds: z.array(z.string().uuid()).default([]),
+    /** List types touched — a full-site rebuild. */
+    listTypeIds: z.array(z.string().uuid()).default([]),
+    /** Page types touched — a full-site rebuild. */
+    pageTypeIds: z.array(z.string().uuid()).default([]),
   })
   .strict();
 
@@ -65,7 +68,7 @@ export const publishImpactPagesOp = defineOperation({
   }),
   handler: async (_ctx, input, tx) => {
     // Fast paths.
-    if (input.structuredSetSlugs.length > 0) {
+    if (input.listIds.length + input.listTypeIds.length + input.pageTypeIds.length > 0) {
       return ok({
         pageIds: [],
         fullSite: true,

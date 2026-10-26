@@ -34,10 +34,11 @@
  *                                        values[fieldName] is
  *                                        { moduleId, contentInstanceId }.
  *   {{#fieldName}}…{{/fieldName}}      — section over a list field
- *                                        (kind = text-list / link-list
- *                                        / module-list). text-list /
- *                                        link-list iterate the inner
- *                                        template; module-list ignores
+ *                                        (kind = list / module-list).
+ *                                        A `list` iterates the inner
+ *                                        template per entry (an entry's
+ *                                        `{{>f}}` module field recurses
+ *                                        here too); module-list ignores
  *                                        the inner and renders each
  *                                        element's nested module HTML
  *                                        via `renderInner` (recursion).
@@ -60,8 +61,8 @@
  * of band so the page's <head>/<style> + footer scripts are stable.
  */
 
-import type { ModuleFieldKind } from "./content.js";
 import { isLinkFailureMarker, type LinkResolver } from "./link-refs.js";
+import type { ListPageContext } from "./lists/resolve.js";
 import { tagModuleId } from "./module-id-tag.js";
 import { caeloMissingComment, renderTemplate, type TemplateField } from "./template-engine.js";
 
@@ -74,11 +75,7 @@ export interface NestedModuleResource {
   readonly html: string;
   readonly css: string;
   readonly js: string;
-  readonly fields: readonly {
-    readonly name: string;
-    readonly kind: ModuleFieldKind;
-    readonly default?: unknown;
-  }[];
+  readonly fields: readonly TemplateField[];
 }
 
 /** A content instance the recursion can render a nested module with. */
@@ -87,6 +84,13 @@ export interface NestedContentInstanceResource {
   readonly moduleId: string;
   readonly values: Record<string, unknown>;
   readonly deletedAt: string | null;
+  /**
+   * The stored content instance these values belong to, when `id` is a
+   * render-local alias (the editor's edit-marked copy `edit:<key>`):
+   * local list entries are addressed by the real instance id (overlays,
+   * `data-caelo-list-item`). Absent = `id` itself.
+   */
+  readonly listHolderId?: string;
 }
 
 /** The stored shape of a `module` field value / `module-list` element. */
@@ -159,11 +163,12 @@ interface RenderContext {
    *  active theme on this install (renderer emits loud-raw for any
    *  `{{theme_<slot>_url}}` placeholders). */
   readonly themeAssets: NestedRenderThemeAssets | undefined;
-  /** Plugin data lists for the page being rendered, and the names of
-   *  installed-but-inactive plugins' lists. Threaded to every nested
-   *  module: a switcher can sit inside a nested chrome module. */
-  readonly dataLists: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
-  readonly dormantDataLists: Readonly<Record<string, string>>;
+  /** The page's list context (`lists/resolve.ts`), threaded to every
+   *  nested module so a list renders the same at any depth — a menu
+   *  inside a nested chrome module included. */
+  readonly lists: ListPageContext | undefined;
+  /** Content instance whose values this level renders (local list address). */
+  readonly listHolder: string | null;
   /** Epic #724 — resolves internal references in every nested module. */
   readonly linkResolver: LinkResolver | undefined;
 }
@@ -197,10 +202,7 @@ export function renderModuleWithContent(
   contentInstanceId: string,
   resolver: NestedRenderResolver,
   themeAssets?: NestedRenderThemeAssets,
-  pluginLists?: {
-    readonly dataLists: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
-    readonly dormantDataLists: Readonly<Record<string, string>>;
-  },
+  lists?: ListPageContext,
   linkResolver?: LinkResolver,
 ): NestedRenderResult {
   const touched = new Set<string>();
@@ -215,12 +217,14 @@ export function renderModuleWithContent(
     path: new Set<string>(),
     depth: 0,
     themeAssets,
-    dataLists: pluginLists?.dataLists ?? {},
-    dormantDataLists: pluginLists?.dormantDataLists ?? {},
+    lists,
+    listHolder: null,
     linkResolver,
   });
   return { html, touchedModuleIds: touched, missingSlots: missing, failures };
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderContext): string {
   if (ctx.depth >= MAX_RECURSION_DEPTH) {
@@ -263,8 +267,10 @@ function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderCon
     path,
     depth: ctx.depth + 1,
     themeAssets: ctx.themeAssets,
-    dataLists: ctx.dataLists,
-    dormantDataLists: ctx.dormantDataLists,
+    lists: ctx.lists,
+    // Variant content (`variant:<key>`) is no stored instance, so its
+    // local list entries carry no instance address.
+    listHolder: ci.listHolderId ?? (UUID_RE.test(ci.id) ? ci.id : null),
     linkResolver: ctx.linkResolver,
   };
 
@@ -286,6 +292,9 @@ function renderInner(moduleId: string, contentInstanceId: string, ctx: RenderCon
  *     HTML for element i. Malformed elements (non-NestedRef shape)
  *     resolve to `undefined` — the engine emits the existing
  *     `module-list-malformed:<name>[<i>]` marker.
+ *   - `{{>f}}` inside an entry of list field `<name>`:
+ *     `list:<name>/<itemId>/<f>`, with the ref passed alongside (the
+ *     entry may come from a shared list, not from `values`).
  *
  * Failure-marker parity: every literal `missingSlots` string the
  * legacy hand-rolled substitution emitted is preserved — half by the
@@ -308,8 +317,8 @@ function substituteWithRecursion(
   // stays off the page. Memoised: `{{>name}}` twice renders it once.
   const fieldByName = new Map(fields.map((f) => [f.name, f]));
   const rendered = new Map<string, string | undefined>();
-  const partials = (key: string): string | undefined => {
-    if (!rendered.has(key)) rendered.set(key, renderPartial(key, fieldByName, values, ctx));
+  const partials = (key: string, ref?: NestedRefValue): string | undefined => {
+    if (!rendered.has(key)) rendered.set(key, renderPartial(key, ref, fieldByName, values, ctx));
     return rendered.get(key);
   };
 
@@ -319,8 +328,8 @@ function substituteWithRecursion(
     contentValues: values,
     partials,
     themeAssets: ctx.themeAssets,
-    dataLists: ctx.dataLists,
-    dormantDataLists: ctx.dormantDataLists,
+    lists: ctx.lists,
+    listHolder: { contentInstanceId: ctx.listHolder },
     linkResolver: ctx.linkResolver,
   });
   for (const m of result.missingSlots) {
@@ -335,18 +344,20 @@ function substituteWithRecursion(
 }
 
 /**
- * Render the partial the engine asked for: `<name>` (a `module` field)
- * or `<name>__<i>` (element i of a `module-list`). `undefined` when the
- * value is not a well-formed ref — the engine then emits its own
- * `module-ref-malformed` / `module-list-malformed` marker.
+ * Render the partial the engine asked for: `<name>` (a `module` field),
+ * `<name>__<i>` (element i of a `module-list`) or
+ * `list:<name>/<itemId>/<f>` (a list entry's module field, `ref` given).
+ * `undefined` when the value is not a well-formed ref — the engine then
+ * emits its own `module-ref-malformed` / `module-list-malformed` marker.
  */
 function renderPartial(
   key: string,
+  ref: NestedRefValue | undefined,
   fieldByName: ReadonlyMap<string, TemplateField>,
   values: Readonly<Record<string, unknown>>,
   ctx: RenderContext,
 ): string | undefined {
-  const hit = nestedRefForPartial(key, fieldByName, values);
+  const hit = nestedRefForPartial(key, ref, fieldByName, values);
   if (!hit) return undefined;
   // #1027 — a nested module's root carries its own id, exactly like a
   // page placement's (the composer tags those), so the live-edit overlay
@@ -366,9 +377,15 @@ function renderPartial(
  */
 function nestedRefForPartial(
   key: string,
+  ref: NestedRefValue | undefined,
   fieldByName: ReadonlyMap<string, TemplateField>,
   values: Readonly<Record<string, unknown>>,
 ): { readonly ref: NestedRefValue; readonly field: string; readonly step: string } | undefined {
+  if (key.startsWith(LIST_PARTIAL_PREFIX)) {
+    const [name, itemId, entryField] = key.slice(LIST_PARTIAL_PREFIX.length).split("/");
+    if (!name || !itemId || !entryField || !ref || !isNestedRef(ref)) return undefined;
+    return { ref, field: name, step: `${name}[${itemId}].${entryField}` };
+  }
   const single = fieldByName.get(key);
   if (single?.kind === "module") {
     const ref = values[key];
@@ -386,6 +403,9 @@ function nestedRefForPartial(
   const el = raw[i];
   return isNestedRef(el) ? { ref: el, field: name, step: `${name}[${i}]` } : undefined;
 }
+
+/** Partial-key prefix of a list entry's embedded module (`template-sections.ts`). */
+const LIST_PARTIAL_PREFIX = "list:";
 
 /** A nested ref a module's template dispatches (see {@link dispatchedNestedRefs}). */
 export interface DispatchedNestedRef extends NestedRefValue {
@@ -408,6 +428,7 @@ export function dispatchedNestedRefs(
   html: string,
   fields: readonly TemplateField[],
   values: Readonly<Record<string, unknown>>,
+  lists?: ListPageContext,
 ): DispatchedNestedRef[] {
   const fieldByName = new Map(fields.map((f) => [f.name, f]));
   const out: DispatchedNestedRef[] = [];
@@ -416,8 +437,9 @@ export function dispatchedNestedRefs(
     html,
     fields,
     contentValues: values,
-    partials: (key) => {
-      const hit = nestedRefForPartial(key, fieldByName, values);
+    ...(lists ? { lists } : {}),
+    partials: (key, ref) => {
+      const hit = nestedRefForPartial(key, ref, fieldByName, values);
       if (!hit) return undefined;
       if (!asked.has(key)) {
         asked.add(key);
@@ -461,8 +483,10 @@ export function renderPlacedModule(
   resolver: NestedRenderResolver,
   options: {
     readonly themeAssets?: NestedRenderThemeAssets;
-    readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
-    readonly dormantDataLists?: Readonly<Record<string, string>>;
+    /** The page's list context (`lists/resolve.ts`). */
+    readonly lists?: ListPageContext;
+    /** The placement's stored content instance (local list address); absent for defaults. */
+    readonly contentInstanceId?: string;
     /** Epic #724 — resolves internal references (see `link-refs.ts`). */
     readonly linkResolver?: LinkResolver;
   },
@@ -482,8 +506,8 @@ export function renderPlacedModule(
     path: new Set<string>(),
     depth: 1,
     themeAssets: options.themeAssets,
-    dataLists: options.dataLists ?? {},
-    dormantDataLists: options.dormantDataLists ?? {},
+    lists: options.lists,
+    listHolder: options.contentInstanceId ?? null,
     linkResolver: options.linkResolver,
   });
   return { html, touchedModuleIds: touched, missingSlots: missing, failures };
@@ -491,19 +515,32 @@ export function renderPlacedModule(
 
 /**
  * Walk a content_instance's values to find every nested-module reference
- * it carries (single + list shapes). Used by the caller to pre-batch
- * the modules + content_instances the page will need.
+ * it carries: `module` / `module-list` values and the `module` fields of
+ * local list entries at any depth (`{ id, node, values, children }`).
+ * Used by the caller to pre-batch the modules + content_instances the
+ * page will need.
  */
-export function collectNestedRefs(values: Record<string, unknown>): NestedRefValue[] {
+export function collectNestedRefs(values: Readonly<Record<string, unknown>>): NestedRefValue[] {
   const refs: NestedRefValue[] = [];
-  for (const v of Object.values(values)) {
+  const visit = (v: unknown, depth: number): void => {
+    if (depth > MAX_COLLECT_DEPTH || typeof v !== "object" || v === null) return;
     if (isNestedRef(v)) {
-      refs.push(v);
-    } else if (Array.isArray(v)) {
-      for (const el of v) {
-        if (isNestedRef(el)) refs.push(el);
-      }
+      refs.push({ moduleId: v.moduleId, contentInstanceId: v.contentInstanceId });
+      return;
     }
-  }
+    if (Array.isArray(v)) {
+      for (const el of v) visit(el, depth + 1);
+      return;
+    }
+    const entry = v as { values?: unknown; children?: unknown };
+    if (typeof entry.values === "object" && entry.values !== null) {
+      for (const inner of Object.values(entry.values)) visit(inner, depth + 1);
+    }
+    if (Array.isArray(entry.children)) visit(entry.children, depth + 1);
+  };
+  for (const v of Object.values(values)) visit(v, 0);
   return refs;
 }
+
+/** Bound for {@link collectNestedRefs}: list depth (8) × two levels per entry, plus slack. */
+const MAX_COLLECT_DEPTH = 24;

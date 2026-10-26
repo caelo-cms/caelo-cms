@@ -289,6 +289,7 @@ describe("theme favicon is emitted into <head>", () => {
   const build = (outDir: string) =>
     adapter.withAdminTransaction(SYS_CTX, (tx) =>
       generateSite({
+        publishAt: new Date().toISOString(),
         tx,
         adapter,
         plugins: localBuildPluginServices,
@@ -502,6 +503,7 @@ describe("theme favicon is emitted into <head>", () => {
 
     const result = await adapter.withAdminTransaction(SYS_CTX, (tx) =>
       generateSite({
+        publishAt: new Date().toISOString(),
         tx,
         adapter,
         plugins: localBuildPluginServices,

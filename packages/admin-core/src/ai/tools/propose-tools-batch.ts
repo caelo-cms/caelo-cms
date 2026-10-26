@@ -26,7 +26,7 @@
  *   ai_memory.set                    — site-memory-propose.ts
  */
 
-import { sourceTextArg } from "@caelo-cms/shared";
+import { pageTypeSlugSchema, sourceTextArg } from "@caelo-cms/shared";
 import { z } from "zod";
 import { boundedThemeDocument } from "../../theme-document-input.js";
 import {
@@ -550,7 +550,7 @@ export const proposeTemplateUpdateTool = makeProposeTool({
   opName: "templates.propose_update",
   pendingQueuePath: "/settings/templates/pending",
   when:
-    "Propose updating a template's HTML/CSS/displayName/layoutId AND/OR " +
+    "Propose updating a template's HTML/CSS/displayName/layoutId/pageType AND/OR " +
     "the block-set (template_blocks). Re-renders every page bound to the " +
     "template — preview shows the count. " +
     "CRITICAL — block syntax: in `html`, render-slot markers MUST be " +
@@ -569,6 +569,7 @@ export const proposeTemplateUpdateTool = makeProposeTool({
       html: sourceTextArg(z.string()).optional(),
       css: sourceTextArg(z.string()).optional(),
       layoutId: uuid.optional(),
+      pageType: pageTypeSlugSchema.optional(),
       blocks: z
         .array(
           z.object({
@@ -594,6 +595,12 @@ export const proposeTemplateUpdateTool = makeProposeTool({
       },
       css: { type: "string" },
       layoutId: { type: "string", format: "uuid" },
+      pageType: {
+        type: "string",
+        pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+        description:
+          "Also allow this template for the page type (slug, list_page_types) — it is added to that type's templates.",
+      },
       blocks: {
         type: "array",
         description:

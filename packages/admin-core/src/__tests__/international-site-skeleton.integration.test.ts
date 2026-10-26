@@ -90,10 +90,14 @@ describe("#394 — international-site skeleton on the foundation", () => {
       expect(meta.map((m) => m.relname)).toEqual([
         "chrome_variants",
         "glossary",
+        "list_item_visibility",
+        "list_value_translations",
         "locales",
+        "page_prop_translations",
         "page_variants",
         "settings",
         "style_guides",
+        "term_translations",
       ]);
       expect(meta.every((m) => m.relforcerowsecurity)).toBe(true);
     } finally {

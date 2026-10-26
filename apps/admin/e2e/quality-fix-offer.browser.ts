@@ -104,9 +104,10 @@ test.beforeAll(() => {
         VALUES (\${s + "-lay"}, 'L',
                 '<!doctype html><html><head><title>{{title}}</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
                 '') RETURNING id\`;
-      const tpl = await tx\`INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
-        VALUES (\${s + "-tpl"}, 'T', 'content', '<main><caelo-slot name="content">_</caelo-slot></main>',
+      const tpl = await tx\`INSERT INTO templates (slug, display_name, html, css, layout_id)
+        VALUES (\${s + "-tpl"}, 'T', '<main><caelo-slot name="content">_</caelo-slot></main>',
                 '', \${lay[0].id}) RETURNING id\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
       await tx\`INSERT INTO pages (slug, name, title, template_id, status, current_path)
         VALUES (\${s}, \${s}, 'Quality offer', \${tpl[0].id}, 'published', \${process.env.PAGE_PATH})\`;
       // #727 — two more pages, so one rule can fail across pages.

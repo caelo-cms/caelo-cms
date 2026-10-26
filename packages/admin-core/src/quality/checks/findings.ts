@@ -24,12 +24,14 @@ export const FINDING_SEVERITIES = ["error", "warning", "info"] as const;
 /**
  * A check id: lower-case kebab words, optionally namespaced with one dot
  * (`seo-check`, `seo-check.titles`). `lighthouse` is the built-in browser
- * audit. The id prefixes every rule id the check reports.
+ * audit; `plugin.<slug>` files a plugin's audit contributions (the
+ * namespace takes a whole plugin slug, up to 55 characters). The id
+ * prefixes every rule id the check reports.
  */
 export const checkIdSchema = z
   .string()
   .regex(
-    /^[a-z][a-z0-9-]{0,39}(\.[a-z][a-z0-9-]{0,39})?$/,
+    /^[a-z][a-z0-9-]{0,39}(\.[a-z][a-z0-9-]{0,54})?$/,
     "a check id is lower-case kebab words, optionally one dot-namespace (e.g. 'seo-check', 'seo-check.titles')",
   );
 

@@ -26,17 +26,40 @@
  * language.
  */
 
-import { z } from "@caelo-cms/plugin-sdk";
+import { type ListTypeDef, z } from "@caelo-cms/plugin-sdk";
+import { isTranslatableField } from "./list-translation.js";
 import { stableJson } from "./stable-json.js";
 
 /** A field as the chrome helpers need it. */
 export interface ChromeField {
   readonly name: string;
   readonly kind: string;
+  /** `list` fields: the list type slug (pages.list_shared_content carries it). */
+  readonly listType?: string;
+  /** `list` fields: local (entries in the value), shared or source. */
+  readonly bind?: "local" | "shared" | "source";
 }
 
 /** Field kinds whose string value is human-readable text. */
 const TEXT_KINDS = new Set(["text", "richtext"]);
+
+/**
+ * How the chrome helpers treat `list` fields (epic #1107).
+ *
+ * A layout placement's local list lives in the module's field defaults,
+ * which have no value address — its entries are translated with the
+ * placement's chrome variant, field by field from the list type. A
+ * shared content instance's local list HAS addresses
+ * (`instance/<id>/<field>/item/…`): it is translated by address through
+ * the list-resolve overlay (./list-translation.ts), so the chrome
+ * variant leaves it out and keeps rendering the source entries.
+ */
+export interface ChromeListContext {
+  /** List types by slug (`list_types.list`). */
+  readonly listTypes: ReadonlyMap<string, ListTypeDef>;
+  /** Whether this placement's local lists belong to its chrome variant. */
+  readonly includeLists: boolean;
+}
 
 /** The variant identity of a layout placement. */
 export function layoutTargetKey(layoutId: string, blockName: string, index: number): string {
@@ -50,37 +73,63 @@ export function instanceTargetKey(contentInstanceId: string): string {
 
 /** One translatable string inside a values object, addressed by path. */
 export interface TranslatableString {
-  /** `field`, `field[2]` (text-list) or `field[2].label` (link-list). */
+  /** `field`, or `field[<entry id>].<key>` for a local list entry's text. */
   readonly path: string;
   readonly text: string;
 }
 
+interface ListEntryLike {
+  readonly id?: unknown;
+  readonly node?: string;
+  readonly values?: Readonly<Record<string, unknown>>;
+  readonly children?: unknown;
+}
+
+/** Depth-first visit of local list entries (`{ id, values, children }`). */
+function walkEntries(items: unknown, visit: (entry: ListEntryLike & { id: string }) => void): void {
+  if (!Array.isArray(items)) return;
+  for (const raw of items as ListEntryLike[]) {
+    if (!raw || typeof raw.id !== "string") continue;
+    visit(raw as ListEntryLike & { id: string });
+    walkEntries(raw.children, visit);
+  }
+}
+
 /**
  * Every human-readable string in a placement's values: text/richtext
- * fields, text-list items and link-list labels. Addresses, numbers and
- * nested module references are not text — a placement with none of
- * these needs no locale variant.
+ * fields and — when `lists.includeLists` — the translatable fields of
+ * local list entries, as their list type declares them. Addresses,
+ * numbers and nested module references are not text — a placement with
+ * none of these needs no locale variant.
+ *
+ * @throws when a local list names a list type the site does not have:
+ *   which entry keys are text is the type's to say, never a guess.
  */
 export function translatableStrings(
   fields: readonly ChromeField[],
   values: Readonly<Record<string, unknown>>,
+  lists: ChromeListContext,
 ): TranslatableString[] {
   const out: TranslatableString[] = [];
   for (const f of fields) {
     const v = values[f.name];
     if (TEXT_KINDS.has(f.kind) && typeof v === "string" && v.trim().length > 0) {
       out.push({ path: f.name, text: v });
-    } else if (f.kind === "text-list" && Array.isArray(v)) {
-      v.forEach((item, i) => {
-        if (typeof item === "string" && item.trim().length > 0) {
-          out.push({ path: `${f.name}[${i}]`, text: item });
-        }
-      });
-    } else if (f.kind === "link-list" && Array.isArray(v)) {
-      v.forEach((item, i) => {
-        const label = (item as { label?: unknown } | null)?.label;
-        if (typeof label === "string" && label.trim().length > 0) {
-          out.push({ path: `${f.name}[${i}].label`, text: label });
+    } else if (f.kind === "list" && lists.includeLists && (f.bind ?? "local") === "local") {
+      if (!Array.isArray(v)) continue;
+      const type = f.listType ? lists.listTypes.get(f.listType) : undefined;
+      if (!type) {
+        throw new Error(
+          `chrome translation: list field "${f.name}" uses list type "${f.listType ?? "(none)"}", which the site does not have — fix the module's field (list_list_types shows the types)`,
+        );
+      }
+      walkEntries(v, (entry) => {
+        const node = type.nodes[entry.node ?? ""];
+        for (const nf of node?.fields ?? []) {
+          const text = entry.values?.[nf.name];
+          if (isTranslatableField(nf) && typeof text === "string" && text.trim().length > 0) {
+            out.push({ path: `${f.name}[${entry.id}].${nf.name}`, text });
+          }
         }
       });
     }
@@ -88,13 +137,14 @@ export function translatableStrings(
   return out;
 }
 
-const PATH_RE = /^([^[\]]+)(?:\[(\d+)\](?:\.(label))?)?$/;
+const PATH_RE = /^([^[\]]+)(?:\[([0-9a-f-]{36})\]\.([a-z][a-z0-9_]*))?$/;
 
 /**
  * Write translated strings back into a deep copy of the source values.
  * Throws on a path that does not address a string the source has — the
  * translator answering for something it was not offered is refused like
- * the page structural lock refuses an invented slot.
+ * the page structural lock refuses an invented slot (which paths were
+ * offered is checked before, by {@link validateChromeTranslation}).
  */
 export function applyStrings(
   values: Readonly<Record<string, unknown>>,
@@ -111,21 +161,18 @@ export function applyStrings(
       out[field] = text;
       continue;
     }
-    const list = out[field];
-    const i = Number(m[2]);
-    if (!Array.isArray(list) || i >= list.length) {
-      throw new Error(`chrome translation: no list item at "${path}"`);
+    const itemId = m[2];
+    const key = m[3] as string;
+    let hit: { values?: Record<string, unknown> } | null = null;
+    walkEntries(out[field], (entry) => {
+      if (entry.id === itemId) hit = entry as { values?: Record<string, unknown> };
+    });
+    const found = hit as { values?: Record<string, unknown> } | null;
+    if (!found?.values || typeof found.values[key] !== "string") {
+      throw new Error(`chrome translation: no list entry text at "${path}"`);
     }
-    if (m[3] === "label") {
-      const item = list[i] as Record<string, unknown> | null;
-      if (!item || typeof item.label !== "string") {
-        throw new Error(`chrome translation: no link label at "${path}"`);
-      }
-      list[i] = { ...item, label: text };
-    } else {
-      if (typeof list[i] !== "string") throw new Error(`chrome translation: no text at "${path}"`);
-      list[i] = text;
-    }
+    // `out` is a deep copy, so the entry can be written in place.
+    found.values[key] = text;
   }
   return out;
 }

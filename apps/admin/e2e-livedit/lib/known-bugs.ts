@@ -4,9 +4,10 @@
  *
  * Every `ai_bug_reports` row a run files is either KNOWN (it matches an entry
  * here, which points at the GitHub issue tracking its root-cause fix) or NEW.
- * A new one fails the e2e-livedit job (`bug-gate.ts`): a tool error the AI had
- * to recover from is our defect (CLAUDE.md §1A/§4), and a non-blocking report
- * is exactly what used to pile up unowned under every PR.
+ * New reports are forwarded to the bug intake, which files their issues, and
+ * only more than `MAX_NEW_BUGS` of them fail the job (`bug-gate.ts`). A tool
+ * error the AI had to recover from is still our defect (CLAUDE.md §1A/§4);
+ * the issue is where it gets owned.
  *
  * Adding an entry is a deliberate act: open the issue first, then list it here
  * with the narrowest `match` that identifies the root cause. Remove the entry

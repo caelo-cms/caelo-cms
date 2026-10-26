@@ -41,6 +41,12 @@ export interface ExtractedLink {
   readonly moduleId: string | null;
   /** The plugin output (`data-caelo-plugin`) it sits in, if any. */
   readonly pluginSlug: string | null;
+  /**
+   * The list entry (`data-caelo-list-item`, epic #1107) it sits in, if
+   * any — the innermost one inside its module (a nested module root
+   * starts outside every entry).
+   */
+  readonly listItem: string | null;
 }
 
 export interface ExtractedPage {
@@ -89,6 +95,7 @@ const SRCSET_TAGS = new Set(["img", "source"]);
 interface Scope {
   readonly moduleId: string | null;
   readonly pluginSlug: string | null;
+  readonly listItem: string | null;
 }
 
 /**
@@ -103,7 +110,8 @@ export function extractLinks(html: string): ExtractedPage {
   const stack: Scope[] = [];
   let baseHref: string | null = null;
   let truncated = false;
-  const top = (): Scope => stack[stack.length - 1] ?? { moduleId: null, pluginSlug: null };
+  const top = (): Scope =>
+    stack[stack.length - 1] ?? { moduleId: null, pluginSlug: null, listItem: null };
   const add = (raw: string | undefined, where: string, kind: LinkKind, nav: boolean) => {
     if (raw === undefined) return;
     if (links.length >= MAX_LINKS_PER_PAGE) {
@@ -118,6 +126,7 @@ export function extractLinks(html: string): ExtractedPage {
       navigational: nav,
       moduleId: scope.moduleId,
       pluginSlug: scope.pluginSlug,
+      listItem: scope.listItem,
     });
   };
   const parser = new Parser(
@@ -131,6 +140,8 @@ export function extractLinks(html: string): ExtractedPage {
         stack.push({
           moduleId: moduleId ?? parent.moduleId,
           pluginSlug: pluginSlug ?? parent.pluginSlug,
+          listItem:
+            attrs["data-caelo-list-item"] ?? (moduleId === undefined ? parent.listItem : null),
         });
         if (name === "base") {
           if (baseHref === null && attrs.href !== undefined) baseHref = attrs.href;

@@ -19,11 +19,13 @@ import { sql } from "drizzle-orm";
 import { jsonbParam } from "../sql-helpers.js";
 import type {
   ContentInstanceState,
+  ListState,
+  ListTypeState,
   ModuleState,
   PageLayoutState,
   PageModuleContentState,
   PageState,
-  StructuredSetState,
+  PageTypeState,
   TemplateState,
   ThemeState,
 } from "./state.js";
@@ -54,7 +56,6 @@ export type SnapshotOpKind =
   | "layout_modules.set"
   // v0.4.0 — page-placement content + globals revert kinds.
   | "page_module_content.set"
-  | "structured_sets.set"
   | "redirects.create"
   | "redirects.update"
   | "redirects.delete"
@@ -81,7 +82,16 @@ export type SnapshotOpKind =
   | "themes.update_meta"
   // Epic #724 rollout E — the literal-link → reference migration (0326).
   | "links.migrate_to_references"
-  | "links.revert_migration";
+  | "links.revert_migration"
+  // Epic #1107 — lists, list types, page types (0354).
+  | "list_types.upsert_many"
+  | "list_types.delete_many"
+  | "lists.upsert_many"
+  | "lists.patch_items_many"
+  | "lists.delete_many"
+  | "lists.promote_local"
+  | "page_types.upsert_many"
+  | "page_types.delete_many";
 
 export type SnapshotEntity =
   | { readonly kind: "module"; readonly entityId: string; readonly state: ModuleState }
@@ -93,11 +103,9 @@ export type SnapshotEntity =
       readonly entityId: string;
       readonly state: PageModuleContentState;
     }
-  | {
-      readonly kind: "structuredSet";
-      readonly entityId: string;
-      readonly state: StructuredSetState;
-    }
+  | { readonly kind: "listType"; readonly entityId: string; readonly state: ListTypeState }
+  | { readonly kind: "list"; readonly entityId: string; readonly state: ListState }
+  | { readonly kind: "pageType"; readonly entityId: string; readonly state: PageTypeState }
   | {
       readonly kind: "contentInstance";
       readonly entityId: string;
@@ -209,15 +217,22 @@ export async function emitSnapshot(
           )
         `);
         break;
-      case "structuredSet":
+      case "listType":
         await tx.execute(sql`
-          INSERT INTO structured_set_snapshots
-            (site_snapshot_id, structured_set_id, state)
-          VALUES (
-            ${siteSnapshotId}::uuid,
-            ${entity.entityId}::uuid,
-            ${jsonbParam(stateJson)}
-          )
+          INSERT INTO list_type_snapshots (site_snapshot_id, list_type_id, state)
+          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${jsonbParam(stateJson)})
+        `);
+        break;
+      case "list":
+        await tx.execute(sql`
+          INSERT INTO list_snapshots (site_snapshot_id, list_id, state)
+          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${jsonbParam(stateJson)})
+        `);
+        break;
+      case "pageType":
+        await tx.execute(sql`
+          INSERT INTO page_type_snapshots (site_snapshot_id, page_type_id, state)
+          VALUES (${siteSnapshotId}::uuid, ${entity.entityId}::uuid, ${jsonbParam(stateJson)})
         `);
         break;
       case "contentInstance":

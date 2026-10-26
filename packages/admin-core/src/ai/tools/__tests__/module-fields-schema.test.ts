@@ -68,7 +68,7 @@ describe("MODULE_FIELDS_JSON_SCHEMA — provider schema mirrors the Zod validato
     const fromJson = [...item.properties.kind.enum].sort();
     const fromZod = [...MODULE_FIELD_KINDS].sort();
     // Set-equality both ways so neither a missing nor an extra kind slips
-    // through (a missing `link-list` is exactly the footer regression).
+    // through (a missing list kind is exactly the footer regression).
     expect(fromJson).toEqual(fromZod);
   });
 

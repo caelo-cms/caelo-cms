@@ -8,7 +8,7 @@
  * The bug: `pages.render_preview` with a `chatBranchId` overlays a
  * branch-edited module's HTML/CSS/JS onto the live `modules` row but
  * DROPPED the snapshot's `fields[]`. So when a chat-branch `edit_module`
- * ADDS a list field (e.g. a new `link-list`) together with the
+ * ADDS a list field (e.g. a new `list`) together with the
  * `{{#field}}` section that iterates it, the render context still used
  * the STALE live `modules.fields` — which doesn't declare the new
  * field — and the section rendered as literal `{{#field}}` text
@@ -20,7 +20,7 @@
  *
  * This test seeds the exact shape: a LIVE module with an empty schema
  * and a body with no section, a chat-branch `module_snapshots` row that
- * adds a `link-list` field + the iterating section, and a bound
+ * adds a `list` field + the iterating section, and a bound
  * content_instance holding the list values. Rendering WITH the branch
  * id must produce the `<a>` items; rendering WITHOUT it must fall back
  * to the (section-free) live body. Per CLAUDE.md §6, every bug fix
@@ -32,6 +32,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -60,15 +61,15 @@ interface SeedIds {
 }
 const seeded: Partial<SeedIds> = {};
 
-// The branch snapshot's module state: adds the `nav_items` link-list
+// The branch snapshot's module state: adds the `nav_items` list
 // field AND the iterating section that the LIVE body lacks.
 const BRANCH_STATE = JSON.stringify({
-  html: '<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>',
+  html: '<nav>{{#nav_items}}<a href="{{link}}">{{label}}</a>{{/nav_items}}</nav>',
   css: "",
   js: "",
   displayName: "Nav (branch-edited)",
   slug: MOD_SLUG,
-  fields: [{ name: "nav_items", kind: "link-list", label: "Nav items" }],
+  fields: [{ name: "nav_items", kind: "list", listType: "links", label: "Nav items" }],
   deletedAt: null,
 });
 
@@ -117,6 +118,7 @@ beforeAll(async () => {
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seeded.templateId = tpl[0]?.id ?? "";
+      await adoptTemplateIntoDefaultPageType(tx, seeded.templateId);
       await tx`
         INSERT INTO template_blocks (template_id, name, display_name, position)
         VALUES (${seeded.templateId}::uuid, 'content', 'Content', 0)
@@ -144,7 +146,20 @@ beforeAll(async () => {
         INSERT INTO content_instances (module_id, "values")
         VALUES (
           ${seeded.moduleId}::uuid,
-          '{"nav_items":[{"label":"Docs","href":"/docs"},{"label":"Blog","href":"/blog"}]}'::jsonb
+          ${JSON.stringify({
+            nav_items: [
+              {
+                id: "00000000-0000-4000-9000-000000000001",
+                node: "link",
+                values: { label: "Docs", link: { href: "/docs" } },
+              },
+              {
+                id: "00000000-0000-4000-9000-000000000002",
+                node: "link",
+                values: { label: "Blog", link: { href: "/blog" } },
+              },
+            ],
+          })}::jsonb
         )
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
@@ -183,7 +198,7 @@ afterAll(async () => {
 });
 
 describe("pages.render_preview branch-overlay carries module fields", () => {
-  it("WITH chatBranchId — branch-added link-list field renders its <a> items (regression)", async () => {
+  it("WITH chatBranchId — branch-added list field renders its <a> entries (regression)", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.render_preview", {
       pageId: seeded.pageId,
       chatBranchId: BRANCH_ID,
@@ -192,12 +207,13 @@ describe("pages.render_preview branch-overlay carries module fields", () => {
     if (!r.ok) return;
     const { html } = r.value as { html: string };
     // The branch body + branch schema compose: the section iterates.
-    expect(html).toContain('<a href="/docs">Docs</a>');
-    expect(html).toContain('<a href="/blog">Blog</a>');
+    const plain = html.replace(/ data-caelo-list-item="[^"]*"/g, "");
+    expect(plain).toContain('<a href="/docs">Docs</a>');
+    expect(plain).toContain('<a href="/blog">Blog</a>');
     // The bug's signature: an undeclared section survives as literal
     // `{{#nav_items}}` text. It must NOT appear now.
     expect(html).not.toMatch(/\{\{[#/]/);
-    expect(html).not.toContain("nav_items");
+    expect(plain).not.toContain("nav_items");
   });
 
   it("WITHOUT chatBranchId — live (section-free) body renders, no items, no residue", async () => {

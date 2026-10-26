@@ -29,6 +29,8 @@
  * be edited as plain text without destroying that markup.
  */
 
+import type { ListTypeDef } from "./lists/list-type.js";
+
 const START = "\uE000";
 const SEP = "\uE001";
 const END = "\uE002";
@@ -38,20 +40,28 @@ const SENTINELS = /[\uE000-\uE002]/g;
 export const EDIT_MARKER_PREFIX = "caelo:f";
 
 /**
- * Field kinds the preview marks: text (`text`, `text-list` items,
- * `link-list` labels) and link / image targets (`url`, `image`,
- * `link-list` hrefs, #918) — the latter usually land in `href` / `src`.
+ * Field kinds the preview marks: text (`text`, the `text` fields of a
+ * local `list`'s entries) and link / image targets (`url`, `image`, the
+ * `href` of a local list entry's `link` fields, #918) — the latter
+ * usually land in `href` / `src`.
  */
-const EDITABLE_KINDS = new Set(["text", "text-list", "link-list", "url", "image"]);
+const EDITABLE_KINDS = new Set(["text", "url", "image", "list"]);
 
 /** Attributes whose marked value the editor can change (link target, image, alt text). */
 const MARKABLE_ATTRIBUTES = new Set(["href", "src", "alt"]);
 
-/** Field shape {@link wrapEditableValues} needs: name + kind. */
+/** Field shape {@link wrapEditableValues} needs: name + kind (+ a list field's type and binding). */
 export interface EditableFieldDef {
   readonly name: string;
   readonly kind?: string;
+  readonly listType?: string;
+  readonly bind?: string;
 }
+
+/** List type lookup by slug, for marking a local list's entries. */
+export type EditableListTypes = (slug: string) => ListTypeDef | undefined;
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function editable(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0 && !value.includes("<");
@@ -65,9 +75,12 @@ function wrap(path: string, value: string): string {
  * Wrap the editable text of a content instance's values in sentinels.
  * Returns a new object; non-editable values pass through untouched.
  *
- * Paths: `<field>` for a `text` / `url` / `image` field, `<field>.<i>`
- * for a `text-list` item, `<field>.<i>.label` / `<field>.<i>.href` for a
- * `link-list` item's label / target.
+ * Paths: `<field>` for a `text` / `url` / `image` field;
+ * `<field>.<itemId>.<key>` for a `text` value of a local list entry and
+ * `<field>.<itemId>.<key>.href` for the target of its `link` value (item
+ * ids are stable uuids, so a path survives reordering). Shared lists are
+ * edited in the list editor, not in place: their values are not part of
+ * the placement.
  *
  * @example
  * wrapEditableValues({ hero_title: "Hi" }, [{ name: "hero_title", kind: "text" }]);
@@ -76,6 +89,7 @@ function wrap(path: string, value: string): string {
 export function wrapEditableValues(
   values: Readonly<Record<string, unknown>>,
   fields: readonly EditableFieldDef[],
+  listTypes?: EditableListTypes,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = { ...values };
   for (const f of fields) {
@@ -84,21 +98,39 @@ export function wrapEditableValues(
     const v = values[f.name];
     if (kind === "text" || kind === "url" || kind === "image") {
       if (editable(v)) out[f.name] = wrap(f.name, v);
-    } else if (kind === "text-list" && Array.isArray(v)) {
-      out[f.name] = v.map((item, i) => (editable(item) ? wrap(`${f.name}.${i}`, item) : item));
-    } else if (kind === "link-list" && Array.isArray(v)) {
-      out[f.name] = v.map((item, i) => {
-        if (typeof item !== "object" || item === null) return item;
-        const { label, href } = item as { label?: unknown; href?: unknown };
-        return {
-          ...item,
-          ...(editable(label) ? { label: wrap(`${f.name}.${i}.label`, label) } : {}),
-          ...(editable(href) ? { href: wrap(`${f.name}.${i}.href`, href) } : {}),
-        };
-      });
+    } else if (kind === "list" && (f.bind ?? "local") === "local" && Array.isArray(v)) {
+      const type = f.listType === undefined ? undefined : listTypes?.(f.listType);
+      if (type) out[f.name] = wrapListEntries(f.name, v, type);
     }
   }
   return out;
+}
+
+/** Mark the text and link targets of local list entries, at any depth. */
+function wrapListEntries(field: string, items: readonly unknown[], type: ListTypeDef): unknown[] {
+  return items.map((raw) => {
+    if (typeof raw !== "object" || raw === null) return raw;
+    const item = raw as { id?: unknown; node?: unknown; values?: unknown; children?: unknown };
+    const node = typeof item.node === "string" ? type.nodes[item.node] : undefined;
+    if (!node || typeof item.id !== "string" || !UUID_RE.test(item.id)) return raw;
+    const values = { ...((item.values ?? {}) as Record<string, unknown>) };
+    for (const def of node.fields) {
+      const v = values[def.name];
+      const at = `${field}.${item.id}.${def.name}`;
+      if (def.type === "text" && editable(v)) values[def.name] = wrap(at, v);
+      if (def.type === "link" && typeof v === "object" && v !== null) {
+        const href = (v as { href?: unknown }).href;
+        if (editable(href)) values[def.name] = { ...v, href: wrap(`${at}.href`, href) };
+      }
+    }
+    return {
+      ...item,
+      values,
+      ...(Array.isArray(item.children)
+        ? { children: wrapListEntries(field, item.children, type) }
+        : {}),
+    };
+  });
 }
 
 /** Comment-safe encoding: no `--`, no `>`, no whitespace. */

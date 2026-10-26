@@ -381,8 +381,9 @@ describe("#605 — the published site carries every plugin's output", () => {
     });
     expect(r.ok).toBe(false);
     const message = JSON.stringify(r);
-    expect(message).toContain("raw plugin data-list markers");
-    expect(message).toContain("consent_categories");
+    // The module iterates the plugin's list source: the render gate names
+    // page, module and the switched-off plugin (epic #1107).
+    expect(message).toContain("list-source-unavailable:consent_categories plugin=consent-manager");
     expect(message).not.toContain("PluginDisabled");
   });
 

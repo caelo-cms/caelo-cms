@@ -66,8 +66,20 @@ An open-source, AI-first Content Management System that enables users to design,
 
 - `{{fieldName}}` — primitive substitution (text, richtext, url, image, …)
 - `{{>fieldName}}` — single nested module reference (field kind = `module`)
-- `{{#fieldName}}…{{/fieldName}}` — section iteration (text-list / link-list / module-list)
+- `{{#fieldName}}…{{/fieldName}}` — section: iterates a `list` field (any binding: local, shared, query, system or plugin source; nested children by their loop name, `{{>recurse}}` for recursive types) or a `module-list`; over a scalar it is a conditional
+- `{{^fieldName}}…{{/fieldName}}` — inverted section (empty list / absent value)
+- `{{a.b}}` — dot access into compound values (`link.href`, `image.alt`, `page.props.author`)
+- Lists, list types, page types and sources: see §3.4 and `docs/lists.md`
 - **Reserved theme-asset placeholders (v0.11.1):** `{{theme_logo_url}}`, `{{theme_logo_dark_url}}`, `{{theme_favicon_url}}`, `{{theme_social_share_url}}` resolve to the active theme's bound asset URLs at render time (operators bind via `themes.set_asset`; AI authors don't need to declare these as fields). Unbound slots stay loud-raw in output AND emit a `theme-asset-unbound:<slot>` marker — silent empty-src would mask a broken `<img>` tag.
+
+### 3.4 Lists, list types and page types (epic #1107)
+
+- A **list** is a tree of entries. A **list type** defines the entry kinds, their fields (text, richtext, link, media, select, boolean, number, date, icon, module, term), which kinds may hang under which, and nodes whose children come from a **source** instead of storage. Lists impose no shape of their own.
+- Lists are **shared** (an entity: menus, navigation, footer links, vocabularies) or **local** (the value of one module's `list` field). Both iterate with the same syntax.
+- **Sources**: a query over pages (page type, terms, parent, order, limit ≤ 50) resolved at build time, system sources (breadcrumbs, children, siblings, page terms, pages of a term) and plugin sources. A page whose render reads a list or a query is rebuilt when that list or the query's result changes.
+- Every page has a **page type** (purpose, allowed templates, properties, vocabularies). Pages carry properties and terms from vocabulary lists (categories, tags). Page types replace the former template `kind`.
+- List types, lists and page types are draft state with snapshots, locks and undo like every other content; writes are routine (no §11.A gate). Writing types needs `content.structure`, granted by default to every role with `content.write`.
+- Core has no locale concept for lists: it exposes value addresses, plugin-declared definition attributes, the `list-resolve` composition point, domain events and audit contributions; a translation plugin does the translating (§7).
 
 ### 3.3 Module Versioning
 

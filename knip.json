@@ -20,7 +20,6 @@
     "apps/admin/src/lib/server/query.ts": ["exports"],
     "packages/admin-core/src/branch.ts": ["exports"],
     "packages/admin-core/src/ops/_propose-helpers.ts": ["types"],
-    "packages/admin-core/src/ops/structured_sets.ts": ["exports"],
     "packages/admin-core/src/proposal-gc-worker.ts": ["exports"],
     "packages/admin-core/src/snapshots/load.ts": ["exports"],
     "packages/provisioning/src/gcloud.ts": ["exports"],

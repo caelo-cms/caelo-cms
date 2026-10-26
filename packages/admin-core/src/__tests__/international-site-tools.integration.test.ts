@@ -19,6 +19,7 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -88,8 +89,9 @@ async function seedPage(slug: string): Promise<string> {
       `INSERT INTO layouts (slug, display_name, html, css) VALUES ('${slug}-lay', 'L', '<html></html>', '') RETURNING id::text AS id`,
     )) as { id: string }[];
     const tpl = (await tx.unsafe(
-      `INSERT INTO templates (slug, display_name, kind, html, css, layout_id) VALUES ('${slug}-tpl', 'T', 'content', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
+      `INSERT INTO templates (slug, display_name, html, css, layout_id) VALUES ('${slug}-tpl', 'T', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
     )) as { id: string }[];
+    await adoptTemplateIntoDefaultPageType(tx, tpl[0]?.id ?? "");
     const id = tpl[0]?.id;
     if (!id) throw new Error("seed failed");
     return id;

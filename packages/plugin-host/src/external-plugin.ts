@@ -71,6 +71,11 @@ export function externalPluginDefinition(opts: {
       Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
     ),
     publicOperations: manifest.publicOperations,
+    // Epic #1107 — the Stage-audit hook is a manifest field, so a
+    // runtime-installed plugin contributes findings like a shipped one.
+    ...(manifest.auditFindingsOperation
+      ? { auditFindingsOperation: manifest.auditFindingsOperation }
+      : {}),
     ...(manifest.hasStaticRender
       ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
       : {}),

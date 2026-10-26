@@ -5,8 +5,8 @@
  * against a real Postgres with international-site answering it.
  *
  * One English page carries an internal link in every place a link can
- * live — module HTML `href`, a `link` field, a `link-list`, rich text —
- * and the layout carries a nav-menu set. All of them were written as
+ * live — module HTML `href`, a `link` field, a list entry, rich text —
+ * and the layout carries a menu module with a links list. All of them were written as
  * paths and stored as page references (rollout C). Its German version
  * (create_variant copies the references verbatim) must link to the
  * GERMAN pages, identically in the editor preview (which live-edit
@@ -82,7 +82,6 @@ async function cleanup(): Promise<void> {
     await tx.unsafe('DROP SCHEMA IF EXISTS "plugin_international_site" CASCADE');
     await tx.unsafe("DELETE FROM plugins WHERE slug = 'international-site'");
     await tx.unsafe(`DELETE FROM redirects WHERE from_path LIKE '%${PFX}-%'`);
-    await tx.unsafe(`DELETE FROM structured_sets WHERE slug LIKE '${PFX}-%'`);
     await tx.unsafe(
       `DELETE FROM layout_modules WHERE layout_id IN (SELECT id FROM layouts WHERE slug LIKE '${PFX}-%')`,
     );
@@ -120,17 +119,72 @@ async function op<T>(operationName: string, args: unknown): Promise<T> {
 }
 
 async function preview(pageId: string): Promise<{ html: string; missingSlots: string[] }> {
-  return sysOp("pages.render_preview", { pageId });
+  const r = await sysOp<{ html: string; missingSlots: string[] }>("pages.render_preview", {
+    pageId,
+  });
+  return { ...r, html: unstamp(r.html) };
 }
 
+let navModuleId = "";
+
+const menuEntries = (items: { label: string; href: string }[]) =>
+  items.map(({ label, href }, i) => ({
+    id: `00000000-0000-4000-9000-${String(i + 1).padStart(12, "0")}`,
+    node: "link",
+    values: { label, link: { href } },
+  }));
+
+/**
+ * The layout menu's entries: a chrome module whose links list renders
+ * from its default, and its German chrome variant (a menu is translatable
+ * site chrome, so the German pages need one) with the same links.
+ */
 async function setNav(items: { label: string; href: string }[]): Promise<void> {
-  await sysOp("structured_sets.set", {
-    kind: "nav-menu",
-    slug: `${PFX}-main`,
-    displayName: "Main menu",
-    items,
-  });
+  await setMenuModule(items);
+  if (germanChrome) {
+    await op("set_chrome_variants", {
+      variants: [
+        {
+          targetKey: `layout:${menuLayoutId}:header:0`,
+          localeCode: "de",
+          values: { menu: menuEntries(items) },
+        },
+      ],
+    });
+  }
 }
+
+/** Set once the locales exist (the plugin keeps chrome variants per locale). */
+let germanChrome = false;
+let menuLayoutId = "";
+
+async function setMenuModule(items: { label: string; href: string }[]): Promise<void> {
+  const fields = [
+    {
+      name: "menu",
+      kind: "list",
+      listType: "links",
+      label: "Main menu",
+      default: menuEntries(items),
+    },
+  ];
+  if (navModuleId) {
+    await sysOp("modules.update", { moduleId: navModuleId, fields });
+    return;
+  }
+  navModuleId = (
+    await sysOp<{ moduleId: string }>("modules.create", {
+      slug: `${PFX}-main-menu`,
+      displayName: "Main menu",
+      html: '<nav><ul>{{#menu}}<li><a href="{{link}}">{{label}}</a></li>{{/menu}}</ul></nav>',
+      css: "",
+      js: "",
+      fields,
+    })
+  ).moduleId;
+}
+
+const unstamp = (html: string) => html.replace(/ data-caelo-list-item="[^"]*"/g, "");
 
 function stagingTarget(): DeployTarget {
   return {
@@ -150,6 +204,7 @@ async function build(pageIds: string[], runId: string): Promise<string> {
   buildRoots.push(root);
   await adapter.withAdminTransaction(SYS_CTX, (tx) =>
     generateSite({
+      publishAt: new Date().toISOString(),
       tx,
       adapter,
       plugins: localBuildPluginServices,
@@ -223,17 +278,23 @@ beforeAll(async () => {
         kind: "content",
         html:
           `<div><a class="h" href="/${PFX}-about">About</a><a class="f" href="{{cta_href}}">CTA</a>` +
-          '{{#nav}}<a class="l" href="{{href}}">{{label}}</a>{{/nav}}<div class="r">{{body}}</div></div>',
+          '{{#nav}}<a class="l" href="{{link}}">{{label}}</a>{{/nav}}<div class="r">{{body}}</div></div>',
         fields: [
           { name: "cta_href", kind: "link", label: "CTA link" },
-          { name: "nav", kind: "link-list", label: "More" },
+          { name: "nav", kind: "list", listType: "links", label: "More" },
           { name: "body", kind: "richtext", label: "Body" },
         ],
         content: {
           source: "inline",
           values: {
             cta_href: `/${PFX}-pricing#plans`,
-            nav: [{ label: "Pricing", href: `/${PFX}-pricing` }],
+            nav: [
+              {
+                id: "00000000-0000-4000-9000-000000000101",
+                node: "link",
+                values: { label: "Pricing", link: { href: `/${PFX}-pricing` } },
+              },
+            ],
             body: `<p>Read <a href="/${PFX}-about?ref=body">about us</a></p>`,
           },
         },
@@ -242,17 +303,10 @@ beforeAll(async () => {
   });
   ids.enLinks = links.pageId;
 
-  // The layout's menu: a nav-menu set rendered by a `nav-menu-<slug>` module.
+  // The layout's menu: a chrome module with a links list.
   await setNav([{ label: "About", href: `/${PFX}-about` }]);
-  const nav = await sysOp<{ moduleId: string }>("modules.create", {
-    slug: `nav-menu-${PFX}-main`,
-    displayName: "Main menu",
-    html: "<nav></nav>",
-    css: "",
-    js: "",
-    fields: [],
-  });
-  await sysOp("layout_modules.set", { layoutId, blockName: "header", moduleIds: [nav.moduleId] });
+  await sysOp("layout_modules.set", { layoutId, blockName: "header", moduleIds: [navModuleId] });
+  menuLayoutId = layoutId;
 
   await op("set_locales", {
     locales: [
@@ -260,6 +314,8 @@ beforeAll(async () => {
       { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
     ],
   });
+  germanChrome = true;
+  await setNav([{ label: "About", href: `/${PFX}-about` }]);
   const variant = async (sourcePageId: string, slug: string) =>
     (
       await op<{ pageId: string }>("create_variant", {
@@ -285,7 +341,8 @@ afterAll(async () => {
 });
 
 /** What the German links page must link to, wherever the link lives. */
-function expectGermanLinks(html: string): void {
+function expectGermanLinks(stamped: string): void {
+  const html = unstamp(stamped);
   expect(html).toContain(`<a class="h" href="/de/${PFX}-ueber/">About</a>`);
   expect(html).toContain(`<a class="f" href="/de/${PFX}-preise/#plans">CTA</a>`);
   expect(html).toContain(`<a class="l" href="/de/${PFX}-preise/">Pricing</a>`);
@@ -295,7 +352,8 @@ function expectGermanLinks(html: string): void {
 }
 
 /** And the English page keeps its English links. */
-function expectEnglishLinks(html: string): void {
+function expectEnglishLinks(stamped: string): void {
+  const html = unstamp(stamped);
   expect(html).toContain(`<a class="h" href="/${PFX}-about/">About</a>`);
   expect(html).toContain(`<a class="f" href="/${PFX}-pricing/#plans">CTA</a>`);
   expect(html).toContain(`<a class="l" href="/${PFX}-pricing/">Pricing</a>`);
@@ -317,7 +375,7 @@ describe("#724 D — internal links go to the rendering page's language", () => 
     expect(stored).toContain(`caelo:page/${ids.enAbout}?ref=body`);
   });
 
-  it("preview: HTML href, link field, link-list, rich text and nav-menu set resolve per language", async () => {
+  it("preview: HTML href, link field, list entries, rich text and the chrome menu resolve per language", async () => {
     const de = await preview(ids.deLinks);
     expect(de.missingSlots.filter((m) => m.startsWith("link-"))).toEqual([]);
     expectGermanLinks(de.html);

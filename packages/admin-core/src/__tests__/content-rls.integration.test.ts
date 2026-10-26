@@ -9,6 +9,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { SQL } from "bun";
+import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 if (!ADMIN_URL) throw new Error("ADMIN_DATABASE_URL required");
@@ -50,6 +51,7 @@ beforeAll(async () => {
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seededTemplateId = tpl[0]?.id ?? "";
+      await adoptTemplateIntoDefaultPageType(tx, seededTemplateId);
       const mod = (await tx`
         INSERT INTO modules (slug, display_name, type, html)
         VALUES (${MOD_SLUG}, 'RLS M', ${MOD_SLUG}, '<p>x</p>')

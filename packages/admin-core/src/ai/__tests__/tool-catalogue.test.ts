@@ -54,33 +54,28 @@ describe("buildToolCatalogue", () => {
   it("issue #301: op-notation entries translate to tool names and PRELOAD them (run #15 regression)", () => {
     // op-notation read allowlist. Post-Tool-Search, allowlists are
     // PRELOAD hints, not filters: the entries translate
-    // (structured_sets.list → list_structured_sets, pages.list →
-    // list_pages) and those tools get `alwaysLoaded` so the model reaches
-    // them without a search round-trip. Nothing is removed — every other
+    // (redirects.list → find_redirects, pages.list → list_pages) and
+    // those tools get `alwaysLoaded` so the model reaches them without a
+    // search round-trip. Nothing is removed — every other
     // tool stays reachable via Tool Search.
-    const tools = registry(
-      "edit_module",
-      "add_module_to_page",
-      "list_structured_sets",
-      "list_pages",
-    );
+    const tools = registry("edit_module", "add_module_to_page", "find_redirects", "list_pages");
     const errSpy = spyOn(console, "error").mockImplementation(() => {});
     try {
       const result = buildToolCatalogue({
         tools,
-        allowedToolNames: new Set(["structured_sets.list", "pages.list"]),
+        allowedToolNames: new Set(["redirects.list", "pages.list"]),
         engagedSkills: [],
         excluded: undefined,
         chatSessionId,
       });
       // Nothing dropped — the whole catalogue is present.
       expect(result.map((t) => t.name).sort()).toEqual(
-        ["add_module_to_page", "edit_module", "list_structured_sets", "list_pages"].sort(),
+        ["add_module_to_page", "edit_module", "find_redirects", "list_pages"].sort(),
       );
-      // The resolved allowlist entry (list_structured_sets, not in the
+      // The resolved allowlist entry (find_redirects, not in the
       // core set) is preloaded via the skill hint.
       const loaded = new Set(result.filter((t) => t.alwaysLoaded).map((t) => t.name));
-      expect(loaded.has("list_structured_sets")).toBe(true);
+      expect(loaded.has("find_redirects")).toBe(true);
       // A clean resolution logs nothing.
       expect(errSpy.mock.calls.some((c) => String(c[0]).includes("skill-allowlist"))).toBe(false);
     } finally {

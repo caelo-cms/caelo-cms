@@ -5,7 +5,7 @@
  * STATIC (operator's rule: nothing dynamic in the system prompt, so it stays
  * cached and is never busted), so the only block it still contributes is the
  * static `## Skills` index. Everything the AI once received as a volatile
- * system-prompt block (pages, modules, theme, structured sets, content library,
+ * system-prompt block (pages, modules, theme, lists, content library,
  * layouts, redirects, locales, users/roles, …) is gone — the AI fetches that
  * state on-demand via the list_/get_ tools (results land in the append-only,
  * cache-friendly message history).

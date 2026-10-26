@@ -220,13 +220,17 @@ describe("buildReport integration", () => {
         scenario: "homepage",
         loops: 33,
         inputTokens: 2_660_400,
-        attribution: { staticPerCallTokens: 52_600, historyEndTokens: 62_400 },
+        attribution: {
+          firstCallInputTokens: 58_100,
+          staticPerCallTokens: 52_600,
+          historyEndTokens: 62_400,
+        },
         violations: [
           {
-            metric: "inputTokens",
-            actual: 2_660_400,
-            limit: 2_000_000,
-            message: "total input 2660.4k > ceiling 2000.0k",
+            metric: "newInputTokens",
+            actual: 439_000,
+            limit: 300_000,
+            message: "new input (cache writes + uncached) 439.0k > ceiling 300.0k",
           },
         ],
       },
@@ -240,8 +244,10 @@ describe("buildReport integration", () => {
     ]);
     const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "", metricsRaw });
     expect(md).toContain("### Input-token breakdown (per scenario attempt)");
-    expect(md).toContain("| homepage | 33 | 2660.4k | 52.6k | 62.4k |");
-    expect(md).toContain("**breached:** total input 2660.4k > ceiling 2000.0k");
+    expect(md).toContain("| homepage | 33 | 2660.4k | 58.1k | 52.6k | 62.4k |");
+    expect(md).toContain(
+      "**breached:** new input (cache writes + uncached) 439.0k > ceiling 300.0k",
+    );
     expect(md).toContain("| homepage (attempt 2) | 18 |");
     expect(md).toContain("1 attempt(s) breached token/loop thresholds");
   });
@@ -352,6 +358,19 @@ describe("formatBugSection", () => {
     expect(md).toContain("`create_module`");
     // A null suspected_tool renders as an em dash, not an empty cell.
     expect(md).toContain("| — | yes | **new** |");
+  });
+
+  it("shows the issue the bug intake filed for a forwarded report", () => {
+    const rows = parseBugReports(BUGS) ?? [];
+    const first = rows[0];
+    if (!first) throw new Error("fixture has no rows");
+    const forwarded = [
+      { ...first, forwardingState: "sent", upstreamIssueUrl: "https://github.com/o/r/issues/77" },
+      { ...first, id: "x2", forwardingState: "sent", upstreamIssueUrl: null },
+    ];
+    const md = formatBugSection(forwarded).join("\n");
+    expect(md).toContain("**new** #77");
+    expect(md).toContain("**new** (issue pending)");
   });
 
   it("carries diagnosis in a collapsed details block", () => {

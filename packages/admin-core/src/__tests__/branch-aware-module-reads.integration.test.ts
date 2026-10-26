@@ -55,15 +55,22 @@ const MODULE_SLUG = "branch-reads-mod";
 const SESSION_PREFIX = "branch-reads-";
 
 const MAIN_HTML =
-  '<nav class="menu" aria-label="Main menu">\n  {{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}\n</nav>';
+  '<nav class="menu" aria-label="Main menu">\n  {{#nav_items}}<a href="{{link}}">{{label}}</a>{{/nav_items}}\n</nav>';
 const MAIN_FIELDS = [
   {
     name: "nav_items",
-    kind: "link-list",
+    kind: "list",
+    listType: "links",
     label: "Navigation",
     // External: an internal link must name an existing page (#724), and
     // this file seeds none.
-    default: [{ label: "Home", href: "https://example.com/" }],
+    default: [
+      {
+        id: "00000000-0000-4000-9000-000000000001",
+        node: "link",
+        values: { label: "Home", link: { href: "https://example.com/" } },
+      },
+    ],
   },
 ];
 
@@ -247,11 +254,20 @@ describe("branch-effective module reads (read_content / edit_content / edit_modu
         fields: [
           {
             name: "nav_items",
-            kind: "link-list",
+            kind: "list",
+            listType: "links",
             label: "Navigation",
             default: [
-              { label: "Home", href: "https://example.com/" },
-              { label: "Blog", href: "https://example.com/blog" },
+              {
+                id: "00000000-0000-4000-9000-000000000001",
+                node: "link",
+                values: { label: "Home", link: { href: "https://example.com/" } },
+              },
+              {
+                id: "00000000-0000-4000-9000-000000000002",
+                node: "link",
+                values: { label: "Blog", link: { href: "https://example.com/blog" } },
+              },
             ],
           },
         ],
@@ -341,7 +357,7 @@ describe("branch-effective module reads (read_content / edit_content / edit_modu
 
     // Main moves on after the Stage (another writer, outside this chat).
     const NEWER_MAIN_HTML =
-      '<nav class="menu menu--newer">\n  {{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}\n</nav>';
+      '<nav class="menu menu--newer">\n  {{#nav_items}}<a href="{{link}}">{{label}}</a>{{/nav_items}}\n</nav>';
     const mainEdit = await execute(registry, adapter, SYSTEM, "modules.update", {
       moduleId,
       html: NEWER_MAIN_HTML,

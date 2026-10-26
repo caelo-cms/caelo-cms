@@ -9,7 +9,7 @@
  * the move side effects) so read-only consumers — the branch page view
  * the link index and the link canonicaliser use (epic #724) — can
  * compose paths without importing the move machinery, which reaches the
- * structured-set and module write ops and would close an import cycle.
+ * module write ops and would close an import cycle.
  */
 
 import {

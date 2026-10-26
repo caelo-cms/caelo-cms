@@ -26,14 +26,13 @@ import {
 } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
-import type { ContentInstanceState, ModuleState, StructuredSetState } from "../snapshots/state.js";
+import type { ContentInstanceState, ModuleState } from "../snapshots/state.js";
 import {
   type LinkMigrationChange,
   ScopeBatch,
   writeMainInstance,
   writeMainLayout,
   writeMainModule,
-  writeMainSet,
 } from "./migrate.js";
 import { stableJson } from "./migrate-convert.js";
 import { loadBranchStates, loadPluginRowTasks } from "./migrate-load.js";
@@ -57,6 +56,19 @@ type Plan = { readonly change: LinkMigrationChange; readonly apply: () => Promis
 
 const EDITED = "edited after the migration — restoring it would discard that edit";
 const GONE = "no longer pending on that chat (staged or undone since)";
+
+/**
+ * Entity kinds a revert can restore. A run recorded before epic #1107 may
+ * name a kind whose table migration 0354 dropped; that part has nothing
+ * left to restore and is reported as a conflict instead of failing.
+ */
+const RESTORABLE_KINDS: ReadonlySet<string> = new Set([
+  "module",
+  "contentInstance",
+  "layout",
+  "pluginRow",
+]);
+const REMOVED = "this kind of content no longer exists (removed by migration 0354)";
 
 /**
  * Restore the `before` of every change whose part still holds its
@@ -101,6 +113,10 @@ export async function revertLinkMigration(
   >();
 
   for (const ch of [...changes].reverse()) {
+    if (!RESTORABLE_KINDS.has(ch.entityKind)) {
+      conflict(ch, REMOVED);
+      continue;
+    }
     if (ch.branchId === null) {
       const plan = await planMain(tx, ch, batchFor(null));
       if (typeof plan === "string") conflict(ch, plan);
@@ -204,34 +220,6 @@ async function planMain(
         },
       };
     }
-    case "structuredSet": {
-      const rows = (await tx.execute(sql`
-        SELECT id::text AS id, kind, slug, display_name, items FROM structured_sets WHERE id = ${ch.entityId}::uuid
-      `)) as unknown as {
-        id: string;
-        kind: string;
-        slug: string;
-        display_name: string;
-        items: unknown;
-      }[];
-      const r = rows[0];
-      if (!r) return "deleted since the migration";
-      const items = typeof r.items === "string" ? JSON.parse(r.items) : r.items;
-      if (stableJson(items) !== stableJson(ch.after.items)) return EDITED;
-      return {
-        change: ch,
-        apply: async () => {
-          batch.addEntity(
-            null,
-            await writeMainSet(
-              tx,
-              { id: r.id, kind: r.kind, slug: r.slug, displayName: r.display_name },
-              ch.before.items,
-            ),
-          );
-        },
-      };
-    }
     case "layout": {
       const rows = (await tx.execute(sql`
         SELECT html FROM layouts WHERE id = ${ch.entityId}::uuid AND deleted_at IS NULL
@@ -307,16 +295,5 @@ async function planBranch(
       throw new Error(
         `link migration revert: layout ${ch.entityId} recorded on branch ${branchId}`,
       );
-    case "structuredSet": {
-      const s = (await loadBranchStates(tx, "structuredSet", branchId, [ch.entityId]))[0];
-      if (!s) return GONE;
-      if (stableJson(s.state.items) !== stableJson(ch.after.items)) return EDITED;
-      const state: StructuredSetState = { ...s.state, items: ch.before.items };
-      return {
-        change: ch,
-        apply: async () =>
-          batch.addEntity(s.chatTaskId, { kind: "structuredSet", entityId: ch.entityId, state }),
-      };
-    }
   }
 }

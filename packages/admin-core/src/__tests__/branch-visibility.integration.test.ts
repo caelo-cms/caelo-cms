@@ -28,6 +28,7 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { PERMISSIONS } from "../permissions.js";
 import { registerAdminOps } from "../register.js";
+import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -133,6 +134,7 @@ beforeAll(async () => {
       RETURNING id::text AS id
     `) as unknown as { id: string }[];
     const templateId = tpl[0]?.id as string;
+    await adoptTemplateIntoDefaultPageType(tx, templateId);
     await tx`INSERT INTO template_blocks (template_id, name, display_name, position)
              VALUES (${templateId}::uuid, 'content', 'Content', 0)`;
     const mod = (await tx`

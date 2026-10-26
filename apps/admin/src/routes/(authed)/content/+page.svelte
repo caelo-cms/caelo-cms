@@ -1,6 +1,6 @@
 <script lang="ts">
   // SPDX-License-Identifier: MPL-2.0
-  import { FileText, History, Layers, Layout, MessageSquare } from "lucide-svelte";
+  import { FileText, History, Layers, Layout, ListTree, MessageSquare } from "lucide-svelte";
   import {
     Card,
     CardDescription,
@@ -11,6 +11,7 @@
   const tiles = [
     { href: "/content/pages", label: "Pages", desc: "Composed from modules; preview in an iframe", icon: FileText },
     { href: "/content/modules", label: "Modules", desc: "The only place raw HTML lives", icon: Layers },
+    { href: "/content/lists", label: "Menus & lists", desc: "Menus, footer links, categories and tags — shared lists", icon: ListTree },
     { href: "/content/templates", label: "Templates", desc: 'Layout shells with <caelo-slot name="…"> markers', icon: Layout },
     { href: "/content/chat", label: "Chats", desc: "Talk to the AI; Publish merges branch into main", icon: MessageSquare },
     { href: "/content/history", label: "History", desc: "Every site snapshot, with per-entity revert", icon: History },

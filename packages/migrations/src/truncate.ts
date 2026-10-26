@@ -70,6 +70,9 @@ if (!url) {
 const ADMIN_TABLES = [
   // Snapshots (referencing content + chats)
   "content_instance_snapshots",
+  "list_snapshots",
+  "list_type_snapshots",
+  "page_type_snapshots",
   "page_module_content_snapshots",
   "module_snapshots",
   "template_snapshots",
@@ -92,13 +95,17 @@ const ADMIN_TABLES = [
   "content_instances",
   "page_module_content",
   "pages_seo",
+  "page_terms",
   "pages",
+  // Epic #1107 — page types list templates (wiped below) by id; shared
+  // lists are content. List types are the shipped seed and stay.
+  "page_types",
+  "lists",
   "template_blocks",
   "templates",
   "layout_modules",
   "layouts",
   "modules",
-  "structured_sets",
   "redirects",
 
   // Media

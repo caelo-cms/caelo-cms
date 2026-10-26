@@ -9,7 +9,10 @@
  * (`data-caelo-module-id`), inside baked plugin output
  * (`data-caelo-plugin`), or in the page's chrome. The stored sources say
  * which layer holds it: a module's template, a content value of that
- * module, a navigation menu's structured set, a layout, or a template.
+ * module, a layout, or a template. A URL inside a rendered list entry
+ * (`data-caelo-list-item`, epic #1107) is stored in that entry: a shared
+ * list's (`<listId>/<itemId>`) or a module field default's
+ * (`local/<field>/<itemId>`); a placement's local list is a content value.
  */
 
 import { truncateKeepingIds } from "@caelo-cms/shared";
@@ -36,6 +39,8 @@ export interface LinkPlace {
   readonly raw: string;
   readonly moduleId: string | null;
   readonly pluginSlug: string | null;
+  /** The rendered list entry it sits in (`data-caelo-list-item`), if any. */
+  readonly listItem?: string | null;
 }
 
 export interface OriginContext {
@@ -43,30 +48,35 @@ export interface OriginContext {
   readonly layouts: readonly LinkLayout[];
 }
 
-/** Navigation menus render from the `nav-menu/<slug>` set, not their template. */
-const NAV_MENU_PREFIX = "nav-menu-";
-
 type Origin =
   | { readonly kind: "theme-asset" }
   | { readonly kind: "plugin"; readonly slug: string }
-  | { readonly kind: "nav-menu"; readonly module: LinkModule; readonly set: string }
   | { readonly kind: "module-template"; readonly module: LinkModule }
   | { readonly kind: "module-value"; readonly module: LinkModule }
   | { readonly kind: "layout"; readonly layout: LinkLayout }
-  | { readonly kind: "chrome" };
+  | { readonly kind: "chrome" }
+  | { readonly kind: "list-entry"; readonly listId: string; readonly itemId: string }
+  | {
+      readonly kind: "field-default-entry";
+      readonly module: LinkModule;
+      readonly field: string;
+      readonly itemId: string;
+    };
+
+const SHARED_ENTRY_RE = /^([0-9a-f-]{36})\/([0-9a-f-]{36})$/i;
+const DEFAULT_ENTRY_RE = /^local\/([a-z][a-z0-9_]*)\/([0-9a-f-]{36})$/i;
 
 function originOf(place: LinkPlace, ctx: OriginContext): Origin {
   if (place.raw.includes("{{theme_")) return { kind: "theme-asset" };
   if (place.pluginSlug) return { kind: "plugin", slug: place.pluginSlug };
   const module = place.moduleId ? ctx.modules.get(place.moduleId) : undefined;
+  const shared = place.listItem ? SHARED_ENTRY_RE.exec(place.listItem) : null;
+  if (shared?.[1] && shared[2]) return { kind: "list-entry", listId: shared[1], itemId: shared[2] };
+  const local = place.listItem ? DEFAULT_ENTRY_RE.exec(place.listItem) : null;
+  if (module && local?.[1] && local[2]) {
+    return { kind: "field-default-entry", module, field: local[1], itemId: local[2] };
+  }
   if (module) {
-    if (module.slug.startsWith(NAV_MENU_PREFIX)) {
-      return {
-        kind: "nav-menu",
-        module,
-        set: `nav-menu/${module.slug.slice(NAV_MENU_PREFIX.length)}`,
-      };
-    }
     return module.html.includes(place.raw)
       ? { kind: "module-template", module }
       : { kind: "module-value", module };
@@ -83,8 +93,6 @@ export function describeOrigin(place: LinkPlace, ctx: OriginContext): string {
       return "(an unbound theme asset)";
     case "plugin":
       return `in the output of plugin "${o.slug}"`;
-    case "nav-menu":
-      return `in navigation menu "${o.module.displayName}" (structured set ${o.set})`;
     case "module-template":
       return `in the template of module "${o.module.displayName}" (${o.module.id})`;
     case "module-value":
@@ -93,6 +101,10 @@ export function describeOrigin(place: LinkPlace, ctx: OriginContext): string {
       return `in layout "${o.layout.displayName}" (${o.layout.id})`;
     case "chrome":
       return "in the page's template markup";
+    case "list-entry":
+      return `in entry ${o.itemId} of shared list ${o.listId}`;
+    case "field-default-entry":
+      return `in entry ${o.itemId} of the default of field "${o.field}" of module "${o.module.displayName}" (${o.module.id})`;
   }
 }
 
@@ -135,11 +147,6 @@ export function fixFor(
           `plugin "${o.slug}" renders "${place.raw}": check its data and settings with get_plugin and change the URL there to ${to}; if the plugin builds the URL itself, report it with bug_report`,
         ),
       };
-    case "nav-menu":
-      return {
-        tool: "set_structured_set",
-        hint: clip(`change the item whose href is "${place.raw}" in ${o.set} to ${to}`),
-      };
     case "module-template":
       return {
         tool: "edit_content",
@@ -159,6 +166,20 @@ export function fixFor(
         tool: "propose_update_layout",
         hint: clip(
           `replace "${place.raw}" in layout "${o.layout.displayName}" (${o.layout.id}) with ${to}`,
+        ),
+      };
+    case "list-entry":
+      return {
+        tool: "patch_list_items_many",
+        hint: clip(
+          `the URL is stored in entry ${o.itemId} of shared list ${o.listId} (list_lists names it): update that entry's link to ${to} — one fix for every module that shows the list`,
+        ),
+      };
+    case "field-default-entry":
+      return {
+        tool: "edit_module",
+        hint: clip(
+          `the URL is stored in entry ${o.itemId} of the default of list field "${o.field}" of module "${o.module.displayName}" (${o.module.id}): set that entry's link to ${to}`,
         ),
       };
     case "chrome":
