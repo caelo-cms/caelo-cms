@@ -191,8 +191,7 @@ describe("composeSystemPromptChunks", () => {
   // `pageType:"page"` on a site whose types are content / home — no site
   // has a `page` type. Ordinary pages omit the type and get the default.
   it("never names a `page` page type and tells the AI to omit the type for an ordinary page", () => {
-    const model =
-      composeSystemPromptChunks([]).find((c) => c.label === "module-model")?.body ?? "";
+    const model = composeSystemPromptChunks([]).find((c) => c.label === "module-model")?.body ?? "";
     const pageTypeInput = JSON.stringify(
       (buildPageTool.inputSchema as { properties: { page: unknown } }).properties.page,
     );
