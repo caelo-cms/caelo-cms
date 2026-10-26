@@ -246,6 +246,7 @@ test("immutable core files: import, inspect, find, resolve, chunked read, exact 
       await tx.execute(sql`UPDATE themes SET is_active=false WHERE is_active=true`);
       await tx.execute(sql`UPDATE themes SET is_active=true WHERE slug=${THEME_SLUG}`);
       const published = await generateSite({
+        publishAt: new Date().toISOString(),
         tx,
         adapter,
         plugins: localBuildPluginServices,

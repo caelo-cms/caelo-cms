@@ -204,6 +204,7 @@ async function build(pageIds: string[], runId: string): Promise<string> {
   buildRoots.push(root);
   await adapter.withAdminTransaction(SYS_CTX, (tx) =>
     generateSite({
+      publishAt: new Date().toISOString(),
       tx,
       adapter,
       plugins: localBuildPluginServices,

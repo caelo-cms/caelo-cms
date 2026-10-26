@@ -148,6 +148,7 @@ async function readSeo(): Promise<{
 function build(runId: string) {
   return adapter.withAdminTransaction(SYSTEM, (tx) =>
     generateSite({
+      publishAt: new Date().toISOString(),
       tx,
       adapter,
       plugins: localBuildPluginServices,

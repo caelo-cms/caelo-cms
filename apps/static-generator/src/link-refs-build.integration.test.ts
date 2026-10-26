@@ -183,6 +183,7 @@ describe("static build — internal references", () => {
     const runId = `${PFX}-run`;
     const result = await adapter.withAdminTransaction(SYSTEM, (tx) =>
       generateSite({
+        publishAt: new Date().toISOString(),
         tx,
         adapter,
         plugins: localBuildPluginServices,
@@ -231,6 +232,7 @@ describe("static build — internal references", () => {
     const root = mkdtempSync(join(tmpdir(), "caelo-link-refs-build-"));
     const build = adapter.withAdminTransaction(SYSTEM, (tx) =>
       generateSite({
+        publishAt: new Date().toISOString(),
         tx,
         adapter,
         plugins: localBuildPluginServices,
@@ -268,6 +270,7 @@ describe("static build — internal references", () => {
     const root = mkdtempSync(join(tmpdir(), "caelo-link-refs-build-"));
     const build = adapter.withAdminTransaction(SYSTEM, (tx) =>
       generateSite({
+        publishAt: new Date().toISOString(),
         tx,
         adapter,
         plugins: localBuildPluginServices,
@@ -319,6 +322,7 @@ describe("static build — internal references", () => {
     const runId = `${PFX}-run4`;
     await adapter.withAdminTransaction(SYSTEM, (tx) =>
       generateSite({
+        publishAt: new Date().toISOString(),
         tx,
         adapter,
         plugins: localBuildPluginServices,

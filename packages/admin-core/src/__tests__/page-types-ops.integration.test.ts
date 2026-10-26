@@ -399,6 +399,16 @@ describe("#1107 page types", () => {
       await op<{ page: { firstPublishedAt: string | null } }>(SYS, "pages.get", { pageId })
     ).page.firstPublishedAt;
     expect(first).not.toBeNull();
+    // The stored value is the run's start: the instant the build rendered
+    // for this never-live page (#1121 review), not the moment of stamping.
+    const { deployRunStartedAt } = await import("../ops/content/first-published.js");
+    const startedAt = await adapter.admin.transaction(async (tx) => {
+      await tx.execute(
+        (await import("drizzle-orm")).sql`SELECT set_config('caelo.actor_kind', 'system', true)`,
+      );
+      return deployRunStartedAt(tx, runId);
+    });
+    expect(new Date(first ?? "").toISOString()).toBe(startedAt);
     await adapter.admin.transaction(async (tx) => {
       await tx.execute(
         (await import("drizzle-orm")).sql`SELECT set_config('caelo.actor_kind', 'system', true)`,
@@ -459,6 +469,9 @@ describe("#1107 render-data loader", () => {
       properties: { teaser: "draft" },
     });
     expect(build.pages.get(pageId)?.properties).not.toHaveProperty("teaser");
+    // Never live yet, but published: it sorts into "latest news" as new,
+    // not last (#1121 review).
+    expect(preview.pages.get(pageId)?.firstPublishedAt).not.toBeNull();
     expect(preview.listTypes.get("menu")?.def.role).toBe("navigation");
     expect(preview.pageTypes.get(news.typeSlug)?.def.vocabularies[0]?.list).toBe(news.vocabId);
     expect(preview.siteLanguage).toBe("en");

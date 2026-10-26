@@ -413,6 +413,13 @@ export async function generateSite(args: {
   runId: string;
   /** Optional repo root so out_dir resolves against it; defaults to cwd. */
   repoRoot?: string;
+  /**
+   * Epic #1107 — the first-publication time this build renders for
+   * published pages that were never live (ISO): the deploy run's
+   * `started_at`, which Publish live then stores, so "latest news" and an
+   * article's date in the shipped HTML match the stored value.
+   */
+  publishAt: string;
   /** Optional progress callback fired after each page is written. */
   onProgress?: ProgressCallback;
   /** P13 — adapter handle so the plugin render pass can read +
@@ -478,7 +485,11 @@ export async function generateSite(args: {
   // Epic #1107 — lists of the whole build, loaded once: menus, page
   // queries and system sources resolve per page from this, and the
   // incremental selection below reads the page index from it.
-  const listData = await loadBuildListRenderData(tx, { env: target.env, plugins: args.plugins });
+  const listData = await loadBuildListRenderData(tx, {
+    env: target.env,
+    plugins: args.plugins,
+    publishAt: args.publishAt,
+  });
   const change: BuildChange = {
     pageIds: args.changedPageIds ?? [],
     listIds: args.changedListIds ?? [],

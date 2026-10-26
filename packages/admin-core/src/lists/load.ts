@@ -62,6 +62,9 @@ export async function loadListRenderData(
 ): Promise<LoadedListRenderData> {
   const branchId = opts.scope === "build" ? null : opts.chatBranchId;
   const pages = await loadPagesInView(tx, branchId);
+  // A published page that was never live shows as if it went live now —
+  // where the next Publish live puts it in "latest news" (#1121 review).
+  const previewPublishAt = new Date().toISOString();
   const pageVariants =
     pages.length > 0 && hasLinkResolveContributors()
       ? await resolveLinkVariants(
@@ -97,7 +100,7 @@ export async function loadListRenderData(
       pageTypeId: p.pageTypeId,
       properties: p.properties,
       terms: p.terms,
-      firstPublishedAt: p.firstPublishedAt,
+      firstPublishedAt: p.firstPublishedAt ?? (p.status === "published" ? previewPublishAt : null),
       updatedAt: p.updatedAt,
       published: p.status === "published",
     })),

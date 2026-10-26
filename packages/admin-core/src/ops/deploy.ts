@@ -98,7 +98,7 @@ import {
   openAiStageHoldIds,
   releaseAiStageHolds,
 } from "../stage/ai-stage-hold.js";
-import { stampFirstPublished } from "./content/first-published.js";
+import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import { json } from "./quality/_shared.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 import {
@@ -434,6 +434,8 @@ async function runGenerator(
     changedListTypeIds?: ReadonlyArray<string>;
     /** #650 — render this origin instead of the stored site URL. */
     siteBaseUrlOverride?: string;
+    /** Epic #1107 — first-publication time of never-live pages (see generateSite). */
+    publishAt: string;
     /**
      * false: leave `<outDir>/current/` alone — #650 Publish live's rebuild,
      * and #1003 every build on a publisher that does not serve `current/`.
@@ -481,6 +483,7 @@ async function runGenerator(
         target: args.target,
         runId: args.runId,
         repoRoot: args.repoRoot,
+        publishAt: args.publishAt,
         ...(args.changedPageIds && args.changedPageIds.length > 0
           ? { changedPageIds: [...args.changedPageIds] }
           : {}),
@@ -908,6 +911,7 @@ export const triggerDeployOp = defineOperation({
       runId,
       target: effectiveTarget,
       repoRoot,
+      publishAt: await deployRunStartedAt(tx, runId),
       changedPageIds: input.changedPageIds,
       changedListIds: input.changedListIds,
       changedListTypeIds: input.changedListTypeIds,
@@ -1378,10 +1382,10 @@ export const promoteDeployOp = defineOperation({
           productionRunId: toRunId,
         });
       }
-      // Epic #1107 — Publish live: the pages of the build it ships (the
-      // live rebuild's, or the staged build's when copied) get their
-      // first_published_at.
-      if (to.env === "production") await stampFirstPublished(tx, rebuilt ? toRunId : fromRunId);
+      // Epic #1107 — Publish live: the pages of the build it ships get
+      // their first_published_at — the staged run's start, which is what
+      // both the staged build and its live rebuild rendered.
+      if (to.env === "production") await stampFirstPublished(tx, fromRunId);
       timer.lap("finish");
       await tx.execute(sql`
         UPDATE deploy_runs
@@ -1485,6 +1489,9 @@ async function rebuildAndPublishLive(
     runId: args.toRunId,
     target,
     repoRoot: args.repoRoot,
+    // The staged build's instant: the parity guard compares the two
+    // renders, and Publish live stores this value (#1121 review).
+    publishAt: await deployRunStartedAt(tx, args.stagingRunId),
     // Nothing may serve this build before the parity guard passed.
     syncCurrent: false,
   });
