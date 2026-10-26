@@ -16,6 +16,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, setDefaultTimeout } from "bun:test";
 import authPlugin from "@caelo-cms/plugin-auth";
 import commentsPlugin from "@caelo-cms/plugin-comments";
+import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap as bootstrapPluginHost,
   pluginToolsRegistry,
@@ -38,7 +39,8 @@ const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 
-const ALL_SLUGS = ["ratings", "newsletter", "comments", "auth"];
+// Ratings requires consent-manager, so the pair is installed together.
+const ALL_SLUGS = ["consent-manager", "ratings", "newsletter", "comments", "auth"];
 
 async function wipe(): Promise<void> {
   resetPluginHost();
@@ -62,6 +64,7 @@ async function wipe(): Promise<void> {
         await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${s})`;
         await tx`DELETE FROM plugin_schema_migrations WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${s})`;
         await tx`DELETE FROM plugins WHERE slug = ${s}`;
+        await tx.unsafe(`DROP SCHEMA IF EXISTS "plugin_${s.replace(/-/g, "_")}" CASCADE`);
       }
     });
   } finally {
@@ -70,7 +73,7 @@ async function wipe(): Promise<void> {
   const pub = new SQL(PUBLIC_URL);
   try {
     for (const s of ALL_SLUGS) {
-      await pub.unsafe(`DROP SCHEMA IF EXISTS plugin_${s} CASCADE`);
+      await pub.unsafe(`DROP SCHEMA IF EXISTS "plugin_${s.replace(/-/g, "_")}" CASCADE`);
     }
   } finally {
     await pub.end();
@@ -145,6 +148,7 @@ async function bootstrapAll(): Promise<void> {
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
     testPlugins: [
+      { definition: consentPlugin },
       { definition: ratingsPlugin },
       { definition: newsletterPlugin },
       { definition: commentsPlugin },

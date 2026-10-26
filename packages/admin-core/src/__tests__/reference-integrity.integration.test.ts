@@ -230,11 +230,11 @@ describe("reference integrity — covered surfaces", () => {
     }
     const byKind = (k: string) =>
       missing.find((i) => i.place.kind === k && !(i.place as { nested?: boolean }).nested);
-    expect(byKind("content")?.fix.tool).toBe("set_page_module_content");
+    expect(byKind("content")?.fix.tool).toBe("set_page_module_content_many");
     expect(byKind("content")?.message).toContain(`"/${PFX}-linker"`);
     expect(byKind("content")?.message).toContain('field "cta_href"');
     expect(byKind("module-html")?.fix.tool).toBe("edit_content");
-    expect(byKind("module-default")?.fix.tool).toBe("edit_module");
+    expect(byKind("module-default")?.fix.tool).toBe("update_modules_many");
     expect(byKind("module-default")?.message).toContain('field "nav_links" of module "RIF Header"');
     expect(byKind("layout-html")?.fix.tool).toBe("propose_update_layout");
     expect(byKind("template-html")?.fix.tool).toBe("edit_content");
@@ -243,7 +243,7 @@ describe("reference integrity — covered surfaces", () => {
         (i) =>
           i.place.kind === "content" &&
           (i.place as { nested: boolean }).nested &&
-          i.fix.tool === "set_content_instance_values",
+          i.fix.tool === "set_content_instance_values_many",
       ),
     ).toBe(true);
 
@@ -283,7 +283,7 @@ describe("reference integrity — Stage gate", () => {
     const message = "message" in refused.error ? String(refused.error.message) : "";
     expect(message).toStartWith("Stage refused");
     expect(message).toContain(`"/${PFX}-l2"`);
-    expect(message).toContain("set_page_module_content");
+    expect(message).toContain("set_page_module_content_many");
 
     // Rolled back: the target page is still live on main.
     const live = await admin(
@@ -367,7 +367,7 @@ describe("reference integrity — Stage gate", () => {
       (f) => f.ruleId === "references/unpublished-target" && f.pageId === linker.pageId,
     );
     expect(finding?.severity).toBe("error");
-    expect(finding?.fix?.tool).toBe("set_page_module_content");
+    expect(finding?.fix?.tool).toBe("set_page_module_content_many");
 
     // Publishing the target clears it.
     await run(SYS, "pages.set_status", { pageId: target.pageId, status: "published" });
@@ -397,7 +397,7 @@ describe("check_links tool", () => {
     expect(r.content).toContain("1 blocking");
     expect(r.content).toContain("Link to a deleted target");
     expect(r.content).toContain(`"/${PFX}-l4"`);
-    expect(r.content).toContain("set_page_module_content");
+    expect(r.content).toContain("set_page_module_content_many");
 
     const clean = await tool.handler(SYS, { pagePath: `/${PFX}-l4` }, {
       registry,

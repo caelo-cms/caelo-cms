@@ -147,10 +147,13 @@ describe("#449 — plugin client assets reach both render surfaces", () => {
       "linked",
     );
     for (const a of assets) {
-      expect(linked).toContain(a.publicPath);
       expect(a.relPath).toMatch(/^_caelo\/plugin\/t449-consent\/runtime\.[0-9a-f]{12}\.(js|css)$/);
     }
-    // The linked page carries references, never the bytes themselves.
+    // The script is referenced, never inlined; a stylesheet this small is
+    // inlined so it does not block first paint (#1124) — the same bytes.
+    const js = assets.find((a) => a.kind === "js");
+    expect(linked).toContain(js?.publicPath ?? "missing");
     expect(linked).not.toContain(RUNTIME_JS);
+    expect(linked).toContain(RUNTIME_CSS);
   });
 });

@@ -10,8 +10,8 @@ Search and keeps only the everyday workflow tools fully loaded.
 Three pieces cooperate; keep them in sync when touching any one:
 
 1. **Core set** — `packages/admin-core/src/ai/tools/core-tools.ts` names
-   the ~24 always-loaded workflow tools (`build_page`, `add_module`,
-   `edit_module`, `set_page_module_content`, …). `buildToolCatalogue`
+   the ~33 always-loaded workflow tools (`build_page`, `add_module`,
+   `update_modules_many`, `set_page_module_content_many`, …). `buildToolCatalogue`
    tags them `alwaysLoaded: true` on the provider-neutral
    `ToolDefinition`.
 2. **Provider transform** — `providers/anthropic.ts` marks every tool
@@ -51,3 +51,50 @@ shape, so `buildSystemAndMessages` now tags only the LAST 4 cacheable
 chunks — earlier chunks still ride inside every later breakpoint's
 cached prefix (a breakpoint caches everything before it). Covered by the
 cache-cap test in `__tests__/tool-search.test.ts`.
+
+## Retired tool names (alias layer)
+
+Every write tool that had a bulk twin was retired in favour of the twin
+(CLAUDE.md §11: the singular is the n=1 case of bulk), and every bulk tool
+whose top-level array holds per-item objects calls that array `items`.
+This keeps the always-loaded core small and gives the model one tool per
+job. Old names still arrive — chat history the model copies from,
+Owner-edited skills and subagent specs, external Power-MCP agents,
+approval rows queued before a rename — so
+`packages/admin-core/src/ai/tools/retired-tools.ts` keeps one explicit
+alias table:
+
+- `RETIRED_TOOLS` — retired name → live tool + an `adapt` function that
+  rewrites the old argument shape (usually `{ items: [args] }`).
+- `ARG_RENAMES` — live tool → old wrapper key → `items`.
+
+It is consulted at four seams: `ToolRegistry.get` / `dispatch`
+(dispatch.ts — chat, Power-MCP, subagents, approval re-dispatch), the AI
+SDK `repairToolCall` hook (`providers/_sdk-shared.ts`), skill allowlists
+(`chat-runner/allowlist-mapping.ts`) and subagent `allowedToolNames`
+(`spawn-subagent.ts`). Aliases never appear in the catalogue, the core set
+or Power-MCP `tools/list`; every use logs `[tool.alias-used] old -> new`.
+Nothing outside the two tables is guessed (CLAUDE.md §2).
+
+### Retiring a tool
+
+1. Move whatever only the old tool did into the surviving tool (result
+   notes, guards, refusal flags), with tests on the survivor.
+2. Delete the old tool file and its registration; add a `RETIRED_TOOLS`
+   entry (or an `ARG_RENAMES` entry for a renamed key) and a case in
+   `ai/tools/__tests__/retired-tools.test.ts`.
+3. Rewrite every AI-facing mention to the live name, with the n=1 call
+   shape where a call is shown: the system prompt, tool descriptions and
+   result/error messages, quality-check `fix.tool` values, static-generator
+   errors, shipped plugin strings and docs. `git grep -w <old_name>` must
+   find only the alias table, its tests and history notes.
+4. Add a cms_admin migration that rewrites the stored skill rows
+   (`allowlisted_tools` mapped and deduplicated, bodies by guarded
+   `replace()`), as `0364_skills_retired_tool_names.sql` does.
+5. Regenerate `packages/mcp-server/power-catalogue.json`
+   (`scripts/power-catalogue.test.ts` says how) and update the admin chat
+   UI where it switches on tool names, keeping the old name for history
+   rows.
+
+Keep an alias until no stored data or supported external client can still
+send the old name; removing one is a breaking change for Power-MCP agents.

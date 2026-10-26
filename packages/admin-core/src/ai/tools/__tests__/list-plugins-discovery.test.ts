@@ -80,6 +80,42 @@ describe("list_plugins — plugins found but not verified", () => {
     expect(r.content).toContain("- forms: verify");
   });
 
+  it("shows which plugins a plugin requires and which active ones require it", async () => {
+    const health = { state: "running", problem: null };
+    const r = await listPluginsTool.handler(
+      AI,
+      {} as never,
+      harness({
+        plugins: [
+          {
+            slug: "consent-manager",
+            version: "0.1.0",
+            status: "active",
+            tier: 1,
+            health,
+            requiresPlugins: [],
+            requiredBy: ["ratings"],
+          },
+          {
+            slug: "ratings",
+            version: "1.0.0",
+            status: "active",
+            tier: 1,
+            health,
+            requiresPlugins: ["consent-manager"],
+            requiredBy: [],
+          },
+        ],
+        discoveryFailures: [],
+      }),
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain("requires");
+    expect(r.content).toContain("required_by");
+    expect(r.content).toMatch(/consent-manager.*ratings/);
+    expect(r.content).toMatch(/ratings.*consent-manager/);
+  });
+
   it("adds nothing when every plugin found verified", async () => {
     const r = await listPluginsTool.handler(
       AI,

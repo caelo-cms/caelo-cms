@@ -1,36 +1,42 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #299 — AI tool: create_content_instances (bulk). Mints N
- * content_instances in ONE transaction. Run #15 fired the singular
- * create_content_instance 7+ times in a row for what was conceptually
- * one operation; per CLAUDE.md §11 the bulk variant is the default.
+ * AI tool: create_content_instances — mints 1..N shared content_instances in
+ * ONE transaction (the former singular create_content_instance is its n=1
+ * case; retired-tools.ts maps old calls here). Dispatches
+ * `content_instances.create_many`, which runs the singular op path per item;
+ * any invalid item rolls the whole batch back.
  */
 
 import { execute } from "@caelo-cms/query-api";
-import { contentInstancesCreateManySchema } from "@caelo-cms/shared";
+import { createContentInstanceToolInput } from "@caelo-cms/shared";
+import { z } from "zod";
 import { describeError, forwardRefusal } from "./_describe-error.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
-export const createContentInstancesTool: ToolDefinitionWithHandler<
-  import("@caelo-cms/shared").ContentInstancesCreateManyInput
-> = {
+const createContentInstancesInput = z
+  .object({ items: z.array(createContentInstanceToolInput).min(1).max(100) })
+  .strict();
+type CreateContentInstancesInput = z.infer<typeof createContentInstancesInput>;
+
+export const createContentInstancesTool: ToolDefinitionWithHandler<CreateContentInstancesInput> = {
   name: "create_content_instances",
-  description:
-    "Mint SEVERAL content_instances in ONE transaction — prefer this over multiple `create_content_instance` calls whenever you need more than one instance (§11 bulk-first: one round-trip instead of N). All-or-nothing: any invalid item aborts the whole batch (the error names `instances[i]` and, for value problems, the failing field) and nothing is written. " +
-    "Each item is the exact `create_content_instance` shape: `{moduleId, values, purpose?, slug?, displayName?}` — `purpose` required for SHARED rows (why this row exists as a reusable instance; surfaced in `## Content Library`), `values` keyed by the module's declared field names. " +
-    "**When NOT to use:** if you're also creating the page and its modules, `build_page` does the whole assembly (modules + instances + placements) in one call — use that instead. For a single instance the singular tool is fine. " +
-    "After minting, bind rows to placements via `set_placement_content` (or let `build_page` content.source='existing' bind them). " +
-    'Typical call: `{instances: [{moduleId: "…", purpose: "Footer CTA shared across product pages", values: {cta_label: "Start free", cta_href: "/signup"}}, {moduleId: "…", values: {…}}]}`.' +
-    INTERNAL_LINK_CONTRACT,
-  schema: contentInstancesCreateManySchema,
+  description: [
+    "Mint shared, reusable content_instances — one call for 1..N (`items[]`), one transaction — for content that appears identically on several pages (site footer copyright, brand banner on product pages, repeated blog CTA). Bind each via `set_placement_content({syncMode:'synced'})`; edits then propagate everywhere bound.",
+    "DO NOT USE FOR: one-off per-page content -> `set_page_module_content_many` (auto-mints a private instance); creating the page/modules too -> `build_page` (its `content` mints + binds in the same call).",
+    "CORE RULES:",
+    "- BEFORE CALLING: check `list_content_instances` — a row with matching purpose + module + placement pattern -> BIND it via `set_placement_content` instead; duplicate shared rows defeat the point.",
+    "- All-or-nothing: an invalid item aborts the batch (the error names `items[i]` + the failing field) and nothing is written.",
+    INTERNAL_LINK_CONTRACT.trim(),
+  ].join("\n"),
+  schema: createContentInstancesInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["instances"],
+    required: ["items"],
     properties: {
-      instances: {
+      items: {
         type: "array",
         minItems: 1,
         maxItems: 100,
@@ -40,10 +46,23 @@ export const createContentInstancesTool: ToolDefinitionWithHandler<
           required: ["moduleId"],
           properties: {
             moduleId: { type: "string", format: "uuid" },
-            slug: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
+            slug: {
+              type: "string",
+              pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+              description: "Optional handle, unique per module.",
+            },
             displayName: { type: "string", minLength: 1, maxLength: 128 },
-            purpose: { type: "string", maxLength: 1000 },
-            values: { type: "object", additionalProperties: true },
+            purpose: {
+              type: "string",
+              maxLength: 1000,
+              description:
+                'Why this row is shared, one line (e.g. "Pricing CTA at the bottom of every pricing-adjacent page"); `list_content_instances` shows it for later reuse-vs-fork decisions. Always set it.',
+            },
+            values: {
+              type: "object",
+              additionalProperties: true,
+              description: "Keyed by the module's declared field names.",
+            },
           },
         },
       },
@@ -55,12 +74,13 @@ export const createContentInstancesTool: ToolDefinitionWithHandler<
       toolCtx.adapter,
       ctx,
       "content_instances.create_many",
-      input,
+      { instances: input.items },
     );
     if (!r.ok) {
       return {
         ok: false,
-        content: `content_instances.create_many failed (whole batch rolled back): ${describeError(r.error)}`,
+        // The op names its own `instances[i]`; the AI sent `items[i]`.
+        content: `content_instances.create_many failed (whole batch rolled back): ${describeError(r.error).replaceAll("instances[", "items[")}`,
         ...forwardRefusal(r.error),
       };
     }
@@ -69,7 +89,12 @@ export const createContentInstancesTool: ToolDefinitionWithHandler<
       ok: true,
       content:
         `${contentInstanceIds.length} content_instance(s) created in one transaction:\n` +
-        contentInstanceIds.map((id, i) => `instances[${i}] → ${id}`).join("\n") +
+        contentInstanceIds
+          .map((id, i) => {
+            const slug = input.items[i]?.slug;
+            return `items[${i}] -> ${id}${slug ? ` (slug=${slug})` : ""}`;
+          })
+          .join("\n") +
         "\nBind them to placements via set_placement_content (or build_page content.source='existing').",
       value: { contentInstanceIds },
     };

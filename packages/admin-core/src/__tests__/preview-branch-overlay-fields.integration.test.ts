@@ -7,7 +7,7 @@
  *
  * The bug: `pages.render_preview` with a `chatBranchId` overlays a
  * branch-edited module's HTML/CSS/JS onto the live `modules` row but
- * DROPPED the snapshot's `fields[]`. So when a chat-branch `edit_module`
+ * DROPPED the snapshot's `fields[]`. So when a chat-branch module edit (`update_modules_many`)
  * ADDS a list field (e.g. a new `list`) together with the
  * `{{#field}}` section that iterates it, the render context still used
  * the STALE live `modules.fields` — which doesn't declare the new

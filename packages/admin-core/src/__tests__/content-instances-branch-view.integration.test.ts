@@ -25,6 +25,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { getContentInstanceTool } from "../ai/tools/get-content-instance.js";
+import { listContentInstancesTool } from "../ai/tools/list-content-instances.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -353,7 +354,7 @@ describe("#1067 — placements and nested parents as the caller sees them", () =
     if (refused.ok) return;
     const message = "message" in refused.error ? refused.error.message : "";
     expect(message).toContain(parent.contentInstanceId);
-    expect(message).toContain("set_content_instance_values");
+    expect(message).toContain("set_content_instance_values_many");
 
     // In a chat, removing the child from the parent's list frees it there.
     const chat = await draftChat("nested");
@@ -446,5 +447,44 @@ describe("#1062 — list_module_peers reads only the touched modules", () => {
     });
     expect(byModule.instances.every((i) => i.moduleId === heroId)).toBe(true);
     expect((await op<Peers>(SYS, "content_instances.list_module_peers", {})).instances).toEqual([]);
+  });
+});
+
+// The retired `## Content Library` prompt block gave the AI each shared
+// row's purpose for the reuse-vs-mint decision (CLAUDE.md §1A); with the
+// prompt static, list_content_instances is where the AI reads it.
+describe("list_content_instances carries the reuse decision support", () => {
+  it("shows purpose and module kind, most-placed row first", async () => {
+    const lonely = await op<{ contentInstanceId: string }>(SYS, "content_instances.create", {
+      moduleId: cardId,
+      slug: `cibv-lib-lonely-${TS}`,
+      displayName: "Lonely",
+      purpose: "Unused draft row",
+      values: { title: "Lonely" },
+    });
+    const shared = await op<{ contentInstanceId: string }>(SYS, "content_instances.create", {
+      moduleId: cardId,
+      slug: `cibv-lib-shared-${TS}`,
+      displayName: "Shared hero",
+      purpose: "Brand hero shown on every product page",
+      values: { title: "Shared" },
+    });
+    const pageId = await livePage("lib", ["L0"]);
+    await op(SYS, "placement.set_content", {
+      pageId,
+      blockName: "content",
+      position: 0,
+      contentInstanceId: shared.contentInstanceId,
+      syncMode: "synced",
+    });
+    const tool = await listContentInstancesTool.handler(SYS, { moduleId: cardId, full: true }, {
+      registry,
+      adapter,
+    } as unknown as Parameters<typeof listContentInstancesTool.handler>[2]);
+    expect(tool.content).toContain("{id,module,kind,slug,displayName,purpose,placements,parents}");
+    expect(tool.content).toContain("Brand hero shown on every product page");
+    expect(tool.content.indexOf(shared.contentInstanceId)).toBeLessThan(
+      tool.content.indexOf(lonely.contentInstanceId),
+    );
   });
 });

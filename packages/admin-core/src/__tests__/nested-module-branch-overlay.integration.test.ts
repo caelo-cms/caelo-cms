@@ -3,7 +3,7 @@
 /**
  * Regression (live-edit run A2, homepage max_loops crash): the preview's
  * nested-module BFS loader read module CODE and instance VALUES from the
- * LIVE tables only. A branched edit_module / set_values on a nested
+ * LIVE tables only. A branched module edit / set_values on a nested
  * (detached, {{>slot}}-embedded) module landed in *_snapshots — so the
  * render kept showing the stale live code and the AI spiralled on
  * "my edits don't propagate" until the loop cap. This is the THIRD read

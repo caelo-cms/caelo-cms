@@ -56,8 +56,8 @@ export async function buildPageContext(
       // module's full HTML wrapped in BEGIN/END markers carrying the
       // module id + slug + block + position. The AI gets both the
       // visual structure ("make the headline more meaningful for this
-      // landing page" works) and the module boundaries (so edit_module
-      // / add_module_to_page calls reference a real id).
+      // landing page" works) and the module boundaries (so update_modules_many /
+      // set_page_module_content_many / add_module calls reference a real id).
       const lines: string[] = [
         "# Current page",
         `Page: ${v.page.slug} (status=${v.page.status}, id=${v.page.id})`,
@@ -113,7 +113,7 @@ export async function buildPageContext(
       lines.push("");
       lines.push(
         "Tool guidance (module / page level):",
-        "- edit_module — change an existing module's content (always reference a real module id from a BEGIN marker above).",
+        "- set_page_module_content_many({items:[{pageId, blockName, position, contentValues}]}) — change what a module shows on THIS page (that placement's fields). update_modules_many({items:[{moduleId, …}]}) — change the module itself (html/css/fields) on every page using it. Take ids, blocks and positions from the BEGIN markers above.",
         "- add_module (target='page', targetRef = this page's id) — insert a NEW module into a block on THIS page only. Use for one-off content (a CTA on the homepage, an FAQ on /about). Position is 'top', 'bottom', or a 0-based index.",
         '- add_module (target=\'template\', targetRef = the Template id above) — create a NEW module and fan it out to EVERY page using this template at the same block + position. Use only when the user explicitly asks for site-wide content ("add a footer to every page", "a header banner across the site").',
         "- remove_module_from (target='page', targetRef = this page's id) — drop a module's reference from this page (the module row stays for re-use elsewhere). Use target='layout' to detach site-wide chrome.",
@@ -124,21 +124,20 @@ export async function buildPageContext(
         "  * `shortTitle` — the short label in breadcrumbs, navigation and the page picker. Public, translated with the page.",
         "  * `slug`  — the URL path component. Public, indexed, every link points at it.",
         "- build_page({page:{title, shortTitle, slug, pageType, templateId, ...}, modules:[]}) — make a new page (empty shell; add modules in the same call for a full page). `pageType` says what the page IS (list_page_types) — an article is `news`, not a plain page.",
-        "- update_pages_many({updates:[{pageId, …}]}) — the ONE tool for page metadata, for 1 page or many (single-item array for one page). Set exactly the identifier the user meant:",
+        "- update_pages_many({items:[{pageId, …}]}) — the ONE tool for page metadata, for 1 page or many (single-item array for one page). Set exactly the identifier the user meant:",
         '  * `title` + `shortTitle` — what "rename this page" means: the tab / search title and the breadcrumb / menu label together.',
         '  * `title` only — when the user mentions "browser tab", "<title>", or "SERP".',
         "  * `shortTitle` only — when the user means the label in the breadcrumb trail or the page picker.",
         "  * `slug` — URL only. Auto-creates a 301 from the old URL; links on the site follow the page automatically. Use only when the user explicitly mentions changing the URL / slug / path. `redirectFromOld:'skip'` suppresses the 301 — only on explicit request.",
         "  * `pageType` / `properties` / `terms` — what the page is, its type's fields, its categories / tags. Use when the user says 'this is a news article' or 'file it under Guides'.",
-        "- delete_pages_many({deletions:[{pageId, disposition:'404'|'redirect', redirectTo?}]}) — the ONE delete tool, for 1 page or many (single-item array for one page). ALWAYS confirm the dead-URL disposition per page; suggest a redirect target (parent section, sibling, or /) when proposing 'redirect'. 5+ pages needs one Owner click.",
+        "- delete_pages_many({items:[{pageId, disposition:'404'|'redirect', redirectTo?}]}) — the ONE delete tool, for 1 page or many (single-item array for one page). ALWAYS confirm the dead-URL disposition per page; suggest a redirect target (parent section, sibling, or /) when proposing 'redirect'. 5+ pages needs one Owner click.",
         '- "Rename to About" sets `title` and `shortTitle`; it never moves the URL unless the user asks for that.',
         "",
-        "Tool guidance (content ops, P6.7.7):",
+        "Tool guidance (content ops):",
         "- duplicate_page(sourcePageId, newSlug, newTitle?, newShortTitle?, targetTemplateId?) — clone a page including its module layout. Modules carry by reference (edits propagate to both pages). If targetTemplateId differs from the source's template, block names must align — otherwise modules in unmatched blocks orphan and you should follow with `repoint_page_template` to migrate or drop them.",
         "- repoint_page_template(pageId, newTemplateId, orphanDisposition) — re-point a page to a different template (one its page type allows; to change the page type too, use update_pages_many with pageType + templateId). Modules in matching block names migrate; orphans drop or relocate per `orphanDisposition` (`{kind:'drop'}` or `{kind:'preserve-as-block', blockName}`). CONFIRM with the user before passing `{kind:'drop'}` if it would lose modules. The response carries `migratedBlocks` and `droppedModules` — surface both back in your reply.",
-        "- move_module(pageId, moduleId, toBlockName, position) — move an EXISTING module across blocks (e.g. content → header). Use this, NOT `add_module`, when the module already exists on the page.",
-        "- reorder_module(pageId, moduleId, direction) — change a module's position WITHIN its current block. Direction is 'up' / 'down' / a 0-based absolute index. Use this, NOT `move_module`, when the destination is the same block.",
-        "- Menus, footer links, categories and tags on this page are SHARED lists, not module content: list_lists (usedBy shows which module shows which list) → get_list → patch_list_items_many. A list only one module shows is that module's local `list` field (set_page_module_content).",
+        "- move_module(pageId, moduleId, position, toBlockName?) — move an EXISTING module: to another block with `toBlockName` (e.g. content → header), within its current block without it (`position` 'up' / 'down' / 0-based index). Use this, NOT `add_module`, when the module already exists on the page.",
+        "- Menus, footer links, categories and tags on this page are SHARED lists, not module content: list_lists (usedBy shows which module shows which list) → get_list → patch_list_items_many. A list only one module shows is that module's local `list` field (set_page_module_content_many).",
         "",
         'When the user asks for a copy change like "make the headline more meaningful" or "rewrite the welcome paragraph", read the surrounding modules in this block to keep the new copy coherent across the whole page.',
       );

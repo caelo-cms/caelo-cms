@@ -219,7 +219,7 @@ export async function checkEntryRefs(
       if (!ci || ci.moduleId !== r.moduleId) {
         issues.push({
           path: r.path,
-          message: `content instance ${r.instanceId} is not a content instance of module "${m.slug}" — create one with create_content_instance for that module and pass its id.`,
+          message: `content instance ${r.instanceId} is not a content instance of module "${m.slug}" — create one with create_content_instances for that module and pass its id.`,
         });
       }
       const accepts = r.field.type === "module" ? r.field.accepts : undefined;

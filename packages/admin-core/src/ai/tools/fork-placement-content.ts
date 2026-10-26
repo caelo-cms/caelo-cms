@@ -19,7 +19,7 @@ export const forkPlacementContentTool: ToolDefinitionWithHandler<
   name: "fork_placement_content",
   description:
     "Detach a placement from its shared content_instance into a fresh unsynced one. Use when the operator wants to edit content on THIS page only, without affecting other pages bound to the same instance. " +
-    "After forking, call set_page_module_content (or set_content_instance_values on the new instance) to apply the edit.",
+    "After forking, call set_page_module_content_many (or set_content_instance_values_many on the new instance) to apply the edit.",
   schema: forkPlacementContentToolInput,
   // issue #251 (WS5) — inputSchema derived from `schema` at registration.
   handler: async (ctx, input, toolCtx) => {

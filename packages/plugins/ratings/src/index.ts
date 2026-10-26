@@ -11,6 +11,12 @@
  *   ratings           — visitor's score per page. One per (visitor_id, page_id)
  *                       for visitors who consented to the visitor-id cookie;
  *                       visitor_id NULL (never de-duplicated) for the rest.
+ *
+ * Consent: ratings is the plugin the `caelo_visitor_id` cookie exists for.
+ * It declares the `visitor_id` purpose (`functional`: it serves the
+ * visitor's own rating action — a second vote replaces the first — and
+ * measures nothing) and requires the consent-manager plugin, which asks
+ * the visitor. Without consent the vote still counts, as a new one.
  *   rating_aggregates — denormalised count + sum + average for fast static reads.
  *
  * Operations:
@@ -65,6 +71,25 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   requestedCapabilities: ["background_workers", "chat_runner_tools"],
+  // The visitor id below exists only with the visitor's consent, and only
+  // a consent provider can ask for it.
+  requiresPlugins: ["consent-manager"],
+  consentPurposes: [
+    {
+      key: "visitor_id",
+      category: "functional",
+      purpose:
+        "Recognises the visitor's browser so a second rating of the same page replaces their first instead of counting twice.",
+      cookies: [
+        {
+          name: "caelo_visitor_id",
+          lifetime: "30 days",
+          purpose:
+            "Remembers which ratings this browser gave, so the visitor can change their rating. Set only after the visitor allows functional cookies; deleted when they withdraw.",
+        },
+      ],
+    },
+  ],
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
   publicOperations: ["submit", "list_aggregates"],
@@ -128,7 +153,8 @@ export default definePlugin<PluginContextTier1>({
 
     list_aggregates: async (ctx, args) => {
       const input = (args ?? {}) as { pageId?: string };
-      const filter: Record<string, unknown> = { limit: 200 };
+      // Most-rated first: the admin panel lists them in this order.
+      const filter: Record<string, unknown> = { limit: 200, orderBy: "count", orderDir: "desc" };
       if (input.pageId) filter.page_id = input.pageId;
       const rows = await ctx.query.list<"rating_aggregates", AggregateRow>(
         "rating_aggregates",
@@ -201,6 +227,42 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   workers: [{ name: "refresh_aggregates", cron: "*/5 * * * *", operationName: "_refresh" }],
+  /** Page ratings in the admin (rendered from this declaration). */
+  adminPanels: [
+    {
+      slug: "ratings",
+      title: "Ratings",
+      description: "How visitors rate your pages.",
+      icon: "star",
+      permission: "settings.write",
+      sections: [
+        {
+          kind: "table",
+          id: "aggregates",
+          title: "Page ratings",
+          description:
+            "Most-rated pages first. Ratings are recounted every five minutes; refresh to recount now.",
+          operation: "list_aggregates",
+          rowsKey: "aggregates",
+          emptyMessage: "No ratings yet.",
+          columns: [
+            { key: "page_id", label: "Page", format: "code" },
+            { key: "count", label: "Votes", format: "number" },
+            { key: "average", label: "Average", format: "number", divisor: 100, decimals: 2 },
+          ],
+          actions: [
+            {
+              id: "refresh",
+              label: "Refresh now",
+              operation: "_refresh",
+              variant: "secondary",
+              successMessage: "Recounted the ratings of {refreshed} pages.",
+            },
+          ],
+        },
+      ],
+    },
+  ],
   tools: [
     {
       name: "list_rating_aggregates",

@@ -620,6 +620,25 @@ export function gatewayEnvContract<V>(inputs: RuntimeEnvInputs<V>): CloudRunEnvV
  */
 export const GATEWAY_TIMEOUT_SECONDS = 3600;
 
+/**
+ * Whether each Cloud Run service gets CPU only while it handles a request
+ * (Cloud Run's request-based billing, `cpuIdle: true`) or for its whole
+ * lifetime (`false`, instance-based billing). Set explicitly: the v2 API
+ * reads a missing `cpuIdle` as `false` as soon as a service declares
+ * `resources`, which is how both services ran with always-on CPU without
+ * anyone choosing it — billed for every idle minute an instance stayed up.
+ *
+ * The gateway only does work inside requests. The admin still runs its
+ * background work (Tier 5: audit worker, importer, plugin cron, GC) on
+ * in-process timers that need CPU between requests.
+ */
+export const SERVICE_CPU_IDLE: Readonly<Record<CloudRunSlug, boolean>> = {
+  // FIXME(issue #1140): true once the admin's background work no longer
+  // depends on CPU between requests (jobs, scheduler, plugin host).
+  admin: false,
+  gateway: true,
+};
+
 /** Admin env var naming the Secret Manager secret the Owner writes the Google sign-in client to. */
 export const OPERATOR_OAUTH_CLIENT_STORE_ENV = "CAELO_OPERATOR_OAUTH_CLIENT_STORE";
 

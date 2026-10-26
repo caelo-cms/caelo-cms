@@ -357,7 +357,7 @@ export const renderPagePreviewOp = defineOperation({
           js: string;
           displayName: string;
           slug: string;
-          // A branch edit_module can ADD/RENAME fields (e.g. a new list field).
+          // A branch update_modules_many can ADD/RENAME fields (e.g. a new list field).
           // The overlay MUST carry the branch schema or the render context uses
           // the stale live `modules.fields`, and a `{{#field}}` section over the
           // new field renders as literal `{{#field}}` text (field-not-declared).
@@ -607,7 +607,7 @@ export const renderPagePreviewOp = defineOperation({
     `)) as unknown as ModuleSourceRow[];
     // Caller-branch module-code overlay for LAYOUT (chrome) modules —
     // same class as the run-#8-R3 page-module overlay above. A branched
-    // `edit_module` on a footer/header writes module_snapshots only; the
+    // `update_modules_many` on a footer/header writes module_snapshots only; the
     // live `modules` row stays published. Without this overlay the
     // preview (and inspect_page_render / screenshot_page riding on it)
     // kept rendering the STALE chrome, sending the AI into an
@@ -698,7 +698,7 @@ export const renderPagePreviewOp = defineOperation({
           `)) as unknown as ModuleSourceRow[];
           // Caller-branch module-CODE overlay for NESTED modules — the
           // THIRD read path of the run-#8-R3 class (page modules and
-          // layout chrome are fixed above/below). A branched edit_module
+          // layout chrome are fixed above/below). A branched update_modules_many
           // on a nested/detached module writes module_snapshots only;
           // without this overlay the recursion rendered the STALE live
           // code and the AI spiralled on "my edits don't propagate"

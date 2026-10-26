@@ -244,7 +244,7 @@ export const selectDesignDraftTool: ToolDefinitionWithHandler<z.infer<typeof sel
     "Mark ONE design draft as the chosen one of its variant set. ONLY call after the operator EXPLICITLY picked (variant-card button, /design/genesis, or in words) — the design choice is theirs, never yours. " +
     "Selecting a different draft later is one call (the previous selection reverts to candidate). " +
     "After selecting a SITE draft: derive the theme from the SELECTED draft's actual palette/typography (propose_create_theme), then build pages that re-express its sections — never invent a different design than the one chosen. " +
-    "After selecting a PAGE/MODULE variant: materialise it on the current chat branch (edit_module / the page's modules), transferring the token-bound fragment faithfully — inspect_design_draft({draftId, includeHtml: true}) returns it.",
+    "After selecting a PAGE/MODULE variant: materialise it on the current chat branch (update_modules_many / the page's modules), transferring the token-bound fragment faithfully — inspect_design_draft({draftId, includeHtml: true}) returns it.",
   schema: selectInput,
   inputSchema: {
     type: "object",

@@ -110,9 +110,8 @@ describe("list tools (epic #1107)", () => {
     expect(LISTS_ALIAS).toContain(
       "Menus, navigation, footer links, categories and tags are SHARED LISTS",
     );
-    for (const t of [listListsTool, upsertListsManyTool, listListTypesTool]) {
-      expect(t.description).toContain(LISTS_ALIAS);
-    }
+    // Said once, where the AI looks for a menu (catalogue budget below).
+    expect(listListsTool.description).toContain(LISTS_ALIAS);
     expect(LIST_FIELD_CONTRACT).toContain("promote_local_list");
   });
 
@@ -181,6 +180,13 @@ describe("list tools (epic #1107)", () => {
     expect(r.content).toContain(
       '  - [11111111-2222-4333-8444-555555555555] entry {"label":"Team"}',
     );
+    // The read names the tree with the key the write takes, and the role
+    // as the type's (v0.11.0 release gate: an "entries:" heading and the
+    // role were copied into an upsert_lists_many call).
+    expect(r.content).toContain("\nitems:\n");
+    expect(r.content).not.toContain("entries:");
+    expect(r.content).toContain("set by the type");
+    expect(upsertListsManyTool.description).toContain("not `entries`");
   });
 
   it("patch_list_items_many forwards the patches unchanged and names the added ids", async () => {
@@ -208,6 +214,16 @@ describe("list tools (epic #1107)", () => {
     const r = await patchListItemsManyTool.handler(AI, input as never, toolCtx);
     expect(calls).toEqual([{ op: "lists.patch_items_many", input }]);
     expect(r.content).toContain("added entry ids: new-id");
+  });
+
+  // e2e-livedit run 40347740757: the AI sent page_type + order in a mega
+  // menu's news entry `query`, which only takes the source's editable knobs
+  // (the type's defaults fix the rest) — the description now says so.
+  it("upsert_lists_many says an entry query takes only the editable knobs", () => {
+    expect(upsertListsManyTool.description).toContain(
+      "only with the knobs that node's source lists in `editable`",
+    );
+    expect(upsertListsManyTool.description).toContain("fixed by the type's `defaults`");
   });
 
   it("upsert_lists_many accepts a nested entry tree and returns the list ref for binding", async () => {
@@ -251,6 +267,35 @@ describe("list tools (epic #1107)", () => {
     expect(r.content).toContain(
       `source entries (preview_list_source itemId): ${NEWS_ENTRY} (news)`,
     );
+  });
+
+  it("the list tools stay within their catalogue budget", () => {
+    // Every catalogue tool — deferred ones too — counts toward each chat
+    // call's input. The lists epic first added ~45k characters and pushed
+    // the real-AI homepage scenario over its input ceiling (PR #1143).
+    const names = new Set([
+      "list_list_types",
+      "upsert_list_types_many",
+      "delete_list_types_many",
+      "list_lists",
+      "get_list",
+      "upsert_lists_many",
+      "patch_list_items_many",
+      "delete_lists_many",
+      "promote_local_list",
+      "preview_list_source",
+      "list_page_types",
+      "upsert_page_types_many",
+      "delete_page_types_many",
+    ]);
+    const size = createDefaultToolRegistry()
+      .catalogue()
+      .filter((t) => names.has(t.name))
+      .reduce(
+        (n, t) => n + t.name.length + t.description.length + JSON.stringify(t.inputSchema).length,
+        0,
+      );
+    expect(size).toBeLessThanOrEqual(18_000);
   });
 
   it("op-name hints come back as tool names", async () => {
@@ -428,7 +473,7 @@ describe("list tools (epic #1107)", () => {
     const term = `caelo:term/${LIST_ID}/${COMPANY}`;
     expect(
       updatePagesManyTool.schema.safeParse({
-        updates: [
+        items: [
           { pageId: COMPANY, pageType: "news", properties: { author: "Ada" }, terms: [term] },
         ],
       }).success,

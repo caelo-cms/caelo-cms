@@ -6,7 +6,6 @@
  * scope here — `actorScope: ["human", "system"]` until P5 widens it.
  */
 
-import { pluginListSourcesRegistry } from "@caelo-cms/plugin-host";
 import { defineOperation, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
 import {
   deriveModuleType,
@@ -38,6 +37,7 @@ import {
 import type { ModuleState } from "../../snapshots/state.js";
 import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
 import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
+import { claimedListSourceNames } from "./list-source-names.js";
 import { applyMediaUsageDelta } from "./media-usage.js";
 import {
   describePlacements,
@@ -295,24 +295,16 @@ export const getModuleOp = withHumanisedLinks(
     `)) as unknown as ModuleDbRow[];
       const [row] = await overlayBranchEdits(ctx, tx, rows, [input.moduleId]);
       if (!row) {
-        return err({ kind: "HandlerError", operation: "modules.get", message: "module not found" });
+        return err({
+          kind: "HandlerError",
+          operation: "modules.get",
+          message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids).`,
+        });
       }
       return ok({ module: rowToModule(row) });
     },
   }),
 );
-
-/**
- * Every list-source name a plugin claims, running or not (#447, epic
- * #1107). Dormant names count: a module written while a plugin ran must
- * stay editable after it is switched off, or turning a plugin off would
- * make its modules unsaveable.
- */
-function claimedListSourceNames(): ReadonlySet<string> {
-  const names = new Set<string>();
-  for (const entry of pluginListSourcesRegistry.catalogue()) names.add(entry.name);
-  return names;
-}
 
 export const createModuleOp = defineOperation({
   name: "modules.create",
@@ -525,9 +517,7 @@ export const createModuleOp = defineOperation({
 
 export const updateModuleOp = defineOperation({
   name: "modules.update",
-  // P5: AI in scope for the `edit_module` tool — the only mutation the
-  // AI can reach in this phase. Page / template / cross-module surfaces
-  // stay AI-blocked until their tools land in later phases.
+  // AI in scope: `update_modules_many` and `edit_content` reach this op.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: moduleUpdateSchema,
@@ -577,7 +567,7 @@ export const updateModuleOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "modules.update",
-        message: "module not found",
+        message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids); add_module creates a new one.`,
       });
     }
 
@@ -847,7 +837,7 @@ async function softDeleteModule(
           refusal: true,
           message:
             `module "${slug}" is still placed on ${describePlacements(placements)} — deleting it would leave empty slots. ` +
-            "Remove it from each page/layout with remove_module_from first (a nested use: drop it from the parent's module field with set_content_instance_values), or keep it; then delete.",
+            "Remove it from each page/layout with remove_module_from first (a nested use: drop it from the parent's module field with set_content_instance_values_many), or keep it; then delete.",
         },
       };
     }
@@ -900,7 +890,7 @@ export const deleteModuleOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "modules.delete",
-        message: "module not found",
+        message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids).`,
       });
     }
     await recordAudit(tx, {
@@ -1002,12 +992,21 @@ export const updateModulesManyOp = defineOperation({
   output: z.object({
     updated: z.number().int(),
     notFound: z.number().int(),
+    /** The ids behind `notFound`, so a caller can name them per item. */
+    notFoundIds: z.array(z.string()),
     failed: z.array(z.object({ moduleId: z.string(), message: z.string() })),
+    /**
+     * Fields the extractor minted for an item whose html came without
+     * `fields[]` — the same hand-back `modules.update` gives, per module, so
+     * the AI's next turn uses the inferred names verbatim.
+     */
+    extracted: z.array(z.object({ moduleId: z.string(), fields: z.array(moduleFieldSchema) })),
   }),
   handler: async (ctx, input, tx) => {
     let updated = 0;
-    let notFound = 0;
+    const notFoundIds: string[] = [];
     const failed: { moduleId: string; message: string }[] = [];
+    const extracted: { moduleId: string; fields: ModuleField[] }[] = [];
     const ids = [...new Set(input.updates.map((u) => u.moduleId))];
     const liveRows = (await tx.execute(sql`
       SELECT id::text AS id FROM modules
@@ -1024,7 +1023,7 @@ export const updateModulesManyOp = defineOperation({
     }
     for (const upd of input.updates) {
       if (!existing.has(upd.moduleId)) {
-        notFound += 1;
+        notFoundIds.push(upd.moduleId);
         continue;
       }
       const r = await updateModuleOp.handler(ctx, upd, tx);
@@ -1034,7 +1033,10 @@ export const updateModulesManyOp = defineOperation({
         continue;
       }
       updated += 1;
+      const fields = r.value.extractedFields;
+      if (fields && fields.length > 0) extracted.push({ moduleId: upd.moduleId, fields });
     }
+    const notFound = notFoundIds.length;
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -1043,6 +1045,6 @@ export const updateModulesManyOp = defineOperation({
       succeeded: true,
       resultSummary: `updated=${updated},notFound=${notFound},failed=${failed.length}`,
     });
-    return ok({ updated, notFound, failed });
+    return ok({ updated, notFound, notFoundIds, failed, extracted });
   },
 });

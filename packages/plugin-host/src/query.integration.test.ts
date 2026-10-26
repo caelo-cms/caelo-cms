@@ -73,6 +73,15 @@ function makePlugin(slug: string) {
         const a = args as { since: string };
         return ctx.query.list("greetings", { since: a.since, orderBy: "created_at", limit: 5 });
       },
+      list_older: async (ctx, args) => {
+        const a = args as { before: string };
+        return ctx.query.list("greetings", {
+          before: a.before,
+          orderBy: "created_at",
+          orderDir: "desc",
+          limit: 5,
+        });
+      },
       change_tags: async (ctx, args) => {
         const a = args as { id: string; tags: unknown };
         await ctx.query.update("greetings", a.id, { tags: a.tags });
@@ -194,6 +203,48 @@ describe("ctx.query.* end-to-end (P12 PR1.1)", () => {
     const rows = list.value as Array<{ message: string }>;
     expect(rows).toHaveLength(1);
     expect(rows[0]?.message).toBe("hello");
+  });
+
+  it("pages newest-first with `before`, excluding the cursor itself", async () => {
+    await bootstrap({
+      infra: { adapter, registry },
+      pluginsRoot: "/dev/null/unused",
+      systemActorId: SYSTEM_ACTOR_ID,
+      testPlugins: [{ definition: pluginA }],
+    });
+    await provisionPluginSchema(pluginA);
+    const invocation = {
+      origin: "system" as const,
+      actorId: "00000000-0000-0000-0000-000000000000",
+    };
+    for (const message of ["first", "second", "third"]) {
+      const add = await runPluginOperation({
+        invocation,
+        pluginSlug: PLUGIN_A,
+        operationName: "add",
+        args: { pageId: "page-1", message },
+      });
+      expect(add.ok).toBe(true);
+      // Distinct milliseconds, so the cursor below is unambiguous.
+      await Bun.sleep(5);
+    }
+    const all = await runPluginOperation({
+      invocation,
+      pluginSlug: PLUGIN_A,
+      operationName: "list_older",
+      args: { before: new Date(Date.now() + 60_000).toISOString() },
+    });
+    if (!all.ok) throw new Error(all.error.message);
+    const rows = all.value as Array<{ message: string; created_at: string | Date }>;
+    expect(rows.map((r) => r.message)).toEqual(["third", "second", "first"]);
+    const older = await runPluginOperation({
+      invocation,
+      pluginSlug: PLUGIN_A,
+      operationName: "list_older",
+      args: { before: new Date(rows[1]?.created_at ?? 0).toISOString() },
+    });
+    if (!older.ok) throw new Error(older.error.message);
+    expect((older.value as Array<{ message: string }>).map((r) => r.message)).toEqual(["first"]);
   });
 
   it("stores a jsonb ARRAY as an array", async () => {

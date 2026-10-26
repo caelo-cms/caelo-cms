@@ -316,7 +316,7 @@ describe("the core links check (#849)", () => {
     expect(about.map((f) => [f.ruleId, f.severity])).toEqual([["links/broken-internal", "error"]]);
     expect(about[0]?.message).toContain(`a[href] "/${PFX}pricng"`);
     expect(about[0]?.message).toContain('module "Text"');
-    expect(about[0]?.fix?.tool).toBe("set_page_module_content");
+    expect(about[0]?.fix?.tool).toBe("set_page_module_content_many");
 
     // #846: the image exists in the build and the shop path is only text.
     const home = findingsOf(pageIds.home).filter((f) => f.ruleId.startsWith("links/"));

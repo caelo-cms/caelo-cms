@@ -8,7 +8,7 @@
  * `page_layout_snapshot` and skipped the live `page_modules` write.
  * `pages.get_with_modules` then read live `page_modules` directly,
  * missing the just-written snapshot. The AI's chain
- * (add_module_to_page → reorder_module / move_module) failed with
+ * (add_module_to_page → move_module) failed with
  * "module X is not on page Y" — the reorder tool's
  * `pages.get_with_modules` read returned the pre-add layout.
  *

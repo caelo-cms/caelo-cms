@@ -46,8 +46,9 @@ import {
   listFieldsOf,
   loadInstancesOfModules,
   loadModulesInView,
+  parseListRef,
 } from "../../lists/local.js";
-import { loadListEntities, loadListEntityBySlug } from "../../lists/store.js";
+import { loadListEntities, loadListEntity, loadListEntityBySlug } from "../../lists/store.js";
 import { loadPublishPageUrlStyle } from "../content/public-urls.js";
 import { branchOf, handlerError, sourceEntriesOf } from "./_shared.js";
 
@@ -79,7 +80,12 @@ const inputSchema = z
     value: z.record(z.string(), z.unknown()).optional(),
     /** With a `page_terms` source: the vocabulary (`caelo:list/<id>`). */
     vocabulary: z.string().optional(),
-    /** A shared list (slug) holding the source node … */
+    /**
+     * A shared list holding the source node: its slug or its reference
+     * `caelo:list/<id>` — the form `vocabulary`, module fields and
+     * get_list hand out, so the AI passes it back as-is (e2e-livedit run
+     * 40344374447 refused that form).
+     */
     list: z.string().min(1).max(64).optional(),
     /** … and the id of that node (its saved query) … */
     itemId: z.string().uuid().optional(),
@@ -186,7 +192,11 @@ async function specFor(
     };
   }
   if (input.list !== undefined) {
-    const list = await loadListEntityBySlug(tx, "list", branchId, input.list);
+    const refId = parseListRef(input.list);
+    const list =
+      refId !== null
+        ? await loadListEntity(tx, "list", branchId, refId)
+        : await loadListEntityBySlug(tx, "list", branchId, input.list);
     if (!list || list.state.deletedAt !== null) {
       return {
         ok: false,

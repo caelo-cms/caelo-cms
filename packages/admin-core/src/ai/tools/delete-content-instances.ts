@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Bulk variant of `delete_content_instance` — soft-deletes N content_instances
- * in one transaction. Built from the `makeBulkTool` factory; dispatches
- * `content_instances.delete_many`. All-or-nothing: if any item still has
- * placements (or is otherwise refused), the whole batch rolls back.
+ * AI tool: delete_content_instances — soft-deletes 1..N content_instances in
+ * one transaction (the former singular delete_content_instance is its n=1
+ * case; retired-tools.ts maps old calls here). Built from the `makeBulkTool`
+ * factory; dispatches `content_instances.delete_many`. All-or-nothing: if any
+ * item still has placements or a parent (or is otherwise refused), the whole
+ * batch rolls back and the refusal names the blockers.
  */
 
 import { deleteContentInstanceToolInput } from "@caelo-cms/shared";
@@ -12,10 +14,14 @@ import { makeBulkTool } from "./_make-bulk-tool.js";
 
 export const deleteContentInstancesTool = makeBulkTool({
   name: "delete_content_instances",
-  description:
-    "Soft-delete SEVERAL content_instances in ONE transaction — prefer this over multiple `delete_content_instance` calls whenever you prune more than one (§11 bulk-first). " +
-    "Only ORPHAN instances (placements=0 and parents=0) can be deleted: if ANY item still has placements or a parent instance the op refuses and the WHOLE batch rolls back (nothing deleted) — detach those placements via `fork_placement_content` first. " +
-    "Use `list_content_instances` to find orphans (placements=0, parents=0). Each item is `{id}`.",
+  description: [
+    "Soft-delete ORPHAN content_instances — one call for 1..N (`items[]`), one transaction. Orphan = zero placements AND no parent instance shows it in a `module`/`module-list` field (`list_content_instances`: placements=0, parents=0).",
+    "CORE RULES:",
+    "- ANY refused item rolls back the WHOLE batch. The refusal names the blockers:",
+    "  - placements (page path, pageId, blockName, position) -> detach each via `fork_placement_content` with those values (the page keeps a private copy), then retry.",
+    "  - parents -> remove the ref from each parent's field via `set_content_instance_values_many` first.",
+    "- In a chat this lands on the draft; the live site changes when staged.",
+  ].join("\n"),
   itemInputSchema: deleteContentInstanceToolInput,
   itemJsonSchema: {
     type: "object",
@@ -26,4 +32,6 @@ export const deleteContentInstancesTool = makeBulkTool({
     },
   },
   opName: "content_instances.delete_many",
+  formatResult: (_value, input) =>
+    `${input.items.length} content_instance(s) soft-deleted: ${input.items.map((i) => i.id).join(", ")}.`,
 });

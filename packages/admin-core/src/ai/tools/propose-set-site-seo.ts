@@ -32,7 +32,7 @@ export const proposeSetSiteSeoTool = makeProposeTool({
     "no path, query or trailing page); a localhost address is refused on cloud installs. Take it from the " +
     "operator's words or the domain they publish under; ask only when you genuinely do not know it. Read the " +
     "current values with get_site_seo first. NOT for the site language — that is set_site_identity({siteLanguage}); " +
-    "NOT for per-page SEO — that is set_page_seo.",
+    "NOT for per-page SEO — that is set_page_seo_many.",
   schema: siteSeoProposalInputSchema,
   inputSchema: {
     type: "object",
@@ -68,7 +68,7 @@ export const getSiteSeoTool = makeReadTool<Record<string, never>>({
   description:
     "Fetch the CURRENT site-wide SEO settings: siteBaseUrl (null = not configured, publishing fails), " +
     "sitemapEnabled, organizationJson. Change them with propose_set_site_seo (Owner-approved). " +
-    "Per-page SEO lives on the page (set_page_seo); the site language on get_site_defaults / set_site_identity.",
+    "Per-page SEO lives on the page (set_page_seo_many); the site language on get_site_defaults / set_site_identity.",
   opName: "site_defaults.get_seo",
   input: z.object({}).strict(),
   format: (value) => {

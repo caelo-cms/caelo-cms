@@ -20,39 +20,6 @@ import { installUnavailableToolNames } from "../tools/install-availability.js";
 import { resolveAllowlistEntries } from "./allowlist-mapping.js";
 
 /**
- * Singular ↔ bulk write-tool pairs. When either side is preloaded (via the
- * core set OR an engaged skill's allowlist), its sibling is preloaded too, so
- * the model ALWAYS sees the batch variant sitting next to the singular it
- * reaches for. This is the systemic fix for the "10 sequential `edit_module`
- * calls because the engaged skill's preload list named `edit_module` but not
- * `update_modules_many`" class: a skill can no longer leave the bulk variant
- * deferred-and-undiscovered just by forgetting to list it.
- *
- * An explicit table, not a `_many` suffix rule, because the pairs are
- * irregular (`edit_module`→`update_modules_many`, `optimize_page_seo`→
- * `bulk_optimize_seo`). Only pairs where BOTH tools exist are listed; the
- * redirect / page bulks (`bulk_create_redirects`, `delete_pages_many`, …) have
- * no singular tool at all, so there is nothing to pair.
- */
-const BULK_TOOL_PAIRS: readonly (readonly [string, string])[] = [
-  ["edit_module", "update_modules_many"],
-  ["set_page_module_content", "set_page_module_content_many"],
-  ["set_content_instance_values", "set_content_instance_values_many"],
-  ["create_content_instance", "create_content_instances"],
-  ["delete_content_instance", "delete_content_instances"],
-  ["set_page_seo", "set_page_seo_many"],
-  ["autofill_page_seo", "autofill_page_seo_many"],
-  ["set_media_alt", "set_media_alt_many"],
-  ["set_media_source", "set_media_source_many"],
-  ["optimize_page_seo", "bulk_optimize_seo"],
-];
-
-/** Bidirectional lookup built from {@link BULK_TOOL_PAIRS}. */
-export const BULK_TOOL_SIBLINGS: ReadonlyMap<string, string> = new Map(
-  BULK_TOOL_PAIRS.flatMap(([a, b]) => [[a, b] as [string, string], [b, a] as [string, string]]),
-);
-
-/**
  * A catalogue entry in provider-`tools` shape. `gated` (Plan B) is an
  * internal marker the chat-runner reads to attach the SDK `execute`
  * (propose → execute_proposal); it rides alongside the provider fields and is
@@ -74,7 +41,7 @@ export type FilteredTool = ToolDefinition & {
  * convention (same convention the v0.6.0 auto-recovery path relies on).
  *
  * Why: engaged-skill allowlists are curated around a workflow's WRITE
- * tools (compose-page lists edit_module, set_page_module_content, …) and
+ * tools (compose-page lists update_modules_many, set_page_module_content_many, …) and
  * historically also stripped every read tool. That blinded the AI
  * mid-session: in migration run #8 the module-lookup tools vanished when
  * a skill engaged, so the AI edited the wrong module (R5), and rebuild
@@ -228,14 +195,11 @@ export function buildToolCatalogue(args: {
   }
   // Loaded up front = the always-on core set PLUS the engaged skills'
   // preload hints. Everything else is reachable via tool search.
+  // Every routine write tool is the bulk form (one item = the n=1 case), so
+  // there is no singular/bulk sibling to preload alongside; a skill that
+  // still names a retired singular resolves to its bulk tool above
+  // (allowlist-mapping.ts, `retired`).
   const preload = new Set<string>([...CORE_TOOL_NAMES, ...skillPreload]);
-  // Auto-preload the bulk sibling of any preloaded singular write tool (and
-  // vice versa), so a skill that names only the singular never leaves its
-  // batch variant deferred-and-undiscovered — see BULK_TOOL_SIBLINGS.
-  for (const name of [...preload]) {
-    const sibling = BULK_TOOL_SIBLINGS.get(name);
-    if (sibling) preload.add(sibling);
-  }
   const builtinTools = fullCatalogue.filter((t) => {
     // Skill allowlists no longer narrow — only the HARD scoping filters
     // do: `excluded` (subagent depth cap) and `spawnAllowed` (per-spawn

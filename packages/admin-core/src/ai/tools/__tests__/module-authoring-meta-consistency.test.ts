@@ -84,7 +84,7 @@ describe("addModuleToolInput accepts the metadata on every target (#106)", () =>
   it("reuse mode (moduleId) TOLERATES carried authoring fields — placement-only, handler surfaces the ignored-authoring info", () => {
     // §1A/§11 — a valid placement must never fail over an extra authoring
     // field. moduleId + html passes the schema; the tool handler (not the
-    // schema) reports that html was not applied and points at edit_module.
+    // schema) reports that html was not applied and points at update_modules_many.
     const r = addModuleToolInput.safeParse({
       target: "layout",
       targetRef: "site-default",

@@ -115,7 +115,7 @@ describe("bulk_create_redirects", () => {
     const r = await bulkCreateRedirectsTool.handler(
       SYSTEM,
       {
-        redirects: [
+        items: [
           { fromPath: `/${PFX}-a`, toPath: "/home" },
           { fromPath: `/${PFX}-b`, toPath: "/home", statusCode: 302 },
           { fromPath: `/${PFX}-c`, toPath: "/blog" },
@@ -133,7 +133,7 @@ describe("bulk_delete_redirects", () => {
     await bulkCreateRedirectsTool.handler(
       SYSTEM,
       {
-        redirects: [
+        items: [
           { fromPath: `/${PFX}-del1`, toPath: "/home" },
           { fromPath: `/${PFX}-del2`, toPath: "/home" },
           { fromPath: `/${PFX}-keep`, toPath: "/home" },
@@ -158,7 +158,7 @@ describe("bulk_delete_redirects", () => {
     await bulkCreateRedirectsTool.handler(
       SYSTEM,
       {
-        redirects: [
+        items: [
           { fromPath: `/${PFX}-m1`, toPath: "/x" },
           { fromPath: `/${PFX}-m2`, toPath: "/x" },
           { fromPath: `/${PFX}-m3`, toPath: "/x" },
@@ -180,7 +180,7 @@ describe("bulk_optimize_seo", () => {
       SYSTEM,
       {
         context: "rebrand from Foo to Bar",
-        updates: [
+        items: [
           { pageId: a, metaDescription: "Bar — the first page." },
           { pageId: b, metaDescription: "Bar — the second page." },
         ],

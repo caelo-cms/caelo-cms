@@ -7,7 +7,7 @@
  * that is not tied to the module bleeds into every other module on the
  * page: an `h1 {}` in the hero restyles the pricing table's heading, a
  * `.card {}` in one module restyles another module's cards. The
- * convention (edit_module description, design-quality skill) is to nest
+ * convention (update_modules_many description, design-quality skill) is to nest
  * module CSS under the module's own root class; this scanner is the
  * mechanical write-time check that rides the authoring tool's result,
  * so the AI fixes the selector in the same turn. A warning, not a gate:

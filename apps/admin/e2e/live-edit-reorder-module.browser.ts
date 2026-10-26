@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7.7 — `reorder_module` swaps a module's position within its
- * current block. Drives the AI tool directly via DatabaseAdapter to
- * keep the assertion deterministic.
+ * P6.7.7 — `move_module` without `toBlockName` reorders a module within
+ * its current block. Drives the AI tool directly via DatabaseAdapter to
+ * keep the assertion deterministic. The retired `reorder_module` name is
+ * exercised too: older chats, skills and external agents still send it,
+ * and the alias table must land it on `move_module`.
  */
 
 import { spawnSync } from "node:child_process";
@@ -62,7 +64,7 @@ test.afterAll(() => {
   );
 });
 
-test("reorder_module up: module B moves from position 1 to 0", () => {
+test("move_module up moves B to position 0; retired reorder_module down moves it back", () => {
   const r = spawnSync(
     "bun",
     [
@@ -84,21 +86,38 @@ test("reorder_module up: module B moves from position 1 to 0", () => {
       const moduleId = block.modules.find((m) => m.slug === process.env.MOD_B).moduleId;
 
       const tools = createDefaultToolRegistry();
-      const result = await tools.dispatch(
-        "reorder_module",
-        { pageId, moduleId, direction: "up" },
+      const orderNow = async () => {
+        const after = await execute(registry, adapter, ctx, "pages.get_with_modules", { pageId });
+        return after.value.page.blocks.find((b) => b.blockName === "content").modules.map((m) => m.slug);
+      };
+      const moved = await tools.dispatch(
+        "move_module",
+        { pageId, moduleId, position: "up" },
         ctx,
         { adapter, registry },
       );
-      const after = await execute(registry, adapter, ctx, "pages.get_with_modules", { pageId });
-      const order = after.value.page.blocks.find((b) => b.blockName === "content").modules.map((m) => m.slug);
-      process.stdout.write(JSON.stringify({ ok: result.ok, content: result.content, order }));
+      const afterMove = await orderNow();
+      // The retired name with its old argument shape (direction).
+      const aliased = await tools.dispatch(
+        "reorder_module",
+        { pageId, moduleId, direction: "down" },
+        ctx,
+        { adapter, registry },
+      );
+      const afterAlias = await orderNow();
+      process.stdout.write(JSON.stringify({
+        moved: { ok: moved.ok, content: moved.content, order: afterMove },
+        aliased: { ok: aliased.ok, content: aliased.content, order: afterAlias },
+      }));
       `,
     ],
     { env: { ...process.env, PAGE_SLUG, MOD_A, MOD_B, MOD_C }, encoding: "utf8" },
   );
   if (r.status !== 0) throw new Error(r.stderr);
-  const out = JSON.parse(r.stdout) as { ok: boolean; content: string; order: string[] };
-  expect(out.ok).toBe(true);
-  expect(out.order).toEqual([MOD_B, MOD_A, MOD_C]);
+  type Step = { ok: boolean; content: string; order: string[] };
+  const out = JSON.parse(r.stdout) as { moved: Step; aliased: Step };
+  expect(out.moved.ok, out.moved.content).toBe(true);
+  expect(out.moved.order).toEqual([MOD_B, MOD_A, MOD_C]);
+  expect(out.aliased.ok, out.aliased.content).toBe(true);
+  expect(out.aliased.order).toEqual([MOD_A, MOD_B, MOD_C]);
 });

@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { addModuleTool } from "../add-module.js";
-import { editModuleTool } from "../edit-module.js";
+import { updateModulesManyTool } from "../bulk-pages-modules.js";
 
 // Mirror of slugSchema's regex source in @caelo-cms/shared (content.ts).
 const SLUG_PATTERN = "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$";
@@ -31,8 +31,12 @@ describe("module-authoring tools — `type` arg mirrors the Zod slug pattern (#1
     expect(t.pattern).toBe(SLUG_PATTERN);
   });
 
-  it("edit_module.inputSchema.type carries the slug pattern", () => {
-    const t = typeArg(editModuleTool.inputSchema);
+  it("update_modules_many item `type` carries the slug pattern", () => {
+    const props = updateModulesManyTool.inputSchema.properties as Record<
+      string,
+      { items: Record<string, unknown> }
+    >;
+    const t = typeArg(props.items.items);
     expect(t.type).toBe("string");
     expect(t.pattern).toBe(SLUG_PATTERN);
   });

@@ -27,9 +27,8 @@ import { join } from "node:path";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { withFieldMarkupGuard } from "../ai/tools/_markup-guard.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
-import { setPageModuleContentTool } from "../ai/tools/set-page-module-content.js";
+import { createDefaultToolRegistry } from "../ai/tools/index.js";
 import { setDeployBridge } from "../ops/deploy.js";
 import { sampleMetrics } from "../quality/__tests__/fixtures/sample-metrics.js";
 import { drainAuditQueue } from "../quality/audit-worker.js";
@@ -368,15 +367,20 @@ describe("the core structure check (#820)", () => {
   });
 
   it("the write that pastes the next copy carries the markup-guard hint", async () => {
-    const tool = withFieldMarkupGuard(setPageModuleContentTool, (i) => [i.contentValues]);
-    const r = await tool.handler(
-      AI,
+    // The registered tool, so the guard wiring itself is under test.
+    const r = await createDefaultToolRegistry().dispatch(
+      "set_page_module_content_many",
       {
-        pageId: pageIds.c,
-        blockName: "content",
-        position: 0,
-        contentValues: { title: "c", body: chain(2) },
+        items: [
+          {
+            pageId: pageIds.c,
+            blockName: "content",
+            position: 0,
+            contentValues: { title: "c", body: chain(2) },
+          },
+        ],
       },
+      AI,
       { registry, adapter } as ToolContext,
     );
     expect(r.ok).toBe(true);

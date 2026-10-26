@@ -7,9 +7,9 @@
  *   - Plugin loads + cms_public schema gets provisioned (forms + form_submissions).
  *   - Owner creates a form definition (admin op).
  *   - Visitor POSTs to /api/plugin/forms/submit via the gateway → submission lands.
- *     No consent provider runs here, so nobody consented to the visitor-id
- *     cookie (#677): none is set and the row's visitor_id is null — a form
- *     submission works without one.
+ *     Forms declares no consent purpose, so no visitor-id cookie is set
+ *     and the submission stores no visitor id at all — a form submission
+ *     never needed one.
  *   - Admin lists submissions → sees the visitor's row.
  *   - mark_read flips status; archive flips again.
  *   - submit refuses unknown form slug.
@@ -249,7 +249,6 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
         submissions: Array<{
           id: string;
           form_slug: string;
-          visitor_id: string | null;
           status: string;
           data: { email: string; message: string };
         }>;
@@ -258,7 +257,8 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
     expect(submissions).toHaveLength(1);
     expect(submissions[0]?.form_slug).toBe(FORM_SLUG);
     expect(submissions[0]?.status).toBe("new");
-    expect(submissions[0]?.visitor_id).toBeNull();
+    // Nothing identifies the visitor on a submission (no column, no value).
+    expect(submissions[0]).not.toHaveProperty("visitor_id");
     expect(submissions[0]?.data.email).toBe("alice@example.com");
   });
 
@@ -408,7 +408,6 @@ describe("Forms plugin end-to-end (P12 PR2)", () => {
           form_slug: "string",
           page_id: "string",
           locale: "string",
-          visitor_id: "string",
           data: "jsonb",
           status: "enum:new,read,archived,spam",
           submitted_at: "timestamp",

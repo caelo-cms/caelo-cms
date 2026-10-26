@@ -15,8 +15,8 @@ import { describe, expect, it } from "bun:test";
 import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { addModuleToolInput, type ExecutionContext, ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../register.js";
+import { updateModulesManyTool } from "../tools/bulk-pages-modules.js";
 import type { ToolContext } from "../tools/dispatch.js";
-import { editModuleTool } from "../tools/edit-module.js";
 
 const registry = new OperationRegistry();
 registerAdminOps(registry);
@@ -39,11 +39,12 @@ function toolCtxRecording(opInputs: Record<string, unknown>[]): ToolContext {
     // execute() calls runOperation(op, ctx, parsedInput).
     runOperation: async (op: { name: string }, _ctx: unknown, input: unknown) => {
       if (op.name === "themes.get_active") return ok({ theme: { tokens: TOKENS } });
-      if (op.name === "modules.update") {
-        opInputs.push(input as Record<string, unknown>);
-        return ok({});
+      if (op.name === "modules.update_many") {
+        const updates = (input as { updates: Record<string, unknown>[] }).updates;
+        opInputs.push(...updates);
+        return ok({ updated: updates.length, notFoundIds: [], failed: [], extracted: [] });
       }
-      // #158 — a css-only edit_module reads the stored root for the scope check.
+      // #158 — a css-only module edit reads the stored root for the scope check.
       if (op.name === "modules.get") {
         return ok({ module: { html: '<section class="hero"><a class="cta"></a></section>' } });
       }
@@ -54,14 +55,18 @@ function toolCtxRecording(opInputs: Record<string, unknown>[]): ToolContext {
 }
 
 describe("bindThemeLiterals (issue #164 slice 2)", () => {
-  it("edit_module writes the BOUND css and reports rewrites", async () => {
+  it("update_modules_many writes the BOUND css and reports rewrites", async () => {
     const opInputs: Record<string, unknown>[] = [];
-    const res = await editModuleTool.handler(
+    const res = await updateModulesManyTool.handler(
       AI,
       {
-        moduleId: "11111111-1111-4111-8111-111111111101",
-        css: ".hero{background:linear-gradient(135deg, #4f46e5, #7c3aed)}.cta{background:#4f46e5}",
-        bindThemeLiterals: true,
+        items: [
+          {
+            moduleId: "11111111-1111-4111-8111-111111111101",
+            css: ".hero{background:linear-gradient(135deg, #4f46e5, #7c3aed)}.cta{background:#4f46e5}",
+            bindThemeLiterals: true,
+          },
+        ],
       },
       toolCtxRecording(opInputs),
     );
@@ -76,9 +81,13 @@ describe("bindThemeLiterals (issue #164 slice 2)", () => {
 
   it("binds by DEFAULT when the flag is omitted (issue #430)", async () => {
     const opInputs: Record<string, unknown>[] = [];
-    await editModuleTool.handler(
+    await updateModulesManyTool.handler(
       AI,
-      { moduleId: "11111111-1111-4111-8111-111111111101", css: ".cta{background:#4f46e5}" },
+      {
+        items: [
+          { moduleId: "11111111-1111-4111-8111-111111111101", css: ".cta{background:#4f46e5}" },
+        ],
+      },
       toolCtxRecording(opInputs),
     );
     expect(opInputs[0]?.css).toBe(".cta{background:var(--color-primary)}");
@@ -86,12 +95,16 @@ describe("bindThemeLiterals (issue #164 slice 2)", () => {
 
   it("passes css through untouched ONLY on an explicit false", async () => {
     const opInputs: Record<string, unknown>[] = [];
-    await editModuleTool.handler(
+    await updateModulesManyTool.handler(
       AI,
       {
-        moduleId: "11111111-1111-4111-8111-111111111101",
-        css: ".cta{background:#4f46e5}",
-        bindThemeLiterals: false,
+        items: [
+          {
+            moduleId: "11111111-1111-4111-8111-111111111101",
+            css: ".cta{background:#4f46e5}",
+            bindThemeLiterals: false,
+          },
+        ],
       },
       toolCtxRecording(opInputs),
     );

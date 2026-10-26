@@ -44,7 +44,7 @@ describe("collapseStatusNotes (issue #303)", () => {
     const input = [
       msg({ role: "user", content: "build me a site" }),
       msg({ role: "assistant", content: "on it" }),
-      msg({ role: "tool", content: "ok", toolName: "edit_module" }),
+      msg({ role: "tool", content: "ok", toolName: "update_modules_many" }),
     ];
     expect(collapseStatusNotes(input)).toEqual(input);
   });

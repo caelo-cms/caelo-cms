@@ -109,7 +109,7 @@ describe("nested-ref validator matches modules.type, not slug (issue #106)", () 
     expect(message).toContain("card");
     // AC #5: actionable + explicitly forbids punting to the operator
     expect(message.toLowerCase()).toContain("do not ask the operator");
-    expect(message).toContain("edit_module");
+    expect(message).toContain("update_modules_many");
   });
 });
 

@@ -142,7 +142,7 @@ describe("move_module — same-block move reorders in place (detected-bug)", () 
       blocks: [{ blockName: "content", moduleIds: [a, b] }],
     });
     // order is [a, b]; move `a` to the bottom of the SAME "content" block.
-    // Previously this dead-ended with "already in block … use reorder_module";
+    // Previously this dead-ended with "already in block … use reorder_module" (a tool since retired into move_module);
     // now it performs the reorder in place (§11 — no forced round-trip).
     const res = await moveModuleTool.handler(
       SYSTEM,
