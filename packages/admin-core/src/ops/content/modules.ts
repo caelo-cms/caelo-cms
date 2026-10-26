@@ -6,7 +6,6 @@
  * scope here — `actorScope: ["human", "system"]` until P5 widens it.
  */
 
-import { pluginListSourcesRegistry } from "@caelo-cms/plugin-host";
 import { defineOperation, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
 import {
   deriveModuleType,
@@ -38,6 +37,7 @@ import {
 import type { ModuleState } from "../../snapshots/state.js";
 import { buildPatchSet, jsonbParam } from "../../sql-helpers.js";
 import { extractModuleStructure, validateTemplatizedModule } from "./extract-module-structure.js";
+import { claimedListSourceNames } from "./list-source-names.js";
 import { applyMediaUsageDelta } from "./media-usage.js";
 import {
   describePlacements,
@@ -301,18 +301,6 @@ export const getModuleOp = withHumanisedLinks(
     },
   }),
 );
-
-/**
- * Every list-source name a plugin claims, running or not (#447, epic
- * #1107). Dormant names count: a module written while a plugin ran must
- * stay editable after it is switched off, or turning a plugin off would
- * make its modules unsaveable.
- */
-function claimedListSourceNames(): ReadonlySet<string> {
-  const names = new Set<string>();
-  for (const entry of pluginListSourcesRegistry.catalogue()) names.add(entry.name);
-  return names;
-}
 
 export const createModuleOp = defineOperation({
   name: "modules.create",
