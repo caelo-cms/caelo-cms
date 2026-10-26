@@ -206,7 +206,9 @@ export const listSharedContentOp = defineOperation({
       WHERE ci.deleted_at IS NULL AND ci.chat_branch_id IS NULL
         AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
         AND EXISTS (
-          SELECT 1 FROM jsonb_array_elements(m.fields::jsonb) f
+          SELECT 1 FROM jsonb_array_elements(
+            CASE WHEN jsonb_typeof(m.fields) = 'array' THEN m.fields ELSE '[]'::jsonb END
+          ) f
           WHERE f->>'kind' = 'list' AND COALESCE(f->>'bind', 'local') = 'local'
         )
       GROUP BY pm.content_instance_id

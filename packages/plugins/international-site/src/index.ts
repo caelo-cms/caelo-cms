@@ -954,10 +954,13 @@ export default definePlugin<PluginContextTier1>({
                 ? "page-property-translation-missing"
                 : "list-translation-missing",
           severity: "warning" as const,
-          message: `${f.code === "list-link-variant-missing" ? "Link target has no version" : "Translation missing"}: ${f.message}`.slice(0, 1000),
+          message:
+            `${f.code === "list-link-variant-missing" ? "Link target has no version" : "Translation missing"}: ${f.message}`.slice(
+              0,
+              1000,
+            ),
           fix: {
-            tool:
-              f.code === "list-link-variant-missing" ? "create_variant" : "translate_chrome",
+            tool: f.code === "list-link-variant-missing" ? "create_variant" : "translate_chrome",
             hint: f.nextStep.slice(0, 500),
           },
         })),

@@ -672,6 +672,7 @@ export async function reconcileListTranslations(
   const isLive = (orphanedAt: string | null): boolean =>
     liveAt !== null && orphanedAt !== null && Date.parse(orphanedAt) < liveAt;
   let collected = 0;
+  let updatedCount = 0;
   for (const u of plan.updates) {
     const table = tableOf.get(u.id) as string;
     const row = rows.find((r) => r.id === u.id);
@@ -683,6 +684,7 @@ export async function reconcileListTranslations(
       continue;
     }
     await deps.q.update(table, u.id, { status: u.status, orphaned_at: u.orphanedAt });
+    updatedCount += 1;
   }
   // Rows already orphaned (no update this round) are collected too.
   if (liveAt !== null) {
@@ -729,7 +731,7 @@ export async function reconcileListTranslations(
       });
     }
   }
-  return { updated: plan.updates.length - collected, inserted: plan.inserts.length, collected };
+  return { updated: updatedCount, inserted: plan.inserts.length, collected };
 }
 
 /** Start of the newest succeeded production build, or null (deploy.list_runs). */
