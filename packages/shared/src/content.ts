@@ -630,7 +630,9 @@ export const pageShortTitleSchema = z
   .string()
   .trim()
   .min(1, "the short title is the page's breadcrumb label and cannot be blank")
-  .max(80, "keep the short title to a breadcrumb-sized label (80 characters at most)");
+  // Same bound as the title it is backfilled and defaulted from, so every
+  // stored page stays editable; keeping it crumb-sized is guidance.
+  .max(256);
 
 /**
  * Page payloads are `.strict()` — passing an `html` field is rejected by Zod

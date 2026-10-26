@@ -284,7 +284,7 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
             shortTitle: {
               type: "string",
               minLength: 1,
-              maxLength: 80,
+              maxLength: 256,
               description:
                 "Short public label in breadcrumbs, navigation and the page picker. Every trail showing the page follows it.",
             },

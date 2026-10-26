@@ -254,6 +254,27 @@ describe("#1142 breadcrumbs", () => {
     expect(ld.itemListElement.map((i) => i.item)).toEqual([`${BASE}/`, `${BASE}/t1142-team/`]);
   });
 
+  // Codex review on #1168: a page created from a long title stores that
+  // title as its short title; saving its settings (which always submit
+  // the short title) must still validate.
+  it("a page whose short title was defaulted from a long title stays editable", async () => {
+    const longTitle = `${"Pricing for teams of every size and every budget ".repeat(4)}`.trim();
+    const created = await run<{ pageId: string }>("pages.create", {
+      slug: "t1142-long",
+      title: longTitle,
+    });
+    const page = await run<{ page: { shortTitle: string } }>("pages.get", {
+      pageId: created.pageId,
+    });
+    expect(page.page.shortTitle).toBe(longTitle);
+    await run("pages.update", {
+      pageId: created.pageId,
+      title: longTitle,
+      shortTitle: page.page.shortTitle,
+      status: "draft",
+    });
+  });
+
   it("duplicating with a new title gives the copy that title as its short title", async () => {
     const copy = await run<{ pageId: string }>("pages.duplicate", {
       sourcePageId: ids.about,

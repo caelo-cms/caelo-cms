@@ -57,7 +57,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
         shortTitle: {
           type: "string",
           minLength: 1,
-          maxLength: 80,
+          maxLength: 256,
           description:
             "The page's short label in breadcrumbs and navigation ('Pricing' for 'Pricing for teams of every size'). Omit when the title is already short — it is stored as the short title.",
         },

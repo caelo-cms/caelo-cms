@@ -235,7 +235,7 @@
             name="shortTitle"
             type="text"
             value={page.shortTitle}
-            maxlength={80}
+            maxlength={256}
             required
             aria-describedby="shortTitle-help"
           />

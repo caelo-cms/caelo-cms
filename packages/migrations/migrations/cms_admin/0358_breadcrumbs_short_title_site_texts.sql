@@ -16,7 +16,9 @@
 --    `SITE_TEXTS_TYPE` (packages/shared/src/lists/default-types.ts);
 --    packages/migrations/src/site-texts-seed.test.ts fails when the two
 --    drift. The list starts empty: the AI adds a key the first time a
---    module reads it, in the site's language.
+--    module reads it, in the site's language. The `key` field carries
+--    `ext["international-site"].translate = false`: it is the lookup
+--    code, and a translated key would hide the entry in that language.
 
 BEGIN;
 SET LOCAL caelo.actor_kind = 'system';
@@ -79,7 +81,12 @@ $seed$
           "label": "Key",
           "type": "text",
           "required": true,
-          "maxLength": 64
+          "maxLength": 64,
+          "ext": {
+            "international-site": {
+              "translate": false
+            }
+          }
         },
         {
           "name": "text",

@@ -124,7 +124,16 @@ export const SITE_TEXTS_TYPE: ListTypeDef = {
     text: {
       label: "Site text",
       fields: [
-        { name: "key", label: "Key", type: "text", required: true, maxLength: 64 },
+        // The lookup key is code, not copy: a translated key would stop
+        // `{{site_text.<key>}}` from finding the entry in that language.
+        {
+          name: "key",
+          label: "Key",
+          type: "text",
+          required: true,
+          maxLength: 64,
+          ext: { "international-site": { translate: false } },
+        },
         { name: "text", label: "Text", type: "text", required: true },
       ],
     },

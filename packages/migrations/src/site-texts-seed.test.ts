@@ -33,6 +33,17 @@ describe("migration 0358 — site texts list type seed", () => {
     expect(seedJson()).toEqual(JSON.parse(JSON.stringify(SITE_TEXTS_TYPE)));
   });
 
+  // Codex review on #1168: with international-site active every text
+  // field is translated unless it opts out. A translated key would make
+  // `{{site_text.<key>}}` miss the entry in that language; the key is code.
+  it("only the text is translated, never the lookup key", () => {
+    const fields = (seedJson() as typeof SITE_TEXTS_TYPE).nodes.text?.fields ?? [];
+    expect(fields.find((f) => f.name === "key")?.ext).toEqual({
+      "international-site": { translate: false },
+    });
+    expect(fields.find((f) => f.name === "text")?.ext).toBeUndefined();
+  });
+
   it("the seeded type is a valid definition", () => {
     const parsed = listTypeDefSchema.parse(seedJson());
     expect(checkListTypeDef(parsed)).toEqual([]);

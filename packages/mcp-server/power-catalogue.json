@@ -487,7 +487,7 @@
               "shortTitle": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 80,
+                "maxLength": 256,
                 "description": "The page's short label in breadcrumbs and navigation ('Pricing' for 'Pricing for teams of every size'). Omit when the title is already short — it is stored as the short title."
               },
               "templateId": {
@@ -3354,7 +3354,7 @@
           "newShortTitle": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 80,
+            "maxLength": 256,
             "description": "The copy's breadcrumb / navigation label. Omitted: newTitle when given, else the source's short title."
           },
           "targetTemplateId": {
@@ -4948,7 +4948,7 @@
                 "shortTitle": {
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 80,
+                  "maxLength": 256,
                   "description": "Short public label in breadcrumbs, navigation and the page picker. Every trail showing the page follows it."
                 },
                 "slug": {

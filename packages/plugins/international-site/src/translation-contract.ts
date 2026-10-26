@@ -106,7 +106,7 @@ export function translationJsonSchema(c: TranslationContract): Record<string, un
   const shortTitleText = {
     type: "string",
     minLength: 1,
-    maxLength: 80,
+    maxLength: 256,
     description: "The translated short title: the page's label in breadcrumbs and menus.",
   };
   const meta = {
@@ -177,7 +177,7 @@ export function translationJsonSchema(c: TranslationContract): Record<string, un
 /** The Zod mirror of {@link translationJsonSchema} — every answer passes it. */
 export function translationAnswerSchema(c: TranslationContract) {
   const title = z.string().min(1);
-  const shortTitle = z.string().trim().min(1).max(80);
+  const shortTitle = z.string().trim().min(1).max(256);
   const meta = z.string().min(1).max(SEO_DESCRIPTION_HARD_MAX);
   const base = {
     title: c.mode === "full" ? title : title.nullable(),
@@ -237,8 +237,8 @@ export function toTranslationPayload(answer: TranslationAnswer): TranslationResu
 export function translationContractText(c: TranslationContract): string {
   const title =
     c.mode === "full"
-      ? '"title": "<translated page title>", "shortTitle": "<translated short title — the page\'s label in breadcrumbs and menus, at most 80 characters>"'
-      : '"title": "<re-translated page title>" or null when the existing title still fits, "shortTitle": "<re-translated short title, at most 80 characters>" or null when the existing one still fits';
+      ? '"title": "<translated page title>", "shortTitle": "<translated short title — the page\'s label in breadcrumbs and menus, as short as the source\'s>"'
+      : '"title": "<re-translated page title>" or null when the existing title still fits, "shortTitle": "<re-translated short title>" or null when the existing one still fits';
   const meta =
     c.metaDescription === "required"
       ? ', "metaDescription": "<translated meta description — a search-result snippet in the target language, at most 320 characters, aim for 160>"'

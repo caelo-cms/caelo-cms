@@ -39,7 +39,7 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
       newShortTitle: {
         type: "string",
         minLength: 1,
-        maxLength: 80,
+        maxLength: 256,
         description:
           "The copy's breadcrumb / navigation label. Omitted: newTitle when given, else the source's short title.",
       },
