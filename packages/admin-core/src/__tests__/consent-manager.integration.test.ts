@@ -546,7 +546,9 @@ describe("#451 — consent-manager", () => {
     });
     if (!added.ok) throw new Error(JSON.stringify(added.error));
     const updated = await call("update_tags_many", {
-      tags: [{ name: "Heatmaps", vendorInfo: { privacyPolicyUrl: "https://acme.example/privacy" } }],
+      tags: [
+        { name: "Heatmaps", vendorInfo: { privacyPolicyUrl: "https://acme.example/privacy" } },
+      ],
     });
     if (!updated.ok) throw new Error(JSON.stringify(updated.error));
     const listed = await call("list_tags");
