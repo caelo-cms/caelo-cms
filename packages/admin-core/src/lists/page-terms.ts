@@ -25,11 +25,6 @@ export function parseTermRef(ref: string): TermRef | null {
   return m?.[1] && m[2] ? { listId: m[1], itemId: m[2] } : null;
 }
 
-/** Format a term reference. */
-export function formatTermRef(t: TermRef): string {
-  return `caelo:term/${t.listId}/${t.itemId}`;
-}
-
 /**
  * Replace the live terms of `pageId` with `terms` (term references,
  * already validated). Order is kept through `created_at`.

@@ -36,8 +36,6 @@ import {
 import { loadPagesInView } from "./pages-view.js";
 import { loadListEntities } from "./store.js";
 
-export { ListRenderDataError } from "@caelo-cms/static-generator";
-
 /** Options of {@link loadListRenderData}. */
 export interface LoadListRenderDataOptions {
   /** The chat branch whose draft view a preview renders; null = main line. */
