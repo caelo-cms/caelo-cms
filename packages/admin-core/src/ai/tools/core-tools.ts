@@ -70,11 +70,18 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "find_media",
   // Epic #1107 — "add Careers to the menu" / "fix the footer link" is an
   // everyday edit: find the shared list, read its entry ids, patch it.
-  // Creating lists and types is rarer and stays deferred (the manage-menu
-  // and manage-page-types skills preload those).
+  // Creating lists stays deferred (the manage-menu and manage-page-types
+  // skills preload those).
   "list_lists",
   "get_list",
   "patch_list_items_many",
+  // A custom list type is part of an ordinary build: feature cards with an
+  // icon, a heading and a text are entries of their own type. Deferred, the
+  // homepage loaded it by tool search mid-build, and that one search cost
+  // 61k uncached input tokens (e2e-livedit run 40375971522: 327.6k new input
+  // against ~170k without it), while the compact definition costs ~750
+  // tokens of cached prefix (_list-tool-schemas.ts).
+  "upsert_list_types_many",
   // Design self-review loop — the AI iterates screenshot -> inspect ->
   // update_modules_many -> screenshot many times per build (the #155 rounds).
   // These reads fire on every iteration, so deferring them made the
