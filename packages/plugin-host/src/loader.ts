@@ -1156,10 +1156,9 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
 
   // #389 — provision the plugin's OWN cms_admin schema (release-signed
   // only; the validator rejects runtime-authored adminSchema and
-  // requires the cms_admin_schema capability). ADD COLUMN IF NOT EXISTS
-  // in the emitted DDL makes a version bump with new columns an
-  // additive evolution; destructive changes are drop-and-recreate
-  // (pre-1.0, #393 uninstall drops the schema).
+  // requires the cms_admin_schema capability). The emitted DDL adds the
+  // columns a version bump declares and drops the ones it no longer
+  // declares (#1146, pre-1.0; audited), host caelo_ columns untouched.
   if (def.adminSchema && Object.keys(def.adminSchema).length > 0) {
     const emitted = adminSchemaFromSpec({
       pluginId,
