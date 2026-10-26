@@ -54,6 +54,9 @@ export function themeVarForAlias(name: string, knownVars: ReadonlySet<string>): 
   return knownVars.has(target) ? target : null;
 }
 
+/** `var(` + the referenced name, when the name ends there. */
+const VAR_NAME_RE = /(var\(\s*)(--[a-zA-Z0-9_-]+)(?![a-zA-Z0-9_-])/g;
+
 /** One renamed reference. */
 export interface CssVarRename {
   readonly from: string;
@@ -72,21 +75,26 @@ export function renameCssVarAliases(
   definedInCss: ReadonlySet<string>,
 ): { css: string; renames: CssVarRename[] } {
   const known = new Set(knownVars);
-  const renames: CssVarRename[] = [];
-  let out = css;
-  const names = new Set([...css.matchAll(/var\(\s*(--[a-zA-Z0-9_-]+)/g)].map((m) => m[1] ?? ""));
-  for (const name of names) {
-    if (known.has(name) || definedInCss.has(name)) continue;
-    const to = themeVarForAlias(name, known);
-    if (to === null) continue;
-    const re = new RegExp(`(var\\(\\s*)${name.replace(/[-]/g, "\\-")}(?![a-zA-Z0-9_-])`, "g");
-    let count = 0;
-    out = out.replace(re, (_m, open: string) => {
-      count += 1;
-      return `${open}${to}`;
-    });
-    if (count > 0) renames.push({ from: name, to, count });
-  }
+  const targets = new Map<string, string>();
+  const counts = new Map<string, number>();
+  // One pass over the references, no pattern built from a name.
+  const out = css.replace(VAR_NAME_RE, (match, open: string, name: string) => {
+    if (known.has(name) || definedInCss.has(name)) return match;
+    let to = targets.get(name);
+    if (to === undefined) {
+      const resolved = themeVarForAlias(name, known);
+      if (resolved === null) return match;
+      to = resolved;
+      targets.set(name, to);
+    }
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+    return `${open}${to}`;
+  });
+  const renames: CssVarRename[] = [...targets].map(([from, to]) => ({
+    from,
+    to,
+    count: counts.get(from) ?? 0,
+  }));
   return { css: out, renames };
 }
 
