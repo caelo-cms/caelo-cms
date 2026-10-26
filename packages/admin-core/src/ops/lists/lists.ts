@@ -258,6 +258,10 @@ async function writeList(
   // AI and the editor alike. Input that is not even entry-shaped skips this
   // and gets validation's own message.
   let input: unknown = args.items;
+  let pending: Extract<
+    Awaited<ReturnType<typeof canonicaliseItemsForWrite>>,
+    { ok: true }
+  >["pending"] = null;
   const shaped = z.array(listItemInputSchema).safeParse(args.items);
   if (shaped.success) {
     const canon = await canonicaliseItemsForWrite(
@@ -269,6 +273,7 @@ async function writeList(
     );
     if (!canon.ok) return { ok: false, message: `${args.at}: ${canon.message}` };
     input = canon.items;
+    pending = canon.pending;
   }
   const validated = validateListItems(type.def, input);
   if (validated.issues.length > 0) {
@@ -300,7 +305,7 @@ async function writeList(
   );
   // Links to pages the chat's import run will still build stay literal;
   // the run's finalisation (imports.resolve_links) rewrites this list.
-  await recordPendingImportLinks(tx, canon.pending, { kind: "list", id });
+  await recordPendingImportLinks(tx, pending, { kind: "list", id });
   return { ok: true, id, state };
 }
 

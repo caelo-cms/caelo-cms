@@ -197,6 +197,8 @@ test.afterAll(async () => {
 });
 
 async function login(page: Page, email: string, password: string): Promise<void> {
+  // Five sign-ins in one file would trip the per-IP login limit.
+  clearLoginRateBucket();
   await page.goto("/login");
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill(password);
