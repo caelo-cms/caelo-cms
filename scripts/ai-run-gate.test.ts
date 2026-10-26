@@ -22,6 +22,9 @@ const REPO_ROOT = resolve(import.meta.dir, "..");
 
 interface Step {
   readonly id?: string;
+  readonly if?: string;
+  readonly uses?: string;
+  readonly with?: Record<string, unknown>;
   readonly run?: string;
   readonly env?: Record<string, string>;
 }
@@ -84,6 +87,9 @@ for (const { file, aiJob } of CASES) {
  *     what its PR already ran); workflow_dispatch stays for release-cut.
  * N2: release-cut's cut job gates on the AI job's success on HEAD before the
  *     release script runs, dispatching a run when there is none.
+ * N4: a green run records the tree it tested (artifact named by the tree
+ *     hash, written only on success), and release-cut reuses a run whose
+ *     tree equals the released commit's tree instead of running again.
  */
 describe("e2e-livedit.yml — main runs once per release, gated in release-cut", () => {
   const livedit = yaml.load(
@@ -126,5 +132,35 @@ describe("e2e-livedit.yml — main runs once per release, gated in release-cut",
     expect(run).not.toContain("gh run watch");
     expect(run).toContain('[ "$run_state" = "completed" ] && [ "$job_state" = "completed" ]');
     expect(run).toContain('|| job_state="api-error"');
+  });
+
+  it("N4: a green run's tested tree is reused by release-cut for the same code", () => {
+    const aiSteps = livedit.jobs["e2e-livedit"]?.steps ?? [];
+    const record = aiSteps.find((s) => s.id === "green-tree");
+    const upload = aiSteps.find(
+      (s) => typeof s.with?.name === "string" && s.with.name.startsWith("e2e-livedit-green-tree-"),
+    );
+    expect(record?.if).toBe("success()");
+    expect(record?.run ?? "").toContain("git rev-parse 'HEAD^{tree}'");
+    expect(upload?.if).toBe("success()");
+    expect(upload?.with?.name).toBe("e2e-livedit-green-tree-${{ steps.green-tree.outputs.tree }}");
+    // The marker is written after the bug gate, so a run with new detected
+    // bugs never records its tree.
+    const bugGate = aiSteps.findIndex((s) => (s.run ?? "").includes("bug-gate.ts"));
+    expect(bugGate).toBeGreaterThanOrEqual(0);
+    expect(aiSteps.indexOf(record as Step)).toBeGreaterThan(bugGate);
+
+    const run =
+      (cut.jobs.cut?.steps ?? []).find((s) =>
+        (s.run ?? "").includes('gh workflow run "$WORKFLOW_FILE"'),
+      )?.run ?? "";
+    expect(run).toContain("TREE=$(git rev-parse 'HEAD^{tree}')");
+    expect(run).toContain("actions/artifacts?name=e2e-livedit-green-tree-$TREE");
+    expect(run).toContain("select(.expired == false)");
+    // Only an e2e-livedit run whose AI job itself succeeded counts.
+    expect(run).toContain('[ "$path" = ".github/workflows/$WORKFLOW_FILE" ] || continue');
+    expect(run.indexOf("tree_job_ok)")).toBeLessThan(
+      run.indexOf('gh workflow run "$WORKFLOW_FILE"'),
+    );
   });
 });

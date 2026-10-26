@@ -109,15 +109,12 @@ describe("list tools (epic #1107)", () => {
     ]) {
       expect(names.has(n)).toBe(true);
     }
-    // The tools that find or create a list say menus are shared lists, local vs shared.
-    for (const t of [listListsTool, upsertListsManyTool]) {
-      expect(t.description).toContain("SHARED LISTS");
-      expect(t.description).toContain("no menu-specific tools");
-      expect(t.description).toContain("`promote_local_list`");
-    }
-    // list_list_types carries its own compact routing: menus are shared lists, local vs shared.
-    expect(listListTypesTool.description).toContain("SHARED LISTS");
-    expect(listListTypesTool.description).toContain("promote_local_list");
+    // Said once, where the AI looks for a menu (catalogue budget below):
+    // menus are shared lists, local vs shared.
+    expect(listListsTool.description).toContain("SHARED LISTS");
+    expect(listListsTool.description).toContain("no menu-specific tools");
+    expect(listListsTool.description).toContain("`promote_local_list`");
+    expect(upsertListsManyTool.description).toContain("menus");
     const fieldProps = (
       MODULE_FIELDS_JSON_SCHEMA.items as { properties: Record<string, { description?: string }> }
     ).properties;
@@ -189,6 +186,13 @@ describe("list tools (epic #1107)", () => {
     expect(r.content).toContain(
       '  - [11111111-2222-4333-8444-555555555555] entry {"label":"Team"}',
     );
+    // The read names the tree with the key the write takes, and the role
+    // as the type's (v0.11.0 release gate: an "entries:" heading and the
+    // role were copied into an upsert_lists_many call).
+    expect(r.content).toContain("\nitems:\n");
+    expect(r.content).not.toContain("entries:");
+    expect(r.content).toContain("set by the type");
+    expect(upsertListsManyTool.description).toContain("not `entries`");
   });
 
   it("patch_list_items_many forwards the patches unchanged and names the added ids", async () => {
@@ -268,6 +272,35 @@ describe("list tools (epic #1107)", () => {
     expect(r.content).toContain(
       `source entries (preview_list_source itemId): ${NEWS_ENTRY} (news)`,
     );
+  });
+
+  it("the list tools stay within their catalogue budget", () => {
+    // Every catalogue tool — deferred ones too — counts toward each chat
+    // call's input. The lists epic first added ~45k characters and pushed
+    // the real-AI homepage scenario over its input ceiling (PR #1143).
+    const names = new Set([
+      "list_list_types",
+      "upsert_list_types_many",
+      "delete_list_types_many",
+      "list_lists",
+      "get_list",
+      "upsert_lists_many",
+      "patch_list_items_many",
+      "delete_lists_many",
+      "promote_local_list",
+      "preview_list_source",
+      "list_page_types",
+      "upsert_page_types_many",
+      "delete_page_types_many",
+    ]);
+    const size = createDefaultToolRegistry()
+      .catalogue()
+      .filter((t) => names.has(t.name))
+      .reduce(
+        (n, t) => n + t.name.length + t.description.length + JSON.stringify(t.inputSchema).length,
+        0,
+      );
+    expect(size).toBeLessThanOrEqual(18_000);
   });
 
   it("op-name hints come back as tool names", async () => {

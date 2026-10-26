@@ -352,9 +352,11 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
 // its n=1 case — retired-tools.ts maps old calls here). Items reuse the
 // shared `moduleUpdateSchema` (the SAME schema modules.update /
 // modules.update_many validate against), so the tool can never be a subset
-// of the op. Source fields decode a whole-value CDATA envelope like every
-// other AI authoring surface (`sourceTextArg`); the op's own refusal of any
-// other CDATA marker still applies to the decoded value.
+// of the op. Source fields decode whole-value transport encodings (CDATA,
+// JSON string literal, HTML-escaped) like every other AI authoring surface
+// (`sourceTextArg`); the op's own checks still apply to the result. An item
+// that changes nothing is refused before any lookup (e2e-livedit run
+// 40351690739: a bare placeholder moduleId came back as "module not found").
 const moduleUpdateItem = moduleUpdateSchema
   .extend({
     html: sourceTextArg(moduleUpdateSchema.shape.html.unwrap()).optional(),
@@ -362,7 +364,11 @@ const moduleUpdateItem = moduleUpdateSchema
     js: sourceTextArg(moduleUpdateSchema.shape.js.unwrap()).optional(),
     bindThemeLiterals: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .refine((v) => Object.keys(v).some((k) => k !== "moduleId" && k !== "bindThemeLiterals"), {
+    message:
+      "this item changes nothing: pass what to change (html, css, js, fields, displayName, description, kind or type). list_modules shows the modules; add_module creates a new one.",
+  });
 const moduleUpdateInput = z.object({ items: z.array(moduleUpdateItem).min(1).max(200) }).strict();
 type ModuleUpdateInput = z.infer<typeof moduleUpdateInput>;
 type ModuleUpdateItem = z.infer<typeof moduleUpdateItem>;

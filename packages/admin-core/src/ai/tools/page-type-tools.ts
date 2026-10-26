@@ -19,6 +19,7 @@ import { z } from "zod";
 import { deletePageTypesManyOp, upsertPageTypesManyOp } from "../../ops/lists/page-types.js";
 import { describeError } from "./_describe-error.js";
 import { makeOpTool, toolNamesIn } from "./_list-tool-kit.js";
+import { UPSERT_PAGE_TYPES_JSON_SCHEMA } from "./_list-tool-schemas.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listPageTypesInput = z
@@ -59,7 +60,7 @@ function describePageType(t: PageTypeRow): string {
 export const listPageTypesTool: ToolDefinitionWithHandler<ListPageTypesInput> = {
   name: "list_page_types",
   description:
-    "The site's page types, what each page IS (`page`, `news`, `product`): purpose, page count, allowed + default template ids, properties (`*` = required), vocabularies (categories/tags lists whose terms its pages carry). " +
+    "The site's page types, what each page IS (`content`, `news`, `product`): purpose, page count, allowed + default template ids, properties (`*` = required), vocabularies (categories/tags lists whose terms its pages carry). " +
     'Read before `build_page` / `update_pages_many` (a new article gets `pageType:"news"` + its properties and terms) and before a page query (`page_type` filters on the slug). New KIND of content (blog, job board) -> `upsert_page_types_many`.',
   schema: listPageTypesInput,
   handler: async (ctx, input, toolCtx) => {
@@ -106,6 +107,7 @@ export const upsertPageTypesManyTool = makeOpTool({
     "- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n" +
     "- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` (pageType `news`) or reuse one -> this -> `build_page`/`update_pages_many` with pageType, properties, terms.\n" +
     "- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
+  inputSchema: UPSERT_PAGE_TYPES_JSON_SCHEMA,
   opName: "page_types.upsert_many",
   input: upsertPageTypesManyOp.input,
   format: (value) =>

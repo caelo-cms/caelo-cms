@@ -72,6 +72,22 @@ describe("buildContextSplitEstimate", () => {
     { role: "assistant", content: "A".repeat(100) },
   ];
 
+  it("counts only the core tools as static when the rest are deferred (PR #1143)", () => {
+    const core: ToolDefinition = { ...providerTools[0]!, alwaysLoaded: true };
+    const deferred: ToolDefinition = {
+      name: "upsert_list_types_many",
+      description: "D".repeat(4000),
+      inputSchema: { type: "object" },
+    };
+    const split = buildContextSplitEstimate({
+      systemChunks: [],
+      providerTools: [core, deferred],
+      messages: [],
+    });
+    expect(split.toolCatalogueTokens).toBe(est(JSON.stringify([core])));
+    expect(split.deferredToolTokens).toBe(est(JSON.stringify([deferred])));
+  });
+
   it("splits chunks by category, tools into the catalogue, skills per slug", () => {
     const split = buildContextSplitEstimate({
       systemChunks: [base, moduleModel, staging, memory, toolsChunk, theme, allPages, skills],

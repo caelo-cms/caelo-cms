@@ -62,6 +62,12 @@ export interface MakeOpToolArgs<I> {
   readonly input: z.ZodType<I>;
   /** Render the op's ok-value as the tool's text result. */
   readonly format: (value: unknown, input: I) => string;
+  /**
+   * A compact JSON Schema the provider sees instead of the one generated
+   * from `input` (which still validates every call). For tools whose
+   * generated schema is large — see `_list-tool-schemas.ts`.
+   */
+  readonly inputSchema?: Record<string, unknown>;
 }
 
 /**
@@ -73,6 +79,7 @@ export function makeOpTool<I>(args: MakeOpToolArgs<I>): ToolDefinitionWithHandle
     name: args.name,
     description: args.description,
     schema: args.input,
+    ...(args.inputSchema ? { inputSchema: args.inputSchema } : {}),
     handler: async (ctx, input, toolCtx) => {
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, args.opName, input);
       if (!r.ok) {

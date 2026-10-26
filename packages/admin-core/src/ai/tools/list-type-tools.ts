@@ -15,6 +15,7 @@ import { z } from "zod";
 import { deleteListTypesManyOp, upsertListTypesManyOp } from "../../ops/lists/list-types.js";
 import { describeError } from "./_describe-error.js";
 import { describeListType, makeOpTool, toolNamesIn } from "./_list-tool-kit.js";
+import { UPSERT_LIST_TYPES_JSON_SCHEMA } from "./_list-tool-schemas.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listListTypesInput = z
@@ -55,7 +56,6 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
   name: "list_list_types",
   description:
     "Read the site's list types — the shapes lists take: node kinds, fields (`*` = required), nesting, nodes that generate entries from a source (page query, breadcrumbs, plugin). Read before writing list entries or a module's `{{#field}}…{{/field}}` template (node fields = keys inside the section).\n" +
-    "- Menus, navigation, footer links, categories, tags = SHARED LISTS of a fitting type; no menu-specific tools. A list ONE module shows stays LOCAL (entries in its `list` field); used in several places, site navigation or a page vocabulary -> SHARED; `promote_local_list` switches local -> shared.\n" +
     "- Shipped: `texts` (strings), `links` (label + link), `menu` (nested, 3 levels, marks current page), `categories`/`tags` (vocabularies pages are assigned to).\n" +
     "- 'ships with plugin' = read-only definition (fill its lists). 'Inert plugin settings' = extensions of an inactive plugin, kept, not applied.\n" +
     "- No type fits (mega menu with columns + latest news, team list with photo + role) -> `upsert_list_types_many`; don't bend `links`.",
@@ -111,13 +111,14 @@ export const upsertListTypesManyTool = makeOpTool({
     "Create or replace list types (the SHAPE of a list) in one transaction.\n" +
     "DO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\n" +
     "CORE RULES:\n" +
-    "- `nodes`: node kind -> {label, fields, children:{name, allow}, source, current_from}. `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `max_depth` required when a node allows itself.\n" +
-    "- Field semantics: `link` value = {href}; `module` = embedded module (`accepts`: module types, absent = any); `term` = entries of vocabulary list `list`. `current_from` names the node's link field that marks the current page.\n" +
+    "- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `max_depth` required when a node allows itself. `current_from` names the node's link field that marks the current page.\n" +
+    "- Field types: text, richtext, link (value {href}), media, select (`options`), boolean, number, date, icon, module (embedded; `accepts` = module types, absent = any), term (entries of vocabulary list `list: <slug>`).\n" +
     "- Vocabulary types: exactly one node kind, with text fields `name` + `slug`.\n" +
-    "- `source` -> generated entries instead of stored children: `query` (`editable` = knobs an entry may change, `defaults` = query), `system`, `plugin`.\n" +
-    '- Mega menu example: root.allow ["column","link"]; `column` {fields:[heading text*], children:{name:"links", allow:["link","news"]}}; `link` {fields:[label text*, link link*], current_from:"link"}; `news` {fields:[heading text], source:{kind:"query", editable:["limit"], defaults:{page_type:"news", order:"published_desc", limit:3}}} (`*` = required:true).\n' +
+    "- `source` -> generated entries instead of stored children: {kind:'query', editable:[knobs an entry may change], defaults:{page_type, order, limit, …}} | {kind:'system', name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:'plugin', name}.\n" +
+    '- Mega menu: root.allow ["column"]; `column` {fields:[heading text], children:{name:"links", allow:["link","news"]}}; `link` {fields:[label text*, link link*], current_from:"link"}; `news` {fields:[heading text], source:{kind:"query", editable:["limit"], defaults:{page_type:"news", order:"published_desc", limit:3}}} (`*` = required:true).\n' +
     "- Changes are checked against every list of the type (incl. local lists in modules): a new required field needs a `default`; removing a node kind/field that has values is refused naming the lists -> `dropValues:true` only when the operator agreed to lose them.\n" +
     "- `expectedVersion` from `list_list_types` prevents overwriting a concurrent change.",
+  inputSchema: UPSERT_LIST_TYPES_JSON_SCHEMA,
   opName: "list_types.upsert_many",
   input: upsertListTypesManyOp.input,
   format: (value) => {

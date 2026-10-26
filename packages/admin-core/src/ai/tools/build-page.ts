@@ -66,7 +66,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           type: "string",
           pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
           description:
-            "What the page IS (`list_page_types`), e.g. `news` for an article, `page` for a plain page. Set it whenever the site has >1 type — page queries ('latest news') find pages by it. Omitted: the type listing `templateId`, else the site default.",
+            "What the page IS: a slug `list_page_types` shows for this site (e.g. `news` for an article); page queries ('latest news') find pages by it. Omit it for an ordinary page (gets the type listing `templateId`, else the site default). Never guess a slug.",
         },
         properties: {
           type: "object",
@@ -133,7 +133,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           },
           ref: {
             type: "string",
-            pattern: "^[a-z][a-z0-9_-]{0,31}$",
+            pattern: "^[A-Za-z][A-Za-z0-9_-]{0,31}$",
             description:
               'Local handle: `{"$ref":"<ref>"}` in another entry\'s `module`/`module-list` field value or `moduleId` resolves to this entry\'s `{moduleId, contentInstanceId}`. Referenced entries are created first.',
           },
@@ -230,7 +230,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     "USE FOR: every page creation (THE page-creation tool); any page needing >1 module — never `add_module` / `create_content_instances` chains. `modules: []` = intentionally empty page shell.",
     "DO NOT USE FOR: one incremental module on an existing page -> `add_module` (target `page`); site chrome header/footer -> `add_module` (target `layout`; chrome never rides in a page body).",
     "CORE RULES:",
-    '- Creating: set `page.pageType` (+ `properties`/`terms`), `page.metaDescription`, and `status:"published"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.',
+    '- Creating: typed page -> `page.pageType` (+ `properties`/`terms`; an ordinary page omits pageType); always `page.metaDescription`, and `status:"published"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.',
     "- Per module, two modes: `moduleId` places an EXISTING module (`list_modules`; reuse first — shared modules keep pages consistent), or mint with `displayName` + `html` + `description` + `kind` + explicit `fields[]` (all required).",
     "- Pair `{{field_name}}` placeholders in `html` with `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`); never heuristic names (`cta2label2`) or numbered scalars (`label1`..`label10` -> ONE `list` field or a `module-list`).",
     "- Nested modules in the SAME call: inner entry gets `ref` and NO `blockName` (detached: minted + content-bound, not placed); the outer module's `module`/`module-list` field value references it as `{\"$ref\":\"<ref>\"}`, any array order. Never an `add_module` -> `remove_module_from` -> `create_content_instances` chain. E.g. `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]`",

@@ -229,7 +229,7 @@
     },
     {
       "name": "build_page",
-      "description": "Build a WHOLE page in ONE transaction: create (`page:{slug, title}`) or target existing (`page:{pageId}`) + the full ordered module list (each entry places one module into a template block, top to bottom; on an existing page entries append). Any invalid entry aborts everything (error names `modules[i]` + failing field); nothing is written.\nUSE FOR: every page creation (THE page-creation tool); any page needing >1 module — never `add_module` / `create_content_instances` chains. `modules: []` = intentionally empty page shell.\nDO NOT USE FOR: one incremental module on an existing page -> `add_module` (target `page`); site chrome header/footer -> `add_module` (target `layout`; chrome never rides in a page body).\nCORE RULES:\n- Creating: set `page.pageType` (+ `properties`/`terms`), `page.metaDescription`, and `status:\"published\"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.\n- Per module, two modes: `moduleId` places an EXISTING module (`list_modules`; reuse first — shared modules keep pages consistent), or mint with `displayName` + `html` + `description` + `kind` + explicit `fields[]` (all required).\n- Pair `{{field_name}}` placeholders in `html` with `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`); never heuristic names (`cta2label2`) or numbered scalars (`label1`..`label10` -> ONE `list` field or a `module-list`).\n- Nested modules in the SAME call: inner entry gets `ref` and NO `blockName` (detached: minted + content-bound, not placed); the outer module's `module`/`module-list` field value references it as `{\"$ref\":\"<ref>\"}`, any array order. Never an `add_module` -> `remove_module_from` -> `create_content_instances` chain. E.g. `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]`\n- Zero templates on the site -> bootstrap first (`create_layout` -> `create_template`).\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.\nTypical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`",
+      "description": "Build a WHOLE page in ONE transaction: create (`page:{slug, title}`) or target existing (`page:{pageId}`) + the full ordered module list (each entry places one module into a template block, top to bottom; on an existing page entries append). Any invalid entry aborts everything (error names `modules[i]` + failing field); nothing is written.\nUSE FOR: every page creation (THE page-creation tool); any page needing >1 module — never `add_module` / `create_content_instances` chains. `modules: []` = intentionally empty page shell.\nDO NOT USE FOR: one incremental module on an existing page -> `add_module` (target `page`); site chrome header/footer -> `add_module` (target `layout`; chrome never rides in a page body).\nCORE RULES:\n- Creating: typed page -> `page.pageType` (+ `properties`/`terms`; an ordinary page omits pageType); always `page.metaDescription`, and `status:\"published\"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.\n- Per module, two modes: `moduleId` places an EXISTING module (`list_modules`; reuse first — shared modules keep pages consistent), or mint with `displayName` + `html` + `description` + `kind` + explicit `fields[]` (all required).\n- Pair `{{field_name}}` placeholders in `html` with `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`); never heuristic names (`cta2label2`) or numbered scalars (`label1`..`label10` -> ONE `list` field or a `module-list`).\n- Nested modules in the SAME call: inner entry gets `ref` and NO `blockName` (detached: minted + content-bound, not placed); the outer module's `module`/`module-list` field value references it as `{\"$ref\":\"<ref>\"}`, any array order. Never an `add_module` -> `remove_module_from` -> `create_content_instances` chain. E.g. `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]`\n- Zero templates on the site -> bootstrap first (`create_layout` -> `create_template`).\n- INTERNAL LINKS (`html` hrefs, `url`/`link` fields, list-entry links): write the page path (e.g. `/about`). Target MUST be an existing page (`list_pages`) or it is refused — create an empty shell first (`build_page({page:{slug, title}, modules:[]})`) or link after. `/` and `/#section` are always valid. Exception: links to pages of this chat's site-import run are kept and resolved by `resolve_import_links` at the end. Media/files: media URL (`find_media`). External: full `https://` URL.\nTypical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -271,7 +271,7 @@
               "pageType": {
                 "type": "string",
                 "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-                "description": "What the page IS (`list_page_types`), e.g. `news` for an article, `page` for a plain page. Set it whenever the site has >1 type — page queries ('latest news') find pages by it. Omitted: the type listing `templateId`, else the site default."
+                "description": "What the page IS: a slug `list_page_types` shows for this site (e.g. `news` for an article); page queries ('latest news') find pages by it. Omit it for an ordinary page (gets the type listing `templateId`, else the site default). Never guess a slug."
               },
               "properties": {
                 "type": "object",
@@ -346,7 +346,7 @@
                 },
                 "ref": {
                   "type": "string",
-                  "pattern": "^[a-z][a-z0-9_-]{0,31}$",
+                  "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,31}$",
                   "description": "Local handle: `{\"$ref\":\"<ref>\"}` in another entry's `module`/`module-list` field value or `moduleId` resolves to this entry's `{moduleId, contentInstanceId}`. Referenced entries are created first."
                 },
                 "moduleId": {
@@ -409,7 +409,7 @@
                 "js": {
                   "type": "string",
                   "maxLength": 50000,
-                  "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\"{{#is_current}} aria-current=\"page\"{{/is_current}}>{{label}}</a>{{#has_children}}<ul>{{#children}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/children}}</ul>{{/has_children}}</li>{{/menu}}</ul></nav>`; `menu` = the module's menu `list` field (usually bound to the shared site menu).\nWrite module JS only for behaviour the kit does not cover."
+                  "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
                 },
                 "fields": {
                   "type": "array",
@@ -467,7 +467,7 @@
                                 "node",
                                 "values"
                               ],
-                              "description": "texts: `{node:\"text\", values:{text}}` | links: `{node:\"link\", values:{label, link:{href}}}` | menu: `{node:\"entry\", values:{label, link:{href}}, children}` | custom type: its fields (`list_list_types`). Keep `id` on resend.",
+                              "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep `id` on resend.",
                               "properties": {
                                 "id": {
                                   "type": "string"
@@ -527,7 +527,7 @@
                       },
                       "source": {
                         "type": "object",
-                        "description": "Required when `bind:\"source\"`: `{kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}}` | `{kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"}` (only these) | `{kind:\"plugin\", name}` (e.g. `consent_categories`; iterating a plugin list needs no field)."
+                        "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
                       },
                       "allowedModuleTypes": {
                         "type": "array",
@@ -2255,7 +2255,7 @@
           "js": {
             "type": "string",
             "maxLength": 50000,
-            "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\"{{#is_current}} aria-current=\"page\"{{/is_current}}>{{label}}</a>{{#has_children}}<ul>{{#children}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/children}}</ul>{{/has_children}}</li>{{/menu}}</ul></nav>`; `menu` = the module's menu `list` field (usually bound to the shared site menu).\nWrite module JS only for behaviour the kit does not cover."
+            "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
           },
           "bindThemeLiterals": {
             "type": "boolean",
@@ -2317,7 +2317,7 @@
                           "node",
                           "values"
                         ],
-                        "description": "texts: `{node:\"text\", values:{text}}` | links: `{node:\"link\", values:{label, link:{href}}}` | menu: `{node:\"entry\", values:{label, link:{href}}, children}` | custom type: its fields (`list_list_types`). Keep `id` on resend.",
+                        "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep `id` on resend.",
                         "properties": {
                           "id": {
                             "type": "string"
@@ -2377,7 +2377,7 @@
                 },
                 "source": {
                   "type": "object",
-                  "description": "Required when `bind:\"source\"`: `{kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}}` | `{kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"}` (only these) | `{kind:\"plugin\", name}` (e.g. `consent_categories`; iterating a plugin list needs no field)."
+                  "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
                 },
                 "allowedModuleTypes": {
                   "type": "array",
@@ -4437,7 +4437,7 @@
                 },
                 "js": {
                   "type": "string",
-                  "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\"{{#is_current}} aria-current=\"page\"{{/is_current}}>{{label}}</a>{{#has_children}}<ul>{{#children}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/children}}</ul>{{/has_children}}</li>{{/menu}}</ul></nav>`; `menu` = the module's menu `list` field (usually bound to the shared site menu).\nWrite module JS only for behaviour the kit does not cover."
+                  "description": "Vanilla JS. Plain source (no CDATA or extra escaping). Emitted ONCE per page into a shared `<script defer>` with all other modules — SHARED top-level scope, NO implicit `root`/`el`/`module`/`this`. Wrap in an IIFE, query `document.querySelectorAll('.your-module-root …')`, iterate matches so multiple placements work. Omit for presentational modules. `data-caelo-ui` kit — use it instead of JS for these (accessible, shipped once per page, style freely in module CSS):\n- `accordion` (FAQ, collapsible): `<div data-caelo-ui=\"accordion\" data-single>` with `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items; `data-single` keeps one open; a link to `#<details id>` opens it.\n- `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>`; ids unique on the page.\n- `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>`; icon buttons keep visible content aria-hidden, text buttons need no aria-label. One slide per view; set the slides' `flex-basis` in module CSS to show more.\n- `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field.\nWrite module JS only for behaviour the kit does not cover."
                 },
                 "fields": {
                   "type": "array",
@@ -4495,7 +4495,7 @@
                                 "node",
                                 "values"
                               ],
-                              "description": "texts: `{node:\"text\", values:{text}}` | links: `{node:\"link\", values:{label, link:{href}}}` | menu: `{node:\"entry\", values:{label, link:{href}}, children}` | custom type: its fields (`list_list_types`). Keep `id` on resend.",
+                              "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep `id` on resend.",
                               "properties": {
                                 "id": {
                                   "type": "string"
@@ -4555,7 +4555,7 @@
                       },
                       "source": {
                         "type": "object",
-                        "description": "Required when `bind:\"source\"`: `{kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}}` | `{kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"}` (only these) | `{kind:\"plugin\", name}` (e.g. `consent_categories`; iterating a plugin list needs no field)."
+                        "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
                       },
                       "allowedModuleTypes": {
                         "type": "array",
@@ -7514,7 +7514,7 @@
     },
     {
       "name": "list_list_types",
-      "description": "Read the site's list types — the shapes lists take: node kinds, fields (`*` = required), nesting, nodes that generate entries from a source (page query, breadcrumbs, plugin). Read before writing list entries or a module's `{{#field}}…{{/field}}` template (node fields = keys inside the section).\n- Menus, navigation, footer links, categories, tags = SHARED LISTS of a fitting type; no menu-specific tools. A list ONE module shows stays LOCAL (entries in its `list` field); used in several places, site navigation or a page vocabulary -> SHARED; `promote_local_list` switches local -> shared.\n- Shipped: `texts` (strings), `links` (label + link), `menu` (nested, 3 levels, marks current page), `categories`/`tags` (vocabularies pages are assigned to).\n- 'ships with plugin' = read-only definition (fill its lists). 'Inert plugin settings' = extensions of an inactive plugin, kept, not applied.\n- No type fits (mega menu with columns + latest news, team list with photo + role) -> `upsert_list_types_many`; don't bend `links`.",
+      "description": "Read the site's list types — the shapes lists take: node kinds, fields (`*` = required), nesting, nodes that generate entries from a source (page query, breadcrumbs, plugin). Read before writing list entries or a module's `{{#field}}…{{/field}}` template (node fields = keys inside the section).\n- Shipped: `texts` (strings), `links` (label + link), `menu` (nested, 3 levels, marks current page), `categories`/`tags` (vocabularies pages are assigned to).\n- 'ships with plugin' = read-only definition (fill its lists). 'Inert plugin settings' = extensions of an inactive plugin, kept, not applied.\n- No type fits (mega menu with columns + latest news, team list with photo + role) -> `upsert_list_types_many`; don't bend `links`.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -7544,30 +7544,37 @@
     },
     {
       "name": "upsert_list_types_many",
-      "description": "Create or replace list types (the SHAPE of a list) in one transaction.\nDO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\nCORE RULES:\n- `nodes`: node kind -> {label, fields, children:{name, allow}, source, current_from}. `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `max_depth` required when a node allows itself.\n- Field semantics: `link` value = {href}; `module` = embedded module (`accepts`: module types, absent = any); `term` = entries of vocabulary list `list`. `current_from` names the node's link field that marks the current page.\n- Vocabulary types: exactly one node kind, with text fields `name` + `slug`.\n- `source` -> generated entries instead of stored children: `query` (`editable` = knobs an entry may change, `defaults` = query), `system`, `plugin`.\n- Mega menu example: root.allow [\"column\",\"link\"]; `column` {fields:[heading text*], children:{name:\"links\", allow:[\"link\",\"news\"]}}; `link` {fields:[label text*, link link*], current_from:\"link\"}; `news` {fields:[heading text], source:{kind:\"query\", editable:[\"limit\"], defaults:{page_type:\"news\", order:\"published_desc\", limit:3}}} (`*` = required:true).\n- Changes are checked against every list of the type (incl. local lists in modules): a new required field needs a `default`; removing a node kind/field that has values is refused naming the lists -> `dropValues:true` only when the operator agreed to lose them.\n- `expectedVersion` from `list_list_types` prevents overwriting a concurrent change.",
+      "description": "Create or replace list types (the SHAPE of a list) in one transaction.\nDO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\nCORE RULES:\n- `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `max_depth` required when a node allows itself. `current_from` names the node's link field that marks the current page.\n- Field types: text, richtext, link (value {href}), media, select (`options`), boolean, number, date, icon, module (embedded; `accepts` = module types, absent = any), term (entries of vocabulary list `list: <slug>`).\n- Vocabulary types: exactly one node kind, with text fields `name` + `slug`.\n- `source` -> generated entries instead of stored children: {kind:'query', editable:[knobs an entry may change], defaults:{page_type, order, limit, …}} | {kind:'system', name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:'plugin', name}.\n- Mega menu: root.allow [\"column\"]; `column` {fields:[heading text], children:{name:\"links\", allow:[\"link\",\"news\"]}}; `link` {fields:[label text*, link link*], current_from:\"link\"}; `news` {fields:[heading text], source:{kind:\"query\", editable:[\"limit\"], defaults:{page_type:\"news\", order:\"published_desc\", limit:3}}} (`*` = required:true).\n- Changes are checked against every list of the type (incl. local lists in modules): a new required field needs a `default`; removing a node kind/field that has values is refused naming the lists -> `dropValues:true` only when the operator agreed to lose them.\n- `expectedVersion` from `list_list_types` prevents overwriting a concurrent change.",
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "listTypes"
+        ],
         "properties": {
           "listTypes": {
-            "minItems": 1,
-            "maxItems": 50,
             "type": "array",
+            "minItems": 1,
             "items": {
               "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "slug",
+                "name",
+                "purpose",
+                "role",
+                "root",
+                "nodes"
+              ],
               "properties": {
                 "slug": {
-                  "type": "string",
-                  "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+                  "type": "string"
                 },
                 "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 200
+                  "type": "string"
                 },
                 "purpose": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 1000
+                  "type": "string"
                 },
                 "role": {
                   "type": "string",
@@ -7579,283 +7586,38 @@
                 },
                 "root": {
                   "type": "object",
-                  "properties": {
-                    "allow": {
-                      "minItems": 1,
-                      "maxItems": 32,
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                      }
-                    },
-                    "max": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 500
-                    }
-                  },
                   "required": [
                     "allow"
                   ],
-                  "additionalProperties": false
+                  "properties": {
+                    "allow": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "max": {
+                      "type": "integer"
+                    }
+                  }
                 },
                 "nodes": {
                   "type": "object",
-                  "propertyNames": {
-                    "type": "string",
-                    "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                  },
-                  "additionalProperties": {
-                    "type": "object",
-                    "properties": {
-                      "label": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 128
-                      },
-                      "fields": {
-                        "maxItems": 32,
-                        "type": "array",
-                        "items": {
-                          "type": "object",
-                          "properties": {
-                            "name": {
-                              "type": "string",
-                              "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                            },
-                            "label": {
-                              "type": "string",
-                              "minLength": 1,
-                              "maxLength": 128
-                            },
-                            "required": {
-                              "type": "boolean"
-                            },
-                            "default": {},
-                            "ext": {
-                              "type": "object"
-                            },
-                            "type": {
-                              "type": "string",
-                              "enum": [
-                                "text",
-                                "richtext",
-                                "link",
-                                "media",
-                                "select",
-                                "boolean",
-                                "number",
-                                "date",
-                                "icon",
-                                "module",
-                                "term"
-                              ]
-                            },
-                            "maxLength": {
-                              "type": "integer",
-                              "minimum": 1,
-                              "maximum": 20000,
-                              "description": "`text` <= 2000, `richtext` <= 20000. For `type`: `text`|`richtext`."
-                            },
-                            "options": {
-                              "minItems": 1,
-                              "maxItems": 64,
-                              "type": "array",
-                              "items": {
-                                "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                              },
-                              "description": "Required when `type`: `select`."
-                            },
-                            "min": {
-                              "type": "number",
-                              "description": "For `type`: `number`."
-                            },
-                            "max": {
-                              "type": "number",
-                              "description": "For `type`: `number`."
-                            },
-                            "accepts": {
-                              "maxItems": 32,
-                              "type": "array",
-                              "items": {
-                                "type": "string",
-                                "pattern": "^[a-z0-9-]+$"
-                              },
-                              "description": "For `type`: `module`."
-                            },
-                            "list": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$",
-                              "description": "Required when `type`: `term`."
-                            },
-                            "multiple": {
-                              "type": "boolean",
-                              "description": "For `type`: `term`."
-                            }
-                          },
-                          "required": [
-                            "type",
-                            "name",
-                            "label"
-                          ],
-                          "additionalProperties": false
-                        }
-                      },
-                      "children": {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "allow": {
-                            "minItems": 1,
-                            "maxItems": 32,
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                            }
-                          },
-                          "max": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 500
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "allow"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "current_from": {
-                        "type": "string",
-                        "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                      },
-                      "source": {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "query",
-                              "system",
-                              "plugin"
-                            ]
-                          },
-                          "editable": {
-                            "maxItems": 7,
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "enum": [
-                                "page_type",
-                                "terms",
-                                "terms_mode",
-                                "parent",
-                                "exclude_current",
-                                "order",
-                                "limit"
-                              ]
-                            },
-                            "description": "Required when `kind`: `query`."
-                          },
-                          "defaults": {
-                            "type": "object",
-                            "properties": {
-                              "page_type": {
-                                "type": "string",
-                                "pattern": "^[a-z0-9-]+$"
-                              },
-                              "terms": {
-                                "maxItems": 20,
-                                "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "pattern": "^caelo:term\\/[0-9a-f-]{36}\\/[0-9a-f-]{36}$"
-                                }
-                              },
-                              "terms_mode": {
-                                "type": "string",
-                                "enum": [
-                                  "any",
-                                  "all"
-                                ]
-                              },
-                              "parent": {
-                                "type": "string",
-                                "pattern": "^caelo:page\\/[0-9a-f-]{36}$"
-                              },
-                              "exclude_current": {
-                                "type": "boolean"
-                              },
-                              "order": {
-                                "type": "string",
-                                "pattern": "^(?:published_desc|published_asc|title_asc|prop_(?:desc|asc):[a-z][a-z0-9_]{0,63})$"
-                              },
-                              "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 50
-                              }
-                            },
-                            "additionalProperties": false,
-                            "description": "Required when `kind`: `query`."
-                          },
-                          "name": {
-                            "type": "string",
-                            "description": "`system`: `breadcrumbs`|`children`|`siblings`|`page_terms`|`term_pages`; `plugin`: pattern `^[a-z][a-z0-9_]{0,63}$`. Required when `kind`: `system`|`plugin`."
-                          }
-                        },
-                        "required": [
-                          "kind"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "ext": {
-                        "type": "object"
-                      }
-                    },
-                    "required": [
-                      "label",
-                      "fields"
-                    ],
-                    "additionalProperties": false
-                  }
+                  "description": "{<kind>: {label, fields:[{name, label, type, required?, default?, options?, list?, multiple?, accepts?, ext?}], children?:{name, allow, max?}, current_from?, source?}}"
                 },
                 "max_depth": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 8
+                  "type": "integer"
                 },
                 "expectedVersion": {
-                  "type": "integer",
-                  "minimum": 1
+                  "type": "integer"
                 }
-              },
-              "required": [
-                "slug",
-                "name",
-                "purpose",
-                "role",
-                "root",
-                "nodes"
-              ],
-              "additionalProperties": false
+              }
             }
           },
           "dropValues": {
-            "default": false,
             "type": "boolean"
           }
-        },
-        "required": [
-          "listTypes"
-        ],
-        "additionalProperties": false
+        }
       }
     },
     {
@@ -7951,51 +7713,21 @@
     },
     {
       "name": "upsert_lists_many",
-      "description": "Create shared lists or replace a list's WHOLE entry tree (one tx).\nMenus, nav, footer links, categories, tags = SHARED LISTS of a fitting type (menu, links, categories, tags, custom e.g. mega menu); no menu-specific tools. Shown by ONE module -> LOCAL (its `list` field); >1 place, site nav or a page vocabulary -> SHARED (`promote_local_list` converts).\nDO NOT USE FOR changing a few entries -> `patch_list_items_many` (a replace drops every omitted entry).\nThen bind it: module `list` field with `bind:'shared'`, `list:'caelo:list/<id>'` (`add_module` / `update_modules_many`), e.g. the layout header.",
+      "description": "Create shared lists (menus, footer links, vocabularies) or replace a list's WHOLE entry tree (one tx). A few entries -> `patch_list_items_many` (a replace drops every omitted entry).\nCORE RULES:\n- `purpose` = why + where it shows ('Main navigation in the site header'). The tree is `items` (not `entries`); the role comes from the type.\n- Entry: terms `caelo:term/<listId>/<itemId>`; `children` only under nodes allowing them; `query` only on source nodes, only knobs its source lists in `editable` (e.g. {limit:5}); omit = type `defaults`.\n- Links `{href}`: path of an EXISTING page (`list_pages`; else empty shell first: `build_page` with `modules: []`); `/`, `/#section` always valid; import-run pages rebuilt in this chat are kept for `resolve_import_links`; external = full `https://` URL.\n- E.g. (menu): [{\"node\":\"entry\",\"values\":{\"label\":\"Company\",\"link\":{\"href\":\"/about\"}},\"children\":[{\"node\":\"entry\",\"values\":{\"label\":\"Team\",\"link\":{\"href\":\"/about/team\"}}}]}]\nThen bind it: module `list` field `bind:'shared'`, `list:'caelo:list/<id>'` (`add_module` / `update_modules_many`), e.g. the layout header.",
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lists"
+        ],
         "properties": {
           "lists": {
+            "type": "array",
             "minItems": 1,
             "maxItems": 50,
-            "type": "array",
             "items": {
               "type": "object",
-              "properties": {
-                "slug": {
-                  "type": "string",
-                  "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 200
-                },
-                "purpose": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 1000,
-                  "description": "Why + where it shows, e.g. 'Main navigation in the site header'."
-                },
-                "type": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 64,
-                  "description": "List type slug (`list_list_types`)."
-                },
-                "items": {
-                  "maxItems": 500,
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/$defs/__schema0"
-                  },
-                  "description": "WHOLE entry tree. Keep `id` of existing entries, omit for new. `values` keyed by the node's fields; terms `caelo:term/<listId>/<itemId>`. `children` only under nodes allowing them. `query` only on source nodes, only the knobs its source lists in `editable` (e.g. {limit:5}); omit = type `defaults`. Links `{href}`: internal path (`/about`) of an EXISTING page (`list_pages`; else build an empty shell first: `build_page` with `modules: []`); `/` and `/#section` always valid; pages of an import run rebuilt in this chat are kept for `resolve_import_links`; external = full `https://` URL. E.g. (menu): [{\"node\":\"entry\",\"values\":{\"label\":\"Company\",\"link\":{\"href\":\"/about\"}},\"children\":[{\"node\":\"entry\",\"values\":{\"label\":\"Team\",\"link\":{\"href\":\"/about/team\"}}}]}]"
-                },
-                "expectedVersion": {
-                  "type": "integer",
-                  "minimum": 1
-                }
-              },
+              "additionalProperties": false,
               "required": [
                 "slug",
                 "name",
@@ -8003,45 +7735,32 @@
                 "type",
                 "items"
               ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "lists"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-              },
-              "node": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 64
-              },
-              "values": {
-                "default": {},
-                "type": "object"
-              },
-              "children": {
-                "type": "array",
+              "properties": {
+                "slug": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "purpose": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "list type slug"
+                },
                 "items": {
-                  "$ref": "#/$defs/__schema0"
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "{node, values, children?, query?, id?} — node = the node KIND (list_list_types); values keyed by its fields; keep `id` of existing entries."
+                  }
+                },
+                "expectedVersion": {
+                  "type": "integer"
                 }
-              },
-              "query": {
-                "type": "object"
               }
-            },
-            "required": [
-              "node"
-            ],
-            "additionalProperties": false
+            }
           }
         }
       }
@@ -8051,29 +7770,37 @@
       "description": "Edit shared-list entries by id — the routine way to maintain a menu, footer links or a vocabulary (one tx). Every page showing the list updates; nothing to rewire. Result names added entry ids.\n`add`: omit `parentId` = top level, omit `position` = append. `update`: `values` merged, `null` removes a value. `remove`: drops its children too.\n'Add Careers under Company' = `get_list` -> one `add` with `parentId` = Company's id. Pass `expectedVersion` from `get_list`; conflict = list changed -> re-read, redo.",
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lists"
+        ],
         "properties": {
           "lists": {
+            "type": "array",
             "minItems": 1,
             "maxItems": 50,
-            "type": "array",
             "items": {
               "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "slug",
+                "patches"
+              ],
               "properties": {
                 "slug": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 64
+                  "type": "string"
                 },
                 "expectedVersion": {
-                  "type": "integer",
-                  "minimum": 1
+                  "type": "integer"
                 },
                 "patches": {
-                  "minItems": 1,
-                  "maxItems": 200,
                   "type": "array",
                   "items": {
                     "type": "object",
+                    "required": [
+                      "op"
+                    ],
+                    "description": "{op:\"add\", parentId?, position?, item} | {op:\"update\", itemId, values?, query?} | {op:\"move\", itemId, parentId?, position} | {op:\"remove\", itemId}",
                     "properties": {
                       "op": {
                         "type": "string",
@@ -8083,91 +7810,12 @@
                           "move",
                           "remove"
                         ]
-                      },
-                      "parentId": {
-                        "type": [
-                          "string",
-                          "null"
-                        ],
-                        "format": "uuid",
-                        "description": "For `op`: `add`|`move`."
-                      },
-                      "position": {
-                        "type": "integer",
-                        "minimum": 0,
-                        "description": "Required when `op`: `move`."
-                      },
-                      "item": {
-                        "$ref": "#/$defs/__schema0",
-                        "description": "Required when `op`: `add`."
-                      },
-                      "itemId": {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "Required when `op`: `update`|`move`|`remove`."
-                      },
-                      "values": {
-                        "type": "object",
-                        "description": "For `op`: `update`."
-                      },
-                      "query": {
-                        "type": [
-                          "object",
-                          "null"
-                        ],
-                        "description": "For `op`: `update`."
                       }
-                    },
-                    "required": [
-                      "op"
-                    ],
-                    "additionalProperties": false
+                    }
                   }
                 }
-              },
-              "required": [
-                "slug",
-                "patches"
-              ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "lists"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-              },
-              "node": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 64
-              },
-              "values": {
-                "default": {},
-                "type": "object"
-              },
-              "children": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/__schema0"
-                }
-              },
-              "query": {
-                "type": "object"
               }
-            },
-            "required": [
-              "node"
-            ],
-            "additionalProperties": false
+            }
           }
         }
       }
@@ -8237,134 +7885,52 @@
     },
     {
       "name": "preview_list_source",
-      "description": "Show what a generated list (page query, system or plugin source) returns for a page BEFORE binding/saving it; same resolver as preview + build, this chat's draft view. Only published pages appear; empty = wrong filter (page type slug, terms) or nothing published yet.\nName the source ONE way:\n- `source` (+ `value` overrides, `vocabulary` for page_terms), e.g. {source:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}}\n- `list` + `itemId`: saved source node of a shared list (e.g. mega menu's news column)\n- `list` + `node` + `value`: a source node kind of the list's type with the knobs about to be saved\n- `moduleId` + `field` (+ `contentInstanceId`): a module's source field.\n`pageId` = page it renders on; needed for breadcrumbs/children/siblings/page_terms; a query excludes that page.",
+      "description": "Show what a generated list (page query, system or plugin source) returns for a page BEFORE binding/saving it; same resolver as preview + build, this chat's draft view. Only published pages appear; empty = wrong filter (page type slug, terms) or nothing published yet.\nE.g. `source`:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}.\n`pageId` = page it renders on; needed for breadcrumbs/children/siblings/page_terms; a query excludes that page.",
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
+        "description": "Name the source ONE way: `source` (+ value, vocabulary) | `list` + `itemId` (a saved source entry) | `list` + `node` (+ value) | `moduleId` + `field` (+ contentInstanceId).",
         "properties": {
           "pageId": {
             "type": "string",
-            "format": "uuid"
+            "description": "the page the entries are generated for"
           },
           "source": {
             "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "query",
-                  "system",
-                  "plugin"
-                ]
-              },
-              "editable": {
-                "maxItems": 7,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "page_type",
-                    "terms",
-                    "terms_mode",
-                    "parent",
-                    "exclude_current",
-                    "order",
-                    "limit"
-                  ]
-                },
-                "description": "Required when `kind`: `query`."
-              },
-              "defaults": {
-                "type": "object",
-                "properties": {
-                  "page_type": {
-                    "type": "string",
-                    "pattern": "^[a-z0-9-]+$"
-                  },
-                  "terms": {
-                    "maxItems": 20,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "pattern": "^caelo:term\\/[0-9a-f-]{36}\\/[0-9a-f-]{36}$"
-                    }
-                  },
-                  "terms_mode": {
-                    "type": "string",
-                    "enum": [
-                      "any",
-                      "all"
-                    ]
-                  },
-                  "parent": {
-                    "type": "string",
-                    "pattern": "^caelo:page\\/[0-9a-f-]{36}$"
-                  },
-                  "exclude_current": {
-                    "type": "boolean"
-                  },
-                  "order": {
-                    "type": "string",
-                    "pattern": "^(?:published_desc|published_asc|title_asc|prop_(?:desc|asc):[a-z][a-z0-9_]{0,63})$"
-                  },
-                  "limit": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 50
-                  }
-                },
-                "additionalProperties": false,
-                "description": "Required when `kind`: `query`."
-              },
-              "name": {
-                "type": "string",
-                "description": "`system`: `breadcrumbs`|`children`|`siblings`|`page_terms`|`term_pages`; `plugin`: pattern `^[a-z][a-z0-9_]{0,63}$`. Required when `kind`: `system`|`plugin`."
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "additionalProperties": false
+            "description": "a source definition (query / system / plugin)"
           },
           "value": {
-            "type": "object"
+            "type": "object",
+            "description": "query knob overrides, or {terms} for term_pages"
           },
           "vocabulary": {
             "type": "string"
           },
           "list": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 64
+            "description": "slug or caelo:list/<id>"
           },
           "itemId": {
-            "type": "string",
-            "format": "uuid"
+            "type": "string"
           },
           "node": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64
+            "type": "string"
           },
           "moduleId": {
-            "type": "string",
-            "format": "uuid"
+            "type": "string"
           },
           "field": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64
+            "type": "string"
           },
           "contentInstanceId": {
-            "type": "string",
-            "format": "uuid"
+            "type": "string"
           }
-        },
-        "additionalProperties": false
+        }
       }
     },
     {
       "name": "list_page_types",
-      "description": "The site's page types, what each page IS (`page`, `news`, `product`): purpose, page count, allowed + default template ids, properties (`*` = required), vocabularies (categories/tags lists whose terms its pages carry). Read before `build_page` / `update_pages_many` (a new article gets `pageType:\"news\"` + its properties and terms) and before a page query (`page_type` filters on the slug). New KIND of content (blog, job board) -> `upsert_page_types_many`.",
+      "description": "The site's page types, what each page IS (`content`, `news`, `product`): purpose, page count, allowed + default template ids, properties (`*` = required), vocabularies (categories/tags lists whose terms its pages carry). Read before `build_page` / `update_pages_many` (a new article gets `pageType:\"news\"` + its properties and terms) and before a page query (`page_type` filters on the slug). New KIND of content (blog, job board) -> `upsert_page_types_many`.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -8389,165 +7955,17 @@
       "description": "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\nCORE RULES:\n- `templates`: ids from `list_templates`; none fits -> `create_template` with `pageType` first. `defaultTemplate` is one of them.\n- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` (pageType `news`) or reuse one -> this -> `build_page`/`update_pages_many` with pageType, properties, terms.\n- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pageTypes"
+        ],
         "properties": {
           "pageTypes": {
-            "minItems": 1,
-            "maxItems": 50,
             "type": "array",
+            "minItems": 1,
             "items": {
               "type": "object",
-              "properties": {
-                "slug": {
-                  "type": "string",
-                  "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 200
-                },
-                "purpose": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 1000
-                },
-                "templates": {
-                  "minItems": 1,
-                  "maxItems": 64,
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "format": "uuid"
-                  }
-                },
-                "defaultTemplate": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "properties": {
-                  "default": [],
-                  "maxItems": 32,
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "name": {
-                        "type": "string",
-                        "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                      },
-                      "label": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 128
-                      },
-                      "required": {
-                        "type": "boolean"
-                      },
-                      "default": {},
-                      "ext": {
-                        "type": "object"
-                      },
-                      "type": {
-                        "type": "string",
-                        "enum": [
-                          "text",
-                          "richtext",
-                          "link",
-                          "media",
-                          "select",
-                          "boolean",
-                          "number",
-                          "date",
-                          "icon",
-                          "module",
-                          "term"
-                        ]
-                      },
-                      "maxLength": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 20000,
-                        "description": "`text` <= 2000, `richtext` <= 20000. For `type`: `text`|`richtext`."
-                      },
-                      "options": {
-                        "minItems": 1,
-                        "maxItems": 64,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                        },
-                        "description": "Required when `type`: `select`."
-                      },
-                      "min": {
-                        "type": "number",
-                        "description": "For `type`: `number`."
-                      },
-                      "max": {
-                        "type": "number",
-                        "description": "For `type`: `number`."
-                      },
-                      "accepts": {
-                        "maxItems": 32,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "pattern": "^[a-z0-9-]+$"
-                        },
-                        "description": "For `type`: `module`."
-                      },
-                      "list": {
-                        "type": "string",
-                        "pattern": "^[a-z0-9-]+$",
-                        "description": "Required when `type`: `term`."
-                      },
-                      "multiple": {
-                        "type": "boolean",
-                        "description": "For `type`: `term`."
-                      }
-                    },
-                    "required": [
-                      "type",
-                      "name",
-                      "label"
-                    ],
-                    "additionalProperties": false
-                  }
-                },
-                "vocabularies": {
-                  "default": [],
-                  "maxItems": 16,
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "list": {
-                        "type": "string",
-                        "format": "uuid"
-                      },
-                      "cardinality": {
-                        "type": "string",
-                        "enum": [
-                          "one",
-                          "many"
-                        ]
-                      },
-                      "required": {
-                        "type": "boolean"
-                      }
-                    },
-                    "required": [
-                      "list",
-                      "cardinality"
-                    ],
-                    "additionalProperties": false
-                  }
-                },
-                "expectedVersion": {
-                  "type": "integer",
-                  "minimum": 1
-                }
-              },
+              "additionalProperties": false,
               "required": [
                 "slug",
                 "name",
@@ -8555,18 +7973,49 @@
                 "templates",
                 "defaultTemplate"
               ],
-              "additionalProperties": false
+              "properties": {
+                "slug": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "purpose": {
+                  "type": "string"
+                },
+                "templates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "defaultTemplate": {
+                  "type": "string"
+                },
+                "properties": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "a field: {name, label, type, required?, default?, options?, …}"
+                  }
+                },
+                "vocabularies": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "{list: <vocabulary list id>, cardinality: one|many, required?}"
+                  }
+                },
+                "expectedVersion": {
+                  "type": "integer"
+                }
+              }
             }
           },
           "dropValues": {
-            "default": false,
             "type": "boolean"
           }
-        },
-        "required": [
-          "pageTypes"
-        ],
-        "additionalProperties": false
+        }
       }
     },
     {
