@@ -2,12 +2,12 @@
 
 /**
  * Regression: inside a chat branch, read_content / edit_content /
- * edit_module must all operate on the BRANCH-EFFECTIVE module, not main.
+ * update_modules_many must all operate on the BRANCH-EFFECTIVE module, not main.
  *
  * Reproduced live on v0.10.28 through the Power-MCP, all in one session:
  *   1. edit_content on module X's html (drop an aria-label) → new sha; the
  *      branch preview showed the change.
- *   2. edit_module on X with ONLY `fields` → success.
+ *   2. a module edit (then edit_module, now update_modules_many) on X with ONLY `fields` → success.
  *   3. X's html then READ as the original. The branched snapshot from
  *      step 2 actually kept the step-1 html (modules.update already built
  *      on the latest branched snapshot); only the main-only read path made
@@ -147,7 +147,7 @@ async function getHtml(ctx: ExecutionContext, moduleId: string): Promise<string>
 
 const DROP_ARIA = { oldString: ' aria-label="Main menu"', newString: "" };
 
-describe("branch-effective module reads (read_content / edit_content / edit_module)", () => {
+describe("branch-effective module reads (read_content / edit_content / update_modules_many)", () => {
   it("read_content returns the branch's html + sha right after edit_content", async () => {
     const { moduleId, aiCtx } = await setup("read");
     const edit = await tools.dispatch(
@@ -236,7 +236,7 @@ describe("branch-effective module reads (read_content / edit_content / edit_modu
     expect(await getHtml(SYSTEM, moduleId)).toBe(MAIN_HTML);
   });
 
-  it("edit_module with only `fields` preserves the branch's html edit (steps 1-3)", async () => {
+  it("update_modules_many with only `fields` preserves the branch's html edit (steps 1-3)", async () => {
     const { moduleId, aiCtx } = await setup("fields");
     const edit = await tools.dispatch(
       "edit_content",
@@ -248,25 +248,29 @@ describe("branch-effective module reads (read_content / edit_content / edit_modu
     const editedSha = shaFrom(edit.content);
 
     const fieldsOnly = await tools.dispatch(
-      "edit_module",
+      "update_modules_many",
       {
-        moduleId,
-        fields: [
+        items: [
           {
-            name: "nav_items",
-            kind: "list",
-            listType: "links",
-            label: "Navigation",
-            default: [
+            moduleId,
+            fields: [
               {
-                id: "00000000-0000-4000-9000-000000000001",
-                node: "link",
-                values: { label: "Home", link: { href: "https://example.com/" } },
-              },
-              {
-                id: "00000000-0000-4000-9000-000000000002",
-                node: "link",
-                values: { label: "Blog", link: { href: "https://example.com/blog" } },
+                name: "nav_items",
+                kind: "list",
+                listType: "links",
+                label: "Navigation",
+                default: [
+                  {
+                    id: "00000000-0000-4000-9000-000000000001",
+                    node: "link",
+                    values: { label: "Home", link: { href: "https://example.com/" } },
+                  },
+                  {
+                    id: "00000000-0000-4000-9000-000000000002",
+                    node: "link",
+                    values: { label: "Blog", link: { href: "https://example.com/blog" } },
+                  },
+                ],
               },
             ],
           },
@@ -314,10 +318,10 @@ describe("branch-effective module reads (read_content / edit_content / edit_modu
     );
     expect((read.value as { sha: string }).sha).toBe(editedSha);
 
-    // A css-only edit_module likewise keeps html + fields.
+    // A css-only update_modules_many item likewise keeps html + fields.
     const cssOnly = await tools.dispatch(
-      "edit_module",
-      { moduleId, css: ".menu{display:flex}", bindThemeLiterals: false },
+      "update_modules_many",
+      { items: [{ moduleId, css: ".menu{display:flex}", bindThemeLiterals: false }] },
       aiCtx,
       toolCtx,
     );
@@ -377,8 +381,8 @@ describe("branch-effective module reads (read_content / edit_content / edit_modu
     // A partial write in the chat builds on the newer main too (the write
     // path shares the loader), so the next Stage cannot revert it.
     const cssOnly = await tools.dispatch(
-      "edit_module",
-      { moduleId, css: ".menu{gap:1rem}", bindThemeLiterals: false },
+      "update_modules_many",
+      { items: [{ moduleId, css: ".menu{gap:1rem}", bindThemeLiterals: false }] },
       aiCtx,
       toolCtx,
     );

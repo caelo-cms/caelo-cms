@@ -26,6 +26,7 @@ import type { Permission } from "../../permissions.js";
 import type { AIProvider } from "../provider.js";
 import { generateInputSchema } from "./generate-input-schema.js";
 import { normalizeToolArgs } from "./normalize-args.js";
+import { liveToolNameFor, resolveToolCall } from "./retired-tools.js";
 
 /**
  * P10.5 — the spawn_subagent tool handler invokes the SAME runChatTurn
@@ -696,8 +697,20 @@ export class ToolRegistry {
     });
   }
 
+  /**
+   * The registered tool for `name`. A retired name (retired-tools.ts)
+   * resolves to the tool that replaced it, so metadata reads (approver
+   * permissions, `needsApproval`, `usesInstallAi`) for an old-name call see
+   * the tool that will actually run. Retired names never appear in
+   * {@link list} or {@link catalogue}.
+   */
   get(name: string): RegisteredTool | undefined {
-    return this.#tools.get(name);
+    const exact = this.#tools.get(name);
+    if (exact) return exact;
+    const live = liveToolNameFor(name);
+    if (live === name) return undefined;
+    console.warn(`[tool.alias-used] ${name} -> ${live} (lookup)`);
+    return this.#tools.get(live);
   }
 
   /**
@@ -735,21 +748,27 @@ export class ToolRegistry {
   }
 
   async dispatch(
-    name: string,
+    requestedName: string,
     rawArgs: unknown,
     ctx: ExecutionContext,
     toolCtx: ToolContext,
   ): Promise<ToolResult> {
-    const tool = this.#tools.get(name);
-    if (!tool) {
-      return { ok: false, content: `unknown tool: ${name}` };
+    // Retired names and renamed bulk keys (retired-tools.ts) resolve to the
+    // live tool and its current argument shape, logged, before anything
+    // else — so every caller (chat, Power-MCP, subagents, approval
+    // re-dispatch) gets the same answer for an old-name call.
+    const resolved = resolveToolCall(requestedName, rawArgs, (n) => this.#tools.has(n), "dispatch");
+    const tool = resolved ? this.#tools.get(resolved.name) : undefined;
+    if (!resolved || !tool) {
+      return { ok: false, content: `unknown tool: ${requestedName}` };
     }
+    const name = resolved.name;
     // issue #251 (WS5) — repair provider-side encoding damage
     // (stringified scalars/objects, findings F11/F12/F17) BEFORE the
     // strict Zod parse. Guided by the declared inputSchema; never
     // invents values. Coercions are logged as #245 telemetry: the
     // repair is the seatbelt, the emitter is still the bug to find.
-    const normalized = normalizeToolArgs(rawArgs, tool.inputSchema);
+    const normalized = normalizeToolArgs(resolved.args, tool.inputSchema);
     if (normalized.coercedPaths.length > 0) {
       console.warn(
         `[tool.args-coerced] ${name}: repaired ${normalized.coercedPaths.join(", ")} (issue #245 telemetry)`,

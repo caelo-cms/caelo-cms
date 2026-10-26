@@ -25,7 +25,9 @@ import {
   type ModelMessage,
   NoObjectGeneratedError,
   streamText,
+  type ToolCallRepairFunction,
   ToolChoiceViolationError,
+  type ToolSet,
 } from "ai";
 
 import type {
@@ -36,6 +38,7 @@ import type {
   ProviderStepSummary,
 } from "../provider.js";
 import { normalizeToolArgs } from "../tools/normalize-args.js";
+import { resolveToolCall } from "../tools/retired-tools.js";
 
 /**
  * Map our ChatMessageInput → SDK ModelMessage[]. Same shape every
@@ -491,6 +494,39 @@ export function buildSDKTools(tools: GenerateInput["tools"]): Record<string, Bui
   return out;
 }
 
+/**
+ * The AI SDK `repairToolCall` hook (CLAUDE.md §12: the SDK's own shape for
+ * fixing a call before it runs). A call to a retired tool name — the model
+ * copying an old call from history, a fixture, a skill example — fails the
+ * SDK's tool lookup with NoSuchToolError; this rewrites it to the live tool
+ * and its current argument shape through the one alias table
+ * (tools/retired-tools.ts), which logs it. Renamed bulk wrapper keys on a
+ * live tool are rewritten the same way. Returns `null` (no repair — the
+ * SDK reports the original error) for anything the table does not cover,
+ * for a target that is not in this turn's tool set (a narrowed subagent),
+ * and for input that is not JSON.
+ */
+export function repairRetiredToolCall<T extends { toolName: string; input: string }>(
+  toolCall: T,
+  tools: Readonly<Record<string, unknown>>,
+): T | null {
+  let args: unknown;
+  try {
+    args = JSON.parse(toolCall.input);
+  } catch {
+    return null;
+  }
+  const resolved = resolveToolCall(
+    toolCall.toolName,
+    args,
+    (name) => Object.hasOwn(tools, name),
+    "sdk-repair",
+  );
+  if (!resolved) return null;
+  if (resolved.name === toolCall.toolName && resolved.renamedKeys.length === 0) return null;
+  return { ...toolCall, toolName: resolved.name, input: JSON.stringify(resolved.args) };
+}
+
 /* ------------------------------------------------------------------ */
 /* issue #442 — SDK-loop wiring helpers                                */
 /* ------------------------------------------------------------------ */
@@ -642,7 +678,13 @@ export async function* runSDKStream(args: {
     ...(systemAndMessages.system !== undefined ? { system: systemAndMessages.system } : {}),
     messages: systemAndMessages.messages,
     ...(Object.keys(sdkTools).length > 0
-      ? { tools: sdkTools as Parameters<typeof streamText>[0]["tools"] }
+      ? {
+          tools: sdkTools as Parameters<typeof streamText>[0]["tools"],
+          // Retired tool names / renamed bulk keys -> the live tool (see
+          // repairRetiredToolCall).
+          repairToolCall: (async ({ toolCall }) =>
+            repairRetiredToolCall(toolCall, sdkTools)) satisfies ToolCallRepairFunction<ToolSet>,
+        }
       : {}),
     // issue #106 (redesign) — RECOVER layer. Only ever set on the chat-runner's
     // single bounded re-run after a narrate-then-stop turn; `"required"` is the

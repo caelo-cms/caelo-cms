@@ -3,7 +3,7 @@
 /**
  * #1091 / #1092 — the chat's automatic bug capture filed designed guard
  * refusals as bugs: delete_modules_many "still placed on … — remove it
- * first", delete_content_instance "cannot delete: … detach … then retry",
+ * first", delete_content_instances "cannot delete: … detach … then retry",
  * and the allowedModuleTypes check (#1090 / #1093). Those are the tools
  * working: the op said no and named the next step.
  *
@@ -20,8 +20,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { shouldAutoCaptureToolFailure } from "../ai/chat-runner/tool-dispatch.js";
 import { buildPageTool } from "../ai/tools/build-page.js";
-import { createContentInstanceTool } from "../ai/tools/create-content-instance.js";
-import { deleteContentInstanceTool } from "../ai/tools/delete-content-instance.js";
+import { createContentInstancesTool } from "../ai/tools/create-content-instances.js";
+import { deleteContentInstancesTool } from "../ai/tools/delete-content-instances.js";
 import { deleteModulesManyTool } from "../ai/tools/delete-modules-many.js";
 import { ToolRegistry, type ToolResult } from "../ai/tools/dispatch.js";
 import { registerAdminOps } from "../register.js";
@@ -88,8 +88,8 @@ beforeAll(async () => {
   registerAdminOps(registry);
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   tools = new ToolRegistry();
-  tools.register(createContentInstanceTool);
-  tools.register(deleteContentInstanceTool);
+  tools.register(createContentInstancesTool);
+  tools.register(deleteContentInstancesTool);
   tools.register(deleteModulesManyTool);
 
   buttonId = await seedModule(`t1091-button-${sfx}`, "button");
@@ -140,11 +140,11 @@ describe("#1091 — guard refusals are marked and not auto-captured", () => {
     expect(r.ok).toBe(false);
     expect(r.ok ? undefined : (r.error as { refusal?: true }).refusal).toBe(true);
 
-    const t = await tool("create_content_instance", { moduleId: parentId, values });
+    const t = await tool("create_content_instances", { items: [{ moduleId: parentId, values }] });
     expect(t.ok).toBe(false);
     expect(t.content).toContain("allowedModuleTypes");
     expect(t.refusal).toBe(true);
-    expect(shouldAutoCaptureToolFailure("create_content_instance", t)).toBe(false);
+    expect(shouldAutoCaptureToolFailure("create_content_instances", t)).toBe(false);
   });
 
   it("build_page keeps the refusal of a nested write after it rolled the call back", async () => {
@@ -186,11 +186,11 @@ describe("#1091 — guard refusals are marked and not auto-captured", () => {
   });
 
   it("deleting an instance another instance still shows (#1092): refusal", async () => {
-    const t = await tool("delete_content_instance", { id: buttonCi });
+    const t = await tool("delete_content_instances", { items: [{ id: buttonCi }] });
     expect(t.ok).toBe(false);
     expect(t.content).toContain("cannot delete");
     expect(t.refusal).toBe(true);
-    expect(shouldAutoCaptureToolFailure("delete_content_instance", t)).toBe(false);
+    expect(shouldAutoCaptureToolFailure("delete_content_instances", t)).toBe(false);
   });
 
   it("deleting a module that is still in use (#1091): refusal per id and on the tool", async () => {
@@ -210,19 +210,23 @@ describe("#1091 — guard refusals are marked and not auto-captured", () => {
 
 describe("#1091 — real failures stay captured", () => {
   it("a reference to a module that does not exist carries no refusal", async () => {
-    const t = await tool("create_content_instance", {
-      moduleId: parentId,
-      values: {
-        cta: {
-          moduleId: "00000000-0000-4000-8000-000000001091",
-          contentInstanceId: buttonCi,
+    const t = await tool("create_content_instances", {
+      items: [
+        {
+          moduleId: parentId,
+          values: {
+            cta: {
+              moduleId: "00000000-0000-4000-8000-000000001091",
+              contentInstanceId: buttonCi,
+            },
+          },
         },
-      },
+      ],
     });
     expect(t.ok).toBe(false);
     expect(t.content).toContain("does not exist");
     expect(t.refusal).toBeUndefined();
-    expect(shouldAutoCaptureToolFailure("create_content_instance", t)).toBe(true);
+    expect(shouldAutoCaptureToolFailure("create_content_instances", t)).toBe(true);
   });
 
   it("delete_modules_many with only unknown ids is a failure, not a refusal", async () => {

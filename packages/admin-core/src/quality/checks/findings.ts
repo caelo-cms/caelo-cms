@@ -51,7 +51,7 @@ export const ruleIdSchema = z
 /** Where the AI fixes a finding: the tool to call and what to do with it. */
 export const findingFixSchema = z
   .object({
-    /** An AI tool name (`set_page_seo`, `edit_module`, …). */
+    /** An AI tool name (`set_page_seo_many`, `update_modules_many`, …). */
     tool: z.string().min(1).max(80),
     /** One sentence: what to change, in the tool's terms. */
     hint: z.string().min(1).max(500),

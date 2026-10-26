@@ -237,6 +237,6 @@ async function danglingCssVarReport(
   const more = hits.length > shown.length ? ` … and ${hits.length - shown.length} more` : "";
   return (
     `⚠️ ${hits.length} stored CSS source(s) now reference vars this theme no longer emits: ` +
-    `${shown.join("; ")}${more}. Update their CSS (edit_module / template / layout) or restore the token.`
+    `${shown.join("; ")}${more}. Update their CSS (update_modules_many / template / layout) or restore the token.`
   );
 }

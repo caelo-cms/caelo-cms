@@ -145,7 +145,7 @@ function countOccurrences(haystack: string, needle: string): number {
  *
  * An empty `oldString` fills an EMPTY body with `newString` — an empty
  * field has no text to anchor an edit on, and refusing it left the model
- * re-sending the whole module through edit_module. Against a body with
+ * re-sending the whole module through update_modules_many. Against a body with
  * content it is refused: an empty anchor would match everywhere.
  */
 export function applyStringEdits(source: string, edits: readonly ContentEdit[]): ApplyEditsResult {
@@ -173,7 +173,7 @@ export function applyStringEdits(source: string, edits: readonly ContentEdit[]):
           error:
             `oldString is empty${where}, but the body already has content (${current.length} characters). ` +
             "An empty oldString only fills an empty body. Anchor on existing text from read_content, " +
-            "or use edit_module to replace the whole field.",
+            "or use update_modules_many to replace the whole field.",
         };
       }
       current = edit.newString;

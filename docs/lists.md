@@ -516,8 +516,8 @@ values, `term` field values in entries and page properties →
 `references/missing-term`), embedded modules (`references/missing-module`)
 and page / media references inside shared and local entries and page
 properties. A break blocks Stage and Publish live with a concrete fix
-(`patch_list_items_many`, `update_pages_many`, `set_page_module_content`,
-`edit_module`, `upsert_list_types_many`). A list nothing renders ships
+(`patch_list_items_many`, `update_pages_many`, `set_page_module_content_many`,
+`update_modules_many`, `upsert_list_types_many`). A list nothing renders ships
 nowhere and is not reported. A list that is still bound cannot be deleted
 (the error names the modules); the integrity check catches what a race
 between branches lets through. In a migration chat a list write keeps a

@@ -73,7 +73,7 @@ test("actual Google SDK sends redirect tools without non-string enums", async ()
   ).toBe(true);
   expect(
     bulkCreateRedirectsTool.schema.safeParse({
-      redirects: [{ fromPath: "/a", toPath: "/b", statusCode: 301 }],
+      items: [{ fromPath: "/a", toPath: "/b", statusCode: 301 }],
     }).success,
   ).toBe(true);
   expect(findRedirectsTool.schema.safeParse({ statusCode: 999 }).success).toBe(false);
@@ -103,7 +103,7 @@ test("actual Google SDK sends redirect tools without non-string enums", async ()
   expect(events.some((event) => event.kind === "error")).toBe(false);
   expect(
     bulkCreateRedirectsTool.schema.safeParse({
-      redirects: [{ fromPath: "/a", toPath: "/b", statusCode: 999 }],
+      items: [{ fromPath: "/a", toPath: "/b", statusCode: 999 }],
     }).success,
   ).toBe(false);
 });

@@ -276,7 +276,7 @@ export const pagesSeoAutofillOp = defineOperation({
         operation: "pages_seo.autofill",
         message:
           `AlreadyAutofilled: this page's SEO was filled at ${isoOpt(target.autofilled_at)}; ${stored}` +
-          "To change a filled description, use optimize_page_seo (explicit re-optimization) or set_page_seo_many (an exact text the operator dictated) — never autofill again.",
+          "To change a filled description, use bulk_optimize_seo (explicit re-optimization) or set_page_seo_many (an exact text the operator dictated) — never autofill again.",
       });
     }
     const og = input.ogImageAssetId ?? null;

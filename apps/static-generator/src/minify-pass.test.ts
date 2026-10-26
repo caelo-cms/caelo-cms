@@ -84,7 +84,7 @@ describe("minifyPageAssets (issue #158)", () => {
   it("refuses the build when the page script does not parse, naming the page and the fix", () => {
     const page = composedPage("", "function broken( {");
     expect(() => minifyPageAssets([page])).toThrow(
-      /page slug=home: the page's module JavaScript does not parse[\s\S]*edit_module/,
+      /page slug=home: the page's module JavaScript does not parse[\s\S]*update_modules_many/,
     );
   });
 });

@@ -143,14 +143,14 @@ describe("AnthropicProvider — SDK-event translation", () => {
       doStream: async () => ({
         stream: streamOf([
           { type: "stream-start", warnings: [] },
-          { type: "tool-input-start", id: "tu_1", toolName: "edit_module" },
+          { type: "tool-input-start", id: "tu_1", toolName: "update_modules_many" },
           { type: "tool-input-delta", id: "tu_1", delta: '{"moduleId":"abc"' },
           { type: "tool-input-delta", id: "tu_1", delta: ',"html":"<p>x</p>"}' },
           { type: "tool-input-end", id: "tu_1" },
           {
             type: "tool-call",
             toolCallId: "tu_1",
-            toolName: "edit_module",
+            toolName: "update_modules_many",
             input: '{"moduleId":"abc","html":"<p>x</p>"}',
           },
           {
@@ -173,7 +173,7 @@ describe("AnthropicProvider — SDK-event translation", () => {
     const toolCall = events.find((e) => e.kind === "tool-call");
     expect(toolCall).toBeTruthy();
     if (toolCall && toolCall.kind === "tool-call") {
-      expect(toolCall.name).toBe("edit_module");
+      expect(toolCall.name).toBe("update_modules_many");
       expect(toolCall.arguments).toEqual({ moduleId: "abc", html: "<p>x</p>" });
     }
     expect(events.find((e) => e.kind === "done")?.kind).toBe("done");

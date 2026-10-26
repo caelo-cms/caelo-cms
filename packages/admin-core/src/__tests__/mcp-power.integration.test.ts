@@ -443,7 +443,7 @@ describe("Power-MCP surface (admin token)", () => {
   }
 
   it("executes a write tool as AI actor with branch + chat-task snapshot attribution", async () => {
-    // create_content_instance rather than build_page: the latter is
+    // create_content_instances rather than build_page: the latter is
     // (correctly) blocked by the cold-start identity/theme gate on a fresh
     // install, which is orthogonal to what this test proves — that a
     // Power-MCP write lands with the session's branch + chat-task
@@ -452,8 +452,8 @@ describe("Power-MCP surface (admin token)", () => {
     const r = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
       plaintextToken: adminToken,
       chatSessionId,
-      toolName: "create_content_instance",
-      args: { moduleId, values: { note: "hello" } },
+      toolName: "create_content_instances",
+      args: { items: [{ moduleId, values: { note: "hello" } }] },
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -490,11 +490,11 @@ describe("Power-MCP surface (admin token)", () => {
     const write = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
       plaintextToken: adminToken,
       chatSessionId,
-      toolName: "create_content_instance",
-      args: { moduleId, values: { note } },
+      toolName: "create_content_instances",
+      args: { items: [{ moduleId, values: { note } }] },
     });
     expect(write.ok && (write.value as { ok: boolean }).ok).toBe(true);
-    const created = /content_instance ([0-9a-f-]{36}) created/.exec(
+    const created = /items\[0\] -> ([0-9a-f-]{36})/.exec(
       write.ok ? (write.value as { content: string }).content : "",
     );
     expect(created).not.toBeNull();
@@ -716,8 +716,8 @@ describe("Power-MCP surface (admin token)", () => {
       statusLine: string | null;
       skills: Array<{ slug: string; body?: string }>;
     };
-    expect(v.systemContext).toContain("## How Caelo fits together");
-    expect(v.systemContext).toContain("## Module model");
+    expect(v.systemContext).toContain("## Tool playbook");
+    expect(v.systemContext).toContain("## Site model");
     expect(v.systemContext).not.toContain("## Subagents");
     expect(v.systemContext).not.toContain("## Finishing a turn");
     // #413 — the playbook variant names the visual-inspection tools that

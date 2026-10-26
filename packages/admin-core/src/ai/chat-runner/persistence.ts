@@ -78,7 +78,7 @@ export function buildUserContent(input: ChatSendMessageInput): string {
 function chipLines(c: ChatChip): string {
   const element = c.selector ? `, element=${c.selector}` : "";
   // #917 — the placement field the text comes from, in the coordinates
-  // set_page_module_content takes.
+  // set_page_module_content_many takes.
   const field =
     c.field && c.blockName !== undefined && c.position !== undefined
       ? `, placement=(blockName=${c.blockName}, position=${c.position}), field=${c.field}${c.item !== undefined ? `, entry=${c.item}${c.key ? `, key=${c.key}` : ""}` : ""}`

@@ -415,8 +415,8 @@ function orphanPages(
       message:
         "Orphan page: no other page of the staged build links here (navigation included), so visitors cannot reach it and crawlers find it only through the sitemap.",
       fix: {
-        tool: "set_page_module_content",
-        hint: "link the page from a menu list or from a related page's content (set_page_module_content); a page meant to stay unlinked (an ad landing page) can keep this warning",
+        tool: "set_page_module_content_many",
+        hint: "link the page from a menu list or from a related page's content (set_page_module_content_many); a page meant to stay unlinked (an ad landing page) can keep this warning",
       },
     }));
 }

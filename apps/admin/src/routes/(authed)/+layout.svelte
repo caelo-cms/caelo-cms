@@ -99,6 +99,7 @@
     csrfToken={data.csrfToken}
     userEmail={data.currentUser?.email ?? null}
     aiSpend7d={data.aiSpend7d}
+    pluginNav={data.pluginNav}
   >
     {@render children()}
   </AppShell>

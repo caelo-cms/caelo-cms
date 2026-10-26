@@ -50,6 +50,7 @@ import type {
   ProviderServerToolCall,
 } from "../provider.js";
 import { repairToolCallPairing } from "./history-repair.js";
+import { rewriteRetiredToolReferences } from "./retired-tool-references.js";
 import type { AccumulatedToolCall } from "./types.js";
 
 /** Provider payload guard — a base64-inflated 20MB PNG breaks calls. */
@@ -245,5 +246,11 @@ export async function buildProviderHistory(
     });
     await onRepair?.(repaired);
   }
-  return repaired.messages;
+  // A tool-search result naming a since-retired tool 400s every replay;
+  // point it at the live replacement (retired-tool-references.ts).
+  const { messages: replayable, rewrites } = rewriteRetiredToolReferences(repaired.messages);
+  if (rewrites.length > 0) {
+    console.error("[chat-runner] history-retired-tool-references", { rewrites });
+  }
+  return replayable;
 }

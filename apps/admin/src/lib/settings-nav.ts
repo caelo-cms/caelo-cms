@@ -44,7 +44,6 @@ export type SettingsIcon =
   | "layout"
   | "lock"
   | "mail"
-  | "message-square"
   | "package"
   | "piggy-bank"
   | "puzzle"
@@ -55,7 +54,6 @@ export type SettingsIcon =
   | "shield-check"
   | "sliders"
   | "sparkles"
-  | "star"
   | "brain"
   | "users"
   | "users-round"
@@ -374,7 +372,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "plugins",
     label: "Plugins",
-    description: "Extra features for visitors — forms, comments, newsletter — and their inboxes.",
+    description:
+      "Extra features for visitors (forms, comments, a newsletter): turn them on and decide what they may access.",
     icon: "puzzle",
     entries: [
       {
@@ -400,38 +399,6 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         permission: "plugins.install",
         icon: "package",
         keywords: ["upload", "grants", "permissions"],
-      },
-      {
-        href: "/settings/plugins/forms",
-        label: "Form submissions",
-        description: "Messages visitors sent through your forms.",
-        permission: "settings.write",
-        icon: "inbox",
-        keywords: ["contact", "leads"],
-      },
-      {
-        href: "/settings/plugins/comments",
-        label: "Comments",
-        description: "Approve or remove visitor comments.",
-        permission: "settings.write",
-        icon: "message-square",
-        keywords: ["moderation"],
-      },
-      {
-        href: "/settings/plugins/newsletter",
-        label: "Newsletter",
-        description: "Draft campaigns and send them to your subscribers.",
-        permission: "settings.write",
-        icon: "mail",
-        keywords: ["email", "subscribers", "campaign"],
-      },
-      {
-        href: "/settings/plugins/ratings",
-        label: "Ratings",
-        description: "How visitors rate your pages.",
-        permission: "settings.write",
-        icon: "star",
-        keywords: ["stars", "reviews"],
       },
       {
         href: "/settings/email",

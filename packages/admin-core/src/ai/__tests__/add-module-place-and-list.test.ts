@@ -148,7 +148,7 @@ describe("list_modules (issue #159)", () => {
     expect(payload).not.toContain("var(--color-primary)"); // css body must not leak
   });
 
-  // #1090 / #1093 — set_content_instance_values / build_page refused a
+  // #1090 / #1093 — set_content_instance_values_many / build_page refused a
   // child module whose type the parent field does not allow, and the
   // allowlist was visible nowhere before the call.
   it("shows each nested field's allowedModuleTypes before the AI picks a child", async () => {

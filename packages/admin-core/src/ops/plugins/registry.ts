@@ -22,7 +22,14 @@
  *   in P11.5+); it only ships the ops that read + mutate the registry.
  */
 
-import { loadedPlugins } from "@caelo-cms/plugin-host";
+import {
+  activeDependentsOf,
+  dependentsMessage,
+  inactiveRequiredPlugins,
+  loadedPlugins,
+  requiredPluginsOf,
+  requirementsMessage,
+} from "@caelo-cms/plugin-host";
 import {
   type EmittedSchema,
   externalArtifactDigest,
@@ -83,6 +90,11 @@ const pluginRow = z.object({
   updatedAt: z.string(),
   /** What the running servers make of `status` (#1008) — see health.ts. */
   health: pluginHealth,
+  /** Plugins that must be active for this one to run (manifest `requiresPlugins`). */
+  requiresPlugins: z.array(z.string()),
+  /** Active plugins that require this one: it cannot be disabled or
+   *  uninstalled while any is listed. */
+  requiredBy: z.array(z.string()),
 });
 
 interface PluginDb {
@@ -108,7 +120,29 @@ interface PluginDb {
   updated_at: string | Date;
 }
 
-function rowToOut(r: PluginDb, health: Map<string, PluginHealth>): z.infer<typeof pluginRow> {
+/** Active plugin slug → the active plugins whose manifest requires it. */
+async function readRequiredBy(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+): Promise<Map<string, string[]>> {
+  const rows = (await tx.execute(sql`
+    SELECT slug, manifest_json FROM plugins
+    WHERE status = 'active' AND jsonb_typeof(manifest_json -> 'requiresPlugins') = 'array'
+    ORDER BY slug
+  `)) as unknown as { slug: string; manifest_json: unknown }[];
+  const out = new Map<string, string[]>();
+  for (const row of rows) {
+    for (const required of requiredPluginsOf(row.manifest_json)) {
+      out.set(required, [...(out.get(required) ?? []), row.slug]);
+    }
+  }
+  return out;
+}
+
+function rowToOut(
+  r: PluginDb,
+  health: Map<string, PluginHealth>,
+  requiredBy: Map<string, string[]>,
+): z.infer<typeof pluginRow> {
   const h = health.get(r.slug);
   if (!h) throw new Error(`plugins: no health computed for "${r.slug}"`);
   return mapRowToOutput(r, pluginRow, (row) => ({
@@ -134,6 +168,8 @@ function rowToOut(r: PluginDb, health: Map<string, PluginHealth>): z.infer<typeo
     createdAt: toIsoRequired(row.created_at, "plugins.created_at"),
     updatedAt: toIsoRequired(row.updated_at, "plugins.updated_at"),
     health: h,
+    requiresPlugins: requiredPluginsOf(row.manifest_json),
+    requiredBy: requiredBy.get(row.slug) ?? [],
   }));
 }
 
@@ -192,8 +228,9 @@ export const listPluginsOp = defineOperation({
       ORDER BY tier ASC, slug ASC
     `)) as unknown as PluginDb[];
     const health = await readPluginHealth(tx, rows);
+    const requiredBy = await readRequiredBy(tx);
     return ok({
-      plugins: rows.map((r) => rowToOut(r, health)),
+      plugins: rows.map((r) => rowToOut(r, health, requiredBy)),
       discoveryFailures: await readDiscoveryFailures(tx),
     });
   },
@@ -231,7 +268,9 @@ export const getPluginOp = defineOperation({
       }
       return ok({ plugin: null });
     }
-    return ok({ plugin: rowToOut(r, await readPluginHealth(tx, [r])) });
+    return ok({
+      plugin: rowToOut(r, await readPluginHealth(tx, [r]), await readRequiredBy(tx)),
+    });
   },
 });
 
@@ -515,6 +554,14 @@ export const preparePluginActivationOp = defineOperation({
         message: `plugin "${input.slug}" status is "${r.status}"; expected awaiting_activation or disabled.`,
       });
     }
+    const missing = await inactiveRequiredPlugins(tx, requiredPluginsOf(r.manifest_json));
+    if (missing.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.prepare_activation",
+        message: requirementsMessage(input.slug, missing),
+      });
+    }
     const schemaName = `plugin_${input.slug.replace(/-/g, "_")}`;
     if (r.status === "disabled") {
       return ok({
@@ -667,6 +714,16 @@ export const activatePluginOp = defineOperation({
         kind: "HandlerError",
         operation: "plugins.activate",
         message: `plugin "${input.slug}" status is "${r.status}"; expected awaiting_activation or disabled.`,
+      });
+    }
+    // Re-checked here, under the row lock: prepare_activation may have run
+    // before a required plugin was switched off.
+    const missing = await inactiveRequiredPlugins(tx, requiredPluginsOf(r.manifest_json));
+    if (missing.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.activate",
+        message: requirementsMessage(input.slug, missing),
       });
     }
 
@@ -839,6 +896,16 @@ export const disablePluginOp = defineOperation({
   input: z.object({ slug: z.string().min(1).max(120) }).strict(),
   output: z.object({}),
   handler: async (ctx, input, tx) => {
+    // An active plugin that requires this one would keep running without
+    // it; the Owner switches the dependents off first.
+    const dependents = await activeDependentsOf(tx, input.slug);
+    if (dependents.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.disable",
+        message: dependentsMessage(input.slug, dependents, "disabled"),
+      });
+    }
     const rows = (await tx.execute(sql`
       UPDATE plugins
       SET status = 'disabled',

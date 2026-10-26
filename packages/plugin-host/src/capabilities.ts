@@ -34,6 +34,7 @@ import {
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
+import { makePluginConsentPurposes } from "./consent-purposes.js";
 import {
   hostSystemActorId,
   type LoadedPlugin,
@@ -102,21 +103,29 @@ export async function makePluginContext(
   if (plugin.provenance === "runtime-authored") {
     const approval = plugin.externalApproval;
     if (!approval) return baseCtx;
-    if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return baseCtx;
+    // The declared purposes are manifest metadata, not author data: a
+    // granted consent provider reads them on every origin — the gateway
+    // asks for its rule as `system`, never on someone's behalf.
+    const consentCtx: PluginContext | PluginContextTier1 = approval.capabilities.includes(
+      "consent_provider",
+    )
+      ? { ...baseCtx, consentPurposes: makePluginConsentPurposes() }
+      : baseCtx;
+    if (visitorContext || !AUTHORING_ORIGINS.has(invocation.origin)) return consentCtx;
     const wantsStorage = approval.capabilities.includes("cms_admin_schema");
     const wantsFiles = approval.capabilities.includes("private_files");
     // Image generation stores its results as private files, so it needs both.
     const wantsImages = wantsFiles && approval.capabilities.includes("image_generation");
     const wantsFonts = approval.capabilities.includes("font_assets");
     const wantsSiteMedia = approval.capabilities.includes("site_media_read");
-    if (!wantsStorage && !wantsFiles && !wantsFonts && !wantsSiteMedia) return baseCtx;
+    if (!wantsStorage && !wantsFiles && !wantsFonts && !wantsSiteMedia) return consentCtx;
     // Private storage and files are author data: only for someone who may
     // author. Without it the plugin still runs, with the base handles — an
     // operation that needs them then fails at the sandbox broker
     // (SandboxCapabilityDenied), not silently.
-    if (!(await authorMayWrite(infra, approval.systemActorId, invocation))) return baseCtx;
+    if (!(await authorMayWrite(infra, approval.systemActorId, invocation))) return consentCtx;
     return {
-      ...baseCtx,
+      ...consentCtx,
       ...(wantsStorage ? { adminQuery: makePluginAdminQuery(plugin, infra, invocation) } : {}),
       ...(wantsFiles ? { privateFiles: makePluginPrivateFiles(plugin, infra, invocation) } : {}),
       ...(wantsImages ? { images: makePluginImages(plugin, infra, invocation) } : {}),
@@ -127,6 +136,9 @@ export async function makePluginContext(
 
   // Release-signed — attach elevated handles per requestedCapabilities.
   const tier1: Mutable<PluginContextTier1> = { ...baseCtx };
+  // Read from this host's own registry, so it works the same on the
+  // public gateway (which asks the provider for its rule) and the admin.
+  if (requested.has("consent_provider")) tier1.consentPurposes = makePluginConsentPurposes();
   if (isPublicSideHost(infra)) {
     // #635 — the public gateway has no cms_admin login. Private storage is
     // the read-only published `visitorProjection`; `ctx.cms` reaches only
@@ -386,7 +398,7 @@ function makeScopedQuery(
       filter?: PluginQueryFilter,
     ): Promise<T[]> => {
       const columns = tableColumns("list", table);
-      const reserved = new Set(["limit", "orderBy", "orderDir", "since"]);
+      const reserved = new Set(["limit", "orderBy", "orderDir", "since", "before"]);
       for (const [k, v] of Object.entries(filter ?? {})) {
         if (k === "limit" && (typeof v !== "number" || v <= 0 || v > 1000)) {
           throw new Error(`${scope.label}.list: limit must be 1..1000`);
@@ -400,12 +412,12 @@ function makeScopedQuery(
         if (k === "orderDir" && v !== "asc" && v !== "desc") {
           throw new Error(`${scope.label}.list: orderDir must be asc|desc`);
         }
-        if (k === "since") {
+        if (k === "since" || k === "before") {
           if (typeof v !== "string") {
-            throw new Error(`${scope.label}.list: since must be ISO timestamp string`);
+            throw new Error(`${scope.label}.list: ${k} must be ISO timestamp string`);
           }
           if (!("created_at" in columns)) {
-            throw new Error(`${scope.label}.list: \`since\` requires a created_at column`);
+            throw new Error(`${scope.label}.list: \`${k}\` requires a created_at column`);
           }
         }
         if (!reserved.has(k)) assertDeclared("list", table, columns, [k]);

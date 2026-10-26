@@ -359,7 +359,7 @@ describe("the per-rule ratchet", () => {
             severity: f.severity ?? "error",
             ...(f.pageId ? { pageId: f.pageId } : {}),
             message: `Broken: ${f.ruleId}`,
-            fix: { tool: "edit_module", hint: "fix it" },
+            fix: { tool: "update_modules_many", hint: "fix it" },
           })),
           errors: [],
         },
