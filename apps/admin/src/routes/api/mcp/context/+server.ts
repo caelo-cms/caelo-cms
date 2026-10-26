@@ -3,7 +3,7 @@
 /**
  * Issue #376 — Power-MCP: site-context endpoint. Serves the external
  * agent the same composed context the chat-runner's system prompt
- * carries (module model, tool playbook, staging, site memory, skills
+ * carries (site model, tool playbook, staging, site memory, skills
  * index) plus the cold-start status line and the active skills. The
  * `includeSkillBodies` flag feeds the `caelo-mcp-server export`
  * CLAUDE.md/skills generator. Auth lives inside the op.

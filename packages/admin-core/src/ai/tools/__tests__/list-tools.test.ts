@@ -216,6 +216,16 @@ describe("list tools (epic #1107)", () => {
     expect(r.content).toContain("added entry ids: new-id");
   });
 
+  // e2e-livedit run 40347740757: the AI sent page_type + order in a mega
+  // menu's news entry `query`, which only takes the source's editable knobs
+  // (the type's defaults fix the rest) — the description now says so.
+  it("upsert_lists_many says an entry query takes only the editable knobs", () => {
+    expect(upsertListsManyTool.description).toContain(
+      "only with the knobs that node's source lists in `editable`",
+    );
+    expect(upsertListsManyTool.description).toContain("fixed by the type's `defaults`");
+  });
+
   it("upsert_lists_many accepts a nested entry tree and returns the list ref for binding", async () => {
     const { toolCtx } = harness({
       "lists.upsert_many": {

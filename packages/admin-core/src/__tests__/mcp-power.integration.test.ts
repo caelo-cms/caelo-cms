@@ -716,8 +716,8 @@ describe("Power-MCP surface (admin token)", () => {
       statusLine: string | null;
       skills: Array<{ slug: string; body?: string }>;
     };
-    expect(v.systemContext).toContain("## How Caelo fits together");
-    expect(v.systemContext).toContain("## Module model");
+    expect(v.systemContext).toContain("## Tool playbook");
+    expect(v.systemContext).toContain("## Site model");
     expect(v.systemContext).not.toContain("## Subagents");
     expect(v.systemContext).not.toContain("## Finishing a turn");
     // #413 — the playbook variant names the visual-inspection tools that

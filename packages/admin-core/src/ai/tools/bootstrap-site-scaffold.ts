@@ -82,7 +82,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     "Stage 0 (no layout): queues a layouts.create PROPOSAL; the operator approves it on the proposal card in the chat (queue: /settings/layouts/pending). " +
     "Stage 1+2 (layout exists): creates template + pins site_defaults directly (no human click). " +
     "Stage 3 (all three exist): no-op. " +
-    "Use on a fresh install when `# Site defaults` says '(none configured yet)'. " +
+    "Use on a fresh install when the site status note says 'Site defaults: needs setup'. " +
     "All inputs optional — sensible defaults yield a header/content/footer layout, a single-block `home` template, and pinned defaults. " +
     // 2026-07 — STATIC on purpose (prompt-cache): the stage is auto-
     // detected server-side and the RESULT names the stage that ran plus

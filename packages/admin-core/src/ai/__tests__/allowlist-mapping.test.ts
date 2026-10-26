@@ -26,8 +26,9 @@ import {
 import { liveToolNames } from "../tools/live-tool-names.js";
 
 /**
- * Every op-notation allowlist entry seeded by migration 0033 (qa-check,
- * legal-check, menu-auditor, page-categorizer). If a future migration
+ * Every op-notation allowlist entry seeded by migration 0033 (the reviewer
+ * skills, deleted again by 0363; the table still translates the same
+ * entries in Owner-written allowlists). If a future migration
  * seeds a new op-notation entry, add it here AND to the table — the
  * completeness test below fails otherwise.
  */

@@ -120,7 +120,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
             minLength: 1,
             maxLength: 80,
             description:
-              "Page-TEMPLATE block to place into (usually 'content'; see `# Current page`). Never 'header' / 'footer': site chrome lives on the layout (add_module target='layout'). " +
+              "Page-TEMPLATE block to place into (usually 'content'; the valid set: `# Current page` for the open page, list_templates `pageBlocks` otherwise). Never 'header' / 'footer': site chrome lives on the layout (add_module target='layout'). " +
               'OMIT for a DETACHED nested-only module (requires `ref`; another entry embeds it via {"$ref": …}).',
           },
           position: {
@@ -173,7 +173,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
             description:
               "The placement's content. Omit for an empty private instance. " +
               "source='inline' → page-local values; source='shared' → mint a REUSABLE instance (purpose required) bound synced; " +
-              "source='existing' → bind an instance from ## Content Library.",
+              "source='existing' → bind an instance from list_content_instances.",
             oneOf: [
               {
                 type: "object",
@@ -228,7 +228,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     "Build a WHOLE page in ONE call: the page (create new via `page: {slug, title}` or target existing via `page: {pageId}`) plus the FULL ordered module list — each entry places one module into a template block, top to bottom (on an existing page entries append; an entry's optional `position` — 'top' or an index, as in add_module — inserts it instead). ONE transaction: any invalid entry aborts the whole call (the error names `modules[i]` and the failing field) and nothing is written. " +
     "This is THE page-creation tool: when creating a typed page (an article is `news`), name its `page.pageType` from list_page_types with its `properties` / `terms` (an ordinary page omits pageType and gets the site's default type), and pass `page.metaDescription` (and `status:'published'` for a page that belongs on the site) — a Stage refuses published pages without a description, and builds only published ones; the result says when something still blocks a Stage. `modules: []` (empty) creates an intentionally empty page shell; a populated `modules` array builds the whole page in one transaction. **Prefer it over add_module / create_content_instance chains whenever a page needs more than one module** — one build_page call replaces that whole round-trip chain (§11 bulk-first). Use add_module (target='page') only for a single incremental module on an existing page. " +
     "**Per module, two modes** (same contract as add_module): pass `moduleId` to place an EXISTING module from `list_modules` (reuse first — shared modules keep pages consistent), or `displayName` + `html` (+ required `description`, `kind`, explicit `fields[]`) to mint a new one. Field names are semantic snake_case (`hero_title`, `primary_cta_href`); repeating content is ONE `list` field (entries of a list type, iterated with `{{#field}}…{{/field}}`) or a `module-list`, never numbered scalars. A `list` field is local (entries in `content.values`, e.g. `{features:[{node:'text', values:{text:'Fast'}}]}`), shared (bind 'shared', value or field `list` = caelo:list/<id> — menus, footer links) or a source (bind 'source': a page query such as the latest news, breadcrumbs; `content.values` may override the knobs the source marks editable). " +
-    "**Per module, `content` fills the placement**: `{source:'inline', values:{hero_title:'…'}}` for page-local content (the routine case); `{source:'shared', purpose:'…', values:{…}}` to mint a REUSABLE instance other pages can bind (synced by default); `{source:'existing', contentInstanceId}` to bind a row from `## Content Library`. Omit `content` for an empty private instance you fill later. " +
+    "**Per module, `content` fills the placement**: `{source:'inline', values:{hero_title:'…'}}` for page-local content (the routine case); `{source:'shared', purpose:'…', values:{…}}` to mint a REUSABLE instance other pages can bind (synced by default); `{source:'existing', contentInstanceId}` to bind a row from list_content_instances. Omit `content` for an empty private instance you fill later. " +
     "Typical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`. " +
     "**Nested modules in the SAME call**: give the inner module `ref` and NO blockName (detached — minted + content-bound but not placed), then reference it from the outer module's `module`/`module-list` field value as `{\"$ref\": \"<ref>\"}` — the server resolves it to the real {moduleId, contentInstanceId}, in any array order. Example: `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]` — the whole nested composition is ONE call, never an add_module → remove_module_from → create_content_instance chain. " +
     "For site-wide chrome (header/footer) use add_module (target='layout') — chrome is layout-owned and never rides in a page body. " +
@@ -238,7 +238,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
     // every page switch. The same facts live in the volatile `# Current
     // page` block, and a blockName mismatch returns a structured error
     // naming the valid set (recover-don't-punt).
-    "Each entry's `blockName` must be a block on the page's template — see `# Current page` (exhaustive list for the focused page); a mismatch error names the valid set. A block name is a template slot, NOT a module `kind`. With zero templates on the site, bootstrap first (create_layout → create_template)." +
+    "Each entry's `blockName` must be a block on the page's template — `# Current page` lists them for the open page, list_templates (`pageBlocks`) for any template; a mismatch error names the valid set. A block name is a template slot, NOT a module `kind`. With zero templates on the site, bootstrap first (create_layout → create_template)." +
     INTERNAL_LINK_CONTRACT,
   schema: buildPageInputSchema,
   inputSchema: BUILD_PAGE_INPUT_SCHEMA,

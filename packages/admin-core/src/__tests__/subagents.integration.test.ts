@@ -7,7 +7,7 @@
  *   - subagent_runs.create_pending → finish round-trip.
  *   - chat.create_session accepts subagentRole + parentChatSessionId.
  *   - ai_calls.aggregate_for_session sums correctly.
- *   - 4 seed skills are active (qa-check, legal-check, menu-auditor, page-categorizer).
+ *   - the reviewer skills seeded by 0033 are gone (0363).
  *
  * NOTE: end-to-end spawn_subagent is exercised at the chat-runner level
  * via FixtureProvider in an existing chat-runner test (covered by the
@@ -205,14 +205,17 @@ describe("subagent ops", () => {
     expect(v.outputTokens).toBe(130);
   });
 
-  it("4 seed skills are active (qa-check, legal-check, menu-auditor, page-categorizer)", async () => {
-    const list = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
+  // Migration 0363 — subagents build; they never review the AI's own work,
+  // and quality review runs as the automatic check on every Stage. The
+  // reviewer skills 0033 seeded are deleted, not archived.
+  it("the reviewer skills seeded by 0033 are deleted (0363)", async () => {
+    const list = await execute(registry, adapter, systemCtx, "skills.list", {});
+    expect(list.ok).toBe(true);
     if (!list.ok) return;
     const slugs = (list.value as { skills: { slug: string }[] }).skills.map((s) => s.slug);
-    expect(slugs).toContain("qa-check");
-    expect(slugs).toContain("legal-check");
-    expect(slugs).toContain("menu-auditor");
-    expect(slugs).toContain("page-categorizer");
+    for (const gone of ["qa-check", "legal-check", "menu-auditor", "page-categorizer"]) {
+      expect(slugs).not.toContain(gone);
+    }
   });
 
   it("issue #264: a child turn with chatBranchIdOverride writes snapshots to the PARENT's branch", async () => {

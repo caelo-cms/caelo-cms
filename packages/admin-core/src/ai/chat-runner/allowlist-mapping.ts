@@ -33,8 +33,8 @@
 
 /**
  * Op-name → AI tool name(s). Keys are every Query-API op name that
- * appears in a seeded skill allowlist today (migration 0033: qa-check,
- * legal-check, menu-auditor, page-categorizer).
+ * a seeded skill allowlist ever carried (migration 0033's reviewer
+ * skills, deleted by 0363); Owner-written allowlists may still use them.
  *
  * An EMPTY mapping means the op is a known read surface with no AI
  * tool counterpart — the data is delivered via system-prompt context

@@ -342,10 +342,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(deleteContentInstancesTool);
   registry.register(setPlacementContentTool);
   registry.register(forkPlacementContentTool);
-  // v0.5.12 — explicit read fallbacks for layouts / templates / pages.
-  // Mirror the system-prompt `# Layouts on this site` / `# Templates →
-  // layouts` / `# All pages` context blocks. Existed only as system-prompt
-  // text before; the AI had no fetch path when it claimed to lack a UUID.
+  // v0.5.12 — read tools for layouts / templates / pages. Once only
+  // system-prompt text (and the AI had no fetch path when it lacked a
+  // UUID); since the prompt became static they are the only source.
   registry.register(listLayoutsTool);
   registry.register(listPluginsTool);
   registry.register(activatePluginTool);
