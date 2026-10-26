@@ -131,7 +131,7 @@ export const buildPageModuleSchema = z
      */
     ref: z
       .string()
-      .regex(/^[a-z][a-z0-9_-]{0,31}$/, "ref must be a short lowercase handle")
+      .regex(/^[A-Za-z][A-Za-z0-9_-]{0,31}$/, "ref must be a short handle: a letter, then letters, digits, _ or -")
       .optional(),
     /**
      * Place mode: an existing module from `list_modules` (UUID), or a

@@ -65,7 +65,7 @@ function describePageType(t: PageTypeRow): string {
 export const listPageTypesTool: ToolDefinitionWithHandler<ListPageTypesInput> = {
   name: "list_page_types",
   description:
-    "The page types of this site — what each page IS (e.g. `page`, `news`, `product`): purpose, page count, allowed templates (ids) and default template, properties (`*` = required) and vocabularies (categories / tags lists whose terms its pages carry). " +
+    "The page types of this site — what each page IS (e.g. `content`, `news`, `product`): purpose, page count, allowed templates (ids) and default template, properties (`*` = required) and vocabularies (categories / tags lists whose terms its pages carry). " +
     "Read it before build_page / update_pages_many so a new article gets `pageType: 'news'` (and its properties and terms), and before writing a page query (`page_type` filters on the slug). Pass `slug` for one type with sample pages. " +
     "A new KIND of content (a blog, a job board, products) is a new page type: upsert_page_types_many.",
   schema: listPageTypesInput,
