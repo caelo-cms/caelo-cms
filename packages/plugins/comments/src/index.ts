@@ -113,12 +113,16 @@ interface CommentRow {
  * Throws on input row not found OR ctx.cms unavailable. Errors from
  * the archive insert propagate up so the moderation tool surfaces
  * them honestly instead of silently failing.
+ *
+ * Returns the comment's page (#1155: the `bakedData` trigger reads it
+ * from the result so the next plugin-data build re-bakes that page), or
+ * null when the comment was already drained.
  */
 async function archiveAndDeletePublic(
   ctx: PluginContextTier1,
   commentId: string,
   decision: "approved" | "rejected" | "spam",
-): Promise<void> {
+): Promise<string | null> {
   if (!ctx.cms) {
     throw new Error("comments.moderate: cms capability required to drain to admin");
   }
@@ -131,7 +135,7 @@ async function archiveAndDeletePublic(
   if (!row) {
     // Already drained or never existed — nothing to do (and no error
     // since a retry of an already-completed moderate is harmless).
-    return;
+    return null;
   }
   // 2. Insert into cms_admin archive. Idempotent.
   await ctx.cms.call<
@@ -162,6 +166,12 @@ async function archiveAndDeletePublic(
   });
   // 3. Delete from cms_public.
   await ctx.query.delete("comments", row.id);
+  return row.page_id;
+}
+
+/** The page a decision changes the baked thread of: only an approval adds to it. */
+function bakedPage(decision: ModerationDecision, pageId: string | null): { pageId?: string } {
+  return decision === "approved" && pageId ? { pageId } : {};
 }
 
 export default definePlugin<PluginContextTier1>({
@@ -189,6 +199,21 @@ export default definePlugin<PluginContextTier1>({
   /** Visitor-facing surface (default deny — everything else is
    *  refused a visitor-context dispatch). */
   publicOperations: ["submit", "list_approved"],
+  /**
+   * #1155 — an approval adds a comment to the page's baked thread. The
+   * comment is live at once through `list_approved` (the delta feed); the
+   * next plugin-data build bakes it into that page's HTML. A submission
+   * changes nothing baked (it waits for moderation), so `submit` is not a
+   * trigger.
+   */
+  bakedData: {
+    description: "Approved comments, baked into the page they belong to.",
+    triggers: [
+      { operation: "moderate", pageIds: { from: "result", key: "pageId" } },
+      { operation: "bulk_moderate", pageIds: { from: "result", key: "pageIds" } },
+      { operation: "ai_moderate", pageIds: { from: "result", key: "pageId" } },
+    ],
+  },
   operations: {
     submit: async (ctx, args) => {
       const input = args as SubmitInput;
@@ -288,8 +313,12 @@ export default definePlugin<PluginContextTier1>({
       //   3. Delete from cms_public so a public-DB compromise leaks
       //      no historical comment data.
       const input = args as { commentId: string; decision: "approved" | "rejected" | "spam" };
-      await archiveAndDeletePublic(ctx, input.commentId, input.decision);
-      return { commentId: input.commentId, status: input.decision };
+      const pageId = await archiveAndDeletePublic(ctx, input.commentId, input.decision);
+      return {
+        commentId: input.commentId,
+        status: input.decision,
+        ...bakedPage(input.decision, pageId),
+      };
     },
 
     bulk_moderate: async (ctx, args) => {
@@ -298,17 +327,19 @@ export default definePlugin<PluginContextTier1>({
         decision: "approved" | "rejected" | "spam";
       };
       let updated = 0;
+      const pageIds = new Set<string>();
       for (const id of input.commentIds) {
         try {
-          await archiveAndDeletePublic(ctx, id, input.decision);
+          const pageId = await archiveAndDeletePublic(ctx, id, input.decision);
           updated += 1;
+          if (input.decision === "approved" && pageId) pageIds.add(pageId);
         } catch {
           // Per-row failure shouldn't strand the whole batch; the
           // unarchived row stays in cms_public for a retry on the
           // next moderation attempt.
         }
       }
-      return { updated };
+      return { updated, pageIds: [...pageIds] };
     },
 
     /**
@@ -342,8 +373,13 @@ export default definePlugin<PluginContextTier1>({
             `ai_moderate: verdict "${input.verdict}" is not one of APPROVE, REJECT, SPAM — call ai_moderate_comment again with exactly one of them`,
           );
         }
-        await archiveAndDeletePublic(ctx, input.commentId, decision);
-        return { commentId: input.commentId, status: decision, verdict };
+        const pageId = await archiveAndDeletePublic(ctx, input.commentId, decision);
+        return {
+          commentId: input.commentId,
+          status: decision,
+          verdict,
+          ...bakedPage(decision, pageId),
+        };
       }
 
       if (isAiDelegated(ctx)) {
@@ -377,8 +413,13 @@ export default definePlugin<PluginContextTier1>({
       if (!decision) {
         return { commentId: input.commentId, status: "pending" as const, verdict };
       }
-      await archiveAndDeletePublic(ctx, input.commentId, decision);
-      return { commentId: input.commentId, status: decision, verdict };
+      const pageId = await archiveAndDeletePublic(ctx, input.commentId, decision);
+      return {
+        commentId: input.commentId,
+        status: decision,
+        verdict,
+        ...bakedPage(decision, pageId),
+      };
     },
   },
   /** The moderation queue in the admin (rendered from this declaration). */
@@ -606,33 +647,35 @@ export default definePlugin<PluginContextTier1>({
     // v0.2.18 / Fix D — bake from cms_admin's comment_archive. The
     // public DB only carries pending submissions; serving HTML reads
     // from the admin-side long-term store.
-    if (!("cms" in ctx) || !ctx.cms) return "";
-    try {
-      const r = await ctx.cms.call<
-        { pageId: string; status: string; limit: number },
-        {
-          comments: ReadonlyArray<{
-            id: string;
-            authorName: string;
-            content: string;
-            submittedAt: string;
-          }>;
-        }
-      >("comment_archive.list_for_page", {
-        pageId: args.pageId,
-        status: "approved",
-        limit: 200,
-      });
-      return r.comments
-        .map((c) => {
-          const safeAuthor = escapeHtml(c.authorName);
-          const safeContent = escapeHtml(c.content);
-          return `<article class="comment"><header>${safeAuthor} · ${new Date(c.submittedAt).toISOString()}</header><div class="body">${safeContent}</div></article>`;
-        })
-        .join("");
-    } catch {
-      return "";
+    //
+    // #1155 — a failed read throws instead of baking an empty thread: a
+    // plugin-data build republishes this region on the live site, and an
+    // empty one would take every published comment off the page.
+    if (!("cms" in ctx) || !ctx.cms) {
+      throw new Error("comments staticRender: the cms_admin grant is required to read comments");
     }
+    const r = await ctx.cms.call<
+      { pageId: string; status: string; limit: number },
+      {
+        comments: ReadonlyArray<{
+          id: string;
+          authorName: string;
+          content: string;
+          submittedAt: string;
+        }>;
+      }
+    >("comment_archive.list_for_page", {
+      pageId: args.pageId,
+      status: "approved",
+      limit: 200,
+    });
+    return r.comments
+      .map((c) => {
+        const safeAuthor = escapeHtml(c.authorName);
+        const safeContent = escapeHtml(c.content);
+        return `<article class="comment"><header>${safeAuthor} · ${new Date(c.submittedAt).toISOString()}</header><div class="body">${safeContent}</div></article>`;
+      })
+      .join("");
   },
 
   /**

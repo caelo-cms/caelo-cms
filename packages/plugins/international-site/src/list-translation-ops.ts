@@ -742,12 +742,18 @@ export async function reconcileListTranslations(
   return { updated: updatedCount, inserted: plan.inserts.length, collected };
 }
 
-/** Start of the newest succeeded production build, or null (deploy.list_runs). */
+/**
+ * Start of the newest succeeded production build, or null (deploy.list_runs).
+ * A plugin-data build (#1155) republishes the live build with fresher
+ * plugin data only, so it never makes a removal live and is skipped.
+ */
 export async function lastLiveBuildAt(deps: ChromeDeps): Promise<string | null> {
   const r = await deps.cms.call<{
-    runs: { env: string; status: string; startedAt: string }[];
+    runs: { env: string; status: string; startedAt: string; buildKind: string }[];
   }>("deploy.list_runs", { limit: 50 });
-  const live = r.runs.filter((x) => x.env === "production" && x.status === "succeeded");
+  const live = r.runs.filter(
+    (x) => x.env === "production" && x.status === "succeeded" && x.buildKind !== "plugin_data",
+  );
   return live.length > 0
     ? (live
         .map((x) => x.startedAt)

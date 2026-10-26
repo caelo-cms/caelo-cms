@@ -54,6 +54,7 @@ import {
   SVG_PATH_PATTERN,
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
+import { readFirebaseBuiltFile } from "./firebase-channel-file.js";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
 import type {
   PromoteSummary,
@@ -459,6 +460,115 @@ async function versionConfig(
   return version.config ?? {};
 }
 
+/** The URL of the site's live channel (what visitors are served). */
+export async function firebaseLiveChannelUrl(): Promise<string> {
+  const channel = await firebaseFetch<{ url?: string }>(`sites/${siteName()}/channels/live`);
+  if (!channel.url) {
+    throw new Error(
+      `firebase-hosting: the live channel of site ${siteName()} reported no url — nothing has been published live yet`,
+    );
+  }
+  return channel.url;
+}
+
+/** One file of a Hosting version: its path (`/about/index.html`) and content hash. */
+interface VersionFileEntry {
+  readonly path: string;
+  readonly hash: string;
+  readonly status: string;
+}
+
+/** A version's full file manifest. Firebase paginates — walk until exhausted. */
+async function listVersionFiles(
+  site: string,
+  versionId: string,
+  token: string,
+): Promise<VersionFileEntry[]> {
+  type ListFilesResponse = { files?: VersionFileEntry[]; nextPageToken?: string };
+  const allFiles: VersionFileEntry[] = [];
+  let pageToken: string | undefined;
+  do {
+    const url = `sites/${site}/versions/${versionId}/files${pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+    const page = await firebaseFetch<ListFilesResponse>(url, { token });
+    for (const f of page.files ?? []) allFiles.push(f);
+    pageToken = page.nextPageToken;
+  } while (pageToken);
+  return allFiles;
+}
+
+/** The version the live channel's latest release points at, or null. */
+async function liveChannelVersion(site: string, token: string): Promise<string | null> {
+  type Release = { type?: string; version?: { name?: string } };
+  const r = await firebaseFetch<{ releases?: Release[] }>(
+    `sites/${site}/channels/live/releases?pageSize=1`,
+    { token },
+  );
+  const head = r.releases?.[0];
+  if (!head || head.type === "SITE_DISABLE") return null;
+  return head.version?.name ?? null;
+}
+
+/**
+ * #1155 — release `liveVersionName` again with `files` replaced: same
+ * config (headers, redirects, rewrites) verbatim, same files by hash
+ * except the replaced ones, which are the only uploads.
+ */
+async function releasePluginDataVersion(args: {
+  site: string;
+  token: string;
+  liveVersionName: string;
+  files: ReadonlyMap<string, Buffer>;
+}): Promise<{ versionName: string; uploadedCount: number; skippedUnchangedCount: number }> {
+  const { site, token } = args;
+  const liveVersionId = args.liveVersionName.split("/").pop() ?? "";
+  const allFiles = await listVersionFiles(site, liveVersionId, token);
+  const filesMap: Record<string, string> = {};
+  for (const f of allFiles) filesMap[f.path] = f.hash;
+  const replaced = new Map<string, Buffer>();
+  for (const [path, body] of args.files) {
+    const key = `/${path}`;
+    if (!(key in filesMap)) {
+      throw new Error(
+        `firebase publisher: ${path} is not a file of the live version ${args.liveVersionName} — a plugin-data build only replaces files the build has`,
+      );
+    }
+    const { body: gzipped, sha256 } = await gzipAndHashBytes(body);
+    filesMap[key] = sha256;
+    replaced.set(sha256, gzipped);
+  }
+  const created = await firebaseFetch<CreateVersionResponse>(`sites/${site}/versions`, {
+    method: "POST",
+    body: JSON.stringify({ config: await versionConfig(site, args.liveVersionName, token) }),
+    token,
+  });
+  const versionName = created.name;
+  const versionId = versionName.split("/").pop() ?? "";
+  const populate = await firebaseFetch<PopulateFilesResponse>(
+    `sites/${site}/versions/${versionId}:populateFiles`,
+    { method: "POST", body: JSON.stringify({ files: filesMap }), token },
+  );
+  const required = new Set(populate.uploadRequiredHashes ?? []);
+  const toUpload = [...replaced.entries()].filter(([hash]) => required.has(hash));
+  await runBatched(toUpload, PARALLEL_UPLOADS, async ([hash, gzipped]) => {
+    await uploadGzippedFile(populate.uploadUrl, hash, gzipped, token);
+  });
+  await firebaseFetch(`sites/${site}/versions/${versionId}?updateMask=status`, {
+    method: "PATCH",
+    body: JSON.stringify({ status: "FINALIZED" }),
+    token,
+  });
+  await firebaseFetch(`sites/${site}/releases?versionName=${versionName}`, {
+    method: "POST",
+    body: JSON.stringify({ message: "Caelo: plugin data (#1155)" }),
+    token,
+  });
+  return {
+    versionName,
+    uploadedCount: toUpload.length,
+    skippedUnchangedCount: Object.keys(filesMap).length - toUpload.length,
+  };
+}
+
 /**
  * Release a copy of `sourceVersionName` on the live channel, rewritten
  * for `target`: same files except robots.txt (the target's policy, with
@@ -479,19 +589,9 @@ async function releaseAsTarget(args: {
   const { site, token } = args;
   const sourceVersionId = args.sourceVersionName.split("/").pop() ?? "";
 
-  // List the source version's full file manifest. Firebase paginates —
-  // walk until exhausted. Every path is needed so the new version is
-  // identical except for the patched robots.txt.
-  type FileEntry = { path: string; hash: string; status: string };
-  type ListFilesResponse = { files?: FileEntry[]; nextPageToken?: string };
-  const allFiles: FileEntry[] = [];
-  let pageToken: string | undefined;
-  do {
-    const url = `sites/${site}/versions/${sourceVersionId}/files${pageToken ? `?pageToken=${encodeURIComponent(pageToken)}` : ""}`;
-    const page = await firebaseFetch<ListFilesResponse>(url, { token });
-    for (const f of page.files ?? []) allFiles.push(f);
-    pageToken = page.nextPageToken;
-  } while (pageToken);
+  // Every path is needed so the new version is identical except for the
+  // patched robots.txt.
+  const allFiles = await listVersionFiles(site, sourceVersionId, token);
 
   const { buildRobotsTxtWithSitemap } = await import("@caelo-cms/static-generator");
   const robotsBody = buildRobotsTxtWithSitemap(
@@ -951,6 +1051,33 @@ export const firebaseHostingPublisher: StaticPublisher = {
     return summary;
   },
 
+  async readLiveFiles({ live, paths }) {
+    const site = siteName();
+    const token = await googleAuthToken();
+    await assertLiveIs(site, token, live.location);
+    const origin = await firebaseLiveChannelUrl();
+    const out = new Map<string, Buffer | null>();
+    await runBatched([...paths], PARALLEL_UPLOADS, async (path) => {
+      const file = await readFirebaseBuiltFile(origin, path);
+      out.set(path, file.found ? file.body : null);
+    });
+    return out;
+  },
+
+  async publishPluginData({ live, runId, files }) {
+    const site = siteName();
+    const token = await googleAuthToken();
+    const liveVersionName = await assertLiveIs(site, token, live.location);
+    const released = await releasePluginDataVersion({ site, token, liveVersionName, files });
+    return {
+      provider: "gcp-firebase",
+      uploadedCount: released.uploadedCount,
+      skippedUnchangedCount: released.skippedUnchangedCount,
+      location: released.versionName,
+      destinationBuildId: runId,
+    };
+  },
+
   async rollback({ targetBuildId, target, siteBaseUrl, sourceLocation }): Promise<PublishSummary> {
     const site = siteName();
     const token = await googleAuthToken();
@@ -981,6 +1108,26 @@ export const firebaseHostingPublisher: StaticPublisher = {
     };
   },
 };
+
+/**
+ * #1155 — the live channel serves the version the live run recorded, or
+ * throw: plugin data is never published on top of a release no deploy run
+ * recorded. Returns that version's name.
+ */
+async function assertLiveIs(site: string, token: string, recorded: string | null): Promise<string> {
+  if (!recorded || !/^sites\/[^/]+\/versions\/[^/]+$/.test(recorded)) {
+    throw new Error(
+      `firebase publisher: the live production run recorded no Hosting version (${JSON.stringify(recorded)}), so plugin data cannot be published on top of it. Publish live again.`,
+    );
+  }
+  const served = await liveChannelVersion(site, token);
+  if (served !== recorded) {
+    throw new Error(
+      `firebase publisher: the live channel serves ${served ?? "nothing"}, but the last recorded production run released ${recorded} — something was released outside Caelo. Publish live again; plugin data is not published on top of an unrecorded release.`,
+    );
+  }
+  return recorded;
+}
 
 // Suppress unused import warning — Readable is referenced from the type
 // signature of `createReadStream` consumers but not used directly.

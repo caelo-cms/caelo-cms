@@ -1207,7 +1207,11 @@ export async function generateSite(args: {
     runId,
     builtAt: new Date().toISOString(),
     pageCount: pageRows.length,
+    // #1155 — `pageId` lets a plugin-data build find a page's file in the
+    // build that is live, without reading the (possibly unpublished)
+    // current page paths from cms_admin.
     pages: pageRows.map((p) => ({
+      pageId: p.page_id,
       slug: p.slug,
       path: p.current_path,
       outputPath: outputPathOf(p),

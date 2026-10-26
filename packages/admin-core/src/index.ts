@@ -211,12 +211,17 @@ export {
   type UpdateRoute,
   type UpdateRouteInput,
 } from "./platform-updates/update-route.js";
+// #1154 — the admin's login rate-limit GC (formerly in the redeploy orchestrator).
+export {
+  type PluginDataTickResult,
+  runPluginDataBuildIfDue,
+  startPluginDataBuildWorker,
+} from "./plugin-data/worker.js";
 export { startProposalGcWorker, stopProposalGcWorker } from "./proposal-gc-worker.js";
 export * from "./public-projection.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).
 export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
 export * from "./rate-limit.js";
-// #1154 — the admin's login rate-limit GC (formerly in the redeploy orchestrator).
 export { startRateLimitGcWorker } from "./rate-limit-gc-worker.js";
 export * from "./register.js";
 export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";

@@ -18,8 +18,8 @@
  */
 
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, sep } from "node:path";
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join, resolve, sep } from "node:path";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
 export const selfHostedStaticPublisher: StaticPublisher = {
@@ -132,6 +132,51 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     return summary;
   },
 
+  async readLiveFiles({ live, paths }) {
+    const out = new Map<string, Buffer | null>();
+    for (const path of paths) {
+      const file = insideBuild(live.localBuildDir, path);
+      out.set(path, existsSync(file) ? await readFile(file) : null);
+    }
+    return out;
+  },
+
+  /**
+   * #1155 — the live build's archive copied to `builds/<runId>/` with the
+   * re-baked files written over it, then mirrored into `current/` like a
+   * rollback. The archive is a complete build, so the new one is too, and
+   * a later rollback to this run finds it.
+   */
+  async publishPluginData({ target, live, runId, files }) {
+    if (!existsSync(join(live.localBuildDir, "routing-manifest.json"))) {
+      throw new Error(
+        `self-hosted publisher: the archive of the live build (${live.localBuildDir}) is missing, so there is nothing to publish plugin data on top of. Publish live again; the next plugin-data build then starts from that build.`,
+      );
+    }
+    const buildDir = join(dirname(live.localBuildDir), runId);
+    await mkdir(buildDir, { recursive: true });
+    await copyTreeExcept(live.localBuildDir, buildDir, []);
+    for (const [path, body] of files) {
+      const file = insideBuild(buildDir, path);
+      if (!existsSync(file)) {
+        throw new Error(
+          `self-hosted publisher: ${path} is not a file of the live build — a plugin-data build only replaces files the build has`,
+        );
+      }
+      await writeFile(file, body);
+    }
+    const currentDir = join(dirname(dirname(live.localBuildDir)), "current");
+    await mkdir(currentDir, { recursive: true });
+    await syncContentsInto(buildDir, currentDir);
+    return {
+      provider: "self-hosted",
+      uploadedCount: files.size,
+      skippedUnchangedCount: (await countFiles(buildDir)) - files.size,
+      location: `${target.outDir}/current/`,
+      destinationBuildId: runId,
+    };
+  },
+
   async rollback({ sourceBuildDir, target }): Promise<PublishSummary> {
     // sourceBuildDir is `<repoRoot>/<target.outDir>/builds/<runId>`.
     // currentDir is the sibling of `builds/`.
@@ -147,6 +192,16 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     };
   },
 };
+
+/** `path` under `dir`, refusing anything that would leave it. */
+function insideBuild(dir: string, path: string): string {
+  const root = resolve(dir);
+  const file = resolve(root, path);
+  if (!file.startsWith(`${root}${sep}`)) {
+    throw new Error(`self-hosted publisher: "${path}" is outside the build directory`);
+  }
+  return file;
+}
 
 function parseJsonOrNull(raw: string): unknown {
   try {

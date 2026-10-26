@@ -11,7 +11,9 @@
  *      writes the row.
  *   4. Splices the rendered HTML into a stable
  *      `<div data-caelo-plugin="<slug>" data-page-id="<id>"
- *           data-baked-at="<iso>">` placeholder.
+ *           data-baked-at="<iso>">` placeholder, wrapped in the bake
+ *      markers a plugin-data build re-renders between (bake-regions.ts,
+ *      #1155).
  *
  * Pages without the placeholder for a given plugin emit no HTML for it
  * (matches "you didn't put the widget on this page, so we don't render
@@ -22,6 +24,7 @@ import type { BuildPluginServices } from "@caelo-cms/plugin-host";
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
 import type { PageUrlStyle } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { bakeRegion, neutralizeBakeMarkers } from "./bake-regions.js";
 
 const SYSTEM_CTX = {
   actorId: "00000000-0000-0000-0000-00000000ffff",
@@ -80,6 +83,10 @@ export async function runPluginRenderPass(args: {
   pageUrlStyle: PageUrlStyle;
 }): Promise<PluginPassResult> {
   const { adapter, plugins, pages, bakeTargets, pageUrlStyle } = args;
+
+  // #1155 — a bake marker in the page itself (module HTML anyone wrote)
+  // must never open or close a region a plugin-data build rewrites.
+  for (const page of pages) page.html = neutralizeBakeMarkers(page.html);
 
   const activePlugins = await plugins.staticRenderPlugins();
   if (activePlugins.length === 0) return { bakedCount: 0, skippedCount: 0 };
@@ -153,6 +160,10 @@ export async function runPluginRenderPass(args: {
             : String(cached[0].baked_at);
         skippedCount += 1;
       } else {
+        // Taken BEFORE the render: it becomes the delta feed's `since`
+        // (§6.1), so an item that lands while the plugin reads its data is
+        // fetched by the Web Component rather than lost between the two.
+        bakedAtIso = new Date().toISOString();
         // A failing render stops the build (CLAUDE.md §2): the page would
         // otherwise ship an empty placeholder where the plugin belongs.
         try {
@@ -162,7 +173,6 @@ export async function runPluginRenderPass(args: {
             `static-generator: plugin "${plugin.slug}" staticRender failed for page ${target.pageId}: ${e instanceof Error ? e.message : String(e)}`,
           );
         }
-        bakedAtIso = new Date().toISOString();
         await adapter.withAdminTransaction(SYSTEM_CTX, async (tx) => {
           await tx.execute(sql`
             INSERT INTO static_bakes (plugin_id, page_id, baked_at, cache_key, rendered_html)
@@ -177,13 +187,16 @@ export async function runPluginRenderPass(args: {
       }
 
       // Splice into the page's HTML at the placeholder. Re-build the
-      // wrapper so data-baked-at is fresh + correct.
+      // wrapper so data-baked-at is fresh + correct, inside the markers.
       const re = placeholderRegex(plugin.slug, target.pageId);
-      page.html = page.html.replace(
-        re,
-        () =>
-          `<div data-caelo-plugin="${plugin.slug}" data-page-id="${target.pageId}" data-baked-at="${bakedAtIso}">${html}</div>`,
-      );
+      const region = bakeRegion({
+        slug: plugin.slug,
+        pageId: target.pageId,
+        version: plugin.version,
+        bakedAt: bakedAtIso,
+        html,
+      });
+      page.html = page.html.replace(re, () => region);
     }
   }
 

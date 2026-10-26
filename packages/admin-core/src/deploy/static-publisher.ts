@@ -75,6 +75,21 @@ export interface PromoteSummary extends PublishSummary {
 }
 
 /**
+ * #1155 — the build that is live on a target, as its deploy run recorded it:
+ * what a plugin-data build reads its files from and publishes on top of.
+ */
+export interface LiveBuildRef {
+  /** The deploy run that put it live (a Publish live, rollback or plugin-data build). */
+  readonly runId: string;
+  /** Its `build_id`. */
+  readonly buildId: string;
+  /** Its `publish_summary.location` (Firebase: the Hosting version); null when none. */
+  readonly location: string | null;
+  /** `<outDir>/builds/<buildId>` on this process — the self-hosted archive. */
+  readonly localBuildDir: string;
+}
+
+/**
  * One adapter per CAELO_PROVIDER. The deploy ops load the active
  * adapter at handler time (NOT at module load time) so a single
  * admin-core build can be reused across providers without static
@@ -163,6 +178,31 @@ export interface StaticPublisher {
     target: DeployTarget;
     /** The staged run the build was checked against. */
     sourceRunId: string;
+  }): Promise<PromoteSummary>;
+
+  /**
+   * #1155 — read files of the build that is live on `target`, as visitors
+   * get them. A path the build does not contain maps to null.
+   */
+  readLiveFiles(args: {
+    target: DeployTarget;
+    live: LiveBuildRef;
+    paths: readonly string[];
+  }): Promise<Map<string, Buffer | null>>;
+
+  /**
+   * #1155 — the plugin-data build's release: the live build exactly as it
+   * is, with `files` (existing build paths) replaced, released as a new
+   * live version under `runId`. Every other file, header, redirect and
+   * setting of the live release is kept as it is. Refuses when the live
+   * release is not `live` (someone released outside Caelo), so it never
+   * publishes on top of something no deploy run recorded.
+   */
+  publishPluginData(args: {
+    target: DeployTarget;
+    live: LiveBuildRef;
+    runId: string;
+    files: ReadonlyMap<string, Buffer>;
   }): Promise<PromoteSummary>;
 
   /**

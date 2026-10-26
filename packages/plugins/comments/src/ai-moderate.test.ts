@@ -194,7 +194,13 @@ describe("ai_moderate", () => {
   it("drains a decided comment to comment_archive and deletes it from cms_public", async () => {
     const h = harness({ aiText: "APPROVE" });
     const r = await run(h, { commentId: COMMENT_ID });
-    expect(r).toEqual({ commentId: COMMENT_ID, status: "approved", verdict: "APPROVE" });
+    // #1155 — an approval names the page whose baked thread it changed.
+    expect(r).toEqual({
+      commentId: COMMENT_ID,
+      status: "approved",
+      verdict: "APPROVE",
+      pageId: "page-1",
+    });
     expect(h.drained).toEqual([{ id: COMMENT_ID, status: "approved" }]);
     expect(h.deleted).toEqual([COMMENT_ID]);
   });

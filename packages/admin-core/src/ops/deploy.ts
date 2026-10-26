@@ -91,6 +91,7 @@ import {
 } from "../deploy/static-publisher.js";
 import { unpublishedLinkTargetSchema } from "../deploy/unpublished-links.js";
 import { verifyStagedBuildServed } from "../deploy/verify-staged-serve.js";
+import { forgetAllBakes, rewindBakesToRun } from "../plugin-data/stale-pages.js";
 import { jsonbParam } from "../sql-helpers.js";
 import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import { json } from "./quality/_shared.js";
@@ -117,7 +118,7 @@ import { setStagingOrigin } from "./staging_access.js";
  * actually mounts (for the dev compose stack: `<checkout>/apps/admin`).
  * An explicit per-call `repoRoot` (tests) still wins.
  */
-function resolveOutputRoot(explicit?: string): string {
+export function resolveOutputRoot(explicit?: string): string {
   return explicit ?? process.env.CAELO_OUTPUT_ROOT ?? process.cwd();
 }
 
@@ -180,6 +181,13 @@ const runRow = z.object({
   errorMessage: z.string().nullable(),
   buildId: z.string().nullable(),
   progress: z.object({ pagesDone: z.number().int(), pagesTotal: z.number().int() }).nullable(),
+  /**
+   * #1155 — `site`: a build of the site (Stage, Publish live, a production
+   * build, a rollback); `plugin_data`: the live build republished with
+   * fresher plugin data only. A `plugin_data` run makes nothing else live,
+   * so "when did a human last publish" skips it.
+   */
+  buildKind: z.enum(["site", "plugin_data"]),
 });
 
 interface TargetDbRow {
@@ -220,6 +228,7 @@ interface RunDbRow {
   error_message: string | null;
   build_id: string | null;
   progress: { pagesDone: number; pagesTotal: number } | string | null;
+  build_kind: "site" | "plugin_data";
 }
 
 function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
@@ -244,6 +253,7 @@ function rowToRun(r: RunDbRow): z.infer<typeof runRow> {
     errorMessage: r.error_message,
     buildId: r.build_id,
     progress,
+    buildKind: r.build_kind,
   };
 }
 
@@ -300,7 +310,7 @@ export const listDeployRunsOp = defineOperation({
              r.status,
              r.started_at, r.finished_at,
              r.page_count, r.file_count, r.error_message,
-             r.build_id, r.progress
+             r.build_id, r.progress, r.build_kind
       FROM deploy_runs r JOIN deploy_targets t ON t.id = r.target_id
       ORDER BY r.started_at DESC
       LIMIT ${input.limit}
@@ -1346,7 +1356,12 @@ export const promoteDeployOp = defineOperation({
       // Epic #1107 — Publish live: the pages of the build it ships get
       // their first_published_at — the staged run's start, which is what
       // both the staged build and its live rebuild rendered.
-      if (to.env === "production") await stampFirstPublished(tx, fromRunId);
+      if (to.env === "production") {
+        await stampFirstPublished(tx, fromRunId);
+        // #1155 — the promoted build baked its plugin data when it was
+        // staged; bakes a plugin-data build made since are pending again.
+        await rewindBakesToRun(tx, fromRunId);
+      }
       timer.lap("finish");
       await tx.execute(sql`
         UPDATE deploy_runs
@@ -1642,6 +1657,8 @@ export const rollbackDeployOp = defineOperation({
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const newRunId = newRunRows[0]?.id ?? "";
+    // #1155 — the build put back may lack any bake made since it ran.
+    if (target.env === "production") await forgetAllBakes(tx);
     return ok({ buildId, newRunId });
   },
 });

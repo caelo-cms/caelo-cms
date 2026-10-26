@@ -17,6 +17,12 @@
  * And the automatic redeploy's trigger does not come back: no admin source
  * polls `audit_events` on a timer.
  *
+ * The one thing a timer may publish is plugin data (#1155): the plugin-data
+ * build republishes the LIVE build with fresher plugin-owned bake regions
+ * and nothing else. It never starts the generator over cms_admin, never
+ * calls the deploy ops above, and is the only caller of the publisher's
+ * `publishPluginData` — pinned below.
+ *
  * Pure static scan over the workspace sources (tests, e2e suites and build
  * output excluded), in the style of scripts/codeql-workflow.test.ts.
  */
@@ -122,6 +128,33 @@ describe("no automatic caller starts a production build (#1154)", () => {
       (s) => /setInterval\s*\(/.test(s.text) && /\bFROM\s+audit_events\b/i.test(s.text),
     ).map((s) => s.path);
     expect(polling).toEqual([]);
+  });
+
+  it("only the plugin-data build publishes plugin data, and it renders nothing from cms_admin (#1155)", () => {
+    const BUILD = "packages/admin-core/src/plugin-data/build.ts";
+    const publishers = ALL_SOURCES.filter((s) => /\.publishPluginData\s*\(/.test(s.text)).map(
+      (s) => s.path,
+    );
+    expect(publishers).toEqual([BUILD]);
+    const build = ALL_SOURCES.find((s) => s.path === BUILD)?.text ?? "";
+    // Its input is the live build's files, never a render of main.
+    for (const forbidden of [
+      /\brunGenerator\b/,
+      /\bgenerateSite\b/,
+      /static-generator\/src\/cli/,
+      /\bpromoteToProduction\b/,
+      /\bpublishLiveBuild\b/,
+      /\bpublishStaging\b/,
+      DEPLOY_CALL,
+    ]) {
+      expect(forbidden.test(build)).toBe(false);
+    }
+    // The tick runs that op and nothing that builds the site.
+    const worker = ALL_SOURCES.find(
+      (s) => s.path === "packages/admin-core/src/plugin-data/worker.ts",
+    );
+    expect(worker?.text).toContain('"deploy.build_plugin_data"');
+    expect(DEPLOY_CALL.test(worker?.text ?? "")).toBe(false);
   });
 
   it("the redeploy orchestrator package is gone", () => {
