@@ -300,15 +300,18 @@ async function syncTarget(
       gone: result.goneCount,
       shadowed: result.shadowedCount,
     });
-    if (result.servedLocation !== undefined) {
-      // The served run's build now lives at a new provider location (a new
-      // Firebase Hosting version with the same files). A rollback to that
-      // run reads its recorded location, which release retention may delete
-      // once redirect-only releases pile up — so the run follows its build.
+    if (result.movedServedBuild !== undefined) {
+      // The served build now lives at a new provider location (a new
+      // Firebase Hosting version with the same files). A rollback reads a
+      // run's recorded location, which release retention may delete once
+      // redirect-only releases pile up — so the run that recorded the
+      // copied version follows it. Matched by that version, not by which
+      // run looks newest, so no other run's build can be pointed at.
       await tx.execute(sql`
         UPDATE deploy_runs
-        SET publish_summary = jsonb_set(publish_summary, '{location}', to_jsonb(${result.servedLocation}::text))
-        WHERE id = ${servedRunId}::uuid AND publish_summary ? 'location'
+        SET publish_summary = jsonb_set(publish_summary, '{location}', to_jsonb(${result.movedServedBuild.to}::text))
+        WHERE target_id = ${t.id}::uuid
+          AND publish_summary->>'location' = ${result.movedServedBuild.from}
       `);
     }
   } catch (e) {
@@ -326,8 +329,8 @@ async function syncTarget(
 }
 
 /**
- * The deploy run whose build `t` serves: production — its newest succeeded
- * run with a build (Publish live, rollback); staging — the run the staging
+ * The deploy run whose build `t` serves: production — its last released
+ * succeeded run with a build (Publish live, rollback); staging — the run the staging
  * host serves (#650, `staging_access.origin_run_id`), else its newest
  * succeeded run. Null when nothing was ever published there.
  */
@@ -340,10 +343,13 @@ async function servedRun(tx: TransactionRunner, t: TargetRow): Promise<string | 
     `)) as unknown as { run_id: string | null }[];
     if (origin[0]?.run_id) return origin[0].run_id;
   }
+  // Release order, not start order: every publish and rollback marks its
+  // run finished while it holds the target's publish lock, so the newest
+  // finished_at is the build released last.
   const rows = (await tx.execute(sql`
     SELECT id::text AS id FROM deploy_runs
     WHERE target_id = ${t.id}::uuid AND status = 'succeeded' AND build_id IS NOT NULL
-    ORDER BY started_at DESC LIMIT 1
+    ORDER BY finished_at DESC NULLS LAST, started_at DESC LIMIT 1
   `)) as unknown as { id: string }[];
   return rows[0]?.id ?? null;
 }

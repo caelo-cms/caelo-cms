@@ -162,7 +162,8 @@ describe("syncFirebaseRedirects (#1157)", () => {
     ]);
     expect(result.location).toBe(fake.releases.get("live")?.[0] ?? "");
     // The served run follows its build to the new version (rollback source).
-    expect(result.servedLocation).toBe(result.location);
+    expect(result.movedServedBuild?.to).toBe(result.location);
+    expect(result.movedServedBuild?.from).toMatch(/versions\/seed/);
     expect(fake.releaseBodies).toEqual([{ message: "Caelo: redirects updated (no build)" }]);
   });
 

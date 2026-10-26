@@ -47,11 +47,16 @@ export const syncRedirectsProviderOp = defineOperation({
   input: z
     .object({
       trigger: z.enum(["save", "retry", "manual"]).default("manual"),
+      /** Only these deploy targets (the retry worker passes the ones that are due). */
+      targetIds: z.array(z.string().uuid()).max(100).optional(),
     })
     .strict(),
   output: z.object({ targets: z.array(outcomeSchema) }),
   handler: async (ctx, input, tx) => {
-    const targets = await syncRedirectsInTx(tx, ctx, { trigger: input.trigger });
+    const targets = await syncRedirectsInTx(tx, ctx, {
+      trigger: input.trigger,
+      ...(input.targetIds ? { targetIds: input.targetIds } : {}),
+    });
     return ok({ targets: targets.map((t) => ({ ...t, unservedTargets: [...t.unservedTargets] })) });
   },
 });

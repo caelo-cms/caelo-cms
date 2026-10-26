@@ -266,11 +266,11 @@ export interface RedirectSyncResult {
   readonly location: string;
   /**
    * Set when the sync moved the served build itself to a new location (a
-   * new Firebase Hosting version with the same files): the served deploy
-   * run's `publish_summary.location` follows it, so a rollback to that run
-   * still finds its build after older versions age out.
+   * new Firebase Hosting version with the same files): the deploy run whose
+   * `publish_summary.location` is `from` moves to `to`, so a rollback to
+   * that run still finds its build after older versions age out.
    */
-  readonly servedLocation?: string;
+  readonly movedServedBuild?: { readonly from: string; readonly to: string };
 }
 
 /** What {@link StaticPublisher.selectStagingPreview} did with the other previews. */

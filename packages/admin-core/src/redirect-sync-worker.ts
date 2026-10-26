@@ -42,32 +42,37 @@ let runs = 0;
 async function runSync(
   opts: RedirectSyncWorkerOpts,
   trigger: RedirectSyncTrigger,
+  targetIds?: readonly string[],
 ): Promise<RedirectSyncOutcome[]> {
   const r = await execute(
     opts.registry,
     opts.adapter,
     { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: `redirect-sync-${runs++}` },
     "redirects.sync_provider",
-    { trigger },
+    { trigger, ...(targetIds ? { targetIds: [...targetIds] } : {}) },
   );
   if (!r.ok) throw new Error(`redirects.sync_provider failed: ${describeError(r.error)}`);
   return (r.value as { targets: RedirectSyncOutcome[] }).targets;
 }
 
-/** One poll: retry when any target is behind and due. */
+/** One poll: retry the targets that are behind and whose backoff has elapsed. */
 async function pollOnce(opts: RedirectSyncWorkerOpts): Promise<void> {
-  const due = await opts.adapter.withAdminTransaction(
+  const due = (await opts.adapter.withAdminTransaction(
     { actorId: SYSTEM_ACTOR_ID, actorKind: "system", requestId: `redirect-sync-poll-${runs++}` },
     async (tx) =>
-      (await tx.execute(sql`
-        SELECT 1 FROM redirect_sync_state
+      tx.execute(sql`
+        SELECT target_id::text AS target_id FROM redirect_sync_state
         WHERE wanted_revision > synced_revision
           AND (next_attempt_at IS NULL OR next_attempt_at <= now())
-        LIMIT 1
-      `)) as unknown as unknown[],
-  );
+      `),
+  )) as unknown as { target_id: string }[];
   if (due.length === 0) return;
-  const outcomes = await runSync(opts, "retry");
+  // Only the due ones: another target may still be backing off.
+  const outcomes = await runSync(
+    opts,
+    "retry",
+    due.map((d) => d.target_id),
+  );
   for (const o of outcomes.filter((x) => x.status === "failed")) {
     console.error("[redirect-sync-worker] the redirects are still not live", {
       target: o.targetName,

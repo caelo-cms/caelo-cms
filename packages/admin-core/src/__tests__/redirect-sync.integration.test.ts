@@ -282,6 +282,28 @@ describe("redirect sync on save (#1157)", () => {
     }
   });
 
+  it("a retry only touches targets whose backoff has elapsed", async () => {
+    stopRedirectSyncWorker();
+    try {
+      await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
+      // Production backs off for an hour; staging (nothing published) is due.
+      await sys(
+        (tx) => tx`
+          UPDATE redirect_sync_state SET next_attempt_at = CASE
+            WHEN target_id = ${targets.production.id}::uuid THEN now() + interval '1 hour'
+            ELSE now() - interval '1 second' END
+        `,
+      );
+      await _redirectSyncPollOnceForTests({ adapter, registry });
+      const s = await status();
+      expect(s.staging?.inSync).toBe(true);
+      expect(s.production?.inSync).toBe(false);
+      expect(s.production?.last).toBeNull();
+    } finally {
+      startRedirectSyncWorker({ adapter, registry, intervalMs: 24 * 60 * 60 * 1000 });
+    }
+  });
+
   it("staging that serves a build gets its own snippet", async () => {
     await serve("staging", { "index.html": "home staging" });
     await sys(
