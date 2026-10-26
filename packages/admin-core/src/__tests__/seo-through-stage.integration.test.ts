@@ -58,9 +58,10 @@ interface Chat {
   ctx: ExecutionContext;
 }
 
-async function chat(title: string): Promise<Chat> {
+async function chat(title: string, isolation?: "experiment"): Promise<Chat> {
   const v = await op<{ chatSessionId: string; chatBranchId: string }>(SYS, "chat.create_session", {
     title: `${PFX}${title}`,
+    ...(isolation ? { isolation } : {}),
   });
   return {
     id: v.chatSessionId,
@@ -286,5 +287,54 @@ describe("#1156 page SEO goes through Stage", () => {
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(JSON.stringify(r.error)).toContain("list_pages");
+  });
+  it("keeps an SEO write made outside the chat when the chat's title edit is staged", async () => {
+    const p = await page("blog");
+    await op(SYS, "pages_seo.set", { pageId: p, metaDescription: "Old text." });
+    const a = await chat("Title only");
+    await op(a.ctx, "pages.update", { pageId: p, title: "Our blog" });
+    // The panel saves a new description meanwhile (outside any chat).
+    await op(SYS, "pages_seo.set", { pageId: p, metaDescription: "Panel text." });
+    expect((await seo(a.ctx, p))?.metaDescription).toBe("Panel text.");
+
+    await op(SYS, "chat.merge_draft_to_main", { chatSessionIds: [a.id] });
+    expect(await liveDescription(p)).toBe("Panel text.");
+  });
+
+  it("applies repeated pages of one bulk optimize in input order", async () => {
+    const p = await page("faq");
+    const a = await chat("Bulk twice");
+    await op(a.ctx, "pages_seo.optimize_many", {
+      updates: [
+        { pageId: p, metaDescription: "First.", ogImageAssetId: null },
+        { pageId: p, metaDescription: "Second." },
+      ],
+    });
+    expect((await seo(a.ctx, p))?.metaDescription).toBe("Second.");
+    const entities = await withSql(
+      (tx) =>
+        tx`SELECT count(*)::int AS n FROM page_snapshots ps JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+           WHERE ps.page_id = ${p}::uuid AND ss.op_kind = 'pages_seo.optimize'` as unknown as Promise<
+          { n: number }[]
+        >,
+    );
+    expect(entities[0]?.n).toBe(1);
+  });
+
+  it("takes nothing over from another chat when an SEO write is refused", async () => {
+    const p = await page("press");
+    const exp = await chat("Holds press", "experiment");
+    await op(exp.ctx, "pages.update", { pageId: p, title: "Press room" });
+    const d = await chat("Bulk with a bad id");
+    const r = await execute(registry, adapter, d.ctx, "pages_seo.optimize_many", {
+      updates: [
+        { pageId: p, metaDescription: "Press." },
+        { pageId: "00000000-0000-4000-8000-000000000002", metaDescription: "x" },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    // The experiment still owns its change: the failed batch rolled back.
+    expect((await pendingPages(exp.id)).map((x) => x.entityId)).toEqual([p]);
+    expect(await pendingPages(d.id)).toEqual([]);
   });
 });

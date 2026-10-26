@@ -186,7 +186,13 @@ export const revertPageOp = defineOperation({
     });
 
     // Emit fresh snapshot capturing whichever side(s) were restored.
-    const newPageState = await loadPageState(tx, input.pageId);
+    const loadedPageState = await loadPageState(tx, input.pageId);
+    // #1156 — the restored SEO is part of what this revert wrote.
+    const restoredSeo = pageRows[0]
+      ? parseAndUpgradePageState(parseSnapshotState(pageRows[0].state)).seo
+      : undefined;
+    const newPageState =
+      loadedPageState && restoredSeo ? { ...loadedPageState, seo: restoredSeo } : loadedPageState;
     const newLayoutState = layoutRows[0] ? await loadPageLayoutState(tx, input.pageId) : null;
     const entities: import("../../snapshots/index.js").SnapshotEntity[] = [];
     if (newPageState) entities.push({ kind: "page", entityId: input.pageId, state: newPageState });

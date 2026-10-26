@@ -22,7 +22,7 @@
  * Zod-validated field. Per CLAUDE.md §2.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
 import {
   err,
   ok,
@@ -623,13 +623,22 @@ export const pagesSeoOptimizeManyOp = defineOperation({
     .strict(),
   output: z.object({ updated: z.number().int() }),
   handler: async (ctx, input, tx) => {
-    const writes: Parameters<typeof commitPageSeoWrites>[2][number][] = [];
+    // One write per page: a page named twice gets its updates applied in
+    // input order (one snapshot entity, so "latest wins" never ties).
+    const byPage = new Map<string, Parameters<typeof commitPageSeoWrites>[2][number]>();
     for (const u of input.updates) {
+      const prev = byPage.get(u.pageId);
+      if (prev) {
+        byPage.set(u.pageId, { opened: prev.opened, next: optimizedSeo(prev.next, u) });
+        continue;
+      }
       const opened = await openPageSeoWrite(ctx, tx, "pages_seo.optimize_many", u.pageId);
-      // One unknown page aborts the batch: nothing was written yet.
-      if (!opened.ok) return opened;
-      writes.push({ opened: opened.value, next: optimizedSeo(opened.value.current, u) });
+      // Thrown, not returned: an earlier item's lock may have taken over
+      // another chat's change, and only an abort rolls that back too.
+      if (!opened.ok) throw new OperationAbortError(opened.error);
+      byPage.set(u.pageId, { opened: opened.value, next: optimizedSeo(opened.value.current, u) });
     }
+    const writes = [...byPage.values()];
     await commitPageSeoWrites(
       ctx,
       tx,

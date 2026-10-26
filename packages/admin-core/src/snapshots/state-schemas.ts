@@ -116,7 +116,7 @@ const pageStateV1 = z.preprocess(
       pageTypeId: z.string().uuid(),
       properties: z.record(z.string(), z.unknown()),
       terms: z.array(z.string()),
-      // #1156 — absent on snapshots written before SEO rode the page; see
+      // #1156 — absent when the snapshot did not write SEO; see
       // PageState.seo for how writers treat that.
       seo: pageSeoStateV1.optional(),
     })

@@ -10,12 +10,17 @@
  * (`chat/publish.ts`), "undo this chat" drops it, a revert restores it, and
  * nothing of it reaches a build before the merge.
  *
+ * `state.seo` is present exactly when the branch wrote SEO: an SEO op sets
+ * it and a later edit of the page on the branch carries it along; a page
+ * snapshot that never touched SEO (a title edit) has none. So a Stage of a
+ * title edit leaves `pages_seo` alone, and an SEO write made outside the
+ * chat in the meantime survives it.
+ *
  * The overlay rule every reader shares ({@link pageSeoViewSql}): the
  * page's LATEST pending page snapshot on the caller's branch decides. When
- * that snapshot carries `seo`, its fields win; when it carries none (a
- * snapshot written before SEO rode the page) or the branch has no pending
- * snapshot of the page, the live row stands. Outside a chat the view is
- * the live row.
+ * that snapshot carries `seo`, its fields win; when it carries none or the
+ * branch has no pending snapshot of the page, the live row stands. Outside
+ * a chat the view is the live row.
  *
  * A missing `pages_seo` row and a row holding the column defaults are the
  * same thing to every reader (the build reads both as "no description");

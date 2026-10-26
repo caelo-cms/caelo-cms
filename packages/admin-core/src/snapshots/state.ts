@@ -87,12 +87,14 @@ export interface PageState {
   /** Terms as `caelo:term/<listId>/<itemId>`, materialised into `page_terms` at merge. */
   readonly terms: readonly string[];
   /**
-   * #1156 — the page's SEO fields (`pages_seo`). SEO belongs to the page,
-   * so it rides the page snapshot: a chat's SEO edit is a pending page
-   * change, merged by Stage, undone with the chat, restored by a revert.
-   * `undefined` only on snapshots written before SEO went through Stage:
-   * they never captured it, so replaying them (merge / revert) leaves the
-   * live row untouched.
+   * #1156 — the page's SEO fields (`pages_seo`), present exactly when this
+   * snapshot (or the branch state it was built on) WROTE them: an SEO op
+   * sets it, a later edit of the same page on the branch carries it along.
+   * SEO belongs to the page, so a chat's SEO edit is a pending page change,
+   * merged by Stage, undone with the chat, restored by a revert.
+   * `undefined` = this snapshot did not change SEO: replaying it (merge /
+   * revert) leaves the live row untouched, so an SEO write outside the
+   * chat made meanwhile survives a Stage of the chat's title edit.
    */
   readonly seo?: PageSeoState;
 }

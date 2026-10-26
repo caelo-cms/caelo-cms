@@ -43,6 +43,20 @@ export async function openPageSeoWrite(
   operation: string,
   pageId: string,
 ): Promise<Result<OpenedPageSeo, QueryError>> {
+  const load = () =>
+    ctx.chatBranchId
+      ? loadPageStateWithBranchOverlay(tx, pageId, ctx.chatBranchId)
+      : loadPageState(tx, pageId);
+  const refusal = () =>
+    err({
+      kind: "HandlerError" as const,
+      operation,
+      message: `no page with id ${pageId} (or it is deleted) — take page ids from list_pages and call again.`,
+    });
+  // Refuse an unknown page BEFORE the lock: taking the lock can take over
+  // another chat's pending change, which must not happen for a refused write.
+  const before = await load();
+  if (!before || before.deletedAt !== null) return refusal();
   if (ctx.chatBranchId) {
     const lock = await checkAndAcquireEntityLock(tx, {
       kind: "page",
@@ -54,18 +68,11 @@ export async function openPageSeoWrite(
       return err(await entityWriteBlockedError(tx, operation, "page", pageId, lock));
     }
   }
-  const page = ctx.chatBranchId
-    ? await loadPageStateWithBranchOverlay(tx, pageId, ctx.chatBranchId)
-    : await loadPageState(tx, pageId);
-  if (!page || page.deletedAt !== null) {
-    return err({
-      kind: "HandlerError",
-      operation,
-      message: `no page with id ${pageId} (or it is deleted) — take page ids from list_pages and call again.`,
-    });
-  }
-  // A pending snapshot written before SEO rode the page carries none: the
-  // live row is still this page's SEO in the caller's view.
+  // Read again under the lock (a takeover may have moved a change here).
+  const page = await load();
+  if (!page || page.deletedAt !== null) return refusal();
+  // A pending page snapshot that did not write SEO carries none: the live
+  // row is still this page's SEO in the caller's view (seo/page-seo.ts).
   const current =
     page.seo ?? (await loadLivePageSeo(tx, [pageId])).get(pageId) ?? PAGE_SEO_COLUMN_DEFAULTS;
   return ok({ pageId, page, current });
@@ -101,7 +108,8 @@ export async function commitPageSeoWrites(
     }
     await applyPageSeoState(tx, opened.pageId, next, ctx.actorId);
     const state = await loadPageState(tx, opened.pageId);
-    if (state) entities.push({ kind: "page", entityId: opened.pageId, state });
+    if (state)
+      entities.push({ kind: "page", entityId: opened.pageId, state: { ...state, seo: next } });
   }
   await emitSnapshot(tx, {
     actorId: ctx.actorId,

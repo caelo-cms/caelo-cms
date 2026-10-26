@@ -12,6 +12,9 @@ import { execute } from "@caelo-cms/query-api";
 import { buildMediaUrl, type ExecutionContext } from "@caelo-cms/shared";
 import { getQueryContext } from "./query.js";
 
+/** Renditions the SEO sheet shows the OG image in, smallest suitable first. */
+const OG_PREVIEW_VARIANTS = ["webp-400", "webp-800", "webp-1200", "webp-1600", "orig"] as const;
+
 /** One page's SEO as the editor shows it. */
 export interface PageSeoInfo {
   readonly title: string;
@@ -56,8 +59,15 @@ export async function loadPageSeoInfo(
   let ogImageUrl: string | null = null;
   if (seo?.ogImageAssetId) {
     const m = await execute(registry, adapter, ctx, "media.get", { assetId: seo.ogImageAssetId });
-    const slug = m.ok ? (m.value as { asset: { slug: string } | null }).asset?.slug : undefined;
-    if (slug) ogImageUrl = buildMediaUrl(slug, "webp-400");
+    const asset = m.ok
+      ? (m.value as { asset: { slug: string; variants: { variant: string }[] } | null }).asset
+      : null;
+    // Only a rendition the pipeline made: small images, SVGs and animated
+    // GIFs have no webp-400, and the media route 404s an absent variant.
+    const variant = asset
+      ? OG_PREVIEW_VARIANTS.find((v) => asset.variants.some((x) => x.variant === v))
+      : undefined;
+    if (asset && variant) ogImageUrl = buildMediaUrl(asset.slug, variant);
   }
   const newPage = mainTitle === null;
   const pending = [

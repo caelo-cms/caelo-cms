@@ -9,7 +9,6 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
-import { loadLivePageSeo, PAGE_SEO_COLUMN_DEFAULTS } from "../seo/page-seo.js";
 import type {
   ContentInstanceState,
   ModuleState,
@@ -162,9 +161,6 @@ export async function loadPageState(
     ORDER BY created_at, list_id, item_id
   `)) as unknown as { ref: string }[];
   const properties = typeof r.properties === "string" ? JSON.parse(r.properties) : r.properties;
-  // #1156 — SEO rides the page snapshot; a page without a row reads as the
-  // column defaults (a merge of this state then creates that row).
-  const seo = (await loadLivePageSeo(tx, [pageId])).get(pageId) ?? PAGE_SEO_COLUMN_DEFAULTS;
   return {
     schemaVersion: 1,
     slug: r.slug,
@@ -177,7 +173,6 @@ export async function loadPageState(
     pageTypeId: r.page_type_id,
     properties: (properties ?? {}) as Record<string, unknown>,
     terms: terms.map((t) => t.ref),
-    seo,
   };
 }
 

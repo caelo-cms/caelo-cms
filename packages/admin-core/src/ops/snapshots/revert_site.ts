@@ -308,7 +308,11 @@ export const revertSiteOp = defineOperation({
     const newPages = await Promise.all(
       parsedPages.map(async (r) => ({
         pageId: r.entity_id,
-        state: (await loadPageState(tx, r.entity_id)) ?? r.state,
+        state: await (async () => {
+          const loaded = await loadPageState(tx, r.entity_id);
+          // #1156 — the restored SEO is part of what this revert wrote.
+          return loaded ? { ...loaded, ...(r.state.seo ? { seo: r.state.seo } : {}) } : r.state;
+        })(),
       })),
     );
     const newLayouts = await Promise.all(

@@ -820,8 +820,8 @@ export async function mergeWindowToMain(
           updated_at     = now()
       `);
       await replacePageTerms(tx, e.entityId, e.state.terms);
-      // #1156 — the page's SEO travels with it (absent on snapshots written
-      // before it did: the live row stays as it is).
+      // #1156 — the page's SEO travels with it, when this branch wrote it
+      // (absent otherwise: the live row stays as it is).
       if (e.state.seo) await applyPageSeoState(tx, e.entityId, e.state.seo, ctx.actorId);
     } else if (e.kind === "pageLayout") {
       // v0.12.0 — page_modules now carries content_instance_id (NOT NULL)
