@@ -323,6 +323,11 @@ interface BugReport {
   blockedTask: boolean;
   status: string;
   source: string;
+  /** Epic #901 forwarding: `queued`, `sent`, `failed`, `local_only` ("" on older captures). */
+  forwardingState: string;
+  /** The GitHub issue the bug intake filed or matched, once known. */
+  upstreamIssueUrl: string | null;
+  forwardError: string | null;
 }
 
 /** Rendered rows are capped so a pathological run can't blow GitHub's 65k comment limit. */
@@ -381,6 +386,9 @@ export function parseBugReports(raw: string): BugReport[] | null {
       blockedTask: row.blockedTask === true,
       status: str(row.status),
       source: str(row.source),
+      forwardingState: str(row.forwardingState),
+      upstreamIssueUrl: strOrNull(row.upstreamIssueUrl),
+      forwardError: strOrNull(row.forwardError),
     };
   });
 }
@@ -467,7 +475,12 @@ function fenceFor(body: string): string {
 /** Ledger issue for a report, or a loud "new" — the rows bug-gate.ts fails on. */
 function issueCell(b: BugReport): string {
   const known = findKnownBug(b);
-  return known ? `#${known.issue}` : "**new**";
+  if (known) return `#${known.issue}`;
+  // Epic #901 — a new report forwarded by the run carries the intake's issue.
+  const m = b.upstreamIssueUrl?.match(/\/issues\/(\d+)$/);
+  if (m) return `**new** #${m[1]}`;
+  if (b.forwardingState === "sent") return "**new** (issue pending)";
+  return "**new**";
 }
 
 /**

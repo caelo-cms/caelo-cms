@@ -360,6 +360,19 @@ describe("formatBugSection", () => {
     expect(md).toContain("| — | yes | **new** |");
   });
 
+  it("shows the issue the bug intake filed for a forwarded report", () => {
+    const rows = parseBugReports(BUGS) ?? [];
+    const first = rows[0];
+    if (!first) throw new Error("fixture has no rows");
+    const forwarded = [
+      { ...first, forwardingState: "sent", upstreamIssueUrl: "https://github.com/o/r/issues/77" },
+      { ...first, id: "x2", forwardingState: "sent", upstreamIssueUrl: null },
+    ];
+    const md = formatBugSection(forwarded).join("\n");
+    expect(md).toContain("**new** #77");
+    expect(md).toContain("**new** (issue pending)");
+  });
+
   it("carries diagnosis in a collapsed details block", () => {
     const md = formatBugSection(parseBugReports(BUGS)).join("\n");
     expect(md).toContain("<summary>Bug details (3)</summary>");

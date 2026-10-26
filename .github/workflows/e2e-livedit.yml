@@ -294,6 +294,10 @@ jobs:
           # generation). Absent ⇒ that scenario skips itself. Add the secret
           # in repo Settings → Secrets and variables → Actions to enable it.
           GOOGLE_GENERATIVE_AI_API_KEY: ${{ secrets.GOOGLE_GENERATIVE_AI_API_KEY }}
+          # Epic #901 — the test admin forwards every AI bug report to the
+          # Caelo bug intake, which files (or joins) its GitHub issue; the
+          # bug gate below blocks only more than 5 new reports.
+          CAELO_E2E_FORWARD_BUGS: "1"
         run: bun run e2e-livedit
 
       # Capture the REAL AI cost of this run from `ai_calls` (operator ask
@@ -374,7 +378,7 @@ jobs:
           mkdir -p "${OUT_DIR}"
           PGPASSWORD=${ADMIN_ROLE_PASSWORD} \
             psql "${ADMIN_DATABASE_URL}" -qAtc \
-            "SET caelo.actor_kind='system'; SELECT COALESCE(json_agg(json_build_object('id', id::text, 'createdAt', created_at::text, 'chatSessionId', chat_session_id::text, 'title', title, 'whatHappened', what_happened, 'expected', expected, 'suspectedTool', suspected_tool, 'evidence', evidence, 'severity', severity, 'blockedTask', blocked_task, 'status', status, 'source', source)), '[]'::json) FROM ai_bug_reports" \
+            "SET caelo.actor_kind='system'; SELECT COALESCE(json_agg(json_build_object('id', id::text, 'createdAt', created_at::text, 'chatSessionId', chat_session_id::text, 'title', title, 'whatHappened', what_happened, 'expected', expected, 'suspectedTool', suspected_tool, 'evidence', evidence, 'severity', severity, 'blockedTask', blocked_task, 'status', status, 'source', source, 'forwardingState', forwarding_state, 'upstreamIssueUrl', upstream_issue_url, 'forwardError', forward_error)), '[]'::json) FROM ai_bug_reports" \
             > "${OUT}" 2>/dev/null || echo '{}' > "${OUT}"
           # An empty/whitespace file is as useless as a missing one. The `{}`
           # sentinel is deliberately NOT an array — build-stats.ts reads that
@@ -402,10 +406,11 @@ jobs:
           fi
 
       # Detected-bug gate. A tool error the AI had to recover from is our
-      # defect (CLAUDE.md §1A/§4); as warnings these piled up unowned under
-      # every PR. Any report not triaged in e2e-livedit/lib/known-bugs.ts
-      # (issue-linked) fails the job. Runs after the capture above and before
-      # the always() uploads + PR comment, which still run on failure.
+      # defect (CLAUDE.md §1A/§4). Each new report was forwarded to the bug
+      # intake during the run, which files its issue; the gate lists them
+      # with that issue and fails only on more than 5 new reports
+      # (MAX_NEW_BUGS in lib/bug-gate.ts). Runs after the capture above and
+      # before the always() uploads + PR comment, which still run on failure.
       - name: Gate on new detected bugs
         if: always() && steps.provider-preflight.outcome == 'success'
         run: bun run apps/admin/e2e-livedit/lib/bug-gate.ts

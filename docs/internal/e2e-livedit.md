@@ -234,18 +234,26 @@ The metric surfaces the same three ways as cost:
 
 **Gating.** Every report is either *known* or *new*. Known means it matches
 an entry in `apps/admin/e2e-livedit/lib/known-bugs.ts`, which names the GitHub
-issue tracking its root-cause fix; the table's `Issue` column shows that issue
-or **new**. The `Gate on new detected bugs` step (`lib/bug-gate.ts`) fails the
-job on any new report, and also when the capture failed (it cannot tell
-"nothing found" from "could not check"). The reasoning: a tool error the AI
-recovered from is still our defect (CLAUDE.md §1A, §4), and while these were
-warnings they piled up under every PR without an owner.
+issue tracking its root-cause fix. New reports are **filed, not blocking**:
+the workflow sets `CAELO_E2E_FORWARD_BUGS=1`, `global-setup.ts` turns on bug
+forwarding for the test install, the admin's forwarding worker sends every
+report to the Caelo bug intake (epic #901) while the run goes on, and
+`global-teardown.ts` waits (up to 3 min) until none is still queued. The
+intake files the GitHub issue or joins an existing one for the same defect,
+and the table's `Issue` column shows it (`**new** #N`, or *issue pending*
+until the intake has one). The `Gate on new detected bugs` step
+(`lib/bug-gate.ts`) fails the job only on **more than 5 new reports**
+(`MAX_NEW_BUGS`) — that many is a broken tool surface, not a stray error —
+and when the capture failed (it cannot tell "nothing found" from "could not
+check"). A new report that did not reach the intake gets a `::warning`:
+there is no issue for it, so file it by hand. Why not block on one: a single
+tool error per run held the v0.11.0 release up for hours; it is still our
+defect (CLAUDE.md §1A, §4), and its issue is where it gets owned.
 
-When the gate fails on your PR: fix the root cause in our layer (tool
+When the gate fails on your PR: fix the root causes in our layer (tool
 description, Zod schema, op, an earlier result that states the requirement).
-Only if the fix is genuinely out of scope, open an issue and add a ledger
-entry with the narrowest `match` that identifies it. Remove the entry in the
-PR that fixes the issue.
+A ledger entry is only for a root cause that is tracked and out of scope;
+use the narrowest `match` and remove it in the PR that fixes the issue.
 
 `{}` vs `[]` is load-bearing: the workflow writes the `{}` sentinel when
 the psql capture fails, which `parseBugReports` reads as "no data" and
