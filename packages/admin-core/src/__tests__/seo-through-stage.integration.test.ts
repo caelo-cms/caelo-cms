@@ -337,4 +337,25 @@ describe("#1156 page SEO goes through Stage", () => {
     expect((await pendingPages(exp.id)).map((x) => x.entityId)).toEqual([p]);
     expect(await pendingPages(d.id)).toEqual([]);
   });
+  it("takes nothing over when autofill refuses (or no-ops on) an already-filled page", async () => {
+    const p = await page("careers");
+    await op(SYS, "pages_seo.autofill", { pageId: p, metaDescription: "Join us." });
+    const exp = await chat("Holds careers", "experiment");
+    await op(exp.ctx, "pages.update", { pageId: p, title: "Careers" });
+    const d = await chat("Autofill again");
+    const refused = await execute(registry, adapter, d.ctx, "pages_seo.autofill", {
+      pageId: p,
+      metaDescription: "Something else.",
+    });
+    expect(refused.ok).toBe(false);
+    expect(
+      await op<{ alreadyFilled: boolean }>(d.ctx, "pages_seo.autofill", {
+        pageId: p,
+        metaDescription: "Join us.",
+      }),
+    ).toEqual({ alreadyFilled: true });
+    // Neither call took the experiment's pending change over.
+    expect((await pendingPages(exp.id)).map((x) => x.entityId)).toEqual([p]);
+    expect(await pendingPages(d.id)).toEqual([]);
+  });
 });

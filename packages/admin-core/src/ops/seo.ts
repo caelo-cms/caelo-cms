@@ -22,7 +22,7 @@
  * Zod-validated field. Per CLAUDE.md §2.
  */
 
-import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError, type QueryError } from "@caelo-cms/query-api";
 import {
   err,
   ok,
@@ -36,7 +36,13 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
 import { loadPageSeoViews, PAGE_SEO_FIELDS, pageSeoViewSql } from "../seo/page-seo.js";
-import { commitPageSeoWrites, openPageSeoWrite, sameSeo } from "../seo/page-seo-write.js";
+import {
+  commitPageSeoWrites,
+  type OpenedPageSeo,
+  openPageSeoWrite,
+  peekPageSeo,
+  sameSeo,
+} from "../seo/page-seo-write.js";
 import type { PageSeoState } from "../snapshots/state.js";
 import { loadPageContentTexts } from "./content/page-content-text.js";
 
@@ -167,7 +173,13 @@ export const pagesSeoSetOp = defineOperation({
     const fieldCount = Object.keys(patch).length;
     if (fieldCount === 0) return ok({});
 
-    const opened = await openPageSeoWrite(ctx, tx, "pages_seo.set", input.pageId);
+    // Peek first: a set that changes nothing takes no lock (no takeover of
+    // another chat's pending change for a no-op).
+    const peek = await peekPageSeo(ctx, tx, "pages_seo.set", input.pageId);
+    if (!peek.ok) return peek;
+    const opened = sameSeo(peek.value.current, { ...peek.value.current, ...patch })
+      ? peek
+      : await openPageSeoWrite(ctx, tx, "pages_seo.set", input.pageId);
     if (!opened.ok) return opened;
     const next = { ...opened.value.current, ...patch };
     if (!sameSeo(opened.value.current, next)) {
@@ -193,6 +205,29 @@ export const pagesSeoSetOp = defineOperation({
   },
 });
 
+/**
+ * Fill-once (CLAUDE.md §2): the refusal for autofilling an already-filled
+ * page with a DIFFERENT text, or null when the text is the same (a no-op).
+ * The message carries the stored text, so the caller sees the page is NOT
+ * missing a description (nothing blocks a Stage on it) and which tool
+ * changes it on purpose.
+ */
+function alreadyAutofilled(target: PageSeoState, metaDescription: string): QueryError | null {
+  const current = target.metaDescription.trim();
+  if (current === metaDescription) return null;
+  const stored =
+    current.length > 0
+      ? `its meta description is already set: "${current}" — nothing is missing for a Stage. `
+      : "its description was removed after the first fill, so set it with set_page_seo_many. ";
+  return {
+    kind: "HandlerError",
+    operation: "pages_seo.autofill",
+    message:
+      `AlreadyAutofilled: this page's SEO was filled at ${target.autofilledAt}; ${stored}` +
+      "To change a filled description, use bulk_optimize_seo (explicit re-optimization) or set_page_seo_many (an exact text the operator dictated) — never autofill again.",
+  };
+}
+
 // ---------------------------------------------------------------------
 // pages_seo.autofill — fill-once. Refuses on already-filled.
 // ---------------------------------------------------------------------
@@ -211,39 +246,38 @@ export const pagesSeoAutofillOp = defineOperation({
     alreadyFilled: z.boolean(),
   }),
   handler: async (ctx, input, tx) => {
-    const opened = await openPageSeoWrite(ctx, tx, "pages_seo.autofill", input.pageId);
+    // Fill-once is decided on the peek, BEFORE the lock: a refused (or
+    // no-op) autofill must not take over another chat's pending change.
+    const peek = await peekPageSeo(ctx, tx, "pages_seo.autofill", input.pageId);
+    if (!peek.ok) return peek;
+    if (peek.value.current.autofilledAt !== null) {
+      const refusal = alreadyAutofilled(peek.value.current, input.metaDescription);
+      if (refusal) return err(refusal);
+      await recordAudit(tx, {
+        actorId: ctx.actorId,
+        requestId: ctx.requestId,
+        operation: "pages_seo.autofill",
+        input: { pageId: input.pageId, descLen: input.metaDescription.length },
+        succeeded: true,
+        entityId: input.pageId,
+        resultSummary: "unchanged (identical to the first fill)",
+      });
+      return ok({ alreadyFilled: true });
+    }
+    // Under the lock a takeover may bring in a fill: refused then (thrown,
+    // so the takeover rolls back), even for the same text.
+    const opened = await openPageSeoWrite(ctx, tx, "pages_seo.autofill", input.pageId, (o) =>
+      o.current.autofilledAt !== null
+        ? (alreadyAutofilled(o.current, input.metaDescription) ?? {
+            kind: "HandlerError",
+            operation: "pages_seo.autofill",
+            message:
+              "AlreadyAutofilled: another chat's first fill of this page was just adopted into this chat — read it with get_page_seo; nothing is missing for a Stage.",
+          })
+        : null,
+    );
     if (!opened.ok) return opened;
     const target = opened.value.current;
-    if (target.autofilledAt !== null) {
-      const current = target.metaDescription.trim();
-      if (current === input.metaDescription) {
-        await recordAudit(tx, {
-          actorId: ctx.actorId,
-          requestId: ctx.requestId,
-          operation: "pages_seo.autofill",
-          input: { pageId: input.pageId, descLen: input.metaDescription.length },
-          succeeded: true,
-          entityId: input.pageId,
-          resultSummary: "unchanged (identical to the first fill)",
-        });
-        return ok({ alreadyFilled: true });
-      }
-      // Fill-once (CLAUDE.md §2): a different text is a rewrite. The
-      // message carries the stored text, so the caller sees the page is
-      // NOT missing a description (nothing blocks a Stage on it) and
-      // which tool changes it on purpose.
-      const stored =
-        current.length > 0
-          ? `its meta description is already set: "${current}" — nothing is missing for a Stage. `
-          : "its description was removed after the first fill, so set it with set_page_seo_many. ";
-      return err({
-        kind: "HandlerError",
-        operation: "pages_seo.autofill",
-        message:
-          `AlreadyAutofilled: this page's SEO was filled at ${target.autofilledAt}; ${stored}` +
-          "To change a filled description, use bulk_optimize_seo (explicit re-optimization) or set_page_seo_many (an exact text the operator dictated) — never autofill again.",
-      });
-    }
     await commitPageSeoWrites(
       ctx,
       tx,
@@ -360,39 +394,44 @@ export const pagesSeoApplyTranslationOp = defineOperation({
     .strict(),
   output: z.object({ outcome: z.enum(["filled", "unchanged", "marked_stale"]) }),
   handler: async (ctx, input, tx) => {
-    const opened = await openPageSeoWrite(ctx, tx, "pages_seo.apply_translation", input.pageId);
-    if (!opened.ok) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages_seo.apply_translation",
-        message: `page ${input.pageId} not found or deleted — re-read the variant group and retry`,
-      });
-    }
-    const { current, page } = opened.value;
-
-    let outcome: "filled" | "unchanged" | "marked_stale";
-    let next: PageSeoState | null = null;
-    if (current.metaDescription === input.metaDescription) {
-      outcome = "unchanged";
-    } else if (current.metaDescription !== "" && page.status === "published") {
-      next = { ...current, optimizedAt: null };
-      outcome = "marked_stale";
-    } else {
-      next = {
+    const notFound = {
+      kind: "HandlerError" as const,
+      operation: "pages_seo.apply_translation",
+      message: `page ${input.pageId} not found or deleted — re-read the variant group and retry`,
+    };
+    const plan = (o: OpenedPageSeo) => {
+      const { current, page } = o;
+      if (current.metaDescription === input.metaDescription) {
+        return { outcome: "unchanged" as const, next: null };
+      }
+      if (current.metaDescription !== "" && page.status === "published") {
+        return { outcome: "marked_stale" as const, next: { ...current, optimizedAt: null } };
+      }
+      const next: PageSeoState = {
         ...current,
         metaDescription: input.metaDescription,
         autofilledAt: current.autofilledAt ?? new Date().toISOString(),
       };
-      outcome = "filled";
-    }
-    if (next && !sameSeo(current, next)) {
-      await commitPageSeoWrites(
-        ctx,
-        tx,
-        [{ opened: opened.value, next }],
-        "pages_seo.apply_translation",
-        `pages_seo.apply_translation slug=${page.slug} outcome=${outcome}`,
-      );
+      return { outcome: "filled" as const, next };
+    };
+    // Decided on the peek first: a call that writes nothing takes no lock
+    // (no takeover of another chat's pending change for a no-op).
+    const peek = await peekPageSeo(ctx, tx, "pages_seo.apply_translation", input.pageId);
+    if (!peek.ok) return err(notFound);
+    let { outcome, next } = plan(peek.value);
+    if (next && !sameSeo(peek.value.current, next)) {
+      const opened = await openPageSeoWrite(ctx, tx, "pages_seo.apply_translation", input.pageId);
+      if (!opened.ok) return err(notFound);
+      ({ outcome, next } = plan(opened.value));
+      if (next && !sameSeo(opened.value.current, next)) {
+        await commitPageSeoWrites(
+          ctx,
+          tx,
+          [{ opened: opened.value, next }],
+          "pages_seo.apply_translation",
+          `pages_seo.apply_translation slug=${opened.value.page.slug} outcome=${outcome}`,
+        );
+      }
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,

@@ -12,7 +12,7 @@
  * can restore it (CLAUDE.md §2: every write emits a snapshot).
  */
 
-import type { QueryError, TransactionRunner } from "@caelo-cms/query-api";
+import { OperationAbortError, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok, type Result } from "@caelo-cms/shared";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import {
@@ -33,49 +33,72 @@ export interface OpenedPageSeo {
 }
 
 /**
- * Lock the page (in a chat) and read what an SEO write builds on: the
- * page's state in the caller's view and its current SEO there. Refuses a
- * page the caller cannot see or that is deleted in its view.
+ * Read what an SEO write would build on, WITHOUT taking the lock: the
+ * page's state in the caller's view and its current SEO there. Ops decide
+ * their refusals on this first — taking the lock can take over another
+ * chat's pending change, which must not happen for a write that is then
+ * refused (it would commit with the refusal). Refuses a page the caller
+ * cannot see or that is deleted in its view.
+ */
+export async function peekPageSeo(
+  ctx: ExecutionContext,
+  tx: TransactionRunner,
+  operation: string,
+  pageId: string,
+): Promise<Result<OpenedPageSeo, QueryError>> {
+  const page = ctx.chatBranchId
+    ? await loadPageStateWithBranchOverlay(tx, pageId, ctx.chatBranchId)
+    : await loadPageState(tx, pageId);
+  if (!page || page.deletedAt !== null) {
+    return err({
+      kind: "HandlerError",
+      operation,
+      message: `no page with id ${pageId} (or it is deleted) — take page ids from list_pages and call again.`,
+    });
+  }
+  // A pending page snapshot that did not write SEO carries none: the live
+  // row is still this page's SEO in the caller's view (seo/page-seo.ts).
+  const current =
+    page.seo ?? (await loadLivePageSeo(tx, [pageId])).get(pageId) ?? PAGE_SEO_COLUMN_DEFAULTS;
+  return ok({ pageId, page, current });
+}
+
+/**
+ * Lock the page (in a chat) and read what an SEO write builds on, as
+ * {@link peekPageSeo} — which runs first, so an unknown page is refused
+ * before the lock.
+ *
+ * @param refuse the op's own refusal rule on the current SEO. Checked on
+ *   the peek (a refusal there returns before the lock) and again under the
+ *   lock: if a takeover changed the state into a refused one, the write
+ *   THROWS `OperationAbortError`, rolling the takeover back with it.
  */
 export async function openPageSeoWrite(
   ctx: ExecutionContext,
   tx: TransactionRunner,
   operation: string,
   pageId: string,
+  refuse?: (opened: OpenedPageSeo) => QueryError | null,
 ): Promise<Result<OpenedPageSeo, QueryError>> {
-  const load = () =>
-    ctx.chatBranchId
-      ? loadPageStateWithBranchOverlay(tx, pageId, ctx.chatBranchId)
-      : loadPageState(tx, pageId);
-  const refusal = () =>
-    err({
-      kind: "HandlerError" as const,
-      operation,
-      message: `no page with id ${pageId} (or it is deleted) — take page ids from list_pages and call again.`,
-    });
-  // Refuse an unknown page BEFORE the lock: taking the lock can take over
-  // another chat's pending change, which must not happen for a refused write.
-  const before = await load();
-  if (!before || before.deletedAt !== null) return refusal();
-  if (ctx.chatBranchId) {
-    const lock = await checkAndAcquireEntityLock(tx, {
-      kind: "page",
-      entityId: pageId,
-      chatBranchId: ctx.chatBranchId,
-      holderKey: ctx.chatTaskId,
-    });
-    if (!lock.permitted) {
-      return err(await entityWriteBlockedError(tx, operation, "page", pageId, lock));
-    }
+  const before = await peekPageSeo(ctx, tx, operation, pageId);
+  if (!before.ok) return before;
+  const early = refuse?.(before.value);
+  if (early) return err(early);
+  if (!ctx.chatBranchId) return before;
+  const lock = await checkAndAcquireEntityLock(tx, {
+    kind: "page",
+    entityId: pageId,
+    chatBranchId: ctx.chatBranchId,
+    holderKey: ctx.chatTaskId,
+  });
+  if (!lock.permitted) {
+    return err(await entityWriteBlockedError(tx, operation, "page", pageId, lock));
   }
   // Read again under the lock (a takeover may have moved a change here).
-  const page = await load();
-  if (!page || page.deletedAt !== null) return refusal();
-  // A pending page snapshot that did not write SEO carries none: the live
-  // row is still this page's SEO in the caller's view (seo/page-seo.ts).
-  const current =
-    page.seo ?? (await loadLivePageSeo(tx, [pageId])).get(pageId) ?? PAGE_SEO_COLUMN_DEFAULTS;
-  return ok({ pageId, page, current });
+  const opened = await peekPageSeo(ctx, tx, operation, pageId);
+  const late = opened.ok ? refuse?.(opened.value) : opened.error;
+  if (late) throw new OperationAbortError(late);
+  return opened;
 }
 
 /** True when `next` changes nothing of `current` (no write, no snapshot). */
