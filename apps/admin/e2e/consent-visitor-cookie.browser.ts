@@ -202,6 +202,10 @@ test.describe("with ratings, which declares the visitor-id purpose (functional)"
     expect(granted).toContain("analytics");
     expect(granted).not.toContain("functional");
     expect(await visitorCookie(context)).toBeUndefined();
+    // The site's analytics tag runs once analytics is granted.
+    expect(
+      await page.evaluate(() => (window as { __caeloE2eAnalytics?: boolean }).__caeloE2eAnalytics),
+    ).toBe(true);
   });
 
   test("allowing functional sets caelo_visitor_id; withdrawing in the banner deletes it (#677)", async ({
@@ -244,7 +248,11 @@ test.describe("without a plugin that declares the visitor-id purpose", () => {
     await decide(page, "[data-consent-accept-all]");
     await page.reload();
     await seen.settle();
-    expect(await grantedCategories(context)).toContain("functional");
+    // Accept-all grants what the banner offers: analytics (the site's tag),
+    // not functional — nothing on this site uses it without ratings.
+    const granted = await grantedCategories(context);
+    expect(granted).toContain("analytics");
+    expect(granted).not.toContain("functional");
     expect(await visitorCookie(context)).toBeUndefined();
     expect(seen.received.filter((s) => s.includes(`${VISITOR_COOKIE}=`))).toEqual([]);
   });

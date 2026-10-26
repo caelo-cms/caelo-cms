@@ -36,6 +36,7 @@ import {
   localBuildPluginServices,
   registerGatewayOperations,
   resetPluginHost,
+  runPluginOperation,
 } from "@caelo-cms/plugin-host";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -72,6 +73,12 @@ const PLUGINS = WITH_RATINGS ? [consentPlugin, ratingsPlugin] : [consentPlugin];
 const SLUGS = PLUGINS.map((p) => p.slug);
 const PFX = `e2e677-${Date.now().toString(36)}`;
 const PAGE_PATH = `/${PFX}-page`;
+/**
+ * An analytics tag, so the banner offers analytics at all: a category
+ * nothing on the site uses is not offered and cannot be granted. Inline
+ * and network-free; it marks the window so the spec can see it ran.
+ */
+const ANALYTICS_TAG = `${PFX} stats`;
 
 /** The banner as the AI authors one: the runtime binds to the attributes. */
 const BANNER_HTML = `<section data-consent-banner aria-label="Cookie consent">
@@ -135,6 +142,14 @@ async function restore(): Promise<void> {
     await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${`${PFX}-tpl`})`;
     await tx`DELETE FROM templates WHERE slug = ${`${PFX}-tpl`}`;
     // Dependents first: ratings requires consent-manager.
+    const [consent] =
+      (await tx`SELECT id::text AS id FROM plugins WHERE slug = 'consent-manager'`) as {
+        id: string;
+      }[];
+    if (consent) {
+      await tx`SELECT set_config('caelo.plugin_id', ${consent.id}, true)`;
+      await tx`DELETE FROM plugin_consent_manager.tags WHERE name = ${ANALYTICS_TAG}`;
+    }
     for (const slug of [...SLUGS].reverse()) {
       await tx`UPDATE plugins SET status = ${before.pluginStatus.get(slug) ?? "awaiting_activation"} WHERE slug = ${slug}`;
     }
@@ -160,6 +175,18 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
   if (adminReport.loaded.length !== PLUGINS.length) {
     throw new Error(`${SLUGS.join(" + ")} did not load: ${JSON.stringify(adminReport)}`);
   }
+
+  const tag = await runPluginOperation({
+    invocation: { origin: "system", actorId: SYSTEM.actorId },
+    pluginSlug: "consent-manager",
+    operationName: "add_tag",
+    args: {
+      name: ANALYTICS_TAG,
+      category: "analytics",
+      inlineSnippet: "window.__caeloE2eAnalytics = true;",
+    },
+  });
+  if (!tag.ok) throw new Error(`analytics tag: ${JSON.stringify(tag.error)}`);
 
   const tpl = await execute(adminRegistry, adminAdapter, SYSTEM, "templates.create", {
     slug: `${PFX}-tpl`,
