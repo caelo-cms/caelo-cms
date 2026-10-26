@@ -18,7 +18,7 @@ export const CONSENT_TOOLS: ReadonlyArray<PluginToolSpec> = [
     name: "consent_status",
     description:
       "Read the consent setup: categories, policy version, the exact contract a banner module must satisfy, and the cookies the site itself sets (name them in the banner's category copy or the privacy policy when asked). " +
-      "Call this FIRST whenever the operator asks for a cookie banner, consent dialog, or anything about tracking — it tells you which data list to iterate and which data-attributes the runtime binds to. " +
+      "Call this FIRST whenever the operator asks for a cookie banner, consent dialog, or anything about tracking — it tells you which list source to iterate and which data-attributes the runtime binds to. " +
       "NOT for changing anything.",
     operationName: "consent_status",
     inputJsonSchema: { type: "object", additionalProperties: false, properties: {} },

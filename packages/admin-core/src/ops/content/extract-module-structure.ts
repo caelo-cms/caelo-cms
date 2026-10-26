@@ -34,10 +34,18 @@
  * Attribute-extraction whitelist: href, src, alt, aria-label, title,
  * placeholder, value-on-input. CSS classes, ids, data-* are NEVER
  * extracted (structural).
+ *
+ * Repeated sibling groups (menu entries, link rows, bullet lists) run
+ * first, through `extract-module-lists.ts`: each group a shipped list
+ * type fits becomes ONE local `list` field and a `{{#field}}…{{/field}}`
+ * section, never numbered scalars. Groups no shipped type holds (cards
+ * of image + heading + text) keep the scalar rules below — the extractor
+ * never mints list types (see that file's header).
  */
 
 import type { ModuleField } from "@caelo-cms/shared";
 import { Parser } from "htmlparser2";
+import { extractRepeatedLists } from "./extract-module-lists.js";
 
 export interface ExtractResult {
   readonly templatizedHtml: string;
@@ -110,13 +118,19 @@ function mintName(base: string, used: Set<string>, preferred?: string): string {
  * otherwise net-new names get minted from the inference table.
  */
 export function extractModuleStructure(
-  html: string,
+  sourceHtml: string,
   existingFields?: readonly ModuleField[],
 ): ExtractResult {
   const extractions: Extraction[] = [];
-  const fields: ModuleField[] = [];
-  const defaultValues: Record<string, unknown> = {};
   const usedNames = new Set<string>((existingFields ?? []).map((f) => f.name));
+  // List groups first: their entry text and hrefs become section keys
+  // (`{{label}}`, `{{link}}`), which the scalar pass below skips.
+  const lists = extractRepeatedLists(sourceHtml, usedNames);
+  const html = lists.html;
+  const fields: ModuleField[] = [...lists.fields];
+  const defaultValues: Record<string, unknown> = Object.fromEntries(
+    lists.fields.map((f) => [f.name, "default" in f ? f.default : undefined]),
+  );
 
   // Walk the source HTML, tracking element stack so we can apply per-
   // tag inference rules.
@@ -412,26 +426,27 @@ export function extractModuleStructure(
  * `fields` that don't line up with explicit `{{…}}` placeholders.
  */
 /**
- * @param knownDataLists names a plugin claims as an iterable list
- *   (#447). A module iterating one declares no field for it — the data
- *   comes from the plugin, not from the module's own content — so
+ * @param knownListSources names a plugin claims as a list source (#447,
+ *   epic #1107). A module iterating one declares no field for it — the
+ *   data comes from the plugin, not from the module's own content — so
  *   demanding a declaration would make those modules unauthorable.
  */
 export function validateTemplatizedModule(
   html: string,
   fields: readonly ModuleField[],
-  knownDataLists?: ReadonlySet<string>,
+  knownListSources?: ReadonlySet<string>,
 ): { ok: true } | { ok: false; message: string } {
   const declared = new Set(fields.map((f) => f.name));
   const referenced = new Set<string>();
   // List-loop scoping: placeholders INSIDE a `{{#listField}}…{{/listField}}`
-  // block are the list's ITEM sub-fields — for a link-list `{{label}}`/`{{href}}`,
-  // for a text-list the item scalar, for a module-list the nested `{{>child}}`.
+  // block are the list's ENTRY keys — for a `list` field its entry fields
+  // (`{{label}}`/`{{link}}`), system keys and children loops, for a
+  // module-list the nested `{{>child}}`.
   // They are NOT top-level module fields, so strip each loop BODY (keeping the
   // `{{#X}}{{/X}}` markers, which reference the list field X itself) before
-  // collecting top-level references. Without this, a valid nav/link-list module
-  // — `{{#nav_links}}<a href="{{href}}">…{{/nav_links}}` — was rejected with
-  // 'placeholder {{href}} references undeclared field "href"' (found via the
+  // collecting top-level references. Without this, a valid nav list module
+  // — `{{#nav_links}}<a href="{{link}}">…{{/nav_links}}` — was rejected with
+  // 'placeholder {{link}} references undeclared field "link"' (found via the
   // ai_moduleize_attempts telemetry: moduleize failed every list module).
   const topLevelHtml = html.replace(
     /\{\{\s*#\s*([a-z][a-z0-9_]*)\s*\}\}[\s\S]*?\{\{\s*\/\s*\1\s*\}\}/g,
@@ -447,7 +462,7 @@ export function validateTemplatizedModule(
   }
   for (const name of referenced) {
     if (declared.has(name)) continue;
-    if (knownDataLists?.has(name)) continue;
+    if (knownListSources?.has(name)) continue;
     return {
       ok: false,
       message: `placeholder {{${name}}} references undeclared field "${name}"`,

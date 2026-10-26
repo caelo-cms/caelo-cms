@@ -39,6 +39,14 @@ describe("buildPageInputSchema — page target modes", () => {
     expect(r.success).toBe(true);
   });
 
+  it("accepts parentPageId: null as top level, like pages.create (PR #1121 e2e)", () => {
+    const r = buildPageInputSchema.safeParse({
+      page: { slug: "pricing", title: "Pricing", parentPageId: null },
+      modules: [mintModule],
+    });
+    expect(r.success).toBe(true);
+  });
+
   it("accepts existing mode (pageId only)", () => {
     const r = buildPageInputSchema.safeParse({
       page: { pageId: UUID },
@@ -140,10 +148,10 @@ describe("buildPageInputSchema — module entry modes name the failing index", (
         {
           blockName: "content",
           displayName: "Nav",
-          html: "<nav>{{#nav_links}}<a href='{{href}}'>{{label}}</a>{{/nav_links}}</nav>",
+          html: "<nav>{{#nav_links}}<a href='{{link}}'>{{label}}</a>{{/nav_links}}</nav>",
           fields: [
-            { name: "nav_links", kind: "link-list", label: "Nav links" },
-            { name: "tags", kind: "text-list", label: "Tags", min: 0, max: 12 },
+            { name: "nav_links", kind: "list", listType: "links", label: "Nav links" },
+            { name: "tags", kind: "list", listType: "texts", label: "Tags", min: 0, max: 12 },
           ],
         },
       ],

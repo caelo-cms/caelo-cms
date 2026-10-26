@@ -20,10 +20,13 @@ import {
   MODULE_CSS_MAX,
   MODULE_HTML_MAX,
   MODULE_JS_MAX,
+  type ModuleField,
   moduleFieldSchema,
+  pageTypeSlugSchema,
   setPlacementContentSchema,
   slugSchema,
 } from "./content.js";
+import { LIST_ITEM_ATTR_RE } from "./lists/item-attr.js";
 import { pluginPreviewSelectionSchema } from "./plugin-preview.js";
 import { redirectTargetPathSchema } from "./redirect-target.js";
 import { unwrapCdataEnvelope } from "./strip-cdata.js";
@@ -274,17 +277,25 @@ export const addModuleToolInput = z
     // the exact two-step build_page was created to kill. Only enforced
     // when the caller authored explicit fields; the raw-HTML path goes
     // through moduleize, which enforces defaults itself.
+    // A `list` field bound to a shared list the module fixes (`list`), or
+    // fed by a source, already has its content: requiring a default there
+    // refused the very footer-bound-to-the-menu call the manage-menu skill
+    // prescribes (PR #1121 e2e-livedit run 40297574140).
+    const carriesContent = (f: ModuleField): boolean =>
+      ("default" in f && f.default !== undefined) ||
+      (f.kind === "list" && (f.bind === "source" || (f.bind === "shared" && f.list !== undefined)));
     if (
       input.fields !== undefined &&
       input.fields.length > 0 &&
       input.values === undefined &&
-      !input.fields.some((f) => "default" in f && f.default !== undefined)
+      !input.fields.some(carriesContent)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
           "A minted module needs its initial content IN THIS CALL: pass `values` " +
           "({fieldName: value, …}) for this placement, or give the fields `default`s. " +
+          'A list field bound to a site list carries its content through `list` ({kind:"list", bind:"shared", list:"caelo:list/<id>"} — create the list first with upsert_lists_many). ' +
           "Without either, the module renders empty placeholders until a second call.",
       });
     }
@@ -355,7 +366,6 @@ export const AI_TOOLS = [
   "delete_pages_many",
   // one remove-module tool routed by target (page|layout).
   "remove_module_from",
-  "set_structured_set",
   "update_theme",
   "set_template_layout",
   "create_layout",
@@ -451,9 +461,14 @@ export const CHAT_MAX_ATTACHMENTS = 4;
  * `context` come from a right-click / text selection in the live-edit
  * preview (#916): what the operator selected and the text of the block
  * around it, so the AI knows exactly what was meant. `blockName` /
- * `position` / `field` / `index` (#917) name the placement field the text
+ * `position` / `field` (#917) — plus `item` / `key` for an entry of a
+ * local list field (epic #1107) — name the placement field the text
  * comes from when the preview marked it, so the AI can address it in
  * `set_page_module_content` without inspecting the page first.
+ * `listItem` is the `data-caelo-list-item` of the list entry the element
+ * sits in (epic #1107, `docs/lists.md` §13): the chip then names that
+ * entry — of a shared list, or of a module's own list — not just the
+ * module around it.
  */
 export const chatChipSchema = z
   .object({
@@ -465,7 +480,12 @@ export const chatChipSchema = z
     blockName: z.string().min(1).max(80).optional(),
     position: z.number().int().nonnegative().optional(),
     field: z.string().min(1).max(200).optional(),
-    index: z.number().int().nonnegative().optional(),
+    item: z.string().uuid().optional(),
+    key: z
+      .string()
+      .regex(/^[a-z][a-z0-9_]{0,63}$/)
+      .optional(),
+    listItem: z.string().max(200).regex(LIST_ITEM_ATTR_RE).optional(),
   })
   .strict();
 export type ChatChip = z.infer<typeof chatChipSchema>;
@@ -555,11 +575,8 @@ export const chatPublishInput = z
       .array(
         z
           .object({
-            // v0.9.0 — added "layout" + "structuredSet" to the enum so
-            // the Stage picker can include/exclude them. Pre-v0.9.0 the
-            // helper accepted "structuredSet" via the underlying SQL
-            // query but the input schema rejected it — minor gap closed
-            // alongside the branched-create work.
+            // v0.9.0 — "layout" joined the enum so the Stage picker can
+            // include/exclude it.
             kind: z.enum([
               "module",
               "template",
@@ -567,7 +584,10 @@ export const chatPublishInput = z
               "pageLayout",
               "pageModuleContent",
               "layout",
-              "structuredSet",
+              // Epic #1107 — shared lists, list types, page types.
+              "listType",
+              "list",
+              "pageType",
               // v0.11.0 (#45) — themes primitive joins the publish/Stage
               // surface so chat-branched theme edits replay into live
               // on chat.publish.
@@ -650,6 +670,8 @@ export const createTemplateToolInput = z
     html: sourceTextArg(z.string().min(1).max(2_000_000)),
     css: sourceTextArg(z.string().max(2_000_000)).default(""),
     layoutId: z.string().uuid().optional(),
+    /** Epic #1107 — the page type (slug) this template serves; omit for the site default. */
+    pageType: pageTypeSlugSchema.optional(),
     // Optional block-set metadata, symmetric with create_layout. Omit to
     // auto-derive blocks from <caelo-slot> tags; pass to set displayName /
     // position (each name must match a slot). Enforced op-side in
@@ -682,25 +704,9 @@ export const removeModuleFromToolInput = z
   .strict();
 export type RemoveModuleFromToolInput = z.infer<typeof removeModuleFromToolInput>;
 
-export const setStructuredSetToolInput = z
-  .object({
-    // structuredSetKind (the 6th kind that was previously unreachable
-    // from any AI tool — the kind-specific wrappers covered only
-    // nav-menu + theme).
-    kind: z.enum(["nav-menu", "taxonomy", "tags", "link-list"]),
-    slug: slugInputSchema,
-    displayName: z.string().min(1).max(200),
-    items: z.array(z.unknown()),
-  })
-  .strict();
-
-// v0.10.22 — `updateThemeToolInput` removed. The kind-specific `update_theme`
-// wrapper was replaced by the unified `set_structured_set` surface.
-// v0.11.0 (#45) — theme moved out of structured_sets entirely into its
-// own `themes` primitive (DTCG-shaped jsonb). Theme edits are now
-// `set_theme_tokens` (loose-name patch) / `propose_create_theme`
-// (gated mint) / `propose_activate_theme` (gated flip) — see
-// packages/admin-core/src/ai/tools/{update-theme-tokens,get-theme,…}.ts.
+// v0.11.0 (#45) — theme edits are `set_theme_tokens` (loose-name patch) /
+// `propose_create_theme` (gated mint) / `propose_activate_theme` (gated
+// flip) — see packages/admin-core/src/ai/tools/{update-theme-tokens,get-theme,…}.ts.
 
 export const setTemplateLayoutToolInput = z
   .object({
@@ -1037,7 +1043,6 @@ export type BulkOptimizeSeoToolInput = z.infer<typeof bulkOptimizeSeoToolInput>;
 export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
-export type SetStructuredSetToolInput = z.infer<typeof setStructuredSetToolInput>;
 // v0.10.22 — `UpdateThemeToolInput` removed alongside `update_theme` tool.
 export type ChatCreateSessionInput = z.infer<typeof chatCreateSessionInput>;
 export type ChatSendMessageInput = z.infer<typeof chatSendMessageInput>;

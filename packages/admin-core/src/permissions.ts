@@ -12,6 +12,9 @@
 export const PERMISSIONS = [
   "content.read",
   "content.write",
+  // Epic #1107: define list types and page types (migration 0350); granted
+  // to every role holding content.write.
+  "content.structure",
   "deploy.trigger",
   "ops.view",
   "plugins.approve",

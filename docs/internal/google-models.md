@@ -47,8 +47,12 @@ allowed values described instead of an unsupported enum. String enums are
 preserved. Caelo's canonical schemas, coercion and strict dispatch validation
 are unchanged; an invalid redirect status still fails validation. Nullable type
 arrays are represented as schema branches so object properties stay attached
-to the object type. The structured-set tool declares its object item shape
-without restoring a top-level discriminator union.
+to the object type. The list tools (`upsert_lists_many`,
+`patch_list_items_many`, `upsert_list_types_many`, …) declare their recursive
+entry shape as `$defs` + `$ref` at the schema root — generated from the shared
+Zod schema, sent unchanged as `parametersJsonSchema` — without restoring a
+top-level discriminator union (`google-tool-schema.test.ts` pins the wire
+shape).
 
 The opt-in `e2e-livedit/google-pictbook.browser.ts` exercises the live Google
 provider through browser login, a fresh chat and the Pictbook entry. It uses no

@@ -45,6 +45,7 @@ async function wipe(): Promise<void> {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`i299-%-${TS}`})`;
       await tx`DELETE FROM pages WHERE slug LIKE ${`i299-%-${TS}`}`;
+      await tx`DELETE FROM page_types WHERE slug LIKE ${`i299-pt-%`}`;
       await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE display_name LIKE ${`I299 %`})`;
       await tx`DELETE FROM modules WHERE display_name LIKE ${"I299 %"}`;
       await tx`DELETE FROM template_blocks WHERE template_id IN (SELECT id FROM templates WHERE slug = ${TPL_SLUG})`;
@@ -787,5 +788,71 @@ describe("pages.build_page — detached entries + {$ref} nested composition (one
       ],
     });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe("pages.build_page — page type, properties, terms (epic #1107)", () => {
+  it("creates the page as the named page type with its properties", async () => {
+    const typeSlug = `i299-pt-${TS}`;
+    const pt = await execute(registry, adapter, systemCtx, "page_types.upsert_many", {
+      pageTypes: [
+        {
+          slug: typeSlug,
+          name: "Article",
+          purpose: "build_page page type test",
+          templates: [templateId],
+          defaultTemplate: templateId,
+          properties: [{ name: "teaser", label: "Teaser", type: "text" }],
+          vocabularies: [],
+        },
+      ],
+    });
+    expect(pt.ok).toBe(true);
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: {
+        slug: `i299-typed-${TS}`,
+        title: "Typed",
+        pageType: typeSlug,
+        properties: { teaser: "Short" },
+        terms: [],
+      },
+      modules: [],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const got = await execute(registry, adapter, systemCtx, "pages.get", {
+      pageId: (r.value as { pageId: string }).pageId,
+    });
+    expect(got.ok).toBe(true);
+    if (!got.ok) return;
+    const page = (
+      got.value as { page: { pageType: string; properties: object; templateId: string } }
+    ).page;
+    expect(page.pageType).toBe(typeSlug);
+    expect(page.properties).toEqual({ teaser: "Short" });
+    expect(page.templateId).toBe(templateId);
+  });
+
+  it("an unknown property is refused and nothing is written", async () => {
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: {
+        slug: `i299-typed-bad-${TS}`,
+        title: "Typed bad",
+        pageType: `i299-pt-${TS}`,
+        properties: { nope: 1 },
+      },
+      modules: [],
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it("pageType is create-mode only (an existing page changes type with pages.update)", async () => {
+    const r = await execute(registry, adapter, systemCtx, "pages.build_page", {
+      page: { pageId: crypto.randomUUID(), pageType: `i299-pt-${TS}` },
+      modules: [],
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(JSON.stringify(r.error)).toContain("drop pageType");
   });
 });

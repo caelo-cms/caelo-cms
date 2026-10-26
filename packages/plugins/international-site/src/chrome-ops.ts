@@ -7,12 +7,18 @@
  * in ./chrome.ts; see its header for the model.
  */
 
-import type { ContentVariantPage, PluginAdminQuery, PluginAi } from "@caelo-cms/plugin-sdk";
+import type {
+  ContentVariantPage,
+  ListTypeDef,
+  PluginAdminQuery,
+  PluginAi,
+} from "@caelo-cms/plugin-sdk";
 import { z } from "@caelo-cms/plugin-sdk";
 import {
   applyStrings,
   buildChromeTranslationPrompt,
   type ChromeField,
+  type ChromeListContext,
   type ChromeTranslationPayload,
   type ChromeTranslationTarget,
   chromeTranslationJsonSchema,
@@ -24,6 +30,14 @@ import {
   validateChromeTranslation,
 } from "./chrome.js";
 import type { LocaleRow } from "./index.js";
+import type { SourceUnit } from "./list-translation.js";
+import {
+  checkListTranslations,
+  type ListTranslationState,
+  listWorkTargets,
+  loadListTranslationState,
+  writeListTranslations,
+} from "./list-translation-ops.js";
 import { basisOf } from "./stable-json.js";
 import {
   type GlossaryEntry,
@@ -43,6 +57,42 @@ export interface ChromeDeps {
   readonly cms: ChromeCms;
   /** Fresh locale registry (code → row). */
   readonly locales: ReadonlyMap<string, LocaleRow>;
+  /** The site's list types by slug (`list_types.list`), for local lists in chrome. */
+  readonly listTypes: ReadonlyMap<string, ListTypeDef>;
+}
+
+/**
+ * Which local lists a chrome target translates itself: a layout
+ * placement's (module defaults have no value address); a shared
+ * instance's go through the list-resolve overlay instead (chrome.ts).
+ */
+export function chromeListContext(
+  deps: Pick<ChromeDeps, "listTypes">,
+  kind: "layout" | "instance",
+): ChromeListContext {
+  return { listTypes: deps.listTypes, includeLists: kind === "layout" };
+}
+
+/**
+ * The part of a target's content its chrome variant derives from: an
+ * instance's local lists are translated by address, so they neither make
+ * the variant stale nor are they copied into it.
+ */
+export function chromeSource(target: {
+  readonly kind: "layout" | "instance";
+  readonly fields: readonly ChromeField[];
+  readonly values: Readonly<Record<string, unknown>>;
+}): { fields: ChromeField[]; values: Record<string, unknown> } {
+  if (target.kind === "layout") return { fields: [...target.fields], values: { ...target.values } };
+  const lists = new Set(
+    target.fields
+      .filter((f) => f.kind === "list" && (f.bind ?? "local") === "local")
+      .map((f) => f.name),
+  );
+  return {
+    fields: target.fields.filter((f) => !lists.has(f.name)),
+    values: Object.fromEntries(Object.entries(target.values).filter(([k]) => !lists.has(k))),
+  };
 }
 
 /** A stored locale variant of one chrome target. */
@@ -160,7 +210,8 @@ export async function refreshChromeStaleness(deps: ChromeDeps): Promise<number> 
     if (v.mode !== "translated" || v.translation_status === "needs_update") continue;
     const target = byKey.get(v.target_key);
     if (!target) continue; // the source was removed; the variant no longer renders
-    if (sourceFingerprint(target.fields, target.values) !== v.source_hash) {
+    const src = chromeSource(target);
+    if (sourceFingerprint(src.fields, src.values) !== v.source_hash) {
       await deps.q.update("chrome_variants", v.id, { translation_status: "needs_update" });
       marked += 1;
     }
@@ -181,7 +232,8 @@ export async function chromeStatus(deps: ChromeDeps): Promise<
   const variants = await loadChromeVariants(deps.q);
   const nonDefault = [...deps.locales.values()].filter((l) => !l.is_default);
   return targets.map((t) => {
-    const translatable = translatableStrings(t.fields, t.values).length > 0;
+    const translatable =
+      translatableStrings(t.fields, t.values, chromeListContext(deps, t.kind)).length > 0;
     const locales: Record<string, string> = {};
     for (const l of nonDefault) {
       const v = variants.find((x) => x.target_key === t.key && x.locale_code === l.code);
@@ -210,7 +262,7 @@ const placementSchema = z
     moduleName: z.string(),
     contentInstanceId: z.string().nullable(),
     shared: z.boolean(),
-    fields: z.array(z.object({ name: z.string(), kind: z.string() })),
+    fields: z.array(z.object({ name: z.string(), kind: z.string() }).passthrough()),
     values: z.record(z.string(), z.unknown()),
   })
   .strict();
@@ -244,6 +296,24 @@ export async function resolveChromeVariants(
   const variants = await loadChromeVariants(deps.q);
   const variantOf = (key: string, locale: string) =>
     variants.find((v) => v.target_key === key && v.locale_code === locale);
+  // Layout placements carry their fields without list types; the chrome
+  // targets (pages.list_shared_content) have them. Loaded only when a
+  // layout placement has a list field.
+  let targetsByKey: Map<string, ChromeTarget> | null = null;
+  const fieldsOf = async (
+    pl: (typeof pages)[number]["placements"][number],
+    key: string,
+  ): Promise<readonly ChromeField[]> => {
+    if (pl.scope !== "layout" || !pl.fields.some((f) => f.kind === "list")) return pl.fields;
+    targetsByKey ??= new Map((await loadChromeTargets(deps.cms)).map((t) => [t.key, t]));
+    const target = targetsByKey.get(key);
+    if (!target) {
+      throw new Error(
+        `international-site: layout placement ${key} is not among the site's shared content — the layout changed during this render; render again`,
+      );
+    }
+    return target.fields;
+  };
 
   for (const page of localized) {
     const locale = pageLocale.get(page.pageId) as LocaleRow;
@@ -257,8 +327,29 @@ export async function resolveChromeVariants(
       const v = variantOf(key, locale.code);
       if (v) {
         const moduleId = pl.scope === "layout" && v.module_id ? v.module_id : undefined;
-        perPage[pl.key] = { ...(moduleId ? { moduleId } : {}), values: v.values ?? {} };
-      } else if (translatableStrings(pl.fields, pl.values).length > 0) {
+        // A translated shared instance keeps rendering its CURRENT local
+        // lists: their entries are translated by address (list-resolve),
+        // so a source entry added since shows up there instead of the
+        // copy frozen into the variant.
+        const values =
+          pl.scope === "page" && v.mode === "translated"
+            ? {
+                ...(v.values ?? {}),
+                ...Object.fromEntries(
+                  pl.fields
+                    .filter((f) => f.kind === "list" && Object.hasOwn(pl.values, f.name))
+                    .map((f) => [f.name, pl.values[f.name]]),
+                ),
+              }
+            : (v.values ?? {});
+        perPage[pl.key] = { ...(moduleId ? { moduleId } : {}), values };
+      } else if (
+        translatableStrings(
+          await fieldsOf(pl, key),
+          pl.values,
+          chromeListContext(deps, pl.scope === "layout" ? "layout" : "instance"),
+        ).length > 0
+      ) {
         perPage[pl.key] = {
           problems: [
             `there is no ${locale.display_name} (${locale.code}) version of "${pl.moduleName}" (${pl.scope === "layout" ? `layout ${pl.blockName} area` : "shared content"}) yet. Next step: translate_chrome({localeCode: "${locale.code}"}) creates it; set_chrome_variants gives the language its own content.`,
@@ -294,8 +385,16 @@ export interface PreparedChromeTranslation {
   readonly upToDate: number;
   readonly skippedIndependent: number;
   readonly nothingToTranslate: number;
-  /** The targets the prompt asks for; empty = nothing to do. */
+  /** The chrome targets the prompt asks for. */
   readonly offered: readonly (ChromeTranslationTarget & { target: ChromeTarget })[];
+  /**
+   * Epic #1107 — the list texts the prompt asks for, one target per list,
+   * local list or page; each string's path is its value ADDRESS, and the
+   * answer is stored by it (./list-translation-ops.ts).
+   */
+  readonly offeredLists: readonly (ChromeTranslationTarget & { units: readonly SourceUnit[] })[];
+  /** The list state the list targets were picked from (null when none were asked for). */
+  readonly listState: ListTranslationState | null;
   readonly variants: readonly ChromeVariantRow[];
   readonly glossary: readonly GlossaryEntry[];
   readonly styleGuide: string | null;
@@ -306,9 +405,12 @@ export interface PreparedChromeTranslation {
 /**
  * Pick the targets a locale's chrome translation covers — every target
  * that has text and whose variant is missing or translated-but-stale (or
- * the given targets, with `force`) — and build the ONE prompt for them.
- * Independent variants are skipped unless forced (the re-attach path,
- * after the Owner approved it). Writes nothing but staleness markers.
+ * the given targets, with `force`) — plus every list text of that locale
+ * that is missing or stale, and build the ONE prompt for them: menus,
+ * footer and header share vocabulary. Independent variants are skipped
+ * unless forced (the re-attach path, after the Owner approved it; it
+ * names its targets and offers no list texts). Writes nothing but
+ * staleness markers.
  */
 export async function prepareChromeTranslation(
   deps: ChromeDeps,
@@ -334,7 +436,7 @@ export async function prepareChromeTranslation(
   const offered: (ChromeTranslationTarget & { target: ChromeTarget })[] = [];
   for (const t of targets) {
     if (args.targetKeys && !args.targetKeys.includes(t.key)) continue;
-    const strings = translatableStrings(t.fields, t.values);
+    const strings = translatableStrings(t.fields, t.values, chromeListContext(deps, t.kind));
     if (strings.length === 0) {
       counts.nothingToTranslate += 1;
       continue;
@@ -350,8 +452,25 @@ export async function prepareChromeTranslation(
     }
     offered.push({ id: `c${offered.length}`, label: t.label, strings, target: t });
   }
-  const base = { locale, sourceLocale: source, ...counts, offered, variants };
-  if (offered.length === 0) return { ...base, glossary: [], styleGuide: null, prompt: null };
+  const listState = args.targetKeys ? null : await loadListTranslationState(deps);
+  const offeredLists = (listState ? listWorkTargets(listState, locale.code) : []).map((t, i) => ({
+    id: `c${offered.length + i}`,
+    label: t.label,
+    strings: t.units.map((u) => ({ path: u.address, text: u.text })),
+    units: t.units,
+  }));
+  const base = {
+    locale,
+    sourceLocale: source,
+    ...counts,
+    offered,
+    offeredLists,
+    listState,
+    variants,
+  };
+  if (offered.length === 0 && offeredLists.length === 0) {
+    return { ...base, glossary: [], styleGuide: null, prompt: null };
+  }
 
   const glossary = (
     (await deps.q.list("glossary", { locale_code: locale.code, limit: 500 })) as unknown as {
@@ -370,7 +489,7 @@ export async function prepareChromeTranslation(
     sourceLocale: source.code,
     targetLocale: locale.code,
     targetLocaleDisplayName: locale.display_name,
-    targets: offered,
+    targets: [...offered, ...offeredLists],
     glossaryBlock: renderGlossaryBlock(glossary),
     styleGuideBlock: renderStyleGuideBlock(styleGuide),
   });
@@ -389,14 +508,33 @@ export function chromeTranslationBasis(p: PreparedChromeTranslation): Promise<st
     sourceLocale: p.sourceLocale.code,
     locale: p.locale.code,
     offered: p.offered.map((o) => ({ id: o.id, key: o.target.key, strings: o.strings })),
+    offeredLists: p.offeredLists.map((o) => ({
+      id: o.id,
+      strings: o.strings,
+      hashes: o.units.map((u) => u.hash),
+    })),
     glossary: p.glossary,
     styleGuide: p.styleGuide,
   });
 }
 
+/** The answered list texts of a chrome answer, by address (epic #1107). */
+export function chromeListAnswers(
+  p: PreparedChromeTranslation,
+  payload: ChromeTranslationPayload,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const answer of payload.targets) {
+    if (!p.offeredLists.some((x) => x.id === answer.target)) continue;
+    for (const [address, text] of Object.entries(answer.strings)) out.set(address, text);
+  }
+  return out;
+}
+
 /**
  * Parse a model's answer and hold it to the chrome contract: exactly the
- * offered targets and paths. Throws on anything that may not be written.
+ * offered targets and paths — and every answered list text valid for its
+ * field. Throws on anything that may not be written.
  *
  * @param answer raw answer text (a ```json fence is tolerated), or the
  *   JSON value an agent already parsed.
@@ -418,7 +556,11 @@ export function parseChromeTranslationAnswer(
       `chrome translation response did not match the contract: ${(e as Error).message}. ${retryHint}`,
     );
   }
-  validateChromeTranslation(payload, p.offered);
+  validateChromeTranslation(payload, [...p.offered, ...p.offeredLists]);
+  const listAnswers = chromeListAnswers(p, payload);
+  if (listAnswers.size > 0 && p.listState) {
+    checkListTranslations(p.listState, p.locale, listAnswers);
+  }
   return payload;
 }
 
@@ -464,12 +606,23 @@ export async function writeChromeTranslation(
         module_id: null,
         values,
         translation_status: "up_to_date",
-        source_hash: sourceFingerprint(o.target.fields, o.target.values),
+        source_hash: (() => {
+          const src = chromeSource(o.target);
+          return sourceFingerprint(src.fields, src.values);
+        })(),
       },
     });
   }
+  // Epic #1107 — list texts by address, validated as one batch before
+  // the chrome rows are written, so a refused value writes neither.
+  const listAnswers = chromeListAnswers(p, payload);
+  let listWritten = 0;
+  if (listAnswers.size > 0) {
+    if (!p.listState) throw new Error("chrome translation: list answers without a list state");
+    listWritten = await writeListTranslations(deps, p.listState, p.locale, listAnswers);
+  }
   for (const { existing, row } of rows) await upsertVariant(deps.q, existing, row);
-  return rows.length;
+  return rows.length + listWritten;
 }
 
 /** The install-side pass: prepare → the install's AI → write, in ONE call. */
@@ -497,7 +650,7 @@ export async function translateChrome(
   const result = await ai.generateObject({
     system: p.prompt.system,
     messages: [{ role: "user", content: p.prompt.user }],
-    jsonSchema: chromeTranslationJsonSchema(p.offered),
+    jsonSchema: chromeTranslationJsonSchema([...p.offered, ...p.offeredLists]),
     maxTokens: 16_000,
     purpose: "translation",
   });
@@ -675,7 +828,10 @@ export async function reattachChromeVariantDelegated(
   }
   // Mirrors the install path: a target without text is never offered,
   // so a forced translation of it changes nothing.
-  if (translatableStrings(target.fields, target.values).length === 0) {
+  if (
+    translatableStrings(target.fields, target.values, chromeListContext(deps, target.kind))
+      .length === 0
+  ) {
     return {
       reattached: false,
       translated: 0,

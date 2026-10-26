@@ -71,8 +71,8 @@ export const DELEGATED_MINT_NEEDS_FIELDS =
   "Pass `fields: []` only for a module with no editable content. " +
   // #820 — a worked example, so authoring the module is never costlier
   // than pasting the same markup into another module's richtext field.
-  'Example for a repeating pattern: html `<div class="chain">{{#steps}}<div class="step"><p>{{.}}</p></div>{{/steps}}</div>`, ' +
-  'fields `[{name: "steps", kind: "text-list", label: "Steps"}]`, values `{steps: ["Crawl", "Diff", "Alert"]}`. ' +
+  'Example for a repeating pattern: html `<div class="chain">{{#steps}}<div class="step"><p>{{text}}</p></div>{{/steps}}</div>`, ' +
+  'fields `[{name: "steps", kind: "list", listType: "texts", label: "Steps"}]`, values `{steps: [{node: "text", values: {text: "Crawl"}}, {node: "text", values: {text: "Diff"}}, {node: "text", values: {text: "Alert"}}]}`. ' +
   "Never paste component markup into a richtext field of another module instead — that is free HTML the structure quality check blocks once it repeats.";
 
 /**

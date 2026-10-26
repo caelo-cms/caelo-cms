@@ -60,9 +60,6 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "fork_placement_content",
   "list_content_instances",
   "get_content_instance",
-  // Structured sets (nav menus etc.)
-  "set_structured_set",
-  "get_structured_set",
   // Planning reads. (offer_choices is deliberately NOT core: keeping the
   // ask-the-operator button always loaded lowered the model's threshold
   // to stall on questions it can answer itself — clean-DB footer run
@@ -72,6 +69,13 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "list_pages",
   "list_modules",
   "find_media",
+  // Epic #1107 — "add Careers to the menu" / "fix the footer link" is an
+  // everyday edit: find the shared list, read its entry ids, patch it.
+  // Creating lists and types is rarer and stays deferred (the manage-menu
+  // and manage-page-types skills preload those).
+  "list_lists",
+  "get_list",
+  "patch_list_items_many",
   // Design self-review loop — the AI iterates screenshot -> inspect ->
   // edit_module -> screenshot many times per build (the #155 rounds).
   // These reads fire on every iteration, so deferring them made the

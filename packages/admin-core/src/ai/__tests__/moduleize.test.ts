@@ -178,3 +178,73 @@ describe("moduleize", () => {
     expect(out.kind).toBe("hero");
   });
 });
+
+describe("moduleize — list fields (epic #1107)", () => {
+  const nav = (field: Record<string, unknown>) => ({
+    html: `<nav>{{#nav_links}}<a href="{{link}}">{{label}}</a>{{/nav_links}}</nav>`,
+    fields: [{ name: "nav_links", kind: "list", label: "Nav links", ...field }],
+    displayName: "Nav",
+    kind: "chrome",
+    description: "Site navigation.",
+  });
+  const links = {
+    listType: "links",
+    default: [{ node: "link", values: { label: "Home", link: { href: "/" } } }],
+  };
+
+  it("accepts a local list of a shipped type", async () => {
+    const r = await moduleize({
+      provider: new ObjectFixtureProvider([nav(links)]),
+      html: '<nav><a href="/">Home</a></nav>',
+    });
+    expect(r.fields[0]).toMatchObject({ kind: "list", listType: "links" });
+  });
+
+  it("repairs a list type moduleize may not use (it never invents one)", async () => {
+    const records: ModuleizeRetryRecord[] = [];
+    const r = await moduleize({
+      provider: new ObjectFixtureProvider([nav({ ...links, listType: "nav-items" }), nav(links)]),
+      html: '<nav><a href="/">Home</a></nav>',
+      onRetry: async (rec) => {
+        records.push(rec);
+      },
+    });
+    expect(r.fields[0]).toMatchObject({ listType: "links" });
+    expect(records[0]?.errors[0]).toContain('"nav-items"');
+  });
+
+  it("repairs entries that do not fit the shipped type", async () => {
+    const records: ModuleizeRetryRecord[] = [];
+    await moduleize({
+      provider: new ObjectFixtureProvider([
+        nav({ listType: "links", default: [{ node: "text", values: { text: "Home" } }] }),
+        nav(links),
+      ]),
+      html: '<nav><a href="/">Home</a></nav>',
+      onRetry: async (rec) => {
+        records.push(rec);
+      },
+    });
+    expect(records[0]?.errors[0]).toContain("nav_links");
+  });
+
+  it("keeps a hinted custom-type list field and takes its entries from the hint", async () => {
+    const hintDefault = [{ node: "column", values: { heading: "Products" } }];
+    const r = await moduleize({
+      provider: new ObjectFixtureProvider([
+        nav({ listType: "mega-menu", default: [{ node: "column", values: {} }] }),
+      ]),
+      html: "<nav><div>Products</div></nav>",
+      fieldsHint: [
+        {
+          name: "nav_links",
+          kind: "list",
+          label: "Mega menu",
+          listType: "mega-menu",
+          default: hintDefault,
+        } as never,
+      ],
+    });
+    expect(r.fields[0]).toMatchObject({ listType: "mega-menu", default: hintDefault });
+  });
+});

@@ -13,13 +13,13 @@ Authors (operators and the AI) write `/about#team`. The write op stores `caelo:p
 | `caelo:page/<pageId>[?query][#anchor]` | a page of this site |
 | `caelo:media/<mediaId>[/<variant>]` | a media asset |
 
-It is a plain string, so `link`/`url` fields, `link-list` items, structured-set items, `href`/`src`/`srcset` in module HTML and rich text all carry it without schema changes. Grammar, parser and the embedded-reference scanner: `packages/shared/src/link-refs.ts`.
+It is a plain string, so `link`/`url` fields, `link` values in list entries (local and shared lists), `href`/`src`/`srcset` in module HTML and rich text all carry it without schema changes. Grammar, parser and the embedded-reference scanner: `packages/shared/src/link-refs.ts`.
 
 ## Where each step lives
 
 | Step | Code |
 |---|---|
-| Canonicalise a write (values, module HTML, field defaults, structured sets, imports) | `packages/shared/src/link-canonicalise.ts` (pure), `packages/admin-core/src/links/canonicalise.ts` + `canonicalise-writes.ts` (site lookup, called inside each write op's transaction) |
+| Canonicalise a write (values, module HTML, field defaults, list entries, imports) | `packages/shared/src/link-canonicalise.ts` (pure), `packages/admin-core/src/links/canonicalise.ts` + `canonicalise-writes.ts` (site lookup, called inside each write op's transaction) |
 | Humanise a read | `packages/admin-core/src/links/humanise.ts` |
 | Resolve at render time (preview, live edit, static build) | `createSiteLinkIndex` in `link-refs.ts`; the chat's view of the site is loaded by `packages/admin-core/src/links/link-targets.ts` |
 | Same-language target on a locale page | the `link-resolve` composition point (`packages/plugin-host/src/link-resolve.ts`), implemented by the international-site plugin (rollout D) |
@@ -50,7 +50,7 @@ Content written before #724 can still hold literal internal paths. A move no lon
 - module HTML (layout chrome modules included);
 - module field defaults (where layout header/footer content lives);
 - content values, read by the module's declared field kinds like the write path (a `text` value `"/month"` stays text);
-- structured-set items, submenus included;
+- list entries in shared lists and in local `list` field values, children included;
 - plugin data, through the plugin hook `linkLocationsOperation`. The plugin names the locations; core converts, writes, snapshots and reverts them. The international-site plugin implements it for its chrome variants.
 
 How it runs:

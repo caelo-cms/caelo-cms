@@ -40,15 +40,48 @@ interface ModuleMeta {
   description: string;
   kind: "chrome" | "hero" | "content" | "cta" | "utility";
   type?: string;
-  fields: { name: string; kind: string; allowedModuleTypes?: string[] }[];
+  fields: CatalogFieldMeta[];
 }
 
+/** The parts of a module field the catalog shows. */
+interface CatalogFieldMeta {
+  name: string;
+  kind: string;
+  allowedModuleTypes?: string[];
+  /** `list` fields (epic #1107): the type, binding, fixed list and source. */
+  listType?: string;
+  bind?: "local" | "shared" | "source";
+  list?: string;
+  source?: { kind: string; name?: string; defaults?: Record<string, unknown> };
+}
+
+/** `caelo:list/<id>` → `<slug>` for the catalog; the ref itself when the list is unknown. */
+export type ListSlugLookup = (ref: string) => string;
+
 /**
- * One field as the catalog shows it: `name:kind`, and for a nested field
- * the module types it accepts (`blocks:module-list allowed=faq/cta`, or
- * `allowed=any`).
+ * One field as the catalog shows it: `name:kind`; for a nested field the
+ * module types it accepts (`blocks:module-list allowed=faq/cta`, or
+ * `allowed=any`); for a list field its type and binding
+ * (`nav:list(menu) shared=main-nav`, `items:list(texts) local`,
+ * `news:list(links) source=query(page_type=news)`).
  */
-export function catalogField(f: ModuleMeta["fields"][number]): string {
+export function catalogField(f: CatalogFieldMeta, listSlug: ListSlugLookup = (ref) => ref): string {
+  if (f.kind === "list") {
+    const bind = f.bind ?? "local";
+    const head = `${f.name}:list(${f.listType ?? "?"})`;
+    if (bind === "shared") return `${head} shared=${f.list ? listSlug(f.list) : "per-placement"}`;
+    if (bind === "source" && f.source) {
+      const s = f.source;
+      const what =
+        s.kind === "query"
+          ? `query(${Object.entries(s.defaults ?? {})
+              .map(([k, v]) => `${k}=${String(v)}`)
+              .join(" ")})`
+          : `${s.kind}:${s.name ?? "?"}`;
+      return `${head} source=${what}`;
+    }
+    return `${head} ${bind}`;
+  }
   if (f.kind !== "module" && f.kind !== "module-list") return `${f.name}:${f.kind}`;
   const allowed =
     f.allowedModuleTypes && f.allowedModuleTypes.length > 0
@@ -62,6 +95,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
   description:
     "List the FULL module catalog with decision-support metadata: id, slug, type, kind, description, fields, and placement usage. " +
     "Call it before placing or nesting an existing module: to find a reuse candidate, to find modules by `kind`/`filter` (plus `limit`/`offset`/`full` as in every list tool), and before filling a `module`/`module-list` field — the fields column shows each nested field's accepted types (`blocks:module-list allowed=faq/cta`; `allowed=any` = no restriction), and a child's `type` must be one of them. " +
+    "`list` fields show their list type and binding: `nav:list(menu) shared=main-nav` (the shared list it shows — edit its entries with patch_list_items_many), `items:list(texts) local` (entries in each placement), `latest:list(links) source=query(page_type=news …)`. " +
     "Returns metadata only (no HTML/CSS/JS bodies). Prefer placing an existing module (`add_module` with `moduleId`) over minting a near-duplicate.",
   schema: listModulesInput,
   inputSchema: z.toJSONSchema(listModulesInput) as Record<string, unknown>,
@@ -91,6 +125,21 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
     );
 
     const all = (listed.value as { modules: (ModuleMeta & Record<string, unknown>)[] }).modules;
+    // Shared list fields name a list by reference; show its slug, which is
+    // what list_lists / get_list / patch_list_items_many take.
+    let listSlug: ListSlugLookup = (ref) => ref;
+    if (all.some((m) => m.fields.some((f) => f.kind === "list" && f.list !== undefined))) {
+      const lists = await execute(toolCtx.registry, toolCtx.adapter, ctx, "lists.list", {});
+      if (lists.ok) {
+        const slugs = new Map(
+          (lists.value as { lists: { id: string; slug: string }[] }).lists.map((l) => [
+            `caelo:list/${l.id}`,
+            l.slug,
+          ]),
+        );
+        listSlug = (ref) => slugs.get(ref) ?? ref;
+      }
+    }
     const needle = input.filter?.toLowerCase();
     const matches = all.filter((m) => {
       if (input.kind !== undefined && m.kind !== input.kind) return false;
@@ -128,7 +177,7 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
         },
         {
           key: "fields",
-          value: (m) => m.fields.map(catalogField).join("|"),
+          value: (m) => m.fields.map((f) => catalogField(f, listSlug)).join("|"),
         },
         {
           key: "placements",
@@ -161,6 +210,14 @@ export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
           name: f.name,
           kind: f.kind,
           ...(f.allowedModuleTypes ? { allowedModuleTypes: f.allowedModuleTypes } : {}),
+          ...(f.kind === "list"
+            ? {
+                listType: f.listType,
+                bind: f.bind ?? "local",
+                ...(f.list !== undefined ? { list: f.list } : {}),
+                ...(f.source !== undefined ? { source: f.source } : {}),
+              }
+            : {}),
         })),
         placementCount: usage.get(m.id)?.placementCount ?? 0,
         sampleSlugs: usage.get(m.id)?.sampleSlugs ?? [],

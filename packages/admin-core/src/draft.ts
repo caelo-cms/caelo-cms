@@ -164,12 +164,9 @@ const ENTITY_TABLES: readonly {
     ownerColumn: "page_id",
     refKind: "page",
   },
-  {
-    table: "structured_set_snapshots",
-    column: "structured_set_id",
-    key: "structuredSet",
-    refKind: "structuredSet",
-  },
+  { table: "list_type_snapshots", column: "list_type_id", key: "listType", refKind: "listType" },
+  { table: "list_snapshots", column: "list_id", key: "list", refKind: "list" },
+  { table: "page_type_snapshots", column: "page_type_id", key: "pageType", refKind: "pageType" },
   {
     table: "content_instance_snapshots",
     column: "content_instance_id",
@@ -264,7 +261,9 @@ async function keyLabel(tx: TransactionRunner, key: string): Promise<string> {
     template: "template",
     page: "page",
     pageLayout: "page",
-    structuredSet: "structuredSet",
+    listType: "listType",
+    list: "list",
+    pageType: "pageType",
     contentInstance: "contentInstance",
     theme: "theme",
   };
@@ -425,7 +424,14 @@ export async function draftStageSelection(
 
 /** A row the undone chat created on the draft (soft-deleted by the undo). */
 export interface CreatedRow {
-  readonly table: "pages" | "modules" | "templates" | "content_instances";
+  readonly table:
+    | "pages"
+    | "modules"
+    | "templates"
+    | "content_instances"
+    | "list_types"
+    | "lists"
+    | "page_types";
   readonly id: string;
 }
 
@@ -448,6 +454,9 @@ const CREATED_TABLE: Readonly<Record<string, CreatedRow["table"]>> = {
   module: "modules",
   template: "templates",
   contentInstance: "content_instances",
+  listType: "list_types",
+  list: "lists",
+  pageType: "page_types",
 };
 
 /**
@@ -569,7 +578,9 @@ export async function releaseIdleDraftLocks(
         WHEN 'template' THEN ${touched(["template"], "l.entity_id")}
         WHEN 'page' THEN ${touched(["page", "pageLayout", "pageModuleContent"], "l.entity_id")}
         WHEN 'pageLayout' THEN ${touched(["pageLayout"], "l.entity_id")}
-        WHEN 'structuredSet' THEN ${touched(["structuredSet"], "l.entity_id")}
+        WHEN 'listType' THEN ${touched(["listType"], "l.entity_id")}
+        WHEN 'list' THEN ${touched(["list"], "l.entity_id")}
+        WHEN 'pageType' THEN ${touched(["pageType"], "l.entity_id")}
         WHEN 'contentInstance' THEN ${touched(["contentInstance"], "l.entity_id")}
         WHEN 'theme' THEN ${touched(["theme"], "l.entity_id")}
         WHEN 'pluginRow' THEN ${touched(["pluginRow"], "l.entity_id")}

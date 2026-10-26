@@ -20,10 +20,32 @@ describe("findUnrenderableLayoutFields (#106)", () => {
   it("flags a defaultable field that has no default", () => {
     const fields: ModuleField[] = [
       { name: "copyright", kind: "text", label: "Copyright" },
-      { name: "nav_links", kind: "link-list", label: "Footer nav" },
+      { name: "nav_links", kind: "list", listType: "links", label: "Footer nav" },
     ];
     const problems = findUnrenderableLayoutFields(fields);
     expect(problems.map((p) => p.name).sort()).toEqual(["copyright", "nav_links"]);
+  });
+
+  it("passes a shared list with a fixed list and a source list without defaults (epic #1107)", () => {
+    const fields: ModuleField[] = [
+      {
+        name: "menu",
+        kind: "list",
+        listType: "menu",
+        bind: "shared",
+        list: "caelo:list/00000000-0000-4000-8000-000000000101",
+        label: "Menu",
+      },
+      {
+        name: "crumbs",
+        kind: "list",
+        listType: "links",
+        bind: "source",
+        source: { kind: "system", name: "breadcrumbs" },
+        label: "Breadcrumbs",
+      },
+    ];
+    expect(findUnrenderableLayoutFields(fields)).toEqual([]);
   });
 
   it("passes when every field carries a default", () => {
@@ -31,9 +53,10 @@ describe("findUnrenderableLayoutFields (#106)", () => {
       { name: "copyright", kind: "text", label: "Copyright", default: "© 2026 Acme" },
       {
         name: "nav_links",
-        kind: "link-list",
+        kind: "list",
+        listType: "links",
         label: "Footer nav",
-        default: [{ label: "Home", href: "/" }],
+        default: [{ node: "link", values: { label: "Home", link: { href: "/" } } }],
       },
     ];
     expect(findUnrenderableLayoutFields(fields)).toEqual([]);
@@ -42,7 +65,7 @@ describe("findUnrenderableLayoutFields (#106)", () => {
   it("treats an explicit falsy default (empty string / empty list) as present", () => {
     const fields: ModuleField[] = [
       { name: "copyright", kind: "text", label: "Copyright", default: "" },
-      { name: "nav_links", kind: "link-list", label: "Footer nav", default: [] },
+      { name: "nav_links", kind: "list", listType: "links", label: "Footer nav", default: [] },
     ];
     expect(findUnrenderableLayoutFields(fields)).toEqual([]);
   });

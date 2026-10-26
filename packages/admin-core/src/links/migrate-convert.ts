@@ -30,7 +30,6 @@ export type LinkSurface =
   | "module_html"
   | "module_field_defaults"
   | "content_values"
-  | "structured_sets"
   | "layout_html"
   | `plugin:${string}`;
 
@@ -127,14 +126,6 @@ export function convertContentValues(
   return convert({ ...values }, cx, (run) =>
     canonicaliseContentValues(fields, values, run, urlNames),
   );
-}
-
-/** Structured-set items: every `href` at any depth. */
-export function convertSetItems(
-  items: readonly unknown[],
-  cx: ConvertContext,
-): PartOutcome<unknown[]> {
-  return convert([...items], cx, (run) => canonicaliseJsonLinks(items, run, "items") as unknown[]);
 }
 
 /**

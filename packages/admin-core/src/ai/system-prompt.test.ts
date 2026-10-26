@@ -156,4 +156,32 @@ describe("composeSystemPromptChunks", () => {
     // Pre-v0.5.9 example response — must NOT come back.
     expect(body).not.toContain("I've drafted the change");
   });
+
+  // Epic #1107 — the operator says "menu", "footer links", "categories";
+  // the prompt maps those words onto shared lists and names the tools, and
+  // nothing teaches the removed structured sets / text-list / link-list /
+  // template kind any more.
+  it("module model + playbook teach lists, list types and page types (epic #1107)", () => {
+    const chunks = composeSystemPromptChunks([]);
+    const model = chunks.find((c) => c.label === "module-model")?.body ?? "";
+    const playbook = chunks.find((c) => c.label === "tool-playbook")?.body ?? "";
+    expect(model).toContain(
+      "a menu, the navigation, footer links, categories and tags are each a SHARED list",
+    );
+    expect(model).toContain("there are no menu tools");
+    expect(model).toContain("**local**");
+    expect(model).toContain("**shared**");
+    expect(model).toContain("**source**");
+    expect(model).toContain("promote_local_list");
+    expect(model).toContain("**Page types**");
+    expect(model).toContain("`term_pages`");
+    expect(model).toContain("{{#is_current}}");
+    expect(playbook).toContain("`patch_list_items_many`");
+    expect(playbook).toContain("`upsert_page_types_many`");
+    expect(playbook).toContain("`preview_list_source`");
+    const all = chunks.map((c) => c.body).join("\n");
+    for (const gone of ["structured set", "structured_set", "text-list", "link-list", "nav-menu"]) {
+      expect(all).not.toContain(gone);
+    }
+  });
 });

@@ -23,7 +23,7 @@ import {
   localBuildPluginServices,
   MAIN_RENDER,
   resetPluginHost,
-  resolveDataLists,
+  resolveListSources,
   runPluginOperation,
   runPluginStaticRender,
 } from "@caelo-cms/plugin-host";
@@ -254,14 +254,18 @@ describe("#590 — canonical, sitemap, hreflang and switcher share one URL build
       }
 
       // --- language switcher (data list + ready-made markup) -------------
-      const lists = await resolveDataLists(
+      const lists = await resolveListSources(
         pages.map((p) => p.id),
         MAIN_RENDER,
         style,
       );
       for (const p of pages) {
         const items = lists.get(p.id)?.language_links ?? [];
-        expect(Object.fromEntries(items.map((i) => [i.locale, i.href]))).toEqual(expected);
+        expect(
+          Object.fromEntries(
+            items.map((i) => [i.values.locale, (i.values.href as { href: string }).href]),
+          ),
+        ).toEqual(expected);
       }
       const selector = await runPluginStaticRender({
         invocation: { origin: "system", actorId: SYSTEM_ACTOR_ID },

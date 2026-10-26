@@ -24,8 +24,16 @@
  *   three or more times side by side in the free markup of one module on
  *   one page — a list of items kept as hand-written HTML (83 tool cards
  *   in one richtext value). Not a block: a single page is allowed free
- *   HTML, but the items belong in a module-list. Pages where the pattern
- *   already blocks as repeated or similar markup get that finding only.
+ *   HTML, but the items belong in a `list` field (a module-list only when
+ *   each item is a module of its own). Pages where the pattern already
+ *   blocks as repeated or similar markup get that finding only.
+ * - `structure/duplicate-navigation` (error, epic #1107): two modules
+ *   carry the same set of links (three or more) as their own data —
+ *   local list entries or hand-written links. A header and a footer
+ *   with the same menu kept twice drift apart; keep it in ONE shared
+ *   list and bind both. Links of a shared list never count.
+ * - `structure/similar-navigation` (warning): near matches of the above
+ *   (Jaccard ≥ the near-match threshold) — likely one menu drifting.
  *
  * Deliberate exceptions go through the existing per-rule acceptance.
  */
@@ -44,6 +52,7 @@ import type { Finding } from "./findings.js";
 import { MAX_FINDINGS_PER_CALL } from "./runner.js";
 import {
   analyseStructure,
+  type LinkGroup,
   type PatternOccurrence,
   type StructureAnalysis,
   type StructureModule,
@@ -107,6 +116,7 @@ export function structureFindings(
     ...perPage("structure/similar-markup", "warning", groups.near, byId),
     ...layoutCss(analysis, layouts, byId),
     ...repeatedItems(analysis, [...groups.exact, ...groups.near], byId),
+    ...navigationFindings(analysis.linkGroups, byId),
   ];
   // Errors come first, so a cut keeps what blocks. The fix of one group
   // is site-wide, so the next Stage re-reports whatever was cut.
@@ -208,7 +218,7 @@ function perPage(
         }
       : {
           tool: "add_module",
-          hint: "mint ONE module from this markup with semantic fields (text-list / link-list / module-list for the repeating items), place it on every listed page with that page's values, remove the free copies, and move the pattern's CSS from the layout into the module",
+          hint: "mint ONE module from this markup with semantic fields (a `list` field for repeated entries; a module-list only when each item is a module of its own), place it on every listed page with that page's values, remove the free copies, and move the pattern's CSS from the layout into the module",
         },
   }));
 }
@@ -260,9 +270,102 @@ function repeatedItems(
     ),
     fix: {
       tool: "add_module",
-      hint: "mint ONE module for the item with semantic fields, give the host module a module-list field (text-list / link-list for plain items) holding one entry per item, and remove the hand-written copies from the field value",
+      hint: "give the host module a `list` field with one entry per item (list type links / menu / texts, or a list type with the item's fields) and render the entries with {{#field}}…{{/field}}; use a module-list only when each item is a module of its own. Then remove the hand-written copies from the field value",
     },
   }));
+}
+
+/** Most distinct link sets compared pairwise for near matches. */
+const MAX_NAV_CANDIDATES = 500;
+
+/** One set of links and the modules that carry it as their own data. */
+interface NavGroup {
+  readonly hrefs: readonly string[];
+  readonly modules: Set<string>;
+  readonly pages: Set<string>;
+}
+
+/**
+ * Two or more modules carrying the same links as their own copies (epic
+ * #1107): exact sets block, near sets warn. One site finding per group —
+ * the fix (one shared list) is one change, wherever the modules sit.
+ */
+function navigationFindings(
+  groups: readonly LinkGroup[],
+  byId: ReadonlyMap<string, StructureModule>,
+): Finding[] {
+  const bySig = new Map<string, NavGroup>();
+  for (const g of groups) {
+    const sig = g.hrefs.join("\u0000");
+    const ng = bySig.get(sig) ?? { hrefs: g.hrefs, modules: new Set(), pages: new Set() };
+    ng.modules.add(g.moduleId);
+    ng.pages.add(g.pageId);
+    bySig.set(sig, ng);
+  }
+  const all = [...bySig.values()];
+  const findings: Finding[] = [];
+  const exact = all.filter((g) => g.modules.size >= 2);
+  for (const g of exact)
+    findings.push(navigationFinding("exact", g.hrefs, g.modules, g.pages, byId));
+
+  // Near: cluster the remaining sets (one module each) by link overlap.
+  const rest = all.filter((g) => g.modules.size < 2).slice(0, MAX_NAV_CANDIDATES);
+  const parent = rest.map((_, i) => i);
+  const find = (i: number): number => {
+    let root = i;
+    while (parent[root] !== root) root = parent[root] as number;
+    return root;
+  };
+  for (let i = 0; i < rest.length; i++) {
+    for (let j = i + 1; j < rest.length; j++) {
+      if (jaccard((rest[i] as NavGroup).hrefs, (rest[j] as NavGroup).hrefs) >= NEAR_MATCH_THRESHOLD)
+        parent[find(i)] = find(j);
+    }
+  }
+  const clusters = new Map<number, NavGroup[]>();
+  rest.forEach((g, i) => {
+    clusters.set(find(i), [...(clusters.get(find(i)) ?? []), g]);
+  });
+  for (const cluster of clusters.values()) {
+    const modules = new Set(cluster.flatMap((g) => [...g.modules]));
+    if (modules.size < 2) continue;
+    const hrefs = [...new Set(cluster.flatMap((g) => g.hrefs))].sort();
+    const pages = new Set(cluster.flatMap((g) => [...g.pages]));
+    findings.push(navigationFinding("near", hrefs, modules, pages, byId));
+  }
+  return findings;
+}
+
+function navigationFinding(
+  match: "exact" | "near",
+  hrefs: readonly string[],
+  modules: ReadonlySet<string>,
+  pages: ReadonlySet<string>,
+  byId: ReadonlyMap<string, StructureModule>,
+): Finding {
+  const names = [...modules].map((id) => `"${byId.get(id)?.displayName ?? id}" (${id})`);
+  const what =
+    match === "exact"
+      ? `carry the same ${hrefs.length} links (${list(hrefs)})`
+      : `carry nearly the same links (${list(hrefs)})`;
+  return {
+    ruleId: match === "exact" ? "structure/duplicate-navigation" : "structure/similar-navigation",
+    severity: match === "exact" ? "error" : "warning",
+    message: clip(
+      `${match === "exact" ? "Duplicate navigation" : "Similar navigation"}: modules ${list(names)} ${what} as copies of their own, on ${pages.size} page(s) — each copy is edited on its own and they drift apart.`,
+    ),
+    fix: {
+      tool: "promote_local_list",
+      hint: "keep these links in ONE shared list: promote one module's list field to a shared list (promote_local_list; hand-written links first become a list field), then bind the other modules' list fields to the same caelo:list/<id> and drop their own copies",
+    },
+  };
+}
+
+function jaccard(a: readonly string[], b: readonly string[]): number {
+  const sa = new Set(a);
+  let both = 0;
+  for (const x of b) if (sa.has(x)) both++;
+  return both / (sa.size + b.length - both);
 }
 
 /** Modules whose templates are structurally identical. */

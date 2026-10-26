@@ -170,8 +170,10 @@ async function previewHtml(pageId: string): Promise<string> {
   if (!r.ok) throw new Error(`render_preview: ${JSON.stringify(r.error)}`);
   const v = r.value as { html: string; missingSlots: string[] };
   expect(v.missingSlots.filter((m) => m.startsWith("link-"))).toEqual([]);
-  return v.html;
+  return unstamp(v.html);
 }
+
+const unstamp = (html: string) => html.replace(/ data-caelo-list-item="[^"]*"/g, "");
 
 async function buildHtml(pageId: string, pagePath: string, runId: string): Promise<string> {
   const root = mkdtempSync(join(tmpdir(), "caelo-link-refs-moves-"));
@@ -187,6 +189,7 @@ async function buildHtml(pageId: string, pagePath: string, runId: string): Promi
   };
   await adapter.withAdminTransaction(SYSTEM, (tx) =>
     generateSite({
+      publishAt: new Date().toISOString(),
       tx,
       adapter,
       plugins: localBuildPluginServices,
@@ -196,15 +199,24 @@ async function buildHtml(pageId: string, pagePath: string, runId: string): Promi
       changedPageIds: [pageId],
     }),
   );
-  return readFile(join(root, "out", "builds", runId, pageOutputPath(pagePath)), "utf8");
+  return unstamp(
+    await readFile(join(root, "out", "builds", runId, pageOutputPath(pagePath)), "utf8"),
+  );
 }
+
+/** One entry of the local `links` list (epic #1107). */
+const more = (label: string, href: string) => ({
+  id: "00000000-0000-4000-9000-000000000001",
+  node: "link",
+  values: { label, link: { href } },
+});
 
 const LINKS_FIELDS = [
   { name: "cta_href", kind: "url", label: "CTA link" },
-  { name: "more", kind: "link-list", label: "More links" },
+  { name: "more", kind: "list", listType: "links", label: "More links" },
 ];
 const LINKS_HTML =
-  '<nav><a href="{{cta_href}}">CTA</a>{{#more}}<a href="{{href}}">{{label}}</a>{{/more}}</nav>';
+  '<nav><a href="{{cta_href}}">CTA</a>{{#more}}<a href="{{link}}">{{label}}</a>{{/more}}</nav>';
 
 describe("links follow a rename by reference", () => {
   it("keeps stored text, creates the 301 and resolves to the new path in preview and build", async () => {
@@ -213,7 +225,7 @@ describe("links follow a rename by reference", () => {
     // Written as paths, the way the AI and the operator write them.
     const linker = await buildPage(`${PFX}-linker`, {
       html: `<p><a href="${oldPath}#team">Team</a></p>${LINKS_HTML}`,
-      values: { cta_href: oldPath, more: [{ label: "About", href: `${oldPath}#history` }] },
+      values: { cta_href: oldPath, more: [more("About", `${oldPath}#history`)] },
       fields: LINKS_FIELDS,
     });
     const before = await storedLinkState(linker);
@@ -256,7 +268,7 @@ describe("links follow a nested subtree move by reference (#690)", () => {
     const oldStep = `${oldGuide}/${PFX}-step`;
     const linker = await buildPage(`${PFX}-index`, {
       html: `<p><a href="${oldStep}">Step</a></p>${LINKS_HTML}`,
-      values: { cta_href: oldGuide, more: [{ label: "Step", href: oldStep }] },
+      values: { cta_href: oldGuide, more: [more("Step", oldStep)] },
       fields: LINKS_FIELDS,
     });
     const before = await storedLinkState(linker);

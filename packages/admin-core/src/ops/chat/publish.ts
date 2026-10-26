@@ -33,12 +33,17 @@ import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { pendingSnapshotSql } from "../../draft.js";
+import { replacePageTerms } from "../../lists/page-terms.js";
+import { applyListEntityRow } from "../../lists/store.js";
 import { releaseChatLocks } from "../../locks.js";
 import {
   emitSnapshot,
+  parseAndUpgradeListState,
+  parseAndUpgradeListTypeState,
   parseAndUpgradeModuleState,
   parseAndUpgradePageLayoutState,
   parseAndUpgradePageState,
+  parseAndUpgradePageTypeState,
   parseAndUpgradeTemplateState,
   parseSnapshotState,
   type SnapshotEntity,
@@ -134,7 +139,7 @@ interface MergeResult {
  * latest entity-state snapshot per kind from the branch, emits them as
  * main snapshots, and replays the writes that the chat-branched
  * handlers deliberately skipped (page_module_content updates,
- * page_modules rewrites, structured_set blob promotion, page upserts,
+ * page_modules rewrites, list / list type / page type promotion, page upserts,
  * module updates).
  *
  * Callers layer their op-specific behavior on top: chat.publish stamps
@@ -302,7 +307,9 @@ export async function mergeWindowToMain(
       | "page"
       | "pageLayout"
       | "pageModuleContent"
-      | "structuredSet"
+      | "listType"
+      | "list"
+      | "pageType"
       | "contentInstance"
       | "theme"
       | "pluginRow",
@@ -312,7 +319,9 @@ export async function mergeWindowToMain(
   const wantPages = filterByKind("page");
   const wantLayouts = filterByKind("pageLayout");
   const wantContent = filterByKind("pageModuleContent");
-  const wantStructuredSets = filterByKind("structuredSet");
+  const wantListTypes = filterByKind("listType");
+  const wantLists = filterByKind("list");
+  const wantPageTypes = filterByKind("pageType");
   const wantContentInstances = filterByKind("contentInstance");
   const wantThemes = filterByKind("theme");
   const includeAll = entitiesFilter === undefined;
@@ -336,7 +345,9 @@ export async function mergeWindowToMain(
       | "page"
       | "pageLayout"
       | "pageModuleContent"
-      | "structuredSet"
+      | "listType"
+      | "list"
+      | "pageType"
       | "contentInstance"
       | "theme"
       | "pluginRow",
@@ -364,7 +375,9 @@ export async function mergeWindowToMain(
       | "page"
       | "pageLayout"
       | "pageModuleContent"
-      | "structuredSet"
+      | "listType"
+      | "list"
+      | "pageType"
       | "contentInstance"
       | "theme"
       | "pluginRow",
@@ -450,22 +463,41 @@ export async function mergeWindowToMain(
     WHERE 1=1 ${notYetPublished("pageModuleContent")} ${stageFilter("pageModuleContent")} ${inFilter(includeAll ? null : (wantContent ?? []))}
   `)) as unknown as Row[]);
 
-  const structuredSetRows =
-    !includeAll && (wantStructuredSets?.length ?? 0) === 0
+  // Epic #1107 — list types, lists, page types: latest state per entity.
+  const latestOf = async (
+    table: string,
+    column: string,
+    kind: "listType" | "list" | "pageType",
+    want: readonly string[] | null,
+  ): Promise<Row[]> =>
+    !includeAll && (want?.length ?? 0) === 0
       ? []
       : ((await tx.execute(sql`
     SELECT entity_id, state FROM (
-      SELECT DISTINCT ON (sss.structured_set_id)
-             sss.structured_set_id::text AS entity_id,
-             sss.state,
-             sss.structured_set_id::text AS entity_id_text
-      FROM structured_set_snapshots sss
-      JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
+      SELECT DISTINCT ON (es.${sql.raw(column)})
+             es.${sql.raw(column)}::text AS entity_id,
+             es.state,
+             es.${sql.raw(column)}::text AS entity_id_text
+      FROM ${sql.raw(table)} es
+      JOIN site_snapshots ss ON ss.id = es.site_snapshot_id
       WHERE ss.chat_branch_id = ${window.branchId}::uuid${sinceFilter}
-      ORDER BY sss.structured_set_id, ss.created_at DESC
+      ORDER BY es.${sql.raw(column)}, ss.created_at DESC
     ) sub
-    WHERE 1=1 ${notYetPublished("structuredSet")} ${stageFilter("structuredSet")} ${inFilter(includeAll ? null : (wantStructuredSets ?? []))}
+    WHERE 1=1 ${notYetPublished(kind)} ${stageFilter(kind)} ${inFilter(includeAll ? null : (want ?? []))}
   `)) as unknown as Row[]);
+  const listTypeRows = await latestOf(
+    "list_type_snapshots",
+    "list_type_id",
+    "listType",
+    wantListTypes,
+  );
+  const listRows = await latestOf("list_snapshots", "list_id", "list", wantLists);
+  const pageTypeRows = await latestOf(
+    "page_type_snapshots",
+    "page_type_id",
+    "pageType",
+    wantPageTypes,
+  );
 
   // v0.12.0 — content_instances merge.
   const contentInstanceRows =
@@ -485,8 +517,7 @@ export async function mergeWindowToMain(
     WHERE 1=1 ${notYetPublished("contentInstance")} ${stageFilter("contentInstance")} ${inFilter(includeAll ? null : (wantContentInstances ?? []))}
   `)) as unknown as Row[]);
 
-  // v0.11.0 (#45 step-11 round-2 opt §1) — themes merge. Mirrors the
-  // structured_sets shape: pick the most-recent branched theme_snapshots
+  // v0.11.0 (#45 step-11 round-2 opt §1) — themes merge: pick the most-recent branched theme_snapshots
   // row per theme_id and replay (tokens + display_name + description +
   // asset FKs) onto the live themes row in the replay loop below.
   const themeRows =
@@ -578,7 +609,9 @@ export async function mergeWindowToMain(
     pageRows.length +
     layoutRows.length +
     contentRows.length +
-    structuredSetRows.length +
+    listTypeRows.length +
+    listRows.length +
+    pageTypeRows.length +
     contentInstanceRows.length +
     themeRows.length;
   if (total === 0) {
@@ -630,17 +663,27 @@ export async function mergeWindowToMain(
         };
         return { kind: "pageModuleContent", entityId: r.entity_id, state: raw };
       }),
-      ...structuredSetRows.map((r): SnapshotEntity => {
-        const raw = parseSnapshotState(r.state) as {
-          schemaVersion: 1;
-          kind: string;
-          slug: string;
-          displayName: string;
-          items: readonly unknown[];
-          deletedAt: string | null;
-        };
-        return { kind: "structuredSet", entityId: r.entity_id, state: raw };
-      }),
+      ...listTypeRows.map(
+        (r): SnapshotEntity => ({
+          kind: "listType",
+          entityId: r.entity_id,
+          state: parseAndUpgradeListTypeState(parseSnapshotState(r.state)),
+        }),
+      ),
+      ...listRows.map(
+        (r): SnapshotEntity => ({
+          kind: "list",
+          entityId: r.entity_id,
+          state: parseAndUpgradeListState(parseSnapshotState(r.state)),
+        }),
+      ),
+      ...pageTypeRows.map(
+        (r): SnapshotEntity => ({
+          kind: "pageType",
+          entityId: r.entity_id,
+          state: parseAndUpgradePageTypeState(parseSnapshotState(r.state)),
+        }),
+      ),
       ...contentInstanceRows.map((r): SnapshotEntity => {
         const raw = parseSnapshotState(r.state) as {
           schemaVersion: 1;
@@ -714,20 +757,14 @@ export async function mergeWindowToMain(
             updated_at = now()
         WHERE id = ${e.entityId}::uuid
       `);
-    } else if (e.kind === "structuredSet") {
-      const itemsJson = JSON.stringify(e.state.items);
-      await tx.execute(sql`
-        UPDATE structured_sets
-        SET items = ${itemsJson}::text::jsonb,
-            display_name = ${e.state.displayName},
-            updated_at = now(),
-            updated_by = ${ctx.actorId}::uuid
-        WHERE id = ${e.entityId}::uuid
-      `);
+    } else if (e.kind === "listType" || e.kind === "list" || e.kind === "pageType") {
+      // Epic #1107 — same shape as content_instances below: UPSERT the
+      // live row from the state and clear chat_branch_id so rows created
+      // in the branch graduate.
+      await applyListEntityRow(tx, ctx.actorId, e, null);
     } else if (e.kind === "theme") {
       // v0.11.0 (#45, step-11 round-2 opt §1) — replay the branched
-      // theme snapshot onto the live themes row. Mirrors the
-      // structured_sets shape: tokens jsonb + display_name + description
+      // theme snapshot onto the live themes row: tokens jsonb + display_name + description
       // + the four asset FKs come from the snapshot state. is_active is
       // intentionally NOT replayed here — activation lives in its own
       // gated propose/execute path and shouldn't be implicitly flipped
@@ -750,7 +787,8 @@ export async function mergeWindowToMain(
       // v0.9.0 — pages.create now branches; merge UPSERTs the live row
       // AND clears chat_branch_id to graduate to main.
       await tx.execute(sql`
-        INSERT INTO pages (id, slug, name, title, template_id, status, deleted_at, version, chat_branch_id, parent_page_id)
+        INSERT INTO pages (id, slug, name, title, template_id, status, deleted_at, version, chat_branch_id, parent_page_id,
+                           page_type_id, properties)
         VALUES (
           ${e.entityId}::uuid,
           ${e.state.slug},
@@ -761,7 +799,9 @@ export async function mergeWindowToMain(
           ${e.state.deletedAt ? sql`now()` : sql`NULL`},
           ${e.state.version},
           NULL,
-          ${e.state.parentPageId ?? null}::uuid
+          ${e.state.parentPageId ?? null}::uuid,
+          ${e.state.pageTypeId}::uuid,
+          ${jsonbParam(e.state.properties)}
         )
         ON CONFLICT (id) DO UPDATE SET
           slug           = EXCLUDED.slug,
@@ -770,12 +810,15 @@ export async function mergeWindowToMain(
           parent_page_id = ${e.state.parentPageId === undefined ? sql`pages.parent_page_id` : sql`EXCLUDED.parent_page_id`},
           title          = EXCLUDED.title,
           template_id    = EXCLUDED.template_id,
+          page_type_id   = EXCLUDED.page_type_id,
+          properties     = EXCLUDED.properties,
           status         = EXCLUDED.status,
           deleted_at     = EXCLUDED.deleted_at,
           chat_branch_id = NULL,
           version        = pages.version + 1,
           updated_at     = now()
       `);
+      await replacePageTerms(tx, e.entityId, e.state.terms);
     } else if (e.kind === "pageLayout") {
       // v0.12.0 — page_modules now carries content_instance_id (NOT NULL)
       // and sync_mode. Producers (pages.set_modules) write the placement

@@ -104,3 +104,53 @@ describe("addModuleToolInput modes (issue #159)", () => {
     expect(r.success).toBe(false);
   });
 });
+
+describe("addModuleToolInput — list fields carry their own content (PR #1121 e2e)", () => {
+  const LIST = "caelo:list/22222222-2222-4222-8222-222222222222";
+  const footer = (fields: unknown[]) =>
+    addModuleToolInput.safeParse({
+      ...BASE,
+      target: "layout" as const,
+      targetRef: "site-default",
+      blockName: "footer",
+      displayName: "Footer",
+      html: '<nav>{{#footer_links}}<a href="{{link}}">{{label}}</a>{{/footer_links}}</nav>',
+      fields,
+    });
+
+  it("accepts a footer bound to a shared list without values or defaults", () => {
+    const r = footer([
+      {
+        name: "footer_links",
+        kind: "list",
+        label: "Links",
+        listType: "menu",
+        bind: "shared",
+        list: LIST,
+      },
+    ]);
+    expect(r.success).toBe(true);
+  });
+
+  it("accepts a list fed by a source", () => {
+    const r = footer([
+      {
+        name: "footer_links",
+        kind: "list",
+        label: "Crumbs",
+        listType: "links",
+        bind: "source",
+        source: { kind: "system", name: "breadcrumbs" },
+      },
+    ]);
+    expect(r.success).toBe(true);
+  });
+
+  it("still refuses a shared list field with no list and no value, naming the list route", () => {
+    const r = footer([
+      { name: "footer_links", kind: "list", label: "Links", listType: "menu", bind: "shared" },
+    ]);
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0]?.message).toContain("upsert_lists_many");
+  });
+});

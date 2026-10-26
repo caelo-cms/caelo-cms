@@ -42,6 +42,7 @@ import {
   findUnrenderableLayoutFields,
   unrenderableLayoutFieldsError,
 } from "./_layout-module-fields.js";
+import { LIST_FIELD_CONTRACT } from "./_list-tool-kit.js";
 import { mintModuleFromHtml } from "./_mint-module.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
@@ -270,6 +271,7 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     "**The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; edit_module changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. " +
     "`blockName` must be a real block on the target; the handler returns the available block set if it isn't. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `"0"`).' +
+    LIST_FIELD_CONTRACT +
     INTERNAL_LINK_CONTRACT,
   // 2026-07 — STATIC on purpose (prompt-cache): the per-turn describe
   // embedded active-page blocks + layout/template slugs into the tool

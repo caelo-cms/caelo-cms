@@ -32,6 +32,7 @@ export * from "./image-capabilities.js";
 export * from "./interactions.js";
 export * from "./link-canonicalise.js";
 export * from "./link-refs.js";
+export * from "./lists/index.js";
 export {
   type LogContext,
   type Logger,
@@ -76,7 +77,6 @@ export * from "./staging-gate.js";
 export * from "./static-cache-policy.js";
 export * from "./static-security-headers.js";
 export * from "./strip-cdata.js";
-export * from "./structured-sets.js";
 export * from "./subagents.js";
 export * from "./template-engine.js";
 export * from "./theme-importers/auto-detect.js";

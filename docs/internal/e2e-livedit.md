@@ -7,10 +7,10 @@ regression classes the mock-AI suite at `apps/admin/e2e/` cannot:
 
 - v0.10.17 — AI emits intent then stops without action (empty response).
 - v0.10.19 — orphan locks in `chat_entity_locks` after Stage.
-- v0.10.20 — `set_nav_menu` JSON-Schema mismatch (covered by Scenario
-  2 in v0.13.1; helper surface ready).
-- v0.10.21 — missing nav-menu primer (covered by Scenario 2 in
-  v0.13.1).
+- v0.10.20 / v0.10.21 — the nav-menu schema mismatch and missing
+  primer. Structured sets and the `nav-menu` binding are gone (epic
+  #1107); menus are shared lists, covered by `scenario-ai-layout-footer`
+  and `scenario-lists-mega-menu`.
 
 All mid-flow assertions are deterministic (DOM via Playwright, DB via
 `bun:SQL`, admin-stderr greps). The only AI call in the verification
@@ -316,7 +316,10 @@ reset it:
 
 - **`resetLiveditFixtures()`** (each scenario calls it first) wipes the
   content state by SQL: chats, pages, modules, content instances,
-  layout placements, non-default templates, import runs.
+  layout placements, non-default templates, import runs, every shared
+  list, every list type but the shipped ones (`texts`, `links`, `menu`,
+  `categories`, `tags`) and every page type but the site default (whose
+  template list drops the wiped templates).
 - **The plugin activation guard** (`_pluginActivationGuard` in
   `fixtures.ts`, automatic for every scenario importing `test` from
   `./fixtures.js`) disables, after each test — pass or fail — every
@@ -382,6 +385,18 @@ vary turn-to-turn even at `temperature: 0` once tools come into
 play. Lean on row counts, foreign-key relationships, and
 content-shape rather than literal strings the AI wrote.
 
+**Lists, list types, page types (epic #1107).** A chat's writes to them
+are draft state until a Stage, so read them through
+`lib/list-model.ts`: `snapshotListModel()` returns the draft view (live
+rows overlaid with the newest pending snapshot) of list types, shared
+lists, page types, pages with their terms, modules, layout chrome and
+content-instance values, and the pure analysers (`chromeBoundLists`,
+`megaMenuFacts`, `blogCategoryFacts`, `calledTool`) turn it into the facts
+a spec asserts. The analysers are unit-tested in `lib/list-model.test.ts`.
+`seedLayoutBlocks`, `primePostOnboarding` and `seedNewsArticles` in
+`helpers.ts` seed chrome blocks, a post-onboarding theme and published
+news articles for list scenarios.
+
 ## What each assertion class catches
 
 | Assertion | Regression class |
@@ -398,8 +413,10 @@ content-shape rather than literal strings the AI wrote.
 | Closing vision verdict `ok: true` | Page renders structurally (heading + body, no broken layout). |
 | Same `page_modules` keys before/after re-edit | Re-edit didn't churn placements (add/delete/reorder). |
 | ≥1 `page_module_content.updated_at` advanced, <total | Edit landed on one content row, not all. |
-| `transcript-failure-count == 0` after a footer-nav prompt (`scenario-ai-layout-footer`) | issue #106: `add_module_to_layout` was emitted, not narrated-then-dropped — the field-schema enum gap that made `link-list` unrepresentable is closed. |
-| `layout_modules` row in the `footer` block whose nav is a `link-list` field OR inline `<a>` tags carrying the labels (`scenario-ai-layout-footer`) | issue #106 / §1A: the footer nav is present + structured, not numbered `label1`/`label2` scalars. Accepts either the §1A-ideal link-list field or inline anchors — both valid for a fixed nav — so the live-AI assertion stays robust to the model's stylistic choice. The schema's link-list *capability* is pinned deterministically in `module-fields-schema.test.ts`. Re-ratified for issue #414: a link-list nav on the chrome module is the INTENDED outcome today, not a defensive fallback — the `nav-menu` structured-set binding (module slug `nav-menu-<set-slug>`) is unreachable for the AI (minted slugs carry a generated suffix), so this row deliberately does NOT require the set. Revisit once #414's binding-mechanism decision lands. |
+| `transcript-failure-count == 0` after a footer-nav prompt (`scenario-ai-layout-footer`) | issue #106: the layout placement was emitted, not narrated-then-dropped — the field-schema enum gap that made a link list unrepresentable is closed. |
+| A module in the layout's `footer` block declares a `list` field bound shared (`bind: "shared"`, the list fixed on the field, a shared default or a placement value `caelo:list/<id>`) to a list whose entries carry the About and Contact labels (`scenario-ai-layout-footer`) | issue #106 / §1A / epic #1107: the footer nav is ONE list field, not numbered `label1`/`label2` scalars and not anchors hardcoded into the module HTML (accepted until #1107 while the structured-set binding was unreachable for the AI, #414); footer links are a SHARED list (the alias the tool descriptions and system prompt carry). The schema's list capability is pinned deterministically in `module-fields-schema.test.ts`. |
+| Mega menu: header AND footer modules are bound to ONE shared list; ≥3 top-level entries are nodes with children (the Products / Solutions / Company columns); the list's type has a node filled by a page query and the list holds such an entry; after "add Careers under Company" the same list (same id) has a Careers entry under the Company column and the follow-up turn called `patch_list_items_many` (`scenario-lists-mega-menu`) | epic #1107: the AI picking the wrong shape for a mega menu (a list per column, hardcoded news links instead of a query node, the footer copying the entries into a second list), placing the chrome per page instead of once on the layout, or maintaining a shared list by rewriting it (`upsert_lists_many`) or the module instead of an item-level patch. The scenario seeds a `news` page type with three published articles so the query has data. |
+| Blog categories: a vocabulary list carries Guides / Product news / Engineering; a page type other than the site default takes that vocabulary; ≥3 pages of that type carry its terms, covering all three categories; ≥1 module lists pages by term (`term_pages` source, or a query whose defaults or placement value set `terms`) (`scenario-lists-blog-categories`) | epic #1107 / the manage-page-types skill: categories kept as plain text or a link list, articles left on the default page type, terms not assigned (`update_pages_many` / `build_page` `terms`), or category pages hand-listing their articles instead of a source. |
 | Active theme is non-seed, described, and `color.primary` is chromatic — hex RGB-spread > 24 or oklch chroma > 0.03, never a seed grayscale value (`scenario-homepage`) | issue #112 / §1A: "preset-menu grayscale ship" — PR #107 run 26767610953 published a fully grayscale site because the AI satisfied the cold-start gate by minting the `shadcn-default` preset and stopping. With presets removed, the AI must compose a brand-derived `ThemeDocument` itself; this row fails if the gate criterion (origin + description) or the compose guidance regresses. Scenario-safe: the prompt names a SaaS/dev-tools brand AND states the design intent explicitly ("fitting color scheme", "nice background for the header") — run 27357551606 proved intent-free prompts let the AI clear the gate while leaving the seed grayscale primary untouched, so a chromatic primary is the only correct outcome here. |
 | Composed palette carries at least two DISTINCT chromatic colors; gradient / surface-alt / web-font presence logged as `[design-report]` warnings (`scenario-homepage`) | issue #161 / epic #149: flat single-hue documents were the post-#112 ceiling — #153's palette-pair hints + DEPTH_AND_SURFACE_HINTS instruct primary + accent. The two-chromatic floor is deterministic under those primers; the richer checks (gradient, surface-alt, non-system typography) start as non-blocking warnings and get promoted to hard assertions once 10x determinism runs show they hold. |
 | Served HTML carries no literal mustache tag (`{{x}}`, `{{#list}}`, an unbound `{{theme_logo_url}}`) and no `<!-- caelo:missing … -->` marker; script/style bodies excluded (`scenario-homepage`, `scenario-consistency`; `findTemplateLeaks`) | issue #161, widening #70/#71: any template the composer failed to resolve reaching a visitor — previously only `{{#`/`{{/` section markers were checked, so an unset scalar field or an unbound theme-asset slot shipped silently. |
@@ -505,11 +522,8 @@ shows up as a downstream "module is null" or a 6-minute Stage timeout.
 
 ## Suggested next scenarios (v0.13.1+)
 
-- **Scenario 2** — `/hosting` page + nav-menu update. Covers v0.10.20
-  (`set_nav_menu` JSON-Schema) + v0.10.21 (missing nav-menu primer)
-  with concrete `structured_sets` row checks.
 - **Scenario 3** — footer copyright edit + Stage/Publish round-trip
   with substring checks on the production HTML.
 
-Both are tracked on the v0.13.1 follow-up roadmap issue (opened
+It is tracked on the v0.13.1 follow-up roadmap issue (opened
 when this PR is opened, per AC #19 in `.workflow-plan.md`).

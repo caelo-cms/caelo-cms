@@ -83,7 +83,7 @@ async function wipe(): Promise<void> {
     await tx`DELETE FROM chat_messages WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE 't664%')`;
     await tx`DELETE FROM ai_calls WHERE chat_session_id IN (SELECT id FROM chat_sessions WHERE title LIKE 't664%')`;
     await tx`DELETE FROM chat_sessions WHERE title LIKE 't664%'`;
-    await tx`DELETE FROM structured_sets WHERE slug LIKE 't664-%'`;
+    await tx`DELETE FROM redirects WHERE from_path LIKE '/t664-%'`;
   });
 }
 
@@ -737,19 +737,21 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
     return r.value as { ok: boolean; content: string };
   }
 
-  const navWrite = (slug: string) => ({
-    kind: "nav-menu",
-    slug,
-    displayName: "t664 nav",
-    // External: an internal link must name an existing page (#724), and
-    // this file seeds no homepage.
-    items: [{ label: "Home", href: "https://example.com/" }],
+  // A routine write that needs no AI and no fixture page: a redirect to
+  // the site root (always a valid target).
+  const redirectWrite = (slug: string) => ({
+    redirects: [{ fromPath: `/${slug}`, toPath: "/", statusCode: 301 }],
   });
 
   it("refuses a Live Edit turn while the external agent works, lists it, and Stop blocks it until allowed", async () => {
     const token = await mintAdminToken();
     const chatSessionId = await createChat("t664 mcp vs live edit");
-    const write = await mcpCall(token, chatSessionId, "set_structured_set", navWrite("t664-a"));
+    const write = await mcpCall(
+      token,
+      chatSessionId,
+      "bulk_create_redirects",
+      redirectWrite("t664-a"),
+    );
     expect(write.ok).toBe(true);
 
     const runs = await listRuns(chatSessionId);
@@ -773,7 +775,12 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
     // Stop the external agent: every later call in this chat is refused …
     const stop = await stopFromOtherInstance(chatSessionId, runs[0]?.id);
     expect(stop.stoppedExternalAgents).toBe(1);
-    const refused = await mcpCall(token, chatSessionId, "set_structured_set", navWrite("t664-b"));
+    const refused = await mcpCall(
+      token,
+      chatSessionId,
+      "bulk_create_redirects",
+      redirectWrite("t664-b"),
+    );
     expect(refused.ok).toBe(false);
     expect(refused.content).toStartWith("stopped_by_operator:");
     const readRefused = await mcpCall(token, chatSessionId, "list_pages", {});
@@ -820,7 +827,12 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
       runId: runs[0]?.id as string,
     });
     expect(allowed.ok && (allowed.value as { allowed: boolean }).allowed).toBe(true);
-    const again = await mcpCall(token, chatSessionId, "set_structured_set", navWrite("t664-c"));
+    const again = await mcpCall(
+      token,
+      chatSessionId,
+      "bulk_create_redirects",
+      redirectWrite("t664-c"),
+    );
     expect(again.ok).toBe(true);
   });
 
@@ -890,11 +902,16 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
     });
     await t.running;
 
-    const write = await mcpCall(token, chatSessionId, "set_structured_set", navWrite("t664-d"));
+    const write = await mcpCall(
+      token,
+      chatSessionId,
+      "bulk_create_redirects",
+      redirectWrite("t664-d"),
+    );
     expect(write.ok).toBe(false);
     expect(write.content).toStartWith("chat_busy:");
     const exists = await withSql(async (tx) => {
-      const rows = (await tx`SELECT 1 FROM structured_sets WHERE slug = 't664-d'`) as unknown[];
+      const rows = (await tx`SELECT 1 FROM redirects WHERE from_path = '/t664-d'`) as unknown[];
       return rows.length > 0;
     });
     expect(exists).toBe(false);
@@ -904,7 +921,12 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
     t.finish();
     await turn;
     // The lease is free again once the turn ended.
-    const after = await mcpCall(token, chatSessionId, "set_structured_set", navWrite("t664-e"));
+    const after = await mcpCall(
+      token,
+      chatSessionId,
+      "bulk_create_redirects",
+      redirectWrite("t664-e"),
+    );
     expect(after.ok).toBe(true);
   });
 });
