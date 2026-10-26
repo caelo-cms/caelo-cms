@@ -120,9 +120,6 @@ export interface SiteImportWorkerConfig {
  */
 async function crawlNextImportRun(cfg: SiteImportWorkerConfig): Promise<void> {
   let runId: string | undefined;
-  let sourceUrl: string | undefined;
-  let depth = 2;
-  let maxPages = 50;
   try {
     // Claim one crawling run atomically. FOR UPDATE SKIP LOCKED so a
     // multi-replica admin can't double-claim a row even if both
@@ -168,9 +165,9 @@ async function crawlNextImportRun(cfg: SiteImportWorkerConfig): Promise<void> {
     const r = rows[0];
     if (!r) return;
     runId = r.id;
-    sourceUrl = r.source_url;
-    depth = r.depth;
-    maxPages = r.max_pages;
+    const sourceUrl = r.source_url;
+    const depth = r.depth;
+    const maxPages = r.max_pages;
     // issue #229 — LIST mode: the proposal pinned an exact URL set. The
     // crawler fetches only these (+ the source origin), no BFS. jsonb
     // may decode to an array or a JSON string depending on the client.
