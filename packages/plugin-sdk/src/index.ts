@@ -1510,9 +1510,11 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * and referenced from every page of the site.
    *
    * Returns `{ "runtime.js": "…", "runtime.css": "…" }`. `.js` files
-   * are linked before `</body>`, `.css` files before `</head>`; the
-   * host hashes each file's content into its name so a CDN can cache
-   * it forever and a changed file still lands.
+   * are linked (deferred) before `</body>`, `.css` files go before
+   * `</head>`: a stylesheet up to 2 KB is inlined as `<style>` so it does
+   * not block first paint (#1124), a larger one is linked. The host
+   * hashes each file's content into its name so a CDN can cache it
+   * forever and a changed file still lands.
    *
    * Why once per build rather than per page: the point of this channel
    * is behaviour a plugin must guarantee itself — a consent dialog that

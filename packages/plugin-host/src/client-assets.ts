@@ -164,6 +164,24 @@ export async function collectBuildAssets(
 const HEAD_CLOSE_RE = /<\/head\s*>/i;
 const BODY_CLOSE_RE = /<\/body\s*>/i;
 
+/**
+ * CSS files up to this size are inlined as `<style>` even on a deployed
+ * page (#1124). A linked stylesheet in `<head>` blocks first paint until
+ * it arrives, and Lighthouse flags it: a round-trip for a few hundred
+ * bytes of rules (the consent runtime's show/hide rule) is the slowest
+ * way to ship them. Above the limit the file is big enough that caching
+ * it once across pages beats repeating it in every page's HTML. Static
+ * pages carry no CSP restricting `style-src`, so an inline block is
+ * allowed wherever the link was.
+ */
+export const INLINE_CSS_MAX_BYTES = 2 * 1024;
+
+function styleTag(asset: PluginClientAsset): string {
+  // `<\/style` means what `</style` means wherever CSS can hold it
+  // (strings, url(), comments), so this escape keeps the CSS intact.
+  return `<style data-caelo-plugin="${escapeAttr(asset.pluginSlug)}">\n${escapeStyleText(asset.content)}\n</style>`;
+}
+
 function escapeAttr(s: string): string {
   return s.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 }
@@ -172,7 +190,8 @@ function escapeAttr(s: string): string {
  * Reference the assets from one page's HTML.
  *
  * CSS goes into `<head>` so a plugin's own surface is styled before
- * first paint; JS goes last in `<body>`, deferred, so it never blocks
+ * first paint — inlined when small (`INLINE_CSS_MAX_BYTES`), linked
+ * otherwise; JS goes last in `<body>`, deferred, so it never blocks
  * rendering. `inline` embeds the identical bytes for the admin preview,
  * which has no build directory to serve from.
  *
@@ -194,11 +213,9 @@ export function injectPluginAssets(
   if (css.length > 0 && HEAD_CLOSE_RE.test(out)) {
     const block = css
       .map((a) =>
-        mode === "linked"
+        mode === "linked" && Buffer.byteLength(a.content, "utf8") > INLINE_CSS_MAX_BYTES
           ? `<link rel="stylesheet" href="${escapeAttr(a.publicPath)}" data-caelo-plugin="${escapeAttr(a.pluginSlug)}" />`
-          : // `<\/style` means what `</style` means wherever CSS can hold it
-            // (strings, url(), comments), so this escape keeps the CSS intact.
-            `<style data-caelo-plugin="${escapeAttr(a.pluginSlug)}">\n${escapeStyleText(a.content)}\n</style>`,
+          : styleTag(a),
       )
       .join("\n");
     // A function replacer: a string one would expand `$&` / `$'` inside
