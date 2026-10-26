@@ -35,7 +35,6 @@
     module_html: "Module markup",
     module_field_defaults: "Layout header / footer content",
     content_values: "Page and shared content",
-    structured_sets: "Menus and link lists",
     layout_html: "Layout page frame",
   };
   const KINDS: Record<string, string> = {

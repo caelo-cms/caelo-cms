@@ -216,7 +216,7 @@ describe("checkColdStartGate (issue #106)", () => {
       toolCtxWith(
         {
           origin: "operator",
-          description: "Migrated from structured_sets theme/site",
+          description: "Seeded on a fresh install",
           tokens: { color: { primary: { $type: "color", $value: "#171717" } } },
         },
         { siteName: "Caelo", sitePurpose: "An AI-first CMS for developers" },

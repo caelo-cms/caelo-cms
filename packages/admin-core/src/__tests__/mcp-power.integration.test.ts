@@ -84,7 +84,6 @@ async function wipeOurRows(): Promise<void> {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx`DELETE FROM mcp_tokens WHERE actor_id IN (${ownerCtx.actorId}::uuid, ${otherCtx.actorId}::uuid)`;
-      await tx`DELETE FROM structured_sets WHERE slug LIKE 'mcp-power-test-%'`;
     });
   } finally {
     await sql.end();
@@ -431,24 +430,30 @@ describe("Power-MCP surface (admin token)", () => {
     }
   });
 
+  /** A module with one text field, seeded directly (not over MCP). */
+  async function seedNoteModule(slug: string): Promise<string> {
+    const r = await execute(registry, adapter, systemCtx, "modules.create", {
+      slug,
+      displayName: "Power MCP test note",
+      html: "<p>{{note}}</p>",
+      fields: [{ name: "note", kind: "text", label: "Note" }],
+    });
+    if (!r.ok) throw new Error(`seed module: ${JSON.stringify(r.error)}`);
+    return (r.value as { moduleId: string }).moduleId;
+  }
+
   it("executes a write tool as AI actor with branch + chat-task snapshot attribution", async () => {
-    // set_structured_set rather than build_page: the latter is (correctly)
-    // blocked by the cold-start identity/theme gate on a fresh install,
-    // which is orthogonal to what this test proves — that a Power-MCP
-    // write lands with the session's branch + chat-task attribution.
-    const slug = `mcp-power-test-${Date.now().toString(36)}`;
+    // create_content_instance rather than build_page: the latter is
+    // (correctly) blocked by the cold-start identity/theme gate on a fresh
+    // install, which is orthogonal to what this test proves — that a
+    // Power-MCP write lands with the session's branch + chat-task
+    // attribution.
+    const moduleId = await seedNoteModule(`mcp-power-test-${Date.now().toString(36)}`);
     const r = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
       plaintextToken: adminToken,
       chatSessionId,
-      toolName: "set_structured_set",
-      args: {
-        kind: "nav-menu",
-        slug,
-        displayName: "Power MCP test nav",
-        // External: an internal link must name an existing page (#724),
-        // and this file seeds no homepage.
-        items: [{ label: "Home", href: "https://example.com/" }],
-      },
+      toolName: "create_content_instance",
+      args: { moduleId, values: { note: "hello" } },
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
@@ -479,32 +484,31 @@ describe("Power-MCP surface (admin token)", () => {
   });
 
   it("stores a write that names excluded tools byte-for-byte and reads it back unchanged (#1044)", async () => {
-    const slug = `mcp-power-1044-${Date.now().toString(36)}`;
+    const moduleId = await seedNoteModule(`mcp-power-1044-${Date.now().toString(36)}`);
     // The exact shape bug report #1044 wrote: excluded tool names inside a value.
-    const displayName = "spawn_subagent, `offer_choices` and submit_result";
+    const note = "spawn_subagent, `offer_choices` and submit_result";
     const write = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
       plaintextToken: adminToken,
       chatSessionId,
-      toolName: "set_structured_set",
-      args: {
-        kind: "nav-menu",
-        slug,
-        displayName,
-        items: [{ label: "Docs", href: "https://example.com/" }],
-      },
+      toolName: "create_content_instance",
+      args: { moduleId, values: { note } },
     });
     expect(write.ok && (write.value as { ok: boolean }).ok).toBe(true);
+    const created = /content_instance ([0-9a-f-]{36}) created/.exec(
+      write.ok ? (write.value as { content: string }).content : "",
+    );
+    expect(created).not.toBeNull();
 
     const read = await execute(registry, adapter, systemCtx, "mcp.execute_tool", {
       plaintextToken: adminToken,
       chatSessionId,
-      toolName: "get_structured_set",
-      args: { kind: "nav-menu", slug },
+      toolName: "get_content_instance",
+      args: { id: created?.[1] },
     });
     expect(read.ok).toBe(true);
     if (!read.ok) return;
     const content = (read.value as { content: string }).content;
-    expect((JSON.parse(content) as { displayName: string }).displayName).toBe(displayName);
+    expect(content).toContain(`values: ${JSON.stringify({ note })}`);
     expect(content).not.toMatch(/not available on this surface/i);
   });
 

@@ -349,7 +349,7 @@ describe("HTML and JSON positions", () => {
         { name: "cta", kind: "url" },
         { name: "hero", kind: "image" },
         { name: "price_suffix", kind: "text" },
-        { name: "nav", kind: "link-list" },
+        { name: "nav", kind: "list" },
         { name: "body", kind: "richtext" },
         { name: "card", kind: "module" },
       ],
@@ -357,7 +357,20 @@ describe("HTML and JSON positions", () => {
         cta: "/company/about",
         hero: "/_caelo/media/hero",
         price_suffix: "/month",
-        nav: [{ label: "Home", href: "/" }],
+        nav: [
+          {
+            id: "00000000-0000-4000-9000-000000000001",
+            node: "entry",
+            values: { label: "/company/about", link: { href: "/" } },
+            children: [
+              {
+                id: "00000000-0000-4000-9000-000000000002",
+                node: "entry",
+                values: { label: "Us", link: { href: "/company/about", target: "_blank" } },
+              },
+            ],
+          },
+        ],
         body: '<p><a href="/company/about">us</a></p>',
         card: { moduleId: ABOUT, contentInstanceId: HOME },
         legacy_href: "/company/about",
@@ -368,7 +381,22 @@ describe("HTML and JSON positions", () => {
       cta: `caelo:page/${ABOUT}`,
       hero: `caelo:media/${HERO}`,
       price_suffix: "/month",
-      nav: [{ label: "Home", href: `caelo:page/${HOME}` }],
+      // Entry link values canonicalise at any depth; a label is text even
+      // when it reads like a path.
+      nav: [
+        {
+          id: "00000000-0000-4000-9000-000000000001",
+          node: "entry",
+          values: { label: "/company/about", link: { href: `caelo:page/${HOME}` } },
+          children: [
+            {
+              id: "00000000-0000-4000-9000-000000000002",
+              node: "entry",
+              values: { label: "Us", link: { href: `caelo:page/${ABOUT}`, target: "_blank" } },
+            },
+          ],
+        },
+      ],
       body: `<p><a href="caelo:page/${ABOUT}">us</a></p>`,
       card: { moduleId: ABOUT, contentInstanceId: HOME },
       legacy_href: `caelo:page/${ABOUT}`,
@@ -382,15 +410,17 @@ describe("HTML and JSON positions", () => {
       [
         {
           name: "links",
-          kind: "link-list",
+          kind: "list",
           label: "L",
-          default: [{ label: "A", href: "/company/about" }],
+          default: [{ node: "link", values: { label: "A", link: { href: "/company/about" } } }],
         },
         { name: "title", kind: "text", label: "T", default: "/company/about" },
       ],
       r,
     );
-    expect(fields[0]?.default).toEqual([{ label: "A", href: `caelo:page/${ABOUT}` }]);
+    expect(fields[0]?.default).toEqual([
+      { node: "link", values: { label: "A", link: { href: `caelo:page/${ABOUT}` } } },
+    ]);
     expect(fields[1]?.default).toBe("/company/about");
   });
 });

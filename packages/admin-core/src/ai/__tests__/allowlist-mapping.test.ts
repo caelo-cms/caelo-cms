@@ -36,8 +36,6 @@ const SEEDED_OP_NOTATION_ENTRIES = [
   "pages.get",
   "pages.list",
   "ai_memory.list",
-  "structured_sets.get",
-  "structured_sets.list",
   "redirects.lookup",
   "redirects.list",
 ] as const;
@@ -71,20 +69,8 @@ describe("OP_NAME_TO_TOOL_NAMES completeness (issue #301)", () => {
     const cases: Array<{ seeded: string[]; expected: string[] }> = [
       {
         // qa-check
-        seeded: [
-          "pages.get_with_modules",
-          "pages.get",
-          "pages.list",
-          "ai_memory.list",
-          "structured_sets.get",
-          "structured_sets.list",
-        ],
-        expected: [
-          "inspect_page_render",
-          "list_pages",
-          "get_structured_set",
-          "list_structured_sets",
-        ],
+        seeded: ["pages.get_with_modules", "pages.get", "pages.list", "ai_memory.list"],
+        expected: ["inspect_page_render", "list_pages"],
       },
       {
         // legal-check
@@ -93,14 +79,8 @@ describe("OP_NAME_TO_TOOL_NAMES completeness (issue #301)", () => {
       },
       {
         // menu-auditor
-        seeded: [
-          "structured_sets.list",
-          "structured_sets.get",
-          "redirects.lookup",
-          "redirects.list",
-          "pages.list",
-        ],
-        expected: ["list_structured_sets", "get_structured_set", "find_redirects", "list_pages"],
+        seeded: ["redirects.lookup", "redirects.list", "pages.list"],
+        expected: ["find_redirects", "list_pages"],
       },
       {
         // page-categorizer
@@ -117,7 +97,7 @@ describe("OP_NAME_TO_TOOL_NAMES completeness (issue #301)", () => {
 });
 
 describe("resolveAllowlistEntry", () => {
-  const live = new Set(["edit_module", "list_pages", "list_structured_sets"]);
+  const live = new Set(["edit_module", "list_pages"]);
 
   it("exact live tool name wins before the translation table", () => {
     expect(resolveAllowlistEntry("edit_module", live)).toEqual({
@@ -127,9 +107,9 @@ describe("resolveAllowlistEntry", () => {
   });
 
   it("op notation translates via the table", () => {
-    expect(resolveAllowlistEntry("structured_sets.list", live)).toEqual({
+    expect(resolveAllowlistEntry("pages.list", live)).toEqual({
       kind: "translated",
-      toolNames: ["list_structured_sets"],
+      toolNames: ["list_pages"],
     });
   });
 
@@ -138,10 +118,10 @@ describe("resolveAllowlistEntry", () => {
   });
 
   it("a table entry whose tool is not registered in THIS process surfaces the mapped name", () => {
-    // structured_sets.get maps to get_structured_set, absent from `live`.
-    expect(resolveAllowlistEntry("structured_sets.get", live)).toEqual({
+    // redirects.lookup maps to find_redirects, absent from `live`.
+    expect(resolveAllowlistEntry("redirects.lookup", live)).toEqual({
       kind: "unresolved",
-      suggestion: "get_structured_set",
+      suggestion: "find_redirects",
     });
   });
 
@@ -172,7 +152,7 @@ describe("resolveAllowlistEntries", () => {
 });
 
 describe("validateAllowlistEntries (save-time gate)", () => {
-  const live = new Set(["edit_module", "list_pages", "list_structured_sets"]);
+  const live = new Set(["edit_module", "list_pages"]);
 
   it("normalizes op notation to tool names with order-preserving dedupe", () => {
     const v = validateAllowlistEntries(
@@ -202,14 +182,14 @@ describe("validateAllowlistEntries (save-time gate)", () => {
 });
 
 describe("suggestNearestToolName", () => {
-  const live = new Set(["list_pages", "get_structured_set", "edit_module"]);
+  const live = new Set(["list_pages", "get_content_instance", "edit_module"]);
 
   it("flips op notation to verb_domain and finds the exact tool", () => {
     expect(suggestNearestToolName("pages.list", live)).toBe("list_pages");
   });
 
   it("catches singular/plural drift within the edit-distance cap", () => {
-    expect(suggestNearestToolName("get_structured_sets", live)).toBe("get_structured_set");
+    expect(suggestNearestToolName("get_content_instances", live)).toBe("get_content_instance");
   });
 
   it("suppresses suggestions too far away to be a plausible typo", () => {

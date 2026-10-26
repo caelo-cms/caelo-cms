@@ -171,8 +171,11 @@ jobs:
       - name: Gate — real-AI suite green on this main commit
         # Main is not covered per push (e2e-livedit.yml runs on PRs only),
         # so this is where main gets its real-AI run: once per release, on
-        # the exact commit being released. A green run on this SHA from an
-        # earlier attempt of this cut is reused instead of paid for twice.
+        # the exact code being released. A green run is reused instead of
+        # paid for twice when it tested exactly this code: an earlier
+        # attempt of this cut on this SHA, or a PR run whose tested tree
+        # (the PR merged into main, recorded by e2e-livedit.yml as the
+        # artifact e2e-livedit-green-tree-<tree>) equals this commit's tree.
         # Otherwise one is dispatched on release-gate/<sha>, a branch pinned
         # to this commit: main stays open during the cut, so a dispatch on
         # main could run a newer commit than the one being released. A
@@ -198,8 +201,26 @@ jobs:
             done
             return 1
           }
+          # Prints the id of an e2e-livedit run whose AI job succeeded on
+          # exactly this commit's tree; fails when there is none.
+          TREE=$(git rev-parse 'HEAD^{tree}')
+          tree_job_ok() {
+            for id in $(gh api "repos/$REPO/actions/artifacts?name=e2e-livedit-green-tree-$TREE&per_page=20" \
+              --jq '.artifacts[] | select(.expired == false) | .workflow_run.id'); do
+              path=$(gh api "repos/$REPO/actions/runs/$id" --jq .path)
+              [ "$path" = ".github/workflows/$WORKFLOW_FILE" ] || continue
+              ok=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
+                --jq "[.jobs[] | select(.name == \"$JOB_NAME\" and .conclusion == \"success\")] | length")
+              if [ "$ok" -gt 0 ]; then echo "$id"; return 0; fi
+            done
+            return 1
+          }
           if run=$(ai_job_ok); then
             echo "::notice::real-AI suite already green on $SHA (run $run)."
+            exit 0
+          fi
+          if run=$(tree_job_ok); then
+            echo "::notice::real-AI suite already green on this exact code (tree $TREE, run $run)."
             exit 0
           fi
           since=$(date -u +%Y-%m-%dT%H:%M:%SZ)

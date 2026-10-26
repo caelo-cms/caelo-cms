@@ -21,7 +21,10 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
 
+const entryId = (n: number) => `00000000-0000-4000-9000-${String(n).padStart(12, "0")}`;
+const unstamp = (html: string) => html.replace(/ data-caelo-list-item="[^"]*"/g, "");
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
@@ -117,27 +120,34 @@ beforeAll(async () => {
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seeded.templateId = tpl[0]?.id ?? "";
+      await adoptTemplateIntoDefaultPageType(tx, seeded.templateId);
       await tx`
         INSERT INTO template_blocks (template_id, name, display_name, position)
         VALUES (${seeded.templateId}::uuid, 'content', 'Content', 0)
       `;
 
-      // text-list module + content_instance + page placement.
+      // A local `texts` list module + content_instance + page placement.
       const tagsMod = (await tx`
         INSERT INTO modules (slug, display_name, type, html, fields)
         VALUES (
           ${MOD_SLUGS.tags},
           'Tags',
           ${MOD_SLUGS.tags},
-          '<ul>{{#tags}}<li>{{.}}</li>{{/tags}}</ul>',
-          '[{"name":"tags","kind":"text-list","label":"Tags"}]'::jsonb
+          '<ul>{{#tags}}<li>{{text}}</li>{{/tags}}</ul>',
+          '[{"name":"tags","kind":"list","listType":"texts","label":"Tags"}]'::jsonb
         )
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       seeded.tagsModuleId = tagsMod[0]?.id ?? "";
       const tagsCi = (await tx`
         INSERT INTO content_instances (module_id, "values")
-        VALUES (${seeded.tagsModuleId}::uuid, '{"tags":["a","b","c"]}'::jsonb)
+        VALUES (${seeded.tagsModuleId}::uuid, ${JSON.stringify({
+          tags: ["a", "b", "c"].map((text, i) => ({
+            id: entryId(i + 1),
+            node: "text",
+            values: { text },
+          })),
+        })}::jsonb)
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
       const tagsPage = (await tx`
@@ -151,15 +161,15 @@ beforeAll(async () => {
         VALUES (${seeded.tagsPageId}::uuid, 'content', 0, ${seeded.tagsModuleId}::uuid, ${tagsCi[0]?.id}::uuid, 'unsynced')
       `;
 
-      // link-list module (AC #1 fixture) + content_instance + page.
+      // A local `links` list module (AC #1 fixture) + content_instance + page.
       const navMod = (await tx`
         INSERT INTO modules (slug, display_name, type, html, fields)
         VALUES (
           ${MOD_SLUGS.nav},
           'Nav',
           ${MOD_SLUGS.nav},
-          '<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>',
-          '[{"name":"nav_items","kind":"link-list","label":"Nav items"}]'::jsonb
+          '<nav>{{#nav_items}}<a href="{{link}}">{{label}}</a>{{/nav_items}}</nav>',
+          '[{"name":"nav_items","kind":"list","listType":"links","label":"Nav items"}]'::jsonb
         )
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
@@ -168,7 +178,12 @@ beforeAll(async () => {
         INSERT INTO content_instances (module_id, "values")
         VALUES (
           ${seeded.navModuleId}::uuid,
-          '{"nav_items":[{"label":"Docs","href":"/docs"},{"label":"Blog","href":"/blog"}]}'::jsonb
+          ${JSON.stringify({
+            nav_items: [
+              { id: entryId(1), node: "link", values: { label: "Docs", link: { href: "/docs" } } },
+              { id: entryId(2), node: "link", values: { label: "Blog", link: { href: "/blog" } } },
+            ],
+          })}::jsonb
         )
         RETURNING id::text AS id
       `) as unknown as { id: string }[];
@@ -285,29 +300,30 @@ afterAll(async () => {
 });
 
 describe("pages.render_preview list iteration (#71)", () => {
-  it("text-list — jsonb {tags:[...]} round-trips through the engine into <li> elements", async () => {
+  it("list (texts) — jsonb entries round-trip through the engine into <li> elements", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.render_preview", {
       pageId: seeded.tagsPageId,
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const { html } = r.value as { html: string };
-    expect(html).toContain("<li>a</li><li>b</li><li>c</li>");
+    expect(unstamp(html)).toContain("<li>a</li><li>b</li><li>c</li>");
+    expect(html).toContain(`data-caelo-list-item="instance/`);
     expect(html).not.toMatch(/\{\{[#/]/);
   });
 
-  it("link-list — AC #1 verbatim fixture over the real DB", async () => {
+  it("list (links) — AC #1 fixture over the real DB", async () => {
     const r = await execute(registry, adapter, systemCtx, "pages.render_preview", {
       pageId: seeded.navPageId,
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const { html } = r.value as { html: string };
-    expect(html).toContain('<a href="/docs">Docs</a>');
-    expect(html).toContain('<a href="/blog">Blog</a>');
+    expect(unstamp(html)).toContain('<a href="/docs">Docs</a>');
+    expect(unstamp(html)).toContain('<a href="/blog">Blog</a>');
     expect(html).not.toMatch(/\{\{[#/]/);
     expect(html).not.toMatch(/\{\{label/);
-    expect(html).not.toMatch(/\{\{href/);
+    expect(html).not.toMatch(/\{\{link/);
   });
 
   it("module-list — nested {moduleId, contentInstanceId} refs render in order, no marker residue", async () => {

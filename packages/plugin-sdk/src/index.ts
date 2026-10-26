@@ -27,8 +27,30 @@
  */
 
 import type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
+// The list model only (Zod underneath): the SDK is bundled into the
+// plugin sandbox with everything it imports at runtime.
+import { type ListTypeDef, listTypeDefSchema, nodeDefSchema } from "@caelo-cms/shared/lists-model";
 import { z } from "zod";
 
+/**
+ * Epic #1107 — the list model a plugin plans with (`docs/lists.md`): the
+ * definitions it reads through the `lists` ops, the value addresses its
+ * `list-resolve` overlays are keyed by, and the field check core applies
+ * to every overlay value. Re-exported for the same reason as `z`.
+ */
+export type {
+  FieldDef,
+  ListItem,
+  ListTypeDef,
+  NodeDef,
+  PageTypeDef,
+  ValueAddress,
+} from "@caelo-cms/shared/lists-model";
+export {
+  formatValueAddress,
+  parseValueAddress,
+  validateFieldValue,
+} from "@caelo-cms/shared/lists-model";
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
  *  sandbox validator allowlists only the SDK + component-kit. */
@@ -95,7 +117,9 @@ export const pluginCapability = z.enum([
   "head_contributions",
   "url_slots",
   "client_assets",
-  "data_lists",
+  "list_sources",
+  "list_types",
+  "list_resolve",
   "companion_skills",
   "font_assets",
   "private_files",
@@ -298,28 +322,94 @@ export type ContributionKind = z.infer<typeof contributionKind>;
  *  operation bodies + frontend mount handler live in source — the
  *  manifest references them by name. */
 /**
- * A named, per-page list a plugin offers to module templates.
+ * Epic #1107 — a list source a plugin offers to module templates
+ * (`docs/lists.md` §6). It replaced the flat-string `dataLists`.
  *
- * `name` is what a module writes as `{{#name}}`; it is claimed
- * site-wide so two plugins can never disagree about what a name means.
- * `itemFields` documents the keys each element carries, so the AI can
- * author the inner markup without reading the plugin's source.
+ * `name` is what a list type's source node names (`source: { kind:
+ * "plugin", name }`) and what a module may iterate directly as
+ * `{{#name}}`; it is claimed site-wide so two plugins can never disagree
+ * about what a name means. `node` declares the fields every generated
+ * entry carries, in the same field system list types use, so the AI
+ * authors the inner markup from the definition and the host validates
+ * every value the plugin returns against it. A generated entry is data,
+ * never structure: no stored children, no nested source, no embedded
+ * module or term reference.
  */
-export const pluginDataListSpec = z
+export const pluginListSourceSpec = z
   .object({
     name: z
       .string()
       .min(1)
       .max(64)
-      .regex(/^[a-z][a-z0-9_]*$/, "data-list names are lowercase snake_case"),
-    /** One line: what this list contains and when it is non-empty. */
+      .regex(/^[a-z][a-z0-9_]*$/, "list source names are lowercase snake_case"),
+    /** Operator-facing label ("Language versions of this page"). */
+    label: z.string().min(1).max(128),
+    /** One line for the AI: what the entries are and when the list is non-empty. */
     description: z.string().min(1).max(300),
-    /** Keys present on every element, for the module author. */
-    itemFields: z.array(z.string().min(1).max(64)).min(1),
+    node: nodeDefSchema,
+  })
+  .strict()
+  .superRefine((spec, ctx) => {
+    if (spec.node.children || spec.node.source) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["node"],
+        message: "a list source entry has no stored children and no nested source",
+      });
+    }
+    for (const [i, f] of spec.node.fields.entries()) {
+      if (f.type === "module" || f.type === "term") {
+        ctx.addIssue({
+          code: "custom",
+          path: ["node", "fields", i],
+          message: `a list source entry cannot carry a ${f.type} field: generated entries are data, not structure`,
+        });
+      }
+    }
+  });
+
+export type PluginListSourceSpec = z.infer<typeof pluginListSourceSpec>;
+
+/**
+ * Epic #1107 — the JSON Schema subset a plugin declares for its
+ * definition extensions (`listExt`). Kept to the keywords the host
+ * compiles safely (the same subset external tool schemas use); the
+ * object root must close `additionalProperties`.
+ */
+export const pluginExtJsonSchema = z.record(z.string(), z.unknown());
+
+/**
+ * Epic #1107 (`docs/lists.md` §9) — attributes a plugin adds to field
+ * and node definitions of list types, stored under `ext.<pluginSlug>`.
+ * Core validates them against the ACTIVE plugin's schema and never
+ * reads them; the plugin interprets them (international-site:
+ * `{ translate: boolean }` on fields).
+ */
+export const pluginListExt = z
+  .object({
+    field: pluginExtJsonSchema.optional(),
+    node: pluginExtJsonSchema.optional(),
   })
   .strict();
 
-export type PluginDataListSpec = z.infer<typeof pluginDataListSpec>;
+export type PluginListExt = z.infer<typeof pluginListExt>;
+
+/**
+ * Epic #1107 — the `list-resolve` composition point's answer for one
+ * output variant (`docs/lists.md` §9.3): values keyed by value address
+ * (`list/<listId>/item/<itemId>/<field>`, `instance/…`, `page/…/props/…`)
+ * and addresses of hidden entries. An overlay replaces values and hides
+ * entries; it can never add, remove or reorder entries — core's resolver
+ * drops anything else and reports it to the plugin's error channel.
+ */
+export const listResolveVariantOverlay = z
+  .object({
+    values: z.record(z.string().min(1).max(400), z.unknown()),
+    hidden: z.array(z.string().min(1).max(400)).max(50_000),
+  })
+  .strict();
+
+export type ListResolveVariantOverlay = z.infer<typeof listResolveVariantOverlay>;
 
 /**
  * A module withheld from the page until the withholding plugin says
@@ -498,6 +588,45 @@ export const pluginLinkLocations = z
   .object({ locations: z.array(pluginLinkLocation).max(10_000) })
   .strict();
 
+/**
+ * Epic #1107 — one Stage-audit finding a plugin contributes through its
+ * `auditFindingsOperation` (see {@link PluginDefinition.auditFindingsOperation}).
+ * Core files it under the rule `plugin.<slug>/<rule>` in the same audit
+ * report as its own checks: an `error` blocks Publish live until fixed or
+ * accepted by the Owner, `warning` / `info` are reported.
+ */
+export const pluginAuditFinding = z
+  .object({
+    /** Lower-case kebab words (`translation-missing`). */
+    rule: z.string().regex(/^[a-z][a-z0-9-]{0,59}$/),
+    severity: z.enum(["error", "warning", "info"]),
+    /** A page of the staged build (one of the `pages` passed in); absent = site-wide. */
+    pageId: z.string().uuid().optional(),
+    /**
+     * AI-actionable: lead with a short label before the first colon
+     * ("Translation missing: …"), then what is wrong and why it matters.
+     */
+    message: z.string().min(1).max(1000),
+    /** The AI tool that fixes it (the plugin's own or a core tool) and one sentence of how. */
+    fix: z
+      .object({ tool: z.string().min(1).max(80), hint: z.string().min(1).max(500) })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type PluginAuditFinding = z.infer<typeof pluginAuditFinding>;
+
+/** What an `auditFindingsOperation` returns. */
+export const pluginAuditFindings = z
+  .object({ findings: z.array(pluginAuditFinding).max(499) })
+  .strict();
+
+/** What an `auditFindingsOperation` is called with: the staged build's pages. */
+export interface PluginAuditFindingsArgs {
+  readonly pages: readonly { readonly pageId: string; readonly path: string }[];
+}
+
 export const pluginManifest = z
   .object({
     // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
@@ -557,6 +686,10 @@ export const pluginManifest = z
      *  `link_resolve` capability: it changes where every internal link
      *  on a page goes. */
     hasLinkResolve: z.boolean().default(false),
+    /** See `PluginDefinition.auditFindingsOperation` (epic #1107). Must
+     *  name one of `operations`. Needs no capability: it reads like a
+     *  render and only adds findings to the Stage audit. */
+    auditFindingsOperation: z.string().min(1).max(120).optional(),
     /** Grants this plugin asks for. A request grants nothing: the Owner
      *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
@@ -590,16 +723,62 @@ export const pluginManifest = z
     /** Plugin-shipped instructions; external packages require a companion_skills receipt. */
     skills: z.array(pluginSkillSpec).optional(),
     /**
-     * Named lists a module can iterate with `{{#name}}…{{/name}}`,
-     * resolved per rendered page. The plugin supplies the DATA; the
-     * module (authored by the AI) owns the markup — so a language
-     * switcher looks like the site it lives on instead of carrying a
-     * plugin's fixed HTML. Names are claimed site-wide, like URL slots.
+     * Epic #1107 — list sources a module iterates (`{{#name}}…{{/name}}`
+     * or a list type's `source: { kind: "plugin", name }`), resolved per
+     * rendered page. The plugin supplies the DATA; the module (authored
+     * by the AI) owns the markup — so a language switcher looks like the
+     * site it lives on. Names are claimed site-wide, like URL slots.
+     * Requires the `list_sources` capability.
      */
-    dataLists: z.array(pluginDataListSpec).optional(),
+    listSources: z.array(pluginListSourceSpec).max(20).optional(),
+    /**
+     * Epic #1107 — list types this plugin ships. They become stored list
+     * types owned by the plugin, available exactly while the plugin runs
+     * (like its skills), and are refreshed from this manifest — bound to
+     * the artifact like everything else here. Slugs start with
+     * `<pluginSlug>-`. Requires the `list_types` capability.
+     */
+    listTypes: z.array(listTypeDefSchema).max(20).optional(),
+    /** See {@link pluginListExt}. Data only — no capability: core never interprets it. */
+    listExt: pluginListExt.optional(),
+    /** See `PluginDefinition.listResolveOperation`. Requires the
+     *  `list_resolve` capability: it changes what lists render as. */
+    hasListResolve: z.boolean().default(false),
   })
   .strict()
   .superRefine((m, ctx) => {
+    // Epic #1107 — a plugin's list types are its own: the slug prefix
+    // keeps them from ever colliding with (or replacing) a site's type.
+    for (const [i, t] of (m.listTypes ?? []).entries()) {
+      if (!t.slug.startsWith(`${m.slug}-`)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["listTypes", i, "slug"],
+          message: `plugin list type slugs must start with "${m.slug}-"`,
+        });
+      }
+    }
+    const sourceNames = new Set<string>();
+    for (const [i, src] of (m.listSources ?? []).entries()) {
+      if (sourceNames.has(src.name)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["listSources", i, "name"],
+          message: `list source "${src.name}" is declared twice`,
+        });
+      }
+      sourceNames.add(src.name);
+    }
+    if (
+      m.auditFindingsOperation !== undefined &&
+      !m.operations.includes(m.auditFindingsOperation)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["auditFindingsOperation"],
+        message: `auditFindingsOperation "${m.auditFindingsOperation}" is not one of the plugin's operations`,
+      });
+    }
     // #635 — the projection can only name what private storage declares.
     for (const [table, columns] of Object.entries(m.visitorProjection ?? {})) {
       const declared = m.adminSchema?.[table];
@@ -785,14 +964,31 @@ export type UrlContributionDef =
  * re-reads current state through its normal handles; snapshots remain
  * the durable history.
  */
+/**
+ * Every domain-event kind a plugin may poll (#392). The list kinds are
+ * epic #1107's neutral translation hooks (`docs/lists.md` §9.4):
+ * `list.items_changed` carries the per-entry diff, `list_type.changed`
+ * what a definition gained or lost, the page kinds which properties /
+ * terms changed. One list for the SDK type and the host's check.
+ */
+export const PLUGIN_EVENT_KINDS = [
+  "page.created",
+  "page.updated",
+  "page.deleted",
+  "page.published",
+  "module.updated",
+  "list.items_changed",
+  "list_type.changed",
+  "list.deleted",
+  "page.properties_changed",
+  "page.terms_changed",
+] as const;
+
+export type PluginEventKind = (typeof PLUGIN_EVENT_KINDS)[number];
+
 export interface PluginDomainEvent {
   readonly id: number;
-  readonly kind:
-    | "page.created"
-    | "page.updated"
-    | "page.deleted"
-    | "page.published"
-    | "module.updated";
+  readonly kind: PluginEventKind;
   readonly entityId: string;
   /** Emitter-supplied context (slug at event time; `chatBranchId` when
    *  the write was branch-scoped — absent means a live write). */
@@ -1405,8 +1601,12 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * can never inject raw head HTML.
    */
   readonly contributionsOperation?: string;
-  /** See `pluginManifest.dataLists`. Release-signed only. */
-  readonly dataLists?: ReadonlyArray<PluginDataListSpec>;
+  /** See `pluginManifest.listSources`; resolved by `listSourcesOperation`. */
+  readonly listSources?: ReadonlyArray<PluginListSourceSpec>;
+  /** See `pluginManifest.listTypes`. */
+  readonly listTypes?: ReadonlyArray<ListTypeDef>;
+  /** See `pluginManifest.listExt`. */
+  readonly listExt?: PluginListExt;
   /**
    * Operations reachable by an unauthenticated visitor through the API
    * gateway (`POST /api/plugin/<slug>/<operation>`).
@@ -1500,13 +1700,61 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly linkLocationsOperation?: string;
   /**
-   * The I/O half of `dataLists`: an operation in `operations` taking
-   * `{pageIds: string[], pageUrlStyle: PageUrlStyle}` (page links come
-   * from `pages.resolve_public_urls`, as for head contributions) and returning
-   * `{lists: Record<pageId, Record<listName, Array<Record<string, string>>>>}`.
-   * Called once per render pass, batched over the pages being rendered.
+   * Epic #1107 — Stage-audit contributions: an operation in `operations`
+   * taking {@link PluginAuditFindingsArgs} (`{pages: [{pageId, path}]}`,
+   * the published pages of the staged build) and returning
+   * `{findings: PluginAuditFinding[]}` (see {@link pluginAuditFinding}).
+   * Core calls it once per Stage audit as a render (read-only) invocation
+   * on the main line — what the staged build was rendered from — and
+   * files each finding under `plugin.<slug>/<rule>` in the same report
+   * as core's checks. A finding may name only a page passed in. A
+   * failing call or a malformed answer fails the audit loudly (no
+   * silent "no findings").
+   *
+   * @example
+   *   audit_findings: async (_ctx, { pages }) => ({
+   *     findings: [{
+   *       rule: "translation-missing", severity: "error", pageId: pages[0].pageId,
+   *       message: "Translation missing: the German version of the menu entry \"Docs\" is empty.",
+   *       fix: { tool: "translate_variant", hint: "translate the entry, then Stage again" },
+   *     }],
+   *   }),
    */
-  readonly dataListsOperation?: string;
+  readonly auditFindingsOperation?: string;
+  /**
+   * Epic #1107 — the I/O half of `listSources`: an operation in
+   * `operations` taking `{pageIds: string[], pageUrlStyle: PageUrlStyle}`
+   * (page links come from `pages.resolve_public_urls`, as for head
+   * contributions) and returning `{sources: Record<pageId,
+   * Record<sourceName, Array<{id: string, values: Record<string,
+   * unknown>}>>>}`. Ids are stable per entry (an entry that means the
+   * same thing on the next render keeps its id); values follow the
+   * source's `node` fields and are validated by the host. Called once
+   * per render pass, batched over the pages being rendered.
+   *
+   * @example
+   *   language_links: async (_ctx, { pageIds }) => ({
+   *     sources: { [pageIds[0]]: { language_links: [
+   *       { id: "de", values: { label: "Deutsch", href: "https://x.de/", locale: "de", is_current: true } },
+   *     ] } },
+   *   }),
+   */
+  readonly listSourcesOperation?: string;
+  /**
+   * Epic #1107 — the `list-resolve` composition point (`docs/lists.md`
+   * §9.3): an operation in `operations` taking `{variants: string[]}`
+   * (the output variants of this render, from the `link-resolve`
+   * partition) and returning `{overlays: Record<variant,
+   * ListResolveVariantOverlay>}`. Called once per preview and once per
+   * build, as a read-only render invocation (so a chat's preview sees
+   * the chat's private storage). Requires the `list_resolve` capability.
+   *
+   * @example
+   *   list_resolve: async () => ({
+   *     overlays: { de: { values: { "list/<listId>/item/<itemId>/label": "Preise" }, hidden: [] } },
+   *   }),
+   */
+  readonly listResolveOperation?: string;
 }
 
 /**
@@ -1538,7 +1786,10 @@ export function manifestFromDefinition(def: {
   readonly adminSchema?: PluginSchemaMap;
   readonly urlContributions?: ReadonlyArray<{ readonly slot: UrlSlot }>;
   readonly contributes?: ReadonlyArray<ContributionKind>;
-  readonly dataLists?: ReadonlyArray<PluginDataListSpec>;
+  readonly listSources?: ReadonlyArray<PluginListSourceSpec>;
+  readonly listTypes?: ReadonlyArray<ListTypeDef>;
+  readonly listExt?: PluginListExt;
+  readonly listResolveOperation?: string;
   readonly skills?: ReadonlyArray<PluginSkillSpec>;
   readonly operations: Readonly<Record<string, unknown>>;
   readonly component?: PluginComponent;
@@ -1547,6 +1798,7 @@ export function manifestFromDefinition(def: {
   readonly deferralsOperation?: string;
   readonly contentVariantsOperation?: string;
   readonly linkResolveOperation?: string;
+  readonly auditFindingsOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
   readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
@@ -1580,6 +1832,8 @@ export function manifestFromDefinition(def: {
     hasDeferrals: Boolean(def.deferralsOperation),
     hasContentVariants: Boolean(def.contentVariantsOperation),
     hasLinkResolve: Boolean(def.linkResolveOperation),
+    hasListResolve: Boolean(def.listResolveOperation),
+    ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
     ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),
@@ -1590,7 +1844,9 @@ export function manifestFromDefinition(def: {
       ? { urlContributions: def.urlContributions.map((c) => ({ slot: c.slot })) }
       : {}),
     ...(def.contributes && def.contributes.length > 0 ? { contributes: [...def.contributes] } : {}),
-    ...(def.dataLists && def.dataLists.length > 0 ? { dataLists: [...def.dataLists] } : {}),
+    ...(def.listSources && def.listSources.length > 0 ? { listSources: [...def.listSources] } : {}),
+    ...(def.listTypes && def.listTypes.length > 0 ? { listTypes: [...def.listTypes] } : {}),
+    ...(def.listExt ? { listExt: def.listExt } : {}),
   });
 }
 

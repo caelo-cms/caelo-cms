@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from "bun:test";
 import type { LinkTargetLookup } from "@caelo-cms/shared";
-import { convertModuleHtml, convertSetItems } from "../links/migrate-convert.js";
+import { convertModuleHtml } from "../links/migrate-convert.js";
 
 const ABOUT_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -33,11 +33,8 @@ describe("link migration conversion", () => {
   });
 
   it("an existing reference is left alone and not counted again", () => {
-    const out = convertSetItems(
-      [
-        { label: "About", href: `caelo:page/${ABOUT_ID}` },
-        { label: "Gone", href: "/gone" },
-      ],
+    const out = convertModuleHtml(
+      `<a href="caelo:page/${ABOUT_ID}">About</a><a href="/gone">Gone</a>`,
       { lookup },
     );
     expect(out.changed).toBe(false);

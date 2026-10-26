@@ -5,8 +5,8 @@
  *
  * Skill rows seeded by migration 0033 (the P10.5 subagent reviewer
  * skills) declared `allowlisted_tools` in Query-API op notation
- * (`pages.list`, `structured_sets.get`, …) while the chat-runner
- * matches AI tool names (`list_pages`, `get_structured_set`, …). The
+ * (`pages.list`, `redirects.list`, …) while the chat-runner
+ * matches AI tool names (`list_pages`, `find_redirects`, …). The
  * intersection was always empty and the old zero-match branch silently
  * widened back to the full catalogue — run #15 hit this 5× in one
  * session ("skill-allowlist-zero-match"), shipping the whole catalogue
@@ -50,9 +50,6 @@ export const OP_NAME_TO_TOOL_NAMES: Readonly<Record<string, readonly string[]>> 
   "pages.list": ["list_pages"],
   "pages.get": ["list_pages"],
   "pages.get_with_modules": ["inspect_page_render"],
-  // Structured sets have direct tool counterparts.
-  "structured_sets.list": ["list_structured_sets"],
-  "structured_sets.get": ["get_structured_set"],
   // Both redirect read ops are served by the one search tool.
   "redirects.list": ["find_redirects"],
   "redirects.lookup": ["find_redirects"],

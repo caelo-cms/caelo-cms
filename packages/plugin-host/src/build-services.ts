@@ -26,19 +26,13 @@
  * main-line render (MAIN_RENDER): builds never render a chat branch.
  */
 
-import type { PageUrlStyle } from "@caelo-cms/shared";
+import type { ListOverlayIssue, PageUrlStyle } from "@caelo-cms/shared";
 import { collectBuildAssets, type PluginClientAsset } from "./client-assets.js";
 import {
   hasContentVariantContributors,
   type ResolvedContentVariants,
   resolveContentVariants,
 } from "./content-variants.js";
-import {
-  dormantDataListNames,
-  type ResolvedDataLists,
-  resolveDataLists,
-} from "./data-list-resolution.js";
-import { pluginDataListsRegistry } from "./data-lists.js";
 import { type ResolvedDeferrals, resolveModuleDeferrals } from "./deferrals.js";
 import {
   isPluginDisabled,
@@ -55,6 +49,18 @@ import {
   type ResolvedLinkVariants,
   resolveLinkVariants,
 } from "./link-resolve.js";
+import {
+  hasListResolveContributors,
+  type ResolvedListOverlays,
+  reportListOverlayIssues,
+  resolveListOverlays,
+} from "./list-resolve.js";
+import {
+  dormantListSourceNames,
+  type ResolvedListSources,
+  resolveListSources,
+} from "./list-source-resolution.js";
+import { pluginListSourcesRegistry } from "./list-sources.js";
 import { type PublicUrlContext, type PublicUrlPage, resolvePublicPageUrls } from "./public-urls.js";
 
 type ContentVariantPages = Parameters<typeof resolveContentVariants>[0];
@@ -69,11 +75,20 @@ export interface StaticRenderPlugin {
 
 /** The plugin answers a static build consumes. All main-line renders. */
 export interface BuildPluginServices {
-  resolveDataLists(pageIds: string[], pageUrlStyle: PageUrlStyle): Promise<ResolvedDataLists>;
-  /** Declared list names whose plugin is not running (name → plugin). */
-  dormantDataListNames(): Promise<Record<string, string>>;
-  /** Every declared list name, running or not. */
-  declaredDataListNames(): Promise<string[]>;
+  /** Plugin list-source entries per page (epic #1107). */
+  resolveListSources(pageIds: string[], pageUrlStyle: PageUrlStyle): Promise<ResolvedListSources>;
+  /** Declared list-source names whose plugin is not running (name → plugin). */
+  dormantListSourceNames(): Promise<Record<string, string>>;
+  /** Every declared list-source name, running or not. */
+  declaredListSourceNames(): Promise<string[]>;
+  hasListResolveContributors(): Promise<boolean>;
+  /** The list-resolve point's overlays for these variants (epic #1107). */
+  resolveListOverlays(variants: string[]): Promise<ResolvedListOverlays>;
+  /** Hand refused overlay entries to the plugins' error channel. */
+  reportListOverlayIssues(
+    resolved: ResolvedListOverlays,
+    issues: ListOverlayIssue[],
+  ): Promise<void>;
   resolveModuleDeferrals(modules: DeferralCandidates): Promise<ResolvedDeferrals>;
   hasContentVariantContributors(): Promise<boolean>;
   resolveContentVariants(pages: ContentVariantPages): Promise<ResolvedContentVariants>;
@@ -97,9 +112,13 @@ export interface BuildPluginServices {
 
 /** The plugin host of THIS process — the admin's, where plugins run. */
 export const localBuildPluginServices: BuildPluginServices = {
-  resolveDataLists: (pageIds, pageUrlStyle) => resolveDataLists(pageIds, MAIN_RENDER, pageUrlStyle),
-  dormantDataListNames: async () => dormantDataListNames(),
-  declaredDataListNames: async () => pluginDataListsRegistry.catalogue().map((c) => c.name),
+  resolveListSources: (pageIds, pageUrlStyle) =>
+    resolveListSources(pageIds, MAIN_RENDER, pageUrlStyle),
+  dormantListSourceNames: async () => dormantListSourceNames(),
+  declaredListSourceNames: async () => pluginListSourcesRegistry.catalogue().map((c) => c.name),
+  hasListResolveContributors: async () => hasListResolveContributors(),
+  resolveListOverlays: (variants) => resolveListOverlays(variants, MAIN_RENDER),
+  reportListOverlayIssues: (resolved, issues) => reportListOverlayIssues(resolved, issues),
   resolveModuleDeferrals: (modules) => resolveModuleDeferrals(modules, MAIN_RENDER),
   hasContentVariantContributors: async () => hasContentVariantContributors(),
   resolveContentVariants: (pages) => resolveContentVariants(pages, MAIN_RENDER),
@@ -133,9 +152,12 @@ export const localBuildPluginServices: BuildPluginServices = {
 
 /** The method names a build may call — the RPC's whole surface. */
 export const BUILD_PLUGIN_METHODS = [
-  "resolveDataLists",
-  "dormantDataListNames",
-  "declaredDataListNames",
+  "resolveListSources",
+  "dormantListSourceNames",
+  "declaredListSourceNames",
+  "hasListResolveContributors",
+  "resolveListOverlays",
+  "reportListOverlayIssues",
   "resolveModuleDeferrals",
   "hasContentVariantContributors",
   "resolveContentVariants",

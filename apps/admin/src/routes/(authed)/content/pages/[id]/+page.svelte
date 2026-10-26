@@ -26,6 +26,7 @@
   import { Select } from "#lib/components/ui/select/index.js";
   import { Combobox } from "#lib/components/ui/combobox/index.js";
   import { parentCandidates } from "#lib/page-tree.js";
+  import PageTypeSettings from "#lib/components/lists/PageTypeSettings.svelte";
 
   let { data, form } = $props();
 
@@ -61,6 +62,9 @@
     title: string;
     status: "draft" | "published";
     templateId: string;
+    pageType: string;
+    properties: Record<string, unknown>;
+    terms: string[];
     version: number;
     deletedAt: string | null;
     blocks: Block[];
@@ -78,6 +82,7 @@
   const allTemplates = data.allTemplates as {
     id: string;
     slug: string;
+    displayName: string;
     blocks: { name: string; displayName: string }[];
   }[];
 
@@ -235,6 +240,19 @@
       </form>
     </CardContent>
   </Card>
+
+  <PageTypeSettings
+    {page}
+    pageTypes={data.pageTypes}
+    templates={allTemplates}
+    ctx={{
+      pages: data.pagePicks,
+      modules: [],
+      vocabularies: data.vocabularies,
+      readOnly: !(data.permissions as string[]).includes("content.write"),
+    }}
+    csrfToken={data.csrfToken}
+  />
 
   <Card>
     <CardHeader>

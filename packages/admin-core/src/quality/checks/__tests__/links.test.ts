@@ -36,9 +36,9 @@ const BASE = "http://127.0.0.1:4100";
 
 const NAV: LinkModule = {
   id: id(201),
-  slug: "nav-menu-main",
+  slug: "main-menu",
   displayName: "Main menu",
-  html: '<nav class="menu">{{#items}}<a href="{{href}}">{{label}}</a>{{/items}}</nav>',
+  html: '<nav class="menu">{{#items}}<a href="{{link}}">{{label}}</a>{{/items}}</nav>',
 };
 const CTA: LinkModule = {
   id: id(202),
@@ -422,7 +422,7 @@ describe("links/orphan-page", () => {
     const orphans = findings.filter((f) => f.ruleId === "links/orphan-page");
     expect(orphans.map((f) => f.pageId)).toEqual([lonely.pageId]);
     expect(orphans[0]).toMatchObject({ severity: "warning" });
-    expect(orphans[0]?.fix?.tool).toBe("set_structured_set");
+    expect(orphans[0]?.fix?.tool).toBe("set_page_module_content");
   });
 
   it("links in <link> or <img> do not make a page reachable", async () => {
@@ -435,7 +435,7 @@ describe("links/orphan-page", () => {
 });
 
 describe("where the fix goes", () => {
-  it("navigation, module template, layout and template chrome each name their tool", async () => {
+  it("module value, module template, layout and template chrome each name their tool", async () => {
     const home: StagedPage = {
       pageId: id(1),
       path: "/",
@@ -448,13 +448,34 @@ describe("where the fix goes", () => {
     const { findings } = await findingsOf([home, ABOUT, TEAM]);
     const toolOf = (href: string) =>
       findings.find((f) => f.message.includes(`"${href}"`))?.fix?.tool;
-    expect(toolOf("/blog/")).toBe("set_structured_set");
-    expect(findings.find((f) => f.message.includes('"/blog/"'))?.fix?.hint).toContain(
-      "nav-menu/main",
-    );
+    // A menu's links are content values of its module (a list field).
+    expect(toolOf("/blog/")).toBe("set_page_module_content");
     expect(toolOf("/contact-us")).toBe("edit_content");
     expect(toolOf("/imprint-old")).toBe("propose_update_layout");
     expect(toolOf("/mystery")).toBe("grep_content");
+  });
+
+  it("a URL in a rendered list entry is fixed in that entry (epic #1107)", async () => {
+    const LIST = id(900);
+    const ITEM = "00000000-0000-4000-9000-000000000001";
+    const home: StagedPage = {
+      pageId: id(1),
+      path: "/",
+      url: `${BASE}/`,
+      html: `<html><body>${mod(
+        NAV,
+        `<a data-caelo-list-item="${LIST}/${ITEM}" href="/gone-shared/">Gone</a><a data-caelo-list-item="local/items/${ITEM}" href="/gone-default/">Gone</a><a data-caelo-list-item="instance/${id(5)}/items/${ITEM}" href="/gone-value/">Gone</a>`,
+      )}${mod(TEXT, '<a href="/about/">About</a><a href="/team">Team</a>')}</body></html>`,
+    };
+    const { findings } = await findingsOf([home, ABOUT, TEAM]);
+    const fixOf = (href: string) => findings.find((f) => f.message.includes(`"${href}"`));
+    expect(fixOf("/gone-shared/")?.fix?.tool).toBe("patch_list_items_many");
+    expect(fixOf("/gone-shared/")?.fix?.hint).toContain(`entry ${ITEM} of shared list ${LIST}`);
+    expect(fixOf("/gone-shared/")?.message).toContain(`in entry ${ITEM} of shared list ${LIST}`);
+    expect(fixOf("/gone-default/")?.fix?.tool).toBe("edit_module");
+    expect(fixOf("/gone-default/")?.fix?.hint).toContain('list field "items"');
+    // A placement's local list is a content value of the module.
+    expect(fixOf("/gone-value/")?.fix?.tool).toBe("set_page_module_content");
   });
 
   it("output of a plugin points at the plugin", async () => {

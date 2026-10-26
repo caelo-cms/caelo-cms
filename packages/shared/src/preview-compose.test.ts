@@ -2,6 +2,8 @@
 
 import { describe, expect, it } from "bun:test";
 import { INTERACTIONS } from "./interactions.js";
+import { fixtureData, fixtureLinkIndex, ITEM, LIST } from "./lists/list-fixtures.test.js";
+import { createListRenderContext } from "./lists/resolve.js";
 import {
   ComposeError,
   composePagePreview,
@@ -18,6 +20,10 @@ const blankModule = {
   css: "",
   js: "",
 };
+
+/** List context over the fixture site, rendered outside any page. */
+const LISTS = createListRenderContext(fixtureData()).forPage(null);
+const uid = (n: number) => `00000000-0000-4000-9000-${String(n).padStart(12, "0")}`;
 
 describe("composePagePreview", () => {
   it("inlines module HTML into named slots and stamps CSS/JS into head/body", () => {
@@ -279,16 +285,17 @@ describe("composePagePreview substitutes {{name}} placeholders with field defaul
 
 describe("composePagePreview list-iteration via shared template engine (#71)", () => {
   // PR #71 / Plan B — the compose path now routes through the shared
-  // template engine and gains text-list / link-list / module-list
-  // section support. The fixtures below are the AC verbatim shapes;
+  // template engine and gains list / module-list section support
+  // (`list` since epic #1107). The fixtures below are the AC verbatim shapes;
   // failures here imply the static-generator is leaking raw mustache
   // markers to visitors again (the bug #71 closes).
   const slot = `<body><caelo-slot name="content">_</caelo-slot></body>`;
 
-  it("AC #1 — link-list iterates per element inside composed page", () => {
+  it("AC #1 — a links list iterates per entry inside composed page", () => {
     const out = composePagePreview({
       templateHtml: slot,
       templateCss: "",
+      lists: LISTS,
       blocks: [
         {
           blockName: "content",
@@ -297,14 +304,14 @@ describe("composePagePreview list-iteration via shared template engine (#71)", (
               moduleId: "mod-nav",
               slug: "header",
               displayName: "Header",
-              html: '<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>',
+              html: '<nav>{{#nav_items}}<a href="{{link}}">{{label}}</a>{{/nav_items}}</nav>',
               css: "",
               js: "",
-              fields: [{ name: "nav_items", kind: "link-list" }],
+              fields: [{ name: "nav_items", kind: "list", listType: "links" }],
               contentValues: {
                 nav_items: [
-                  { label: "Docs", href: "/docs" },
-                  { label: "Blog", href: "/blog" },
+                  { id: uid(1), node: "link", values: { label: "Docs", link: { href: "/docs" } } },
+                  { id: uid(2), node: "link", values: { label: "Blog", link: { href: "/blog" } } },
                 ],
               },
             },
@@ -315,18 +322,23 @@ describe("composePagePreview list-iteration via shared template engine (#71)", (
     // Outermost element is tagged with data-caelo-module-id; assert
     // the section iterated and that no raw markers leaked into the
     // composed HTML.
-    expect(out.html).toContain('<a href="/docs">Docs</a>');
-    expect(out.html).toContain('<a href="/blog">Blog</a>');
+    expect(out.html).toContain(
+      `<a href="/docs" data-caelo-list-item="local/nav_items/${uid(1)}">Docs</a>`,
+    );
+    expect(out.html).toContain(
+      `<a href="/blog" data-caelo-list-item="local/nav_items/${uid(2)}">Blog</a>`,
+    );
     expect(out.html).not.toMatch(/\{\{[#/]/);
     expect(out.html).not.toMatch(/\{\{label/);
     expect(out.html).not.toMatch(/\{\{href/);
     expect(out.html).toContain('data-caelo-module-id="mod-nav"');
   });
 
-  it("AC #2 — text-list iterates {{.}} per element inside composed page", () => {
+  it("AC #2 — a texts list iterates per entry inside composed page", () => {
     const out = composePagePreview({
       templateHtml: slot,
       templateCss: "",
+      lists: LISTS,
       blocks: [
         {
           blockName: "content",
@@ -335,17 +347,25 @@ describe("composePagePreview list-iteration via shared template engine (#71)", (
               moduleId: "mod-tags",
               slug: "tags",
               displayName: "Tags",
-              html: "<ul>{{#tags}}<li>{{.}}</li>{{/tags}}</ul>",
+              html: "<ul>{{#tags}}<li>{{text}}</li>{{/tags}}</ul>",
               css: "",
               js: "",
-              fields: [{ name: "tags", kind: "text-list" }],
-              contentValues: { tags: ["a", "b", "c"] },
+              fields: [{ name: "tags", kind: "list", listType: "texts" }],
+              contentValues: {
+                tags: ["a", "b", "c"].map((text, i) => ({
+                  id: uid(i + 1),
+                  node: "text",
+                  values: { text },
+                })),
+              },
             },
           ],
         },
       ],
     });
-    expect(out.html).toContain("<li>a</li><li>b</li><li>c</li>");
+    expect(out.html.replace(/ data-caelo-list-item="[^"]*"/g, "")).toContain(
+      "<li>a</li><li>b</li><li>c</li>",
+    );
     expect(out.html).not.toMatch(/\{\{[#/]/);
     expect(out.html).toContain('data-caelo-module-id="mod-tags"');
   });
@@ -525,11 +545,25 @@ describe("composePageWithLayout", () => {
   });
 
   it("renders a responsive nav with once-per-page functional assets (issue #160)", () => {
+    // The module owns the markup (epic #1107 — no built-in menu renderer);
+    // the interaction kit owns the behaviour.
     const navModule = {
       ...blankModule,
       moduleId: "33333333-3333-4333-8333-333333333303",
-      slug: "nav-menu-header",
-      html: "<nav>replaced</nav>",
+      slug: "header-nav",
+      html:
+        '<nav class="caelo-nav-menu" data-caelo-ui="mobile-nav" data-nav-open="false">' +
+        '<button type="button" class="caelo-nav-toggle" aria-expanded="false" aria-label="Menu"></button>' +
+        '<ul>{{#menu}}<li><a href="{{link}}">{{label}}</a></li>{{/menu}}</ul></nav>',
+      fields: [
+        {
+          name: "menu",
+          kind: "list" as const,
+          listType: "menu",
+          bind: "shared" as const,
+          list: `caelo:list/${LIST.header}`,
+        },
+      ],
     };
     const out = composePageWithLayout({
       templateHtml,
@@ -539,10 +573,12 @@ describe("composePageWithLayout", () => {
       layoutCss: "",
       layoutBlocks: [],
       layoutSlug: "test",
-      structuredSets: {
-        byKindSlug: { "nav-menu/header": [{ label: "Docs", href: "/docs" }] },
-      },
+      lists: LISTS,
+      linkResolver: fixtureLinkIndex().forPage(null),
     });
+    expect(out.html).toContain(
+      `<li data-caelo-list-item="${LIST.header}/${ITEM.about}"><a href="/about/">About</a></li>`,
+    );
     expect(out.html).toContain('class="caelo-nav-toggle"');
     expect(out.html).toContain('aria-expanded="false"');
     expect(out.html).toContain('data-nav-open="false"');

@@ -13,6 +13,7 @@ import type { ExecutionContext, PageLogEntry } from "@caelo-cms/shared";
 import { pageLogEntrySchema } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -66,6 +67,7 @@ beforeAll(async () => {
               (SELECT id FROM layouts WHERE slug = 'site-default'))
       ON CONFLICT (id) DO NOTHING
     `;
+    await adoptTemplateIntoDefaultPageType(tx, TEMPLATE_ID);
     await tx`
       INSERT INTO pages (id, slug, title, template_id)
       VALUES (${PAGE_ID}::uuid, 'issue-264-page-log', 'issue-264 page', ${TEMPLATE_ID}::uuid)

@@ -14,6 +14,7 @@ export * from "./content.js";
 export * from "./context.js";
 export * from "./css-gradient-scan.js";
 export * from "./css-scope-scan.js";
+export * from "./css-var-aliases.js";
 export * from "./css-var-scan.js";
 export * from "./database-url.js";
 export * from "./design-draft-shell.js";
@@ -32,6 +33,7 @@ export * from "./image-capabilities.js";
 export * from "./interactions.js";
 export * from "./link-canonicalise.js";
 export * from "./link-refs.js";
+export * from "./lists/index.js";
 export {
   type LogContext,
   type Logger,
@@ -72,11 +74,11 @@ export * from "./screenshot-capture.js";
 export * from "./seo.js";
 export * from "./skills.js";
 export * from "./snapshots.js";
+export * from "./source-text-transport.js";
 export * from "./staging-gate.js";
 export * from "./static-cache-policy.js";
 export * from "./static-security-headers.js";
 export * from "./strip-cdata.js";
-export * from "./structured-sets.js";
 export * from "./subagents.js";
 export * from "./template-engine.js";
 export * from "./theme-importers/auto-detect.js";

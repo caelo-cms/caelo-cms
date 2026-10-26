@@ -11,7 +11,9 @@
  *   - layouts: their HTML and their chrome modules (whose content lives in
  *     the field defaults — layout placements have no content instance);
  *   - templates: their HTML;
- *   - structured sets (navigation menus and friends);
+ *   - lists (epic #1107): shared lists' entries, list types' source
+ *     defaults, and pages' terms and properties — what `list` fields,
+ *     queries and `{{page.*}}` render;
  *   - plugin storage, through the plugins' `linkLocationsOperation` hook
  *     (the same hook the link migration, rollout E, uses).
  *
@@ -28,9 +30,16 @@
 
 import { collectPluginLinkLocations, MAIN_RENDER, withPluginScope } from "@caelo-cms/plugin-host";
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import { MODULE_FIELD_KINDS, type ModuleFieldKind } from "@caelo-cms/shared";
+import {
+  type ListItem,
+  type ListTypeDef,
+  MODULE_FIELD_KINDS,
+  type ModuleFieldKind,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { pendingSnapshotSql } from "../draft.js";
+import { loadPagesInView } from "../lists/pages-view.js";
+import { loadListEntities } from "../lists/store.js";
 import { effectiveLayoutModulesSql } from "../ops/content/layout-overlay.js";
 import { parseSnapshotState } from "../snapshots/index.js";
 import {
@@ -91,14 +100,6 @@ export interface SourceLayout {
   readonly blocks: readonly { readonly blockName: string; readonly moduleIds: readonly string[] }[];
 }
 
-export interface SourceSet {
-  readonly id: string;
-  readonly kind: string;
-  readonly slug: string;
-  readonly name: string;
-  readonly items: readonly unknown[];
-}
-
 /** One plugin-stored value that may carry links. */
 export interface SourcePluginValue {
   readonly pluginSlug: string;
@@ -107,6 +108,29 @@ export interface SourcePluginValue {
   readonly value: unknown;
   /** Present when the value is a module content-values object. */
   readonly fields: readonly SourceField[] | null;
+}
+
+/** A shared list (epic #1107) as the scope sees it. */
+export interface SourceList {
+  readonly id: string;
+  readonly slug: string;
+  readonly name: string;
+  readonly listTypeId: string;
+  readonly items: readonly ListItem[];
+}
+
+/** A list type as the scope sees it. */
+export interface SourceListType {
+  readonly id: string;
+  readonly slug: string;
+  readonly def: ListTypeDef;
+}
+
+/** A page's list data: what `{{page.props.*}}` and page queries read. */
+export interface SourcePageData {
+  readonly properties: Readonly<Record<string, unknown>>;
+  /** `caelo:term/<listId>/<itemId>` */
+  readonly terms: readonly string[];
 }
 
 /** Every link-carrying surface of one scope. */
@@ -118,8 +142,13 @@ export interface ReferenceSourceModel {
   readonly instances: ReadonlyMap<string, SourceInstance>;
   readonly templates: ReadonlyMap<string, SourceTemplate>;
   readonly layouts: ReadonlyMap<string, SourceLayout>;
-  readonly sets: readonly SourceSet[];
   readonly plugins: readonly SourcePluginValue[];
+  /** Shared lists by id (deleted ones absent). */
+  readonly lists: ReadonlyMap<string, SourceList>;
+  /** List types by id (deleted ones absent). */
+  readonly listTypes: ReadonlyMap<string, SourceListType>;
+  /** Page id → its properties and terms (pages of the scope). */
+  readonly pageData: ReadonlyMap<string, SourcePageData>;
 }
 
 const IDENT_RE = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -161,7 +190,6 @@ type OverlayTable =
   | "module_snapshots"
   | "template_snapshots"
   | "content_instance_snapshots"
-  | "structured_set_snapshots"
   | "page_snapshots"
   | "page_layout_snapshots";
 
@@ -301,31 +329,6 @@ export async function loadReferenceSources(
     ]),
   );
 
-  const setRows = (await tx.execute(sql`
-    SELECT id::text AS id, kind, slug, display_name, items FROM structured_sets
-  `)) as unknown as {
-    id: string;
-    kind: string;
-    slug: string;
-    display_name: string;
-    items: unknown;
-  }[];
-  const sets = new Map<string, SourceSet>(
-    setRows.map((r) => {
-      const items = json(r.items);
-      return [
-        r.id,
-        {
-          id: r.id,
-          kind: r.kind,
-          slug: r.slug,
-          name: r.display_name,
-          items: Array.isArray(items) ? items : [],
-        },
-      ];
-    }),
-  );
-
   if (branchId) {
     placements = await overlayBranch(tx, branchId, {
       pageTemplates,
@@ -333,9 +336,35 @@ export async function loadReferenceSources(
       modules,
       instances,
       templates,
-      sets,
     });
   }
+
+  // Lists, list types and page data through the same overlay readers the
+  // preview uses (lists/store.ts, lists/pages-view.ts).
+  const lists = new Map<string, SourceList>(
+    (await loadListEntities(tx, "list", branchId)).map((l) => [
+      l.id,
+      {
+        id: l.id,
+        slug: l.state.slug,
+        name: l.state.name,
+        listTypeId: l.state.listTypeId,
+        items: l.state.items,
+      },
+    ]),
+  );
+  const listTypes = new Map<string, SourceListType>(
+    (await loadListEntities(tx, "listType", branchId)).map((t) => [
+      t.id,
+      { id: t.id, slug: t.state.slug, def: t.state.definition },
+    ]),
+  );
+  const pageData = new Map<string, SourcePageData>(
+    (await loadPagesInView(tx, branchId)).map((p) => [
+      p.id,
+      { properties: p.properties, terms: p.terms },
+    ]),
+  );
 
   return {
     pageTemplates,
@@ -344,7 +373,9 @@ export async function loadReferenceSources(
     instances,
     templates,
     layouts,
-    sets: [...sets.values()],
+    lists,
+    listTypes,
+    pageData,
     plugins: await loadPluginValues(
       tx,
       branchId,
@@ -368,7 +399,6 @@ async function overlayBranch(
     modules: Map<string, SourceModule>;
     instances: Map<string, SourceInstance>;
     templates: Map<string, SourceTemplate>;
-    sets: Map<string, SourceSet>;
   },
 ): Promise<SourcePlacement[]> {
   for (const [id, raw] of await overlay(tx, branchId, "module_snapshots", "module_id")) {
@@ -405,30 +435,6 @@ async function overlayBranch(
     const s = raw as { moduleId: string; values: unknown; deletedAt: string | null };
     if (s.deletedAt) m.instances.delete(id);
     else m.instances.set(id, { id, moduleId: s.moduleId, values: asRecord(s.values) });
-  }
-  for (const [id, raw] of await overlay(
-    tx,
-    branchId,
-    "structured_set_snapshots",
-    "structured_set_id",
-  )) {
-    const s = raw as {
-      kind: string;
-      slug: string;
-      displayName: string;
-      items: unknown;
-      deletedAt: string | null;
-    };
-    if (s.deletedAt) m.sets.delete(id);
-    else {
-      m.sets.set(id, {
-        id,
-        kind: s.kind,
-        slug: s.slug,
-        name: s.displayName,
-        items: Array.isArray(s.items) ? s.items : [],
-      });
-    }
   }
   for (const [id, raw] of await overlay(tx, branchId, "page_snapshots", "page_id")) {
     const s = raw as { templateId?: string; deletedAt?: string | null };

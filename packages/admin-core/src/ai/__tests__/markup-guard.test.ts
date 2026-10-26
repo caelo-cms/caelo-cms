@@ -19,6 +19,7 @@ import {
   valuePatterns,
   withFieldMarkupGuard,
 } from "../tools/_markup-guard.js";
+import { carriersOf, listValueHrefs, sharedListHints } from "../tools/_shared-list-guard.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "../tools/dispatch.js";
 
 const chain = (n: number) =>
@@ -39,6 +40,7 @@ const inst = (
   placementCount = 1,
 ): IndexedInstance => ({
   id,
+  moduleId: "00000000-0000-4000-8000-0000000000aa",
   moduleDisplayName: "Text",
   placementCount,
   values,
@@ -168,5 +170,123 @@ describe("repeatedItemHints (#1068)", () => {
     const written = { body_html: cards(2) };
     expect(repeatedItemHints(written)).toEqual([]);
     expect(fieldReuseHints([written], [inst("i1", written)], [])).toEqual([]);
+  });
+});
+
+describe("list field wording (epic #1107)", () => {
+  it("repeated items and the second copy recommend a list field before a module-list", () => {
+    const card = (n: number) =>
+      `<article class="tc"><h3 class="tc__name">T${n}</h3><dl class="tc__facts"><dt>P</dt><dd>${n}</dd></dl></article>`;
+    const items = repeatedItemHints({ body_html: [0, 1, 2].map(card).join("") });
+    expect(items[0]).toContain("give the host module a `list` field with one entry per item");
+    const v = { body: chain(3) };
+    const second = fieldReuseHints([v], [inst("a", v), inst("b", { body: chain(4) })], []);
+    expect(second[0]).toContain("a `list` field for repeated entries");
+  });
+});
+
+describe("sharedListHints (epic #1107)", () => {
+  const HEADER = "00000000-0000-4000-8000-0000000000b1";
+  const FOOTER = "00000000-0000-4000-8000-0000000000b2";
+  const menu = (paths: string[]) =>
+    paths.map((p, i) => ({
+      id: `00000000-0000-4000-9000-00000000000${i}`,
+      node: "entry",
+      values: { label: p, link: { href: p } },
+    }));
+  const MENU = ["/", "/docs", "/pricing", "/blog"];
+  const modules = (footerDefault: unknown) => [
+    {
+      id: HEADER,
+      displayName: "Site header",
+      fields: [{ name: "nav", kind: "list", listType: "menu", default: menu(MENU) }],
+    },
+    {
+      id: FOOTER,
+      displayName: "Site footer",
+      fields: [{ name: "links", kind: "list", listType: "links", default: footerDefault }],
+    },
+  ];
+
+  it("reads hrefs of entries and their children; a shared binding is no local list", () => {
+    expect(
+      listValueHrefs([
+        { id: "a", node: "entry", values: { link: { href: "/b" } }, children: menu(["/a"]) },
+      ]),
+    ).toEqual(["/a", "/b"]);
+    expect(listValueHrefs("caelo:list/00000000-0000-4000-8000-000000000001")).toBeNull();
+    expect(listValueHrefs(["plain", "strings"])).toBeNull();
+  });
+
+  it("names every module that keeps the same links and points at one shared list", () => {
+    const carriers = carriersOf(modules(menu([...MENU].reverse())), []);
+    const hints = sharedListHints([{ field: "links", value: menu(MENU) }], carriers);
+    expect(hints).toHaveLength(1);
+    expect(hints[0]).toContain("keeps the same 4 links as 1 other module(s)");
+    expect(hints[0]).toContain('"Site header" (field `nav`)');
+    expect(hints[0]).toContain('"Site footer" (field `links`)');
+    expect(hints[0]).toContain("ONE shared list (promote_local_list");
+  });
+
+  it("counts a placement's value like a default, and stays silent for one module or other links", () => {
+    const instances = [
+      { moduleId: FOOTER, moduleDisplayName: "Site footer", values: { links: menu(MENU) } },
+    ];
+    expect(
+      sharedListHints(
+        [{ field: "links", value: menu(MENU) }],
+        carriersOf(modules(undefined), instances),
+      ),
+    ).toHaveLength(1);
+    // Only the header carries the menu.
+    expect(
+      sharedListHints([{ field: "nav", value: menu(MENU) }], carriersOf(modules(undefined), [])),
+    ).toEqual([]);
+    // The footer links elsewhere.
+    expect(
+      sharedListHints(
+        [{ field: "nav", value: menu(MENU) }],
+        carriersOf(modules(menu(["/imprint", "/privacy", "/terms"])), []),
+      ),
+    ).toEqual([]);
+  });
+
+  it("the field guard appends the hint when a placement write copies the header's menu", async () => {
+    const registry = new OperationRegistry();
+    registerAdminOps(registry);
+    const toolCtx = {
+      registry,
+      adapter: {
+        runOperation: async (op: { name: string }) => {
+          if (op.name === "modules.list") {
+            return ok({ modules: modules(undefined).map((m) => ({ ...m, html: "<nav></nav>" })) });
+          }
+          if (op.name === "content_instances.list") {
+            return ok({
+              instances: [
+                {
+                  ...inst("f", { links: menu(MENU) }),
+                  moduleId: FOOTER,
+                  moduleDisplayName: "Site footer",
+                },
+              ],
+            });
+          }
+          return ok({});
+        },
+      } as unknown as DatabaseAdapter,
+    } as ToolContext;
+    const tool: ToolDefinitionWithHandler<{ values: Record<string, unknown> }> = {
+      name: "fake_write",
+      description: "",
+      schema: undefined as never,
+      handler: async () => ({ ok: true, content: "written." }),
+    };
+    const r = await withFieldMarkupGuard(tool, (i) => [i.values]).handler(
+      { actorId: "00000000-0000-0000-0000-000000000a1a", actorKind: "ai", requestId: "t1107d" },
+      { values: { links: menu(MENU) } },
+      toolCtx,
+    );
+    expect(r.content).toStartWith("written. 🎯 markup-guard: field `links` keeps the same 4 links");
   });
 });

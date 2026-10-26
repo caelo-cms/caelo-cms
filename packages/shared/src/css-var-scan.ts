@@ -17,6 +17,8 @@
  * that is legitimate authoring, not drift.
  */
 
+import { themeVarForAlias } from "./css-var-aliases.js";
+
 /** One `var(--x)` reference found in CSS. */
 export interface CssVarReference {
   readonly name: string;
@@ -97,6 +99,13 @@ export function scanCssVars(input: CssVarScanInput): UnknownCssVar[] {
   for (const ref of extractCssVarReferences(input.css)) {
     if (known.has(ref.name) || reported.has(ref.name)) continue;
     reported.add(ref.name);
+    // A common role name (`--color-text`) suggests the theme's name for
+    // that role, not the nearest spelling (which was `--color-accent`).
+    const alias = themeVarForAlias(ref.name, known);
+    if (alias !== null) {
+      unknown.push({ name: ref.name, hasFallback: ref.hasFallback, suggestion: alias });
+      continue;
+    }
     let best: string | null = null;
     let bestDist = Number.POSITIVE_INFINITY;
     for (const candidate of known) {

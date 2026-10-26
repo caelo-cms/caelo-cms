@@ -209,7 +209,7 @@ export function buildToolCatalogue(args: {
   // `excluded` below — those are unchanged.
   //
   // Entries still resolve exact-first then via the issue-#301 op→tool
-  // table (seeded skills carry op notation like `structured_sets.list`);
+  // table (seeded skills carry op notation like `pages.list`);
   // unresolved entries are logged so a typo'd skill row is visible.
   const skillPreload = new Set<string>();
   if (allowedToolNames) {

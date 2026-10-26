@@ -250,6 +250,9 @@ export const buildPageOp = defineOperation({
         ...(input.page.templateId !== undefined ? { templateId: input.page.templateId } : {}),
         ...(input.page.status !== undefined ? { status: input.page.status } : {}),
         ...(input.page.parentPageId !== undefined ? { parentPageId: input.page.parentPageId } : {}),
+        ...(input.page.pageType !== undefined ? { pageType: input.page.pageType } : {}),
+        ...(input.page.properties !== undefined ? { properties: input.page.properties } : {}),
+        ...(input.page.terms !== undefined ? { terms: input.page.terms } : {}),
       });
       if (!parsed.success) {
         return fail(`page: ${parsed.error.issues[0]?.message ?? "invalid page payload"}`);

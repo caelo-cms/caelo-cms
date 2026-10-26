@@ -34,9 +34,12 @@ export function parseSnapshotState<T>(raw: unknown): T {
 
 export { classifySeverity, defaultTemplateBlockIsHeader } from "./severity.js";
 export {
+  parseAndUpgradeListState,
+  parseAndUpgradeListTypeState,
   parseAndUpgradeModuleState,
   parseAndUpgradePageLayoutState,
   parseAndUpgradePageState,
+  parseAndUpgradePageTypeState,
   parseAndUpgradeTemplateState,
   SnapshotSchemaError,
 } from "./state-schemas.js";

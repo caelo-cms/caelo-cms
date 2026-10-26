@@ -57,8 +57,15 @@ export interface ContextSplitEstimate {
   readonly totalTokens: number;
   /** Fixed prose backbone: base + module-model + staging + memory chunks. */
   readonly systemPromptTokens: number;
-  /** `# Available tools` prompt chunk + the JSON schemas sent as the provider `tools` param. */
+  /**
+   * `# Available tools` prompt chunk + the JSON schemas of the tools whose
+   * definitions ride every call. Under tool search only the core tools
+   * (`alwaysLoaded`) do; the rest are sent deferred, by name, and only
+   * cost context once loaded — see {@link deferredToolTokens}.
+   */
   readonly toolCatalogueTokens: number;
+  /** Schemas of deferred tools: not billed per call, listed so nobody mistakes them for static cost. */
+  readonly deferredToolTokens: number;
   /** Per-label estimate for every other system-prompt chunk (theme, modules, all-pages, …). */
   readonly contextBlockTokens: Readonly<Record<string, number>>;
   /** Per-slug estimate for each engaged skill's body (from the skills chunk sections). */
@@ -131,11 +138,23 @@ export function buildContextSplitEstimate(args: {
     }
   }
 
-  // The provider `tools` param carries full JSON schemas per tool —
-  // typically several times larger than the in-prompt name+description
-  // listing; both are catalogue cost.
+  // The provider `tools` param carries full JSON schemas per tool. When
+  // the catalogue marks a core set (`alwaysLoaded`), the rest goes out
+  // deferred behind tool search and is not part of each call's input;
+  // counting it as static made "static per call" track the WHOLE catalogue
+  // (it led a token-budget analysis astray, PR #1143).
+  let deferredToolTokens = 0;
   if (args.providerTools.length > 0) {
-    toolCatalogueTokens += estimateTextTokens(JSON.stringify(args.providerTools));
+    const hasCore = args.providerTools.some((t) => t.alwaysLoaded === true);
+    const loaded = hasCore
+      ? args.providerTools.filter((t) => t.alwaysLoaded === true)
+      : args.providerTools;
+    toolCatalogueTokens += estimateTextTokens(JSON.stringify(loaded));
+    if (hasCore) {
+      deferredToolTokens = estimateTextTokens(
+        JSON.stringify(args.providerTools.filter((t) => t.alwaysLoaded !== true)),
+      );
+    }
   }
 
   const historyTokens = estimateHistoryTokens(args.messages);
@@ -151,6 +170,7 @@ export function buildContextSplitEstimate(args: {
     totalTokens,
     systemPromptTokens,
     toolCatalogueTokens,
+    deferredToolTokens,
     contextBlockTokens,
     skillTokens,
     historyTokens,
