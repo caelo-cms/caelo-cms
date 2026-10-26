@@ -473,7 +473,7 @@ describe("list tools (epic #1107)", () => {
     const term = `caelo:term/${LIST_ID}/${COMPANY}`;
     expect(
       updatePagesManyTool.schema.safeParse({
-        updates: [
+        items: [
           { pageId: COMPANY, pageType: "news", properties: { author: "Ada" }, terms: [term] },
         ],
       }).success,

@@ -140,7 +140,7 @@ export const upsertListsManyTool = makeOpTool({
     "Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree) — nothing else: the tree is `items` (not `entries`), and the role comes from the type. " +
     'An entry is {node, values, children?, query?}: `values` keyed by the node\'s fields (links as {"href": "/about"} or an external URL; terms as caelo:term/<listId>/<itemId>), `children` under nodes that allow them, `query` only on source nodes and only with the knobs that node\'s source lists in `editable` (e.g. {limit:5}) — page_type, order and the rest are fixed by the type\'s `defaults`; omit `query` to use them as they are. Keep the `id` of entries that already exist; omit it for new ones. ' +
     'Example (type menu): [{"node":"entry","values":{"label":"Company","link":{"href":"/about"}},"children":[{"node":"entry","values":{"label":"Team","link":{"href":"/about/team"}}}]}]. ' +
-    "Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / edit_module), e.g. the header module on the layout.",
+    "Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / update_modules_many), e.g. the header module on the layout.",
   inputSchema: UPSERT_LISTS_JSON_SCHEMA,
   opName: "lists.upsert_many",
   input: upsertListsManyOp.input,
@@ -201,7 +201,7 @@ export const promoteLocalListTool = makeOpTool({
   name: "promote_local_list",
   description:
     "Turn a module's LOCAL list into a SHARED list and bind the field to it, in one call — when a second place needs the same entries ('show the footer links in the mobile menu too', 'the editors should maintain these links without opening the module'). " +
-    "Input: `moduleId` + `field` (the module's `list` field), and the new list's `slug`, `name`, `purpose`. Refused when the module's placements show different entries (it names them) — then decide which entries the shared list keeps and use upsert_lists_many + edit_module instead. " +
+    "Input: `moduleId` + `field` (the module's `list` field), and the new list's `slug`, `name`, `purpose`. Refused when the module's placements show different entries (it names them) — then decide which entries the shared list keeps and use upsert_lists_many + update_modules_many instead. " +
     "Result: the list id and its ref (caelo:list/<id>) for binding other modules.",
   opName: "lists.promote_local",
   input: promoteLocalListOp.input,

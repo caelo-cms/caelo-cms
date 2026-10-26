@@ -98,12 +98,12 @@ describe("OP_NAME_TO_TOOL_NAMES completeness (issue #301)", () => {
 });
 
 describe("resolveAllowlistEntry", () => {
-  const live = new Set(["edit_module", "list_pages"]);
+  const live = new Set(["update_modules_many", "list_pages"]);
 
   it("exact live tool name wins before the translation table", () => {
-    expect(resolveAllowlistEntry("edit_module", live)).toEqual({
+    expect(resolveAllowlistEntry("update_modules_many", live)).toEqual({
       kind: "tool",
-      toolNames: ["edit_module"],
+      toolNames: ["update_modules_many"],
     });
   });
 
@@ -127,21 +127,21 @@ describe("resolveAllowlistEntry", () => {
   });
 
   it("unknown names are unresolved with a nearest-name suggestion", () => {
-    expect(resolveAllowlistEntry("edit_modul", live)).toEqual({
+    expect(resolveAllowlistEntry("update_modules_man", live)).toEqual({
       kind: "unresolved",
-      suggestion: "edit_module",
+      suggestion: "update_modules_many",
     });
   });
 });
 
 describe("resolveAllowlistEntries", () => {
   it("partitions a mixed allowlist and dedupes the resolved set", () => {
-    const live = new Set(["edit_module", "list_pages"]);
+    const live = new Set(["update_modules_many", "list_pages"]);
     const r = resolveAllowlistEntries(
-      ["edit_module", "pages.list", "pages.get", "ai_memory.list", "no.such_op"],
+      ["update_modules_many", "pages.list", "pages.get", "ai_memory.list", "no.such_op"],
       live,
     );
-    expect([...r.resolvedToolNames].sort()).toEqual(["edit_module", "list_pages"]);
+    expect([...r.resolvedToolNames].sort()).toEqual(["list_pages", "update_modules_many"]);
     expect(r.translated).toEqual([
       { entry: "pages.list", toolNames: ["list_pages"] },
       { entry: "pages.get", toolNames: ["list_pages"] },
@@ -153,23 +153,23 @@ describe("resolveAllowlistEntries", () => {
 });
 
 describe("validateAllowlistEntries (save-time gate)", () => {
-  const live = new Set(["edit_module", "list_pages"]);
+  const live = new Set(["update_modules_many", "list_pages"]);
 
   it("normalizes op notation to tool names with order-preserving dedupe", () => {
     const v = validateAllowlistEntries(
-      ["pages.get", "pages.list", "edit_module", "ai_memory.list"],
+      ["pages.get", "pages.list", "update_modules_many", "ai_memory.list"],
       live,
     );
     expect(v.ok).toBe(true);
-    if (v.ok) expect(v.normalized).toEqual(["list_pages", "edit_module"]);
+    if (v.ok) expect(v.normalized).toEqual(["list_pages", "update_modules_many"]);
   });
 
   it("rejects unknown entries, naming each with its suggestion", () => {
-    const v = validateAllowlistEntries(["edit_modul", "wholly_unrelated_xyz"], live);
+    const v = validateAllowlistEntries(["update_modules_man", "wholly_unrelated_xyz"], live);
     expect(v.ok).toBe(false);
     if (!v.ok) {
       expect(v.problems).toEqual([
-        { entry: "edit_modul", suggestion: "edit_module" },
+        { entry: "update_modules_man", suggestion: "update_modules_many" },
         { entry: "wholly_unrelated_xyz", suggestion: null },
       ]);
     }
@@ -183,7 +183,7 @@ describe("validateAllowlistEntries (save-time gate)", () => {
 });
 
 describe("suggestNearestToolName", () => {
-  const live = new Set(["list_pages", "get_content_instance", "edit_module"]);
+  const live = new Set(["list_pages", "get_content_instance", "update_modules_many"]);
 
   it("flips op notation to verb_domain and finds the exact tool", () => {
     expect(suggestNearestToolName("pages.list", live)).toBe("list_pages");

@@ -3,15 +3,15 @@
 /**
  * Coverage for page + content-instance tools that had no dedicated test:
  * duplicate_page, get_page_log, inspect_built_page (no-build path),
- * delete_content_instance, set_placement_content. Real Postgres (§6).
+ * delete_content_instances, set_placement_content. Real Postgres (§6).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
-import { createContentInstanceTool } from "../ai/tools/create-content-instance.js";
-import { deleteContentInstanceTool } from "../ai/tools/delete-content-instance.js";
+import { createContentInstancesTool } from "../ai/tools/create-content-instances.js";
+import { deleteContentInstancesTool } from "../ai/tools/delete-content-instances.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { duplicatePageTool } from "../ai/tools/duplicate-page.js";
 import { forkPlacementContentTool } from "../ai/tools/fork-placement-content.js";
@@ -147,17 +147,17 @@ describe("content instances", () => {
     return (r.value as { contentInstanceId: string }).contentInstanceId;
   }
 
-  it("create_content_instance mints an instance, delete_content_instance removes it", async () => {
+  it("create_content_instances mints an instance, delete_content_instances removes it", async () => {
     // create via the tool (coverage), then delete via the tool.
-    const created = await createContentInstanceTool.handler(
+    const created = await createContentInstancesTool.handler(
       SYSTEM,
-      { moduleId, displayName: "Inst", values: { body: "hi" } },
+      { items: [{ moduleId, displayName: "Inst", values: { body: "hi" } }] },
       toolCtx(),
     );
     expect(created.ok).toBe(true);
     const id = await seedInstance("ToDelete");
 
-    const del = await deleteContentInstanceTool.handler(SYSTEM, { id }, toolCtx());
+    const del = await deleteContentInstancesTool.handler(SYSTEM, { items: [{ id }] }, toolCtx());
     expect(del.ok).toBe(true);
   });
 
@@ -180,7 +180,7 @@ describe("content instances", () => {
   // #63 — the refusal once named propose_delete_content_instance, a tool
   // that never existed, leaving the AI at a dead end. It must point at
   // the real detach path, and following that path must make the delete pass.
-  it("delete_content_instance on a bound instance points at a working detach path", async () => {
+  it("delete_content_instances on a bound instance points at a working detach path", async () => {
     const instId = await seedInstance("Shared");
     const bind = await setPlacementContentTool.handler(
       SYSTEM,
@@ -189,7 +189,11 @@ describe("content instances", () => {
     );
     expect(bind.ok).toBe(true);
 
-    const refused = await deleteContentInstanceTool.handler(SYSTEM, { id: instId }, toolCtx());
+    const refused = await deleteContentInstancesTool.handler(
+      SYSTEM,
+      { items: [{ id: instId }] },
+      toolCtx(),
+    );
     expect(refused.ok).toBe(false);
     expect(refused.content).not.toContain("propose_delete_content_instance");
     expect(refused.content).toContain("fork_placement_content");
@@ -202,7 +206,11 @@ describe("content instances", () => {
       toolCtx(),
     );
     expect(fork.ok).toBe(true);
-    const del = await deleteContentInstanceTool.handler(SYSTEM, { id: instId }, toolCtx());
+    const del = await deleteContentInstancesTool.handler(
+      SYSTEM,
+      { items: [{ id: instId }] },
+      toolCtx(),
+    );
     expect(del.ok).toBe(true);
   });
 
@@ -234,7 +242,11 @@ describe("content instances", () => {
       chatTaskId: chatSessionId,
     };
 
-    const refused = await deleteContentInstanceTool.handler(ai, { id: instId }, toolCtx());
+    const refused = await deleteContentInstancesTool.handler(
+      ai,
+      { items: [{ id: instId }] },
+      toolCtx(),
+    );
     expect(refused.ok).toBe(false);
     const fork = await forkPlacementContentTool.handler(
       ai,
@@ -242,7 +254,11 @@ describe("content instances", () => {
       toolCtx(),
     );
     expect(fork.ok).toBe(true);
-    const del = await deleteContentInstanceTool.handler(ai, { id: instId }, toolCtx());
+    const del = await deleteContentInstancesTool.handler(
+      ai,
+      { items: [{ id: instId }] },
+      toolCtx(),
+    );
     expect(del.ok).toBe(true);
     expect(await liveDeletedAt(instId)).toBeNull();
 

@@ -354,7 +354,7 @@ describe("#1067 — placements and nested parents as the caller sees them", () =
     if (refused.ok) return;
     const message = "message" in refused.error ? refused.error.message : "";
     expect(message).toContain(parent.contentInstanceId);
-    expect(message).toContain("set_content_instance_values");
+    expect(message).toContain("set_content_instance_values_many");
 
     // In a chat, removing the child from the parent's list frees it there.
     const chat = await draftChat("nested");

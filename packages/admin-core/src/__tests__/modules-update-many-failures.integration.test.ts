@@ -97,11 +97,12 @@ describe("#1038 — modules.update_many failure reasons", () => {
     // the refusal above counts as B having seen A's change, so B's retry
     // would go through (the #620 re-read contract).
     const c = await draftChat("third");
-    const tool = await updateModulesManyTool.handler(c, input, {
+    // The op takes `updates`; the tool's wrapper key is `items`.
+    const tool = await updateModulesManyTool.handler(c, { items: input.updates }, {
       registry,
       adapter,
     } as unknown as Parameters<typeof updateModulesManyTool.handler>[2]);
-    expect(tool.content).toContain(`${busy}: Conflict`);
+    expect(tool.content).toContain(`- ${busy}: not applied — Conflict`);
     expect(tool.content).toContain(`i1038-first-${TS}`);
   });
 });

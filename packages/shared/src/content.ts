@@ -276,7 +276,7 @@ const moduleFieldModuleSchema = z
      * stable `modules.type` class, e.g. `button` — NOT the unique
      * `modules.slug` like `button-mpqxq3ch`). When absent, any module is
      * permitted. The op-layer validator enforces the whitelist against
-     * the referenced module's `type` at `set_content_instance_values`
+     * the referenced module's `type` at `content_instances.set_values`
      * time. v0.12.3 (issue #106) renamed this from `allowedModuleSlugs`:
      * an exact-slug whitelist could never match an AI-minted module
      * because every minted slug carries a uniqueness suffix.
@@ -491,7 +491,7 @@ export type ModuleKind = (typeof MODULE_KINDS)[number];
 /**
  * v0.12.0 — description is `.default("")` at the Zod boundary so the
  * 82+ legacy callers in tests/seed scripts keep working unchanged.
- * AI tool descriptions (create_module / edit_module) require the AI
+ * AI tool descriptions (add_module / build_page / update_modules_many) require the AI
  * to supply a real description explicitly — see CLAUDE.md §1A.
  */
 const moduleDescription = z.string().max(1000);
@@ -783,7 +783,7 @@ const contentValuesSchema = z.record(z.string(), z.unknown());
  * Shown by the AI's list_content_instances tool so the AI can decide
  * *reuse the synced row* vs *fork to unsynced* vs *mint new* without
  * asking the operator. Required by the AI's
- * create_content_instance tool description; legacy callers may pass
+ * create_content_instances tool description; legacy callers may pass
  * null (the migration-0093 unsynced rows have purpose=NULL).
  * See CLAUDE.md §1A.
  */

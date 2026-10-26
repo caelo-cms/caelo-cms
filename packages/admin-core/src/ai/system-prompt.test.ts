@@ -3,6 +3,7 @@
 import { describe, expect, it } from "bun:test";
 import { composeSystemPromptChunks } from "./system-prompt.js";
 import { buildPageTool } from "./tools/build-page.js";
+import { RETIRED_TOOLS } from "./tools/retired-tools.js";
 
 describe("composeSystemPromptChunks", () => {
   it("emits base + tool-playbook + module-model + staging + memory as cacheable chunks in stable order", () => {
@@ -39,12 +40,16 @@ describe("composeSystemPromptChunks", () => {
     const body = playbook?.body ?? "";
     // One anchor per workflow: create / modify / extend / import.
     expect(body).toContain("`build_page`");
-    expect(body).toContain("`set_page_module_content`");
+    expect(body).toContain("`set_page_module_content_many`");
     expect(body).toContain("`add_module`");
     expect(body).toContain("`propose_site_import`");
     // The discovery instruction: more tools exist + search loads them.
     expect(body).toContain("NOT the full catalogue");
     expect(body).toContain("tool-search tool");
+    // Retired tool names are aliases only; the playbook teaches the live ones.
+    for (const retired of Object.keys(RETIRED_TOOLS)) {
+      expect(body).not.toMatch(new RegExp(`\\b${retired}\\b`));
+    }
   });
 
   it("is fully static — dynamic context never reaches the system prompt", () => {

@@ -73,7 +73,7 @@ describe("chat.append_message empty-content boundary (issue #303)", () => {
     const r = parse({
       role: "assistant",
       content: "",
-      toolCalls: [{ id: "tc-1", name: "edit_module", arguments: {} }],
+      toolCalls: [{ id: "tc-1", name: "update_modules_many", arguments: {} }],
     });
     expect(r.success).toBe(true);
   });

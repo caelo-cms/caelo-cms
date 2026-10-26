@@ -77,8 +77,8 @@ describe("repairToolCallPairing (run #10 D1)", () => {
         role: "assistant",
         content: "Editing now.",
         toolCalls: [
-          { id: "toulu_answered", name: "edit_module", arguments: {} },
-          { id: "toulu_unanswered", name: "edit_module", arguments: {} },
+          { id: "toulu_answered", name: "update_modules_many", arguments: {} },
+          { id: "toulu_unanswered", name: "update_modules_many", arguments: {} },
         ],
       },
       // Only the first call ever got its result — the 400 aborted the
@@ -113,7 +113,7 @@ describe("repairToolCallPairing (run #10 D1)", () => {
       {
         role: "assistant",
         content: "",
-        toolCalls: [{ id: "toulu_dup", name: "edit_module", arguments: {} }],
+        toolCalls: [{ id: "toulu_dup", name: "update_modules_many", arguments: {} }],
       },
       { role: "tool", content: "first", toolCallId: "toulu_dup" },
       { role: "tool", content: "second (duplicate)", toolCallId: "toulu_dup" },

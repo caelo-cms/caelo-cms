@@ -44,6 +44,7 @@
   import type { DebugToolCall, DebugUsage } from "./debug-types.js";
   import CredentialHandoffs from "../CredentialHandoffs.svelte";
   import InlineDiff from "./InlineDiff.svelte";
+  import { moduleHtmlEdits } from "./module-edits.js";
   import QualityFixOfferCard from "./QualityFixOfferCard.svelte";
   import {
     autoContinueOffer,
@@ -2089,17 +2090,8 @@
                   mediaType: evImage.mediaType,
                 });
               }
-              if (typeof args.moduleId === "string" && typeof args.html === "string") {
-                proposedDiffs = [
-                  ...proposedDiffs,
-                  {
-                    moduleId: args.moduleId,
-                    before: moduleStateBefore[args.moduleId] ?? "",
-                    after: args.html,
-                    selected: true,
-                  },
-                ];
-              }
+              // Proposed module diffs are collected on `tool-start`, the
+              // only event that carries the call's arguments.
               // v0.2.46 — append a synthetic tool message routed to its
               // per-tool card. Without this, tool results only land in
               // the transcript on next page load; during streaming the
@@ -2156,18 +2148,16 @@
               if (toolCallId && name) {
                 toolCallMeta.set(toolCallId, { name, args });
               }
-              const moduleId =
-                typeof args.moduleId === "string" ? (args.moduleId as string) : undefined;
-              const html = typeof args.html === "string" ? (args.html as string) : undefined;
-              if (moduleId && html) {
+              const edits = moduleHtmlEdits(name, args);
+              if (edits.length > 0) {
                 proposedDiffs = [
                   ...proposedDiffs,
-                  {
+                  ...edits.map(({ moduleId, html }) => ({
                     moduleId,
                     before: moduleStateBefore[moduleId] ?? "",
                     after: html,
                     selected: true,
-                  },
+                  })),
                 ];
               }
             } else if (ev["kind"] === "done") {
@@ -2340,11 +2330,12 @@
                       void sendAutoMessage(answer, "operator");
                     }}
                   />
-                  {#if m.toolName === "edit_module" && typeof m.toolArgs?.moduleId === "string" && typeof m.toolArgs?.html === "string"}
-                    {@const moduleId = m.toolArgs.moduleId as string}
-                    {@const html = m.toolArgs.html as string}
+                  <!-- One inline diff per module whose HTML the call replaced:
+                       every `items` entry of update_modules_many, or the single
+                       module of an edit_module call in an older chat. -->
+                  {#each moduleHtmlEdits(m.toolName ?? "", m.toolArgs) as edit, editIdx (editIdx)}
                     {@const diffIdx = proposedDiffs.findIndex(
-                      (d) => d.moduleId === moduleId && d.after === html,
+                      (d) => d.moduleId === edit.moduleId && d.after === edit.html,
                     )}
                     {#if diffIdx >= 0}
                       {@const d = proposedDiffs[diffIdx]}
@@ -2365,7 +2356,7 @@
                         }}
                       />
                     {/if}
-                  {/if}
+                  {/each}
                 </li>
               {:else if m.origin === "system"}
                 {#if isContextNote(m.content)}

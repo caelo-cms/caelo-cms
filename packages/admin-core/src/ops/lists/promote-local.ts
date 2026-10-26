@@ -124,7 +124,7 @@ export const promoteLocalListOp = defineOperation({
         false,
         handlerError(
           op,
-          `placements of module "${module.slug}" show different "${input.field}" lists (content instances ${groups}). One shared list cannot keep them all. Make them the same first (set_content_instance_values), or create the shared list yourself with lists.upsert_many and bind only the module you want.`,
+          `placements of module "${module.slug}" show different "${input.field}" lists (content instances ${groups}). One shared list cannot keep them all. Make them the same first (set_content_instance_values_many), or create the shared list yourself with lists.upsert_many and bind only the module you want.`,
           true,
         ),
       );

@@ -363,7 +363,7 @@ describe("email, bug reports, media settings", () => {
       title: `report ${id}`,
       whatHappened: "x",
       expected: "y",
-      suspectedTool: "edit_module",
+      suspectedTool: "update_modules_many",
       evidence: null,
       severity: "degraded",
       blockedTask: false,
@@ -482,7 +482,7 @@ describe("content maintenance tools", () => {
       "hero (Hero)",
     );
     expect((await run(getPageSeoTool, { pageId: U1 }, h.toolCtx)).content).toContain(
-      "autofill_page_seo",
+      "autofill_page_seo_many",
     );
   });
 

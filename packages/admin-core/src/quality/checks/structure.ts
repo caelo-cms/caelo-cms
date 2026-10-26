@@ -434,7 +434,7 @@ function layoutCss(
         `Module CSS in the layout: layout "${layout.displayName}" styles ${list(specific)} — these rules ship on every page but serve one module or free markup.`,
       ),
       fix: {
-        tool: "edit_module",
+        tool: "update_modules_many",
         hint: "move these rules into the CSS of the module that uses them (for free markup: into the module you mint for it), then drop them from the layout with propose_update_layout",
       },
     });

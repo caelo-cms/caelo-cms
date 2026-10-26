@@ -14,6 +14,10 @@
  * fallback pre-1.0 forbids).
  *
  * This module is the single, explicit translation layer:
+ *   - retired tool names (`edit_module`, `set_page_seo`, … — see
+ *     `tools/retired-tools.ts`) resolve to the bulk tool that replaced
+ *     them, so a skill or preload list written before the merge keeps
+ *     preloading the right tool and is normalized to it on save.
  *   - `OP_NAME_TO_TOOL_NAMES` maps every op name that appears in a
  *     seeded skill allowlist to the AI tool name(s) covering the same
  *     read/write surface. Unknown names never pass silently.
@@ -30,6 +34,8 @@
  * so in a healthy install this table is a belt-and-braces layer for
  * operator-edited rows and pre-0157 databases.
  */
+
+import { liveToolNameFor } from "../tools/retired-tools.js";
 
 /**
  * Op-name → AI tool name(s). Keys are every Query-API op name that
@@ -63,6 +69,8 @@ export const OP_NAME_TO_TOOL_NAMES: Readonly<Record<string, readonly string[]>> 
 export type AllowlistEntryResolution =
   /** The entry IS a live tool name — passes through unchanged. */
   | { readonly kind: "tool"; readonly toolNames: readonly string[] }
+  /** A retired tool name — resolves to the live tool that replaced it. */
+  | { readonly kind: "retired"; readonly toolNames: readonly string[] }
   /** Op-notation entry translated to ≥1 live tool via the table. */
   | { readonly kind: "translated"; readonly toolNames: readonly string[] }
   /** Known op with no AI-tool counterpart (context-served) — narrows nothing. */
@@ -76,6 +84,8 @@ export interface AllowlistResolution {
   readonly resolvedToolNames: ReadonlySet<string>;
   /** Op-notation entries that translated, with their tool names (for logging). */
   readonly translated: ReadonlyArray<{ entry: string; toolNames: readonly string[] }>;
+  /** Retired tool names that resolved to their replacement (for logging). */
+  readonly retired: ReadonlyArray<{ entry: string; toolNames: readonly string[] }>;
   /** Known context-served ops that narrow nothing. */
   readonly contextServed: readonly string[];
   /** Entries that resolved to nothing — each with a nearest-name hint. */
@@ -83,14 +93,20 @@ export interface AllowlistResolution {
 }
 
 /**
- * Resolves one allowlist entry: exact live-tool match first, then the
- * translation table, else unresolved with a nearest-name suggestion.
+ * Resolves one allowlist entry: exact live-tool match first, then a retired
+ * tool name, then the op translation table, else unresolved with a
+ * nearest-name suggestion.
  */
 export function resolveAllowlistEntry(
   entry: string,
   liveToolNames: ReadonlySet<string>,
 ): AllowlistEntryResolution {
   if (liveToolNames.has(entry)) return { kind: "tool", toolNames: [entry] };
+  const replacement = liveToolNameFor(entry);
+  if (replacement !== entry) {
+    if (liveToolNames.has(replacement)) return { kind: "retired", toolNames: [replacement] };
+    return { kind: "unresolved", suggestion: replacement };
+  }
   const mapped = OP_NAME_TO_TOOL_NAMES[entry];
   if (mapped !== undefined) {
     if (mapped.length === 0) return { kind: "context-served" };
@@ -111,6 +127,7 @@ export function resolveAllowlistEntries(
 ): AllowlistResolution {
   const resolvedToolNames = new Set<string>();
   const translated: Array<{ entry: string; toolNames: readonly string[] }> = [];
+  const retired: Array<{ entry: string; toolNames: readonly string[] }> = [];
   const contextServed: string[] = [];
   const unresolved: Array<{ entry: string; suggestion: string | null }> = [];
   for (const entry of entries) {
@@ -123,6 +140,11 @@ export function resolveAllowlistEntries(
         for (const n of r.toolNames) resolvedToolNames.add(n);
         translated.push({ entry, toolNames: r.toolNames });
         break;
+      case "retired":
+        for (const n of r.toolNames) resolvedToolNames.add(n);
+        retired.push({ entry, toolNames: r.toolNames });
+        console.warn(`[tool.alias-used] ${entry} -> ${r.toolNames.join(", ")} (skill allowlist)`);
+        break;
       case "context-served":
         contextServed.push(entry);
         break;
@@ -131,7 +153,7 @@ export function resolveAllowlistEntries(
         break;
     }
   }
-  return { resolvedToolNames, translated, contextServed, unresolved };
+  return { resolvedToolNames, translated, retired, contextServed, unresolved };
 }
 
 /** One rejected allowlist entry + the nearest live tool name, if any. */
@@ -143,8 +165,8 @@ export interface AllowlistProblem {
 /**
  * Save-time validation + normalization for `allowlistedTools`
  * (issue #301, CLAUDE.md §2 loud path). Success returns the canonical
- * tool-name list: exact names kept, op-notation entries replaced by
- * their tool names, context-served entries dropped, order-preserving
+ * tool-name list: exact names kept, op-notation entries and retired tool
+ * names replaced by their live tool names, context-served entries dropped, order-preserving
  * dedupe. Failure names every bad entry with a suggestion so the
  * caller (Owner form or AI tool result) can fix it without guessing.
  */
@@ -183,7 +205,7 @@ export function describeAllowlistProblems(problems: readonly AllowlistProblem[])
     .map((p) => `"${p.entry}"${p.suggestion ? ` (did you mean "${p.suggestion}"?)` : ""}`)
     .join(", ");
   return (
-    `allowlistedTools entries must be live AI tool names (e.g. "edit_module", "list_pages"), ` +
+    `allowlistedTools entries must be live AI tool names (e.g. "update_modules_many", "list_pages"), ` +
     `not Query-API op names. Unresolvable: ${list}. ` +
     `Fix the named entries and retry; these are PRELOAD hints, not a restriction ` +
     `(call with allowlistedTools=[] to preload no extras — the catalogue is never narrowed either way).`

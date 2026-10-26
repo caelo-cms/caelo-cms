@@ -44,17 +44,28 @@ const FORK_TOOL: GenerateInput["tools"][number] = {
   },
 };
 
-/** Mirrors the provider-facing shape derived from `set_content_instance_values`. */
+/** Mirrors the provider-facing shape of `set_content_instance_values_many` (values per item). */
 const SET_VALUES_TOOL: GenerateInput["tools"][number] = {
-  name: "set_content_instance_values",
+  name: "set_content_instance_values_many",
   description: "set instance values",
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["id", "values"],
+    required: ["items"],
     properties: {
-      id: { type: "string" },
-      values: { type: "object", additionalProperties: true },
+      items: {
+        type: "array",
+        minItems: 1,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "values"],
+          properties: {
+            id: { type: "string" },
+            values: { type: "object", additionalProperties: true },
+          },
+        },
+      },
     },
   },
 };
@@ -118,12 +129,12 @@ describe("issue #245 — provider bridge delivers typed tool-call args", () => {
     expect(args).toEqual({ pageId: "p1", blockName: "header", position: 2 });
   });
 
-  it("parses a JSON-encoded object delivered as a string (F11/F12: values)", async () => {
+  it("parses a JSON-encoded object delivered as a string (F11/F12: values, inside items[])", async () => {
     const args = await toolCallArgsFor(
       SET_VALUES_TOOL,
-      '{"id":"c1","values":"{\\"hero_title\\":\\"Hi\\"}"}',
+      '{"items":[{"id":"c1","values":"{\\"hero_title\\":\\"Hi\\"}"}]}',
     );
-    expect(args).toEqual({ id: "c1", values: { hero_title: "Hi" } });
+    expect(args).toEqual({ items: [{ id: "c1", values: { hero_title: "Hi" } }] });
   });
 
   it("leaves already-typed args untouched (no false coercion)", async () => {

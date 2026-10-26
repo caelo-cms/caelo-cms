@@ -75,7 +75,7 @@ describe("design-quality skill (issue #154)", () => {
     expect(skill?.body).toContain("SELF-REVIEW LOOP");
     expect(skill?.body).toContain("screenshot_page");
     expect(skill?.body).toContain("two review rounds");
-    expect(skill?.body).toContain("set_page_module_content");
+    expect(skill?.body).toContain("set_page_module_content_many");
   });
 });
 

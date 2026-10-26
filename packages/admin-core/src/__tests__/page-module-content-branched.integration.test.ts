@@ -2,7 +2,7 @@
 
 /**
  * v0.6.1 — regression test for the chat-branched placement-visibility
- * fix in `set_page_module_content`. Pre-v0.6.1 the placement check
+ * fix in `page_module_content.set` (behind `set_page_module_content_many`). Pre-v0.6.1 the placement check
  * queried only live `page_modules` — so a placement created earlier in
  * the SAME chat (via `pages.set_modules` branch-writing to
  * `page_layout_snapshots`) was invisible, surfacing as a v0.6.0 W3
@@ -125,7 +125,7 @@ async function seedTemplateAndModule(): Promise<{ templateId: string; moduleId: 
   return { templateId, moduleId: (mod.value as { moduleId: string }).moduleId };
 }
 
-describe("set_page_module_content — branch-aware placement check (v0.6.1)", () => {
+describe("page_module_content.set — branch-aware placement check (v0.6.1)", () => {
   it("(a) live flow — placement created without a chat branch is visible immediately", async () => {
     const ctx = systemCtx(); // no branch
     const pageRes = await execute(registry, adapter, ctx, "pages.create", {

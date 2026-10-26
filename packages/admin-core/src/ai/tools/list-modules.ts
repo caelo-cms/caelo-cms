@@ -13,7 +13,7 @@
  * module, and it was visible nowhere before the call was refused.
  *
  * Deliberately returns metadata only — never html/css/js. Reading a
- * module's body is an editing concern (`edit_module` round-trips it);
+ * module's body is an editing concern (`read_content` / `edit_content` handle it);
  * dumping bodies here would blow the context for zero decision value.
  */
 

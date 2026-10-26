@@ -19,7 +19,7 @@ Every module row carries two identifiers:
 slug is composed as `deriveModuleType(name) + "-" + suffix`, so `type` is always
 a prefix of `slug` and the two cannot drift.
 
-The AI may author `type` explicitly on `add_module_to_page` / `edit_module` when
+The AI may author `type` explicitly on `add_module` / `update_modules_many` when
 it matters — e.g. minting a second button variant as `type: "button"` so it
 satisfies a CTA's `allowedModuleTypes` whitelist. When omitted, the op derives
 it.
@@ -40,7 +40,7 @@ When a `content_instances` value binds a module into that slot, the validator
 reference iff the **referenced module's `type`** is in the whitelist. It matches
 `type`, **never** `slug`. On a mismatch the error is AI-actionable: it names the
 candidate set and the next step (reuse a module whose `type` is allowed, or widen
-the field's `allowedModuleTypes` via `edit_module` on the parent module).
+the field's `allowedModuleTypes` via `update_modules_many` on the parent module).
 
 ### Why types, not slugs
 
@@ -73,8 +73,8 @@ keep working** — a stored `["legacy-exact"]` still matches a module whose
   truncated).
 - The `## Site model` system-prompt primer states the nested-ref syntax and
   value shape (`{ moduleId, contentInstanceId }`); the module tools' own
-  descriptions (`edit_module`, `add_module`, `build_page`,
-  `set_page_module_content`, `set_content_instance_values`) carry the
+  descriptions (`update_modules_many`, `add_module`, `build_page`,
+  `set_page_module_content_many`, `set_content_instance_values_many`) carry the
   `allowedModuleTypes` rule: the referenced module's `type` must be in the
   whitelist, and the AI reuses an existing module of an allowed type rather
   than minting a near-duplicate.

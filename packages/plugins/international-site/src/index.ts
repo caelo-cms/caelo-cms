@@ -1882,7 +1882,7 @@ export default definePlugin<PluginContextTier1>({
       description:
         "Translate ONE variant page from its group's source language — the whole page in a single context-aware pass (module layout locked; glossary + style guide applied; existing human-polished translations preserved where the source did not change). " +
         "Use after create_variant (the draft still carries the source language) and for any variant intl_status marks needs_update. The result stays a DRAFT — review, then publish. " +
-        'The meta description is translated in the same pass: a draft or a variant without one gets it filled; a LIVE variant that already has one keeps it (SEO fill-once) and comes back seo: "marked_stale" with a nextStep — then re-optimize with optimize_page_seo only if the operator wants it. ' +
+        'The meta description is translated in the same pass: a draft or a variant without one gets it filled; a LIVE variant that already has one keeps it (SEO fill-once) and comes back seo: "marked_stale" with a nextStep — then re-optimize with bulk_optimize_seo only if the operator wants it. ' +
         "NOT for many pages at once — prefer translate_all_stale. NOT for the group's source page itself." +
         MCP_TRANSLATE_PAGE,
       operationName: "translate_variant",

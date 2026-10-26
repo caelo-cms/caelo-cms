@@ -76,8 +76,8 @@ function fixture(moduleId: string, html: string): ProviderEvent[][] {
       {
         kind: "tool-call",
         id: `tu-${html.slice(0, 4)}`,
-        name: "edit_module",
-        arguments: { moduleId, html },
+        name: "update_modules_many",
+        arguments: { items: [{ moduleId, html }] },
       },
       { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
       { kind: "done", stopReason: "tool_use" },

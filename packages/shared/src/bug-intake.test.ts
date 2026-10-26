@@ -32,7 +32,7 @@ describe("computeBugFingerprint", () => {
   });
 
   it("keeps different tools and different quoted field names apart", async () => {
-    expect(await auto("boom", "build_page")).not.toBe(await auto("boom", "edit_module"));
+    expect(await auto("boom", "build_page")).not.toBe(await auto("boom", "update_modules_many"));
     expect(await auto('Invalid input at "page.slug"')).not.toBe(
       await auto('Invalid input at "page.title"'),
     );

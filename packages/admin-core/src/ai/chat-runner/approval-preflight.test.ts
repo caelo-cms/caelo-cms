@@ -52,7 +52,7 @@ function fixture(): { tools: ToolRegistry; registry: OperationRegistry } {
     handler: async () => ({ ok: true, content: "-" }),
   } as never);
   tools.register({
-    name: "edit_module",
+    name: "update_modules_many",
     description: "routine",
     schema: z.looseObject({}),
     inputSchema: { type: "object" },
@@ -96,7 +96,7 @@ describe("preflightGatedCall", () => {
 
   it("ignores a routine (non-gated) tool", () => {
     const { tools, registry } = fixture();
-    expect(preflightGatedCall(tools, registry, "edit_module", { anything: 1 })).toBeNull();
+    expect(preflightGatedCall(tools, registry, "update_modules_many", { anything: 1 })).toBeNull();
   });
 
   it("stays out of the way when the op cannot be resolved", () => {

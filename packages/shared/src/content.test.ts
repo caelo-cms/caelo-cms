@@ -91,7 +91,7 @@ describe("moduleCreateSchema", () => {
     expect(moduleCreateSchema.safeParse({ ...base, js: 'xml += "]]>";' }).success).toBe(true);
   });
 
-  it("rejects CDATA on the update path too (edit_module / edit_content funnel)", () => {
+  it("rejects CDATA on the update path too (update_modules_many / edit_content funnel)", () => {
     const r = moduleUpdateSchema.safeParse({
       moduleId: "8c2f2f2a-0000-4000-8000-000000000432",
       css: "/*<![CDATA[*/ .x{} /*]]>*/",
