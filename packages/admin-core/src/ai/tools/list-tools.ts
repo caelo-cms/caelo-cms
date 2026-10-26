@@ -115,10 +115,13 @@ export const getListTool = makeOpTool({
   format: (value) => {
     const l = (value as { list: ListSummaryRow & { items: ListItemInput[] } }).list;
     const lines = [
-      `list ${l.slug} (${l.id}) — type ${l.type}, ${l.role}, version ${l.version}, ${l.itemCount} entries`,
+      // Read keys mirror the write keys (upsert_lists_many takes `items`;
+      // the role belongs to the type): the AI copied an earlier "entries:"
+      // heading and the role into a write call (release gate, v0.11.0).
+      `list ${l.slug} (${l.id}) — type ${l.type} (role ${l.role}, set by the type), version ${l.version}, ${l.itemCount} entries`,
       `purpose: ${l.purpose}`,
       `used by: ${usedBy(l.usage) || "no module"}; ${l.usage.placementCount} placement(s); sample pages: ${l.usage.samplePages.map((p) => p.path).join(", ") || "none"}`,
-      "entries:",
+      "items:",
     ];
     renderItems(l.items, 0, lines);
     return lines.join("\n");
@@ -129,7 +132,7 @@ export const upsertListsManyTool = makeOpTool({
   name: "upsert_lists_many",
   description:
     `Create shared lists, or replace a list's WHOLE entry tree (1–50 lists, one transaction). ${LISTS_ALIAS} ` +
-    "Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree). " +
+    "Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree) — nothing else: the tree is `items` (not `entries`), and the role comes from the type. " +
     'An entry is {node, values, children?, query?}: `values` keyed by the node\'s fields (links as {"href": "/about"} or an external URL; terms as caelo:term/<listId>/<itemId>), `children` under nodes that allow them, `query` only on source nodes (the knobs the type marks editable). Keep the `id` of entries that already exist; omit it for new ones. ' +
     'Example (type menu): [{"node":"entry","values":{"label":"Company","link":{"href":"/about"}},"children":[{"node":"entry","values":{"label":"Team","link":{"href":"/about/team"}}}]}]. ' +
     "Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / edit_module), e.g. the header module on the layout.",

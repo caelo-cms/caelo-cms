@@ -181,6 +181,13 @@ describe("list tools (epic #1107)", () => {
     expect(r.content).toContain(
       '  - [11111111-2222-4333-8444-555555555555] entry {"label":"Team"}',
     );
+    // The read names the tree with the key the write takes, and the role
+    // as the type's (v0.11.0 release gate: an "entries:" heading and the
+    // role were copied into an upsert_lists_many call).
+    expect(r.content).toContain("\nitems:\n");
+    expect(r.content).not.toContain("entries:");
+    expect(r.content).toContain("set by the type");
+    expect(upsertListsManyTool.description).toContain("not `entries`");
   });
 
   it("patch_list_items_many forwards the patches unchanged and names the added ids", async () => {

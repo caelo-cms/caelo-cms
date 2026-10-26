@@ -3,7 +3,7 @@
   "tools": [
     {
       "name": "edit_module",
-      "description": "Edit ONE module's structure: HTML template, fields, CSS, JS, displayName, description, or kind. **AUTHOR EXPLICITLY (v0.12.0+):** pass `html` with `{{fieldName}}` placeholders + an explicit `fields[]` array with semantic snake_case names (`hero_title`, `primary_cta_href`, `nav_items`), NOT a literal-content fallback. The operator says 'fix the homepage hero copy'; YOU translate that to the right field names. Field names like `cta2label2` or `spanText` are wrong — they leak the extractor heuristic. **Field kinds:** `text`, `richtext`, `url`, `image`, `number`, `boolean`, `link` (primitives); `list` (entries of a list type — see List fields below); `module` (single nested module, slot `{{>field}}`); `module-list` (array of nested modules, slot `{{#field}}{{/field}}`). **Nested fields may declare `allowedModuleTypes`** — a whitelist of stable module `type`s (e.g. `[\"button\"]`), NOT slugs. It matches the referenced module's `type`; set it to constrain what can nest in a `module`/`module-list` slot, and widen it here if a valid module is being wrongly rejected. **Lists are lists, not numbered scalars.** A menu with 10 items is ONE `list` field with 10 entries — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `list` (listType \"texts\"). Cards with several parts per item (image + heading + text) use a list type with those fields (upsert_list_types_many) or a `module-list` of a card module. **Update description + kind when the module's purpose drifts.** `list_modules` exposes them to your future self; stale descriptions hurt your own decision-making. **Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `list_modules` catalog. Treat it as a fallback, not the default path. **Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158); the tool result flags unscoped selectors. **Module JS shares ONE page-level script** - no implicit `root`/`el` binding exists; wrap in an IIFE and query via document.querySelectorAll scoped to your module's root class (see the `js` input description). **Accordion, tabs, carousel need NO module JS** - mark the markup with `data-caelo-ui=\"accordion|tabs|carousel\"` and Caelo ships vetted, accessible behaviour (markup contract in the `js` input description). Edits are CHAT-BRANCHED until publish. **For a TARGETED change to existing html/css/js, PREFER `edit_content`** (surgical string-replace: far cheaper than re-emitting the whole body here, and the diff is reviewable). Use `edit_module` for a WHOLESALE rewrite, a brand-new module body, or `fields`/`displayName`/`kind`/`type`/`description` changes. Use this for structure, styling, fields list, or `description`/`kind` updates. DO NOT use this to change what one page shows — use `set_page_module_content` (per-page content) or `set_content_instance_values` (shared content) for that. Prefer `update_modules_many` when targeting > 1 module. DO NOT use for page metadata (`update_pages_many`) or template-level edits (`propose_update_template`). **List fields** (`kind:'list'`, `listType` = a list type slug, list_list_types): repeating content — menu entries, footer links, feature bullets, FAQ rows — is ONE list field iterated with `{{#field}}…{{/field}}`; inside, the entry's own fields are the keys (`texts`: `{{text}}`; `links`: `{{label}}` `{{link}}`; `menu`: also `{{#children}}…{{/children}}` and `{{#is_current}}`; a source node: `{{#items}}<a href='{{link}}'>{{title}}</a>{{/items}}`). Bindings: **local** (default) — the entries are this placement's value, e.g. `[{node:'link', values:{label:'Home', link:{href:'/'}}}]` (on layout chrome: the field `default`); **shared** — `bind:'shared'` with `list:'caelo:list/<id>'` on the field (fixed for every placement — the site menu) or the placement value `caelo:list/<id>`; **source** — `bind:'source'` with `source:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}` or `{kind:'system', name:'breadcrumbs'}`, and the placement value may override the editable knobs (`{limit:5}`). Menus, navigation, footer links, categories and tags are SHARED (list_lists first — reuse the site's list, create it with upsert_lists_many); a list only this module shows stays LOCAL; promote_local_list switches when a second place needs it. Entries of a shared list are edited with patch_list_items_many, never through the module. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Edit ONE module's structure: HTML template, fields, CSS, JS, displayName, description, or kind. **AUTHOR EXPLICITLY (v0.12.0+):** pass `html` with `{{fieldName}}` placeholders + an explicit `fields[]` array with semantic snake_case names (`hero_title`, `primary_cta_href`, `nav_items`), NOT a literal-content fallback. The operator says 'fix the homepage hero copy'; YOU translate that to the right field names. Field names like `cta2label2` or `spanText` are wrong — they leak the extractor heuristic. **Field kinds:** `text`, `richtext`, `url`, `image`, `number`, `boolean`, `link` (primitives); `list` (entries of a list type — see List fields below); `module` (single nested module, slot `{{>field}}`); `module-list` (array of nested modules, slot `{{#field}}{{/field}}`). **Nested fields may declare `allowedModuleTypes`** — a whitelist of stable module `type`s (e.g. `[\"button\"]`), NOT slugs. It matches the referenced module's `type`; set it to constrain what can nest in a `module`/`module-list` slot, and widen it here if a valid module is being wrongly rejected. **Lists are lists, not numbered scalars.** A menu with 10 items is ONE `list` field with 10 entries — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `list` (listType \"texts\"). Cards with several parts per item (image + heading + text) use a list type with those fields (upsert_list_types_many) or a `module-list` of a card module. **Update description + kind when the module's purpose drifts.** `list_modules` exposes them to your future self; stale descriptions hurt your own decision-making. **Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `list_modules` catalog. Treat it as a fallback, not the default path. **Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158); the tool result flags unscoped selectors. **Module JS shares ONE page-level script** - no implicit `root`/`el` binding exists; wrap in an IIFE and query via document.querySelectorAll scoped to your module's root class (see the `js` input description). **Accordion, tabs, carousel need NO module JS** - mark the markup with `data-caelo-ui=\"accordion|tabs|carousel\"` and Caelo ships vetted, accessible behaviour (markup contract in the `js` input description). Edits are CHAT-BRANCHED until publish. **For a TARGETED change to existing html/css/js, PREFER `edit_content`** (surgical string-replace: far cheaper than re-emitting the whole body here, and the diff is reviewable). Use `edit_module` for a WHOLESALE rewrite, a brand-new module body, or `fields`/`displayName`/`kind`/`type`/`description` changes. Use this for structure, styling, fields list, or `description`/`kind` updates. DO NOT use this to change what one page shows — use `set_page_module_content` (per-page content) or `set_content_instance_values` (shared content) for that. Prefer `update_modules_many` when targeting > 1 module. DO NOT use for page metadata (`update_pages_many`) or template-level edits (`propose_update_template`). **List fields** (`kind:'list'`, `listType`): repeating content is ONE list field, `{{#field}}…{{/field}}` (system prompt: lists). local (default): the placement value / chrome `default` is the entries, `[{node:'link', values:{label:'Home', link:{href:'/'}}}]`; shared: `bind:'shared'`, `list:'caelo:list/<id>'` — menus, navigation, footer links, categories, tags (list_lists first; entries change via patch_list_items_many; promote_local_list when a second place needs a local list); source: `bind:'source'` with a query / system / plugin `source`. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -89,7 +89,7 @@
                   "maxLength": 128
                 },
                 "default": {
-                  "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); list (local) → an array of entries of the list type with the REAL text + URLs, e.g. listType \"links\": [{\"node\":\"link\",\"values\":{\"label\":\"Home\",\"link\":{\"href\":\"/\"}}},{\"node\":\"link\",\"values\":{\"label\":\"About\",\"link\":{\"href\":\"/about\"}}}]; listType \"texts\": [{\"node\":\"text\",\"values\":{\"text\":\"Fast\"}}]; list (shared) → \"caelo:list/<id>\". Omit for module / module-list and for a list with bind \"source\".",
+                  "description": "The ORIGINAL value(s) this field replaced, never a placeholder: scalar kinds → a string; list → its entries (local) or \"caelo:list/<id>\" (shared). Omit for module / module-list and bind \"source\".",
                   "anyOf": [
                     {
                       "type": "string"
@@ -104,192 +104,26 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "additionalProperties": false,
                         "required": [
                           "node",
                           "values"
                         ],
+                        "description": "texts: {node:\"text\", values:{text}}; links: {node:\"link\", values:{label, link:{href}}}; menu: {node:\"entry\", values:{label, link:{href}}, children:[entries]}; a custom type: its fields (list_list_types). Keep `id` when resending an existing entry.",
                         "properties": {
                           "id": {
-                            "type": "string",
-                            "description": "Keep the id of an existing entry; omit for a new one."
+                            "type": "string"
                           },
                           "node": {
                             "type": "string",
-                            "description": "The entry's node kind (texts: text; links: link; menu: entry)."
+                            "description": "The NODE kind, not the type slug: \"text\" (texts), \"link\" (links), \"entry\" (menu)."
                           },
                           "values": {
-                            "type": "object",
-                            "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                            "additionalProperties": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "number"
-                                },
-                                {
-                                  "type": "boolean"
-                                },
-                                {
-                                  "type": "object",
-                                  "additionalProperties": false,
-                                  "required": [
-                                    "href"
-                                  ],
-                                  "properties": {
-                                    "href": {
-                                      "type": "string",
-                                      "minLength": 1,
-                                      "maxLength": 2000
-                                    },
-                                    "target": {
-                                      "type": "string",
-                                      "enum": [
-                                        "_self",
-                                        "_blank"
-                                      ]
-                                    }
-                                  }
-                                },
-                                {
-                                  "type": "array",
-                                  "items": {
-                                    "type": "string"
-                                  }
-                                }
-                              ]
-                            }
+                            "type": "object"
                           },
                           "children": {
                             "type": "array",
                             "items": {
-                              "type": "object",
-                              "additionalProperties": false,
-                              "required": [
-                                "node",
-                                "values"
-                              ],
-                              "properties": {
-                                "id": {
-                                  "type": "string",
-                                  "description": "Keep the id of an existing entry; omit for a new one."
-                                },
-                                "node": {
-                                  "type": "string",
-                                  "description": "The entry's node kind (texts: text; links: link; menu: entry)."
-                                },
-                                "values": {
-                                  "type": "object",
-                                  "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                                  "additionalProperties": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string"
-                                      },
-                                      {
-                                        "type": "number"
-                                      },
-                                      {
-                                        "type": "boolean"
-                                      },
-                                      {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "required": [
-                                          "href"
-                                        ],
-                                        "properties": {
-                                          "href": {
-                                            "type": "string",
-                                            "minLength": 1,
-                                            "maxLength": 2000
-                                          },
-                                          "target": {
-                                            "type": "string",
-                                            "enum": [
-                                              "_self",
-                                              "_blank"
-                                            ]
-                                          }
-                                        }
-                                      },
-                                      {
-                                        "type": "array",
-                                        "items": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    ]
-                                  }
-                                },
-                                "children": {
-                                  "type": "array",
-                                  "items": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "required": [
-                                      "node",
-                                      "values"
-                                    ],
-                                    "properties": {
-                                      "id": {
-                                        "type": "string",
-                                        "description": "Keep the id of an existing entry; omit for a new one."
-                                      },
-                                      "node": {
-                                        "type": "string",
-                                        "description": "The entry's node kind (texts: text; links: link; menu: entry)."
-                                      },
-                                      "values": {
-                                        "type": "object",
-                                        "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                                        "additionalProperties": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "number"
-                                            },
-                                            {
-                                              "type": "boolean"
-                                            },
-                                            {
-                                              "type": "object",
-                                              "additionalProperties": false,
-                                              "required": [
-                                                "href"
-                                              ],
-                                              "properties": {
-                                                "href": {
-                                                  "type": "string",
-                                                  "minLength": 1,
-                                                  "maxLength": 2000
-                                                },
-                                                "target": {
-                                                  "type": "string",
-                                                  "enum": [
-                                                    "_self",
-                                                    "_blank"
-                                                  ]
-                                                }
-                                              }
-                                            },
-                                            {
-                                              "type": "array",
-                                              "items": {
-                                                "type": "string"
-                                              }
-                                            }
-                                          ]
-                                        }
-                                      }
-                                    }
-                                  }
-                                }
-                              }
+                              "type": "object"
                             }
                           }
                         }
@@ -316,7 +150,7 @@
                 "listType": {
                   "type": "string",
                   "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-                  "description": "list fields: the list type slug — shipped \"texts\" (plain strings), \"links\" (label + link), \"menu\" (nested entries), \"categories\" / \"tags\" (vocabularies), or a custom type (list_list_types)."
+                  "description": "list: type slug — \"texts\", \"links\", \"menu\", \"categories\", \"tags\" or custom."
                 },
                 "bind": {
                   "type": "string",
@@ -325,86 +159,16 @@
                     "shared",
                     "source"
                   ],
-                  "description": "list fields: local (default) = the entries are the placement's value (chrome: the field default); shared = a site list (menus, navigation, footer links, categories, tags) — fix it with `list` or give each placement caelo:list/<id>; source = entries generated per page from `source` (a page query, breadcrumbs)."
+                  "description": "list: local (default; entries live with the placement) | shared (a site list: menus, navigation, footer links, categories, tags) | source (generated per page)."
                 },
                 "list": {
                   "type": "string",
                   "pattern": "^caelo:list/[0-9a-f-]{36}$",
-                  "description": "list fields with bind shared: the list every placement shows (caelo:list/<id> from upsert_lists_many / list_lists). With a page_terms source: the vocabulary to show."
+                  "description": "list, shared: caelo:list/<id>."
                 },
                 "source": {
                   "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "kind"
-                  ],
-                  "description": "Where generated entries come from: {kind:\"query\", editable:[…knobs], defaults:{page_type, order, limit, …}}, {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} or {kind:\"plugin\", name}.",
-                  "properties": {
-                    "kind": {
-                      "type": "string",
-                      "enum": [
-                        "query",
-                        "system",
-                        "plugin"
-                      ]
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "editable": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "page_type",
-                          "terms",
-                          "terms_mode",
-                          "parent",
-                          "exclude_current",
-                          "order",
-                          "limit"
-                        ]
-                      }
-                    },
-                    "defaults": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "page_type": {
-                          "type": "string",
-                          "pattern": "^[a-z0-9-]+$"
-                        },
-                        "terms": {
-                          "type": "array",
-                          "maxItems": 20,
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "terms_mode": {
-                          "type": "string",
-                          "enum": [
-                            "any",
-                            "all"
-                          ]
-                        },
-                        "parent": {
-                          "type": "string"
-                        },
-                        "exclude_current": {
-                          "type": "boolean"
-                        },
-                        "order": {
-                          "type": "string"
-                        },
-                        "limit": {
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 50
-                        }
-                      }
-                    }
-                  }
+                  "description": "list, bind \"source\": {kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}} | {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} (only these) | {kind:\"plugin\", name:\"<source>\"} (e.g. consent_categories — iterating a plugin list needs no field at all)."
                 },
                 "allowedModuleTypes": {
                   "type": "array",
@@ -910,7 +674,7 @@
                         "maxLength": 128
                       },
                       "default": {
-                        "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); list (local) → an array of entries of the list type with the REAL text + URLs, e.g. listType \"links\": [{\"node\":\"link\",\"values\":{\"label\":\"Home\",\"link\":{\"href\":\"/\"}}},{\"node\":\"link\",\"values\":{\"label\":\"About\",\"link\":{\"href\":\"/about\"}}}]; listType \"texts\": [{\"node\":\"text\",\"values\":{\"text\":\"Fast\"}}]; list (shared) → \"caelo:list/<id>\". Omit for module / module-list and for a list with bind \"source\".",
+                        "description": "The ORIGINAL value(s) this field replaced, never a placeholder: scalar kinds → a string; list → its entries (local) or \"caelo:list/<id>\" (shared). Omit for module / module-list and bind \"source\".",
                         "anyOf": [
                           {
                             "type": "string"
@@ -925,192 +689,26 @@
                             "type": "array",
                             "items": {
                               "type": "object",
-                              "additionalProperties": false,
                               "required": [
                                 "node",
                                 "values"
                               ],
+                              "description": "texts: {node:\"text\", values:{text}}; links: {node:\"link\", values:{label, link:{href}}}; menu: {node:\"entry\", values:{label, link:{href}}, children:[entries]}; a custom type: its fields (list_list_types). Keep `id` when resending an existing entry.",
                               "properties": {
                                 "id": {
-                                  "type": "string",
-                                  "description": "Keep the id of an existing entry; omit for a new one."
+                                  "type": "string"
                                 },
                                 "node": {
                                   "type": "string",
-                                  "description": "The entry's node kind (texts: text; links: link; menu: entry)."
+                                  "description": "The NODE kind, not the type slug: \"text\" (texts), \"link\" (links), \"entry\" (menu)."
                                 },
                                 "values": {
-                                  "type": "object",
-                                  "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                                  "additionalProperties": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string"
-                                      },
-                                      {
-                                        "type": "number"
-                                      },
-                                      {
-                                        "type": "boolean"
-                                      },
-                                      {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "required": [
-                                          "href"
-                                        ],
-                                        "properties": {
-                                          "href": {
-                                            "type": "string",
-                                            "minLength": 1,
-                                            "maxLength": 2000
-                                          },
-                                          "target": {
-                                            "type": "string",
-                                            "enum": [
-                                              "_self",
-                                              "_blank"
-                                            ]
-                                          }
-                                        }
-                                      },
-                                      {
-                                        "type": "array",
-                                        "items": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    ]
-                                  }
+                                  "type": "object"
                                 },
                                 "children": {
                                   "type": "array",
                                   "items": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "required": [
-                                      "node",
-                                      "values"
-                                    ],
-                                    "properties": {
-                                      "id": {
-                                        "type": "string",
-                                        "description": "Keep the id of an existing entry; omit for a new one."
-                                      },
-                                      "node": {
-                                        "type": "string",
-                                        "description": "The entry's node kind (texts: text; links: link; menu: entry)."
-                                      },
-                                      "values": {
-                                        "type": "object",
-                                        "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                                        "additionalProperties": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "number"
-                                            },
-                                            {
-                                              "type": "boolean"
-                                            },
-                                            {
-                                              "type": "object",
-                                              "additionalProperties": false,
-                                              "required": [
-                                                "href"
-                                              ],
-                                              "properties": {
-                                                "href": {
-                                                  "type": "string",
-                                                  "minLength": 1,
-                                                  "maxLength": 2000
-                                                },
-                                                "target": {
-                                                  "type": "string",
-                                                  "enum": [
-                                                    "_self",
-                                                    "_blank"
-                                                  ]
-                                                }
-                                              }
-                                            },
-                                            {
-                                              "type": "array",
-                                              "items": {
-                                                "type": "string"
-                                              }
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "children": {
-                                        "type": "array",
-                                        "items": {
-                                          "type": "object",
-                                          "additionalProperties": false,
-                                          "required": [
-                                            "node",
-                                            "values"
-                                          ],
-                                          "properties": {
-                                            "id": {
-                                              "type": "string",
-                                              "description": "Keep the id of an existing entry; omit for a new one."
-                                            },
-                                            "node": {
-                                              "type": "string",
-                                              "description": "The entry's node kind (texts: text; links: link; menu: entry)."
-                                            },
-                                            "values": {
-                                              "type": "object",
-                                              "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                                              "additionalProperties": {
-                                                "anyOf": [
-                                                  {
-                                                    "type": "string"
-                                                  },
-                                                  {
-                                                    "type": "number"
-                                                  },
-                                                  {
-                                                    "type": "boolean"
-                                                  },
-                                                  {
-                                                    "type": "object",
-                                                    "additionalProperties": false,
-                                                    "required": [
-                                                      "href"
-                                                    ],
-                                                    "properties": {
-                                                      "href": {
-                                                        "type": "string",
-                                                        "minLength": 1,
-                                                        "maxLength": 2000
-                                                      },
-                                                      "target": {
-                                                        "type": "string",
-                                                        "enum": [
-                                                          "_self",
-                                                          "_blank"
-                                                        ]
-                                                      }
-                                                    }
-                                                  },
-                                                  {
-                                                    "type": "array",
-                                                    "items": {
-                                                      "type": "string"
-                                                    }
-                                                  }
-                                                ]
-                                              }
-                                            }
-                                          }
-                                        }
-                                      }
-                                    }
+                                    "type": "object"
                                   }
                                 }
                               }
@@ -1137,7 +735,7 @@
                       "listType": {
                         "type": "string",
                         "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-                        "description": "list fields: the list type slug — shipped \"texts\" (plain strings), \"links\" (label + link), \"menu\" (nested entries), \"categories\" / \"tags\" (vocabularies), or a custom type (list_list_types)."
+                        "description": "list: type slug — \"texts\", \"links\", \"menu\", \"categories\", \"tags\" or custom."
                       },
                       "bind": {
                         "type": "string",
@@ -1146,86 +744,16 @@
                           "shared",
                           "source"
                         ],
-                        "description": "list fields: local (default) = the entries are the placement's value (chrome: the field default); shared = a site list (menus, navigation, footer links, categories, tags) — fix it with `list` or give each placement caelo:list/<id>; source = entries generated per page from `source` (a page query, breadcrumbs)."
+                        "description": "list: local (default; entries live with the placement) | shared (a site list: menus, navigation, footer links, categories, tags) | source (generated per page)."
                       },
                       "list": {
                         "type": "string",
                         "pattern": "^caelo:list/[0-9a-f-]{36}$",
-                        "description": "list fields with bind shared: the list every placement shows (caelo:list/<id> from upsert_lists_many / list_lists). With a page_terms source: the vocabulary to show."
+                        "description": "list, shared: caelo:list/<id>."
                       },
                       "source": {
                         "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "kind"
-                        ],
-                        "description": "Where generated entries come from: {kind:\"query\", editable:[…knobs], defaults:{page_type, order, limit, …}}, {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} or {kind:\"plugin\", name}.",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "query",
-                              "system",
-                              "plugin"
-                            ]
-                          },
-                          "name": {
-                            "type": "string"
-                          },
-                          "editable": {
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "enum": [
-                                "page_type",
-                                "terms",
-                                "terms_mode",
-                                "parent",
-                                "exclude_current",
-                                "order",
-                                "limit"
-                              ]
-                            }
-                          },
-                          "defaults": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                              "page_type": {
-                                "type": "string",
-                                "pattern": "^[a-z0-9-]+$"
-                              },
-                              "terms": {
-                                "type": "array",
-                                "maxItems": 20,
-                                "items": {
-                                  "type": "string"
-                                }
-                              },
-                              "terms_mode": {
-                                "type": "string",
-                                "enum": [
-                                  "any",
-                                  "all"
-                                ]
-                              },
-                              "parent": {
-                                "type": "string"
-                              },
-                              "exclude_current": {
-                                "type": "boolean"
-                              },
-                              "order": {
-                                "type": "string"
-                              },
-                              "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 50
-                              }
-                            }
-                          }
-                        }
+                        "description": "list, bind \"source\": {kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}} | {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} (only these) | {kind:\"plugin\", name:\"<source>\"} (e.g. consent_categories — iterating a plugin list needs no field at all)."
                       },
                       "allowedModuleTypes": {
                         "type": "array",
@@ -3067,7 +2595,7 @@
     },
     {
       "name": "add_module",
-      "description": "Add ONE module to a page, a layout (site-wide chrome on every page), or a template (fans out to every page of that page-type). **Prefer `build_page` when a PAGE needs more than one module** — it places the whole ordered list WITH content in one transaction. `target` = 'page' | 'layout' | 'template'. `targetRef` is that page's id or URL path ('/docs/setup'), or the layout's / template's slug or id. A bare page slug works only while it names one page — nested pages can share a slug. Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `list_modules` to place/fan-out a SHARED module without minting a duplicate — a later edit_module then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` is placement-only: if you also pass authoring fields (a different label, new html, …) the call still succeeds but those fields are NOT applied and the result says so — to actually change a shared module, place it by `moduleId` and then call edit_module. **The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; edit_module changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. `blockName` must be a real block on the target; the handler returns the available block set if it isn't. NOTE on `position`: pass the literal string \"top\" or \"bottom\", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `\"0\"`). **List fields** (`kind:'list'`, `listType` = a list type slug, list_list_types): repeating content — menu entries, footer links, feature bullets, FAQ rows — is ONE list field iterated with `{{#field}}…{{/field}}`; inside, the entry's own fields are the keys (`texts`: `{{text}}`; `links`: `{{label}}` `{{link}}`; `menu`: also `{{#children}}…{{/children}}` and `{{#is_current}}`; a source node: `{{#items}}<a href='{{link}}'>{{title}}</a>{{/items}}`). Bindings: **local** (default) — the entries are this placement's value, e.g. `[{node:'link', values:{label:'Home', link:{href:'/'}}}]` (on layout chrome: the field `default`); **shared** — `bind:'shared'` with `list:'caelo:list/<id>'` on the field (fixed for every placement — the site menu) or the placement value `caelo:list/<id>`; **source** — `bind:'source'` with `source:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}` or `{kind:'system', name:'breadcrumbs'}`, and the placement value may override the editable knobs (`{limit:5}`). Menus, navigation, footer links, categories and tags are SHARED (list_lists first — reuse the site's list, create it with upsert_lists_many); a list only this module shows stays LOCAL; promote_local_list switches when a second place needs it. Entries of a shared list are edited with patch_list_items_many, never through the module. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.\n\nOver this connection the install's AI is not used: the AI part comes back to you — a work item to answer with your own model and send back through the tool it names, or an `AiDelegated:` answer that says what to do instead (see caelo_get_context).",
+      "description": "Add ONE module to a page, a layout (site-wide chrome on every page), or a template (fans out to every page of that page-type). **Prefer `build_page` when a PAGE needs more than one module** — it places the whole ordered list WITH content in one transaction. `target` = 'page' | 'layout' | 'template'. `targetRef` is that page's id or URL path ('/docs/setup'), or the layout's / template's slug or id. A bare page slug works only while it names one page — nested pages can share a slug. Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `list_modules` to place/fan-out a SHARED module without minting a duplicate — a later edit_module then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` is placement-only: if you also pass authoring fields (a different label, new html, …) the call still succeeds but those fields are NOT applied and the result says so — to actually change a shared module, place it by `moduleId` and then call edit_module. **The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; edit_module changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. `blockName` must be a real block on the target; the handler returns the available block set if it isn't. NOTE on `position`: pass the literal string \"top\" or \"bottom\", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `\"0\"`). **List fields** (`kind:'list'`, `listType`): repeating content is ONE list field, `{{#field}}…{{/field}}` (system prompt: lists). local (default): the placement value / chrome `default` is the entries, `[{node:'link', values:{label:'Home', link:{href:'/'}}}]`; shared: `bind:'shared'`, `list:'caelo:list/<id>'` — menus, navigation, footer links, categories, tags (list_lists first; entries change via patch_list_items_many; promote_local_list when a second place needs a local list); source: `bind:'source'` with a query / system / plugin `source`. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.\n\nOver this connection the install's AI is not used: the AI part comes back to you — a work item to answer with your own model and send back through the tool it names, or an `AiDelegated:` answer that says what to do instead (see caelo_get_context).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -3199,7 +2727,7 @@
                   "maxLength": 128
                 },
                 "default": {
-                  "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); list (local) → an array of entries of the list type with the REAL text + URLs, e.g. listType \"links\": [{\"node\":\"link\",\"values\":{\"label\":\"Home\",\"link\":{\"href\":\"/\"}}},{\"node\":\"link\",\"values\":{\"label\":\"About\",\"link\":{\"href\":\"/about\"}}}]; listType \"texts\": [{\"node\":\"text\",\"values\":{\"text\":\"Fast\"}}]; list (shared) → \"caelo:list/<id>\". Omit for module / module-list and for a list with bind \"source\".",
+                  "description": "The ORIGINAL value(s) this field replaced, never a placeholder: scalar kinds → a string; list → its entries (local) or \"caelo:list/<id>\" (shared). Omit for module / module-list and bind \"source\".",
                   "anyOf": [
                     {
                       "type": "string"
@@ -3214,192 +2742,26 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "additionalProperties": false,
                         "required": [
                           "node",
                           "values"
                         ],
+                        "description": "texts: {node:\"text\", values:{text}}; links: {node:\"link\", values:{label, link:{href}}}; menu: {node:\"entry\", values:{label, link:{href}}, children:[entries]}; a custom type: its fields (list_list_types). Keep `id` when resending an existing entry.",
                         "properties": {
                           "id": {
-                            "type": "string",
-                            "description": "Keep the id of an existing entry; omit for a new one."
+                            "type": "string"
                           },
                           "node": {
                             "type": "string",
-                            "description": "The entry's node kind (texts: text; links: link; menu: entry)."
+                            "description": "The NODE kind, not the type slug: \"text\" (texts), \"link\" (links), \"entry\" (menu)."
                           },
                           "values": {
-                            "type": "object",
-                            "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                            "additionalProperties": {
-                              "anyOf": [
-                                {
-                                  "type": "string"
-                                },
-                                {
-                                  "type": "number"
-                                },
-                                {
-                                  "type": "boolean"
-                                },
-                                {
-                                  "type": "object",
-                                  "additionalProperties": false,
-                                  "required": [
-                                    "href"
-                                  ],
-                                  "properties": {
-                                    "href": {
-                                      "type": "string",
-                                      "minLength": 1,
-                                      "maxLength": 2000
-                                    },
-                                    "target": {
-                                      "type": "string",
-                                      "enum": [
-                                        "_self",
-                                        "_blank"
-                                      ]
-                                    }
-                                  }
-                                },
-                                {
-                                  "type": "array",
-                                  "items": {
-                                    "type": "string"
-                                  }
-                                }
-                              ]
-                            }
+                            "type": "object"
                           },
                           "children": {
                             "type": "array",
                             "items": {
-                              "type": "object",
-                              "additionalProperties": false,
-                              "required": [
-                                "node",
-                                "values"
-                              ],
-                              "properties": {
-                                "id": {
-                                  "type": "string",
-                                  "description": "Keep the id of an existing entry; omit for a new one."
-                                },
-                                "node": {
-                                  "type": "string",
-                                  "description": "The entry's node kind (texts: text; links: link; menu: entry)."
-                                },
-                                "values": {
-                                  "type": "object",
-                                  "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                                  "additionalProperties": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string"
-                                      },
-                                      {
-                                        "type": "number"
-                                      },
-                                      {
-                                        "type": "boolean"
-                                      },
-                                      {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "required": [
-                                          "href"
-                                        ],
-                                        "properties": {
-                                          "href": {
-                                            "type": "string",
-                                            "minLength": 1,
-                                            "maxLength": 2000
-                                          },
-                                          "target": {
-                                            "type": "string",
-                                            "enum": [
-                                              "_self",
-                                              "_blank"
-                                            ]
-                                          }
-                                        }
-                                      },
-                                      {
-                                        "type": "array",
-                                        "items": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    ]
-                                  }
-                                },
-                                "children": {
-                                  "type": "array",
-                                  "items": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "required": [
-                                      "node",
-                                      "values"
-                                    ],
-                                    "properties": {
-                                      "id": {
-                                        "type": "string",
-                                        "description": "Keep the id of an existing entry; omit for a new one."
-                                      },
-                                      "node": {
-                                        "type": "string",
-                                        "description": "The entry's node kind (texts: text; links: link; menu: entry)."
-                                      },
-                                      "values": {
-                                        "type": "object",
-                                        "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                                        "additionalProperties": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "number"
-                                            },
-                                            {
-                                              "type": "boolean"
-                                            },
-                                            {
-                                              "type": "object",
-                                              "additionalProperties": false,
-                                              "required": [
-                                                "href"
-                                              ],
-                                              "properties": {
-                                                "href": {
-                                                  "type": "string",
-                                                  "minLength": 1,
-                                                  "maxLength": 2000
-                                                },
-                                                "target": {
-                                                  "type": "string",
-                                                  "enum": [
-                                                    "_self",
-                                                    "_blank"
-                                                  ]
-                                                }
-                                              }
-                                            },
-                                            {
-                                              "type": "array",
-                                              "items": {
-                                                "type": "string"
-                                              }
-                                            }
-                                          ]
-                                        }
-                                      }
-                                    }
-                                  }
-                                }
-                              }
+                              "type": "object"
                             }
                           }
                         }
@@ -3426,7 +2788,7 @@
                 "listType": {
                   "type": "string",
                   "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-                  "description": "list fields: the list type slug — shipped \"texts\" (plain strings), \"links\" (label + link), \"menu\" (nested entries), \"categories\" / \"tags\" (vocabularies), or a custom type (list_list_types)."
+                  "description": "list: type slug — \"texts\", \"links\", \"menu\", \"categories\", \"tags\" or custom."
                 },
                 "bind": {
                   "type": "string",
@@ -3435,86 +2797,16 @@
                     "shared",
                     "source"
                   ],
-                  "description": "list fields: local (default) = the entries are the placement's value (chrome: the field default); shared = a site list (menus, navigation, footer links, categories, tags) — fix it with `list` or give each placement caelo:list/<id>; source = entries generated per page from `source` (a page query, breadcrumbs)."
+                  "description": "list: local (default; entries live with the placement) | shared (a site list: menus, navigation, footer links, categories, tags) | source (generated per page)."
                 },
                 "list": {
                   "type": "string",
                   "pattern": "^caelo:list/[0-9a-f-]{36}$",
-                  "description": "list fields with bind shared: the list every placement shows (caelo:list/<id> from upsert_lists_many / list_lists). With a page_terms source: the vocabulary to show."
+                  "description": "list, shared: caelo:list/<id>."
                 },
                 "source": {
                   "type": "object",
-                  "additionalProperties": false,
-                  "required": [
-                    "kind"
-                  ],
-                  "description": "Where generated entries come from: {kind:\"query\", editable:[…knobs], defaults:{page_type, order, limit, …}}, {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} or {kind:\"plugin\", name}.",
-                  "properties": {
-                    "kind": {
-                      "type": "string",
-                      "enum": [
-                        "query",
-                        "system",
-                        "plugin"
-                      ]
-                    },
-                    "name": {
-                      "type": "string"
-                    },
-                    "editable": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "page_type",
-                          "terms",
-                          "terms_mode",
-                          "parent",
-                          "exclude_current",
-                          "order",
-                          "limit"
-                        ]
-                      }
-                    },
-                    "defaults": {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "properties": {
-                        "page_type": {
-                          "type": "string",
-                          "pattern": "^[a-z0-9-]+$"
-                        },
-                        "terms": {
-                          "type": "array",
-                          "maxItems": 20,
-                          "items": {
-                            "type": "string"
-                          }
-                        },
-                        "terms_mode": {
-                          "type": "string",
-                          "enum": [
-                            "any",
-                            "all"
-                          ]
-                        },
-                        "parent": {
-                          "type": "string"
-                        },
-                        "exclude_current": {
-                          "type": "boolean"
-                        },
-                        "order": {
-                          "type": "string"
-                        },
-                        "limit": {
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 50
-                        }
-                      }
-                    }
-                  }
+                  "description": "list, bind \"source\": {kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}} | {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} (only these) | {kind:\"plugin\", name:\"<source>\"} (e.g. consent_categories — iterating a plugin list needs no field at all)."
                 },
                 "allowedModuleTypes": {
                   "type": "array",
@@ -5859,7 +5151,7 @@
                         "maxLength": 128
                       },
                       "default": {
-                        "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); list (local) → an array of entries of the list type with the REAL text + URLs, e.g. listType \"links\": [{\"node\":\"link\",\"values\":{\"label\":\"Home\",\"link\":{\"href\":\"/\"}}},{\"node\":\"link\",\"values\":{\"label\":\"About\",\"link\":{\"href\":\"/about\"}}}]; listType \"texts\": [{\"node\":\"text\",\"values\":{\"text\":\"Fast\"}}]; list (shared) → \"caelo:list/<id>\". Omit for module / module-list and for a list with bind \"source\".",
+                        "description": "The ORIGINAL value(s) this field replaced, never a placeholder: scalar kinds → a string; list → its entries (local) or \"caelo:list/<id>\" (shared). Omit for module / module-list and bind \"source\".",
                         "anyOf": [
                           {
                             "type": "string"
@@ -5874,192 +5166,26 @@
                             "type": "array",
                             "items": {
                               "type": "object",
-                              "additionalProperties": false,
                               "required": [
                                 "node",
                                 "values"
                               ],
+                              "description": "texts: {node:\"text\", values:{text}}; links: {node:\"link\", values:{label, link:{href}}}; menu: {node:\"entry\", values:{label, link:{href}}, children:[entries]}; a custom type: its fields (list_list_types). Keep `id` when resending an existing entry.",
                               "properties": {
                                 "id": {
-                                  "type": "string",
-                                  "description": "Keep the id of an existing entry; omit for a new one."
+                                  "type": "string"
                                 },
                                 "node": {
                                   "type": "string",
-                                  "description": "The entry's node kind (texts: text; links: link; menu: entry)."
+                                  "description": "The NODE kind, not the type slug: \"text\" (texts), \"link\" (links), \"entry\" (menu)."
                                 },
                                 "values": {
-                                  "type": "object",
-                                  "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                                  "additionalProperties": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string"
-                                      },
-                                      {
-                                        "type": "number"
-                                      },
-                                      {
-                                        "type": "boolean"
-                                      },
-                                      {
-                                        "type": "object",
-                                        "additionalProperties": false,
-                                        "required": [
-                                          "href"
-                                        ],
-                                        "properties": {
-                                          "href": {
-                                            "type": "string",
-                                            "minLength": 1,
-                                            "maxLength": 2000
-                                          },
-                                          "target": {
-                                            "type": "string",
-                                            "enum": [
-                                              "_self",
-                                              "_blank"
-                                            ]
-                                          }
-                                        }
-                                      },
-                                      {
-                                        "type": "array",
-                                        "items": {
-                                          "type": "string"
-                                        }
-                                      }
-                                    ]
-                                  }
+                                  "type": "object"
                                 },
                                 "children": {
                                   "type": "array",
                                   "items": {
-                                    "type": "object",
-                                    "additionalProperties": false,
-                                    "required": [
-                                      "node",
-                                      "values"
-                                    ],
-                                    "properties": {
-                                      "id": {
-                                        "type": "string",
-                                        "description": "Keep the id of an existing entry; omit for a new one."
-                                      },
-                                      "node": {
-                                        "type": "string",
-                                        "description": "The entry's node kind (texts: text; links: link; menu: entry)."
-                                      },
-                                      "values": {
-                                        "type": "object",
-                                        "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                                        "additionalProperties": {
-                                          "anyOf": [
-                                            {
-                                              "type": "string"
-                                            },
-                                            {
-                                              "type": "number"
-                                            },
-                                            {
-                                              "type": "boolean"
-                                            },
-                                            {
-                                              "type": "object",
-                                              "additionalProperties": false,
-                                              "required": [
-                                                "href"
-                                              ],
-                                              "properties": {
-                                                "href": {
-                                                  "type": "string",
-                                                  "minLength": 1,
-                                                  "maxLength": 2000
-                                                },
-                                                "target": {
-                                                  "type": "string",
-                                                  "enum": [
-                                                    "_self",
-                                                    "_blank"
-                                                  ]
-                                                }
-                                              }
-                                            },
-                                            {
-                                              "type": "array",
-                                              "items": {
-                                                "type": "string"
-                                              }
-                                            }
-                                          ]
-                                        }
-                                      },
-                                      "children": {
-                                        "type": "array",
-                                        "items": {
-                                          "type": "object",
-                                          "additionalProperties": false,
-                                          "required": [
-                                            "node",
-                                            "values"
-                                          ],
-                                          "properties": {
-                                            "id": {
-                                              "type": "string",
-                                              "description": "Keep the id of an existing entry; omit for a new one."
-                                            },
-                                            "node": {
-                                              "type": "string",
-                                              "description": "The entry's node kind (texts: text; links: link; menu: entry)."
-                                            },
-                                            "values": {
-                                              "type": "object",
-                                              "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}; a custom type: its fields, list_list_types).",
-                                              "additionalProperties": {
-                                                "anyOf": [
-                                                  {
-                                                    "type": "string"
-                                                  },
-                                                  {
-                                                    "type": "number"
-                                                  },
-                                                  {
-                                                    "type": "boolean"
-                                                  },
-                                                  {
-                                                    "type": "object",
-                                                    "additionalProperties": false,
-                                                    "required": [
-                                                      "href"
-                                                    ],
-                                                    "properties": {
-                                                      "href": {
-                                                        "type": "string",
-                                                        "minLength": 1,
-                                                        "maxLength": 2000
-                                                      },
-                                                      "target": {
-                                                        "type": "string",
-                                                        "enum": [
-                                                          "_self",
-                                                          "_blank"
-                                                        ]
-                                                      }
-                                                    }
-                                                  },
-                                                  {
-                                                    "type": "array",
-                                                    "items": {
-                                                      "type": "string"
-                                                    }
-                                                  }
-                                                ]
-                                              }
-                                            }
-                                          }
-                                        }
-                                      }
-                                    }
+                                    "type": "object"
                                   }
                                 }
                               }
@@ -6086,7 +5212,7 @@
                       "listType": {
                         "type": "string",
                         "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-                        "description": "list fields: the list type slug — shipped \"texts\" (plain strings), \"links\" (label + link), \"menu\" (nested entries), \"categories\" / \"tags\" (vocabularies), or a custom type (list_list_types)."
+                        "description": "list: type slug — \"texts\", \"links\", \"menu\", \"categories\", \"tags\" or custom."
                       },
                       "bind": {
                         "type": "string",
@@ -6095,86 +5221,16 @@
                           "shared",
                           "source"
                         ],
-                        "description": "list fields: local (default) = the entries are the placement's value (chrome: the field default); shared = a site list (menus, navigation, footer links, categories, tags) — fix it with `list` or give each placement caelo:list/<id>; source = entries generated per page from `source` (a page query, breadcrumbs)."
+                        "description": "list: local (default; entries live with the placement) | shared (a site list: menus, navigation, footer links, categories, tags) | source (generated per page)."
                       },
                       "list": {
                         "type": "string",
                         "pattern": "^caelo:list/[0-9a-f-]{36}$",
-                        "description": "list fields with bind shared: the list every placement shows (caelo:list/<id> from upsert_lists_many / list_lists). With a page_terms source: the vocabulary to show."
+                        "description": "list, shared: caelo:list/<id>."
                       },
                       "source": {
                         "type": "object",
-                        "additionalProperties": false,
-                        "required": [
-                          "kind"
-                        ],
-                        "description": "Where generated entries come from: {kind:\"query\", editable:[…knobs], defaults:{page_type, order, limit, …}}, {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} or {kind:\"plugin\", name}.",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "query",
-                              "system",
-                              "plugin"
-                            ]
-                          },
-                          "name": {
-                            "type": "string"
-                          },
-                          "editable": {
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "enum": [
-                                "page_type",
-                                "terms",
-                                "terms_mode",
-                                "parent",
-                                "exclude_current",
-                                "order",
-                                "limit"
-                              ]
-                            }
-                          },
-                          "defaults": {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                              "page_type": {
-                                "type": "string",
-                                "pattern": "^[a-z0-9-]+$"
-                              },
-                              "terms": {
-                                "type": "array",
-                                "maxItems": 20,
-                                "items": {
-                                  "type": "string"
-                                }
-                              },
-                              "terms_mode": {
-                                "type": "string",
-                                "enum": [
-                                  "any",
-                                  "all"
-                                ]
-                              },
-                              "parent": {
-                                "type": "string"
-                              },
-                              "exclude_current": {
-                                "type": "boolean"
-                              },
-                              "order": {
-                                "type": "string"
-                              },
-                              "limit": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 50
-                              }
-                            }
-                          }
-                        }
+                        "description": "list, bind \"source\": {kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}} | {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} (only these) | {kind:\"plugin\", name:\"<source>\"} (e.g. consent_categories — iterating a plugin list needs no field at all)."
                       },
                       "allowedModuleTypes": {
                         "type": "array",
@@ -10083,7 +9139,7 @@
     },
     {
       "name": "upsert_lists_many",
-      "description": "Create shared lists, or replace a list's WHOLE entry tree (1–50 lists, one transaction). Menus, navigation, footer links, categories and tags are SHARED LISTS of a fitting list type (menu, links, categories, tags, or a custom type such as a mega menu) — there are no menu-specific tools. A list only ONE module shows stays LOCAL (its entries live in that module's `list` field); a list needed in more than one place, the site navigation, or a vocabulary pages are assigned to is SHARED. promote_local_list switches a local list to shared in one call. Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree). An entry is {node, values, children?, query?}: `values` keyed by the node's fields (links as {\"href\": \"/about\"} or an external URL; terms as caelo:term/<listId>/<itemId>), `children` under nodes that allow them, `query` only on source nodes (the knobs the type marks editable). Keep the `id` of entries that already exist; omit it for new ones. Example (type menu): [{\"node\":\"entry\",\"values\":{\"label\":\"Company\",\"link\":{\"href\":\"/about\"}},\"children\":[{\"node\":\"entry\",\"values\":{\"label\":\"Team\",\"link\":{\"href\":\"/about/team\"}}}]}]. Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / edit_module), e.g. the header module on the layout.",
+      "description": "Create shared lists, or replace a list's WHOLE entry tree (1–50 lists, one transaction). Menus, navigation, footer links, categories and tags are SHARED LISTS of a fitting list type (menu, links, categories, tags, or a custom type such as a mega menu) — there are no menu-specific tools. A list only ONE module shows stays LOCAL (its entries live in that module's `list` field); a list needed in more than one place, the site navigation, or a vocabulary pages are assigned to is SHARED. promote_local_list switches a local list to shared in one call. Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree) — nothing else: the tree is `items` (not `entries`), and the role comes from the type. An entry is {node, values, children?, query?}: `values` keyed by the node's fields (links as {\"href\": \"/about\"} or an external URL; terms as caelo:term/<listId>/<itemId>), `children` under nodes that allow them, `query` only on source nodes (the knobs the type marks editable). Keep the `id` of entries that already exist; omit it for new ones. Example (type menu): [{\"node\":\"entry\",\"values\":{\"label\":\"Company\",\"link\":{\"href\":\"/about\"}},\"children\":[{\"node\":\"entry\",\"values\":{\"label\":\"Team\",\"link\":{\"href\":\"/about/team\"}}}]}]. Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / edit_module), e.g. the header module on the layout.",
       "inputSchema": {
         "type": "object",
         "properties": {
