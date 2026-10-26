@@ -32,6 +32,8 @@ const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
+/** The random id the banner keeps in caelo_consent and posts with each decision. */
+const CONSENT_ID = "0b1c2d3e-4f50-4617-8899-aabbccddeeff";
 const SYS_CTX: ExecutionContext = {
   actorId: SYSTEM_ACTOR_ID,
   actorKind: "system",
@@ -350,6 +352,7 @@ describe("#451 — consent-manager", () => {
 
   it("records a visitor's decision", async () => {
     const r = await call("record_consent", {
+      consentId: CONSENT_ID,
       granted: ["necessary", "analytics"],
       policyVersion: 1,
     });
@@ -363,12 +366,17 @@ describe("#451 — consent-manager", () => {
       const rows = await pub.begin(async (tx) => {
         await tx.unsafe("SET LOCAL caelo.actor_kind = 'plugin'");
         await tx.unsafe(`SET LOCAL caelo.plugin_id = '${pluginId}'`);
-        return (await tx.unsafe(
-          `SELECT granted::text AS granted, policy_version FROM "plugin_consent_manager"."consent_log"`,
-        )) as { granted: string; policy_version: number }[];
+        return (await tx.unsafe(`SELECT * FROM "plugin_consent_manager"."consent_log"`)) as Array<
+          Record<string, unknown> & { granted: string[]; policy_version: number }
+        >;
       });
       expect(rows).toHaveLength(1);
-      expect(JSON.parse(rows[0]?.granted ?? "[]")).toEqual(["necessary", "analytics"]);
+      // The record is the decision and the banner's own id — nothing that
+      // identifies the visitor anywhere else.
+      expect(rows[0]?.consent_id).toBe(CONSENT_ID);
+      expect(Object.keys(rows[0] ?? {})).not.toContain("visitor_id");
+      expect(Object.keys(rows[0] ?? {})).not.toContain("ip_hash");
+      expect(rows[0]?.granted).toEqual(["necessary", "analytics"]);
       expect(rows[0]?.policy_version).toBe(1);
     } finally {
       await pub.end();
@@ -378,13 +386,18 @@ describe("#451 — consent-manager", () => {
   it("rejects a malformed decision instead of storing a half-record", async () => {
     // A consent row is evidence; one with the wrong shape is worse than
     // none, because it looks like proof.
-    const r = await call("record_consent", { granted: "everything", policyVersion: 1 });
+    const r = await call("record_consent", {
+      consentId: CONSENT_ID,
+      granted: "everything",
+      policyVersion: 1,
+    });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.message).toContain("array of category keys");
   });
 
   it("rejects a decision naming a category the site never offered", async () => {
     const r = await call("record_consent", {
+      consentId: CONSENT_ID,
       granted: ["necessary", "crypto-mining"],
       policyVersion: 1,
     });
@@ -393,7 +406,11 @@ describe("#451 — consent-manager", () => {
   });
 
   it("rejects a decision made under an outdated policy version", async () => {
-    const r = await call("record_consent", { granted: ["necessary"], policyVersion: 99 });
+    const r = await call("record_consent", {
+      consentId: CONSENT_ID,
+      granted: ["necessary"],
+      policyVersion: 99,
+    });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.message).toContain("not the current one");
   });
@@ -700,12 +717,36 @@ describe("#451 — consent-manager", () => {
     // export has to exist before anyone reaches for uninstall.
     const r = await call("export_log");
     if (!r.ok) throw new Error(JSON.stringify(r.error));
-    const out = r.value as { csv: string; rows: number; truncated: boolean };
-    expect(out.truncated).toBe(false);
+    const out = r.value as { csv: string; rows: number };
     expect(out.rows).toBeGreaterThan(0);
     const [header, first] = out.csv.split("\n");
-    expect(header).toBe("recorded_at,visitor_id,ip_hash,policy_version,granted");
+    expect(header).toBe("recorded_at,consent_id,policy_version,granted");
+    expect(first).toContain(CONSENT_ID);
     expect(first).toContain("necessary analytics");
+  });
+
+  it("lists the log newest first for the Owner's panel", async () => {
+    const r = await call("list_log", { limit: 50 });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const out = r.value as { rows: Array<{ consentId: string }>; hasMore: boolean };
+    expect(out.hasMore).toBe(false);
+    expect(out.rows[0]?.consentId).toBe(CONSENT_ID);
+  });
+
+  it("keeps a year of records at least: retention below it is refused", async () => {
+    const low = await call("set_settings", {
+      retentionDays: 30,
+      placeholderModuleSlug: "consent-placeholder",
+    });
+    expect(low.ok).toBe(false);
+    const ok = await call("set_settings", {
+      retentionDays: 400,
+      placeholderModuleSlug: "consent-placeholder",
+    });
+    if (!ok.ok) throw new Error(JSON.stringify(ok.error));
+    const read = await call("get_settings");
+    if (!read.ok) throw new Error(JSON.stringify(read.error));
+    expect((read.value as { retentionDays: number }).retentionDays).toBe(400);
   });
 
   it("reports how visitors decide, as counts only (#1131)", async () => {

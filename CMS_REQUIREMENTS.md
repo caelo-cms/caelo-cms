@@ -459,9 +459,10 @@ Every plugin is the same kind of thing, whoever wrote it and however it arrived.
 Every active plugin gets exactly this:
 
 - **Its own public tables** (`cms_public.<slug>`), declared in the manifest schema, read and written through `ctx.query`. RLS scopes every row to the plugin; no other plugin and no visitor query can reach them.
-- `ctx.theme` (read-only tokens), `ctx.visitor` (opaque visitor id, public user id, IP hash — **never** the session bearer token), `ctx.captcha` (proof verification), `ctx.api` (the plugin's own public read surface), `ctx.invocation` (who the call acts for — origin, actor, the chat's human, the chat branch).
+- `ctx.theme` (read-only tokens), `ctx.visitor` (opaque visitor id — only for a plugin that declares the `visitor_id` consent purpose, and only with the visitor's consent to it; public user id, IP hash — **never** the session bearer token), `ctx.captcha` (proof verification), `ctx.api` (the plugin's own public read surface), `ctx.invocation` (who the call acts for — origin, actor, the chat's human, the chat branch).
 - Declaring `operations`, a Web Component, and `staticRender`.
 - **Visitor-facing operations** listed in `publicOperations` (default deny; §14.7).
+- **Admin panels** (`adminPanels`): declarative admin pages (tables, statistics, forms, settings) over the plugin's own operations. Core renders them under the admin's Plugins navigation only while the plugin is active, each behind a permission from the fixed catalog; a plugin ships no admin UI code, so a runtime-installed plugin gets the same pages a shipped one does.
 - **Plugin dependencies** (`requiresPlugins`): the plugin activates only while each listed plugin is active, and a required plugin cannot be disabled or uninstalled while a dependent runs. A dependency grants no access to the other plugin.
 - **Consent purposes** (`consentPurposes`): what the plugin needs the visitor's consent for, under which category (`functional`, `analytics` or `marketing` — never `necessary`, which would set a cookie unasked), and the cookies it sets. Declaring the `visitor_id` purpose is the only way the API gateway sets the `caelo_visitor_id` cookie, and it does so only for visitors who granted that category. Core itself keys nothing to the visitor cookie: rate limits use the client address, the captcha proof only its single use.
 

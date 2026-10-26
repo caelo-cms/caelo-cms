@@ -37,6 +37,7 @@ import {
   syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
+import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
@@ -59,7 +60,22 @@ if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !PUBLIC_URL) {
 }
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
-const SLUGS = ["consent-manager", "ratings"] as const;
+const SLUGS = ["consent-manager", "ratings", "visitor-echo"] as const;
+
+/**
+ * A plugin that declares no consent purpose and answers with the visitor
+ * id it was handed: the id must reach only the plugin that asked for it.
+ */
+const echoPlugin = definePlugin<PluginContextTier1>({
+  slug: "visitor-echo",
+  version: "0.0.1",
+  tier: 1,
+  schema: {},
+  publicOperations: ["whoami"],
+  operations: {
+    whoami: async (ctx) => ({ visitorId: ctx.visitor.id }),
+  },
+});
 const RECORD = "/api/plugin/consent-manager/record_consent";
 /** The random id the banner keeps in caelo_consent and posts with every decision. */
 const CONSENT_ID = "0b1c2d3e-4f50-4617-8899-aabbccddeeff";
@@ -267,7 +283,11 @@ beforeAll(async () => {
     infra: { adapter: adminAdapter, registry: new OperationRegistry() },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
-    testPlugins: [{ definition: consentPlugin }, { definition: ratingsPlugin }],
+    testPlugins: [
+      { definition: consentPlugin },
+      { definition: ratingsPlugin },
+      { definition: echoPlugin },
+    ],
   });
   expect(adminReport.failed).toEqual([]);
   await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
@@ -297,7 +317,11 @@ beforeAll(async () => {
     infra: { adapter: gatewayAdapter, registry },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
-    testPlugins: [{ definition: consentPlugin }, { definition: ratingsPlugin }],
+    testPlugins: [
+      { definition: consentPlugin },
+      { definition: ratingsPlugin },
+      { definition: echoPlugin },
+    ],
   });
   expect(report.failed).toEqual([]);
   // Ratings asks for a captcha proof; the proof path has its own tests.
@@ -401,6 +425,14 @@ describe("accepted, then withdrawn (#677)", () => {
     const second = await handleRequest(post(RATE, { pageId: "p-accepted", score: 1 }, cookies));
     await expectStatus(second, 200);
     expect(((await second.json()) as { data: { mode: string } }).data.mode).toBe("updated");
+  });
+
+  it("hands the id only to the plugin that declared it, not to every plugin", async () => {
+    const r = await handleRequest(
+      post("/api/plugin/visitor-echo/whoami", {}, [ACCEPTED, `caelo_visitor_id=${visitorCookie}`]),
+    );
+    await expectStatus(r, 200);
+    expect(((await r.json()) as { data: { visitorId: string | null } }).data.visitorId).toBeNull();
   });
 
   it("expires the cookie when the visitor withdraws, and stops reading it", async () => {
