@@ -118,7 +118,15 @@ export const editModuleToolInput = z
     /** issue #164 slice 2 — see addModuleToolInput.bindThemeLiterals. */
     bindThemeLiterals: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  // e2e-livedit run 40351690739: a call with only a (placeholder)
+  // moduleId reached the op and came back as a bare "module not found".
+  // An edit that changes nothing is refused before any lookup, with the
+  // fields that make it one.
+  .refine((v) => Object.keys(v).some((k) => k !== "moduleId" && k !== "bindThemeLiterals"), {
+    message:
+      "edit_module changes nothing: pass what to change (html, css, js, fields, displayName, description, kind or type). list_modules shows the modules; add_module creates a new one.",
+  });
 
 /**
  * v0.4.0 — `set_page_module_content` AI tool. Fills the content values for
