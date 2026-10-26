@@ -571,8 +571,14 @@ export interface ScenarioThresholds {
    * run-warmth confound), so it is the primary guard.
    */
   maxFreshPct?: number;
-  /** Ceiling for total input tokens across the scenario — context-bloat / no-compaction guard. */
-  maxInputTokens?: number;
+  /**
+   * Ceiling for NEW input tokens across the scenario: cache writes plus
+   * uncached input — what a run adds to the context and pays for in full.
+   * Cache reads are left out on purpose: they re-read context already
+   * paid for at a tenth of the price, so a total-input ceiling measured
+   * mostly re-reads and blocked runs that cost ~$1 (v0.11.0 cut).
+   */
+  maxNewInputTokens?: number;
   /** Ceiling for total loops (all turns) — runaway-loop guard. */
   maxLoops?: number;
 }
@@ -616,12 +622,13 @@ export function checkThresholds(m: ScenarioMetrics, th: ScenarioThresholds): Thr
       message: `uncached-fresh ${m.freshPct}% > ceiling ${th.maxFreshPct}% (caching regressed)`,
     });
   }
-  if (th.maxInputTokens !== undefined && m.totals.inCall > th.maxInputTokens) {
+  const newInput = m.totals.freshIn + m.totals.cacheWrite;
+  if (th.maxNewInputTokens !== undefined && newInput > th.maxNewInputTokens) {
     v.push({
-      metric: "inputTokens",
-      actual: m.totals.inCall,
-      limit: th.maxInputTokens,
-      message: `total input ${k(m.totals.inCall)} > ceiling ${k(th.maxInputTokens)}`,
+      metric: "newInputTokens",
+      actual: newInput,
+      limit: th.maxNewInputTokens,
+      message: `new input (cache writes + uncached) ${k(newInput)} > ceiling ${k(th.maxNewInputTokens)}`,
     });
   }
   if (th.maxLoops !== undefined && m.totals.loops > th.maxLoops) {
@@ -642,28 +649,22 @@ export function checkThresholds(m: ScenarioMetrics, th: ScenarioThresholds): Thr
  * per scenario as baselines land; a missing row ⇒ report-only, no gating.
  */
 export const THRESHOLDS: Record<string, ScenarioThresholds> = {
-  // Homepage build+edit. Ceilings re-derived 2026-08-05 (issue #432) from
-  // measured first attempts:
-  //   healthy era (post design-quality self-review + tool-search + skill
-  //   routing, runs of 2026-08-04/05): input ~1.0–1.65M, loops 16–21
-  //   (e.g. 1342.5k/19 and 1467.1k/21 on run 30891873119; 1646.5k on main
-  //   run 30897363718). The pre-#348 baseline this file used to cite
-  //   (625–760k, 11–12 loops) predates those features — the old 1200k
-  //   ceiling sat mid-distribution and failed healthy attempts.
-  //   degraded era (stored-corruption repair spirals, runs 31000584991 /
-  //   31000699422): input 2176.9k/27, 2505.6k/31, 2660.4k/33 — the model
-  //   burning ~15–20 loops visually repairing module bodies our write path
-  //   should have rejected (CDATA guard in packages/shared content.ts).
-  // maxInputTokens = 2.0M ≈ 1.2× the worst measured healthy attempt and
-  // BELOW the observed spiral floor (2.18M); maxLoops = 26 ≈ 1.25× the
-  // worst healthy loop count and below the observed spiral counts (27+).
-  // Both therefore still catch every observed degraded run while no longer
-  // failing on healthy variance.
+  // Homepage build+edit. Ceilings re-derived 2026-10-26 (v0.11.0 cut)
+  // from the homepage attempts of the last 13 real-AI runs:
+  //   new input (cache writes + uncached): 149–204k before the lists epic
+  //   (runs 40020751720 … 40179589726), 102–269k with it; the two attempts
+  //   whose caching broke measured 411k and 439k (149k / 162k uncached,
+  //   runs 40324346694 / 40298528362).
+  //   loops: 11–25 healthy; the 2026-08 stored-corruption repair spirals
+  //   ran 27–33 (runs 31000584991 / 31000699422).
+  // maxNewInputTokens = 300k ≈ 1.1× the worst healthy attempt and below
+  // both cache breaks; maxLoops = 26 below every observed spiral. There
+  // is no retry (playwright.livedit.config.ts), so these are the verdict.
   homepage: {
     minBuildTurnCacheHitPct: 75,
     minCacheHitPct: 60,
     maxFreshPct: 10,
-    maxInputTokens: 2_000_000,
+    maxNewInputTokens: 300_000,
     maxLoops: 26,
   },
 };

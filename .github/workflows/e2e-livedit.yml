@@ -284,14 +284,9 @@ jobs:
 
       # Token/loop regression guards (issue #432): the per-scenario ceilings
       # this step gates on live in `apps/admin/e2e-livedit/lib/metrics-core.ts`
-      # THRESHOLDS. Re-derived 2026-08-05 from measured baselines: healthy
-      # homepage first attempts run ~1.0–1.65M input / 16–21 loops (design-
-      # quality self-review + tool-search + skill-routing era); the stored-
-      # corruption repair spirals the ceilings exist to catch measured
-      # 2.18–2.66M / 27–33 loops. Ceilings: 2.0M input (≈1.2× worst healthy,
-      # below the spiral floor) and 26 loops. Attempt-level breaches surface
-      # as `::warning` annotations from global-teardown EVEN when a Playwright
-      # retry turns this step green — never let a retry hide a breach again.
+      # THRESHOLDS: new input (cache writes + uncached) <= 300k and loops
+      # <= 26 for the homepage, re-derived 2026-10-26 (rationale at the
+      # constant). No Playwright retry: a breach fails this step.
       - name: Run e2e-livedit (Scenario 1)
         env:
           ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
@@ -414,6 +409,29 @@ jobs:
       - name: Gate on new detected bugs
         if: always() && steps.provider-preflight.outcome == 'success'
         run: bun run apps/admin/e2e-livedit/lib/bug-gate.ts
+
+      # release-cut reuses this run for main when main's tree is exactly the
+      # tree tested here, instead of paying for the same suite twice. A PR
+      # run tests the merge of the PR into main, and squash-merging a PR
+      # that is up to date with main produces that same tree. The artifact
+      # name carries the tree hash so release-cut finds it by name; it is
+      # written only when every step above succeeded.
+      - name: Record the tested tree (green only)
+        id: green-tree
+        if: success()
+        run: |
+          mkdir -p "$RUNNER_TEMP/green-tree"
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "$tree" > "$RUNNER_TEMP/green-tree/tree.txt"
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+      - name: Upload the tested tree (green only)
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-livedit-green-tree-${{ steps.green-tree.outputs.tree }}
+          path: ${{ runner.temp }}/green-tree/tree.txt
+          if-no-files-found: error
+          retention-days: 30
 
       # Durable per-run cost record — the trend metric the operator wants.
       # Separate from the failure-only artifact below: this uploads on

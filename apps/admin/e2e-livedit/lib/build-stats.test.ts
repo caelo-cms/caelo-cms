@@ -227,10 +227,10 @@ describe("buildReport integration", () => {
         },
         violations: [
           {
-            metric: "inputTokens",
-            actual: 2_660_400,
-            limit: 2_000_000,
-            message: "total input 2660.4k > ceiling 2000.0k",
+            metric: "newInputTokens",
+            actual: 439_000,
+            limit: 300_000,
+            message: "new input (cache writes + uncached) 439.0k > ceiling 300.0k",
           },
         ],
       },
@@ -245,7 +245,9 @@ describe("buildReport integration", () => {
     const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "", metricsRaw });
     expect(md).toContain("### Input-token breakdown (per scenario attempt)");
     expect(md).toContain("| homepage | 33 | 2660.4k | 58.1k | 52.6k | 62.4k |");
-    expect(md).toContain("**breached:** total input 2660.4k > ceiling 2000.0k");
+    expect(md).toContain(
+      "**breached:** new input (cache writes + uncached) 439.0k > ceiling 300.0k",
+    );
     expect(md).toContain("| homepage (attempt 2) | 18 |");
     expect(md).toContain("1 attempt(s) breached token/loop thresholds");
   });

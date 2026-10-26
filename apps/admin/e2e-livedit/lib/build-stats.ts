@@ -297,7 +297,7 @@ export function formatBreakdownSection(rows: ScenarioSummary[]): string[] {
   const warnings = buildThresholdWarnings(rows);
   if (warnings.length > 0) {
     lines.push(
-      `**⚠️ ${warnings.length} attempt(s) breached token/loop thresholds** — visible above and as run annotations, even if a retry turned the check green (issue #432).`,
+      `**⚠️ ${warnings.length} attempt(s) breached token/loop thresholds** — visible above and as run annotations; a breach fails the run (no retry).`,
     );
     lines.push("");
   }

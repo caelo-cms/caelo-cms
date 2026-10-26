@@ -170,17 +170,20 @@ catalogue + blocks + skills), static × loops vs Σ history, history
 start→end growth per loop, and per-tool result tokens. Rule of thumb
 from the measured baseline: the tool catalogue dominates the static
 share (~48k of ~53k est per call), so **loop count is the input-token
-lever** — every extra loop re-bills the whole context.
+lever** — every extra loop re-reads the whole context (from the cache,
+at a tenth of the fresh price).
 
 **Thresholds** (`THRESHOLDS` in `lib/metrics-core.ts`) gate the homepage
-scenario; the ceilings were re-derived 2026-08-05 from measured
-baselines (healthy first attempts ~1.0–1.65M input / 16–21 loops;
-stored-corruption repair spirals 2.18–2.66M / 27–33 — see the rationale
-comment at the constant and issue #432). Every scenario attempt's
-violations persist into `scenario-metrics.jsonl`, and global-teardown
-emits a GitHub `::warning` annotation per breached attempt **even when a
-Playwright retry passed** — a green check with annotations means "look
-at the metrics artifact", not "all clear".
+scenario on **new input** (cache writes + uncached input: what a run
+adds to the context and pays for in full) and **loops**. Total input is
+reported but not gated: it is ~90% cache reads of context already paid
+for. Ceilings re-derived 2026-10-26 from the last 13 runs: healthy new
+input 102–269k / 11–25 loops; broken caching 411–439k; repair spirals
+27–33 loops → 300k and 26 (rationale at the constant). **There is no
+retry** (`retries: 0`): the first attempt is the verdict, so a breached
+ceiling fails the run. Every attempt's violations also persist into
+`scenario-metrics.jsonl`, and global-teardown emits a `::warning`
+annotation per breach.
 
 ## AI-detected bugs per run (defect metric)
 
@@ -311,7 +314,7 @@ edit to assertions).
 
 All scenarios share one admin process and one database (`workers: 1`),
 so every piece of site state a scenario changes is visible to the
-scenarios after it — and to its own Playwright retry. Two mechanisms
+scenarios after it. Two mechanisms
 reset it:
 
 - **`resetLiveditFixtures()`** (each scenario calls it first) wipes the
