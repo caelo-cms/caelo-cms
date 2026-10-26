@@ -33,8 +33,8 @@ import { z } from "zod";
 import { validateTemplatizedModule } from "../ops/content/extract-module-structure.js";
 import type { AIProvider } from "./provider.js";
 import {
-  MODULE_FIELDS_STRUCTURED_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
+  MODULEIZE_FIELDS_JSON_SCHEMA,
 } from "./tools/_module-fields-schema.js";
 
 /** The clean module the block produces. */
@@ -89,13 +89,13 @@ export interface ModuleizeArgs {
  * constrains the model's response to this shape; `moduleizeOutputSchema`
  * (Zod) re-validates + the module contract checks run on top.
  */
-const MODULEIZE_JSON_SCHEMA = {
+export const MODULEIZE_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["html", "fields", "displayName", "kind"],
   properties: {
     html: { type: "string", minLength: 1 },
-    fields: MODULE_FIELDS_STRUCTURED_JSON_SCHEMA,
+    fields: MODULEIZE_FIELDS_JSON_SCHEMA,
     displayName: { type: "string", minLength: 1, maxLength: 128 },
     // ONLY the two META props moduleize actually parses (see
     // moduleizeOutputSchema below) — `description` + `kind`. The full

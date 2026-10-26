@@ -18,6 +18,7 @@ import {
   hasRecursion,
   type ListTypeDef,
   listTypeDefSchema,
+  sourceDefSchema,
 } from "./list-type.js";
 import { checkPageTypeDef, pageTypeDefSchema } from "./page-type.js";
 
@@ -299,5 +300,16 @@ describe("page types and addresses", () => {
       expect(formatValueAddress(a!)).toBe(s);
     }
     expect(parseValueAddress("pages/x")).toBeNull();
+  });
+});
+
+describe("source definitions", () => {
+  it("a plugin source written as a system source is refused with the plugin form (PR #1121 e2e)", () => {
+    const r = sourceDefSchema.safeParse({ kind: "system", name: "consent_categories" });
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0]?.message).toContain('{kind:"plugin", name:"<source>"}');
+    expect(sourceDefSchema.safeParse({ kind: "plugin", name: "consent_categories" }).success).toBe(
+      true,
+    );
   });
 });

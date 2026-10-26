@@ -26,7 +26,7 @@ export const CONSENT_SKILLS: ReadonlyArray<PluginSkillSpec> = [
       "Flow:",
       "1. Call consent_status FIRST. It returns the categories, the list source to iterate (consent_categories: key, label, description, required — `required` is a boolean, so {{#required}}…{{/required}} marks the always-on category), and the exact attribute contract.",
       "2. Author ONE module for the banner and place it in the site LAYOUT — one placement covers every page. A per-page placement will miss the next page the operator adds.",
-      "3. Iterate the categories rather than hard-coding four blocks:",
+      '3. Iterate the categories rather than hard-coding four blocks. consent_categories is a list the plugin provides by name: write the section and declare NO field for it (a declared one would be {kind:"list", bind:"source", source:{kind:"plugin", name:"consent_categories"}} — never kind "system"):',
       '   <div data-consent-banner>{{#consent_categories}}<label><input type="checkbox" data-consent-category="{{key}}"> {{label}} <span>{{description}}</span></label>{{/consent_categories}}<button data-consent-accept-all>…</button><button data-consent-reject-all>…</button><button data-consent-save>…</button></div>',
       "4. Style it as part of the site: its own tokens, its own type scale. It should look like the footer belongs to the same site, not like a third-party widget.",
       "5. Declining must be exactly as easy as accepting — same prominence, same number of clicks. The runtime warns when data-consent-reject-all is missing, and a banner without it is not lawful consent.",

@@ -88,7 +88,17 @@ export const sourceDefSchema = z.discriminatedUnion("kind", [
       defaults: pageQueryPartialSchema,
     })
     .strict(),
-  z.object({ kind: z.literal("system"), name: z.enum(SYSTEM_SOURCE_NAMES) }).strict(),
+  z
+    .object({
+      kind: z.literal("system"),
+      // The AI reached for {kind:"system", name:"consent_categories"} in the
+      // PR #1121 e2e run: name the plugin form in the refusal itself.
+      name: z.enum(SYSTEM_SOURCE_NAMES, {
+        error: () =>
+          `system sources are ${SYSTEM_SOURCE_NAMES.join(", ")} — a plugin's list source (consent_categories, language_links, …) is {kind:"plugin", name:"<source>"}, and a module that only iterates it needs no field at all: {{#<source>}}…{{/<source>}}.`,
+      }),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal("plugin"),

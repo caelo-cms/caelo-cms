@@ -146,7 +146,8 @@ const LIST_SOURCE_SCHEMA = {
   required: ["kind"],
   description:
     'Where generated entries come from: {kind:"query", editable:[…knobs], defaults:{page_type, order, limit, …}}, ' +
-    '{kind:"system", name:"breadcrumbs"|"children"|"siblings"|"page_terms"|"term_pages"} or {kind:"plugin", name}.',
+    '{kind:"system", name:"breadcrumbs"|"children"|"siblings"|"page_terms"|"term_pages"} (ONLY these five) or {kind:"plugin", name:"<source>"} for a list a plugin provides (consent_categories, language_links, …). ' +
+    "A module that only iterates a plugin's list needs no field: {{#consent_categories}}…{{/consent_categories}} resolves by name.",
   properties: {
     kind: { type: "string", enum: ["query", "system", "plugin"] },
     name: { type: "string" },
@@ -259,15 +260,66 @@ export const MODULE_FIELDS_JSON_SCHEMA: Record<string, unknown> = {
   items: moduleFieldItemSchema(ENTRY_VALUES_SCHEMA, 3, true),
 };
 
+/** The field kinds moduleize emits (its SYSTEM prompt names exactly these). */
+const MODULEIZE_FIELD_KINDS = [
+  "text",
+  "richtext",
+  "url",
+  "image",
+  "number",
+  "boolean",
+  "link",
+  "list",
+] as const;
+
 /**
- * The same fields array for SDK-native structured output (`generateObject`,
- * moduleize): every object closed, which Anthropic's `output_config.format`
- * requires, so local list entries take the shipped types' fields only.
+ * The fields array for moduleize's SDK-native structured output
+ * (`generateObject`): every object closed, which Anthropic's
+ * `output_config.format` requires, and ONLY what moduleize produces —
+ * scalar kinds plus local lists of the shipped types. Binding, sources,
+ * min / max and nested-module whitelists are module-tool concerns: carried
+ * here they pushed the schema to 28 optional parameters, past the
+ * provider's grammar limit of 24, and every moduleize call failed with
+ * "Schemas contains too many optional parameters" (PR #1121, e2e-livedit
+ * run 40294659332). `moduleize-schema-budget.test.ts` pins the budget.
  */
-export const MODULE_FIELDS_STRUCTURED_JSON_SCHEMA: Record<string, unknown> = {
+export const MODULEIZE_FIELDS_JSON_SCHEMA: Record<string, unknown> = {
   type: "array",
   maxItems: 64,
-  items: moduleFieldItemSchema(STRICT_ENTRY_VALUES_SCHEMA, 2, false),
+  items: {
+    type: "object",
+    additionalProperties: false,
+    required: ["name", "kind", "label"],
+    properties: {
+      name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
+      kind: { type: "string", enum: [...MODULEIZE_FIELD_KINDS] },
+      label: { type: "string", minLength: 1, maxLength: 128 },
+      default: {
+        description:
+          "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder: " +
+          "text/richtext/url/image/link/number/boolean → a string; " +
+          'list → its entries with the REAL text + URLs, e.g. listType "links": ' +
+          '[{"node":"link","values":{"label":"Home","link":{"href":"/"}}}]; listType "texts": [{"node":"text","values":{"text":"Fast"}}].',
+        anyOf: [
+          { type: "string" },
+          { type: "number" },
+          { type: "boolean" },
+          { type: "array", items: listEntrySchema(STRICT_ENTRY_VALUES_SCHEMA, 2, false) },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["label", "href"],
+            properties: { label: { type: "string" }, href: { type: "string" } },
+          },
+        ],
+      },
+      listType: {
+        type: "string",
+        pattern: SLUG_PATTERN,
+        description: 'list fields: "texts", "links" or "menu" — or the type a field hint names.',
+      },
+    },
+  },
 };
 
 /**
