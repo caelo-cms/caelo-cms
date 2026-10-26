@@ -71,6 +71,9 @@ export function externalPluginDefinition(opts: {
       Object.fromEntries(manifest.operations.map((name) => [name, invoke(name)])),
     ),
     publicOperations: manifest.publicOperations,
+    // Admin panels are reviewed manifest data: an installed plugin gets
+    // the same admin pages a shipped one declares (one plugin model).
+    ...(manifest.adminPanels ? { adminPanels: manifest.adminPanels } : {}),
     // Epic #1107 — the Stage-audit hook is a manifest field, so a
     // runtime-installed plugin contributes findings like a shipped one.
     ...(manifest.auditFindingsOperation

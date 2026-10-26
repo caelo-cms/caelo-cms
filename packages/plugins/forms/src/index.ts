@@ -285,6 +285,103 @@ export default definePlugin<PluginContextTier1>({
       return { summary: completion.text, totalConsidered: rows.length };
     },
   },
+  /** The submissions inbox in the admin (rendered from this declaration). */
+  adminPanels: [
+    {
+      slug: "submissions",
+      title: "Form submissions",
+      description: "Messages visitors sent through your forms.",
+      icon: "inbox",
+      permission: "settings.write",
+      sections: [
+        {
+          kind: "table",
+          id: "inbox",
+          title: "Inbox",
+          description:
+            "New submissions arrive as new; mark them read or archive them once handled.",
+          operation: "list_submissions",
+          args: { limit: 200 },
+          rowsKey: "submissions",
+          rowKey: "id",
+          emptyMessage: "No submissions in this view.",
+          filters: [
+            {
+              arg: "status",
+              label: "Status",
+              allLabel: "All",
+              options: [
+                { value: "new", label: "New" },
+                { value: "read", label: "Read" },
+                { value: "archived", label: "Archived" },
+                { value: "spam", label: "Spam" },
+              ],
+            },
+          ],
+          columns: [
+            { key: "form_slug", label: "Form", format: "text" },
+            { key: "submitted_at", label: "Submitted", format: "datetime" },
+            {
+              key: "status",
+              label: "Status",
+              format: "badge",
+              badgeVariants: { new: "default", read: "secondary", spam: "destructive" },
+            },
+            { key: "data", label: "Data", format: "json" },
+          ],
+          rowActions: [
+            {
+              id: "mark-read",
+              label: "Mark read",
+              operation: "mark_read",
+              variant: "secondary",
+              rowArgs: { submissionId: "id" },
+              when: [{ key: "status", in: ["new"] }],
+              successMessage: "Marked as read.",
+            },
+            {
+              id: "archive",
+              label: "Archive",
+              operation: "archive",
+              variant: "outline",
+              rowArgs: { submissionId: "id" },
+              when: [{ key: "status", notIn: ["archived"] }],
+              successMessage: "Archived.",
+            },
+          ],
+          bulkActions: [
+            {
+              id: "read-selected",
+              label: "Mark selected read",
+              operation: "set_submission_status",
+              args: { status: "read" },
+              idsArg: "submissionIds",
+              variant: "secondary",
+              successMessage: "Marked {updated} submissions as read.",
+            },
+            {
+              id: "archive-selected",
+              label: "Archive selected",
+              operation: "set_submission_status",
+              args: { status: "archived" },
+              idsArg: "submissionIds",
+              variant: "outline",
+              successMessage: "Archived {updated} submissions.",
+            },
+            {
+              id: "spam-selected",
+              label: "Mark selected as spam",
+              operation: "set_submission_status",
+              args: { status: "spam" },
+              idsArg: "submissionIds",
+              variant: "destructive",
+              successMessage: "Marked {updated} submissions as spam.",
+            },
+          ],
+        },
+      ],
+    },
+  ],
   tools: [
     {
       name: "list_form_submissions",

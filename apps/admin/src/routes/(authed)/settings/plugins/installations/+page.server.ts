@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { activateApprovedExternalPlugin, pluginManifest } from "@caelo-cms/plugin-host";
+import { adminPanelOperations } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { fail } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
@@ -31,7 +32,22 @@ export const load: PageServerLoad = async ({ locals }) => {
     }
   ).installations;
   return {
-    installations: rows.map((row) => ({ ...row, manifest: pluginManifest.parse(row.manifest) })),
+    installations: rows.map((row) => {
+      const manifest = pluginManifest.parse(row.manifest);
+      return {
+        ...row,
+        manifest,
+        // The admin pages the Owner approves with this package: who may
+        // open each one and which of the plugin's operations it can run.
+        panels: (manifest.adminPanels ?? []).map((panel) => ({
+          slug: panel.slug,
+          title: panel.title,
+          description: panel.description,
+          permission: panel.permission,
+          operations: [...new Set(adminPanelOperations(panel).map((o) => o.operation))],
+        })),
+      };
+    }),
   };
 };
 function message(error: unknown): string {

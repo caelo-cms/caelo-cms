@@ -28,6 +28,10 @@ export const PERMISSIONS = [
   // #696: install Caelo updates + change the update policy (migration 0267);
   // every use additionally needs the Owner's password, re-entered (step-up, #757).
   "platform.update",
+  // See visitors' personal data that plugins record, e.g. the consent log
+  // (migration 0360). Owner only by default: a panel showing such data
+  // declares it, so granting editors content access never exposes it.
+  "privacy.view",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];

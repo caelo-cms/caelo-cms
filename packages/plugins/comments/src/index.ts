@@ -381,6 +381,101 @@ export default definePlugin<PluginContextTier1>({
       return { commentId: input.commentId, status: decision, verdict };
     },
   },
+  /** The moderation queue in the admin (rendered from this declaration). */
+  adminPanels: [
+    {
+      slug: "moderation",
+      title: "Comments",
+      description: "Approve or remove visitor comments.",
+      icon: "message-square",
+      permission: "settings.write",
+      sections: [
+        {
+          kind: "table",
+          id: "pending",
+          title: "Waiting for moderation",
+          description:
+            "Visitor comments awaiting review. Let the AI decide one, or approve, reject or mark it as spam yourself.",
+          operation: "list_pending",
+          rowsKey: "comments",
+          rowKey: "id",
+          emptyMessage: "No comments awaiting moderation.",
+          columns: [
+            { key: "author_name", label: "Author", format: "text" },
+            { key: "content", label: "Comment", format: "multiline" },
+            { key: "page_id", label: "Page", format: "code" },
+            { key: "submitted_at", label: "Submitted", format: "datetime" },
+          ],
+          rowActions: [
+            {
+              id: "ai-moderate",
+              label: "AI moderate",
+              operation: "ai_moderate",
+              variant: "secondary",
+              rowArgs: { commentId: "id" },
+              successMessage: "AI verdict: {verdict}. The comment is now {status}.",
+            },
+            {
+              id: "approve",
+              label: "Approve",
+              operation: "moderate",
+              args: { decision: "approved" },
+              variant: "default",
+              rowArgs: { commentId: "id" },
+              successMessage: "Approved.",
+            },
+            {
+              id: "reject",
+              label: "Reject",
+              operation: "moderate",
+              args: { decision: "rejected" },
+              variant: "outline",
+              rowArgs: { commentId: "id" },
+              successMessage: "Rejected.",
+            },
+            {
+              id: "spam",
+              label: "Spam",
+              operation: "moderate",
+              args: { decision: "spam" },
+              variant: "destructive",
+              rowArgs: { commentId: "id" },
+              successMessage: "Marked as spam.",
+            },
+          ],
+          bulkActions: [
+            {
+              id: "approve-selected",
+              label: "Approve selected",
+              operation: "bulk_moderate",
+              args: { decision: "approved" },
+              idsArg: "commentIds",
+              variant: "default",
+              successMessage: "Approved {updated} comments.",
+            },
+            {
+              id: "reject-selected",
+              label: "Reject selected",
+              operation: "bulk_moderate",
+              args: { decision: "rejected" },
+              idsArg: "commentIds",
+              variant: "outline",
+              successMessage: "Rejected {updated} comments.",
+            },
+            {
+              id: "spam-selected",
+              label: "Mark selected as spam",
+              operation: "bulk_moderate",
+              args: { decision: "spam" },
+              idsArg: "commentIds",
+              variant: "destructive",
+              successMessage: "Marked {updated} comments as spam.",
+            },
+          ],
+        },
+      ],
+    },
+  ],
   tools: [
     {
       name: "list_pending_comments",

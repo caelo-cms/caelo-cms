@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import type { Permission } from "@caelo-cms/admin-core";
+import type { PluginNavLink } from "./plugin-panels.js";
 
 /**
  * The admin side navigation's information architecture.
@@ -69,6 +70,11 @@ export const CONTENT_GROUP_ID = "content";
 
 export const CONTENT_GROUP_LABEL = "Content";
 
+/** Id of the plugin pages' collapsible group; also its `localStorage` key suffix. */
+export const PLUGINS_GROUP_ID = "plugins";
+
+export const PLUGINS_GROUP_LABEL = "Plugins";
+
 export const CONTENT_LINKS: readonly MainNavLink[] = [
   // issue #620 — unstaged work across chats: Stage all / selected, Discard.
   { href: "/content/changes", label: "Open changes", icon: "changes", permission: "content.write" },
@@ -102,6 +108,8 @@ export interface VisibleMainNav {
   liveEdit: (MainNavLink & { description: string }) | null;
   dashboard: MainNavLink;
   content: MainNavLink[];
+  /** The panels of active plugins this viewer may open; empty = no "Plugins" group. */
+  plugins: PluginNavLink[];
   settings: MainNavLink | null;
 }
 
@@ -120,12 +128,19 @@ function canSee(perms: PermissionSource, permission: Permission | null): boolean
  * @param perms the viewer's effective permissions.
  * @param settingsVisible whether the viewer may open at least one Settings
  *   page (`hasAnySettingsAccess`); Settings has no single gate of its own.
+ * @param pluginLinks the plugin panels this viewer may open
+ *   (`pluginNavLinks`, computed on the server from the running plugins).
  */
-export function visibleMainNav(perms: PermissionSource, settingsVisible: boolean): VisibleMainNav {
+export function visibleMainNav(
+  perms: PermissionSource,
+  settingsVisible: boolean,
+  pluginLinks: readonly PluginNavLink[],
+): VisibleMainNav {
   return {
     liveEdit: canSee(perms, LIVE_EDIT.permission) ? LIVE_EDIT : null,
     dashboard: DASHBOARD,
     content: CONTENT_LINKS.filter((l) => canSee(perms, l.permission)),
+    plugins: [...pluginLinks],
     settings: settingsVisible ? SETTINGS_LINK : null,
   };
 }
