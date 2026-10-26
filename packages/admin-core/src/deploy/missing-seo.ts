@@ -31,7 +31,7 @@ export interface PageMissingMetaDescription {
   readonly id: string;
   readonly title: string;
   readonly path: string;
-  /** The fill-once marker is set: `autofill_page_seo` refuses this page. */
+  /** The fill-once marker is set: `autofill_page_seo_many` refuses this page. */
   readonly alreadyAutofilled: boolean;
 }
 
@@ -100,7 +100,7 @@ export function describeMissingMetaDescriptions(missing: MissingMetaDescriptions
     "Every published page needs one before it is built. Write each from the page's content " +
     "(150–160 characters; ONE get_page_seo({pageIds}) call returns every page's core text; when " +
     "migrating a site, carry over the source page's description) with " +
-    "autofill_page_seo_many — one call for all of them (autofill_page_seo for a single page) — " +
+    "autofill_page_seo_many — one call for all of them — " +
     `then Stage again.${refilled}`
   );
 }

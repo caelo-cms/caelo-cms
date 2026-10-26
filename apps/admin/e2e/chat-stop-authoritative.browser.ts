@@ -194,7 +194,7 @@ test("an external agent working in the chat is listed, keeps the Live Edit AI ou
   // Any routine write that needs no AI and no fixture page: a redirect to
   // the site root (always a valid target). This spec is about Stop.
   const write = (s: string) => ({
-    redirects: [{ fromPath: `/${s}`, toPath: "/", statusCode: 301 }],
+    items: [{ fromPath: `/${s}`, toPath: "/", statusCode: 301 }],
   });
   expect(
     (await mcpTool(request, token, chatSessionId, "bulk_create_redirects", write(slug))).ok,

@@ -29,12 +29,12 @@ UPDATE skills
 UPDATE skills
    SET body = replace(
      body,
-     '- For many pages at once, bulk_optimize_seo runs the optimisation across a set in one call — prefer it over looping optimize_page_seo.',
-     '- For many pages at once, bulk_optimize_seo runs the optimisation across a set in one call — prefer it over looping optimize_page_seo.
+     '- bulk_optimize_seo takes every page of a pass in one call (`items`, one shared `context`) — never one call per page.',
+     '- bulk_optimize_seo takes every page of a pass in one call (`items`, one shared `context`) — never one call per page.
 - Every SEO edit is a draft change of its page, like a title edit: it shows in this chat''s open changes, reaches the live site only with the next Stage and the operator''s Publish live, and undoing the chat drops it. Never tell the operator an SEO change is live before that.'
    )
  WHERE slug = 'page-seo'
-   AND body LIKE '%- For many pages at once, bulk_optimize_seo runs the optimisation across a set in one call — prefer it over looping optimize_page_seo.%'
+   AND body LIKE '%- bulk_optimize_seo takes every page of a pass in one call (`items`, one shared `context`) — never one call per page.%'
    AND body NOT LIKE '%Every SEO edit is a draft change of its page%';
 
 COMMIT;

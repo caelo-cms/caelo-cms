@@ -11,6 +11,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { publishProjectionOnce, registerAdminOps } from "@caelo-cms/admin-core";
+import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap as bootstrapPluginHost,
   resetPluginHost,
@@ -122,24 +123,32 @@ async function withAdminSql<T>(fn: (tx: SQL) => Promise<T>): Promise<T> {
   }
 }
 
-/** Remove this file's rows and the ratings plugin (templates survive the per-file reset). */
+/** The plugins this file installs: ratings, and consent-manager, which ratings requires. */
+const SLUGS = ["ratings", "consent-manager"] as const;
+
+/** Remove this file's rows and its plugins (templates survive the per-file reset). */
 async function wipe(): Promise<void> {
   resetPluginHost();
   await withAdminSql(async (tx) => {
     await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM templates WHERE slug LIKE ${`${PFX}%`}`;
-    await tx`DELETE FROM audit_events WHERE actor_id IN (
-      SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'ratings'))`;
-    await tx`DELETE FROM site_snapshots WHERE actor_id IN (
-      SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'ratings'))`;
-    await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'ratings')`;
-    await tx`DELETE FROM plugin_schema_migrations
-             WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = 'ratings')`;
-    await tx`DELETE FROM plugins WHERE slug = 'ratings'`;
+    for (const slug of SLUGS) {
+      await tx`DELETE FROM audit_events WHERE actor_id IN (
+        SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${slug}))`;
+      await tx`DELETE FROM site_snapshots WHERE actor_id IN (
+        SELECT id FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${slug}))`;
+      await tx`DELETE FROM actors WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${slug})`;
+      await tx`DELETE FROM plugin_schema_migrations
+               WHERE plugin_id IN (SELECT id FROM plugins WHERE slug = ${slug})`;
+      await tx`DELETE FROM plugins WHERE slug = ${slug}`;
+      await tx.unsafe(`DROP SCHEMA IF EXISTS "plugin_${slug.replace(/-/g, "_")}" CASCADE`);
+    }
   });
   const pub = new SQL(PUBLIC_ADMIN_URL as string);
   try {
-    await pub.unsafe("DROP SCHEMA IF EXISTS plugin_ratings CASCADE");
+    for (const slug of SLUGS) {
+      await pub.unsafe(`DROP SCHEMA IF EXISTS "plugin_${slug.replace(/-/g, "_")}" CASCADE`);
+    }
   } finally {
     await pub.end();
   }
@@ -261,7 +270,8 @@ beforeAll(async () => {
     infra: { adapter, registry: adminRegistry },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYS.actorId,
-    testPlugins: [{ definition: ratingsPlugin }],
+    // Consent-manager first: ratings requires it.
+    testPlugins: [{ definition: consentPlugin }, { definition: ratingsPlugin }],
   });
   const installedId = await adapter.withAdminTransaction(SYS, async (tx) => {
     const rows = (await tx.execute(

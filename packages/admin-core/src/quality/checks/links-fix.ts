@@ -156,9 +156,9 @@ export function fixFor(
       };
     case "module-value":
       return {
-        tool: "set_page_module_content",
+        tool: "set_page_module_content_many",
         hint: clip(
-          `the URL is a content value of module "${o.module.displayName}" (${o.module.id}) on this page: set it to ${to} (set_content_instance_values when the content is a shared instance)`,
+          `the URL is a content value of module "${o.module.displayName}" (${o.module.id}) on this page: set it to ${to} (set_content_instance_values_many when the content is a shared instance)`,
         ),
       };
     case "layout":
@@ -177,7 +177,7 @@ export function fixFor(
       };
     case "field-default-entry":
       return {
-        tool: "edit_module",
+        tool: "update_modules_many",
         hint: clip(
           `the URL is stored in entry ${o.itemId} of the default of list field "${o.field}" of module "${o.module.displayName}" (${o.module.id}): set that entry's link to ${to}`,
         ),

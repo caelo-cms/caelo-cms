@@ -198,7 +198,16 @@ describe("get_plugin", () => {
       tools: [{ name: "list_form_submissions" }],
       skills: [{ name: "forms-skill" }],
       requestedCapabilities: ["email.send"],
+      consentPurposes: [
+        {
+          key: "visitor_id",
+          category: "functional",
+          cookies: [{ name: "caelo_visitor_id" }],
+        },
+      ],
     },
+    requiresPlugins: ["consent-manager"],
+    requiredBy: ["newsletter"],
     sourceCode: "SECRET_SOURCE_MARKER",
     validationErrors: [],
     manifestSignature: "sig",
@@ -240,6 +249,10 @@ describe("get_plugin", () => {
     expect(r.content).toContain("health: failing (servers: 1 loaded, 1 failing)");
     expect(r.content).toContain("problem: [activate, plugin] 2x");
     expect(r.content).toContain("SMTP host refused");
+    // Dependencies both ways, and what it asks visitors to consent to.
+    expect(r.content).toContain("requires plugins: consent-manager");
+    expect(r.content).toContain("required by (active): newsletter");
+    expect(r.content).toContain("consent purposes: visitor_id (functional): caelo_visitor_id");
     expect(JSON.stringify(r)).not.toContain("SECRET_SOURCE_MARKER");
     expect(h.calls[1]?.input).toEqual({ pluginId: U1 });
   });
@@ -350,7 +363,7 @@ describe("email, bug reports, media settings", () => {
       title: `report ${id}`,
       whatHappened: "x",
       expected: "y",
-      suspectedTool: "edit_module",
+      suspectedTool: "update_modules_many",
       evidence: null,
       severity: "degraded",
       blockedTask: false,
@@ -469,7 +482,7 @@ describe("content maintenance tools", () => {
       "hero (Hero)",
     );
     expect((await run(getPageSeoTool, { pageId: U1 }, h.toolCtx)).content).toContain(
-      "autofill_page_seo",
+      "autofill_page_seo_many",
     );
   });
 

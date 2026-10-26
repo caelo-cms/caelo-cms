@@ -327,7 +327,7 @@ export const buildPageOp = defineOperation({
     // §2 (no silent drop) — a placement-only `moduleId` entry that ALSO carried
     // authoring fields does NOT re-author the shared module; per index we record
     // any such field whose value DIFFERS from the module's stored one, so the
-    // tool can tell the AI its change wasn't applied (use edit_module) instead
+    // tool can tell the AI its change wasn't applied (use update_modules_many) instead
     // of vanishing it.
     const ignoredAuthoringByIndex: Record<string, string[]> = {};
     // Mint entries by their exact html, so a later entry that repeats one
@@ -523,7 +523,7 @@ export const buildPageOp = defineOperation({
         if (!ci) {
           return fail(
             `${moduleLabel(i, entry)}: content_instance ${content.contentInstanceId} not found or deleted — ` +
-              "pick one from `## Content Library` / list_content_instances, or pass content.source='inline' with values instead",
+              "pick one from list_content_instances, or pass content.source='inline' with values instead",
           );
         }
         if (ci.module_id !== moduleId) {

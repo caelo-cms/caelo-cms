@@ -572,7 +572,7 @@
     <!-- P7 review-pass: Cmd+M opens the media picker; on pick, the URL +
          alt drop into the chat composer as an <img> hint. The user
          then describes what to do with it ("place this on the hero")
-         and the AI uses the URL via edit_module. -->
+         and the AI places the URL in the module. -->
     <MediaPicker
       bind:open={mediaPickerOpen}
       onPick={onMediaPicked}

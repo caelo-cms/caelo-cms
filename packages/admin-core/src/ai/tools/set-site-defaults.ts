@@ -32,14 +32,13 @@ export const setSiteDefaultsTool: ToolDefinitionWithHandler<
   name: "set_site_defaults",
   // 2026-07 — STATIC on purpose: tool definitions are part of Anthropic's
   // prompt-cache prefix, so state-dependent text here busted the cache on
-  // every site change. Current values + valid slugs live in the volatile
-  // `## Site defaults` / `## Layouts` context blocks (after the cache
-  // breakpoints) and in get_site_defaults / list_layouts / list_templates.
+  // every site change. Current values + valid slugs are read with
+  // get_site_defaults / list_layouts / list_templates.
   description:
     "Set the site-wide default layout and/or default template. New pages created without an explicit layout/template " +
     "fall back to these. SAFE TO CALL DIRECTLY — only affects future creates; existing pages keep their pinned ids. " +
-    "Pass slugs (e.g. `home-template`, `site-default`), not UUIDs — current values and the valid slugs are in the " +
-    "`## Site defaults` / `## Layouts` context blocks (or get_site_defaults / list_layouts / list_templates). " +
+    "Pass slugs (e.g. `home-template`, `site-default`), not UUIDs — current values and the valid slugs come from " +
+    "get_site_defaults / list_layouts / list_templates. " +
     "On the FIRST set both `defaultLayoutSlug` and `defaultTemplateSlug` are required; afterwards pass only the field you change. " +
     "With no layouts/templates on the site yet, bootstrap first (create_layout → create_template) — the op rejects loudly until then.",
   schema: setSiteDefaultsToolInput,

@@ -24,8 +24,7 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "stage_changes",
   // A page's first Stage needs its meta description (the build refuses
   // pages without one — deploy/missing-seo.ts), so writing it is a step of
-  // every page build, not long-tail SEO work. Its singular sibling rides
-  // along via BULK_TOOL_SIBLINGS.
+  // every page build, not long-tail SEO work.
   "autofill_page_seo_many",
   // The read that step needs: each page's core text (+ stored SEO) in one
   // call, so a description is written without rendering the page.
@@ -38,9 +37,11 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "move_pages",
   "delete_pages_many",
   "set_pages_status_many",
-  // Module placement + structure
+  // Module placement + structure. Every write tool here is the bulk form
+  // (one item = the n=1 case); the retired singular names alias to them
+  // without being offered (retired-tools.ts).
   "add_module",
-  "edit_module",
+  "update_modules_many",
   // Surgical read/edit over module + template bodies (Claude-Code-style).
   // Hot path of the everyday edit loop — read a body, string-replace it —
   // so they stay loaded rather than behind a tool-search round-trip.
@@ -50,12 +51,10 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "edit_content",
   "remove_module_from",
   "move_module",
-  "reorder_module",
   // Per-page + shared content
-  "set_page_module_content",
   "set_page_module_content_many",
-  "create_content_instance",
-  "set_content_instance_values",
+  "create_content_instances",
+  "set_content_instance_values_many",
   "set_placement_content",
   "fork_placement_content",
   "list_content_instances",
@@ -77,7 +76,7 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "get_list",
   "patch_list_items_many",
   // Design self-review loop — the AI iterates screenshot -> inspect ->
-  // edit_module -> screenshot many times per build (the #155 rounds).
+  // update_modules_many -> screenshot many times per build (the #155 rounds).
   // These reads fire on every iteration, so deferring them made the
   // model pay a tool-search round-trip per design round (live-edit run
   // 2026-07: 21 toolSearch calls in one turn, several 40-56s loops).
@@ -85,7 +84,8 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "get_theme",
   "screenshot_page",
   "inspect_page_render",
-  "inspect_built_page",
+  // inspect_built_page (the staged build, GCP only) is the rarer check after
+  // a Stage — deferred behind tool search, still registered.
   // The AI's defect channel — a bug can surface at ANY moment, and an
   // AI that must tool-search for the reporting channel while confused
   // defeats the purpose (2026-07, run B4 selector-crop diagnosis).

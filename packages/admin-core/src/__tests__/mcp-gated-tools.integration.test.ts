@@ -362,7 +362,7 @@ describe("#687 — a core needsApproval tool over the Power-MCP", () => {
     }
 
     const r = await callOverMcp("delete_pages_many", {
-      deletions: pageIds.map((pageId) => ({ pageId, disposition: "404" })),
+      items: pageIds.map((pageId) => ({ pageId, disposition: "404" })),
     });
     expect(r.ok).toBe(true);
     expect(r.approval?.domain).toBe("tool_approvals");

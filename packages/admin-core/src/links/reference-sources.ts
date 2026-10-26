@@ -79,7 +79,7 @@ export interface SourcePlacement {
   readonly contentInstanceId: string | null;
   /**
    * `synced`: the placement shows the shared instance row, so a fix goes
-   * to the instance (set_page_module_content refuses a synced placement).
+   * to the instance (set_page_module_content_many refuses a synced placement).
    * Null when there is no instance.
    */
   readonly syncMode: "synced" | "unsynced" | null;

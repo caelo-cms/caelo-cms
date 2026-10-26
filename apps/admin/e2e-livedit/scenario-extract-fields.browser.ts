@@ -5,8 +5,8 @@
  * hardcoded HTML.
  *
  * The operator says: "create a module with this HTML: `<h1>Welcome</h1>
- * <a href="/x">go</a>`". The AI calls `edit_module` (or
- * `add_module_to_page`) with the un-templatised HTML. The server's
+ * <a href="/x">go</a>`". The AI calls `update_modules_many` (or
+ * `add_module`) with the un-templatised HTML. The server's
  * extractor walks the HTML, inserts {{title}} + {{ctaHref}} +
  * {{ctaLabel}} placeholders, mints the matching fields with the
  * original strings as defaults, and persists. A follow-up DB read

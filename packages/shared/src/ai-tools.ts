@@ -17,9 +17,6 @@ import {
   contentInstanceDeleteSchema,
   contentInstanceUpdateSchema,
   forkPlacementContentSchema,
-  MODULE_CSS_MAX,
-  MODULE_HTML_MAX,
-  MODULE_JS_MAX,
   type ModuleField,
   moduleFieldSchema,
   pageTypeSlugSchema,
@@ -86,63 +83,6 @@ export const positionInputSchema = z.preprocess(
     ),
   ]),
 );
-
-export const editModuleToolInput = z
-  .object({
-    moduleId: z.string().uuid(),
-    displayName: z.string().min(1).max(128).optional(),
-    /**
-     * v0.12.0 — rewrite the module's purpose. Optional; passing it
-     * updates the `list_modules` catalog your future self will read.
-     */
-    description: z.string().max(1000).optional(),
-    /** v0.12.0 — re-classify the module's role tag. */
-    kind: z.enum(["chrome", "hero", "content", "cta", "utility"]).optional(),
-    /**
-     * v0.12.3 (issue #106) — re-classify the module's stable `type` (the
-     * class a parent's `allowedModuleTypes` whitelist matches against,
-     * e.g. `button`). Rarely needed; usually derived from displayName at
-     * create time. Set it to make this module satisfy a parent's allowlist.
-     */
-    type: slugSchema.optional(),
-    html: sourceTextArg(z.string().max(MODULE_HTML_MAX)).optional(),
-    css: sourceTextArg(z.string().max(MODULE_CSS_MAX)).optional(),
-    js: sourceTextArg(z.string().max(MODULE_JS_MAX)).optional(),
-    /**
-     * v0.4.0 — module field schema. Each field declares one substitution
-     * slot referenced in the module HTML as `{{name}}`. Page placements
-     * fill these via `set_page_module_content`. Optional on edits — pass
-     * to replace the declared schema.
-     */
-    fields: z.array(moduleFieldSchema).max(64).optional(),
-    /** issue #164 slice 2 — see addModuleToolInput.bindThemeLiterals. */
-    bindThemeLiterals: z.boolean().optional(),
-  })
-  .strict()
-  // e2e-livedit run 40351690739: a call with only a (placeholder)
-  // moduleId reached the op and came back as a bare "module not found".
-  // An edit that changes nothing is refused before any lookup, with the
-  // fields that make it one.
-  .refine((v) => Object.keys(v).some((k) => k !== "moduleId" && k !== "bindThemeLiterals"), {
-    message:
-      "edit_module changes nothing: pass what to change (html, css, js, fields, displayName, description, kind or type). list_modules shows the modules; add_module creates a new one.",
-  });
-
-/**
- * v0.4.0 — `set_page_module_content` AI tool. Fills the content values for
- * a module placement on a specific page. Page-bound + branch-isolated per
- * chat until publish (unlike `edit_module` which is global + immediate).
- */
-export const setPageModuleContentToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    blockName: z.string().min(1).max(64),
-    position: z.number().int().nonnegative(),
-    /** Map of module field name → value. Fully replaces existing values. */
-    contentValues: z.record(z.string(), z.unknown()),
-  })
-  .strict();
-export type SetPageModuleContentToolInput = z.infer<typeof setPageModuleContentToolInput>;
 
 export const siteMemoryProposeToolInput = z
   .object({
@@ -233,8 +173,8 @@ export const addModuleToolInput = z
      * stores the values as the minted module's `fields[].default` —
      * which requires explicit `fields` (moduleize field names are
      * unknowable up front) and is rejected for `moduleId` reuse (a
-     * shared module renders its stored defaults; edit_module changes
-     * them).
+     * shared module renders its stored defaults; update_modules_many
+     * changes them).
      */
     values: z.record(z.string(), z.unknown()).optional(),
   })
@@ -245,7 +185,7 @@ export const addModuleToolInput = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           message:
-            "Reusing a module on a layout renders the module's STORED field defaults — `values` has nothing to bind to. Drop `values` (the chrome shows the module as-is), or change the shared copy via edit_module.",
+            "Reusing a module on a layout renders the module's STORED field defaults — `values` has nothing to bind to. Drop `values` (the chrome shows the module as-is), or change the shared copy via update_modules_many.",
         });
       } else if (input.fields === undefined || input.fields.length === 0) {
         ctx.addIssue({
@@ -269,7 +209,7 @@ export const addModuleToolInput = z
     // (§1A/§11), so we do NOT reject a moduleId call that also carries authoring
     // fields. Those fields are not applied here; the tool HANDLER surfaces an
     // INFO for any ignored field whose value DIFFERS from the module's stored
-    // one, pointing at edit_module — so a dropped change is never silent (§2).
+    // one, pointing at update_modules_many — so a dropped change is never silent (§2).
     if (input.moduleId !== undefined) return;
     if (input.displayName === undefined || input.html === undefined) {
       ctx.addIssue({
@@ -361,44 +301,6 @@ export const deleteContentInstanceToolInput = contentInstanceDeleteSchema;
 export const setPlacementContentToolInput = setPlacementContentSchema;
 export const forkPlacementContentToolInput = forkPlacementContentSchema;
 
-export const AI_TOOLS = [
-  "edit_module",
-  "site_memory_propose",
-  "add_module",
-  "create_page",
-  // audit #3 — page metadata (name/title/slug/template/status) is one tool for
-  // 1..200 pages: `update_pages_many`. The former rename_page / set_page_title
-  // / change_page_slug were single-field wrappers over the same pages.update.
-  "update_pages_many",
-  // audit #4 — one delete tool for 1..200 pages, disposition per page.
-  // The former singular delete_page folded in (n=1 is a one-item array).
-  "delete_pages_many",
-  // one remove-module tool routed by target (page|layout).
-  "remove_module_from",
-  "update_theme",
-  "set_template_layout",
-  "create_layout",
-  "set_site_defaults",
-  "duplicate_page",
-  "repoint_page_template",
-  "move_module",
-  "reorder_module",
-  "set_nav_menu",
-  "add_plugin_to_page",
-  // v0.12.0 — content_instances + placement binding
-  "list_content_instances",
-  "get_content_instance",
-  "create_content_instance",
-  "set_content_instance_values",
-  "delete_content_instance",
-  "set_placement_content",
-  "fork_placement_content",
-  // issue #299 — bulk-first build path (§11)
-  "build_page",
-  "create_content_instances",
-  "set_page_module_content_many",
-] as const;
-export type AiToolName = (typeof AI_TOOLS)[number];
 export type AddPluginToPageToolInput = z.infer<typeof addPluginToPageToolInput>;
 export type ListContentInstancesToolInput = z.infer<typeof listContentInstancesToolInput>;
 export type GetContentInstanceToolInput = z.infer<typeof getContentInstanceToolInput>;
@@ -473,7 +375,7 @@ export const CHAT_MAX_ATTACHMENTS = 4;
  * `position` / `field` (#917) — plus `item` / `key` for an entry of a
  * local list field (epic #1107) — name the placement field the text
  * comes from when the preview marked it, so the AI can address it in
- * `set_page_module_content` without inspecting the page first.
+ * `set_page_module_content_many` without inspecting the page first.
  * `listItem` is the `data-caelo-list-item` of the list entry the element
  * sits in (epic #1107, `docs/lists.md` §13): the chip then names that
  * entry — of a shared list, or of a module's own list — not just the
@@ -794,32 +696,40 @@ export const repointPageTemplateToolInput = z
   })
   .strict();
 
+/**
+ * `move_module` position: `top` | `bottom` | a 0-based index in the target
+ * block, plus `up` / `down` (one slot within the module's CURRENT block).
+ * Same quote-stripping + numeric-string coercion as `positionInputSchema`.
+ */
+export const movePositionInputSchema = z.preprocess(
+  stripSurroundingQuotes,
+  z.union([
+    z.enum(["top", "bottom", "up", "down"]),
+    z.preprocess(
+      (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number.parseInt(v, 10) : v),
+      z.number().int().min(0).max(1000),
+    ),
+  ]),
+);
+
+/**
+ * `move_module` — moves a placement to `toBlockName` (omitted = the block it
+ * is in now, i.e. a reorder) at `position`. `up` / `down` only make sense
+ * inside the current block; the handler refuses them with another block.
+ */
 export const moveModuleToolInput = z
   .object({
     pageId: z.string().uuid(),
     moduleId: z.string().uuid(),
-    toBlockName: z.string().min(1).max(80),
-    /** "top" | "bottom" | a 0-based index inside the destination block. */
-    position: positionInputSchema,
-  })
-  .strict();
-
-export const reorderModuleToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    moduleId: z.string().uuid(),
-    /**
-     * `up` / `down` shift one slot. An integer is an absolute 0-based
-     * target position within the same block.
-     */
-    direction: z.union([z.enum(["up", "down"]), z.number().int().min(0).max(1000)]),
+    toBlockName: z.string().min(1).max(80).optional(),
+    position: movePositionInputSchema,
   })
   .strict();
 
 /**
  * P7 — `find_media`. Searches the media library by alt-text /
  * filename / mime. Each row carries the media UUID (what
- * `set_theme_asset` / `set_media_alt` require) plus a pre-resolved
+ * `set_theme_asset` / `set_media_alt_many` require) plus a pre-resolved
  * variant URL. The AI's only media-inventory surface — the `## Media`
  * system-prompt block was removed by the context diet (#300), so every
  * asset lookup ("an image of a sunlit office") goes through this tool.
@@ -864,7 +774,7 @@ export const regenerateMediaVariantsToolInput = z
 export type RegenerateMediaVariantsToolInput = z.infer<typeof regenerateMediaVariantsToolInput>;
 
 /**
- * P7 — `set_media_alt`. AI may improve a11y on an existing asset
+ * P7 — one item of `set_media_alt_many`. AI may improve a11y on an existing asset
  * without a human round-trip (e.g. when the editor uploaded an image
  * with the default alt and the AI reads its content). Updates only
  * the alt field on `media_assets`.
@@ -894,7 +804,7 @@ export const setNotFoundPageToolInput = z.object({ pageId: z.string().uuid().nul
 export type SetNotFoundPageToolInput = z.infer<typeof setNotFoundPageToolInput>;
 
 /**
- * 0181 — `set_media_source`. AI records an asset's provenance (source
+ * 0181 — one item of `set_media_source_many`. AI records an asset's provenance (source
  * kind + origin detail) and licence when known. All fields but the
  * assetId are optional; the op COALESCEs so omitted fields stay
  * unchanged.
@@ -910,7 +820,7 @@ export const setMediaSourceToolInput = z
 export type SetMediaSourceToolInput = z.infer<typeof setMediaSourceToolInput>;
 
 /**
- * P8 — `set_page_seo`. Manual / panel writes to the per-page SEO
+ * P8 — one item of `set_page_seo_many`. Manual / panel writes to the per-page SEO
  * sidecar. AI calls this only on explicit user intent
  * ("set the home meta description to ..."). Doesn't bump fingerprints
  * (autofilled_at / optimized_at).
@@ -931,7 +841,7 @@ export const setPageSeoToolInput = z
 export type SetPageSeoToolInput = z.infer<typeof setPageSeoToolInput>;
 
 /**
- * P8 — `autofill_page_seo` (and, per item, `autofill_page_seo_many`).
+ * P8 — one item of `autofill_page_seo_many`.
  * Fill-once. Refuses when the page's SEO was already autofilled. The AI
  * calls it before a page's first Stage; staging and production builds
  * refuse pages without a meta description (deploy/missing-seo.ts).
@@ -944,22 +854,6 @@ export const autofillPageSeoToolInput = z
   })
   .strict();
 export type AutofillPageSeoToolInput = z.infer<typeof autofillPageSeoToolInput>;
-
-/**
- * P8 — `optimize_page_seo`. Explicit re-optimization. Always allowed.
- * Takes optional context (keyword analysis / intent shifts / branding
- * changes). The AI can call this across N pages in one chat turn —
- * the resulting changes batch into one Publish-pill confirm.
- */
-export const optimizePageSeoToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    metaDescription: z.string().min(1).max(320),
-    ogImageAssetId: z.string().uuid().nullable().optional(),
-    context: z.string().max(4000).optional(),
-  })
-  .strict();
-export type OptimizePageSeoToolInput = z.infer<typeof optimizePageSeoToolInput>;
 
 /**
  * P8 AI-first review pass — bulk variants. Per CLAUDE.md §11, bulk
@@ -980,7 +874,7 @@ export type FindRedirectsToolInput = z.infer<typeof findRedirectsToolInput>;
 
 export const bulkCreateRedirectsToolInput = z
   .object({
-    redirects: z
+    items: z
       .array(
         z
           .object({
@@ -1032,7 +926,7 @@ export type BulkDeleteRedirectsToolInput = z.infer<typeof bulkDeleteRedirectsToo
 
 export const bulkOptimizeSeoToolInput = z
   .object({
-    updates: z
+    items: z
       .array(
         z
           .object({
@@ -1049,7 +943,6 @@ export const bulkOptimizeSeoToolInput = z
   .strict();
 export type BulkOptimizeSeoToolInput = z.infer<typeof bulkOptimizeSeoToolInput>;
 
-export type EditModuleToolInput = z.infer<typeof editModuleToolInput>;
 export type SiteMemoryProposeToolInput = z.infer<typeof siteMemoryProposeToolInput>;
 export type CreateTemplateToolInput = z.infer<typeof createTemplateToolInput>;
 // v0.10.22 — `UpdateThemeToolInput` removed alongside `update_theme` tool.
@@ -1067,7 +960,6 @@ export type SetSiteDefaultsToolInput = z.infer<typeof setSiteDefaultsToolInput>;
 export type DuplicatePageToolInput = z.infer<typeof duplicatePageToolInput>;
 export type RepointPageTemplateToolInput = z.infer<typeof repointPageTemplateToolInput>;
 export type MoveModuleToolInput = z.infer<typeof moveModuleToolInput>;
-export type ReorderModuleToolInput = z.infer<typeof reorderModuleToolInput>;
 // v0.10.22 — `SetNavMenuToolInput` removed alongside `set_nav_menu` tool.
 
 /**

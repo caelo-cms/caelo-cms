@@ -88,7 +88,7 @@ export function minifyJs(js: string, pageSlug: string): string {
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     throw new Error(
-      `static-generator: page slug=${pageSlug}: the page's module JavaScript does not parse, so no module script on this page would run. Fix the module whose js contains the line below (edit_module or edit_content), then rebuild:\n${detail}`,
+      `static-generator: page slug=${pageSlug}: the page's module JavaScript does not parse, so no module script on this page would run. Fix the module whose js contains the line below (edit_content or update_modules_many), then rebuild:\n${detail}`,
     );
   }
   // esbuild escapes `</script` in strings; a sequence it could not

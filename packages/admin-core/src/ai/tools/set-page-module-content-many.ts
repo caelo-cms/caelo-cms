@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #299 — AI tool: set_page_module_content_many (bulk). Fills the
- * content values for N placements in ONE transaction. Run #15 fired the
- * singular 29× at 110K–556K input tokens per round-trip; per CLAUDE.md
- * §11 the bulk variant is the default for any multi-placement pass.
+ * AI tool: set_page_module_content_many — fills the content values of 1..N
+ * placements in ONE transaction (the former singular set_page_module_content
+ * is its n=1 case; retired-tools.ts maps old calls here). Page content lives
+ * in a content_instance bound to the placement: unsynced placements stay
+ * local to their page, synced ones are refused (fork first or edit the
+ * shared instance deliberately).
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -17,13 +19,15 @@ export const setPageModuleContentManyTool: ToolDefinitionWithHandler<
   import("@caelo-cms/shared").PageModuleContentSetManyInput
 > = {
   name: "set_page_module_content_many",
-  description:
-    "Set content values for SEVERAL placements in ONE transaction — prefer this over multiple `set_page_module_content` calls whenever a content pass touches more than one placement (a whole page's text, the same fix across pages; §11 bulk-first). All-or-nothing: any invalid item aborts the whole batch (the error names `items[i]`, the placement, and for value problems the failing field) and nothing is written. " +
-    "Each item is the exact `set_page_module_content` shape: `{pageId, blockName, position, contentValues}` with `contentValues` keyed by the module's declared field names; each fully replaces that placement's values. Items may span multiple pages. " +
-    "Same UNSYNCED-only contract as the singular tool: a SYNCED placement in the batch aborts it with the fork/commit guidance — fork_placement_content that placement (or set_content_instance_values deliberately) and resend. " +
-    "**When NOT to use:** when the page and its modules don't exist yet, `build_page` places modules WITH their content in one call — never build a page as add_module + set_page_module_content_many when one build_page call does both. For one placement the singular tool is fine. " +
-    'Typical call: `{items: [{pageId: "…", blockName: "content", position: 0, contentValues: {hero_title: "…"}}, {pageId: "…", blockName: "content", position: 1, contentValues: {body: "…"}}]}`.' +
-    INTERNAL_LINK_CONTRACT,
+  description: [
+    "Set the content values of placements — one call for 1..N (`items[]`, may span pages), one transaction. Content lives in a content_instance bound to the placement.",
+    "USE FOR: page-local copy ('change the hero heading on /home to X'), a whole page's text, the same fix across pages.",
+    "DO NOT USE FOR: pages/modules not existing yet -> one `build_page` call (never `add_module` + this tool); one entry's text -> `patch_page_module_fields`; changes for every page using the module (structure/styling/fields) -> `update_modules_many`.",
+    "CORE RULES:",
+    "- UNSYNCED placements (default) stay local. A SYNCED placement aborts the batch -> `fork_placement_content` it (detach first) or deliberately `set_content_instance_values_many` (propagates everywhere), then resend.",
+    "- All-or-nothing: an invalid item aborts the batch (the error names `items[i]`, the placement and the failing field) and nothing is written.",
+    INTERNAL_LINK_CONTRACT.trim(),
+  ].join("\n"),
   schema: pageModuleContentSetManySchema,
   inputSchema: {
     type: "object",
@@ -42,7 +46,14 @@ export const setPageModuleContentManyTool: ToolDefinitionWithHandler<
             pageId: { type: "string", format: "uuid" },
             blockName: { type: "string", minLength: 1, maxLength: 80 },
             position: { type: "integer", minimum: 0 },
-            contentValues: { type: "object", additionalProperties: true },
+            contentValues: {
+              type: "object",
+              additionalProperties: true,
+              description:
+                "Keyed by the module's declared field names (`{{field}}`); fully replaces the placement's values. Missing fields fall back to the field's `default`; `{}` resets to all defaults. " +
+                'Local `list`: entry array (`[{node:"text", values:{text:"Fast"}}]`, existing entries keep `id`). Shared `list`: `caelo:list/<id>` switches the list shown (its entries change via `patch_list_items_many`, on every page). Source field: its editable knobs (`{limit:5}`). ' +
+                "Nested `module`/`module-list`: `{moduleId, contentInstanceId}` | array; the module's stable `type` must be in the field's `allowedModuleTypes` when set (`list_modules` shows both) — reuse an allowed-type module.",
+            },
           },
         },
       },

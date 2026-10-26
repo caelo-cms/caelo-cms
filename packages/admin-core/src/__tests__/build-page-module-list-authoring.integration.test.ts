@@ -35,9 +35,9 @@ import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-ap
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { buildPageTool } from "../ai/tools/build-page.js";
-import { createContentInstanceTool } from "../ai/tools/create-content-instance.js";
+import { createContentInstancesTool } from "../ai/tools/create-content-instances.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
-import { setPageModuleContentTool } from "../ai/tools/set-page-module-content.js";
+import { setPageModuleContentManyTool } from "../ai/tools/set-page-module-content-many.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -239,37 +239,45 @@ describe("build_page authors a module-list card grid (the path issue #417's dogf
     expect(html).not.toContain("{{feature_cards}}");
   });
 
-  it("incremental chain appends a card: create_content_instance + set_page_module_content", async () => {
-    const created = await createContentInstanceTool.handler(
+  it("incremental chain appends a card: create_content_instances + set_page_module_content_many", async () => {
+    const created = await createContentInstancesTool.handler(
       SYSTEM,
       {
-        moduleId: cardModuleId,
-        displayName: "I417 Card Three",
-        values: { card_title: "Open source", card_body: "MPL 2.0 forever." },
+        items: [
+          {
+            moduleId: cardModuleId,
+            displayName: "I417 Card Three",
+            values: { card_title: "Open source", card_body: "MPL 2.0 forever." },
+          },
+        ],
       },
       toolCtx(),
     );
     expect(created.ok).toBe(true);
-    if (!created.ok) throw new Error(`create_content_instance failed: ${created.content}`);
+    if (!created.ok) throw new Error(`create_content_instances failed: ${created.content}`);
     // The tool reports the new id in its text content (that IS the AI-facing
     // surface — the model reads it from the tool result, so the test does too).
-    const thirdId = /content_instance ([0-9a-f-]{36}) created/.exec(created.content)?.[1];
+    const thirdId = /items\[0\] -> ([0-9a-f-]{36})/.exec(created.content)?.[1];
     if (!thirdId) throw new Error(`no contentInstanceId in tool content: ${created.content}`);
 
-    const set = await setPageModuleContentTool.handler(
+    const set = await setPageModuleContentManyTool.handler(
       SYSTEM,
       {
-        pageId,
-        blockName: "content",
-        position: 0,
-        contentValues: {
-          feature_cards: [...cardRefs, { moduleId: cardModuleId, contentInstanceId: thirdId }],
-        },
+        items: [
+          {
+            pageId,
+            blockName: "content",
+            position: 0,
+            contentValues: {
+              feature_cards: [...cardRefs, { moduleId: cardModuleId, contentInstanceId: thirdId }],
+            },
+          },
+        ],
       },
       toolCtx(),
     );
     expect(set.ok).toBe(true);
-    if (!set.ok) throw new Error(`set_page_module_content failed: ${set.content}`);
+    if (!set.ok) throw new Error(`set_page_module_content_many failed: ${set.content}`);
 
     const html = await renderPage(SYSTEM, pageId);
     expect(html).toContain("<h3>Open source</h3>");

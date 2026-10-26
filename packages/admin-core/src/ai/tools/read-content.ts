@@ -98,7 +98,7 @@ export const readContentTool: ToolDefinitionWithHandler<ReadContentInput> = {
     "Omit `field` to see every body; name a `field` to window a large one via `offset` (1-based line) + `limit`. " +
     "Each block prints a `sha=` token you can hand back to edit_content as `expectedSha` to guard against a concurrent change. " +
     "Prefer this over dumping a whole module through list_modules (which returns metadata only). " +
-    "Use edit_content (NOT edit_module) to change what you read here surgically.",
+    "Use edit_content (NOT update_modules_many) to change what you read here surgically.",
   schema: readContentInput,
   inputSchema: z.toJSONSchema(readContentInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {

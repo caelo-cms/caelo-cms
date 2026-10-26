@@ -2,8 +2,8 @@
 
 /**
  * v0.5.12 — `list_pages` (2026-07: makeListReadTool — TOON output,
- * uniform filter/limit/offset/full). Read fallback for the `# All pages`
- * context block; the block is a turn-start snapshot, this is live.
+ * uniform filter/limit/offset/full). The AI's read path for pages: the
+ * system prompt carries no page list (CLAUDE.md §11).
  */
 
 import { z } from "zod";
@@ -35,7 +35,7 @@ export const listPagesTool = makeListReadTool<z.infer<typeof listPagesInput>, Li
     "List every page with its URL path, UUID, slug, parent page UUID, nesting depth, title, page type (what the page IS — `news`, `page`, …; list_page_types) and template UUID (TOON rows). " +
     "Pages nest: a page's URL is its parent's URL + '/' + its slug (`/seo-monitoring/alerts` = slug 'alerts' under the '/seo-monitoring' page); depth 1 = top level. Pass `underPageId` to list one section's subtree. Inside a chat, paths show the chat's pending moves. " +
     "Standard list params: `filter` (substring across all columns), `limit`/`offset` (pagination), `full: true` (no truncation). " +
-    "Use when you need a page UUID that isn't in the `# All pages` context block — the block is a turn-start snapshot, this is live. DO NOT ask the operator to paste a UUID.",
+    "Use when you need a page UUID or path. DO NOT ask the operator to paste a UUID.",
   opName: "pages.list",
   input: listPagesInput,
   label: "pages",

@@ -122,6 +122,7 @@ const execute = async (message) => {
     ...(message.hasImages ? { images: handles("images", ["describe", "get", "generate", "edit", "transform"]) } : {}),
     ...(message.hasFonts ? { fonts: handles("fonts", ["find", "inspect", "resolve", "readChunk"]) } : {}),
     ...(message.hasSiteMedia ? { siteMedia: handles("siteMedia", ["find", "inspect", "readChunk"]) } : {}),
+    ...(message.hasConsentPurposes ? { consentPurposes: handles("consentPurposes", ["list"]) } : {}),
     ...(message.hasPrivateFiles ? { privateFiles: handles("privateFiles", ["begin", "writeChunk", "commit", "stat", "readChunk", "remove"]) } : {}),
     api: handles("api", ["list", "get"]),
     captcha: handles("captcha", ["requireProof"]),

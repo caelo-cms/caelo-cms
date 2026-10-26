@@ -9,13 +9,13 @@
  * something like *"build me a homepage for an AI-first CMS called
  * Caelo"*, the AI infers siteName + sitePurpose from that prompt and
  * calls this tool BEFORE authoring modules so the identity persists
- * into every future chat's system prompt.
+ * for every future chat (get_site_defaults reads it back).
  *
- * The system-prompt `## Site identity` block tells the AI when to
- * call this: it surfaces an "untouched install" warning when both
- * `siteName` and `sitePurpose` are null. The AI proposes values in
- * its first turn, captures them via this tool, then proceeds to
- * theme evolution + module authoring.
+ * The site status note on the user message tells the AI when to call
+ * this: it says "Site identity: not captured" while `siteName` is null
+ * (chat-runner/context-blocks.ts). The AI proposes values in its first
+ * turn, captures them via this tool, then proceeds to theme evolution +
+ * module authoring.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -28,14 +28,14 @@ const setSiteIdentityToolInput = z
   .object({
     /**
      * The site's display name as it should appear in the header and
-     * the AI's system-prompt context. Operator-supplied or AI-inferred
+     * the AI's site context. Operator-supplied or AI-inferred
      * from the chat prompt.
      */
     siteName: z.string().min(1).max(200).nullable().optional(),
     /**
      * One or two sentences describing what the site is for and who
-     * it's for. Carried into the `## Site identity` block so every
-     * future chat has the brand context.
+     * it's for. get_site_defaults returns it, so every future chat has
+     * the brand context.
      */
     sitePurpose: z.string().min(1).max(2000).nullable().optional(),
     /**
@@ -59,7 +59,7 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
   name: "set_site_identity",
   description:
     "Record the site's identity (display name + purpose) so future chats inherit the brand context. " +
-    "On a fresh install where the `## Site identity` block shows '(untouched)', call this in your FIRST " +
+    "When the site status note says 'Site identity: not captured', call this in your FIRST " +
     "turn — infer `siteName` and `sitePurpose` from the operator's chat prompt and capture them BEFORE " +
     "authoring any modules. Example: operator says 'build me a homepage for an AI-first CMS called Caelo, " +
     "trustworthy and developer-focused' → call `set_site_identity({siteName: 'Caelo', sitePurpose: 'An " +

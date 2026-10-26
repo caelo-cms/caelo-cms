@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P8 AI-first review pass — `bulk_optimize_seo`. The user supplies
- * shared context (keyword analysis, intent shift, branding update);
- * the AI assembles the per-page revisions and posts them all in one
- * tool call. The original `optimize_page_seo` description told the
- * AI to make N round-trips per turn — this replaces that pattern
- * per CLAUDE.md §11.
+ * P8 — `bulk_optimize_seo`: explicit re-optimization of 1..N pages' meta
+ * descriptions with one shared, user-supplied `context` (keyword analysis,
+ * intent shift, branding update). The former singular optimize_page_seo is
+ * its n=1 case (retired-tools.ts maps old calls here, moving their per-call
+ * `context` to the top level). Always allowed regardless of fill state.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -18,22 +17,20 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
   import("@caelo-cms/shared").BulkOptimizeSeoToolInput
 > = {
   name: "bulk_optimize_seo",
-  description:
-    "Re-optimize SEO across up to 200 pages in one transaction with shared context " +
-    "(keyword research, intent shift, branding update). " +
-    "Use this — NOT multiple `optimize_page_seo` calls — when the user asks to optimize 2+ pages. " +
-    "Each update is { pageId, metaDescription, ogImageAssetId? }. " +
-    "Read the pages' current descriptions and core text with ONE `get_page_seo({pageIds})` call first. " +
-    "All-or-nothing: a single failed update rolls back the whole batch. " +
-    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it). " +
-    "For a single page, use `optimize_page_seo`.",
+  description: [
+    "Re-optimize meta descriptions (+ optional og:image) — one call for 1..N pages (`items[]`), one all-or-nothing transaction, with one shared `context`. Allowed regardless of fill state.",
+    "USE FOR: ONLY when the user explicitly asks to optimize/rewrite SEO and gives context (keywords, intent shift, branding).",
+    "DO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; an exact user-dictated value -> `set_page_seo_many`.",
+    "Read current descriptions + core text with ONE `get_page_seo({pageIds})` first.",
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
+  ].join("\n"),
   schema: bulkOptimizeSeoToolInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["updates"],
+    required: ["items"],
     properties: {
-      updates: {
+      items: {
         type: "array",
         minItems: 1,
         maxItems: 200,
@@ -48,17 +45,19 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
           },
         },
       },
-      context: { type: "string", maxLength: 4000 },
+      context: {
+        type: "string",
+        maxLength: 4000,
+        description:
+          "The user's optimization brief (keywords, intent, branding), applied to every item.",
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const r = await execute(
-      toolCtx.registry,
-      toolCtx.adapter,
-      ctx,
-      "pages_seo.optimize_many",
-      input,
-    );
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages_seo.optimize_many", {
+      updates: input.items,
+      ...(input.context !== undefined ? { context: input.context } : {}),
+    });
     if (!r.ok) {
       return { ok: false, content: `pages_seo.optimize_many failed: ${describeError(r.error)}` };
     }

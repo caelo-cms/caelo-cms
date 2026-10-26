@@ -5,8 +5,8 @@
  * couldn't create new page-types). Wraps `templates.create`. The op
  * resolves `layoutId` to `site_defaults.default_layout_id` when omitted,
  * so the AI only needs to pass slug + displayName + html + css for the
- * common case; it picks a non-default layout from `## Layouts on this
- * site` when the user asks.
+ * common case; it picks a non-default layout from list_layouts when the
+ * user asks.
  *
  * Use when the user asks for a new page-type (e.g. "create a blog-post
  * template", "make a landing-page template"). Do NOT use to create a
@@ -28,7 +28,7 @@ export const createTemplateTool: ToolDefinitionWithHandler<
     "Create a new template (a reusable HTML+CSS shell pages bind to) for a page type. " +
     "Use when pages need a new shape ('a blog-post template', 'a landing-page layout'). `pageType` = the page type (slug, list_page_types) whose pages may use it — the template is added to that type's templates; omit it for the site's default page type. A new KIND of content (news, products) is a page type first: upsert_page_types_many needs a template id, so create the template with the page type it belongs to, or create the type afterwards listing this template. " +
     "Do NOT use to create a one-off page — use `build_page` instead. " +
-    "`layoutId` is OPTIONAL when site defaults define a default layout (see `## Site defaults` / get_site_defaults) — then omitting it binds to that default. Without a configured default, `layoutId` is REQUIRED: pick a UUID from `## Layouts on this site` / list_layouts (omitting it fails with a structured 'no defaults' error, no silent fallback). With ZERO layouts on the site, call create_layout first. " +
+    "`layoutId` is OPTIONAL when site defaults define a default layout (get_site_defaults) — then omitting it binds to that default. Without a configured default, `layoutId` is REQUIRED: pick a UUID from list_layouts (omitting it fails with a structured 'no defaults' error, no silent fallback). With ZERO layouts on the site, call create_layout first. " +
     'CRITICAL — block syntax: render slots in `html` MUST be <caelo-slot name="X"></caelo-slot> tags, ' +
     "NOT HTML comments like <!-- block:X -->. The composer ignores comment-style markers and the page " +
     "renders empty. Define block rows separately via the templates editor or " +

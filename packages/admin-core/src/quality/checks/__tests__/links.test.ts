@@ -130,7 +130,7 @@ describe("links/broken-internal", () => {
     expect(broken[0]?.message).toContain('a[href] "/pricng"');
     expect(broken[0]?.message).toContain('content value of module "Text"');
     expect(broken[0]?.message).toContain("nothing is served at /pricng");
-    expect(broken[0]?.fix?.tool).toBe("set_page_module_content");
+    expect(broken[0]?.fix?.tool).toBe("set_page_module_content_many");
     expect(broken[0]?.fix?.hint).toContain("bulk_create_redirects");
   });
 
@@ -422,7 +422,7 @@ describe("links/orphan-page", () => {
     const orphans = findings.filter((f) => f.ruleId === "links/orphan-page");
     expect(orphans.map((f) => f.pageId)).toEqual([lonely.pageId]);
     expect(orphans[0]).toMatchObject({ severity: "warning" });
-    expect(orphans[0]?.fix?.tool).toBe("set_page_module_content");
+    expect(orphans[0]?.fix?.tool).toBe("set_page_module_content_many");
   });
 
   it("links in <link> or <img> do not make a page reachable", async () => {
@@ -449,7 +449,7 @@ describe("where the fix goes", () => {
     const toolOf = (href: string) =>
       findings.find((f) => f.message.includes(`"${href}"`))?.fix?.tool;
     // A menu's links are content values of its module (a list field).
-    expect(toolOf("/blog/")).toBe("set_page_module_content");
+    expect(toolOf("/blog/")).toBe("set_page_module_content_many");
     expect(toolOf("/contact-us")).toBe("edit_content");
     expect(toolOf("/imprint-old")).toBe("propose_update_layout");
     expect(toolOf("/mystery")).toBe("grep_content");
@@ -472,10 +472,10 @@ describe("where the fix goes", () => {
     expect(fixOf("/gone-shared/")?.fix?.tool).toBe("patch_list_items_many");
     expect(fixOf("/gone-shared/")?.fix?.hint).toContain(`entry ${ITEM} of shared list ${LIST}`);
     expect(fixOf("/gone-shared/")?.message).toContain(`in entry ${ITEM} of shared list ${LIST}`);
-    expect(fixOf("/gone-default/")?.fix?.tool).toBe("edit_module");
+    expect(fixOf("/gone-default/")?.fix?.tool).toBe("update_modules_many");
     expect(fixOf("/gone-default/")?.fix?.hint).toContain('list field "items"');
     // A placement's local list is a content value of the module.
-    expect(fixOf("/gone-value/")?.fix?.tool).toBe("set_page_module_content");
+    expect(fixOf("/gone-value/")?.fix?.tool).toBe("set_page_module_content_many");
   });
 
   it("output of a plugin points at the plugin", async () => {

@@ -6,7 +6,7 @@
  * module's or template's body (html/css/js), applied atomically in one
  * transaction via the entity's existing write op.
  *
- * Why this over re-emitting the whole body through edit_module: the wire
+ * Why this over re-emitting the whole body through update_modules_many: the wire
  * cost drops from O(body) to O(diff), the preview is genuinely minimal
  * (CLAUDE.md §8), and every existing invariant is preserved for free —
  * the edit funnels through modules.update (snapshot, per-entity chat-branch
@@ -61,8 +61,8 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
     "Read the body first with read_content and copy exact text (incl. whitespace) into `oldString`; optionally pass its `sha=` as `expectedSha` to guard against a concurrent change. " +
     'To fill an EMPTY field (e.g. a module with no js yet), pass one edit with `oldString: ""` and the new content as `newString`; an empty oldString on a field that has content is refused. ' +
     "On success it returns the NEW `sha=` plus a line-numbered snippet of each changed region — chain another edit_content in the same turn using that sha and the fresh line numbers, WITHOUT re-reading. " +
-    "PREFER this over edit_module for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. " +
-    "Use edit_module instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. " +
+    "PREFER this over update_modules_many for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. " +
+    "Use update_modules_many instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. " +
     "TEMPLATES AND LAYOUTS ARE GATED: an edit_content on a template or layout is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim such an edit was applied." +
     INTERNAL_LINK_CONTRACT,
   schema: editContentInput,
@@ -147,7 +147,7 @@ export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
       };
     }
 
-    // Module parity with edit_module: surface theme-var drift + design-guard
+    // Module parity with update_modules_many: surface theme-var drift + design-guard
     // findings on the freshly-written CSS / html so the AI fixes them in
     // the same turn.
     let suffix = "";

@@ -118,8 +118,8 @@ describe("chat.list_open_with_pending", () => {
         {
           kind: "tool-call",
           id: "t1",
-          name: "edit_module",
-          arguments: { moduleId, html: "<p>edited</p>" },
+          name: "update_modules_many",
+          arguments: { items: [{ moduleId, html: "<p>edited</p>" }] },
         },
         { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
         { kind: "done", stopReason: "tool_use" },

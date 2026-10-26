@@ -1,0 +1,32 @@
+-- SPDX-License-Identifier: MPL-2.0
+--
+-- 0361 — the gateway stops tying its own state to the visitor cookie.
+--
+-- `caelo_visitor_id` is now set only for a plugin that declares the
+-- `visitor_id` consent purpose (ratings), and only with the visitor's
+-- consent to that purpose's category. Core needs no visitor id:
+--
+--   gateway_pow_challenges.visitor_id_hash
+--     bound a captcha challenge to the visitor cookie it was issued with.
+--     It protected nothing: a client that drops the cookie got an unbound
+--     challenge any request could redeem, and the binding made the captcha
+--     depend on a cookie the visitor may refuse. The protection is the
+--     work and the single use (`used_at`), bounded by the per-address rate
+--     limit on /api/captcha/challenge.
+--
+--   gateway_request_log.visitor_id_hash
+--     nothing reads it — the admin's request list and analytics
+--     (admin-core ops/gateway.ts) never selected it — so storing a
+--     per-visitor hash next to every request was keeping data without a
+--     use for it.
+--
+-- Rate-limit buckets were already keyed by text (`key`); the gateway now
+-- builds every key from the client-address hash, so no column changes.
+--
+-- Rollout: a gateway still on the previous release inserts the dropped
+-- column and fails until it is replaced — challenge issue answers 500 and
+-- the (best-effort) request log skips rows. Migrations run before the new
+-- revision takes traffic, so that window is the rollout itself.
+
+ALTER TABLE gateway_pow_challenges DROP COLUMN IF EXISTS visitor_id_hash;
+ALTER TABLE gateway_request_log DROP COLUMN IF EXISTS visitor_id_hash;

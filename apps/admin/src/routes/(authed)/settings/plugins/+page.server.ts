@@ -49,6 +49,10 @@ interface PluginRow {
     problem: PluginErrorSummary | null;
     recentErrors: PluginErrorSummary[];
   };
+  /** Plugins that must be active before this one can be activated. */
+  requiresPlugins: string[];
+  /** Active plugins that require this one (it cannot be disabled while any runs). */
+  requiredBy: string[];
 }
 
 interface PluginErrorSummary {

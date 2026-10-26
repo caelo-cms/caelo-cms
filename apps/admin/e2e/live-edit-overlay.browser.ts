@@ -5,7 +5,7 @@
  *
  *   1. Owner logs in → lands on /edit by clicking the sidebar nav.
  *   2. Iframe loads the production preview of a seeded page.
- *   3. AI prompt (test-provider fixture) lands an `edit_module` tool call.
+ *   3. AI prompt (test-provider fixture) lands an `update_modules_many` tool call.
  *   4. Iframe re-renders within ~2s with the new HTML.
  *   5. Element click in the iframe surfaces a chip in the overlay composer.
  */
@@ -63,7 +63,7 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
   page,
 }) => {
   // Seed the page server-side so we can predict the moduleId for the
-  // test-provider fixture's edit_module tool call.
+  // test-provider fixture's update_modules_many tool call.
   const r = spawnSync(
     "bun",
     [
@@ -121,8 +121,8 @@ test("Owner edits a page via the live-edit overlay; iframe re-renders", async ({
         // collision would short-circuit the dispatch and skip snapshot
         // emission, leaving HERO_BEFORE in the iframe.
         id: `tu_le_${ts}`,
-        name: "edit_module",
-        arguments: { moduleId: ids.mod, html: "<h1>HERO_FROM_AI</h1>" },
+        name: "update_modules_many",
+        arguments: { items: [{ moduleId: ids.mod, html: "<h1>HERO_FROM_AI</h1>" }] },
       },
       { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
       { kind: "done", stopReason: "tool_use" },

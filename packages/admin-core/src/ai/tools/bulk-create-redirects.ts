@@ -16,19 +16,14 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
 > = {
   name: "bulk_create_redirects",
   description:
-    "Create up to 500 redirects in one transaction. " +
-    "Use when the user provides a list (e.g. 'redirect /old-blog/* to /blog/*' for many paths, " +
-    "or pastes a CSV / table of mappings). " +
-    "Pass `upsert: true` to update existing fromPath rows instead of skipping them. " +
-    "Prefer this over multiple `redirects.create` calls — one round-trip vs N. " +
-    "For a single redirect, use `redirects.create` directly.",
+    "Create redirects in one transaction — one call for 1..N (`items[]`): a single redirect (one-item array), a list ('/old-blog/* -> /blog/*' across many paths), a pasted CSV/table. `upsert:true` updates existing fromPath rows instead of skipping them.",
   schema: bulkCreateRedirectsToolInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["redirects"],
+    required: ["items"],
     properties: {
-      redirects: {
+      items: {
         type: "array",
         minItems: 1,
         maxItems: 500,
@@ -43,7 +38,7 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
               minLength: 1,
               maxLength: 500,
               description:
-                "A path on this site starting with a single '/' (e.g. '/blog/new'). Never a full URL ('/https://…') or '//host' — external (other-domain) targets are not supported.",
+                "Path on this site starting with a single '/' (e.g. '/blog/new'); never a full URL or '//host' — external targets unsupported.",
             },
             statusCode: { type: "integer", enum: [301, 302, 307, 308, 410], default: 301 },
           },
@@ -53,7 +48,10 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "redirects.create_many", input);
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "redirects.create_many", {
+      redirects: input.items,
+      upsert: input.upsert,
+    });
     if (!r.ok) {
       return { ok: false, content: `redirects.create_many failed: ${describeError(r.error)}` };
     }

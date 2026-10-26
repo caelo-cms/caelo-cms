@@ -25,17 +25,6 @@
  *
  * Idempotent — calling after stage 3 returns the no-op message;
  * never tramples existing state.
- *
- * v0.12.0 note — the post-bootstrap guidance string still mentions
- * `set_page_module_content`. That tool is now a routing SHIM: it
- * resolves the placement's content_instance_id + sync_mode and
- * forwards to `content_instances.set_values` for unsynced placements
- * (the default after pages.set_modules mints a fresh unsynced
- * content_instance per net-new placement). For synced placements the
- * shim returns a structured error pointing at `fork_placement_content`
- * / `set_content_instance_values`. Fresh installs never see synced
- * placements until the operator explicitly opts in, so the bootstrap
- * recovery path stays simple.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -82,7 +71,7 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
     "Stage 0 (no layout): queues a layouts.create PROPOSAL; the operator approves it on the proposal card in the chat (queue: /settings/layouts/pending). " +
     "Stage 1+2 (layout exists): creates template + pins site_defaults directly (no human click). " +
     "Stage 3 (all three exist): no-op. " +
-    "Use on a fresh install when `# Site defaults` says '(none configured yet)'. " +
+    "Use on a fresh install when the site status note says 'Site defaults: needs setup'. " +
     "All inputs optional — sensible defaults yield a header/content/footer layout, a single-block `home` template, and pinned defaults. " +
     // 2026-07 — STATIC on purpose (prompt-cache): the stage is auto-
     // detected server-side and the RESULT names the stage that ran plus

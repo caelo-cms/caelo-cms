@@ -119,17 +119,17 @@ flowchart LR
 
 **No-fallback rule** (see [CLAUDE.md §2](./CLAUDE.md#2-non-negotiable-invariants)): missing layout `content` slot, an unbound or missing list (`list-unbound` / `list-missing` markers), missing template/layout where required → `ComposeError` / structured `HandlerError`. Never silent recovery. `site_defaults` is a *create-time* resolver, NOT a render-time fallback.
 
-**Three "add module" paths, picked by intent:**
+**One `add_module` tool with three targets, picked by intent:**
 
 | user says… | tool | blast radius |
 |---|---|---|
-| "add a CTA on this page" | `add_module_to_page` | one page |
-| "add a hero on every blog post" | `add_module_to_template` | all pages on the template |
-| "add a footer on every page" | `add_module_to_layout` | all pages on the layout |
-| "move the hero to the header" | `move_module` | same page, cross-block |
-| "show testimonials before gallery" | `reorder_module` | same page, same block |
+| "add a CTA on this page" | `add_module` (`target: 'page'`) | one page |
+| "add a hero on every blog post" | `add_module` (`target: 'template'`) | all pages on the template |
+| "add a footer on every page" | `add_module` (`target: 'layout'`) | all pages on the layout |
+| "move the hero to the header" | `move_module` (`toBlockName`) | same page, cross-block |
+| "show testimonials before gallery" | `move_module` (no `toBlockName`) | same page, same block |
 | "duplicate this page" | `duplicate_page` | modules carry by reference |
-| "switch this page to landing-tpl" | `change_template` | modules migrate; orphan disposition required |
+| "switch this page to landing-tpl" | `repoint_page_template` | modules migrate; orphan disposition required |
 | "add Careers under Company" | `patch_list_items_many` | the shared menu list; every module bound to it |
 | "make the primary brighter" | `set_theme_tokens` | the active theme |
 

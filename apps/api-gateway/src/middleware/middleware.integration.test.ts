@@ -14,9 +14,9 @@ import { publishProjectionOnce } from "@caelo-cms/admin-core";
 import { DatabaseAdapter } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { readBodyWithCap } from "./body-cap.js";
-import { hashVisitorId, issuePowChallenge, verifyPowProof } from "./captcha.js";
+import { issuePowChallenge, verifyPowProof } from "./captcha.js";
 import { checkHoneypot } from "./honeypot.js";
-import { consumeRateLimit, rateLimitKey, resolveRateLimitSpec } from "./rate-limit.js";
+import { consumeRateLimit, ipScopedRateLimitKey, resolveRateLimitSpec } from "./rate-limit.js";
 import { generateCookieSecret, signCookieValue, verifySignedCookie } from "./signed-cookie.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -123,7 +123,7 @@ describe("honeypot", () => {
 
 describe("rate-limit", () => {
   it("denies after window threshold; resets after window", async () => {
-    const key = rateLimitKey("test-rl", "submit", `${Date.now()}-rl`);
+    const key = ipScopedRateLimitKey("test-rl", "submit", `${Date.now()}-rl`);
     const spec = { perVisitorMax: 3, windowSeconds: 60 };
     const a1 = await consumeRateLimit(adapter, { key, spec });
     const a2 = await consumeRateLimit(adapter, { key, spec });
@@ -137,7 +137,7 @@ describe("rate-limit", () => {
   });
 
   it("denies the right count under concurrent burst (advisory-lock atomicity)", async () => {
-    const key = rateLimitKey("test-rl", "race", `${Date.now()}-race`);
+    const key = ipScopedRateLimitKey("test-rl", "race", `${Date.now()}-race`);
     const spec = { perVisitorMax: 1000, windowSeconds: 60 };
     // Fire 30 concurrent calls. With 10 burst tokens, exactly 20 should
     // be denied. The advisory lock guarantees no double-count race.
@@ -152,7 +152,7 @@ describe("rate-limit", () => {
   });
 
   it("burst gate fires before sliding window when many requests in <1s", async () => {
-    const key = rateLimitKey("test-rl", "burst", `${Date.now()}-burst`);
+    const key = ipScopedRateLimitKey("test-rl", "burst", `${Date.now()}-burst`);
     const spec = { perVisitorMax: 1000, windowSeconds: 60 };
     let denied = 0;
     for (let i = 0; i < 20; i++) {
@@ -190,11 +190,10 @@ describe("rate-limit", () => {
 });
 
 describe("captcha (PoW)", () => {
-  const visitorIdHash = hashVisitorId("test-visitor");
   const config = { provider: "pow" as const, powTargetPrefix: "0" }; // trivially easy
 
   it("issues a challenge, validates a correct nonce, rejects replay", async () => {
-    const challenge = await issuePowChallenge(adapter, { config, visitorIdHash });
+    const challenge = await issuePowChallenge(adapter, { config });
     expect(challenge.challenge).toMatch(/^[0-9a-f]+$/);
     // Find a nonce satisfying the trivial "starts with 0" target. At a
     // 1-hex-char target there's a 1/16 chance per nonce, so scanning
@@ -215,44 +214,31 @@ describe("captcha (PoW)", () => {
     }
     expect(nonce).not.toBe("");
 
-    const r1 = await verifyPowProof(
-      adapter,
-      { challenge: challenge.challenge, nonce },
-      visitorIdHash,
-    );
+    const r1 = await verifyPowProof(adapter, { challenge: challenge.challenge, nonce });
     expect(r1.ok).toBe(true);
 
     // Replay should fail.
-    const r2 = await verifyPowProof(
-      adapter,
-      { challenge: challenge.challenge, nonce },
-      visitorIdHash,
-    );
+    const r2 = await verifyPowProof(adapter, { challenge: challenge.challenge, nonce });
     expect(r2.ok).toBe(false);
   });
 
   it("rejects a wrong nonce without burning the challenge", async () => {
-    const proof = await solved(visitorIdHash);
-    const bad = await verifyPowProof(
-      adapter,
-      { challenge: proof.challenge, nonce: unsolvedNonce(proof.challenge, config.powTargetPrefix) },
-      visitorIdHash,
-    );
+    const proof = await solved();
+    const bad = await verifyPowProof(adapter, {
+      challenge: proof.challenge,
+      nonce: unsolvedNonce(proof.challenge, config.powTargetPrefix),
+    });
     expect(bad).toEqual({ ok: false, reason: "proof does not satisfy target prefix" });
     // The valid proof for the same challenge must still succeed afterwards.
-    const good = await verifyPowProof(adapter, proof, visitorIdHash);
+    const good = await verifyPowProof(adapter, proof);
     expect(good).toEqual({ ok: true });
   });
 
   it("rejects an unknown challenge", async () => {
-    const r = await verifyPowProof(
-      adapter,
-      {
-        challenge: "00000000",
-        nonce: "0",
-      },
-      visitorIdHash,
-    );
+    const r = await verifyPowProof(adapter, {
+      challenge: "00000000",
+      nonce: "0",
+    });
     expect(r).toEqual({ ok: false, reason: expect.stringContaining("unknown captcha challenge") });
   });
 
@@ -271,50 +257,43 @@ describe("captcha (PoW)", () => {
     }
   }
 
-  /** Issue a challenge to `issuedTo` and solve it. */
-  async function solved(issuedTo: string): Promise<{ challenge: string; nonce: string }> {
-    const { challenge, target } = await issuePowChallenge(adapter, {
-      config,
-      visitorIdHash: issuedTo,
-    });
+  /** Issue a challenge and solve it. */
+  async function solved(): Promise<{ challenge: string; nonce: string }> {
+    const { challenge, target } = await issuePowChallenge(adapter, { config });
     for (let nonce = 0; ; nonce++) {
       const hex = new Bun.CryptoHasher("sha256").update(`${challenge}${nonce}`).digest("hex");
       if (hex.startsWith(target)) return { challenge, nonce: String(nonce) };
     }
   }
 
-  it("binding: a challenge issued to a visitor is redeemable by that visitor", async () => {
-    expect(await verifyPowProof(adapter, await solved(visitorIdHash), visitorIdHash)).toEqual({
-      ok: true,
-    });
+  it("binds a challenge to nothing: whichever request presents it first claims it, once", async () => {
+    // No visitor binding (the cookie could be dropped at will, so it
+    // protected nothing): the work and the single use are the protection.
+    const proof = await solved();
+    expect(await verifyPowProof(adapter, proof)).toEqual({ ok: true });
+    const again = await verifyPowProof(adapter, proof);
+    expect(again.ok === false && again.reason).toContain("already used");
   });
 
-  it("binding: another visitor (or none) cannot redeem it, and is told why — it stays unused", async () => {
-    const proof = await solved(visitorIdHash);
-    for (const other of [hashVisitorId("someone-else"), ""]) {
-      const r = await verifyPowProof(adapter, proof, other);
-      expect(r.ok).toBe(false);
-      if (!r.ok) {
-        expect(r.reason).toContain("issued to a different visitor");
-        expect(r.reason).toContain("caelo_visitor_id");
-      }
-    }
-    // The failed attempts claimed nothing: the visitor it was issued to still can.
-    expect(await verifyPowProof(adapter, proof, visitorIdHash)).toEqual({ ok: true });
-  });
-
-  it("binding: a challenge issued without a visitor id is redeemable by any request", async () => {
-    expect(await verifyPowProof(adapter, await solved(""), visitorIdHash)).toEqual({ ok: true });
-    expect(await verifyPowProof(adapter, await solved(""), "")).toEqual({ ok: true });
+  it("stores no visitor binding on the challenge row (cms_public 0361)", async () => {
+    const columns = await adapter.withPublicTransaction(
+      { actorId: "00000000-0000-0000-0000-00000000ffff", actorKind: "system", requestId: "t" },
+      async (tx) =>
+        (await tx.execute(sql`
+          SELECT table_name, column_name FROM information_schema.columns
+           WHERE table_name IN ('gateway_pow_challenges', 'gateway_request_log')
+             AND column_name = 'visitor_id_hash'`)) as unknown as unknown[],
+    );
+    expect(columns).toEqual([]);
   });
 
   it("names a replay and an expiry as what they are", async () => {
-    const used = await solved(visitorIdHash);
-    await verifyPowProof(adapter, used, visitorIdHash);
-    const replay = await verifyPowProof(adapter, used, visitorIdHash);
+    const used = await solved();
+    await verifyPowProof(adapter, used);
+    const replay = await verifyPowProof(adapter, used);
     expect(replay.ok === false && replay.reason).toContain("already used");
 
-    const late = await solved(visitorIdHash);
+    const late = await solved();
     await adapter.withPublicTransaction(
       { actorId: "00000000-0000-0000-0000-00000000ffff", actorKind: "system", requestId: "t" },
       async (tx) => {
@@ -323,7 +302,7 @@ describe("captcha (PoW)", () => {
            WHERE challenge = ${late.challenge}`);
       },
     );
-    const expired = await verifyPowProof(adapter, late, visitorIdHash);
+    const expired = await verifyPowProof(adapter, late);
     expect(expired.ok === false && expired.reason).toContain("expired");
   });
 });

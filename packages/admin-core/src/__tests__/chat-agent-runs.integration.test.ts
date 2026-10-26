@@ -740,7 +740,7 @@ describe("one agent per chat: Live Edit and Power-MCP (issue #665)", () => {
   // A routine write that needs no AI and no fixture page: a redirect to
   // the site root (always a valid target).
   const redirectWrite = (slug: string) => ({
-    redirects: [{ fromPath: `/${slug}`, toPath: "/", statusCode: 301 }],
+    items: [{ fromPath: `/${slug}`, toPath: "/", statusCode: 301 }],
   });
 
   it("refuses a Live Edit turn while the external agent works, lists it, and Stop blocks it until allowed", async () => {
