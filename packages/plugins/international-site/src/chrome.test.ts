@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import type { ListTypeDef } from "@caelo-cms/plugin-sdk";
 import {
   applyStrings,
   buildChromeTranslationPrompt,
@@ -18,11 +19,50 @@ const T2 = "00000000-0000-4000-9000-000000000004";
 
 const fields = [
   { name: "tagline", kind: "text" },
-  { name: "nav", kind: "list" },
-  { name: "tags", kind: "list" },
+  { name: "nav", kind: "list", listType: "links" },
+  { name: "tags", kind: "list", listType: "texts" },
   { name: "cta_href", kind: "url" },
   { name: "count", kind: "number" },
 ];
+// The shipped `links` and `texts` types (shared default-types.ts).
+const listTypes = new Map<string, ListTypeDef>([
+  [
+    "links",
+    {
+      slug: "links",
+      name: "Links",
+      purpose: "Links",
+      role: "content",
+      root: { allow: ["link"] },
+      nodes: {
+        link: {
+          label: "Link",
+          fields: [
+            { name: "label", label: "Label", type: "text", required: true },
+            { name: "link", label: "Link", type: "link", required: true },
+          ],
+        },
+      },
+    },
+  ],
+  [
+    "texts",
+    {
+      slug: "texts",
+      name: "Texts",
+      purpose: "Texts",
+      role: "content",
+      root: { allow: ["text"] },
+      nodes: {
+        text: {
+          label: "Text",
+          fields: [{ name: "text", label: "Text", type: "text", required: true }],
+        },
+      },
+    },
+  ],
+]);
+const LAYOUT = { listTypes, includeLists: true };
 const values = {
   tagline: "Made with care",
   nav: [
@@ -39,13 +79,59 @@ const values = {
 
 describe("translatableStrings", () => {
   it("collects text, list items and link labels — never addresses or numbers", () => {
-    expect(translatableStrings(fields, values)).toEqual([
+    expect(translatableStrings(fields, values, LAYOUT)).toEqual([
       { path: "tagline", text: "Made with care" },
       { path: `nav[${E1}].label`, text: "About" },
       { path: `nav[${E2}].label`, text: "Pricing" },
       { path: `tags[${T1}].text`, text: "fast" },
     ]);
-    expect(translatableStrings([{ name: "logo", kind: "image" }], { logo: "x.png" })).toEqual([]);
+    expect(
+      translatableStrings([{ name: "logo", kind: "image" }], { logo: "x.png" }, LAYOUT),
+    ).toEqual([]);
+  });
+
+  it("reads which entry fields are text from the list type, not from key names (#1114)", () => {
+    // `title` was on the old heuristic key list; here it is a code field
+    // the type marks as not translated, and `body` is rich text nobody
+    // would have guessed.
+    const type: ListTypeDef = {
+      slug: "faq",
+      name: "FAQ",
+      purpose: "Questions",
+      role: "content",
+      root: { allow: ["qa"] },
+      nodes: {
+        qa: {
+          label: "Q&A",
+          fields: [
+            {
+              name: "title",
+              label: "Code",
+              type: "text",
+              ext: { "international-site": { translate: false } },
+            },
+            { name: "body", label: "Answer", type: "richtext" },
+          ],
+        },
+      },
+    };
+    const ctx = { listTypes: new Map([["faq", type]]), includeLists: true };
+    const v = { faq: [{ id: E1, node: "qa", values: { title: "Q-17", body: "<p>Yes</p>" } }] };
+    expect(translatableStrings([{ name: "faq", kind: "list", listType: "faq" }], v, ctx)).toEqual([
+      { path: `faq[${E1}].body`, text: "<p>Yes</p>" },
+    ]);
+  });
+
+  it("leaves a shared instance's local lists to the address overlay", () => {
+    expect(
+      translatableStrings(fields, values, { listTypes, includeLists: false }).map((s) => s.path),
+    ).toEqual(["tagline"]);
+  });
+
+  it("refuses a local list whose type the site does not have", () => {
+    expect(() =>
+      translatableStrings([{ name: "nav", kind: "list", listType: "gone" }], values, LAYOUT),
+    ).toThrow(/list type "gone"/);
   });
 });
 

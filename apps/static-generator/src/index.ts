@@ -27,6 +27,8 @@ export {
   assembleListRenderData,
   ListRenderDataError,
   type ListRenderSources,
+  type LoadedListRenderData,
+  renderVariants,
 } from "./list-data.js";
 // #802 — the file the designated 404 page ships as (the quality audit
 // loads it there, not at the page's own path).

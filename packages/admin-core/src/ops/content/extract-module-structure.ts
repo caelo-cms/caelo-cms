@@ -426,15 +426,15 @@ export function extractModuleStructure(
  * `fields` that don't line up with explicit `{{…}}` placeholders.
  */
 /**
- * @param knownDataLists names a plugin claims as an iterable list
- *   (#447). A module iterating one declares no field for it — the data
- *   comes from the plugin, not from the module's own content — so
+ * @param knownListSources names a plugin claims as a list source (#447,
+ *   epic #1107). A module iterating one declares no field for it — the
+ *   data comes from the plugin, not from the module's own content — so
  *   demanding a declaration would make those modules unauthorable.
  */
 export function validateTemplatizedModule(
   html: string,
   fields: readonly ModuleField[],
-  knownDataLists?: ReadonlySet<string>,
+  knownListSources?: ReadonlySet<string>,
 ): { ok: true } | { ok: false; message: string } {
   const declared = new Set(fields.map((f) => f.name));
   const referenced = new Set<string>();
@@ -462,7 +462,7 @@ export function validateTemplatizedModule(
   }
   for (const name of referenced) {
     if (declared.has(name)) continue;
-    if (knownDataLists?.has(name)) continue;
+    if (knownListSources?.has(name)) continue;
     return {
       ok: false,
       message: `placeholder {{${name}}} references undeclared field "${name}"`,

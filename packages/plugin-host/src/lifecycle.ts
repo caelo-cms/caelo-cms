@@ -10,8 +10,8 @@
  * step with the database.
  */
 
-import { pluginDataListsRegistry } from "./data-lists.js";
 import { loadedPlugins, setPluginDisabled } from "./dispatch.js";
+import { pluginListSourcesRegistry } from "./list-sources.js";
 import { pluginPromptContextRegistry } from "./prompt-context-registry.js";
 import { pluginWorkerScheduler } from "./scheduler.js";
 import { pluginToolsRegistry } from "./tools-registry.js";
@@ -46,7 +46,7 @@ export function deregisterPlugin(slug: string): void {
   // Live sources only — the DECLARED names stay, so a module still
   // holding `{{#its_list}}` renders "plugin switched off" instead of
   // "unknown field".
-  pluginDataListsRegistry.unregisterPlugin(slug);
+  pluginListSourcesRegistry.unregisterPlugin(slug);
   pluginPromptContextRegistry.unregisterPlugin(slug);
   urlContributionsRegistry.unregisterPlugin(slug);
   loadedPlugins.unload(slug);

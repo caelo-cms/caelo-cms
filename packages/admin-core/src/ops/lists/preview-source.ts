@@ -25,7 +25,7 @@
  *    "source"` field, with that placement's overrides.
  */
 
-import { dormantDataListNames, resolveDataLists } from "@caelo-cms/plugin-host";
+import { dormantListSourceNames, resolveListSources } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import {
   createListRenderContext,
@@ -33,7 +33,6 @@ import {
   ok,
   type PluginSourceEntry,
   pageQueryPartialSchema,
-  pluginSourcesFromDataLists,
   type ScopeEntry,
   type ScopeValue,
   sourceDefSchema,
@@ -345,11 +344,11 @@ export const previewListSourceOp = withHumanisedLinks(
             ),
           };
         }
-        const resolved = await resolveDataLists([pageId], { chatBranchId: branchId }, style);
-        pluginSources = pluginSourcesFromDataLists(resolved.get(pageId) ?? {});
+        const resolved = await resolveListSources([pageId], { chatBranchId: branchId }, style);
+        pluginSources = resolved.get(pageId) ?? {};
       }
       const page = createListRenderContext(data, {
-        dormantPluginSources: dormantDataListNames(),
+        dormantPluginSources: dormantListSourceNames(),
       }).forPage(pageId, { pluginSources });
       const resolved = page.resolveField(spec.spec, spec.value, { contentInstanceId: null });
       if (!resolved.ok) {

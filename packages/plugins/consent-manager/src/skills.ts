@@ -24,7 +24,7 @@ export const CONSENT_SKILLS: ReadonlyArray<PluginSkillSpec> = [
       "The split: the PLUGIN owns behaviour (recording the choice, holding tags and embeds back). YOU own everything visible — markup, copy, layout, colour. Never hand-write the consent logic in module JS; it is already there and it is the part that has to be right.",
       "",
       "Flow:",
-      "1. Call consent_status FIRST. It returns the categories, the data list to iterate, and the exact attribute contract.",
+      "1. Call consent_status FIRST. It returns the categories, the list source to iterate (consent_categories: key, label, description, required — `required` is a boolean, so {{#required}}…{{/required}} marks the always-on category), and the exact attribute contract.",
       "2. Author ONE module for the banner and place it in the site LAYOUT — one placement covers every page. A per-page placement will miss the next page the operator adds.",
       "3. Iterate the categories rather than hard-coding four blocks:",
       '   <div data-consent-banner>{{#consent_categories}}<label><input type="checkbox" data-consent-category="{{key}}"> {{label}} <span>{{description}}</span></label>{{/consent_categories}}<button data-consent-accept-all>…</button><button data-consent-reject-all>…</button><button data-consent-save>…</button></div>',

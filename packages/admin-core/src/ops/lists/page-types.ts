@@ -14,11 +14,13 @@
  * refused unless `dropValues`. Writes need `content.structure`.
  */
 
+import { activeListExt } from "@caelo-cms/plugin-host";
 import { defineOperation } from "@caelo-cms/query-api";
 import { checkPageTypeDef, ok, type PageTypeDef, pageTypeDefSchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { checkDefinitionExt } from "../../lists/ext.js";
 import { fitPageToType, loadVocabularyIndex } from "../../lists/page-fit.js";
 import { parseTermRef } from "../../lists/page-terms.js";
 import { loadPagesInView } from "../../lists/pages-view.js";
@@ -73,7 +75,9 @@ async function rows(
 
 export const listPageTypesOp = defineOperation({
   name: "page_types.list",
-  actorScope: ["human", "ai", "system"],
+  // Why plugin: the `lists` read grant (docs/lists.md §9) — a translation
+  // plugin reads property definitions (and their `ext`) through named ops.
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({ query: z.string().min(1).max(128).optional() }).strict(),
   output: z.object({ pageTypes: z.array(pageTypeRowSchema) }),
@@ -94,7 +98,8 @@ export const listPageTypesOp = defineOperation({
 
 export const getPageTypeOp = defineOperation({
   name: "page_types.get",
-  actorScope: ["human", "ai", "system"],
+  // Why plugin: the `lists` read grant (see page_types.list).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({ slug: z.string().min(1).max(64) }).strict(),
   output: z.object({
@@ -193,6 +198,13 @@ export const upsertPageTypesManyOp = defineOperation({
       }
       const found = await loadListEntityForUpsert(tx, "pageType", branchId, def.slug);
       const existing = found && found.state.deletedAt === null ? found : null;
+      const extIssues = checkDefinitionExt(def, existing?.state.definition ?? null, activeListExt);
+      if (extIssues.length > 0) {
+        return failBatch(
+          wrote,
+          handlerError(op, `${at}: ${extIssues.join(" ")} Resend the whole batch.`, true),
+        );
+      }
       if (expectedVersion !== undefined && (existing?.state.version ?? 0) !== expectedVersion) {
         return failBatch(
           wrote,

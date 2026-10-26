@@ -45,7 +45,6 @@ import {
   linkMarkersOf,
   PhaseTimer,
   type PhaseTiming,
-  pluginSourcesFromDataLists,
   redirectTargetIssue,
   runBatched,
   type ThemeDocument,
@@ -799,16 +798,16 @@ export async function generateSite(args: {
   // P13 — per-page bake target for the plugin render pass, keyed by page
   // id: slugs are not unique once pages nest (epic #690).
   const bakeTargets = new Map<string, BakeTarget>();
-  // Plugin data lists for the whole deploy, resolved in ONE call per
+  // Plugin list sources for the whole deploy, resolved in ONE call per
   // contributing plugin rather than per page. Names declared by
   // installed-but-inactive plugins come along so a module still
-  // iterating a switched-off plugin's list emits the loud marker here
+  // iterating a switched-off plugin's source emits the loud marker here
   // exactly as it does in the editor preview.
-  const allLists = await args.plugins.resolveDataLists(
+  const allSources = await args.plugins.resolveListSources(
     pageRows.map((p) => p.page_id),
     pageUrlStyle,
   );
-  const dormantLists = await args.plugins.dormantDataListNames();
+  const dormantSources = await args.plugins.dormantListSourceNames();
   // #450 — withheld modules, resolved ONCE for the build. Asking per
   // page would be one plugin round-trip per page for a verdict that is
   // per MODULE; the module set is the same question every time.
@@ -947,7 +946,7 @@ export async function generateSite(args: {
   );
   const renderedForGate: RenderedPageForGate[] = [];
   const linkIndex = await loadBuildLinkIndex(tx, target.env, pageUrlStyle, args.plugins);
-  const listContext = createListRenderContext(listData, { dormantPluginSources: dormantLists });
+  const listContext = createListRenderContext(listData, { dormantPluginSources: dormantSources });
   const renderDeps = new Map<string, ListRenderDeps>();
   const overlayIssues = [...listContext.overlayIssues];
   const unpublishedLinkTargets: UnpublishedLinkTarget[] = [];
@@ -967,7 +966,7 @@ export async function generateSite(args: {
     const linkResolver = linkIndex.forPage(page.page_id);
     const lists = listContext.forPage(page.page_id, {
       linkResolver,
-      pluginSources: pluginSourcesFromDataLists(allLists.get(page.page_id) ?? {}),
+      pluginSources: allSources.get(page.page_id) ?? {},
     });
     try {
       composed = composePageWithLayout({
@@ -1042,11 +1041,15 @@ export async function generateSite(args: {
   assertNoRenderFailures(renderedForGate);
   // A `list-resolve` overlay entry the resolver refused (unknown address,
   // structural change) is the plugin's fault, not the site's: the stored
-  // value rendered instead, and the build says so.
+  // value rendered instead, and the plugin's error channel says so
+  // (plugin_errors → list_plugins / Settings → Plugins, #1008).
   for (const i of overlayIssues) {
     console.warn(
       `[static-generator] list overlay for variant "${i.variant}" refused at ${i.address}: ${i.reason}`,
     );
+  }
+  if (overlayIssues.length > 0 && listData.overlaySources) {
+    await args.plugins.reportListOverlayIssues(listData.overlaySources, overlayIssues);
   }
   timer.lap("compose");
 
@@ -1137,10 +1140,11 @@ export async function generateSite(args: {
     p.html = injectPluginAssets(p.html, clientAssets, "linked");
   }
 
-  // #605 — a plugin data-list section that survived composition means the
-  // page would ship raw `{{#list}}` markers to visitors (the plugin is off,
-  // or its answer never reached the build). Refuse the build and name them.
-  assertNoPluginMarkers(composedPages, await args.plugins.declaredDataListNames());
+  // #605 — a plugin list-source section that survived composition means
+  // the page would ship raw `{{#source}}` markers to visitors (the plugin
+  // is off, or its answer never reached the build). Refuse the build and
+  // name them.
+  assertNoPluginMarkers(composedPages, await args.plugins.declaredListSourceNames());
 
   // issue #158 — minify the composer's inline CSS/JS last, after every
   // pass that still rewrites inside them (media URLs, plugin assets).

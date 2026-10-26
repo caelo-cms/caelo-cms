@@ -12,7 +12,11 @@
  */
 
 export { externalArtifactDigest } from "./artifact.js";
-export { validateInstallationPolicy, validateSelectedGrants } from "./installation-policy.js";
+export {
+  validateExternalToolSchema,
+  validateInstallationPolicy,
+  validateSelectedGrants,
+} from "./installation-policy.js";
 export {
   bytesToHex,
   CAELO_TIER1_PUBLIC_KEY_HEX,

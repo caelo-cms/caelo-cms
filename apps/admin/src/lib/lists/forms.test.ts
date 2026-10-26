@@ -183,10 +183,8 @@ describe("query knobs", () => {
 
 describe("editor tabs", () => {
   test("plugin tabs show only while their plugin is active", () => {
-    const tabs = [
-      ...LIST_EDITOR_TABS,
-      { id: "languages", label: "Languages", requiresPlugin: "international-site" },
-    ];
+    // The Languages tab is international-site's (epic #1107 part G).
+    const tabs = LIST_EDITOR_TABS;
     expect(listEditorTabs("main-menu", new Set(), tabs).map((t) => t.id)).toEqual([
       "",
       "structure",

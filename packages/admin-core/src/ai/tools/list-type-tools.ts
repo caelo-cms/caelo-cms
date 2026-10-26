@@ -36,6 +36,19 @@ interface ListTypeRow {
   definition: ListTypeDef;
   listCount: number;
   version: number;
+  /** The plugin that ships this type (its definition is read-only), or null. */
+  ownerPlugin: string | null;
+  /** Definition extensions of plugins that are not active (kept, not applied). */
+  inertExt: string[];
+}
+
+/** Version, list count, plugin ownership and inert extensions of one type. */
+function typeFacts(t: ListTypeRow): string {
+  const owner = t.ownerPlugin
+    ? `; ships with plugin "${t.ownerPlugin}" (read-only definition — use it, or create your own type)`
+    : "";
+  const inert = t.inertExt.length > 0 ? `; inert plugin settings: ${t.inertExt.join(", ")}` : "";
+  return `${t.listCount} shared list(s); version ${t.version}${owner}${inert}`;
 }
 
 export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = {
@@ -44,6 +57,7 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
     "The list types of this site — the shapes lists take: which node kinds exist, their fields (`*` = required), what may hang under what, and which nodes generate entries from a source (a page query, breadcrumbs, a plugin). " +
     `${LISTS_ALIAS} ` +
     "Shipped types: `texts` (plain strings), `links` (label + link), `menu` (nested entries, 3 levels, marks the current page), `categories` / `tags` (vocabularies pages are assigned to). " +
+    "A type that ships with a plugin (marked 'ships with plugin') is read-only: its lists are yours to fill, its definition is not to change. 'Inert plugin settings' are extensions of a plugin that is not active — kept, not applied. " +
     "Read this before writing a list's entries or a module's `{{#field}}…{{/field}}` template (the node fields are the keys inside the section). Pass `slug` for one type in detail (lists of the type + modules with local lists of it). " +
     "When no type fits (a mega menu with columns and a latest-news block, a team list with photo + role), create one with upsert_list_types_many instead of bending `links`.",
   schema: listListTypesInput,
@@ -63,7 +77,7 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
       return {
         ok: true,
         content: [
-          `${describeListType(v.listType.definition)}\n  version ${v.listType.version}`,
+          `${describeListType(v.listType.definition)}\n  ${typeFacts(v.listType)}`,
           `shared lists: ${v.lists.map((l) => `${l.slug} ("${l.name}")`).join(", ") || "none"}`,
           `local lists (module fields / placements): ${v.localLists.join("; ") || "none"}`,
           `definition: ${JSON.stringify(v.listType.definition)}`,
@@ -86,12 +100,7 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
     }
     return {
       ok: true,
-      content: rows
-        .map(
-          (t) =>
-            `${describeListType(t.definition)}\n  ${t.listCount} shared list(s); version ${t.version}`,
-        )
-        .join("\n"),
+      content: rows.map((t) => `${describeListType(t.definition)}\n  ${typeFacts(t)}`).join("\n"),
       value: r.value,
     };
   },
@@ -105,6 +114,7 @@ export const upsertListTypesManyTool = makeOpTool({
     "A node with `source` gets generated entries instead of stored children: {kind:'query', editable:[knobs the entry may change], defaults:{page_type:'news', order:'published_desc', limit:3}} for 'latest news', {kind:'system', name:'breadcrumbs'|'children'|'siblings'|'page_terms'|'term_pages'}, or {kind:'plugin', name}. " +
     'Example — a mega menu: root.allow ["column","link"]; node `column` {fields:[{name:"heading",type:"text",label:"Heading",required:true}], children:{name:"links",allow:["link","news"]}}; node `link` {fields:[label text*, link link*], current_from:"link"}; node `news` {fields:[{name:"heading",type:"text",label:"Heading"}], source:{kind:"query",editable:["limit"],defaults:{page_type:"news",order:"published_desc",limit:3}}}. ' +
     "Changing a type that has lists is checked against every list of the type (local ones in modules too): a new required field needs a `default`; removing a node kind or field that still has values is refused with the lists named — pass `dropValues: true` only when the operator agreed to lose those values. Pass `expectedVersion` from list_list_types to avoid overwriting a concurrent change. " +
+    "A type that ships with a plugin cannot be changed (by you or the operator) — create your own type under another slug instead. " +
     "Do NOT create a near-duplicate of a shipped type — reuse `links` / `menu` when they fit.",
   opName: "list_types.upsert_many",
   input: upsertListTypesManyOp.input,
@@ -126,7 +136,7 @@ export const upsertListTypesManyTool = makeOpTool({
 export const deleteListTypesManyTool = makeOpTool({
   name: "delete_list_types_many",
   description:
-    "Delete list types by slug (1–50). Refused while any list (shared, or local in a module field) still uses the type — the error names them; delete or convert those lists first. Undoable like every draft change. " +
+    "Delete list types by slug (1–50). Refused for a type that ships with a plugin, and while any list (shared, or local in a module field) still uses the type — the error names them; delete or convert those lists first. Undoable like every draft change. " +
     "Do NOT use to empty a list (that is patch_list_items_many / upsert_lists_many) or to drop a list (delete_lists_many).",
   opName: "list_types.delete_many",
   input: deleteListTypesManyOp.input,

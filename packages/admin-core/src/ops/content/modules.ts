@@ -6,7 +6,7 @@
  * scope here — `actorScope: ["human", "system"]` until P5 widens it.
  */
 
-import { pluginDataListsRegistry } from "@caelo-cms/plugin-host";
+import { pluginListSourcesRegistry } from "@caelo-cms/plugin-host";
 import { defineOperation, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
 import {
   deriveModuleType,
@@ -303,14 +303,14 @@ export const getModuleOp = withHumanisedLinks(
 );
 
 /**
- * Every data-list name a plugin claims, running or not (#447). Dormant
- * names count: a module written while a plugin ran must stay editable
- * after it is switched off, or turning a plugin off would make its
- * modules unsaveable.
+ * Every list-source name a plugin claims, running or not (#447, epic
+ * #1107). Dormant names count: a module written while a plugin ran must
+ * stay editable after it is switched off, or turning a plugin off would
+ * make its modules unsaveable.
  */
-function claimedDataListNames(): ReadonlySet<string> {
+function claimedListSourceNames(): ReadonlySet<string> {
   const names = new Set<string>();
-  for (const entry of pluginDataListsRegistry.catalogue()) names.add(entry.name);
+  for (const entry of pluginListSourcesRegistry.catalogue()) names.add(entry.name);
   return names;
 }
 
@@ -363,7 +363,7 @@ export const createModuleOp = defineOperation({
       const validation = validateTemplatizedModule(
         candidateHtml,
         candidateFields,
-        claimedDataListNames(),
+        claimedListSourceNames(),
       );
       if (!validation.ok) {
         await recordAudit(tx, {
@@ -627,7 +627,7 @@ export const updateModuleOp = defineOperation({
       const validation = validateTemplatizedModule(
         extracted.templatizedHtml,
         extracted.fields,
-        claimedDataListNames(),
+        claimedListSourceNames(),
       );
       if (!validation.ok) {
         await recordAudit(tx, {

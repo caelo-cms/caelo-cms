@@ -18,7 +18,7 @@ import {
   collectBuildAssets,
   MAIN_RENDER,
   resetPluginHost,
-  resolveDataLists,
+  resolveListSources,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -231,19 +231,23 @@ describe("#451 — consent-manager", () => {
     expect(cookies.find((c) => c.name === "caelo_visitor_id")?.category).toBe("analytics");
   });
 
-  it("offers the categories to a module as a data list, not as markup", async () => {
-    const lists = await resolveDataLists([pageId], MAIN_RENDER, "directory");
-    const items = lists.get(pageId)?.consent_categories;
+  it("offers the categories to a module as a list source, not as markup", async () => {
+    const sources = await resolveListSources([pageId], MAIN_RENDER, "directory");
+    const items = sources.get(pageId)?.consent_categories;
     expect(items).toBeDefined();
-    expect(items?.map((i) => i.key)).toEqual(["necessary", "functional", "analytics", "marketing"]);
+    // The category key is the stable entry id.
+    expect(items?.map((i) => i.id)).toEqual(["necessary", "functional", "analytics", "marketing"]);
     // Every key the banner template needs, and nothing that looks like
     // HTML — the plugin never supplies markup.
-    expect(Object.keys(items?.[0] ?? {}).sort()).toEqual([
+    expect(Object.keys(items?.[0]?.values ?? {}).sort()).toEqual([
       "description",
       "key",
       "label",
       "required",
     ]);
+    // `required` is a real boolean now: {{#required}} means what it says.
+    expect(items?.find((i) => i.id === "necessary")?.values.required).toBe(true);
+    expect(items?.find((i) => i.id === "marketing")?.values.required).toBe(false);
     expect(JSON.stringify(items)).not.toContain("<");
   });
 

@@ -24,8 +24,8 @@ import {
   MAIN_RENDER,
   resetPluginHost,
   resetPluginHostSync,
-  resolveDataLists,
   resolveLinkVariants,
+  resolveListSources,
 } from "@caelo-cms/plugin-host";
 import { definePlugin } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
@@ -144,16 +144,23 @@ beforeAll(async () => {
           version: "0.1.0",
           tier: 1,
           schema: {},
-          requestedCapabilities: ["link_resolve", "head_contributions"],
+          requestedCapabilities: ["link_resolve", "head_contributions", "list_sources"],
           linkResolveOperation: "link_resolve",
-          dataLists: [
+          listSources: [
             {
               name: "language_links",
+              label: "Test list",
               description: "test list",
-              itemFields: ["href", "label"],
+              node: {
+                label: "Entry",
+                fields: [
+                  { name: "href", label: "Href", type: "link" },
+                  { name: "label", label: "Label", type: "text" },
+                ],
+              },
             },
           ],
-          dataListsOperation: "language_links",
+          listSourcesOperation: "language_links",
           contributes: ["head"],
           contributionsOperation: "head_contributions",
           operations: {
@@ -189,7 +196,7 @@ describe("#1087 — a failing plugin degrades the preview instead of aborting it
     expect(rendered.pluginFailures.every((f) => f.slug === PLUGIN)).toBe(true);
     const reasons = rendered.pluginFailures.map((f) => f.reason).join("\n");
     expect(reasons).toContain(`link-resolve: ${PLUGIN}.link_resolve failed`);
-    expect(reasons).toContain(`data-lists: ${PLUGIN}.language_links failed`);
+    expect(reasons).toContain(`list-sources: ${PLUGIN}.language_links failed`);
     expect(reasons).toContain(`head-composition: ${PLUGIN}.head_contributions failed`);
     expect(reasons).toContain(REFUSAL);
   });
@@ -216,7 +223,7 @@ describe("#1087 — a failing plugin degrades the preview instead of aborting it
   it("builds (no failure sink) still fail loudly on the same plugin", async () => {
     const pages = [pageId];
     await expect(resolveLinkVariants(pages, MAIN_RENDER)).rejects.toThrow(/link_resolve failed/);
-    await expect(resolveDataLists(pages, MAIN_RENDER, "directory")).rejects.toThrow(
+    await expect(resolveListSources(pages, MAIN_RENDER, "directory")).rejects.toThrow(
       /language_links failed/,
     );
     await expect(

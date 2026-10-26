@@ -24,6 +24,8 @@ export interface ListEditorTab {
 export const LIST_EDITOR_TABS: readonly ListEditorTab[] = [
   { id: "", label: "Entries" },
   { id: "structure", label: "Structure" },
+  // Epic #1107 part G — what each entry shows in each language.
+  { id: "languages", label: "Languages", requiresPlugin: "international-site" },
 ];
 
 /** The tabs to show for `slug`, with their hrefs. */

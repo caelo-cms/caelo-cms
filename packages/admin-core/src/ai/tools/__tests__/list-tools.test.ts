@@ -261,10 +261,34 @@ describe("list tools (epic #1107)", () => {
     const menu = DEFAULT_LIST_TYPES.find((t) => t.slug === "menu");
     const { toolCtx, calls } = harness({
       "list_types.list": {
-        listTypes: [{ slug: "menu", definition: menu, listCount: 1, version: 1 }],
+        listTypes: [
+          {
+            slug: "menu",
+            definition: menu,
+            listCount: 1,
+            version: 1,
+            ownerPlugin: null,
+            inertExt: [],
+          },
+          {
+            slug: "language-switcher",
+            definition: { ...menu, slug: "language-switcher" },
+            listCount: 0,
+            version: 1,
+            ownerPlugin: "international-site",
+            inertExt: ["nodes.entry.ext.seo-plugin"],
+          },
+        ],
       },
       "list_types.get": {
-        listType: { slug: "menu", definition: menu, listCount: 1, version: 1 },
+        listType: {
+          slug: "menu",
+          definition: menu,
+          listCount: 1,
+          version: 1,
+          ownerPlugin: null,
+          inertExt: [],
+        },
         lists: [{ id: LIST_ID, slug: "main-nav", name: "Main navigation" }],
         localLists: [],
       },
@@ -274,6 +298,9 @@ describe("list tools (epic #1107)", () => {
     expect(all.content).toContain('node entry "');
     expect(all.content).toContain("label*:text");
     expect(all.content).toContain('children "children" → entry');
+    // A plugin-owned type says it is read-only; inert extensions are named.
+    expect(all.content).toContain('ships with plugin "international-site" (read-only definition');
+    expect(all.content).toContain("inert plugin settings: nodes.entry.ext.seo-plugin");
     const one = await listListTypesTool.handler(AI, { slug: "menu" }, toolCtx);
     expect(one.content).toContain('main-nav ("Main navigation")');
     expect(calls.map((c) => c.op)).toEqual(["list_types.list", "list_types.get"]);

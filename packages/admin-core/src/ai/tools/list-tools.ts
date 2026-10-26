@@ -51,8 +51,14 @@ function usedBy(u: ListUsageView): string {
   return u.modules.map((m) => `${m.slug}.${m.field}`).join(" ");
 }
 
-/** The op schema is a strict object; the read-tool factory extends it with the list params. */
-const listListsInput = listListsOp.input as unknown as z.ZodObject<z.ZodRawShape>;
+/**
+ * The op's filters; the read-tool factory extends them with the list
+ * params. `includeItems` is left out: a TOON row cannot show a tree, and
+ * get_list is the AI's way to read entries.
+ */
+const listListsInput = (listListsOp.input as unknown as z.ZodObject<z.ZodRawShape>).omit({
+  includeItems: true,
+});
 
 export const listListsTool = makeListReadTool<Record<string, unknown>, ListSummaryRow>({
   name: "list_lists",
