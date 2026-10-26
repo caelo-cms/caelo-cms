@@ -70,7 +70,7 @@ import {
   translateChrome,
 } from "./chrome-ops.js";
 import { chromeLinkLocations } from "./link-locations.js";
-import { LIST_EXT_FIELD_SCHEMA } from "./list-translation.js";
+import { entryStates, LIST_EXT_FIELD_SCHEMA } from "./list-translation.js";
 import {
   lastLiveBuildAt,
   listFindings,
@@ -991,6 +991,19 @@ export default definePlugin<PluginContextTier1>({
             (r) => r.hidden && (listId === undefined || r.address.startsWith(`list/${listId}/`)),
           )
           .map((r) => ({ localeCode: r.locale_code, address: r.address })),
+        // One list: every entry and what it shows in each language.
+        ...(target
+          ? {
+              entries: entryStates(
+                state.snapshot,
+                target,
+                [...deps.locales.values()].filter((l) => !l.is_default).map((l) => l.code),
+                state.index,
+                state.linkHasVersion,
+                state.hiddenByOperator,
+              ),
+            }
+          : {}),
       };
     },
 

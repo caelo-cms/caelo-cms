@@ -209,14 +209,25 @@ page's variant carrying any of the terms, title order, at most 50; the
 terms come from the placement value's `terms` on a module field, from
 the node's `term` field values on a source node).
 
-Plugin sources replace the plugin manifest's `dataLists`: a plugin
-declares `listSources: [{ name, label, node: NodeDef }]`; the host
-resolves them per page before rendering, exactly where `dataLists` were
-resolved, and passes them to `forPage` as `pluginSources` (entries
-`{ id, values }`; until the SDK change lands, `pluginSourcesFromDataLists`
-converts the `dataLists` answer, ids are positions). A section name no
-module field declares but an installed plugin does (`{{#language_links}}`)
-reads that plugin source too; module fields always win.
+Plugin sources (they replaced the manifest's `dataLists`): a plugin
+declares `listSources: [{ name, label, description, node: NodeDef }]`
+and names a `listSourcesOperation` (grant `list_sources`). The node is
+data only — no children, no source, no `module` / `term` fields. The
+operation takes `{ pageIds, pageUrlStyle }` and returns
+`{ sources: Record<pageId, Record<name, { id, values }[]>> }`; the host
+(`plugin-host/src/list-source-resolution.ts`) calls it once per preview /
+build, batched over the pages, and checks the answer before anything
+renders: only pages that were asked about, only names the plugin
+claimed, at most 500 entries per page and source, ids that are stable
+tokens (`[A-Za-z0-9_.:-]{1,128}`, unique), values valid for the node's
+fields and no undeclared key, at most 4 MiB serialized. A violation
+throws (in a preview and in a build); a failing call is reported as
+`plugin-render-failed:<slug>` in a preview and throws in a build. The
+entries reach `forPage` as `pluginSources`. A section name no module
+field declares but an installed plugin does (`{{#language_links}}`)
+reads that plugin source too; module fields always win. Names of an
+installed-but-inactive plugin render `list-source-unavailable:<name>
+plugin=<slug>`.
 
 ## 7. Module field kind `list`
 
@@ -331,10 +342,16 @@ provides five neutral hooks:
    `instance/<contentInstanceId>/<field>/item/<itemId>/<itemField>`,
    `page/<pageId>/props/<field>`, `list_type/<typeId>/node/<node>/<field>`.
 2. **Definition extensions**: a plugin manifest declares `listExt:
-   { field?: ZodJSON, node?: ZodJSON }`; values live under
-   `ext.<pluginSlug>` on field and node definitions. Core validates them
-   against the active plugin's schema and stores them; it never reads
-   them. With the plugin archived they stay as inert data.
+   { field?: JSONSchema, node?: JSONSchema }` (the safe subset tool
+   schemas use; no grant — core never interprets it); values live under
+   `ext.<pluginSlug>` on list-type field and node definitions and on
+   page-type properties. `list_types.upsert_many` and
+   `page_types.upsert_many` validate them against the RUNNING plugin's
+   schema (`plugin-host` `activeListExt`, `admin-core/src/lists/ext.ts`).
+   With the plugin not running (inactive, disabled, unknown) they stay as
+   inert data: a write that keeps them unchanged passes, one that adds or
+   changes them is refused with "activate the plugin first";
+   `list_types.list` / `get` name inert attributes in `inertExt`.
 3. **Composition point `list-resolve`**: before a build (and per preview)
    the host asks every plugin that answers it for an overlay per output
    variant: `{ [variant]: { values: Record<address, unknown>; hidden: address[] } }`.
@@ -342,11 +359,40 @@ provides five neutral hooks:
    (from `link-resolve`'s page variants). An overlay can replace values
    and hide entries; it cannot add, remove or reorder entries (enforced by
    the resolver: unknown addresses are dropped and reported as plugin
-   errors).
+   errors). Wiring (`plugin-host/src/list-resolve.ts`): a plugin names a
+   `listResolveOperation` (grant `list_resolve`), called with
+   `{ variants }` — the distinct variants of the `link-resolve` partition
+   — as a read-only render invocation in the render's scope (a chat's
+   preview sees the chat's plugin storage). Both loaders
+   (`admin-core/src/lists/load.ts`, the generator's `list-data.ts`) ask
+   it right after `link-resolve` and pass the merged overlays as
+   `ListRenderData.overlays` (with `overlaySources`, who sent what). An
+   answer for a variant that was not asked about, two plugins setting one
+   address, or more than 16 MiB throws. After the render the preview and
+   the generator hand `overlayIssues` to `reportListOverlayIssues`: one
+   `plugin_errors` row per plugin (phase `render`, class `plugin`), shown
+   in `list_plugins` / Settings → Plugins — never a reason to switch the
+   plugin off (#1008).
+   **Plugin list types**: a manifest may ship `listTypes` (slugs start
+   with `<pluginSlug>-`, grant `list_types`). The host stores them through
+   `list_types.sync_plugin_types` (system-only; the same checks as
+   `upsert_many`) each time the plugin loads; `list_types.plugin_id`
+   (migration 0357) records the owner. Such a type is available exactly
+   while the plugin is (`plugin_list_type_available`, like a plugin's
+   skills): every list read and render leaves it out otherwise, and a
+   person or the AI cannot change or delete it (`ownerPlugin` in
+   `list_types.list`). Uninstalling the plugin keeps the type as a site
+   type (`ON DELETE SET NULL`) so the operator's lists survive.
 4. **Domain events** with the chat branch: `list.items_changed`
    (`added | updated {fields, before} | moved | removed` per entry),
    `list_type.changed` (`fieldsAdded/fieldsRemoved/nodesRemoved`),
-   `list.deleted`, `page.properties_changed`, `page.terms_changed`.
+   `list.deleted`, `page.properties_changed`, `page.terms_changed` —
+   pollable by a plugin with the `domain_events` grant
+   (`PLUGIN_EVENT_KINDS` in the SDK). Plugins read list data through the
+   named ops of the `lists` read domain (`lists.list` with
+   `includeItems`, `lists.get`, `list_types.list` / `get`,
+   `page_types.list` / `get`) and `pages.list_shared_content`
+   (`listInstances`: which pages each local list is placed on).
 5. **Audit contributions**: a plugin names one of its operations as
    `auditFindingsOperation` (manifest field; shipped and runtime-installed
    plugins alike, no capability). Each Stage audit calls it once through
@@ -377,7 +423,11 @@ branch-aware storage, the change handling table (added → `missing`,
 source changed → `needs_update`, moved → nothing, removed → `orphaned`
 and garbage-collected after the removal is live, link target without a
 variant → entry hidden + finding, query nodes scoped by variant), its AI
-tools and the "Languages" tab in the list editor. See the plugin's README.
+tools (`translate_chrome`, `apply_translations` with `kind: "addresses"`,
+`set_list_item_visibility`, `list_translation_status`), its
+`audit_findings` contribution and the "Languages" tab in the list editor
+(`/content/lists/[slug]/languages`). See
+`packages/plugins/international-site/README.md`.
 
 ## 10. Rendering, preview, builds
 
@@ -429,8 +479,8 @@ tools and the "Languages" tab in the list editor. See the plugin's README.
   is no built-in menu renderer.
 - Overlays: refused overlay entries (unknown address, a structural
   `module` / `term` value, a value failing its field) are collected on
-  the context (`overlayIssues`); the generator logs them, the plugin's
-  error channel takes them once the `list-resolve` point is wired.
+  the context (`overlayIssues`); the preview and the generator report
+  them to the sending plugin's error channel (`plugin_errors`, §9.3).
 
 ## 11. Draft, snapshots, integrity
 

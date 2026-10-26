@@ -3,7 +3,7 @@
   "tools": [
     {
       "name": "edit_module",
-      "description": "Edit ONE module's structure: HTML template, fields, CSS, JS, displayName, description, or kind. **AUTHOR EXPLICITLY (v0.12.0+):** pass `html` with `{{fieldName}}` placeholders + an explicit `fields[]` array with semantic snake_case names (`hero_title`, `primary_cta_href`, `nav_items`), NOT a literal-content fallback. The operator says 'fix the homepage hero copy'; YOU translate that to the right field names. Field names like `cta2label2` or `spanText` are wrong — they leak the extractor heuristic. **Field kinds (v0.12.0):** `text`, `richtext`, `url`, `image`, `number`, `boolean`, `link` (primitives); `text-list` (array of strings, slot `{{#field}}…{{.}}…{{/field}}`); `link-list` (array of `{label, href}`, slot `{{#field}}…{{label}}…{{href}}…{{/field}}` — use for menus, footer columns); `module` (single nested module, slot `{{>field}}`); `module-list` (array of nested modules, slot `{{#field}}…{{/field}}`). **Nested fields may declare `allowedModuleTypes`** — a whitelist of stable module `type`s (e.g. `[\"button\"]`), NOT slugs. It matches the referenced module's `type`; set it to constrain what can nest in a `module`/`module-list` slot, and widen it here if a valid module is being wrongly rejected. **Lists are lists, not numbered scalars.** A menu with 10 items is ONE `link-list` field with 10 elements — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `text-list`. Cards with rich per-item structure use `module-list` pointing at a sub-module. **Update description + kind when the module's purpose drifts.** The `## Modules` block exposes them to your future self; stale descriptions hurt your own decision-making. **Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `## Modules` block. Treat it as a fallback, not the default path. **Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158); the tool result flags unscoped selectors. **Module JS shares ONE page-level script** - no implicit `root`/`el` binding exists; wrap in an IIFE and query via document.querySelectorAll scoped to your module's root class (see the `js` input description). **Accordion, tabs, carousel need NO module JS** - mark the markup with `data-caelo-ui=\"accordion|tabs|carousel\"` and Caelo ships vetted, accessible behaviour (markup contract in the `js` input description). Edits are CHAT-BRANCHED until publish. **For a TARGETED change to existing html/css/js, PREFER `edit_content`** (surgical string-replace: far cheaper than re-emitting the whole body here, and the diff is reviewable). Use `edit_module` for a WHOLESALE rewrite, a brand-new module body, or `fields`/`displayName`/`kind`/`type`/`description` changes. Use this for structure, styling, fields list, or `description`/`kind` updates. DO NOT use this to change what one page shows — use `set_page_module_content` (per-page content) or `set_content_instance_values` (shared content) for that. Prefer `update_modules_many` when targeting > 1 module. DO NOT use for page metadata (`update_pages_many`) or template-level edits (`propose_update_template`). **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Edit ONE module's structure: HTML template, fields, CSS, JS, displayName, description, or kind. **AUTHOR EXPLICITLY (v0.12.0+):** pass `html` with `{{fieldName}}` placeholders + an explicit `fields[]` array with semantic snake_case names (`hero_title`, `primary_cta_href`, `nav_items`), NOT a literal-content fallback. The operator says 'fix the homepage hero copy'; YOU translate that to the right field names. Field names like `cta2label2` or `spanText` are wrong — they leak the extractor heuristic. **Field kinds (v0.12.0):** `text`, `richtext`, `url`, `image`, `number`, `boolean`, `link` (primitives); `list` (entries of a list type, slot `{{#field}}…{{/field}}` with the entry's keys inside — `listType` \"texts\": `{{text}}`; \"links\": `{{label}}` + `{{link}}`; \"menu\": plus `{{#children}}…{{/children}}`; `bind` local (default, entries in the placement), shared (`caelo:list/<id>` — menus, footer links used site-wide) or source (page query / breadcrumbs)); `module` (single nested module, slot `{{>field}}`); `module-list` (array of nested modules, slot `{{#field}}…{{/field}}`). **Nested fields may declare `allowedModuleTypes`** — a whitelist of stable module `type`s (e.g. `[\"button\"]`), NOT slugs. It matches the referenced module's `type`; set it to constrain what can nest in a `module`/`module-list` slot, and widen it here if a valid module is being wrongly rejected. **Lists are lists, not numbered scalars.** A menu with 10 items is ONE `list` field with 10 entries — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `list` (listType \"texts\"). Cards with rich per-item structure use `module-list` pointing at a sub-module. **Update description + kind when the module's purpose drifts.** `list_modules` exposes them to your future self; stale descriptions hurt your own decision-making. **Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `list_modules` catalog. Treat it as a fallback, not the default path. **Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158); the tool result flags unscoped selectors. **Module JS shares ONE page-level script** - no implicit `root`/`el` binding exists; wrap in an IIFE and query via document.querySelectorAll scoped to your module's root class (see the `js` input description). **Accordion, tabs, carousel need NO module JS** - mark the markup with `data-caelo-ui=\"accordion|tabs|carousel\"` and Caelo ships vetted, accessible behaviour (markup contract in the `js` input description). Edits are CHAT-BRANCHED until publish. **For a TARGETED change to existing html/css/js, PREFER `edit_content`** (surgical string-replace: far cheaper than re-emitting the whole body here, and the diff is reviewable). Use `edit_module` for a WHOLESALE rewrite, a brand-new module body, or `fields`/`displayName`/`kind`/`type`/`description` changes. Use this for structure, styling, fields list, or `description`/`kind` updates. DO NOT use this to change what one page shows — use `set_page_module_content` (per-page content) or `set_content_instance_values` (shared content) for that. Prefer `update_modules_many` when targeting > 1 module. DO NOT use for page metadata (`update_pages_many`) or template-level edits (`propose_update_template`). **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -50,7 +50,7 @@
           },
           "js": {
             "type": "string",
-            "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` is applied by the built-in nav-menu renderer; never add it by hand. Write module JS only for behaviour the kit does not cover."
+            "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (a menu that collapses behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/menu}}</ul></nav>` around the module's list field. Write module JS only for behaviour the kit does not cover."
           },
           "fields": {
             "type": "array",
@@ -78,8 +78,7 @@
                     "number",
                     "boolean",
                     "link",
-                    "text-list",
-                    "link-list",
+                    "list",
                     "module",
                     "module-list"
                   ]
@@ -90,7 +89,7 @@
                   "maxLength": 128
                 },
                 "default": {
-                  "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); text-list → an array of strings; link-list → an array of {label, href} objects with the REAL link text + URL, e.g. [{\"label\":\"Home\",\"href\":\"/\"},{\"label\":\"About\",\"href\":\"/about\"}]. Omit for module / module-list.",
+                  "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); list (local) → an array of entries of the list type with the REAL text + URLs, e.g. listType \"links\": [{\"node\":\"link\",\"values\":{\"label\":\"Home\",\"link\":{\"href\":\"/\"}}},{\"node\":\"link\",\"values\":{\"label\":\"About\",\"link\":{\"href\":\"/about\"}}}]; listType \"texts\": [{\"node\":\"text\",\"values\":{\"text\":\"Fast\"}}]; list (shared) → \"caelo:list/<id>\". Omit for module / module-list and for a list with bind \"source\".",
                   "anyOf": [
                     {
                       "type": "string"
@@ -104,24 +103,119 @@
                     {
                       "type": "array",
                       "items": {
-                        "type": "string"
-                      }
-                    },
-                    {
-                      "type": "array",
-                      "items": {
                         "type": "object",
                         "additionalProperties": false,
                         "required": [
-                          "label",
-                          "href"
+                          "node",
+                          "values"
                         ],
                         "properties": {
-                          "label": {
+                          "node": {
                             "type": "string"
                           },
-                          "href": {
-                            "type": "string"
+                          "values": {
+                            "type": "object",
+                            "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}).",
+                            "additionalProperties": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                },
+                                {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": [
+                                    "href"
+                                  ],
+                                  "properties": {
+                                    "href": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 2000
+                                    },
+                                    "target": {
+                                      "type": "string",
+                                      "enum": [
+                                        "_self",
+                                        "_blank"
+                                      ]
+                                    }
+                                  }
+                                },
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          "children": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "node",
+                                "values"
+                              ],
+                              "properties": {
+                                "node": {
+                                  "type": "string"
+                                },
+                                "values": {
+                                  "type": "object",
+                                  "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}).",
+                                  "additionalProperties": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": [
+                                          "href"
+                                        ],
+                                        "properties": {
+                                          "href": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "target": {
+                                            "type": "string",
+                                            "enum": [
+                                              "_self",
+                                              "_blank"
+                                            ]
+                                          }
+                                        }
+                                      },
+                                      {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            }
                           }
                         }
                       }
@@ -143,6 +237,99 @@
                       }
                     }
                   ]
+                },
+                "listType": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+                  "description": "list: the list type slug (shipped: \"texts\", \"links\", \"menu\", \"categories\", \"tags\")."
+                },
+                "bind": {
+                  "type": "string",
+                  "enum": [
+                    "local",
+                    "shared",
+                    "source"
+                  ],
+                  "description": "list: local (default) = entries stored with this placement; shared = a list used in several places (menus, footer links); source = generated per page."
+                },
+                "list": {
+                  "type": "string",
+                  "pattern": "^caelo:list/[0-9a-f-]{36}$",
+                  "description": "list, bind shared: fix the list for every placement (caelo:list/<id>)."
+                },
+                "source": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "description": "Where generated entries come from: {kind:\"query\", editable:[…knobs], defaults:{page_type, order, limit, …}}, {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} or {kind:\"plugin\", name}.",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "query",
+                        "system",
+                        "plugin"
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "editable": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "page_type",
+                          "terms",
+                          "terms_mode",
+                          "parent",
+                          "exclude_current",
+                          "order",
+                          "limit"
+                        ]
+                      }
+                    },
+                    "defaults": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "page_type": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9-]+$"
+                        },
+                        "terms": {
+                          "type": "array",
+                          "maxItems": 20,
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "terms_mode": {
+                          "type": "string",
+                          "enum": [
+                            "any",
+                            "all"
+                          ]
+                        },
+                        "parent": {
+                          "type": "string"
+                        },
+                        "exclude_current": {
+                          "type": "boolean"
+                        },
+                        "order": {
+                          "type": "string"
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 50
+                        }
+                      }
+                    }
+                  }
                 },
                 "allowedModuleTypes": {
                   "type": "array",
@@ -216,7 +403,7 @@
     },
     {
       "name": "edit_content",
-      "description": "Surgically edit a module's, template's or layout's body (html/css/js) by string replacement — the cheap, minimal-diff way to change existing code. Pass `entityKind` + `entityId` + `field` + an `edits` array of {oldString, newString, replaceAll?}. Each `oldString` must be UNIQUE in the body (add surrounding context if not) unless `replaceAll:true`; edits apply in order, atomically (all-or-nothing). Read the body first with read_content and copy exact text (incl. whitespace) into `oldString`; optionally pass its `sha=` as `expectedSha` to guard against a concurrent change. On success it returns the NEW `sha=` plus a line-numbered snippet of each changed region — chain another edit_content in the same turn using that sha and the fresh line numbers, WITHOUT re-reading. PREFER this over edit_module for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. Use edit_module instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. TEMPLATES AND LAYOUTS ARE GATED: an edit_content on a template or layout is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim such an edit was applied. **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Surgically edit a module's, template's or layout's body (html/css/js) by string replacement — the cheap, minimal-diff way to change existing code. Pass `entityKind` + `entityId` + `field` + an `edits` array of {oldString, newString, replaceAll?}. Each `oldString` must be UNIQUE in the body (add surrounding context if not) unless `replaceAll:true`; edits apply in order, atomically (all-or-nothing). Read the body first with read_content and copy exact text (incl. whitespace) into `oldString`; optionally pass its `sha=` as `expectedSha` to guard against a concurrent change. To fill an EMPTY field (e.g. a module with no js yet), pass one edit with `oldString: \"\"` and the new content as `newString`; an empty oldString on a field that has content is refused. On success it returns the NEW `sha=` plus a line-numbered snippet of each changed region — chain another edit_content in the same turn using that sha and the fresh line numbers, WITHOUT re-reading. PREFER this over edit_module for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. Use edit_module instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. TEMPLATES AND LAYOUTS ARE GATED: an edit_content on a template or layout is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim such an edit was applied. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -247,8 +434,7 @@
               "type": "object",
               "properties": {
                 "oldString": {
-                  "type": "string",
-                  "minLength": 1
+                  "type": "string"
                 },
                 "newString": {
                   "type": "string"
@@ -324,7 +510,7 @@
     },
     {
       "name": "set_page_module_content",
-      "description": "Set the content values for ONE module placement on a specific page. **Prefer `set_page_module_content_many` when a content pass touches more than one placement** (a whole page's text in one transaction — §11 bulk-first), and `build_page` when the modules don't exist yet (it places modules WITH content in one call). v0.12.0 — page CONTENT lives in a content_instance bound to the placement. For UNSYNCED placements (the default) this tool routes through content_instances.set_values and edits stay local to this page. For SYNCED placements (sharing content with other pages) this tool refuses and points you at fork_placement_content (to detach first) or set_content_instance_values (to commit to the propagate-everywhere blast radius). Use this when the operator says 'change the hero heading on /home to X' or 'set the about page subtitle to Y'. Use `edit_module` (NOT this tool) when the change should affect every page using the module (structural / styling / field-schema change). `contentValues` is keyed by the module's declared field names (`{{fieldName}}` placeholders). For nested fields (kind `module` / `module-list`) the value is `{ moduleId, contentInstanceId }` (or an array of them); the referenced module's stable `type` must be in the field's `allowedModuleTypes` when set (reuse a module of an allowed type — see `## Modules`). Missing fields fall back to the module field's `default`. Pass an empty object to reset a placement to all defaults. **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Set the content values for ONE module placement on a specific page. **Prefer `set_page_module_content_many` when a content pass touches more than one placement** (a whole page's text in one transaction — §11 bulk-first), and `build_page` when the modules don't exist yet (it places modules WITH content in one call). v0.12.0 — page CONTENT lives in a content_instance bound to the placement. For UNSYNCED placements (the default) this tool routes through content_instances.set_values and edits stay local to this page. For SYNCED placements (sharing content with other pages) this tool refuses and points you at fork_placement_content (to detach first) or set_content_instance_values (to commit to the propagate-everywhere blast radius). Use this when the operator says 'change the hero heading on /home to X' or 'set the about page subtitle to Y'. Use `edit_module` (NOT this tool) when the change should affect every page using the module (structural / styling / field-schema change). `contentValues` is keyed by the module's declared field names (`{{fieldName}}` placeholders). For nested fields (kind `module` / `module-list`) the value is `{ moduleId, contentInstanceId }` (or an array of them); the referenced module's stable `type` must be in the field's `allowedModuleTypes` when set (reuse a module of an allowed type — `list_modules` shows each module's `type` and each nested field's `allowedModuleTypes`). Missing fields fall back to the module field's `default`. Pass an empty object to reset a placement to all defaults. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -357,7 +543,7 @@
     },
     {
       "name": "patch_page_module_fields",
-      "description": "Change individual values of ONE module placement — a heading, one bullet of a text-list, a link-list entry's text or target, a `url` field, an `image` field — and leave every other value of that placement untouched. Use this for targeted wording fixes ('the hero says Welcom, fix it', 'rename the second menu item to Pricing', or a reference chip naming `placement=(blockName, position), field=…[index]`): you send only the changed values instead of the placement's whole contentValues. `text` is the new value: plain text for text fields (it is HTML-escaped for you — never send markup), a path / https URL for `url` / `image` fields and link targets. `index` addresses a `text-list` item or a `link-list` entry; `part: \"href\"` sets that entry's target instead of its text. Several edits of one placement go in one call (all or none). Use `set_page_module_content` (NOT this tool) to replace a placement's values wholesale or to set nested modules; `set_page_module_content_many` for passes across several placements; `edit_module` for structure. SYNCED placements (content shared with other pages) need `scope`: `\"everywhere\"` changes it on every page that shows it, `\"here\"` detaches this page first and changes only it — ask the operator which they mean when it is not clear. Typical call: `{pageId: \"…\", blockName: \"content\", position: 0, edits: [{field: \"hero_title\", text: \"Welcome\"}, {field: \"nav_items\", index: 1, text: \"Pricing\"}]}`.",
+      "description": "Change individual values of ONE module placement — a heading, one entry's text or link target in a local `list` field, a `url` field, an `image` field — and leave every other value of that placement untouched. Use this for targeted wording fixes ('the hero says Welcom, fix it', 'rename the second menu item to Pricing', or a reference chip naming `placement=(blockName, position), field=…[entry]`): you send only the changed values instead of the placement's whole contentValues. `text` is the new value: plain text for text fields (it is HTML-escaped for you — never send markup), a path / https URL for `url` / `image` fields and link targets. For a local `list` field, `item` is the entry id and `key` the entry field (e.g. `label`, `text`, `link`); `part: \"href\"` sets a link field's target. Several edits of one placement go in one call (all or none). Use `set_page_module_content` (NOT this tool) to replace a placement's values wholesale or to set nested modules; `set_page_module_content_many` for passes across several placements; `edit_module` for structure. SYNCED placements (content shared with other pages) need `scope`: `\"everywhere\"` changes it on every page that shows it, `\"here\"` detaches this page first and changes only it — ask the operator which they mean when it is not clear. Typical call: `{pageId: \"…\", blockName: \"content\", position: 0, edits: [{field: \"hero_title\", text: \"Welcome\"}, {field: \"nav_items\", item: \"<entry id>\", key: \"label\", text: \"Pricing\"}]}`.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -397,14 +583,17 @@
                   "minLength": 1,
                   "maxLength": 200
                 },
-                "index": {
-                  "type": "integer",
-                  "minimum": 0
+                "item": {
+                  "type": "string",
+                  "description": "Entry id of a local list field."
+                },
+                "key": {
+                  "type": "string",
+                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
                 },
                 "part": {
                   "type": "string",
                   "enum": [
-                    "label",
                     "href"
                   ]
                 },
@@ -427,7 +616,7 @@
     },
     {
       "name": "build_page",
-      "description": "Build a WHOLE page in ONE call: the page (create new via `page: {slug, title}` or target existing via `page: {pageId}`) plus the FULL ordered module list — each entry places one module into a template block, top to bottom (on an existing page entries append; an entry's optional `position` — 'top' or an index, as in add_module — inserts it instead). ONE transaction: any invalid entry aborts the whole call (the error names `modules[i]` and the failing field) and nothing is written. This is THE page-creation tool: when creating, pass `page.metaDescription` (and `status:'published'` for a page that belongs on the site) — a Stage refuses published pages without a description, and builds only published ones; the result says when something still blocks a Stage. `modules: []` (empty) creates an intentionally empty page shell; a populated `modules` array builds the whole page in one transaction. **Prefer it over add_module / create_content_instance chains whenever a page needs more than one module** — one build_page call replaces that whole round-trip chain (§11 bulk-first). Use add_module (target='page') only for a single incremental module on an existing page. **Per module, two modes** (same contract as add_module): pass `moduleId` to place an EXISTING module from `## Modules` (reuse first — shared modules keep pages consistent), or `displayName` + `html` (+ required `description`, `kind`, explicit `fields[]`) to mint a new one. Field names are semantic snake_case (`hero_title`, `primary_cta_href`); repeats are LIST fields (`text-list`, `link-list`, `module-list`), never numbered scalars. **Per module, `content` fills the placement**: `{source:'inline', values:{hero_title:'…'}}` for page-local content (the routine case); `{source:'shared', purpose:'…', values:{…}}` to mint a REUSABLE instance other pages can bind (synced by default); `{source:'existing', contentInstanceId}` to bind a row from `## Content Library`. Omit `content` for an empty private instance you fill later. Typical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`. **Nested modules in the SAME call**: give the inner module `ref` and NO blockName (detached — minted + content-bound but not placed), then reference it from the outer module's `module`/`module-list` field value as `{\"$ref\": \"<ref>\"}` — the server resolves it to the real {moduleId, contentInstanceId}, in any array order. Example: `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]` — the whole nested composition is ONE call, never an add_module → remove_module_from → create_content_instance chain. For site-wide chrome (header/footer) use add_module (target='layout') — chrome is layout-owned and never rides in a page body. Each entry's `blockName` must be a block on the page's template — see `# Current page` (exhaustive list for the focused page); a mismatch error names the valid set. A block name is a template slot, NOT a module `kind`. With zero templates on the site, bootstrap first (create_layout → create_template). **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Build a WHOLE page in ONE call: the page (create new via `page: {slug, title}` or target existing via `page: {pageId}`) plus the FULL ordered module list — each entry places one module into a template block, top to bottom (on an existing page entries append; an entry's optional `position` — 'top' or an index, as in add_module — inserts it instead). ONE transaction: any invalid entry aborts the whole call (the error names `modules[i]` and the failing field) and nothing is written. This is THE page-creation tool: when creating, pass `page.metaDescription` (and `status:'published'` for a page that belongs on the site) — a Stage refuses published pages without a description, and builds only published ones; the result says when something still blocks a Stage. `modules: []` (empty) creates an intentionally empty page shell; a populated `modules` array builds the whole page in one transaction. **Prefer it over add_module / create_content_instance chains whenever a page needs more than one module** — one build_page call replaces that whole round-trip chain (§11 bulk-first). Use add_module (target='page') only for a single incremental module on an existing page. **Per module, two modes** (same contract as add_module): pass `moduleId` to place an EXISTING module from `list_modules` (reuse first — shared modules keep pages consistent), or `displayName` + `html` (+ required `description`, `kind`, explicit `fields[]`) to mint a new one. Field names are semantic snake_case (`hero_title`, `primary_cta_href`); repeats are LIST fields (`list` with a `listType`, or `module-list`), never numbered scalars. **Per module, `content` fills the placement**: `{source:'inline', values:{hero_title:'…'}}` for page-local content (the routine case); `{source:'shared', purpose:'…', values:{…}}` to mint a REUSABLE instance other pages can bind (synced by default); `{source:'existing', contentInstanceId}` to bind a row from `## Content Library`. Omit `content` for an empty private instance you fill later. Typical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`. **Nested modules in the SAME call**: give the inner module `ref` and NO blockName (detached — minted + content-bound but not placed), then reference it from the outer module's `module`/`module-list` field value as `{\"$ref\": \"<ref>\"}` — the server resolves it to the real {moduleId, contentInstanceId}, in any array order. Example: `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]` — the whole nested composition is ONE call, never an add_module → remove_module_from → create_content_instance chain. For site-wide chrome (header/footer) use add_module (target='layout') — chrome is layout-owned and never rides in a page body. Each entry's `blockName` must be a block on the page's template — see `# Current page` (exhaustive list for the focused page); a mismatch error names the valid set. A block name is a template slot, NOT a module `kind`. With zero templates on the site, bootstrap first (create_layout → create_template). **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -439,7 +628,7 @@
           "page": {
             "type": "object",
             "additionalProperties": false,
-            "description": "EITHER { pageId } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
+            "description": "EITHER { pageId, metaDescription? } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, name?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
             "properties": {
               "pageId": {
                 "type": "string",
@@ -477,7 +666,7 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 320,
-                "description": "Create mode: the new page's meta description (150–160 characters, written from the page's content; in a migration, the source page's). A Stage refuses a published page without one — pass it here so the page is Stage-ready from this call (fill-once, same as autofill_page_seo)."
+                "description": "The page's meta description (150–160 characters, written from the page's content; in a migration, the source page's). A Stage refuses a published page without one — pass it here so the page is Stage-ready from this call. Fill-once, same as autofill_page_seo: with pageId it is written only when the page has no description yet; an existing one is kept and the result says so."
               },
               "parentPageId": {
                 "type": "string",
@@ -528,7 +717,7 @@
                   "description": "Local handle: another entry's module/module-list field value (or moduleId) {\"$ref\": \"<ref>\"} resolves to this entry's {moduleId, contentInstanceId}. Array order does not matter — referenced entries are created first automatically."
                 },
                 "moduleId": {
-                  "description": "EXISTING module UUID from ## Modules — or {\"$ref\": \"<handle>\"} to RE-PLACE a module minted by another entry of THIS call (e.g. one card module, three placements; each entry still gets its own content).",
+                  "description": "EXISTING module UUID from list_modules — or {\"$ref\": \"<handle>\"} to RE-PLACE a module minted by another entry of THIS call (e.g. one card module, three placements; each entry still gets its own content).",
                   "oneOf": [
                     {
                       "type": "string",
@@ -587,7 +776,7 @@
                 "js": {
                   "type": "string",
                   "maxLength": 50000,
-                  "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` is applied by the built-in nav-menu renderer; never add it by hand. Write module JS only for behaviour the kit does not cover."
+                  "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (a menu that collapses behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/menu}}</ul></nav>` around the module's list field. Write module JS only for behaviour the kit does not cover."
                 },
                 "fields": {
                   "type": "array",
@@ -615,8 +804,7 @@
                           "number",
                           "boolean",
                           "link",
-                          "text-list",
-                          "link-list",
+                          "list",
                           "module",
                           "module-list"
                         ]
@@ -627,7 +815,7 @@
                         "maxLength": 128
                       },
                       "default": {
-                        "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); text-list → an array of strings; link-list → an array of {label, href} objects with the REAL link text + URL, e.g. [{\"label\":\"Home\",\"href\":\"/\"},{\"label\":\"About\",\"href\":\"/about\"}]. Omit for module / module-list.",
+                        "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); list (local) → an array of entries of the list type with the REAL text + URLs, e.g. listType \"links\": [{\"node\":\"link\",\"values\":{\"label\":\"Home\",\"link\":{\"href\":\"/\"}}},{\"node\":\"link\",\"values\":{\"label\":\"About\",\"link\":{\"href\":\"/about\"}}}]; listType \"texts\": [{\"node\":\"text\",\"values\":{\"text\":\"Fast\"}}]; list (shared) → \"caelo:list/<id>\". Omit for module / module-list and for a list with bind \"source\".",
                         "anyOf": [
                           {
                             "type": "string"
@@ -641,24 +829,119 @@
                           {
                             "type": "array",
                             "items": {
-                              "type": "string"
-                            }
-                          },
-                          {
-                            "type": "array",
-                            "items": {
                               "type": "object",
                               "additionalProperties": false,
                               "required": [
-                                "label",
-                                "href"
+                                "node",
+                                "values"
                               ],
                               "properties": {
-                                "label": {
+                                "node": {
                                   "type": "string"
                                 },
-                                "href": {
-                                  "type": "string"
+                                "values": {
+                                  "type": "object",
+                                  "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}).",
+                                  "additionalProperties": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": [
+                                          "href"
+                                        ],
+                                        "properties": {
+                                          "href": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "target": {
+                                            "type": "string",
+                                            "enum": [
+                                              "_self",
+                                              "_blank"
+                                            ]
+                                          }
+                                        }
+                                      },
+                                      {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                "children": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": [
+                                      "node",
+                                      "values"
+                                    ],
+                                    "properties": {
+                                      "node": {
+                                        "type": "string"
+                                      },
+                                      "values": {
+                                        "type": "object",
+                                        "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}).",
+                                        "additionalProperties": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "number"
+                                            },
+                                            {
+                                              "type": "boolean"
+                                            },
+                                            {
+                                              "type": "object",
+                                              "additionalProperties": false,
+                                              "required": [
+                                                "href"
+                                              ],
+                                              "properties": {
+                                                "href": {
+                                                  "type": "string",
+                                                  "minLength": 1,
+                                                  "maxLength": 2000
+                                                },
+                                                "target": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "_self",
+                                                    "_blank"
+                                                  ]
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
                                 }
                               }
                             }
@@ -680,6 +963,99 @@
                             }
                           }
                         ]
+                      },
+                      "listType": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+                        "description": "list: the list type slug (shipped: \"texts\", \"links\", \"menu\", \"categories\", \"tags\")."
+                      },
+                      "bind": {
+                        "type": "string",
+                        "enum": [
+                          "local",
+                          "shared",
+                          "source"
+                        ],
+                        "description": "list: local (default) = entries stored with this placement; shared = a list used in several places (menus, footer links); source = generated per page."
+                      },
+                      "list": {
+                        "type": "string",
+                        "pattern": "^caelo:list/[0-9a-f-]{36}$",
+                        "description": "list, bind shared: fix the list for every placement (caelo:list/<id>)."
+                      },
+                      "source": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind"
+                        ],
+                        "description": "Where generated entries come from: {kind:\"query\", editable:[…knobs], defaults:{page_type, order, limit, …}}, {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} or {kind:\"plugin\", name}.",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "query",
+                              "system",
+                              "plugin"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "editable": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "page_type",
+                                "terms",
+                                "terms_mode",
+                                "parent",
+                                "exclude_current",
+                                "order",
+                                "limit"
+                              ]
+                            }
+                          },
+                          "defaults": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "page_type": {
+                                "type": "string",
+                                "pattern": "^[a-z0-9-]+$"
+                              },
+                              "terms": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "terms_mode": {
+                                "type": "string",
+                                "enum": [
+                                  "any",
+                                  "all"
+                                ]
+                              },
+                              "parent": {
+                                "type": "string"
+                              },
+                              "exclude_current": {
+                                "type": "boolean"
+                              },
+                              "order": {
+                                "type": "string"
+                              },
+                              "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 50
+                              }
+                            }
+                          }
+                        }
                       },
                       "allowedModuleTypes": {
                         "type": "array",
@@ -806,7 +1182,7 @@
     },
     {
       "name": "set_page_module_content_many",
-      "description": "Set content values for SEVERAL placements in ONE transaction — prefer this over multiple `set_page_module_content` calls whenever a content pass touches more than one placement (a whole page's text, the same fix across pages; §11 bulk-first). All-or-nothing: any invalid item aborts the whole batch (the error names `items[i]`, the placement, and for value problems the failing field) and nothing is written. Each item is the exact `set_page_module_content` shape: `{pageId, blockName, position, contentValues}` with `contentValues` keyed by the module's declared field names; each fully replaces that placement's values. Items may span multiple pages. Same UNSYNCED-only contract as the singular tool: a SYNCED placement in the batch aborts it with the fork/commit guidance — fork_placement_content that placement (or set_content_instance_values deliberately) and resend. **When NOT to use:** when the page and its modules don't exist yet, `build_page` places modules WITH their content in one call — never build a page as add_module + set_page_module_content_many when one build_page call does both. For one placement the singular tool is fine. Typical call: `{items: [{pageId: \"…\", blockName: \"content\", position: 0, contentValues: {hero_title: \"…\"}}, {pageId: \"…\", blockName: \"content\", position: 1, contentValues: {body: \"…\"}}]}`. **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Set content values for SEVERAL placements in ONE transaction — prefer this over multiple `set_page_module_content` calls whenever a content pass touches more than one placement (a whole page's text, the same fix across pages; §11 bulk-first). All-or-nothing: any invalid item aborts the whole batch (the error names `items[i]`, the placement, and for value problems the failing field) and nothing is written. Each item is the exact `set_page_module_content` shape: `{pageId, blockName, position, contentValues}` with `contentValues` keyed by the module's declared field names; each fully replaces that placement's values. Items may span multiple pages. Same UNSYNCED-only contract as the singular tool: a SYNCED placement in the batch aborts it with the fork/commit guidance — fork_placement_content that placement (or set_content_instance_values deliberately) and resend. **When NOT to use:** when the page and its modules don't exist yet, `build_page` places modules WITH their content in one call — never build a page as add_module + set_page_module_content_many when one build_page call does both. For one placement the singular tool is fine. Typical call: `{items: [{pageId: \"…\", blockName: \"content\", position: 0, contentValues: {hero_title: \"…\"}}, {pageId: \"…\", blockName: \"content\", position: 1, contentValues: {body: \"…\"}}]}`. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -853,7 +1229,7 @@
     },
     {
       "name": "create_content_instances",
-      "description": "Mint SEVERAL content_instances in ONE transaction — prefer this over multiple `create_content_instance` calls whenever you need more than one instance (§11 bulk-first: one round-trip instead of N). All-or-nothing: any invalid item aborts the whole batch (the error names `instances[i]` and, for value problems, the failing field) and nothing is written. Each item is the exact `create_content_instance` shape: `{moduleId, values, purpose?, slug?, displayName?}` — `purpose` required for SHARED rows (why this row exists as a reusable instance; surfaced in `## Content Library`), `values` keyed by the module's declared field names. **When NOT to use:** if you're also creating the page and its modules, `build_page` does the whole assembly (modules + instances + placements) in one call — use that instead. For a single instance the singular tool is fine. After minting, bind rows to placements via `set_placement_content` (or let `build_page` content.source='existing' bind them). Typical call: `{instances: [{moduleId: \"…\", purpose: \"Footer CTA shared across product pages\", values: {cta_label: \"Start free\", cta_href: \"/signup\"}}, {moduleId: \"…\", values: {…}}]}`. **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Mint SEVERAL content_instances in ONE transaction — prefer this over multiple `create_content_instance` calls whenever you need more than one instance (§11 bulk-first: one round-trip instead of N). All-or-nothing: any invalid item aborts the whole batch (the error names `instances[i]` and, for value problems, the failing field) and nothing is written. Each item is the exact `create_content_instance` shape: `{moduleId, values, purpose?, slug?, displayName?}` — `purpose` required for SHARED rows (why this row exists as a reusable instance; surfaced in `## Content Library`), `values` keyed by the module's declared field names. **When NOT to use:** if you're also creating the page and its modules, `build_page` does the whole assembly (modules + instances + placements) in one call — use that instead. For a single instance the singular tool is fine. After minting, bind rows to placements via `set_placement_content` (or let `build_page` content.source='existing' bind them). Typical call: `{instances: [{moduleId: \"…\", purpose: \"Footer CTA shared across product pages\", values: {cta_label: \"Start free\", cta_href: \"/signup\"}}, {moduleId: \"…\", values: {…}}]}`. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -901,7 +1277,7 @@
     },
     {
       "name": "list_content_instances",
-      "description": "List content_instances — the values filling module placeholders (TOON rows: id, module, slug, displayName, placements). `placementCount` is the blast radius: >1 means SHARED, editing propagates to every bound page. Check BEFORE set_content_instance_values. Narrow by `moduleId` / `slug` / `pageId` (instances used on one page), plus the standard list params: `filter`, `limit`/`offset`, `full: true`.",
+      "description": "List content_instances — the values filling module placeholders (TOON rows: id, module, slug, displayName, placements, parents). `placementCount` is the blast radius: >1 means SHARED, editing propagates to every bound page. Check BEFORE set_content_instance_values. `parents` counts instances that show this one inside a module / module-list field; an ORPHAN (safe to delete) has placements=0 AND parents=0. Both counts are as this chat's draft sees them. Narrow by `moduleId` / `slug` / `pageId` (instances used on one page), plus the standard list params: `filter`, `limit`/`offset`, `full: true`.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -948,7 +1324,7 @@
     },
     {
       "name": "get_content_instance",
-      "description": "Fetch one content_instance by id. Returns the values + the list of placements (page slug + block + position + sync_mode) that bind to it. Use this to confirm blast radius before set_content_instance_values.",
+      "description": "Fetch one content_instance by id. Returns the values, the placements (page path + block + position + sync_mode) that bind to it, and the parent instances that show it inside a module / module-list field — all as this chat's draft sees them. Use this to confirm blast radius before set_content_instance_values, and before deleting (orphan = no placements AND no parents).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -967,7 +1343,7 @@
     },
     {
       "name": "create_content_instance",
-      "description": "Mint ONE shared, reusable content_instance for a module — used when the same content should appear identically on N pages (the site footer's copyright, a brand banner across product pages, a repeated CTA in the blog). **Prefer `create_content_instances` (plural) when minting more than one instance** — one transaction instead of N round-trips (§11 bulk-first) — and `build_page` when you're also creating the page/modules (its per-module `content` payload mints and binds in the same call). The new row is then bindable to N placements via `set_placement_content({syncMode:'synced'})` so editing it propagates everywhere bound. **Required v0.12.0 input:** `purpose` — a one-line rationale for why this is a shared row (\"The brand footer used across the whole marketing site\", \"Pricing CTA — appears at the bottom of every pricing-adjacent page\"). The `## Content Library` block surfaces this so your future self can decide reuse vs fork without asking the operator. **When NOT to use:** for one-off per-page content, prefer `set_page_module_content` — that path auto-mints an unsynced (private) instance per placement, no shared semantics, no decision needed. Only mint a shared instance when reuse is the actual intent. **Decision rule before calling:** check `## Content Library` first. If a row with the matching purpose + module + appropriate placement pattern already exists, BIND to it via `set_placement_content` instead of minting a new one. Duplicate shared rows defeat the point. `values` keys are the module's declared field names (`{{fieldName}}` placeholders); `slug` is an optional kebab-case handle (must be unique per module) for easy AI-side reference. **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Mint ONE shared, reusable content_instance for a module — used when the same content should appear identically on N pages (the site footer's copyright, a brand banner across product pages, a repeated CTA in the blog). **Prefer `create_content_instances` (plural) when minting more than one instance** — one transaction instead of N round-trips (§11 bulk-first) — and `build_page` when you're also creating the page/modules (its per-module `content` payload mints and binds in the same call). The new row is then bindable to N placements via `set_placement_content({syncMode:'synced'})` so editing it propagates everywhere bound. **Required v0.12.0 input:** `purpose` — a one-line rationale for why this is a shared row (\"The brand footer used across the whole marketing site\", \"Pricing CTA — appears at the bottom of every pricing-adjacent page\"). The `## Content Library` block surfaces this so your future self can decide reuse vs fork without asking the operator. **When NOT to use:** for one-off per-page content, prefer `set_page_module_content` — that path auto-mints an unsynced (private) instance per placement, no shared semantics, no decision needed. Only mint a shared instance when reuse is the actual intent. **Decision rule before calling:** check `## Content Library` first. If a row with the matching purpose + module + appropriate placement pattern already exists, BIND to it via `set_placement_content` instead of minting a new one. Duplicate shared rows defeat the point. `values` keys are the module's declared field names (`{{fieldName}}` placeholders); `slug` is an optional kebab-case handle (must be unique per module) for easy AI-side reference. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1001,7 +1377,7 @@
     },
     {
       "name": "set_content_instance_values",
-      "description": "Edit a content_instance's values. **BLAST RADIUS = placementCount in `## Content Library`** — this propagates to EVERY placement bound with sync_mode='synced'. **Read `## Content Library` first** to see the row's `purpose` + sample pages + placement count before editing. If the operator described an edit that should ONLY affect one page, this is the WRONG tool — use `set_page_module_content` (unsynced placements) or `fork_placement_content` first (synced placements that need to be detached). `values` fully replaces existing values (zero-merge); read first via `get_content_instance` if you need to preserve other fields. **Nested fields (kind `module` / `module-list`):** the value is `{ moduleId, contentInstanceId }` (single) or an array of them (list). The referenced module's stable `type` MUST be in the field's `allowedModuleTypes` when that whitelist is set — see each module's `type` in `## Modules`. Reuse an existing module of an allowed type rather than minting a duplicate; if none fits, create one with `type` set to an allowed value. Optional metadata edits in the same write: `slug` + `displayName` (pass `null` to clear), and v0.12.0 `purpose` (rewrite the rationale when the operator's intent for this shared row has shifted — keeps `## Content Library` accurate for your future self). Prefer `set_content_instance_values_many` over multiple `set_content_instance_values` calls when changing more than one. **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Edit a content_instance's values. **BLAST RADIUS = placementCount in `## Content Library`** — this propagates to EVERY placement bound with sync_mode='synced'. **Read `## Content Library` first** to see the row's `purpose` + sample pages + placement count before editing. If the operator described an edit that should ONLY affect one page, this is the WRONG tool — use `set_page_module_content` (unsynced placements) or `fork_placement_content` first (synced placements that need to be detached). `values` fully replaces existing values (zero-merge); read first via `get_content_instance` if you need to preserve other fields. **Nested fields (kind `module` / `module-list`):** the value is `{ moduleId, contentInstanceId }` (single) or an array of them (list). The referenced module's stable `type` MUST be in the field's `allowedModuleTypes` when that whitelist is set — see each module's `type` and each nested field's `allowedModuleTypes` in `list_modules`. Reuse an existing module of an allowed type rather than minting a duplicate; if none fits, create one with `type` set to an allowed value. Optional metadata edits in the same write: `slug` + `displayName` (pass `null` to clear), and v0.12.0 `purpose` (rewrite the rationale when the operator's intent for this shared row has shifted — keeps `## Content Library` accurate for your future self). Prefer `set_content_instance_values_many` over multiple `set_content_instance_values` calls when changing more than one. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1066,7 +1442,7 @@
     },
     {
       "name": "delete_content_instance",
-      "description": "Soft-delete a content_instance. Only allowed when ZERO placements still bind to it (orphan instance). When placements exist, the op returns an error listing each placement (page path, pageId, blockName, position): detach each one via fork_placement_content with those values (the page keeps its content as a private copy), then retry. In a chat this all happens on the chat's draft; the live site changes when the chat is staged. Use list_content_instances to find orphan instances (placementCount=0) and prune them. Prefer `delete_content_instances` over multiple `delete_content_instance` calls when deleting more than one.",
+      "description": "Soft-delete a content_instance. Only allowed for an orphan: ZERO placements bind to it AND no other instance shows it inside a module / module-list field. When placements exist, the op returns an error listing each placement (page path, pageId, blockName, position): detach each one via fork_placement_content with those values (the page keeps its content as a private copy), then retry. In a chat this all happens on the chat's draft; the live site changes when the chat is staged. When a parent instance still shows it, the op names the parents: remove the ref from each parent's field via set_content_instance_values first. Use list_content_instances to find orphans (placements=0 and parents=0) and prune them. Prefer `delete_content_instances` over multiple `delete_content_instance` calls when deleting more than one.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1083,7 +1459,7 @@
     },
     {
       "name": "set_content_instance_values_many",
-      "description": "Edit SEVERAL content_instances in ONE transaction — prefer this over multiple `set_content_instance_values` calls whenever you change more than one (§11 bulk-first: one round-trip + one snapshot instead of N). All-or-nothing: any invalid item aborts the whole batch (the error names `items[i]`) and nothing is written. **Same per-item BLAST RADIUS caveat as the singular tool:** each item propagates to EVERY placement bound to that instance with sync_mode='synced' — read `## Content Library` first. `values` fully replaces existing values (zero-merge) per item. Each item is the exact `set_content_instance_values` shape: `{id, values, expectedVersion?, slug?, displayName?, purpose?}`. **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
+      "description": "Edit SEVERAL content_instances in ONE transaction — prefer this over multiple `set_content_instance_values` calls whenever you change more than one (§11 bulk-first: one round-trip + one snapshot instead of N). All-or-nothing: any invalid item aborts the whole batch (the error names `items[i]`) and nothing is written. **Same per-item BLAST RADIUS caveat as the singular tool:** each item propagates to EVERY placement bound to that instance with sync_mode='synced' — read `## Content Library` first. `values` fully replaces existing values (zero-merge) per item. Each item is the exact `set_content_instance_values` shape: `{id, values, expectedVersion?, slug?, displayName?, purpose?}`. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1143,7 +1519,7 @@
     },
     {
       "name": "delete_content_instances",
-      "description": "Soft-delete SEVERAL content_instances in ONE transaction — prefer this over multiple `delete_content_instance` calls whenever you prune more than one (§11 bulk-first). Only ORPHAN instances (placementCount=0) can be deleted: if ANY item still has placements the op refuses and the WHOLE batch rolls back (nothing deleted) — detach those placements via `fork_placement_content` first. Use `list_content_instances` to find orphans (placementCount=0). Each item is `{id}`.",
+      "description": "Soft-delete SEVERAL content_instances in ONE transaction — prefer this over multiple `delete_content_instance` calls whenever you prune more than one (§11 bulk-first). Only ORPHAN instances (placements=0 and parents=0) can be deleted: if ANY item still has placements or a parent instance the op refuses and the WHOLE batch rolls back (nothing deleted) — detach those placements via `fork_placement_content` first. Use `list_content_instances` to find orphans (placements=0, parents=0). Each item is `{id}`.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1243,7 +1619,7 @@
     },
     {
       "name": "list_layouts",
-      "description": "List every layout with UUID, slug, display name, and blocks INCLUDING the chrome modules placed in each (`header(main-menu)|footer(site-footer)`). One read answers \"is module X already on the layout?\". Standard list params: `filter`, `limit`/`offset`, `full: true`. Use when you need a layout UUID that isn't in the context block (e.g. right after an Owner approved a layout-create proposal). DO NOT ask the operator to paste a UUID.",
+      "description": "List every layout with UUID, slug, display name, and its LAYOUT blocks INCLUDING the chrome modules placed in each (`header(main-menu)|content|footer(site-footer)`). One read answers \"is module X already on the layout?\". Layout blocks are site chrome: place a header / footer / nav into them ONCE for every page with add_module target='layout'. They are NOT build_page blockNames — a page places into its TEMPLATE's blocks (list_templates `pageBlocks`, usually just `content`); the layout's `content` block is where the template renders. Standard list params: `filter`, `limit`/`offset`, `full: true`. Use when you need a layout UUID or slug (e.g. right after an Owner approved a layout-create proposal). DO NOT ask the operator to paste a UUID.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1282,7 +1658,7 @@
     },
     {
       "name": "list_plugins",
-      "description": "List the plugins installed on this site with their activation status. `active` means the plugin is running and its tools and skills are available to you right now; `awaiting_activation` means it is installed and verified but NOTHING of it is loaded — you cannot call its tools and its skills are not in your skills index. Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
+      "description": "List the plugins installed on this site: their status (the Owner's decision) and their health (what the running servers make of it). `status`: `active` = the Owner wants it running; `awaiting_activation` = installed and verified, but nothing of it is loaded; `disabled` = the Owner stopped it. Availability comes from `health`, not from `status`: only `health = running` means its tools and skills are usable right now. `failing` = an active plugin failed to load on a server (`problem` says why) — it is NOT switched off, tell the operator, get_plugin has the details; `unreported` = active, but no server has reported it yet (just activated or starting); `not_running` = not active. Never tell the operator a capability works while its plugin is failing. Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. Plugins found on disk that failed verification are listed after the table: they are NOT installed — explain why and the fix. Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1336,7 +1712,7 @@
     },
     {
       "name": "list_templates",
-      "description": "List every template with UUID, slug, display name, and bound layout UUID (TOON rows). Standard list params: `filter`, `limit`/`offset`, `full: true`. Use when you need a template UUID that isn't in the `# Templates → layouts` context block. DO NOT ask the operator to paste a UUID.",
+      "description": "List every template with UUID, slug, display name, bound layout UUID, and `pageBlocks` (TOON rows). `pageBlocks` are the blocks a page on that template places modules into — the ONLY valid `blockName` values for build_page and add_module target='page' (usually just `content`). Header / footer / nav are NOT page blocks: they are site chrome on the template's LAYOUT (list_layouts), placed once with add_module target='layout'. Standard list params: `filter`, `limit`/`offset`, `full: true`. Use when you need a template UUID or its blocks before building a page. DO NOT ask the operator to paste a UUID.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -1430,7 +1806,7 @@
           "slugs": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 5,
+            "maxItems": 20,
             "items": {
               "type": "string",
               "pattern": "^[a-z0-9-]+$",
@@ -1443,7 +1819,7 @@
     },
     {
       "name": "list_modules",
-      "description": "List the FULL module catalog with decision-support metadata: id, slug, type, kind, description, field names, and placement usage. Use when the `## Modules` block is truncated (>40 modules), when you need to verify a reuse candidate before minting, or to find modules by `kind`/`filter` (plus `limit`/`offset`/`full` as in every list tool). Do NOT call when `## Modules` already shows a fitting module — the block carries the same data. Returns metadata only (no HTML/CSS/JS bodies). Prefer placing an existing module (`add_module` with `moduleId`) over minting a near-duplicate.",
+      "description": "List the FULL module catalog with decision-support metadata: id, slug, type, kind, description, fields, and placement usage. Call it before placing or nesting an existing module: to find a reuse candidate, to find modules by `kind`/`filter` (plus `limit`/`offset`/`full` as in every list tool), and before filling a `module`/`module-list` field — the fields column shows each nested field's accepted types (`blocks:module-list allowed=faq/cta`; `allowed=any` = no restriction), and a child's `type` must be one of them. Returns metadata only (no HTML/CSS/JS bodies). Prefer placing an existing module (`add_module` with `moduleId`) over minting a near-duplicate.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -2192,7 +2568,7 @@
     },
     {
       "name": "bug_report",
-      "description": "File a bug report against Caelo ITSELF when a tool or surface behaves contrary to its documented contract — e.g. a tool result contradicts persisted state, a screenshot/render ignores a parameter, an error fires on input the description says is valid. This is for defects in the SYSTEM, not for your own mistakes (wrong arguments, misread state) and not for content/design issues on the site being built. Report ONCE per distinct defect (do not re-file the same bug in one session), then CONTINUE the task via a workaround when one exists. Only when the bug genuinely blocks the task: file with blockedTask=true, tell the operator in one sentence what is blocked, and stop that line of work instead of retrying into the same wall. `whatHappened` = what you observed (include the exact tool + arguments); `expected` = what the tool's contract promised; `evidence` = the result excerpt that proves it. The result says where the report went (stored on this site only, or sent to the Caelo team) — tell the operator exactly that and never claim the Caelo team was notified unless the result says it was sent.",
+      "description": "File a bug report against Caelo ITSELF when a tool or surface behaves contrary to its documented contract — e.g. a tool result contradicts persisted state, a screenshot/render ignores a parameter, an error fires on input the description says is valid. This is for defects in the SYSTEM, not for your own mistakes (wrong arguments, misread state) and not for content/design issues on the site being built. Report only after a concrete failure you observed — a tool returned something wrong or broke the task. Never call it as a stand-in for another tool: when the tool you need is not in your tool list, search for it instead. Report ONCE per distinct defect (do not re-file the same bug in one session), then CONTINUE the task via a workaround when one exists. Only when the bug genuinely blocks the task: file with blockedTask=true, tell the operator in one sentence what is blocked, and stop that line of work instead of retrying into the same wall. `whatHappened` = what you observed (include the exact tool + arguments); `expected` = what the tool's contract promised; `evidence` = the result excerpt that proves it. The result says where the report went (stored on this site only, or sent to the Caelo team) — tell the operator exactly that and never claim the Caelo team was notified unless the result says it was sent.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2204,18 +2580,19 @@
         "properties": {
           "title": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 200
+            "minLength": 10,
+            "maxLength": 200,
+            "description": "The defect in a few words, e.g. \"screenshot_page ignores selector\"."
           },
           "whatHappened": {
             "type": "string",
-            "minLength": 1,
+            "minLength": 10,
             "maxLength": 4000,
             "description": "What you observed, incl. the exact tool + arguments used."
           },
           "expected": {
             "type": "string",
-            "minLength": 1,
+            "minLength": 10,
             "maxLength": 4000,
             "description": "What the tool's description / the system's contract promised instead."
           },
@@ -2520,7 +2897,7 @@
     },
     {
       "name": "add_module",
-      "description": "Add ONE module to a page, a layout (site-wide chrome on every page), or a template (fans out to every page of that page-type). **Prefer `build_page` when a PAGE needs more than one module** — it places the whole ordered list WITH content in one transaction. `target` = 'page' | 'layout' | 'template'. `targetRef` is that page's id or URL path ('/docs/setup'), or the layout's / template's slug or id. A bare page slug works only while it names one page — nested pages can share a slug. Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `## Modules` to place/fan-out a SHARED module without minting a duplicate — a later edit_module then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` is placement-only: if you also pass authoring fields (a different label, new html, …) the call still succeeds but those fields are NOT applied and the result says so — to actually change a shared module, place it by `moduleId` and then call edit_module. **The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; edit_module changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. `blockName` must be a real block on the target; the handler returns the available block set if it isn't. NOTE on `position`: pass the literal string \"top\" or \"bottom\", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `\"0\"`). **Internal links** (`href`s in HTML, `url`/`link` fields, link-list and nav items): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.\n\nOver this connection the install's AI is not used: the AI part comes back to you — a work item to answer with your own model and send back through the tool it names, or an `AiDelegated:` answer that says what to do instead (see caelo_get_context).",
+      "description": "Add ONE module to a page, a layout (site-wide chrome on every page), or a template (fans out to every page of that page-type). **Prefer `build_page` when a PAGE needs more than one module** — it places the whole ordered list WITH content in one transaction. `target` = 'page' | 'layout' | 'template'. `targetRef` is that page's id or URL path ('/docs/setup'), or the layout's / template's slug or id. A bare page slug works only while it names one page — nested pages can share a slug. Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `list_modules` to place/fan-out a SHARED module without minting a duplicate — a later edit_module then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` is placement-only: if you also pass authoring fields (a different label, new html, …) the call still succeeds but those fields are NOT applied and the result says so — to actually change a shared module, place it by `moduleId` and then call edit_module. **The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; edit_module changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. `blockName` must be a real block on the target; the handler returns the available block set if it isn't. NOTE on `position`: pass the literal string \"top\" or \"bottom\", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `\"0\"`). **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.\n\nOver this connection the install's AI is not used: the AI part comes back to you — a work item to answer with your own model and send back through the tool it names, or an `AiDelegated:` answer that says what to do instead (see caelo_get_context).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -2609,7 +2986,7 @@
           "js": {
             "type": "string",
             "maxLength": 50000,
-            "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` is applied by the built-in nav-menu renderer; never add it by hand. Write module JS only for behaviour the kit does not cover."
+            "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (a menu that collapses behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/menu}}</ul></nav>` around the module's list field. Write module JS only for behaviour the kit does not cover."
           },
           "bindThemeLiterals": {
             "type": "boolean",
@@ -2641,8 +3018,7 @@
                     "number",
                     "boolean",
                     "link",
-                    "text-list",
-                    "link-list",
+                    "list",
                     "module",
                     "module-list"
                   ]
@@ -2653,7 +3029,7 @@
                   "maxLength": 128
                 },
                 "default": {
-                  "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); text-list → an array of strings; link-list → an array of {label, href} objects with the REAL link text + URL, e.g. [{\"label\":\"Home\",\"href\":\"/\"},{\"label\":\"About\",\"href\":\"/about\"}]. Omit for module / module-list.",
+                  "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); list (local) → an array of entries of the list type with the REAL text + URLs, e.g. listType \"links\": [{\"node\":\"link\",\"values\":{\"label\":\"Home\",\"link\":{\"href\":\"/\"}}},{\"node\":\"link\",\"values\":{\"label\":\"About\",\"link\":{\"href\":\"/about\"}}}]; listType \"texts\": [{\"node\":\"text\",\"values\":{\"text\":\"Fast\"}}]; list (shared) → \"caelo:list/<id>\". Omit for module / module-list and for a list with bind \"source\".",
                   "anyOf": [
                     {
                       "type": "string"
@@ -2667,24 +3043,119 @@
                     {
                       "type": "array",
                       "items": {
-                        "type": "string"
-                      }
-                    },
-                    {
-                      "type": "array",
-                      "items": {
                         "type": "object",
                         "additionalProperties": false,
                         "required": [
-                          "label",
-                          "href"
+                          "node",
+                          "values"
                         ],
                         "properties": {
-                          "label": {
+                          "node": {
                             "type": "string"
                           },
-                          "href": {
-                            "type": "string"
+                          "values": {
+                            "type": "object",
+                            "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}).",
+                            "additionalProperties": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "number"
+                                },
+                                {
+                                  "type": "boolean"
+                                },
+                                {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": [
+                                    "href"
+                                  ],
+                                  "properties": {
+                                    "href": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 2000
+                                    },
+                                    "target": {
+                                      "type": "string",
+                                      "enum": [
+                                        "_self",
+                                        "_blank"
+                                      ]
+                                    }
+                                  }
+                                },
+                                {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              ]
+                            }
+                          },
+                          "children": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "node",
+                                "values"
+                              ],
+                              "properties": {
+                                "node": {
+                                  "type": "string"
+                                },
+                                "values": {
+                                  "type": "object",
+                                  "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}).",
+                                  "additionalProperties": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": [
+                                          "href"
+                                        ],
+                                        "properties": {
+                                          "href": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "target": {
+                                            "type": "string",
+                                            "enum": [
+                                              "_self",
+                                              "_blank"
+                                            ]
+                                          }
+                                        }
+                                      },
+                                      {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                }
+                              }
+                            }
                           }
                         }
                       }
@@ -2706,6 +3177,99 @@
                       }
                     }
                   ]
+                },
+                "listType": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+                  "description": "list: the list type slug (shipped: \"texts\", \"links\", \"menu\", \"categories\", \"tags\")."
+                },
+                "bind": {
+                  "type": "string",
+                  "enum": [
+                    "local",
+                    "shared",
+                    "source"
+                  ],
+                  "description": "list: local (default) = entries stored with this placement; shared = a list used in several places (menus, footer links); source = generated per page."
+                },
+                "list": {
+                  "type": "string",
+                  "pattern": "^caelo:list/[0-9a-f-]{36}$",
+                  "description": "list, bind shared: fix the list for every placement (caelo:list/<id>)."
+                },
+                "source": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "description": "Where generated entries come from: {kind:\"query\", editable:[…knobs], defaults:{page_type, order, limit, …}}, {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} or {kind:\"plugin\", name}.",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "query",
+                        "system",
+                        "plugin"
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "editable": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "page_type",
+                          "terms",
+                          "terms_mode",
+                          "parent",
+                          "exclude_current",
+                          "order",
+                          "limit"
+                        ]
+                      }
+                    },
+                    "defaults": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "page_type": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9-]+$"
+                        },
+                        "terms": {
+                          "type": "array",
+                          "maxItems": 20,
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "terms_mode": {
+                          "type": "string",
+                          "enum": [
+                            "any",
+                            "all"
+                          ]
+                        },
+                        "parent": {
+                          "type": "string"
+                        },
+                        "exclude_current": {
+                          "type": "boolean"
+                        },
+                        "order": {
+                          "type": "string"
+                        },
+                        "limit": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 50
+                        }
+                      }
+                    }
+                  }
                 },
                 "allowedModuleTypes": {
                   "type": "array",
@@ -3751,7 +4315,8 @@
               "1K",
               "2K",
               "4K"
-            ]
+            ],
+            "description": "Native resolution. 2K / 4K only on models whose get_image_capabilities lists them; omit it otherwise. 1K is accepted on every model."
           },
           "references": {
             "type": "array",
@@ -3814,7 +4379,8 @@
               "1K",
               "2K",
               "4K"
-            ]
+            ],
+            "description": "Native resolution. 2K / 4K only on models whose get_image_capabilities lists them; omit it otherwise. 1K is accepted on every model."
           },
           "altText": {
             "type": "string"
@@ -3955,7 +4521,7 @@
     },
     {
       "name": "autofill_page_seo",
-      "description": "Write a page's meta description (and optional og:image) for the FIRST time. Every new page needs one before it is Staged — a Stage refuses pages without one. Write it from the page's actual content (or carry over the source page's description when migrating a site). Prefer `autofill_page_seo_many` when more than one page needs it. For a page you create with build_page, pass `page.metaDescription` there instead — same fill-once write, no extra call. Fill-once: sending the SAME text again is a harmless no-op; a DIFFERENT text for an already-filled page returns AlreadyAutofilled with the stored description (the page is not missing one) — change it on purpose only via `optimize_page_seo`, and only when the user asks. Aim for 50–60 char title (set via `update_pages_many`) and 150–160 char meta description.",
+      "description": "Write a page's meta description (and optional og:image) for the FIRST time. Every new page needs one before it is Staged — a Stage refuses pages without one. Write it from the page's actual content — `get_page_seo` returns the page's core text (or carry over the source page's description when migrating a site). Prefer `autofill_page_seo_many` when more than one page needs it. For a page you create with build_page, pass `page.metaDescription` there instead — same fill-once write, no extra call. Fill-once: sending the SAME text again is a harmless no-op; a DIFFERENT text for an already-filled page returns AlreadyAutofilled with the stored description (the page is not missing one) — change it on purpose only via `optimize_page_seo`, and only when the user asks. Aim for 50–60 char title (set via `update_pages_many`) and 150–160 char meta description.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -3985,7 +4551,7 @@
     },
     {
       "name": "autofill_page_seo_many",
-      "description": "Write the FIRST meta description for SEVERAL pages in ONE transaction — prefer this over multiple `autofill_page_seo` calls (§11 bulk-first). Use it after building pages and before Staging them: a Stage refuses pages without a meta description and names them. Write each description from that page's actual content (150–160 characters, for a human reading a search result), or carry over the source page's description when migrating a site. All-or-nothing: a page already autofilled with a DIFFERENT text (AlreadyAutofilled) aborts the whole batch — leave such pages out (the same text again is a no-op); their descriptions change through `optimize_page_seo` / `bulk_optimize_seo` (re-optimization) or `set_page_seo_many` (an exact value the user dictated). Each item is the `autofill_page_seo` shape: `{pageId, metaDescription, ogImageAssetId?}`.",
+      "description": "Write the FIRST meta description for SEVERAL pages in ONE transaction — prefer this over multiple `autofill_page_seo` calls (§11 bulk-first). Use it after building pages and before Staging them: a Stage refuses pages without a meta description and names them. Write each description from that page's actual content (150–160 characters, for a human reading a search result) — read the core text of all of them with ONE `get_page_seo({pageIds})` call, never by rendering pages — or carry over the source page's description when migrating a site. All-or-nothing: a page already autofilled with a DIFFERENT text (AlreadyAutofilled) aborts the whole batch — leave such pages out (the same text again is a no-op); their descriptions change through `optimize_page_seo` / `bulk_optimize_seo` (re-optimization) or `set_page_seo_many` (an exact value the user dictated). Each item is the `autofill_page_seo` shape: `{pageId, metaDescription, ogImageAssetId?}`.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4027,7 +4593,7 @@
     },
     {
       "name": "optimize_page_seo",
-      "description": "Explicit re-optimization of per-page meta description (and optional og:image) for ONE page. Use ONLY when the user explicitly asks to optimize / re-write SEO and provides context (keyword research, intent shift, branding update). Always allowed regardless of fill state. For 2+ pages prefer `bulk_optimize_seo` — one tool call carrying all updates instead of N round-trips. Don't use for first-publish auto-fill — that's `autofill_page_seo`.",
+      "description": "Explicit re-optimization of per-page meta description (and optional og:image) for ONE page. Use ONLY when the user explicitly asks to optimize / re-write SEO and provides context (keyword research, intent shift, branding update). Always allowed regardless of fill state. Read the page's current description and core text with `get_page_seo` first. For 2+ pages prefer `bulk_optimize_seo` — one tool call carrying all updates instead of N round-trips. Don't use for first-publish auto-fill — that's `autofill_page_seo`.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4117,7 +4683,7 @@
     },
     {
       "name": "check_links",
-      "description": "Check the site's internal links (links between its own pages and media) in the draft you see — every place a link is stored: page content, module HTML, field defaults, layouts, templates, navigation menus and plugin data. Reports links to deleted pages or media and links without a page in the linking page's language (both BLOCK Stage and Publish live), links to unpublished pages (BLOCK Publish live, a warning at Stage), and old plain-path links (warnings). Each problem names the page, where the link is stored and the tool that fixes it. Use it before stage_changes when you deleted, unpublished or translated pages, when a Stage was refused for links, or when the operator asks about broken links. Not for external links or what the built site serves (get_quality_audit has the staged-build link check).",
+      "description": "Check the site's internal links (links between its own pages and media) in the draft you see — every place a link is stored: page content, module HTML, field defaults, layouts, templates, lists (menus, vocabularies), page terms and properties, and plugin data. Reports links to deleted pages or media, links without a page in the linking page's language, and references to a deleted list, a removed vocabulary entry (term) or a deleted module embedded in a list entry (all BLOCK Stage and Publish live), links to unpublished pages (BLOCK Publish live, a warning at Stage), and old plain-path links (warnings). Each problem names the page, where the link is stored and the tool that fixes it. Use it before stage_changes when you deleted, unpublished or translated pages, when a Stage was refused for links, or when the operator asks about broken links. Not for external links or what the built site serves (get_quality_audit has the staged-build link check).",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -4699,7 +5265,7 @@
     },
     {
       "name": "bulk_optimize_seo",
-      "description": "Re-optimize SEO across up to 200 pages in one transaction with shared context (keyword research, intent shift, branding update). Use this — NOT multiple `optimize_page_seo` calls — when the user asks to optimize 2+ pages. Each update is { pageId, metaDescription, ogImageAssetId? }. All-or-nothing: a single failed update rolls back the whole batch. For a single page, use `optimize_page_seo`.",
+      "description": "Re-optimize SEO across up to 200 pages in one transaction with shared context (keyword research, intent shift, branding update). Use this — NOT multiple `optimize_page_seo` calls — when the user asks to optimize 2+ pages. Each update is { pageId, metaDescription, ogImageAssetId? }. Read the pages' current descriptions and core text with ONE `get_page_seo({pageIds})` call first. All-or-nothing: a single failed update rolls back the whole batch. For a single page, use `optimize_page_seo`.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4985,7 +5551,7 @@
                 },
                 "js": {
                   "type": "string",
-                  "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` is applied by the built-in nav-menu renderer; never add it by hand. Write module JS only for behaviour the kit does not cover."
+                  "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (a menu that collapses behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/menu}}</ul></nav>` around the module's list field. Write module JS only for behaviour the kit does not cover."
                 },
                 "fields": {
                   "type": "array",
@@ -5013,8 +5579,7 @@
                           "number",
                           "boolean",
                           "link",
-                          "text-list",
-                          "link-list",
+                          "list",
                           "module",
                           "module-list"
                         ]
@@ -5025,7 +5590,7 @@
                         "maxLength": 128
                       },
                       "default": {
-                        "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); text-list → an array of strings; link-list → an array of {label, href} objects with the REAL link text + URL, e.g. [{\"label\":\"Home\",\"href\":\"/\"},{\"label\":\"About\",\"href\":\"/about\"}]. Omit for module / module-list.",
+                        "description": "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); list (local) → an array of entries of the list type with the REAL text + URLs, e.g. listType \"links\": [{\"node\":\"link\",\"values\":{\"label\":\"Home\",\"link\":{\"href\":\"/\"}}},{\"node\":\"link\",\"values\":{\"label\":\"About\",\"link\":{\"href\":\"/about\"}}}]; listType \"texts\": [{\"node\":\"text\",\"values\":{\"text\":\"Fast\"}}]; list (shared) → \"caelo:list/<id>\". Omit for module / module-list and for a list with bind \"source\".",
                         "anyOf": [
                           {
                             "type": "string"
@@ -5039,24 +5604,119 @@
                           {
                             "type": "array",
                             "items": {
-                              "type": "string"
-                            }
-                          },
-                          {
-                            "type": "array",
-                            "items": {
                               "type": "object",
                               "additionalProperties": false,
                               "required": [
-                                "label",
-                                "href"
+                                "node",
+                                "values"
                               ],
                               "properties": {
-                                "label": {
+                                "node": {
                                   "type": "string"
                                 },
-                                "href": {
-                                  "type": "string"
+                                "values": {
+                                  "type": "object",
+                                  "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}).",
+                                  "additionalProperties": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "required": [
+                                          "href"
+                                        ],
+                                        "properties": {
+                                          "href": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 2000
+                                          },
+                                          "target": {
+                                            "type": "string",
+                                            "enum": [
+                                              "_self",
+                                              "_blank"
+                                            ]
+                                          }
+                                        }
+                                      },
+                                      {
+                                        "type": "array",
+                                        "items": {
+                                          "type": "string"
+                                        }
+                                      }
+                                    ]
+                                  }
+                                },
+                                "children": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "additionalProperties": false,
+                                    "required": [
+                                      "node",
+                                      "values"
+                                    ],
+                                    "properties": {
+                                      "node": {
+                                        "type": "string"
+                                      },
+                                      "values": {
+                                        "type": "object",
+                                        "description": "The entry's values, keyed by the list type's field names (texts: {text}; links / menu: {label, link: {href}}).",
+                                        "additionalProperties": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string"
+                                            },
+                                            {
+                                              "type": "number"
+                                            },
+                                            {
+                                              "type": "boolean"
+                                            },
+                                            {
+                                              "type": "object",
+                                              "additionalProperties": false,
+                                              "required": [
+                                                "href"
+                                              ],
+                                              "properties": {
+                                                "href": {
+                                                  "type": "string",
+                                                  "minLength": 1,
+                                                  "maxLength": 2000
+                                                },
+                                                "target": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "_self",
+                                                    "_blank"
+                                                  ]
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
                                 }
                               }
                             }
@@ -5078,6 +5738,99 @@
                             }
                           }
                         ]
+                      },
+                      "listType": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+                        "description": "list: the list type slug (shipped: \"texts\", \"links\", \"menu\", \"categories\", \"tags\")."
+                      },
+                      "bind": {
+                        "type": "string",
+                        "enum": [
+                          "local",
+                          "shared",
+                          "source"
+                        ],
+                        "description": "list: local (default) = entries stored with this placement; shared = a list used in several places (menus, footer links); source = generated per page."
+                      },
+                      "list": {
+                        "type": "string",
+                        "pattern": "^caelo:list/[0-9a-f-]{36}$",
+                        "description": "list, bind shared: fix the list for every placement (caelo:list/<id>)."
+                      },
+                      "source": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind"
+                        ],
+                        "description": "Where generated entries come from: {kind:\"query\", editable:[…knobs], defaults:{page_type, order, limit, …}}, {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} or {kind:\"plugin\", name}.",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "query",
+                              "system",
+                              "plugin"
+                            ]
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "editable": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "page_type",
+                                "terms",
+                                "terms_mode",
+                                "parent",
+                                "exclude_current",
+                                "order",
+                                "limit"
+                              ]
+                            }
+                          },
+                          "defaults": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "properties": {
+                              "page_type": {
+                                "type": "string",
+                                "pattern": "^[a-z0-9-]+$"
+                              },
+                              "terms": {
+                                "type": "array",
+                                "maxItems": 20,
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "terms_mode": {
+                                "type": "string",
+                                "enum": [
+                                  "any",
+                                  "all"
+                                ]
+                              },
+                              "parent": {
+                                "type": "string"
+                              },
+                              "exclude_current": {
+                                "type": "boolean"
+                              },
+                              "order": {
+                                "type": "string"
+                              },
+                              "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 50
+                              }
+                            }
+                          }
+                        }
                       },
                       "allowedModuleTypes": {
                         "type": "array",
@@ -5564,7 +6317,9 @@
               "head_contributions",
               "url_slots",
               "client_assets",
-              "data_lists",
+              "list_sources",
+              "list_types",
+              "list_resolve",
               "companion_skills",
               "font_assets",
               "private_files",
@@ -5621,7 +6376,7 @@
     },
     {
       "name": "revalidate_plugin",
-      "description": "Re-run the plugin validator over a submitted plugin that is NOT running (draft, awaiting activation or rejected) — after a Caelo upgrade, or to re-file a rejected submission. Passing moves it to awaiting activation (activate_plugin then proposes turning it on); failing returns the validator errors to fix. Refused for running, disabled or failed plugins — those are the Owner's call.",
+      "description": "Re-run the plugin validator over a submitted plugin that is NOT running (draft, awaiting activation or rejected) — after a Caelo upgrade, or to re-file a rejected submission. Passing moves it to awaiting activation (activate_plugin then proposes turning it on); failing returns the validator errors to fix. Refused for running or disabled plugins — those are the Owner's call; for an active plugin that fails to load use reload_plugin.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5629,6 +6384,25 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120
+          }
+        },
+        "required": [
+          "slug"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "reload_plugin",
+      "description": "Retry loading an ACTIVE plugin on every server — the fix for a plugin whose health is `failing` (it stays active; servers do not retry on their own). Use after the cause was addressed, or when the problem looks transient, and when the operator asks to reload it. Returns this server's result right away; other servers follow within seconds — check get_plugin for their state. Not for a plugin that is awaiting activation or disabled (activating is the Owner's decision: activate_plugin).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "Plugin slug as list_plugins shows it."
           }
         },
         "required": [
@@ -7528,7 +8302,7 @@
     },
     {
       "name": "get_plugin",
-      "description": "Read one plugin in detail: version, tier, status, signature, the validator's findings, the tools / skills / capabilities its manifest declares, and its AI spend over the last 24h against its AI cost cap. Use when list_plugins' one-line summary is not enough — e.g. why a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. Never returns the plugin's source.",
+      "description": "Read one plugin in detail: version, tier, status, signature, health (whether the running servers have it loaded, and why not), its recent errors, the validator's findings, the tools / skills / capabilities its manifest declares, and its AI spend over the last 24h against its AI cost cap. Use when list_plugins' one-line summary is not enough — e.g. why a plugin is failing or a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. A `core` error is Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team — repeat that exactly, never say the team knows unless it says sent; a `plugin` error comes from the plugin's own code; `transient` ones were retried. Errors never switch a plugin off. Never returns the plugin's source.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -7886,20 +8660,29 @@
     },
     {
       "name": "get_page_seo",
-      "description": "Read one page's stored SEO fields: meta description, OG image, canonical URL, noindex, sitemap changefreq/priority, and when it was autofilled / optimized. Use before set_page_seo or optimize_page_seo so you change what is there instead of guessing; null means the page has no SEO row yet (autofill_page_seo fills it).",
+      "description": "Read pages' stored SEO fields (meta description, OG image, canonical URL, noindex, sitemap changefreq/priority, when autofilled / optimized) AND each page's core text: the plain text of the page's own content blocks (headings, paragraphs, list items, link labels; nested cards included; header/footer chrome left out), from THIS chat's draft, capped at ~1500 characters. Use it to read what a page already has AND its core text before writing or optimizing its description — one call for every page (`pageIds`, up to 50), then ONE autofill_page_seo_many (first description) or bulk_optimize_seo / set_page_seo_many. Don't render the page for this (inspect_page_render / screenshot_page are for layout and visual questions). A page without an SEO row shows that autofill_page_seo_many fills it.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "pageId": {
+            "description": "One page. Pass this OR pageIds.",
             "type": "string",
             "format": "uuid",
             "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "pageIds": {
+            "description": "Several pages (up to 50) in one call. Pass this OR pageId.",
+            "minItems": 1,
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
           }
         },
-        "required": [
-          "pageId"
-        ],
         "additionalProperties": false
       }
     },

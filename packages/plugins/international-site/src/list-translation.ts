@@ -605,3 +605,54 @@ export function reconcile(
   }
   return { updates, inserts };
 }
+
+/** What one entry looks like in one language (the list editor's Languages tab). */
+export type EntryLanguageState =
+  | "translated"
+  | "needs_update"
+  | "missing"
+  | "hidden"
+  | "link-target-missing"
+  | "nothing-to-translate";
+
+/**
+ * Per entry of one target and per language: the state the entry shows
+ * in, worst first — hidden by the operator, then a link without a
+ * version, then missing / stale texts.
+ */
+export function entryStates(
+  snapshot: ListSourceSnapshot,
+  target: string,
+  locales: readonly string[],
+  index: TranslationIndex,
+  linkHasVersion: (href: string, locale: string) => boolean,
+  hiddenByOperator: ReadonlyMap<string, ReadonlySet<string>>,
+): { address: string; label: string; locales: Record<string, EntryLanguageState> }[] {
+  const unitsByEntry = new Map<string, SourceUnit[]>();
+  for (const u of snapshot.units) {
+    if (u.target !== target || u.entry === null) continue;
+    unitsByEntry.set(u.entry, [...(unitsByEntry.get(u.entry) ?? []), u]);
+  }
+  return snapshot.entries
+    .filter((e) => e.target === target)
+    .map((e) => {
+      const out: Record<string, EntryLanguageState> = {};
+      for (const l of locales) {
+        if (!appliesTo(e, l)) continue;
+        const units = unitsByEntry.get(e.address) ?? [];
+        const statuses = units.map((u) => unitStatus(u, l, index));
+        out[l] = hiddenByOperator.get(l)?.has(e.address)
+          ? "hidden"
+          : e.links.some((h) => !linkHasVersion(h, l))
+            ? "link-target-missing"
+            : statuses.includes("missing")
+              ? "missing"
+              : statuses.includes("needs_update")
+                ? "needs_update"
+                : units.length === 0
+                  ? "nothing-to-translate"
+                  : "translated";
+      }
+      return { address: e.address, label: e.label, locales: out };
+    });
+}
