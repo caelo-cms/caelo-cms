@@ -333,7 +333,7 @@ describe("build_page authors a module-list card grid (the path issue #417's dogf
     const msg = (r.error as { message?: string }).message ?? "";
     expect(msg).toContain("modules[0]");
     expect(msg).toContain("numbered-scalar fanout");
-    expect(msg).toContain("text-list");
+    expect(msg).toContain('kind "list"');
     expect(msg).toContain("module-list");
 
     // All-or-nothing: the page create rolled back with the module reject.

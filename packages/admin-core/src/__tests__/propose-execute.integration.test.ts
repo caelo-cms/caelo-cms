@@ -60,7 +60,7 @@ async function wipe(): Promise<void> {
   // Strategy: clear OUR test-tagged data (pending rows, users,
   // templates) but leave the test actors in place between runs. Actors
   // are FK-referenced by ~10 tables (audit_events / site_snapshots /
-  // ai_calls / structured_sets / etc.); cleaning them on every test
+  // ai_calls / lists / etc.); cleaning them on every test
   // run took 18+s. The test ids are stable; we just keep them alive.
   const sql = new SQL(ADMIN_URL!);
   try {

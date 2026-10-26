@@ -32,7 +32,7 @@ export interface InteractionSnippet {
   readonly js: string;
 }
 
-/** Functional-only rules for the built-in nav renderer: collapse/expand, zero aesthetics. */
+/** Functional-only rules for a collapsible nav (`mobile-nav`): collapse/expand, zero aesthetics. */
 const MOBILE_NAV_CSS =
   ".caelo-nav-menu .caelo-nav-toggle{display:none;background:none;border:0;cursor:pointer;padding:0.5rem;color:inherit;font:inherit}" +
   ".caelo-nav-menu .caelo-nav-toggle .caelo-nav-bar{display:block;width:1.25em;height:2px;background:currentColor;margin:0.25em 0}" +
@@ -199,5 +199,5 @@ export const INTERACTION_MARKUP_CONTRACT =
   '`accordion` (FAQ, collapsible sections): `<div data-caelo-ui="accordion" data-single>` containing `<details id="..."><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. ' +
   '`tabs`: `<div data-caelo-ui="tabs"><div role="tablist" aria-label="..."><button type="button" role="tab" id="t1" aria-controls="p1" aria-selected="true">...</button><button type="button" role="tab" id="t2" aria-controls="p2" aria-selected="false" tabindex="-1">...</button></div><div role="tabpanel" id="p1" aria-labelledby="t1">...</div><div role="tabpanel" id="p2" aria-labelledby="t2" hidden>...</div></div>` - ids must be unique on the page. ' +
   '`carousel` (slider, testimonials): `<section data-caelo-ui="carousel" aria-roledescription="carousel" aria-label="..."><div data-caelo-carousel-track tabindex="0"><div role="group" aria-roledescription="slide" aria-label="1 of 3">...</div>...</div><button type="button" data-caelo-carousel-prev aria-label="Previous slide"><span aria-hidden="true">&lsaquo;</span></button><button type="button" data-caelo-carousel-next aria-label="Next slide"><span aria-hidden="true">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides\' `flex-basis` in module CSS to show more. ' +
-  "`mobile-nav` is applied by the built-in nav-menu renderer; never add it by hand. " +
+  '`mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class="caelo-nav-menu" data-caelo-ui="mobile-nav" data-nav-open="false"><button type="button" class="caelo-nav-toggle" aria-expanded="false" aria-label="Menu"><span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module\'s menu `list` field. ' +
   "Write module JS only for behaviour the kit does not cover.";

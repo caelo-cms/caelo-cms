@@ -22,7 +22,9 @@ export async function lockedEntityLabel(
     page: sql`SELECT COALESCE(title, slug) AS label FROM pages WHERE id = ${entityId}::uuid`,
     pageLayout: sql`SELECT COALESCE(title, slug) AS label FROM pages WHERE id = ${entityId}::uuid`,
     layout: sql`SELECT display_name AS label FROM layouts WHERE id = ${entityId}::uuid`,
-    structuredSet: sql`SELECT display_name AS label FROM structured_sets WHERE id = ${entityId}::uuid`,
+    listType: sql`SELECT COALESCE(definition->>'name', slug) AS label FROM list_types WHERE id = ${entityId}::uuid`,
+    list: sql`SELECT COALESCE(name, slug) AS label FROM lists WHERE id = ${entityId}::uuid`,
+    pageType: sql`SELECT COALESCE(definition->>'name', slug) AS label FROM page_types WHERE id = ${entityId}::uuid`,
     theme: sql`SELECT display_name AS label FROM themes WHERE id = ${entityId}::uuid`,
     contentInstance: sql`
       SELECT COALESCE(ci.display_name, ci.slug, m.slug) AS label

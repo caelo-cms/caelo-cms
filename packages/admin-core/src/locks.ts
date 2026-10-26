@@ -3,8 +3,8 @@
 /**
  * v0.5.0 — Per-entity write locks for global entities.
  *
- * When a chat writes to a module / template / layout / structured_set /
- * redirect, the entity is locked to that chat's session until the chat
+ * When a chat writes to a module / template / layout / list / list type /
+ * page type / redirect, the entity is locked to that chat's session until the chat
  * stages, publishes or is discarded. The lock keeps two branches from
  * holding divergent unmerged edits of the same entity — merge is "latest
  * state wins", so the second Stage would silently overwrite the first.
@@ -48,7 +48,6 @@ export type LockedEntityKind =
   | "template"
   | "pageLayout"
   | "layout"
-  | "structuredSet"
   | "redirect"
   // v0.5.3 — page-bound writes (pages.update / pages.delete /
   // pages.set_modules etc.) and global config singletons
@@ -63,8 +62,13 @@ export type LockedEntityKind =
   // rewrite shared content.
   | "contentInstance"
   // v0.11.0 — themes are global (one active row affects every page),
-  // so writes lock the theme entity same as structured_sets / layouts.
+  // so writes lock the theme entity same as layouts.
   | "theme"
+  // Epic #1107 — shared lists, their types and page types are global
+  // entities like content instances: one lock each.
+  | "listType"
+  | "list"
+  | "pageType"
   // A row in a plugin's private storage written on a chat branch
   // (docs/branch-aware-plugin-storage.md). Row ids are uuids, unique
   // across plugin tables, so the row id alone keys the lock.

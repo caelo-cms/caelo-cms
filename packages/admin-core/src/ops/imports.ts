@@ -34,6 +34,7 @@ import { deriveRunCalibration } from "../ai/import-cost-model.js";
 import { recordAudit } from "../audit.js";
 import { loadChatBinding } from "../draft.js";
 import { humaniseForRead } from "../links/humanise.js";
+import { IMPORT_LINK_ENTITY_KINDS, type ImportLinkEntityKind } from "../links/import-targets.js";
 import {
   loadContentInstanceStateWithBranchOverlay,
   loadModuleStateWithBranchOverlay,
@@ -2184,7 +2185,7 @@ export const getImportRunReportOp = defineOperation({
       unresolved: z.array(
         z.object({
           value: z.string(),
-          entityKind: z.enum(["content_instance", "module", "structured_set"]),
+          entityKind: z.enum(IMPORT_LINK_ENTITY_KINDS),
           entityId: z.string(),
           location: z.string(),
         }),
@@ -2382,7 +2383,7 @@ async function loadImportRunLinks(
   resolved: number;
   unresolved: {
     value: string;
-    entityKind: "content_instance" | "module" | "structured_set";
+    entityKind: ImportLinkEntityKind;
     entityId: string;
     location: string;
   }[];
@@ -2396,7 +2397,7 @@ async function loadImportRunLinks(
   `)) as unknown as {
     value: string;
     status: "pending" | "resolved" | "unresolved";
-    entity_kind: "content_instance" | "module" | "structured_set";
+    entity_kind: ImportLinkEntityKind;
     entity_id: string;
     location: string;
   }[];

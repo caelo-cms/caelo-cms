@@ -57,10 +57,11 @@ function seedSourcePage(): SeedResult {
           VALUES (\${process.env.SRC_SLUG + "-lay"}, 'L',
                   '<!doctype html><html><head><title>{{title}}</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
                   '') RETURNING id\`;
-        const tpl = await tx\`INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
-          VALUES (\${process.env.SRC_SLUG + "-tpl"}, 'T', 'content',
+        const tpl = await tx\`INSERT INTO templates (slug, display_name, html, css, layout_id)
+          VALUES (\${process.env.SRC_SLUG + "-tpl"}, 'T',
                   '<main><caelo-slot name="content">_</caelo-slot></main>',
                   '', \${lay[0].id}) RETURNING id\`;
+        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
         await tx\`INSERT INTO layout_blocks (layout_id, name, display_name, position)
           VALUES (\${lay[0].id}, 'content', 'Content', 0)\`;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)
@@ -367,9 +368,10 @@ function seed(): Seed {
                 '') RETURNING id\`;
       await tx\`INSERT INTO layout_blocks (layout_id, name, display_name, position)
         VALUES (\${lay[0].id}, 'content', 'Content', 0), (\${lay[0].id}, 'footer', 'Footer', 1)\`;
-      const tpl = await tx\`INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
-        VALUES (\${P + "-tpl"}, 'T', 'content', '<main><caelo-slot name="content">_</caelo-slot></main>', '', \${lay[0].id})
+      const tpl = await tx\`INSERT INTO templates (slug, display_name, html, css, layout_id)
+        VALUES (\${P + "-tpl"}, 'T', '<main><caelo-slot name="content">_</caelo-slot></main>', '', \${lay[0].id})
         RETURNING id\`;
+      await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
       await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)
         VALUES (\${tpl[0].id}, 'content', 'Content', 0)\`;
       // Internal links are stored as page references (#724), so the
@@ -382,11 +384,11 @@ function seed(): Seed {
       const deUeber = await mk(P + "-ueber", "/de/" + P + "-ueber");
       const fields = JSON.stringify([
         { name: "tagline", kind: "text", label: "Tagline", default: "Made with care" },
-        { name: "nav", kind: "link-list", label: "Menu", default: [{ label: "About", href: "caelo:page/" + enAbout }] },
+        { name: "nav", kind: "list", listType: "links", label: "Menu", default: [{ id: "00000000-0000-4000-9000-000000000001", node: "link", values: { label: "About", link: { href: "caelo:page/" + enAbout } } }] },
       ]);
       const mod = await tx\`INSERT INTO modules (slug, display_name, type, kind, html, fields)
         VALUES (\${P + "-footer"}, 'Site footer', 'footer', 'chrome',
-                '<footer><p class="tag">{{tagline}}</p>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}</footer>',
+                '<footer><p class="tag">{{tagline}}</p>{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}</footer>',
                 (\${fields}::text)::jsonb) RETURNING id\`;
       await tx\`INSERT INTO layout_modules (layout_id, block_name, position, module_id)
         VALUES (\${lay[0].id}, 'footer', 0, \${mod[0].id})\`;
@@ -402,7 +404,7 @@ function seed(): Seed {
         await tx.unsafe(\`INSERT INTO plugin_international_site.page_variants (group_id, page_id, locale_code, translation_status)
           VALUES ('\${g}', '\${en}', 'en', 'source'), ('\${g}', '\${de}', 'de', 'up_to_date')\`);
       }
-      const values = JSON.stringify({ tagline: "Mit Sorgfalt gemacht", nav: [{ label: "Über uns", href: "caelo:page/" + enAbout }] });
+      const values = JSON.stringify({ tagline: "Mit Sorgfalt gemacht", nav: [{ id: "00000000-0000-4000-9000-000000000001", node: "link", values: { label: "Über uns", link: { href: "caelo:page/" + enAbout } } }] });
       await tx\`INSERT INTO plugin_international_site.chrome_variants
         (target_key, locale_code, mode, values, translation_status, source_hash)
         VALUES (\${"layout:" + lay[0].id + ":footer:0"}, 'de', 'translated', (\${values}::text)::jsonb, 'up_to_date', 'seeded')\`;
@@ -466,7 +468,9 @@ test("an English page shows the English footer, its German counterpart the Germa
 
     const en = await request.get(`${BASE}/edit/preview/${s.enPageId}`, { headers });
     expect(en.status()).toBe(200);
-    const enHtml = await en.text();
+    // List entries carry their edit marker (epic #1107); the links are what this checks.
+    const unstamp = (html: string) => html.replace(/ data-caelo-list-item="[^"]*"/g, "");
+    const enHtml = unstamp(await en.text());
     expect(enHtml).toContain('<p class="tag">Made with care</p>');
     // References render in the default deploy target's URL style; the
     // e2e stack keeps the column default (`directory` → trailing slash).
@@ -474,7 +478,7 @@ test("an English page shows the English footer, its German counterpart the Germa
 
     const de = await request.get(`${BASE}/edit/preview/${s.dePageId}`, { headers });
     expect(de.status()).toBe(200);
-    const deHtml = await de.text();
+    const deHtml = unstamp(await de.text());
     expect(deHtml).toContain('<p class="tag">Mit Sorgfalt gemacht</p>');
     expect(deHtml).toMatch(new RegExp(`<a href="/de/${PFX}-ueber/?">Über uns</a>`));
     expect(deHtml).not.toContain("Made with care");
@@ -501,9 +505,10 @@ test("#690 — a nested page's German variant nests under the German parent, reu
           VALUES (\${process.env.SRC + "-nlay"}, 'L',
                   '<!doctype html><html><head><title>t</title></head><body><caelo-slot name="content">_</caelo-slot></body></html>',
                   '') RETURNING id\`;
-        const tpl = await tx\`INSERT INTO templates (slug, display_name, kind, html, css, layout_id)
-          VALUES (\${process.env.SRC + "-ntpl"}, 'T', 'content',
+        const tpl = await tx\`INSERT INTO templates (slug, display_name, html, css, layout_id)
+          VALUES (\${process.env.SRC + "-ntpl"}, 'T',
                   '<main><caelo-slot name="content">_</caelo-slot></main>', '', \${lay[0].id}) RETURNING id\`;
+        await tx\`UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb(\${tpl[0].id}::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1) AND NOT (definition->'templates' ? \${tpl[0].id}::text)\`;
         await tx\`INSERT INTO layout_blocks (layout_id, name, display_name, position)
           VALUES (\${lay[0].id}, 'content', 'Content', 0)\`;
         await tx\`INSERT INTO template_blocks (template_id, name, display_name, position)

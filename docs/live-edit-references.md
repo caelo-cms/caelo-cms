@@ -80,6 +80,7 @@ site's fixed navigation cannot hide them.
 | Chip + Ask AI (composer focus) in the chat | `apps/admin/src/lib/components/chat/ChatPanel.svelte` (`caelo:chip` window event) |
 | Expanding a collapsed chat on a reference | `apps/admin/src/lib/components/edit/Overlay.svelte` |
 | Chip schema (Zod, validated by the stream endpoint) | `chatChipSchema` in `packages/shared/src/ai-tools.ts` |
+| List entry references (`data-caelo-list-item` parser) | `packages/shared/src/lists/item-attr.ts` |
 | What the AI reads | `buildUserContent` in `packages/admin-core/src/ai/chat-runner/persistence.ts` |
 | Field markers in the preview | `packages/shared/src/edit-markers.ts`, used by `pages.render_preview` with `editMarkers: true` |
 | In-place editing runtime | `apps/admin/src/lib/components/edit/field-edit-script.ts` |
@@ -98,7 +99,9 @@ site's fixed navigation cannot hide them.
   blockName?: string;    // the marked placement field the text comes from (#917) …
   position?: number;
   field?: string;
-  index?: number;        // … and its list item, for text-list / link-list
+  item?: string;         // … and, for a module's own list, the entry id
+  key?: string;          //     and the entry field the text is
+  listItem?: string;     // data-caelo-list-item of the list entry the element sits in (epic #1107)
 }
 ```
 
@@ -118,6 +121,28 @@ never element paths or class names (CLAUDE.md §1A).
 Pinned chips persist the module + element only; the selected text belongs to
 the message it was picked for.
 
+### List entries (epic #1107)
+
+The template engine stamps `data-caelo-list-item` on the root element of
+every rendered stored list entry (`docs/lists.md` §13). A reference built
+inside one carries that value as `listItem`, and the chip's label starts with
+the entry's text (`Entry “About” · nav`), so pointing at a menu item points
+at that menu entry, not at the whole header. The AI reads it in the
+coordinates its tools take:
+
+| `data-caelo-list-item` | the AI reads | edited with |
+|---|---|---|
+| `<listId>/<itemId>` (shared list) | `list entry=(shared list=<listId>, entry=<itemId>)` | `get_list` / `patch_list_items_many` |
+| `instance/<ciId>/<field>/<itemId>` (a module's own list) | `list entry=(content instance=<ciId>, list field=<field>, entry=<itemId>)` | the content tools on that instance |
+| `local/<field>/<itemId>` (a field default, site chrome) | `list entry=(default of list field=<field>, entry=<itemId>)` | the module (the default is part of it) |
+
+Generated entries (queries, system and plugin sources) carry no stamp, so a
+reference inside one names the module only. Two entries of one menu share
+an element path; the chat keeps one chip per entry (`listItem` is part of
+the de-duplication). The value is validated against `LIST_ITEM_ATTR_RE`
+(`packages/shared/src/lists/item-attr.ts`) by the protocol and the chip
+schema.
+
 ## Field markers and in-place editing (#917)
 
 `pages.render_preview({ editMarkers: true })`, which only the editor's preview
@@ -129,13 +154,16 @@ iframe asks for, wraps every plain-text value of a page placement in comments:
 
 `p` is the placement (`<blockName>#<position>`, URI-encoded), `s` is 0 for a
 placement with its own content and, for a synced (shared) one, the number of
-pages showing it; `f` is the field path: `title`, `tags.1` (text-list item),
-`links.0.label` / `links.0.href` (link-list text / target). Values that carry
-markup, empty values and other field kinds are not marked.
+pages showing it; `f` is the field path: `title`, or for an entry of a
+module's own list (a `list` field, epic #1107) `<field>.<entry id>.<key>`
+(`links.<id>.label`), with `.href` for a link's target. Values that carry
+markup, empty values and other field kinds are not marked. Entries of a
+shared list are not marked: they are edited in *Content → Menus & lists*, or
+by the AI through the list entry reference below.
 
 A tag whose `href`, `src` or `alt` is exactly one marked value (#918) gets the
 same information as attributes, e.g.
-`<a href="/docs" data-caelo-fields="href=links.0.href" data-caelo-placement="content%230" data-caelo-shared="0">`.
+`<a href="/docs" data-caelo-fields="href=links.<entry id>.link.href" data-caelo-placement="content%230" data-caelo-shared="0">`.
 An attribute assembled from several parts (`href="/blog/{{slug}}"`) is not
 editable and not marked. A value used in an attribute,
 comment, `<script>`, `<style>`, `<title>` or `<textarea>` renders exactly as
@@ -143,7 +171,7 @@ without markers. Variant content (#592) and layout chrome are not marked.
 Published output never contains markers.
 
 Saving goes through `page_module_content.patch_fields`
-`{pageId, blockName, position, edits: [{field, index?, part?, text}], scope?}` (bulk-first:
+`{pageId, blockName, position, edits: [{field, item?, key?, part?, text}], scope?}` (bulk-first:
 several values of one placement in one call and one snapshot): it resolves the
 placement through the caller's branch-overlaid layout (the view the preview
 renders), refuses synced placements, escapes `&`, `<`, `>` once (text fields
@@ -151,8 +179,9 @@ are substituted unescaped), patches only those fields or items (all or none), an
 `content_instances.set_values` (lock, version check, snapshot), so chat Undo
 reverts it. The preview reloads after every save, success or not.
 
-`part` picks a link-list item's text (`label`, default) or target (`href`).
-Link targets (`url` fields, link-list hrefs) must be a path, `#…`, `http(s)://`,
+`item` + `key` address one field of one list entry; `part: "href"` picks a
+link's target instead of its text. Link targets (`url` fields, `link` entry
+fields) must be a path, `#…`, `http(s)://`,
 `mailto:`, `tel:` or `caelo:` reference; image addresses a path, `http(s)://`
 or `caelo:media/` reference; neither may contain quotes, angle brackets or
 spaces. Both are stored as typed (the write-boundary canonicaliser of epic

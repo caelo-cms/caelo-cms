@@ -9,8 +9,8 @@
  * rendered for. Renaming or moving a page then changes no stored link.
  *
  * Grammar (one form for every place a link can live — `link` / `url`
- * fields, `link-list` items, `*_href` values, module HTML attributes,
- * rich text, structured-set items, field defaults):
+ * fields, list entry `link` values, `*_href` values, module HTML attributes,
+ * rich text, field defaults):
  *
  *   caelo:page/<pageId>[?query][#anchor]
  *   caelo:media/<mediaId>[/<variant>]
@@ -277,7 +277,7 @@ export function replaceLinkRefs(
 }
 
 /**
- * Walk a JSON value (content values, field defaults, set items) and map
+ * Walk a JSON value (content values, field defaults, list entries) and map
  * every string through {@link replaceLinkRefs}. Returns the SAME
  * reference when nothing changed, so callers can cheaply detect no-ops.
  */

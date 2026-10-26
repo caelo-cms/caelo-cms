@@ -164,6 +164,26 @@ export function validateManifest(
         hint: "manifest declares `workers` but does not request the `background_workers` capability. Add it to `requestedCapabilities` (or drop the workers).",
       });
     }
+    // Epic #1107 — list sources, list types and list-resolve overlays
+    // change what pages render; each is its own Owner grant.
+    if (m.listSources && m.listSources.length > 0 && !caps.has("list_sources")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest declares `listSources` but does not request the `list_sources` capability. Add it to `requestedCapabilities` (or drop the sources).",
+      });
+    }
+    if (m.listTypes && m.listTypes.length > 0 && !caps.has("list_types")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "manifest declares `listTypes` but does not request the `list_types` capability. Add it to `requestedCapabilities` (or drop the list types).",
+      });
+    }
+    if (m.hasListResolve && !caps.has("list_resolve")) {
+      failures.push({
+        kind: "manifest-cap-missing",
+        hint: "the plugin answers the `list-resolve` point but does not request the `list_resolve` capability. Add it to `requestedCapabilities` (or drop listResolveOperation).",
+      });
+    }
   }
 
   // Tier 2 (runtime-authored) cannot reach over the grantability

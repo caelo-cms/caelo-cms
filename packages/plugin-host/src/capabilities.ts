@@ -14,22 +14,23 @@
  * Author storage is never attached to a visitor or render invocation.
  */
 
-import type {
-  PluginAdminQuery,
-  PluginCapability,
-  PluginCaptcha,
-  PluginCms,
-  PluginContext,
-  PluginContextTier1,
-  PluginDomainEvent,
-  PluginEmail,
-  PluginEvents,
-  PluginInvocation,
-  PluginQuery,
-  PluginQueryFilter,
-  PluginSnapshots,
-  PluginTheme,
-  PluginVisitor,
+import {
+  PLUGIN_EVENT_KINDS,
+  type PluginAdminQuery,
+  type PluginCapability,
+  type PluginCaptcha,
+  type PluginCms,
+  type PluginContext,
+  type PluginContextTier1,
+  type PluginDomainEvent,
+  type PluginEmail,
+  type PluginEvents,
+  type PluginInvocation,
+  type PluginQuery,
+  type PluginQueryFilter,
+  type PluginSnapshots,
+  type PluginTheme,
+  type PluginVisitor,
 } from "@caelo-cms/plugin-sdk";
 import { execute } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
@@ -501,13 +502,7 @@ function makePluginAdminQuery(
 // At-least-once: poll() reads past the cursor, commit() advances it.
 // ---------------------------------------------------------------------------
 
-const EVENT_KINDS = new Set([
-  "page.created",
-  "page.updated",
-  "page.deleted",
-  "page.published",
-  "module.updated",
-]);
+const EVENT_KINDS: ReadonlySet<string> = new Set(PLUGIN_EVENT_KINDS);
 
 function makePluginEvents(plugin: LoadedPlugin, infra: PluginHostInfra): PluginEvents {
   assertUuid(plugin.pluginActorId, "caelo.actor_id");

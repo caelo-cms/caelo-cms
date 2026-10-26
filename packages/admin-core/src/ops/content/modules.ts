@@ -6,7 +6,7 @@
  * scope here — `actorScope: ["human", "system"]` until P5 widens it.
  */
 
-import { pluginDataListsRegistry } from "@caelo-cms/plugin-host";
+import { pluginListSourcesRegistry } from "@caelo-cms/plugin-host";
 import { defineOperation, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
 import {
   deriveModuleType,
@@ -27,6 +27,7 @@ import { emitDomainEvent } from "../../domain-events.js";
 import { canonicaliseModuleCode } from "../../links/canonicalise-writes.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { recordPendingImportLinks } from "../../links/import-targets.js";
+import { normaliseListFieldDefaults } from "../../lists/field-values.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -294,7 +295,11 @@ export const getModuleOp = withHumanisedLinks(
     `)) as unknown as ModuleDbRow[];
       const [row] = await overlayBranchEdits(ctx, tx, rows, [input.moduleId]);
       if (!row) {
-        return err({ kind: "HandlerError", operation: "modules.get", message: "module not found" });
+        return err({
+          kind: "HandlerError",
+          operation: "modules.get",
+          message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids).`,
+        });
       }
       return ok({ module: rowToModule(row) });
     },
@@ -302,14 +307,14 @@ export const getModuleOp = withHumanisedLinks(
 );
 
 /**
- * Every data-list name a plugin claims, running or not (#447). Dormant
- * names count: a module written while a plugin ran must stay editable
- * after it is switched off, or turning a plugin off would make its
- * modules unsaveable.
+ * Every list-source name a plugin claims, running or not (#447, epic
+ * #1107). Dormant names count: a module written while a plugin ran must
+ * stay editable after it is switched off, or turning a plugin off would
+ * make its modules unsaveable.
  */
-function claimedDataListNames(): ReadonlySet<string> {
+function claimedListSourceNames(): ReadonlySet<string> {
   const names = new Set<string>();
-  for (const entry of pluginDataListsRegistry.catalogue()) names.add(entry.name);
+  for (const entry of pluginListSourcesRegistry.catalogue()) names.add(entry.name);
   return names;
 }
 
@@ -362,7 +367,7 @@ export const createModuleOp = defineOperation({
       const validation = validateTemplatizedModule(
         candidateHtml,
         candidateFields,
-        claimedDataListNames(),
+        claimedListSourceNames(),
       );
       if (!validation.ok) {
         await recordAudit(tx, {
@@ -405,7 +410,21 @@ export const createModuleOp = defineOperation({
       return err({ kind: "HandlerError", operation: "modules.create", message: linkCanon.message });
     }
     const persistedHtml = linkCanon.value.html as string;
-    const persistedFields = linkCanon.value.fields as ModuleField[];
+    // Epic #1107 — `list` field defaults: entries validated, ids assigned.
+    const listDefaults = await normaliseListFieldDefaults(
+      tx,
+      ctx,
+      ctx.chatBranchId ?? null,
+      linkCanon.value.fields as ModuleField[],
+    );
+    if (!listDefaults.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "modules.create",
+        message: listDefaults.message,
+      });
+    }
+    const persistedFields = listDefaults.value;
     // v0.9.0 — branch-scoped uniqueness. Same-branch slug clash
     // surfaces as the unique-index violation at INSERT below; check
     // here narrows it to a clean error. We only check the caller's
@@ -562,7 +581,7 @@ export const updateModuleOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "modules.update",
-        message: "module not found",
+        message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids); add_module creates a new one.`,
       });
     }
 
@@ -613,7 +632,7 @@ export const updateModuleOp = defineOperation({
       const validation = validateTemplatizedModule(
         extracted.templatizedHtml,
         extracted.fields,
-        claimedDataListNames(),
+        claimedListSourceNames(),
       );
       if (!validation.ok) {
         await recordAudit(tx, {
@@ -662,7 +681,19 @@ export const updateModuleOp = defineOperation({
       return err({ kind: "HandlerError", operation: "modules.update", message: linkCanon.message });
     }
     const persistedHtml = linkCanon.value.html;
-    const persistedFields = linkCanon.value.fields;
+    let persistedFields = linkCanon.value.fields;
+    if (persistedFields !== undefined) {
+      // Epic #1107 — `list` field defaults: entries validated, ids assigned.
+      const listDefaults = await normaliseListFieldDefaults(tx, ctx, branchId, persistedFields);
+      if (!listDefaults.ok) {
+        return err({
+          kind: "HandlerError",
+          operation: "modules.update",
+          message: listDefaults.message,
+        });
+      }
+      persistedFields = listDefaults.value;
+    }
 
     // v0.5.1 — branched writes skip the live UPDATE. Module code stays
     // visible to other chats at its pre-edit state until publish merges
@@ -873,7 +904,7 @@ export const deleteModuleOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "modules.delete",
-        message: "module not found",
+        message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids).`,
       });
     }
     await recordAudit(tx, {

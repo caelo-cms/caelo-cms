@@ -52,12 +52,17 @@ export async function resolvePageRefs(
     if (UUID_RE.test(ref)) return { ok: true, pageId: ref };
     if (ref.startsWith("/")) {
       const hit = pages.find((p) => pathKey(p.currentPath) === pathKey(ref));
-      return hit
-        ? { ok: true, pageId: hit.id }
-        : {
-            ok: false,
-            message: `no page lives at ${ref} — call list_pages for the current paths, or pass the page id`,
-          };
+      if (hit) return { ok: true, pageId: hit.id };
+      // The homepage is served at "/", so "/<its slug>" (e.g. "/home") can
+      // never be another page's path — it names the homepage the same way
+      // its bare slug already does (PR #1121 e2e: add_module targetRef
+      // "/home" was refused).
+      const home = pages.find((p) => p.currentPath === "/");
+      if (home && pathKey(ref) === `/${home.slug}`) return { ok: true, pageId: home.id };
+      return {
+        ok: false,
+        message: `no page lives at ${ref} — call list_pages for the current paths, or pass the page id`,
+      };
     }
     const bySlug = pages.filter((p) => p.slug === ref);
     if (bySlug.length === 1 && bySlug[0]) return { ok: true, pageId: bySlug[0].id };

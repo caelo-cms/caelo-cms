@@ -12,7 +12,7 @@
  *
  * ## Why once per build
  *
- * `staticRender` is per page and `dataListsOperation` returns data, not
+ * `staticRender` is per page and `listSourcesOperation` returns data, not
  * files. The behaviour this channel exists for — a consent dialog that
  * must work no matter how the site's markup was authored, an embed that
  * must not load before the visitor opts in — needs its configuration

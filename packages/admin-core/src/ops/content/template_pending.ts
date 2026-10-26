@@ -57,7 +57,13 @@ export const proposeTemplateUpdateOp = defineOperation({
       });
     }
     const changedFields = (
-      ["displayName", "html", "css", "layoutId"] as const satisfies readonly (keyof typeof input)[]
+      [
+        "displayName",
+        "html",
+        "css",
+        "layoutId",
+        "pageType",
+      ] as const satisfies readonly (keyof typeof input)[]
     ).filter((k) => input[k] !== undefined);
     const preview = {
       kind: "update",

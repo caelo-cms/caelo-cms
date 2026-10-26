@@ -5,14 +5,27 @@
  * skeleton; pages compose into them via `template_blocks` slots.
  */
 
-import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok, templateCreateSchema, templateUpdateSchema } from "@caelo-cms/shared";
+import {
+  defineOperation,
+  OperationAbortError,
+  type QueryError,
+  type TransactionRunner,
+} from "@caelo-cms/query-api";
+import {
+  type ExecutionContext,
+  err,
+  ok,
+  templateCreateSchema,
+  templateUpdateSchema,
+} from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
+import { loadListEntities, loadListEntityBySlug, persistListEntity } from "../../lists/store.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import { emitSnapshot, loadTemplateState } from "../../snapshots/index.js";
+import type { PageTypeState } from "../../snapshots/state.js";
 import { buildPatchSet } from "../../sql-helpers.js";
 import { readSiteDefaults } from "../site_defaults.js";
 
@@ -20,8 +33,11 @@ const templateRowSchema = z.object({
   id: z.string(),
   slug: z.string(),
   displayName: z.string(),
-  /** v0.12.0 — page-type tag pages inherit. */
-  kind: z.enum(["home", "landing", "product", "blog", "doc", "content", "utility"]),
+  /**
+   * Epic #1107 — slugs of the page types (in the caller's view) whose
+   * pages may use this template. Replaces the old `kind` tag.
+   */
+  pageTypes: z.array(z.string()),
   html: z.string(),
   css: z.string(),
   /** P6.7.6 — every template binds to one layout. */
@@ -36,7 +52,6 @@ type RawTemplateRow = {
   id: string;
   slug: string;
   display_name: string;
-  kind?: string | null;
   html: string;
   css: string;
   layout_id: string;
@@ -59,6 +74,7 @@ function iso(v: string | Date): string {
 function rowsToTemplates(
   templates: RawTemplateRow[],
   blocks: RawBlockRow[],
+  pageTypesByTemplate: ReadonlyMap<string, string[]>,
 ): z.infer<typeof templateRowSchema>[] {
   const blockMap = new Map<string, { name: string; displayName: string; position: number }[]>();
   for (const b of blocks) {
@@ -68,19 +84,11 @@ function rowsToTemplates(
   }
   for (const arr of blockMap.values()) arr.sort((a, b) => a.position - b.position);
   return templates.map((t) => {
-    const kindRaw = (t.kind ?? "content") as
-      | "home"
-      | "landing"
-      | "product"
-      | "blog"
-      | "doc"
-      | "content"
-      | "utility";
     return {
       id: t.id,
       slug: t.slug,
       displayName: t.display_name,
-      kind: kindRaw,
+      pageTypes: pageTypesByTemplate.get(t.id) ?? [],
       html: t.html,
       css: t.css,
       layoutId: t.layout_id,
@@ -90,6 +98,19 @@ function rowsToTemplates(
       blocks: blockMap.get(t.id) ?? [],
     };
   });
+}
+
+/** Page type slugs per template id, as the caller sees the page types. */
+async function pageTypesByTemplate(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  for (const t of await loadListEntities(tx, "pageType", ctx.chatBranchId ?? null)) {
+    for (const id of t.state.definition.templates)
+      out.set(id, [...(out.get(id) ?? []), t.state.slug]);
+  }
+  return out;
 }
 
 export const listTemplatesOp = defineOperation({
@@ -105,13 +126,13 @@ export const listTemplatesOp = defineOperation({
     const templates = (await tx.execute(
       input.includeDeleted
         ? sql`
-            SELECT id::text AS id, slug, display_name, kind, html, css,
+            SELECT id::text AS id, slug, display_name, html, css,
                    layout_id::text AS layout_id,
                    created_at, updated_at, deleted_at
             FROM templates WHERE 1=1 ${branchFilter} ORDER BY created_at ASC
           `
         : sql`
-            SELECT id::text AS id, slug, display_name, kind, html, css,
+            SELECT id::text AS id, slug, display_name, html, css,
                    layout_id::text AS layout_id,
                    created_at, updated_at, deleted_at
             FROM templates WHERE deleted_at IS NULL ${branchFilter} ORDER BY created_at ASC
@@ -121,7 +142,9 @@ export const listTemplatesOp = defineOperation({
       SELECT template_id::text AS template_id, name, display_name, position
       FROM template_blocks
     `)) as unknown as RawBlockRow[];
-    return ok({ templates: rowsToTemplates(templates, blocks) });
+    return ok({
+      templates: rowsToTemplates(templates, blocks, await pageTypesByTemplate(tx, ctx)),
+    });
   },
 });
 
@@ -136,7 +159,7 @@ export const getTemplateOp = defineOperation({
     // v0.9.0 — branch-aware read.
     const branchFilter = branchVisibilityFilter(ctx);
     const templates = (await tx.execute(sql`
-      SELECT id::text AS id, slug, display_name, kind, html, css,
+      SELECT id::text AS id, slug, display_name, html, css,
              layout_id::text AS layout_id,
              created_at, updated_at, deleted_at
       FROM templates WHERE id = ${input.templateId}::uuid ${branchFilter} LIMIT 1
@@ -152,7 +175,7 @@ export const getTemplateOp = defineOperation({
       SELECT template_id::text AS template_id, name, display_name, position
       FROM template_blocks WHERE template_id = ${input.templateId}::uuid
     `)) as unknown as RawBlockRow[];
-    const composed = rowsToTemplates(templates, blocks);
+    const composed = rowsToTemplates(templates, blocks, await pageTypesByTemplate(tx, ctx));
     const template = composed[0];
     if (!template) {
       return err({
@@ -256,11 +279,10 @@ export const createTemplateOp = defineOperation({
     // v0.9.0 — branched-create: branched until chat.merge_to_main
     // clears the chat_branch_id tag.
     const rows = (await tx.execute(sql`
-      INSERT INTO templates (slug, display_name, kind, html, css, layout_id, chat_branch_id)
+      INSERT INTO templates (slug, display_name, html, css, layout_id, chat_branch_id)
       VALUES (
         ${input.slug},
         ${input.displayName},
-        ${input.kind},
         ${input.html},
         ${input.css},
         ${layoutId}::uuid,
@@ -339,6 +361,16 @@ export const createTemplateOp = defineOperation({
         entities: [{ kind: "template", entityId: templateId, state }],
       });
     }
+    // Epic #1107 — the template serves a page type: the named one, else
+    // the site's default page type (stored data).
+    const added = await addTemplateToPageType(
+      ctx,
+      tx,
+      templateId,
+      input.pageType,
+      "templates.create",
+    );
+    if (!added.ok) throw new OperationAbortError(added.error);
     return ok({ templateId });
   },
 });
@@ -390,7 +422,6 @@ export const updateTemplateOp = defineOperation({
     }
     const sets = buildPatchSet({
       display_name: input.displayName,
-      kind: input.kind,
       html: input.html,
       css: input.css,
       layout_id: input.layoutId !== undefined ? sql`${input.layoutId}::uuid` : undefined,
@@ -400,7 +431,6 @@ export const updateTemplateOp = defineOperation({
     // when only `blocks` was provided.
     const hasScalarPatch =
       input.displayName !== undefined ||
-      input.kind !== undefined ||
       input.html !== undefined ||
       input.css !== undefined ||
       input.layoutId !== undefined;
@@ -455,9 +485,101 @@ export const updateTemplateOp = defineOperation({
         entities: [{ kind: "template", entityId: input.templateId, state }],
       });
     }
+    if (input.pageType !== undefined) {
+      const added = await addTemplateToPageType(
+        ctx,
+        tx,
+        input.templateId,
+        input.pageType,
+        "templates.update",
+      );
+      if (!added.ok) throw new OperationAbortError(added.error);
+    }
     return ok({});
   },
 });
+
+/**
+ * Epic #1107 — append a template to a page type's `templates` (a page
+ * type write: lock, snapshot, in the caller's view). `pageTypeSlug`
+ * undefined = the site's default page type. A no-op when already listed.
+ */
+async function addTemplateToPageType(
+  ctx: Parameters<typeof createTemplateOp.handler>[0],
+  tx: Parameters<typeof createTemplateOp.handler>[2],
+  templateId: string,
+  pageTypeSlug: string | undefined,
+  operation: string,
+): Promise<{ ok: true } | { ok: false; error: QueryError }> {
+  const branchId = ctx.chatBranchId ?? null;
+  let type: Awaited<ReturnType<typeof loadListEntityBySlug<"pageType">>>;
+  if (pageTypeSlug === undefined) {
+    const defaults = await readSiteDefaults(tx);
+    const all = await loadListEntities(tx, "pageType", branchId);
+    type = all.find((t) => t.id === defaults?.defaultPageTypeId) ?? null;
+    if (!type) {
+      return {
+        ok: false,
+        error: {
+          kind: "HandlerError",
+          operation,
+          message:
+            "the site has no default page type to put the template in — pass pageType (page_types.list shows the page types)",
+        },
+      };
+    }
+  } else {
+    type = await loadListEntityBySlug(tx, "pageType", branchId, pageTypeSlug);
+    if (!type) {
+      const known = (await loadListEntities(tx, "pageType", branchId)).map((t) => t.state.slug);
+      return {
+        ok: false,
+        error: {
+          kind: "HandlerError",
+          operation,
+          message: `no page type "${pageTypeSlug}" — the site has ${known.join(", ") || "none"}. Use one of those, or create it first (page_types.upsert_many).`,
+        },
+      };
+    }
+  }
+  if (type.state.definition.templates.includes(templateId)) return { ok: true };
+  const lock = await checkAndAcquireEntityLock(tx, {
+    kind: "pageType",
+    entityId: type.id,
+    chatBranchId: ctx.chatBranchId,
+    holderKey: ctx.chatTaskId,
+  });
+  if (!lock.permitted) {
+    return {
+      ok: false,
+      error: await entityWriteBlockedError(tx, operation, "pageType", type.id, lock),
+    };
+  }
+  const state: PageTypeState = {
+    ...type.state,
+    definition: {
+      ...type.state.definition,
+      templates: [...type.state.definition.templates, templateId],
+    },
+    version: type.state.version + 1,
+  };
+  const entity = await persistListEntity(
+    tx,
+    ctx.actorId,
+    branchId,
+    { kind: "pageType", entityId: type.id, state },
+    false,
+  );
+  await emitSnapshot(tx, {
+    actorId: ctx.actorId,
+    opKind: operation === "templates.create" ? "templates.create" : "templates.update",
+    description: `${operation} → page type ${type.state.slug}`,
+    chatTaskId: ctx.chatTaskId ?? null,
+    chatBranchId: branchId,
+    entities: [entity],
+  });
+  return { ok: true };
+}
 
 /**
  * P6.7.6 review pass — narrow AI-allowed surface for re-pointing a
@@ -586,6 +708,46 @@ export const deleteTemplateOp = defineOperation({
         resultSummary: "already-deleted",
       });
       return ok({});
+    }
+    // Epic #1107 — page types stop listing the template. A type for which
+    // it is the default (or the only) template cannot lose it silently.
+    const listing = (await loadListEntities(tx, "pageType", ctx.chatBranchId ?? null)).filter((t) =>
+      t.state.definition.templates.includes(input.templateId),
+    );
+    for (const t of listing) {
+      if (t.state.definition.defaultTemplate === input.templateId) {
+        return err({
+          kind: "HandlerError",
+          operation: "templates.delete",
+          refusal: true,
+          message: `page type "${t.state.slug}" uses this template as its defaultTemplate — make another of its templates the default first (page_types.upsert_many), then retry.`,
+        });
+      }
+    }
+    for (const t of listing) {
+      const state: PageTypeState = {
+        ...t.state,
+        definition: {
+          ...t.state.definition,
+          templates: t.state.definition.templates.filter((id) => id !== input.templateId),
+        },
+        version: t.state.version + 1,
+      };
+      const entity = await persistListEntity(
+        tx,
+        ctx.actorId,
+        ctx.chatBranchId ?? null,
+        { kind: "pageType", entityId: t.id, state },
+        false,
+      );
+      await emitSnapshot(tx, {
+        actorId: ctx.actorId,
+        opKind: "templates.delete",
+        description: `templates.delete → page type ${t.state.slug} drops the template`,
+        chatTaskId: ctx.chatTaskId ?? null,
+        chatBranchId: ctx.chatBranchId ?? null,
+        entities: [entity],
+      });
     }
     await tx.execute(sql`
       UPDATE templates SET deleted_at = now() WHERE id = ${input.templateId}::uuid

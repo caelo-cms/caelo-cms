@@ -24,6 +24,7 @@ export type MainNavIcon =
   | "changes"
   | "file"
   | "layers"
+  | "list"
   | "package"
   | "image"
   | "layout"
@@ -73,6 +74,8 @@ export const CONTENT_LINKS: readonly MainNavLink[] = [
   { href: "/content/changes", label: "Open changes", icon: "changes", permission: "content.write" },
   { href: "/content/pages", label: "Pages", icon: "file", permission: "content.read" },
   { href: "/content/modules", label: "Modules", icon: "layers", permission: "content.read" },
+  // Epic #1107 — menus, footer links, categories, tags: every shared list.
+  { href: "/content/lists", label: "Menus & lists", icon: "list", permission: "content.read" },
   {
     href: "/content/library",
     label: "Content library",

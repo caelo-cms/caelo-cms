@@ -134,11 +134,18 @@ try {
             updated_at          = now()
         `;
       } else {
+        // Epic #1107 — the default page type is the one listing the
+        // template (migration 0351 typed the seeded home-template). None
+        // listing it fails the NOT NULL loudly instead of guessing a type.
         await tx`
-          INSERT INTO site_defaults (default_layout_id, default_template_id)
+          INSERT INTO site_defaults (default_layout_id, default_template_id, default_page_type_id)
           VALUES (
             (SELECT id FROM layouts WHERE slug = 'site-default'),
-            ${tplId}::uuid
+            ${tplId}::uuid,
+            (SELECT id FROM page_types
+              WHERE chat_branch_id IS NULL AND deleted_at IS NULL
+                AND definition->'templates' ? ${tplId}
+              ORDER BY created_at LIMIT 1)
           )
         `;
       }
@@ -149,46 +156,6 @@ try {
         ON CONFLICT (template_id, name) DO NOTHING
       `;
     }
-
-    // P6.7.5 — default structured sets so a fresh install has a
-    // working header / footer / theme / tags primitive out of the box.
-    // Idempotent: ON CONFLICT (kind, slug) DO NOTHING keeps user edits
-    // intact across re-seed.
-    await tx`
-      INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
-      VALUES (
-        'nav-menu', 'header-main', 'Header navigation',
-        ${[{ label: "Home", href: "/home" }]}::jsonb,
-        ${actorId}::uuid
-      )
-      ON CONFLICT (kind, slug) DO NOTHING
-    `;
-    await tx`
-      INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
-      VALUES (
-        'nav-menu', 'footer-main', 'Footer navigation',
-        ${[]}::jsonb,
-        ${actorId}::uuid
-      )
-      ON CONFLICT (kind, slug) DO NOTHING
-    `;
-    // NO `kind='theme'` row here. v0.11.0 (migration 0097) moved themes out of
-    // `structured_sets` into their own `themes` table and dropped `theme` from
-    // `structuredSetKind` — 0097 even deletes any legacy row, because
-    // `structuredSetKind.parse(r.kind)` throws on read once the kind is gone.
-    // This seed kept re-inserting it after the migration had cleaned it up,
-    // which poisoned every freshly-seeded dev DB: `structured_sets.list`
-    // (unfiltered) threw a ZodError, taking the AI's `list_structured_sets`
-    // tool down with it. Themes seed through the `themes` table instead.
-    await tx`
-      INSERT INTO structured_sets (kind, slug, display_name, items, updated_by)
-      VALUES (
-        'tags', 'blog', 'Blog tags',
-        ${[]}::jsonb,
-        ${actorId}::uuid
-      )
-      ON CONFLICT (kind, slug) DO NOTHING
-    `;
   });
 } finally {
   await sql.end();

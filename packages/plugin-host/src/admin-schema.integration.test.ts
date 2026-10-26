@@ -147,8 +147,13 @@ describe("#389 — plugin-owned cms_admin schema", () => {
         `INSERT INTO layouts (slug, display_name, html, css) VALUES ('t389-lay', 'L', '<html></html>', '') RETURNING id::text AS id`,
       )) as { id: string }[];
       const tpl = (await tx.unsafe(
-        `INSERT INTO templates (slug, display_name, kind, html, css, layout_id) VALUES ('t389-tpl', 'T', 'home', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
+        `INSERT INTO templates (slug, display_name, html, css, layout_id) VALUES ('t389-tpl', 'T', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
       )) as { id: string }[];
+      // Epic #1107 — a raw-inserted template joins the default page type so
+      // pages can use it (templates.create does this itself).
+      await tx.unsafe(
+        `UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb('${tpl[0]?.id}'::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)`,
+      );
       const pg = (await tx.unsafe(
         `INSERT INTO pages (slug, name, title, template_id, status) VALUES ('t389-page', 'P', 'P', '${tpl[0]?.id}', 'draft') RETURNING id::text AS id`,
       )) as { id: string }[];
@@ -208,8 +213,13 @@ describe("#389 — plugin-owned cms_admin schema", () => {
         `INSERT INTO layouts (slug, display_name, html, css) VALUES ('t389-lay2', 'L', '<html></html>', '') RETURNING id::text AS id`,
       )) as { id: string }[];
       const tpl = (await tx.unsafe(
-        `INSERT INTO templates (slug, display_name, kind, html, css, layout_id) VALUES ('t389-tpl2', 'T', 'home', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
+        `INSERT INTO templates (slug, display_name, html, css, layout_id) VALUES ('t389-tpl2', 'T', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
       )) as { id: string }[];
+      // Epic #1107 — a raw-inserted template joins the default page type so
+      // pages can use it (templates.create does this itself).
+      await tx.unsafe(
+        `UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb('${tpl[0]?.id}'::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)`,
+      );
       const pg = (await tx.unsafe(
         `INSERT INTO pages (slug, name, title, template_id, status) VALUES ('t389-page2', 'P', 'P', '${tpl[0]?.id}', 'draft') RETURNING id::text AS id`,
       )) as { id: string }[];

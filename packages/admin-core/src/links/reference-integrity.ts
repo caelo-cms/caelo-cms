@@ -23,8 +23,17 @@
  *
  * Only what renders is checked: page placements (and the field defaults a
  * value-less field shows), nested modules, the layouts and templates of
- * live pages with their chrome modules, structured sets, and plugin data
- * named through the plugins' link-locations hook.
+ * live pages with their chrome modules, and plugin data named through the
+ * plugins' link-locations hook.
+ *
+ * Lists (epic #1107, reference-lists.ts) are followed the way they
+ * render: a module's `list` field renders its shared list (and that
+ * list's type's source defaults) on the module's pages, a list entry's
+ * `module` field renders that module there too, and a page renders its
+ * own terms and properties. Besides page / media links inside all of
+ * those, the check resolves `caelo:list/<id>`, `caelo:term/<list>/<item>`
+ * and embedded modules: one whose target is gone is `missing-list` /
+ * `missing-term` / `missing-module`, blocking like a deleted page.
  */
 
 import {
@@ -46,6 +55,7 @@ import {
   type SiteLinkIndex,
   urlFieldNamesInHtml,
 } from "@caelo-cms/shared";
+import { type ListFieldDef, listFieldsOf } from "../lists/local.js";
 import type { LinkTargets } from "./link-targets.js";
 import {
   fixFor,
@@ -54,7 +64,15 @@ import {
   type ReferencePlace,
   type ReferenceProblem,
 } from "./reference-fix.js";
-import type { ReferenceSourceModel, SourceField } from "./reference-sources.js";
+import {
+  collectListRefs,
+  collectTermRefs,
+  entryIds,
+  entryModules,
+  type FoundTermRef,
+  walkEntries,
+} from "./reference-lists.js";
+import type { ReferenceSourceModel, SourceField, SourceListType } from "./reference-sources.js";
 
 export type { ReferenceFix, ReferencePlace, ReferenceProblem } from "./reference-fix.js";
 
@@ -144,6 +162,25 @@ interface IssueAcc {
   readonly pages: Set<string>;
 }
 
+/** A list reference to resolve (see reference-lists.ts). */
+type StructRef =
+  | { readonly kind: "list"; readonly listId: string; readonly where: string }
+  | { readonly kind: "term"; readonly term: FoundTermRef; readonly where: string }
+  | {
+      readonly kind: "module";
+      readonly moduleId: string;
+      readonly contentInstanceId: string;
+      readonly where: string;
+    };
+
+/** What one shared list renders besides its own entries, found once. */
+interface ListRenders {
+  /** Lists its entries reference (a `page_terms` vocabulary, …). */
+  readonly lists: readonly string[];
+  /** Modules its entries embed. */
+  readonly modules: readonly { moduleId: string; contentInstanceId: string }[];
+}
+
 /** A slot: one value at one place, scanned with one canonicaliser call. */
 export type ReferenceSlot =
   | { readonly kind: "html"; readonly value: string; readonly where: string }
@@ -176,6 +213,94 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     const list = slots.get(key) ?? [];
     if (!list.some((s) => slotId(s) === slotKey)) list.push(slot);
     slots.set(key, list);
+  };
+
+  // ── List references (epic #1107): recorded per place, resolved below. ──
+  const structural = new Map<string, Map<string, StructRef>>();
+  const addStruct = (placeKey: string, r: StructRef) => {
+    const id =
+      r.kind === "list"
+        ? r.listId
+        : r.kind === "term"
+          ? r.term.ref
+          : `${r.moduleId}/${r.contentInstanceId}`;
+    const refs = structural.get(placeKey) ?? new Map<string, StructRef>();
+    refs.set(`${r.kind}\u0000${r.where}\u0000${id}`, r);
+    structural.set(placeKey, refs);
+  };
+  /** Record the list and term references in `value`; returns the lists it names. */
+  const recordRefs = (placeKey: string, value: unknown, where: string): string[] => {
+    const lists = collectListRefs(value);
+    for (const listId of lists) addStruct(placeKey, { kind: "list", listId, where });
+    for (const term of collectTermRefs(value)) addStruct(placeKey, { kind: "term", term, where });
+    return lists;
+  };
+  const typeBySlug = new Map([...model.listTypes.values()].map((t) => [t.slug, t]));
+  const moduleAndInstanceExist = (moduleId: string, contentInstanceId: string) =>
+    model.modules.has(moduleId) && model.instances.get(contentInstanceId)?.moduleId === moduleId;
+
+  // A list type's source nodes render their query defaults wherever a
+  // list of the type renders.
+  const scannedTypes = new Set<string>();
+  const renderListType = (t: SourceListType, pages: Iterable<string>) => {
+    const sourced = Object.entries(t.def.nodes).filter(([, n]) => n.source !== undefined);
+    if (sourced.length === 0) return;
+    const key = `list-type:${t.id}`;
+    const acc = placeOf(key, { kind: "list-type", listTypeId: t.id, listTypeSlug: t.slug });
+    for (const p of pages) acc.pages.add(p);
+    if (scannedTypes.has(t.id)) return;
+    scannedTypes.add(t.id);
+    for (const [node, n] of sourced) {
+      const where = `nodes.${node}.source`;
+      addSlot(key, { kind: "json", value: n.source, where }, where);
+      recordRefs(key, n.source, where);
+    }
+  };
+
+  const listRenders = new Map<string, ListRenders>();
+  /**
+   * A shared list renders on `pages`: its entries (links, terms, nested
+   * list references) are checked there, the modules they embed render
+   * there, and so do the lists they name.
+   */
+  const renderList = (listId: string, pages: ReadonlySet<string>, seen = new Set<string>()) => {
+    const l = model.lists.get(listId);
+    if (!l || seen.has(listId)) return;
+    seen.add(listId);
+    const key = `list:${l.id}`;
+    const acc = placeOf(key, {
+      kind: "list",
+      listId: l.id,
+      listSlug: l.slug,
+      listName: l.name,
+    });
+    for (const p of pages) acc.pages.add(p);
+    const type = model.listTypes.get(l.listTypeId);
+    let renders = listRenders.get(l.id);
+    if (!renders) {
+      const lists = new Set<string>();
+      for (const { item, where } of walkEntries(l.items)) {
+        const stored = { values: item.values, ...(item.query ? { query: item.query } : {}) };
+        addSlot(key, { kind: "json", value: stored, where }, where);
+        for (const id of recordRefs(key, stored, where)) lists.add(id);
+      }
+      const modules = type ? entryModules(type.def, l.items) : [];
+      for (const em of modules) addStruct(key, { kind: "module", ...em });
+      renders = { lists: [...lists], modules };
+      listRenders.set(l.id, renders);
+    }
+    for (const em of renders.modules) {
+      if (!moduleAndInstanceExist(em.moduleId, em.contentInstanceId)) continue;
+      nestedQueue.push({
+        moduleId: em.moduleId,
+        instanceId: em.contentInstanceId,
+        pages: new Set(pages),
+        nested: true,
+        synced: false,
+      });
+    }
+    for (const nested of renders.lists) renderList(nested, pages, seen);
+    if (type) renderListType(type, pages);
   };
 
   // ── Modules: their HTML, and per field the value or the default. ──
@@ -268,6 +393,67 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
         moduleDefault(m.id, field, u.pages);
       }
     }
+    for (const lf of listFieldsOf(m.fields)) renderListField(m.id, m.name, lf, inst, u);
+  };
+
+  /**
+   * One `list` field of a rendering module (docs/lists.md §7): the field's
+   * own definition (fixed list, source), then the value the placement
+   * shows — its content instance's value, else the field default. Page
+   * links inside a local list are the field slot's (above); here the
+   * list, term and embedded-module references.
+   */
+  const renderListField = (
+    moduleId: string,
+    moduleName: string,
+    lf: ListFieldDef,
+    inst: { id: string; values: Readonly<Record<string, unknown>> } | undefined,
+    u: Unit,
+  ) => {
+    if (lf.list !== undefined || lf.source !== undefined) {
+      const key = `module-field:${moduleId}:${lf.name}`;
+      const acc = placeOf(key, { kind: "module-field", moduleId, moduleName, field: lf.name });
+      for (const p of u.pages) acc.pages.add(p);
+      if (lf.source !== undefined) {
+        const where = `fields.${lf.name}.source`;
+        addSlot(key, { kind: "json", value: lf.source, where }, where);
+        recordRefs(key, lf.source, where);
+      }
+      for (const listId of recordRefs(key, lf.list, `fields.${lf.name}.list`)) {
+        renderList(listId, u.pages);
+      }
+    }
+    const has = inst !== undefined && Object.hasOwn(inst.values, lf.name);
+    const value = has && inst ? inst.values[lf.name] : lf.default;
+    if (value === undefined || value === null) return;
+    // The same places the field slot above used for this value.
+    const key =
+      has && inst ? `content:${inst.id}:${lf.name}` : `module-default:${moduleId}:${lf.name}`;
+    const where = has ? `values.${lf.name}` : `fields.${lf.name}.default`;
+    if ((lf.bind ?? "local") !== "local") {
+      for (const listId of recordRefs(key, value, where)) renderList(listId, u.pages);
+      return;
+    }
+    for (const { item, where: entry } of walkEntries(value)) {
+      const stored = { values: item.values, ...(item.query ? { query: item.query } : {}) };
+      for (const listId of recordRefs(key, stored, `${where} ${entry}`)) {
+        renderList(listId, u.pages);
+      }
+    }
+    const type = typeBySlug.get(lf.listType);
+    if (!type) return;
+    for (const em of entryModules(type.def, value)) {
+      addStruct(key, { kind: "module", ...em, where: `${where} ${em.where}` });
+      if (!moduleAndInstanceExist(em.moduleId, em.contentInstanceId)) continue;
+      nestedQueue.push({
+        moduleId: em.moduleId,
+        instanceId: em.contentInstanceId,
+        pages: u.pages,
+        nested: true,
+        synced: false,
+      });
+    }
+    renderListType(type, u.pages);
   };
 
   for (const pl of model.placements) {
@@ -318,6 +504,28 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
     }
   }
 
+  // ── Pages: their terms and properties (what queries and {{page.*}} read). ──
+  for (const [pageId, data] of model.pageData) {
+    if (!livePage(pageId)) continue;
+    const key = `page:${pageId}`;
+    const acc = placeOf(key, {
+      kind: "page",
+      pageId,
+      pagePath: pageInfo.get(pageId)?.path ?? pageId,
+    });
+    acc.pages.add(pageId);
+    const one = new Set([pageId]);
+    recordRefs(key, data.terms, "terms");
+    // A vocabulary renders on the pages carrying its terms (page_terms,
+    // `{{#page.terms.<vocabulary>}}`): its entries' links ship there.
+    for (const term of collectTermRefs(data.terms)) renderList(term.listId, one);
+    for (const [name, v] of Object.entries(data.properties)) {
+      const where = `properties.${name}`;
+      addSlot(key, { kind: "json", value: v, where }, where);
+      recordRefs(key, v, where);
+    }
+  }
+
   // ── Nested modules, breadth-first, cycle-safe, depth-capped. ──
   const seen = new Set<string>();
   let level = nestedQueue.splice(0);
@@ -329,31 +537,6 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
       renderUnit(u);
     }
     level = nestedQueue.splice(0);
-  }
-
-  // ── Structured sets: a nav menu renders where its module does. ──
-  const pagesByModuleSlug = new Map<string, Set<string>>();
-  for (const [key, acc] of places) {
-    if (!key.startsWith("module-html:")) continue;
-    const m = model.modules.get((acc.place as { moduleId: string }).moduleId);
-    if (m) pagesByModuleSlug.set(m.slug, acc.pages);
-  }
-  for (const s of model.sets) {
-    const key = `set:${s.id}`;
-    const acc = placeOf(key, {
-      kind: "structured-set",
-      setId: s.id,
-      set: `${s.kind}/${s.slug}`,
-      setName: s.name,
-    });
-    const navPages =
-      s.kind === "nav-menu" ? pagesByModuleSlug.get(`nav-menu-${s.slug}`) : undefined;
-    // Only nav menus render (through their `nav-menu-<slug>` module, see
-    // preview-compose); a set nothing renders ships nowhere: warnings only.
-    if (navPages) for (const p of navPages) acc.pages.add(p);
-    s.items.forEach((item, i) => {
-      addSlot(key, { kind: "json", value: item, where: `items[${i}]` }, `items[${i}]`);
-    });
   }
 
   // ── Plugin data named by the plugins' link-locations hook. ──
@@ -376,6 +559,46 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
       addSlot(key, { kind: "json", value: pv.value, where: "value" }, "value");
     }
   });
+
+  const itemIdsOf = new Map<string, ReadonlySet<string>>();
+  const brokenStructRef = (r: StructRef): { problem: ReferenceProblem; target: string } | null => {
+    switch (r.kind) {
+      case "list":
+        return model.lists.has(r.listId)
+          ? null
+          : { problem: "missing-list", target: `a deleted list (${r.listId})` };
+      case "term": {
+        const l = model.lists.get(r.term.listId);
+        if (!l) {
+          return {
+            problem: "missing-term",
+            target: `"${r.term.ref}", whose vocabulary list (${r.term.listId}) was deleted`,
+          };
+        }
+        let ids = itemIdsOf.get(l.id);
+        if (!ids) {
+          ids = entryIds(l.items);
+          itemIdsOf.set(l.id, ids);
+        }
+        return ids.has(r.term.itemId)
+          ? null
+          : {
+              problem: "missing-term",
+              target: `entry ${r.term.itemId} of vocabulary "${l.slug}" (${l.id}), which was removed`,
+            };
+      }
+      case "module": {
+        const m = model.modules.get(r.moduleId);
+        if (!m) return { problem: "missing-module", target: `a deleted module (${r.moduleId})` };
+        return model.instances.get(r.contentInstanceId)?.moduleId === r.moduleId
+          ? null
+          : {
+              problem: "missing-module",
+              target: `content instance ${r.contentInstanceId} of module "${m.name}", which was deleted`,
+            };
+      }
+    }
+  };
 
   // ── Resolve every slot. ──
   const issues = new Map<string, IssueAcc>();
@@ -402,7 +625,7 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
   for (const [placeKey, acc] of places) {
     const renderPages: (string | null)[] =
       acc.siteWide || acc.pages.size === 0 ? [null] : [...acc.pages];
-    if (!acc.siteWide && acc.pages.size === 0 && acc.place.kind !== "structured-set") continue;
+    if (!acc.siteWide && acc.pages.size === 0) continue;
     for (const slot of slots.get(placeKey) ?? []) {
       const found = scanSlot(slot, input.lookup);
       for (const { ref, where } of found.refs) {
@@ -443,6 +666,13 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
         }
       }
     }
+    for (const r of structural.get(placeKey)?.values() ?? []) {
+      const broken = brokenStructRef(r);
+      if (!broken) continue;
+      for (const page of renderPages) {
+        record(placeKey, broken.problem, broken.target, null, null, r.where, page);
+      }
+    }
   }
 
   const out: ReferenceIssue[] = [];
@@ -464,7 +694,15 @@ export function scanReferenceIntegrity(input: ReferenceScanInput): ReferenceIssu
       place: acc.place,
       pageIds,
       shipped,
-      message: issueMessage(i.problem, acc.place, pageIds.map(pathOf), i.target, i.variant, fix),
+      message: issueMessage(
+        i.problem,
+        acc.place,
+        pageIds.map(pathOf),
+        i.target,
+        i.variant,
+        fix,
+        i.where,
+      ),
       fix,
     });
   }
@@ -483,6 +721,9 @@ function severityOf(
   if (!shipped) return "warning";
   switch (problem) {
     case "missing-target":
+    case "missing-list":
+    case "missing-term":
+    case "missing-module":
       return linkIssueSeverity(env, "missing") ?? "warning";
     case "variant-missing":
       return linkIssueSeverity(env, "no-variant") ?? "warning";

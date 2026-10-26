@@ -22,17 +22,19 @@
  */
 
 import {
+  DEFAULT_LIST_TYPES,
   type ModuleField,
   type ModuleKind,
   moduleFieldSchema,
   moduleKindSchema,
+  validateListItems,
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { validateTemplatizedModule } from "../ops/content/extract-module-structure.js";
 import type { AIProvider } from "./provider.js";
 import {
-  MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
+  MODULEIZE_FIELDS_JSON_SCHEMA,
 } from "./tools/_module-fields-schema.js";
 
 /** The clean module the block produces. */
@@ -87,13 +89,13 @@ export interface ModuleizeArgs {
  * constrains the model's response to this shape; `moduleizeOutputSchema`
  * (Zod) re-validates + the module contract checks run on top.
  */
-const MODULEIZE_JSON_SCHEMA = {
+export const MODULEIZE_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: ["html", "fields", "displayName", "kind"],
   properties: {
     html: { type: "string", minLength: 1 },
-    fields: MODULE_FIELDS_JSON_SCHEMA,
+    fields: MODULEIZE_FIELDS_JSON_SCHEMA,
     displayName: { type: "string", minLength: 1, maxLength: 128 },
     // ONLY the two META props moduleize actually parses (see
     // moduleizeOutputSchema below) — `description` + `kind`. The full
@@ -121,11 +123,13 @@ const moduleizeOutputSchema = z.object({
 
 const SYSTEM = [
   "You convert raw module HTML into a reusable Caelo module. Do ONE thing:",
-  "1. Find every value a non-technical operator would want to edit (headings, body copy, button labels, hrefs, image srcs, list items) and replace it in the HTML with a `{{field_name}}` placeholder.",
-  "2. Emit a `fields[]` entry for each placeholder with a SEMANTIC snake_case name that describes the VALUE (`hero_title`, `primary_cta_href`, `nav_items`), never the tag. Pick the right kind: text, richtext, url, image, number, boolean, link; repeating content is a LIST field (`text-list`, `link-list`, `module-list`) — never numbered scalars (label, label2, ...).",
-  '   LIST fields render in the html with MUSTACHE SECTIONS, never Handlebars — do NOT use `{{this}}`. A `text-list` iterates as `{{#field}}…{{.}}…{{/field}}` (`{{.}}` is the current string item); a `link-list` as `{{#field}}<a href="{{href}}">{{label}}</a>{{/field}}` (`{{href}}`/`{{label}}` are the per-item keys). E.g. a nav becomes `<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>` with ONE `nav_items` link-list field. The `{{#field}}`/`{{/field}}` section names + the enclosing field are the ONLY declared fields; `{{.}}`, `{{href}}`, `{{label}}` inside a section are per-item locals, not separate fields.',
-  "   EVERY field MUST carry `default` = the ORIGINAL value you replaced in the input HTML (the exact heading text, the exact href, ...). The raw copy must never be lost — placements without custom content render these defaults. A `link-list` default is an array of `{label, href}` with the real link text + URL; a `text-list` default is an array of strings.",
-  "3. Give the module a short displayName, a kind (chrome|hero|content|cta|utility), and a one-line description (what it is + when to use it).",
+  "1. Find every value a non-technical operator would want to edit (headings, body copy, button labels, hrefs, image srcs, list entries) and replace it in the HTML with a `{{field_name}}` placeholder.",
+  "2. Emit a `fields[]` entry for each placeholder with a SEMANTIC snake_case name that describes the VALUE (`hero_title`, `primary_cta_href`, `nav_links`), never the tag. Kinds: text, richtext, url, image, number, boolean, link, list.",
+  '3. Repeating content is ONE `list` field, never numbered scalars (label, label2, …). Pick its `listType` from the shipped types: "texts" (plain strings: bullets, chips, steps), "links" (label + link: a nav row, a footer column, social links), "menu" (navigation whose entries can carry sub-entries). The field is local: its entries are stored with the module.',
+  '   A list renders with a MUSTACHE SECTION, never Handlebars (no `{{this}}`, no `{{#each}}`): `{{#field}}…{{/field}}` repeats its block once per entry, and inside it the entry\'s own keys render — "texts": `{{#features}}<li>{{text}}</li>{{/features}}`; "links": `{{#nav_links}}<a href="{{link}}">{{label}}</a>{{/nav_links}}`; "menu": `{{#nav_menu}}<li><a href="{{link}}">{{label}}</a>{{#has_children}}<ul>{{#children}}<li><a href="{{link}}">{{label}}</a></li>{{/children}}</ul>{{/has_children}}</li>{{/nav_menu}}`. Only the section name is a declared field; `{{text}}`, `{{label}}`, `{{link}}`, `{{#children}}` are entry keys.',
+  "   Never invent a list type. Repeated parts no shipped type holds (cards of image + heading + text) stay fields of this module, one per visible value, named by role. When the field hint names a `list` field with another `listType`, keep that field (name, listType) and write its section with that type's keys.",
+  '4. EVERY field carries `default` = the ORIGINAL value you replaced (the exact heading text, the exact href, …). The copy must never be lost: placements without their own content render these defaults. A list default is its entries with the real text and URLs: "texts" → `[{"node":"text","values":{"text":"Fast"}}]`; "links" → `[{"node":"link","values":{"label":"Home","link":{"href":"/"}}}]`; "menu" → `[{"node":"entry","values":{"label":"Products","link":{"href":"/products"}},"children":[{"node":"entry","values":{"label":"Pricing","link":{"href":"/pricing"}}}]}]`.',
+  "5. Give the module a short displayName, a kind (chrome|hero|content|cta|utility), and a one-line description (what it is + when to use it).",
   "Every `{{field}}` in html MUST have a matching fields[] entry and vice-versa. Return a single JSON object matching the schema (html, fields, displayName, kind, description) — do not reply with prose.",
 ].join("\n");
 
@@ -182,13 +186,64 @@ async function runOnce(
   }
 }
 
+/** The shipped list types moduleize authors local lists of (it never mints a type). */
+const SHIPPED_LIST_TYPES = new Map(
+  DEFAULT_LIST_TYPES.filter((t) => t.role !== "vocabulary").map((t) => [t.slug, t]),
+);
+
 /**
- * Validate the tool-call args: shape (Zod) THEN the module contract
- * (placeholder ↔ field). Returns the parsed result or a human error string.
+ * Check every `list` field against the list types moduleize may use and
+ * take a hinted custom-type field's default from the hint. The output
+ * schema closes entry values to the shipped types' fields (structured
+ * output needs closed objects), so a custom type's entries cannot come
+ * back from the model — the hint is where they live. Returns the fields
+ * to keep, or the repair message.
+ */
+function checkListFields(
+  fields: ModuleField[],
+  hint: readonly ModuleField[] | undefined,
+): { ok: true; fields: ModuleField[] } | { ok: false; error: string } {
+  const out: ModuleField[] = [];
+  for (const f of fields) {
+    if (f.kind !== "list") {
+      out.push(f);
+      continue;
+    }
+    const hinted = hint?.find((h) => h.kind === "list" && h.name === f.name);
+    const shipped = SHIPPED_LIST_TYPES.get(f.listType);
+    if (!shipped) {
+      if (hinted?.kind === "list" && hinted.listType === f.listType) {
+        out.push(hinted.default === undefined ? f : { ...f, default: hinted.default });
+        continue;
+      }
+      return {
+        ok: false,
+        error: `list field "${f.name}": listType "${f.listType}" is not one you may use — pick "texts", "links" or "menu", or keep the parts as separate fields.`,
+      };
+    }
+    if (Array.isArray(f.default)) {
+      const checked = validateListItems(shipped, f.default, { path: `${f.name}.default` });
+      const issue = checked.issues[0];
+      if (issue) {
+        return {
+          ok: false,
+          error: `list field "${f.name}" (${f.listType}): ${issue.path}: ${issue.message}`,
+        };
+      }
+    }
+    out.push(f);
+  }
+  return { ok: true, fields: out };
+}
+
+/**
+ * Validate the tool-call args: shape (Zod), the module contract
+ * (placeholder ↔ field), then the list fields. Returns the parsed result or a human error string.
  */
 function validate(
   args: unknown,
   inputHtml: string,
+  hint?: readonly ModuleField[],
 ): { ok: true; value: ModuleizeResult } | { ok: false; error: string } {
   if (args === undefined) {
     return {
@@ -205,6 +260,8 @@ function validate(
   }
   const contract = validateTemplatizedModule(parsed.data.html, parsed.data.fields);
   if (!contract.ok) return { ok: false, error: contract.message };
+  const lists = checkListFields(parsed.data.fields, hint);
+  if (!lists.ok) return lists;
   // Content-preservation contract: when the input HTML carried visible
   // copy and the model minted fields, at least one field must carry the
   // original value as its `default`. Without this check the copy VANISHES
@@ -228,7 +285,7 @@ function validate(
       };
     }
   }
-  return { ok: true, value: parsed.data };
+  return { ok: true, value: { ...parsed.data, fields: lists.fields } };
 }
 
 /**
@@ -267,7 +324,7 @@ export async function moduleize(args: ModuleizeArgs): Promise<ModuleizeResult> {
     if (providerError !== undefined) {
       throw new Error(`moduleize: provider error — ${providerError}`);
     }
-    const result = validate(toolArgs, args.html);
+    const result = validate(toolArgs, args.html, args.fieldsHint);
     if (result.ok) {
       if (attempt > 1) {
         // A repair happened → persist telemetry (caller writes the row).

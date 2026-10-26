@@ -14,7 +14,6 @@ import {
   canonicaliseContentValues,
   canonicaliseFieldDefaults,
   canonicaliseHtmlLinks,
-  canonicaliseJsonLinks,
   type ExecutionContext,
   urlFieldNamesInHtml,
 } from "@caelo-cms/shared";
@@ -103,24 +102,6 @@ export async function canonicaliseModuleCode<F extends CanonicaliseField>(
             ),
     }),
     { previous, pendingEntity: "module" },
-  );
-}
-
-/**
- * Structured-set items (nav menus, link lists): every `href` at any
- * depth (submenu `children` included) is a link.
- */
-export async function canonicaliseSetItems(
-  tx: TransactionRunner,
-  ctx: ExecutionContext,
-  items: readonly unknown[],
-  previous: unknown,
-): Promise<CanonicaliseOutcome<unknown[]>> {
-  return canonicaliseLinksForWrite(
-    tx,
-    ctx,
-    (run) => canonicaliseJsonLinks(items, run, "items") as unknown[],
-    { previous, pendingEntity: "structured_set" },
   );
 }
 

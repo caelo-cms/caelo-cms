@@ -61,7 +61,6 @@ const SURFACE_TEXT: Record<string, string> = {
   module_html: "module HTML",
   module_field_defaults: "module field defaults (layout chrome)",
   content_values: "page / shared content",
-  structured_sets: "menus and link lists",
   layout_html: "a layout's own HTML (the page frame; the Owner edits it under Settings → Layouts)",
 };
 
@@ -71,9 +70,9 @@ export const getLinkMigrationReportTool: ToolDefinitionWithHandler<ReportInput> 
     "Internal links are stored as page references (they follow a page when it is renamed or moved). " +
     "Content written before that was converted once by the link migration; this tool reports it: links converted per " +
     "place, and every link it could NOT convert (it matched no page or media asset — never guessed), with the module / " +
-    "content / menu it sits in. Use when the operator asks about broken or old links after an update, or before fixing " +
-    "links site-wide. Fix each listed link with the normal edit tools (edit_module, set_content_instance_values, " +
-    "set_structured_set) by pointing it at an existing page's path (list_pages) or removing it; the edit stores the " +
+    "content it sits in. Use when the operator asks about broken or old links after an update, or before fixing " +
+    "links site-wide. Fix each listed link with the normal edit tools (edit_module, set_content_instance_values) " +
+    "by pointing it at an existing page's path (list_pages) or removing it; the edit stores the " +
     "reference. A link in a layout's own HTML (the page frame) is the Owner's to fix under Settings → Layouts: name " +
     "the layout and the path to use. Filter with `search` (matches the link, the label and the field). Running or reverting the migration " +
     "is the Owner's (Settings → Internal links); you only read.",

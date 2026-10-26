@@ -5,6 +5,7 @@ import { err, ok, revertPageInput } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { replacePageTerms } from "../../lists/page-terms.js";
 import {
   emitSnapshot,
   loadPageLayoutState,
@@ -14,6 +15,7 @@ import {
   parseSnapshotState,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
+import { jsonbParam } from "../../sql-helpers.js";
 import { recomputeCurrentPathsWithMoves } from "../content/current-path.js";
 import { applyPathMoveEffects } from "../content/path-moves.js";
 
@@ -74,11 +76,15 @@ export const revertPageOp = defineOperation({
           template_id = ${target.templateId}::uuid,
           status = ${target.status},
           ${target.parentPageId === undefined ? sql`` : sql`parent_page_id = ${target.parentPageId}::uuid,`}
+          page_type_id = ${target.pageTypeId}::uuid,
+          properties = ${jsonbParam(target.properties)},
           deleted_at = ${target.deletedAt},
           updated_at = now(),
           version = version + 1
         WHERE id = ${input.pageId}::uuid
       `);
+      // Epic #1107 — the page's terms are part of its state.
+      await replacePageTerms(tx, input.pageId, target.terms);
       // A restored slug / parent moves the page's URL and its subtree's.
       const recomputed = await recomputeCurrentPathsWithMoves(
         tx,

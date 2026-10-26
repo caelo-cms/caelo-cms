@@ -5,8 +5,8 @@
  *
  * - a page created under a parent composes "/<parent path>/<slug>";
  * - `pages.move_many` moves a page AND its subtree in one transaction:
- *   current_path, a 301 per moved URL, chain collapse; nav-menu and
- *   module links follow as page references and no stored text is
+ *   current_path, a 301 per moved URL, chain collapse; module links
+ *   follow as page references and no stored text is
  *   rewritten (epic #724);
  * - a parent rename cascades to every descendant;
  * - structural refusals (cycle, depth > 6, homepage as parent / nested
@@ -96,7 +96,6 @@ function errMsg(r: { ok: boolean; error?: unknown }): string {
 async function wipe(): Promise<void> {
   await q(async (tx) => {
     await tx`DELETE FROM redirects WHERE from_path LIKE ${`%${PFX}-%`} OR to_path LIKE ${`%${PFX}-%`}`;
-    await tx`DELETE FROM structured_sets WHERE slug LIKE ${`${PFX}-%`}`;
     await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE ${`${PFX}-%`})`;
     await tx`DELETE FROM modules WHERE slug LIKE ${`${PFX}-%`}`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}-%`})`;
@@ -151,7 +150,7 @@ describe("nested page URLs — create + compose", () => {
 });
 
 describe("nested page URLs — pages.move_many", () => {
-  // Since #724 nav and module links are stored as page references, so a
+  // Since #724 module links are stored as page references, so a
   // move rewrites no stored link: reads show the new paths. A legacy
   // literal link (content written before #724 that the migration could
   // not convert) is not rewritten either: it reaches the page via the 301.
@@ -167,13 +166,6 @@ describe("nested page URLs — pages.move_many", () => {
       (tx) => tx`INSERT INTO redirects (from_path, to_path, status_code, created_by)
       VALUES (${`/${PFX}-legacy`}, ${oldPage}, 301, ${SYSTEM.actorId}::uuid)`,
     );
-    const nav = await execute(registry, adapter, SYSTEM, "structured_sets.set", {
-      kind: "nav-menu",
-      slug: `${PFX}-nav`,
-      displayName: "Nav",
-      items: [{ label: "Mv", href: oldPage, children: [{ label: "Sub", href: oldSub }] }],
-    });
-    expect(nav.ok).toBe(true);
     const mod = await execute(registry, adapter, SYSTEM, "modules.create", {
       slug: `${PFX}-links`,
       displayName: "Links",
@@ -204,20 +196,6 @@ describe("nested page URLs — pages.move_many", () => {
       expect(moved.map((m) => m.to).sort()).toEqual([newPage, newSub].sort());
     }
 
-    const setRows = (await q(
-      (tx) => tx`SELECT items FROM structured_sets WHERE slug = ${`${PFX}-nav`}`,
-    )) as unknown as { items: unknown }[];
-    const items = JSON.stringify(setRows[0]?.items);
-    expect(items).toContain(`"href":"caelo:page/${page}"`);
-    expect(items).toContain(`"href":"caelo:page/${sub}"`);
-    const readSet = await execute(registry, adapter, SYSTEM, "structured_sets.get", {
-      kind: "nav-menu",
-      slug: `${PFX}-nav`,
-    });
-    if (!readSet.ok) throw new Error("get nav");
-    const readItems = JSON.stringify((readSet.value as { set: { items: unknown } }).set.items);
-    expect(readItems).toContain(`"href":"${newPage}"`);
-    expect(readItems).toContain(`"href":"${newSub}"`);
     const html = (
       (await q((tx) => tx`SELECT html FROM modules WHERE id = ${moduleId}::uuid`)) as unknown as {
         html: string;

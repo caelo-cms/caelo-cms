@@ -35,7 +35,6 @@ export type SettingsIcon =
   | "bug"
   | "circle-arrow-up"
   | "coins"
-  | "database"
   | "download"
   | "gauge"
   | "globe"
@@ -144,14 +143,6 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
             permission: "roles.manage",
           },
         ],
-      },
-      {
-        href: "/settings/structured",
-        label: "Structured data",
-        description: "Menus, tags, categories and link lists used across pages.",
-        permission: "roles.manage",
-        icon: "database",
-        keywords: ["menu", "taxonomy", "tags", "nav"],
       },
       {
         href: "/settings/redirects",
@@ -632,16 +623,6 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
  */
 export const SETTINGS_SUB_PAGES: readonly SettingsSubPage[] = [
   { route: "/settings/layouts/[id]", parent: "/settings/layouts", permission: "roles.manage" },
-  {
-    route: "/settings/structured/[kind]/new",
-    parent: "/settings/structured",
-    permission: "roles.manage",
-  },
-  {
-    route: "/settings/structured/[kind]/[slug]",
-    parent: "/settings/structured",
-    permission: "roles.manage",
-  },
   { route: "/settings/import/[runId]", parent: "/settings/import", permission: "settings.write" },
   { route: "/settings/audit/[requestId]", parent: SETTINGS_ROOT, permission: "settings.read" },
 ];

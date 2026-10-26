@@ -126,6 +126,7 @@ describe("built page head order (#1017)", () => {
     const runId = `${PFX}-run`;
     await adapter.withAdminTransaction(SYSTEM, (tx) =>
       generateSite({
+        publishAt: new Date().toISOString(),
         tx,
         adapter,
         plugins: localBuildPluginServices,

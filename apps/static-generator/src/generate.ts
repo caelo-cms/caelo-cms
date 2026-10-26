@@ -31,20 +31,24 @@ import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   buildMediaUrl,
   ComposeError,
+  type ComposeField,
   type ComposeFonts,
   type ComposeTheme,
   type ComposeThemeAsset,
+  collectListModuleRefs,
   composePageWithLayout,
+  createListRenderContext,
   FAVICON_VARIANT,
   fontUnresolvableMarker,
   isRasterImageMime,
+  type ListRenderDeps,
   linkMarkersOf,
-  type ModuleFieldKind,
   PhaseTimer,
   type PhaseTiming,
   redirectTargetIssue,
   runBatched,
   type ThemeDocument,
+  templateFieldsFromJson,
   themeFaviconRendition,
   trimSlashes,
 } from "@caelo-cms/shared";
@@ -57,6 +61,14 @@ import {
 import { loadSiteFontUsage } from "./font-usage-sources.js";
 import { defaultFontsCacheDir, resolveThemeFonts } from "./fonts-resolver.js";
 import { loadBuildLinkIndex } from "./link-index.js";
+import {
+  type BuildChange,
+  incrementalPageIds,
+  isIncremental,
+  loadBuildListRenderData,
+  readTargetRenderDeps,
+  writeRenderDeps,
+} from "./list-data.js";
 import { readMediaSettings, runMediaPass } from "./media-pass.js";
 import { minifyPageAssets } from "./minify-pass.js";
 import {
@@ -180,40 +192,23 @@ interface ModuleRow {
   content_values: string | null;
   content_instance_id: string;
   sync_mode: "synced" | "unsynced";
+  /** Set once content variants replaced the instance's values: no stored instance renders. */
+  variant?: true;
 }
 
 /**
  * Parse the jsonb `modules.fields` column as it comes back from
- * `m.fields::text`. The shape is `[{ name, kind, label, default? }]`.
- * The substitution path needs `name`, `kind` (#71 — for text-list /
- * link-list / module-list dispatch via the shared template engine),
- * and `default`. Returns undefined when the column is null / empty
- * / malformed — caller treats that as "no field-default substitution
- * to do" rather than throwing, so a legacy module with a NULL fields
- * column still ships.
+ * `m.fields::text` into the fields the shared template engine renders
+ * with (name, kind, default, a `list` field's binding — see
+ * `templateFieldsFromJson`). Returns undefined when the column is null /
+ * empty / malformed — the caller treats that as "no field-default
+ * substitution to do" rather than throwing, so a legacy module with a
+ * NULL fields column still ships.
  */
-function parseModuleFields(
-  raw: string | null,
-): { name: string; kind?: ModuleFieldKind; default?: unknown }[] | undefined {
+function parseModuleFields(raw: string | null): ComposeField[] | undefined {
   if (!raw) return undefined;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0) return undefined;
-    const out: { name: string; kind?: ModuleFieldKind; default?: unknown }[] = [];
-    for (const f of parsed) {
-      if (!f || typeof f !== "object") continue;
-      const o = f as { name?: unknown; kind?: unknown; default?: unknown };
-      if (typeof o.name !== "string") continue;
-      // The jsonb may carry an unknown / typo'd kind; the cast preserves
-      // today's runtime behaviour (the engine emits kind-mismatch when
-      // dispatch fails to find a matching branch), so propagating the
-      // raw string as the union type is a deliberate lie that keeps
-      // the fail-loud channel intact. Compile-time safety lives at the
-      // callers (compose, nested-module-render) where `kind` originates from
-      // typed authoring tools rather than raw jsonb.
-      const kind = typeof o.kind === "string" ? (o.kind as ModuleFieldKind) : undefined;
-      out.push({ name: o.name, kind, default: o.default });
-    }
+    const out = templateFieldsFromJson(raw);
     return out.length > 0 ? out : undefined;
   } catch {
     return undefined;
@@ -418,6 +413,13 @@ export async function generateSite(args: {
   runId: string;
   /** Optional repo root so out_dir resolves against it; defaults to cwd. */
   repoRoot?: string;
+  /**
+   * Epic #1107 — the first-publication time this build renders for
+   * published pages that were never live (ISO): the deploy run's
+   * `started_at`, which Publish live then stores, so "latest news" and an
+   * article's date in the shipped HTML match the stored value.
+   */
+  publishAt: string;
   /** Optional progress callback fired after each page is written. */
   onProgress?: ProgressCallback;
   /** P13 — adapter handle so the plugin render pass can read +
@@ -431,10 +433,16 @@ export async function generateSite(args: {
    */
   plugins: BuildPluginServices;
   /** P13 ideas-pass — incremental rebuild whitelist. When non-empty,
-   *  only re-bake the listed page ids; the rest are left alone in
-   *  the build dir. Auto-redeploy passes the audit_events tail's
-   *  touched page ids; manual triggers omit it for full rebuild. */
+   *  only re-bake the listed page ids — plus every page whose render
+   *  dependencies (`render-deps.json`, epic #1107) the change reaches;
+   *  the rest are left alone in the build dir. Auto-redeploy passes the
+   *  audit_events tail's touched page ids; manual triggers omit it for
+   *  full rebuild. */
   changedPageIds?: ReadonlyArray<string>;
+  /** Epic #1107 — shared lists changed since the last build (incremental). */
+  changedListIds?: ReadonlyArray<string>;
+  /** Epic #1107 — list types changed since the last build (incremental). */
+  changedListTypeIds?: ReadonlyArray<string>;
   /**
    * #650 — the origin this build renders into every absolute URL
    * (canonical, sitemap, og:url, hreflang, robots `Sitemap:`) instead of
@@ -474,6 +482,24 @@ export async function generateSite(args: {
 
   await mkdir(buildDir, { recursive: true });
 
+  // Epic #1107 — lists of the whole build, loaded once: menus, page
+  // queries and system sources resolve per page from this, and the
+  // incremental selection below reads the page index from it.
+  const listData = await loadBuildListRenderData(tx, {
+    env: target.env,
+    plugins: args.plugins,
+    publishAt: args.publishAt,
+  });
+  const change: BuildChange = {
+    pageIds: args.changedPageIds ?? [],
+    listIds: args.changedListIds ?? [],
+    listTypeIds: args.changedListTypeIds ?? [],
+  };
+  const incremental = isIncremental(change);
+  const previousDeps = incremental ? await readTargetRenderDeps(outDir) : null;
+  // null = every page (full build, or no deps recorded yet for this target).
+  const pagesToBuild = incremental ? incrementalPageIds(change, previousDeps, listData) : null;
+
   // P13 ideas-pass — incremental whitelist filter when caller supplied
   // changedPageIds. Empty list / undefined = full-site build.
   // v0.2.80 — drizzle's bound-array interpolation through bun-sql
@@ -487,8 +513,10 @@ export async function generateSite(args: {
   // relaxation removes that guard. Same workaround as
   // packages/admin-core/src/ops/snapshots/publish_impact_pages.ts.
   const incrementalFilter =
-    args.changedPageIds && args.changedPageIds.length > 0
-      ? sql.raw(` AND p.id = ANY(${uuidArrayLiteral(args.changedPageIds)}::uuid[])`)
+    pagesToBuild !== null
+      ? pagesToBuild.length > 0
+        ? sql.raw(` AND p.id = ANY(${uuidArrayLiteral(pagesToBuild)}::uuid[])`)
+        : sql.raw(" AND false")
       : sql.raw("");
   // v0.9.9 — Stage ≡ Production: both filter to status='published'.
   // Drafts are a live-edit-only concept (visible in /edit's iframe +
@@ -535,7 +563,7 @@ export async function generateSite(args: {
   const zeroPageError = zeroPageBuildError({
     pageCount: pageRows.length,
     env: target.env,
-    incremental: (args.changedPageIds?.length ?? 0) > 0,
+    incremental: pagesToBuild !== null,
   });
   if (zeroPageError !== null) throw new Error(zeroPageError);
 
@@ -545,7 +573,7 @@ export async function generateSite(args: {
     notFoundPageId,
     builtPageIds: pageRows.map((p) => p.page_id),
     env: target.env,
-    incremental: (args.changedPageIds?.length ?? 0) > 0,
+    incremental: pagesToBuild !== null,
   });
   if (notFoundError !== null) throw new Error(notFoundError);
   const outputPathOf = (p: PageRow): string =>
@@ -570,14 +598,15 @@ export async function generateSite(args: {
     outputPaths: plannedPaths,
     rootEligibleSlugs,
     env: target.env,
-    incremental: (args.changedPageIds?.length ?? 0) > 0,
+    incremental: pagesToBuild !== null,
   });
   if (rootError !== null) throw new Error(rootError);
   timer.lap("load-pages");
 
   // P6.7.6 — load layout modules once for the whole build, keyed by
-  // layout_id. Per-page composition picks its layout's set; same
-  // rationale as structured sets above.
+  // layout_id. Per-page composition picks its layout's set — re-querying
+  // per page would be wasteful and could surface rebuild-mid-deploy races
+  // where some pages saw the old chrome and some the new.
   const layoutModRows = (await tx.execute(sql`
     SELECT lm.layout_id::text AS layout_id,
            lm.block_name AS block_name,
@@ -617,7 +646,7 @@ export async function generateSite(args: {
         html: string;
         css: string;
         js: string;
-        fields?: { name: string; kind?: ModuleFieldKind; default?: unknown }[];
+        fields?: ComposeField[];
       }[]
     >
   >();
@@ -638,24 +667,6 @@ export async function generateSite(args: {
       fields: parseModuleFields(r.fields),
     });
     perLayout.set(r.block_name, arr);
-  }
-
-  // P6.7.5 — load structured sets once for the whole build so each
-  // page's composer gets the same nav-menu state. Re-querying per-page
-  // would be wasteful and could surface rebuild-mid-deploy races where
-  // some pages saw the old menu and some the new.
-  // v0.11.0 (#45) — theme moved out of structured_sets into its own
-  // `themes` table; loaded separately below as a ComposeTheme.
-  const setRows = (await tx.execute(sql`
-    SELECT kind, slug, items::text AS items FROM structured_sets
-  `)) as unknown as { kind: string; slug: string; items: string }[];
-  const structuredSets = { byKindSlug: {} as Record<string, unknown[]> };
-  for (const r of setRows) {
-    try {
-      structuredSets.byKindSlug[`${r.kind}/${r.slug}`] = JSON.parse(r.items) as unknown[];
-    } catch {
-      // ignore malformed rows
-    }
   }
 
   // v0.11.0 — load the active theme once for the whole build. The
@@ -798,16 +809,16 @@ export async function generateSite(args: {
   // P13 — per-page bake target for the plugin render pass, keyed by page
   // id: slugs are not unique once pages nest (epic #690).
   const bakeTargets = new Map<string, BakeTarget>();
-  // Plugin data lists for the whole deploy, resolved in ONE call per
+  // Plugin list sources for the whole deploy, resolved in ONE call per
   // contributing plugin rather than per page. Names declared by
   // installed-but-inactive plugins come along so a module still
-  // iterating a switched-off plugin's list emits the loud marker here
+  // iterating a switched-off plugin's source emits the loud marker here
   // exactly as it does in the editor preview.
-  const allLists = await args.plugins.resolveDataLists(
+  const allSources = await args.plugins.resolveListSources(
     pageRows.map((p) => p.page_id),
     pageUrlStyle,
   );
-  const dormantLists = await args.plugins.dormantDataListNames();
+  const dormantSources = await args.plugins.dormantListSourceNames();
   // #450 — withheld modules, resolved ONCE for the build. Asking per
   // page would be one plugin round-trip per page for a verdict that is
   // per MODULE; the module set is the same question every time.
@@ -923,7 +934,11 @@ export async function generateSite(args: {
     const blocks = groupModulesByBlock(
       modRows.map((r) => {
         const values = applied.pageValues.get(r);
-        return values === undefined ? r : { ...r, content_values: JSON.stringify(values) };
+        // Variant content is no stored instance: its local list entries
+        // carry no instance address (`docs/lists.md` §13).
+        return values === undefined
+          ? r
+          : { ...r, content_values: JSON.stringify(values), variant: true as const };
       }),
     );
     composeInputsByPage.set(page.page_id, { blocks, layoutBlocks: applied.layoutBlocks });
@@ -937,9 +952,14 @@ export async function generateSite(args: {
     [...composeInputsByPage.values()].flatMap((c) =>
       [...c.blocks, ...c.layoutBlocks].flatMap((b) => b.modules),
     ),
+    // Modules embedded in shared list entries (a mega menu's teaser).
+    collectListModuleRefs(listData),
   );
   const renderedForGate: RenderedPageForGate[] = [];
   const linkIndex = await loadBuildLinkIndex(tx, target.env, pageUrlStyle, args.plugins);
+  const listContext = createListRenderContext(listData, { dormantPluginSources: dormantSources });
+  const renderDeps = new Map<string, ListRenderDeps>();
+  const overlayIssues = [...listContext.overlayIssues];
   const unpublishedLinkTargets: UnpublishedLinkTarget[] = [];
   timer.lap("load-content");
 
@@ -955,20 +975,22 @@ export async function generateSite(args: {
     // offending row, rather than silently emitting a body-less page.
     let composed: ReturnType<typeof composePageWithLayout>;
     const linkResolver = linkIndex.forPage(page.page_id);
+    const lists = listContext.forPage(page.page_id, {
+      linkResolver,
+      pluginSources: allSources.get(page.page_id) ?? {},
+    });
     try {
       composed = composePageWithLayout({
         templateHtml: page.template_html,
         templateCss: page.template_css,
         blocks,
-        structuredSets,
         theme: activeTheme,
         fonts: themeFonts,
         layoutHtml: page.layout_html,
         layoutCss: page.layout_css,
         layoutBlocks,
         layoutSlug: page.layout_slug,
-        dataLists: allLists.get(page.page_id) ?? {},
-        dormantDataLists: dormantLists,
+        lists,
         deferredModules,
         nestedModules,
         linkResolver,
@@ -980,6 +1002,12 @@ export async function generateSite(args: {
       throw e;
     }
 
+    renderDeps.set(page.page_id, lists.deps());
+    for (const issue of lists.overlayIssues()) {
+      if (!overlayIssues.some((i) => i.address === issue.address && i.variant === issue.variant)) {
+        overlayIssues.push(issue);
+      }
+    }
     composedPages.push({
       html: composed.html,
       pageId: page.page_id,
@@ -1022,6 +1050,18 @@ export async function generateSite(args: {
   // malformed list item, …) would ship as a silently empty section.
   // Refuse the build and name every page / module / field instead.
   assertNoRenderFailures(renderedForGate);
+  // A `list-resolve` overlay entry the resolver refused (unknown address,
+  // structural change) is the plugin's fault, not the site's: the stored
+  // value rendered instead, and the plugin's error channel says so
+  // (plugin_errors → list_plugins / Settings → Plugins, #1008).
+  for (const i of overlayIssues) {
+    console.warn(
+      `[static-generator] list overlay for variant "${i.variant}" refused at ${i.address}: ${i.reason}`,
+    );
+  }
+  if (overlayIssues.length > 0 && listData.overlaySources) {
+    await args.plugins.reportListOverlayIssues(listData.overlaySources, overlayIssues);
+  }
   timer.lap("compose");
 
   // P7 — media pass. Mutates each composedPages[i].html in place to
@@ -1111,10 +1151,11 @@ export async function generateSite(args: {
     p.html = injectPluginAssets(p.html, clientAssets, "linked");
   }
 
-  // #605 — a plugin data-list section that survived composition means the
-  // page would ship raw `{{#list}}` markers to visitors (the plugin is off,
-  // or its answer never reached the build). Refuse the build and name them.
-  assertNoPluginMarkers(composedPages, await args.plugins.declaredDataListNames());
+  // #605 — a plugin list-source section that survived composition means
+  // the page would ship raw `{{#source}}` markers to visitors (the plugin
+  // is off, or its answer never reached the build). Refuse the build and
+  // name them.
+  assertNoPluginMarkers(composedPages, await args.plugins.declaredListSourceNames());
 
   // issue #158 — minify the composer's inline CSS/JS last, after every
   // pass that still rewrites inside them (media URLs, plugin assets).
@@ -1188,6 +1229,16 @@ export async function generateSite(args: {
     JSON.stringify(manifest, null, 2),
     "utf8",
   );
+  fileCount += 1;
+  // Epic #1107 — what every page's render read, for the next incremental build.
+  await writeRenderDeps({
+    outDir,
+    buildDir,
+    previous: previousDeps,
+    rebuilt: renderDeps,
+    data: listData,
+    full: pagesToBuild === null,
+  });
   fileCount += 1;
 
   // #587 — the redirects table, served at the edge on every provider
@@ -1289,8 +1340,9 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
     html: string;
     css: string;
     js: string;
-    fields?: { name: string; kind?: ModuleFieldKind; default?: unknown }[];
+    fields?: ComposeField[];
     contentValues?: Record<string, unknown>;
+    contentInstanceId?: string;
   }[];
 }[] {
   const grouped = new Map<
@@ -1302,8 +1354,9 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
       html: string;
       css: string;
       js: string;
-      fields?: { name: string; kind?: ModuleFieldKind; default?: unknown }[];
+      fields?: ComposeField[];
       contentValues?: Record<string, unknown>;
+      contentInstanceId?: string;
     }[]
   >();
   for (const r of rows) {
@@ -1317,6 +1370,7 @@ function groupModulesByBlock(rows: readonly ModuleRow[]): {
       js: r.js,
       fields: parseModuleFields(r.fields),
       contentValues: parseContentValues(r.content_values),
+      ...(r.variant ? {} : { contentInstanceId: r.content_instance_id }),
     });
     grouped.set(r.block_name, arr);
   }

@@ -56,6 +56,7 @@ const TEMPLATES = [
     displayName: "Home (default)",
     layoutId: LAYOUT_ID,
     blocks: [{ name: "content" }],
+    pageTypes: ["page"],
   },
 ];
 
@@ -103,8 +104,11 @@ describe("block roles — page blocks vs layout chrome (#1076)", () => {
       harness({ "templates.list": { templates: TEMPLATES } }),
     );
     expect(r.ok).toBe(true);
-    expect(r.content).toContain("{slug,id,displayName,layoutId,pageBlocks}");
-    expect(r.content).toContain(`home-template,${TEMPLATE_ID},Home (default),${LAYOUT_ID},content`);
+    expect(r.content).toContain("{slug,id,displayName,layoutId,pageBlocks,pageTypes}");
+    // Epic #1107 — the page types whose pages may use the template.
+    expect(r.content).toContain(
+      `home-template,${TEMPLATE_ID},Home (default),${LAYOUT_ID},content,page`,
+    );
     expect(listTemplatesTool.description).toContain("ONLY valid `blockName` values for build_page");
     expect(listTemplatesTool.description).toContain("site chrome on the template's LAYOUT");
   });

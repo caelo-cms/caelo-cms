@@ -21,6 +21,13 @@
       "development": "./src/index.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./lists-model": {
+      "types": "./dist/lists/model.d.ts",
+      "bun": "./src/lists/model.ts",
+      "development": "./src/lists/model.ts",
+      "import": "./dist/lists/model.js",
+      "default": "./dist/lists/model.js"
     }
   },
   "files": [

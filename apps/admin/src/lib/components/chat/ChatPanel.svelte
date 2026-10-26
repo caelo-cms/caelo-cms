@@ -95,7 +95,11 @@
     blockName?: string;
     position?: number;
     field?: string;
-    index?: number;
+    /** Entry id + entry field, for a local list field (epic #1107). */
+    item?: string;
+    key?: string;
+    /** The list entry the element sits in (`data-caelo-list-item`, epic #1107). */
+    listItem?: string;
     /** When true the chip rides every send within this session (P6.7). */
     pinned?: boolean;
   }
@@ -1598,7 +1602,9 @@
         (c) =>
           c.moduleId === chip.moduleId &&
           c.selector === chip.selector &&
-          c.selectedText === chip.selectedText,
+          c.selectedText === chip.selectedText &&
+          // Two entries of one menu share the element path; the entry tells them apart.
+          c.listItem === chip.listItem,
       );
       if (!present) chips = [...chips, chip];
       if (ask === true) composerEl?.focus();
