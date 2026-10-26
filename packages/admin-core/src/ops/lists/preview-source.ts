@@ -30,6 +30,7 @@ import { defineOperation } from "@caelo-cms/query-api";
 import {
   createListRenderContext,
   type ListFieldSpec,
+  type ListTypeDef,
   ok,
   type PluginSourceEntry,
   pageQueryPartialSchema,
@@ -48,7 +49,7 @@ import {
 } from "../../lists/local.js";
 import { loadListEntities, loadListEntityBySlug } from "../../lists/store.js";
 import { loadPublishPageUrlStyle } from "../content/public-urls.js";
-import { branchOf, handlerError } from "./_shared.js";
+import { branchOf, handlerError, sourceEntriesOf } from "./_shared.js";
 
 const OP = "lists.preview_source";
 
@@ -162,6 +163,9 @@ async function specFor(
       value: unknown;
       /** For a source node: the node's id inside the resolved shared list. */
       itemId?: string;
+      /** The list's own id and its source entries, for an actionable refusal. */
+      listId?: string;
+      sourceEntries?: { id: string; node: string }[];
       describe: string;
     }
   | { ok: false; message: string }
@@ -225,6 +229,11 @@ async function specFor(
       },
       value: undefined,
       itemId: input.itemId,
+      listId: list.id,
+      sourceEntries: sourceEntriesOf(
+        types.find((t) => t.id === list.state.listTypeId)?.state.definition as ListTypeDef,
+        list.state.items,
+      ),
       describe: `entry ${input.itemId} of list "${input.list}"`,
     };
   }
@@ -368,7 +377,10 @@ export const previewListSourceOp = withHumanisedLinks(
             ok: false,
             error: handlerError(
               OP,
-              `${spec.describe}: no such entry — get_list shows the entry ids.`,
+              `${spec.describe}: no such entry${spec.itemId === spec.listId ? " — that is the list's own id, not an entry's" : ""}. ` +
+                (spec.sourceEntries && spec.sourceEntries.length > 0
+                  ? `Source entries of this list: ${spec.sourceEntries.map((e) => `${e.id} (${e.node})`).join(", ")}.`
+                  : "This list has no source entries — preview a source node kind with `node` instead."),
             ),
           };
         }

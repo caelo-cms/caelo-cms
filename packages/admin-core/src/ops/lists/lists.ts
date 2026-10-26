@@ -50,6 +50,7 @@ import {
   failBatch,
   handlerError,
   listTypesBySlug,
+  sourceEntriesOf,
   type Tx,
 } from "./_shared.js";
 
@@ -373,6 +374,8 @@ export const upsertListsManyOp = defineOperation({
         version: z.number().int().positive(),
         created: z.boolean(),
         itemCount: z.number().int().nonnegative(),
+        /** Entries filled from a source — the ids preview_list_source takes. */
+        sourceEntries: z.array(z.object({ id: z.string(), node: z.string() })),
       }),
     ),
   }),
@@ -385,8 +388,12 @@ export const upsertListsManyOp = defineOperation({
       version: number;
       created: boolean;
       itemCount: number;
+      sourceEntries: { id: string; node: string }[];
     }[] = [];
     const entities: { kind: "list"; entityId: string; state: ListState }[] = [];
+    const typesById = new Map(
+      [...(await listTypesBySlug(tx, branchId)).values()].map((t) => [t.id, t.def]),
+    );
     let wrote = false;
     const seen = new Set<string>();
     for (const [i, item] of input.lists.entries()) {
@@ -443,6 +450,10 @@ export const upsertListsManyOp = defineOperation({
         version: r.state.version,
         created: existing === null,
         itemCount: countItems(r.state.items),
+        sourceEntries: (() => {
+          const def = typesById.get(r.state.listTypeId);
+          return def ? sourceEntriesOf(def, r.state.items) : [];
+        })(),
       });
     }
     await emitSnapshot(tx, {

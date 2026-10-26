@@ -138,12 +138,22 @@ export const upsertListsManyTool = makeOpTool({
   format: (value) =>
     (
       value as {
-        lists: { id: string; slug: string; version: number; created: boolean; itemCount: number }[];
+        lists: {
+          id: string;
+          slug: string;
+          version: number;
+          created: boolean;
+          itemCount: number;
+          sourceEntries: { id: string; node: string }[];
+        }[];
       }
     ).lists
       .map(
         (l) =>
-          `list ${l.slug} ${l.created ? "created" : "replaced"}: id=${l.id} ref=caelo:list/${l.id} version ${l.version}, ${l.itemCount} entries`,
+          `list ${l.slug} ${l.created ? "created" : "replaced"}: id=${l.id} ref=caelo:list/${l.id} version ${l.version}, ${l.itemCount} entries` +
+          (l.sourceEntries.length > 0
+            ? `; source entries (preview_list_source itemId): ${l.sourceEntries.map((e) => `${e.id} (${e.node})`).join(", ")}`
+            : ""),
       )
       .join("\n"),
 });

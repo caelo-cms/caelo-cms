@@ -404,7 +404,7 @@ function seed(): Seed {
         await tx.unsafe(\`INSERT INTO plugin_international_site.page_variants (group_id, page_id, locale_code, translation_status)
           VALUES ('\${g}', '\${en}', 'en', 'source'), ('\${g}', '\${de}', 'de', 'up_to_date')\`);
       }
-      const values = JSON.stringify({ tagline: "Mit Sorgfalt gemacht", nav: [{ label: "Über uns", href: "caelo:page/" + enAbout }] });
+      const values = JSON.stringify({ tagline: "Mit Sorgfalt gemacht", nav: [{ id: "00000000-0000-4000-9000-000000000001", node: "link", values: { label: "Über uns", link: { href: "caelo:page/" + enAbout } } }] });
       await tx\`INSERT INTO plugin_international_site.chrome_variants
         (target_key, locale_code, mode, values, translation_status, source_hash)
         VALUES (\${"layout:" + lay[0].id + ":footer:0"}, 'de', 'translated', (\${values}::text)::jsonb, 'up_to_date', 'seeded')\`;
