@@ -23,6 +23,10 @@
  *   • #449 — the plugin's runtime and stylesheet reach the page.
  *   • §1A — declining is offered as prominently as accepting, without
  *     the operator having to ask for it.
+ *   • #1135 / #1129 — the operator names their statistics tool; the AI
+ *     registers it from the vendor template, and the banner then offers
+ *     exactly the categories something on the site uses: analytics, not
+ *     the unused functional and marketing.
  */
 
 import { spawnSync } from "node:child_process";
@@ -119,7 +123,7 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
 
   await sendChatPromptAndWait(
     page,
-    "Wir brauchen einen Cookie-Banner für die ganze Website, der zum Design passt. Besucher sollen einzeln auswählen können, was sie erlauben.",
+    "Wir brauchen einen Cookie-Banner für die ganze Website, der zum Design passt. Besucher sollen einzeln auswählen können, was sie erlauben. Für Statistiken nutzen wir Google Analytics mit der Mess-ID G-T454TEST.",
     600_000,
   );
   const sessionId = tracker.currentSessionId();
@@ -148,9 +152,12 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
   // individually — that is what the operator asked for, and a banner
   // with one Accept button is not it. `necessary` is deliberately not
   // required here: it cannot be declined, so rendering it as a line of
-  // text rather than a checkbox is a legitimate choice.
-  for (const key of ["functional", "analytics", "marketing"]) {
-    expect(html).toContain(`data-consent-category="${key}"`);
+  // text rather than a checkbox is a legitimate choice. Only what the
+  // site uses is a choice (#1129): the analytics tool the operator named,
+  // not functional or marketing, which nothing on this site needs.
+  expect(html).toContain('data-consent-category="analytics"');
+  for (const key of ["functional", "marketing"]) {
+    expect(html).not.toContain(`data-consent-category="${key}"`);
   }
 
   // Declining has to be as easy as accepting; a banner without a reject
@@ -181,10 +188,16 @@ test("bau mir einen Cookie-Banner — categories as data, hooks wired, runtime o
   const stagedHtml = await staged.text();
   expect(stagedHtml).toContain("data-consent-banner");
   expect(stagedHtml).not.toMatch(/\{\{[#^/]\s*consent_categories/);
-  for (const key of ["functional", "analytics", "marketing"]) {
-    expect(stagedHtml).toContain(`data-consent-category="${key}"`);
-  }
+  expect(stagedHtml).toContain('data-consent-category="analytics"');
   expect(stagedHtml).toMatch(/src="\/_caelo\/plugin\/consent-manager\/[^"]+\.js"/);
+
+  // The named tool was registered from its template, not pasted into a
+  // module: the runtime holds it until analytics is granted (#1135).
+  const runtimeSrc = /src="(\/_caelo\/plugin\/consent-manager\/[^"]+\.js)"/.exec(stagedHtml)?.[1];
+  const runtime = await page.request.get(`${getStagingUrl().replace(/\/+$/, "")}${runtimeSrc}`);
+  expect(runtime.status(), "GET staged consent runtime").toBeLessThan(400);
+  expect(await runtime.text()).toContain("gtag/js?id=G-T454TEST");
+  expect(stagedHtml).not.toContain("G-T454TEST");
 
   assertNoOrphanLocks(sessionId ?? "");
   assertNoChatRunnerDiagWarnings();

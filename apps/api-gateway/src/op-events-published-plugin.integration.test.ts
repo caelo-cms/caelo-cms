@@ -13,7 +13,8 @@
  * Postgres half of that defense (CLAUDE.md §2).
  *
  * Production wiring, like public-gateway.integration.test.ts: an admin-side
- * host registers the real ratings plugin plus a fixture that is then
+ * host registers the real ratings plugin (with consent-manager, which it
+ * requires) plus a fixture that is then
  * disabled, the admin publishes the projection, and the gateway serves
  * /api/* as public_role through the dispatch-only host. The adversarial
  * inserts go straight at the table as public_role, the way a compromised
@@ -22,6 +23,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { publishProjectionOnce } from "@caelo-cms/admin-core";
+import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
   bootstrapDispatchOnly,
@@ -54,7 +56,9 @@ if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !PUBLIC_URL) {
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
 /** A Tier 1 fixture that is installed, then disabled before the publish. */
 const OFF_SLUG = "t856-off";
-const SLUGS = ["ratings", OFF_SLUG] as const;
+// Ratings requires consent-manager (its visitor-id purpose needs a
+// consent provider), so the real pair is installed.
+const SLUGS = ["consent-manager", "ratings", OFF_SLUG] as const;
 const UNKNOWN_PLUGIN_ID = "85600000-0000-4000-8000-000000000001";
 const HASH = "d".repeat(64);
 
@@ -68,6 +72,9 @@ const offFixture = definePlugin({
     ping: async () => ({ pong: true }),
   },
 });
+
+/** Consent-manager's declared projection, which the gateway's consent rule reads. */
+const DECLARATIONS = new Map([["consent-manager", consentPlugin.visitorProjection ?? {}]]);
 
 let adminAdapter: DatabaseAdapter;
 let gatewayAdapter: DatabaseAdapter;
@@ -169,7 +176,11 @@ beforeAll(async () => {
     infra: { adapter: adminAdapter, registry: new OperationRegistry() },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
-    testPlugins: [{ definition: ratingsPlugin }, { definition: offFixture }],
+    testPlugins: [
+      { definition: consentPlugin },
+      { definition: ratingsPlugin },
+      { definition: offFixture },
+    ],
   });
   expect(adminReport.failed).toEqual([]);
   pluginIds = await asAdmin(async (tx) => {
@@ -182,7 +193,7 @@ beforeAll(async () => {
     }[];
     return Object.fromEntries(rows.map((r) => [r.slug, r.id]));
   });
-  await publishProjectionOnce(adminAdapter, { declarations: new Map() });
+  await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
   resetPluginHost();
 
   // --- Gateway side: its real identity, dispatch-only host. ---
@@ -202,7 +213,11 @@ beforeAll(async () => {
     infra: { adapter: gatewayAdapter, registry },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
-    testPlugins: [{ definition: ratingsPlugin }, { definition: offFixture }],
+    testPlugins: [
+      { definition: consentPlugin },
+      { definition: ratingsPlugin },
+      { definition: offFixture },
+    ],
   });
   expect(report.failed).toEqual([]);
   gateway = new SQL(PUBLIC_URL as string);
@@ -215,7 +230,7 @@ afterAll(async () => {
              captcha_pow_target_prefix = ${savedCaptcha?.prefix ?? "000fff"} WHERE id = 1`;
   });
   await cleanup();
-  await publishProjectionOnce(adminAdapter, { declarations: new Map() });
+  await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
   await gatewayAdapter.close();
   await adminAdapter.close();
 });

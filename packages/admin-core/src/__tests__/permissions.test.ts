@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
+import { PLUGIN_PANEL_PERMISSIONS } from "@caelo-cms/plugin-sdk";
 import {
   BUILTIN_ROLE_NAMES,
   hasAllPermissions,
@@ -19,6 +20,10 @@ describe("permission catalog", () => {
     for (const p of ["deploy.trigger", "ops.view", "roles.manage", "plugins.approve"]) {
       expect(set.has(p)).toBe(true);
     }
+  });
+
+  it("is the catalog a plugin's admin panel can declare (the SDK repeats it)", () => {
+    expect([...PLUGIN_PANEL_PERMISSIONS].sort()).toEqual([...PERMISSIONS].sort());
   });
 
   it("built-in role catalogue matches seed", () => {

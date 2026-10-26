@@ -162,11 +162,24 @@ export function formatPluginError(e: {
   return `[${e.phase}, ${e.errorClass}${report ? `, ${report}` : ""}] ${e.occurrences}x, last ${e.lastSeenAt}: ${e.message}`;
 }
 
+/** A manifest's `consentPurposes`, one `key (category): cookie, …` entry each. */
+function consentPurposesLine(raw: unknown): string {
+  if (!Array.isArray(raw) || raw.length === 0) return "(none)";
+  return raw
+    .map((p: { key?: unknown; category?: unknown; cookies?: unknown }) => {
+      const cookies = Array.isArray(p.cookies)
+        ? p.cookies.map((c: { name?: unknown }) => String(c?.name ?? "")).join(", ")
+        : "";
+      return `${String(p.key)} (${String(p.category)}): ${cookies || "no cookies"}`;
+    })
+    .join("; ");
+}
+
 /** One plugin's detail + its last-24h AI spend against its cap. */
 export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
   name: "get_plugin",
   description:
-    "Read one plugin in detail: version, tier, status, signature, health (whether the running servers have it loaded, and why not), its recent errors, the validator's findings, the tools / skills / capabilities its manifest declares, and its AI spend over the last 24h against its AI cost cap. " +
+    "Read one plugin in detail: version, tier, status, signature, health (whether the running servers have it loaded, and why not), its recent errors, the validator's findings, the tools / skills / capabilities its manifest declares, the plugins it requires and the active ones that require it, what it asks visitors to consent to (purpose, category, cookies), and its AI spend over the last 24h against its AI cost cap. " +
     "Use when list_plugins' one-line summary is not enough — e.g. why a plugin is failing or a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. " +
     "A `core` error is Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team — repeat that exactly, never say the team knows unless it says sent; a `plugin` error comes from the plugin's own code; `transient` ones were retried. Errors never switch a plugin off. " +
     "Never returns the plugin's source.",
@@ -188,6 +201,9 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
       `tools: ${names(m.tools).join(", ") || "(none)"}`,
       `skills: ${names(m.skills).join(", ") || "(none)"}`,
       `requested capabilities: ${Array.isArray(m.requestedCapabilities) ? m.requestedCapabilities.join(", ") || "(none)" : "(none)"}`,
+      `requires plugins: ${plugin.requiresPlugins.join(", ") || "(none)"} (each must be active first)`,
+      `required by (active): ${plugin.requiredBy.join(", ") || "(none)"}`,
+      `consent purposes: ${consentPurposesLine(m.consentPurposes)}`,
     ];
     const h = plugin.health;
     lines.push(

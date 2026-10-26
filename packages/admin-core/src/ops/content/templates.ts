@@ -116,7 +116,9 @@ async function pageTypesByTemplate(
 export const listTemplatesOp = defineOperation({
   name: "templates.list",
   // CLAUDE.md §11: AI plans cross-template moves and needs broad read.
-  actorScope: ["human", "ai", "system"],
+  // Plugin actors read too, like pages.list (#396): consent-manager checks
+  // a tag scoped to templates against the templates that exist (#1138).
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({ includeDeleted: z.boolean().default(false) }),
   output: z.object({ templates: z.array(templateRowSchema) }),

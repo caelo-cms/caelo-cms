@@ -1017,7 +1017,7 @@
     },
     {
       "name": "list_plugins",
-      "description": "List the plugins installed on this site: their status (the Owner's decision) and their health (what the running servers make of it). `status`: `active` = the Owner wants it running; `awaiting_activation` = installed and verified, but nothing of it is loaded; `disabled` = the Owner stopped it. Availability comes from `health`, not from `status`: only `health = running` means its tools and skills are usable right now. `failing` = an active plugin failed to load on a server (`problem` says why) — it is NOT switched off, tell the operator, get_plugin has the details; `unreported` = active, but no server has reported it yet (just activated or starting); `not_running` = not active. Never tell the operator a capability works while its plugin is failing. Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. Plugins found on disk that failed verification are listed after the table: they are NOT installed — explain why and the fix. Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
+      "description": "List the plugins installed on this site: their status (the Owner's decision) and their health (what the running servers make of it). `status`: `active` = the Owner wants it running; `awaiting_activation` = installed and verified, but nothing of it is loaded; `disabled` = the Owner stopped it. Availability comes from `health`, not from `status`: only `health = running` means its tools and skills are usable right now. `failing` = an active plugin failed to load on a server (`problem` says why) — it is NOT switched off, tell the operator, get_plugin has the details; `unreported` = active, but no server has reported it yet (just activated or starting); `not_running` = not active. Never tell the operator a capability works while its plugin is failing. Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. `requires` = plugins that must be active before this one can be activated (activate those first, in that order); `required_by` = active plugins that need this one, so it cannot be disabled or uninstalled until they are. Plugins found on disk that failed verification are listed after the table: they are NOT installed — explain why and the fix. Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -5181,7 +5181,8 @@
               "image_generation",
               "site_media_read",
               "content_variants",
-              "link_resolve"
+              "link_resolve",
+              "consent_provider"
             ]
           },
           "target": {
@@ -7162,7 +7163,7 @@
     },
     {
       "name": "get_plugin",
-      "description": "Read one plugin in detail: version, tier, status, signature, health (whether the running servers have it loaded, and why not), its recent errors, the validator's findings, the tools / skills / capabilities its manifest declares, and its AI spend over the last 24h against its AI cost cap. Use when list_plugins' one-line summary is not enough — e.g. why a plugin is failing or a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. A `core` error is Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team — repeat that exactly, never say the team knows unless it says sent; a `plugin` error comes from the plugin's own code; `transient` ones were retried. Errors never switch a plugin off. Never returns the plugin's source.",
+      "description": "Read one plugin in detail: version, tier, status, signature, health (whether the running servers have it loaded, and why not), its recent errors, the validator's findings, the tools / skills / capabilities its manifest declares, the plugins it requires and the active ones that require it, what it asks visitors to consent to (purpose, category, cookies), and its AI spend over the last 24h against its AI cost cap. Use when list_plugins' one-line summary is not enough — e.g. why a plugin is failing or a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. A `core` error is Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team — repeat that exactly, never say the team knows unless it says sent; a `plugin` error comes from the plugin's own code; `transient` ones were retried. Errors never switch a plugin off. Never returns the plugin's source.",
       "inputSchema": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",

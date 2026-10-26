@@ -21,7 +21,10 @@
  *   [data-consent-accept-all]       grant everything
  *   [data-consent-reject-all]       grant only what is required
  *   [data-consent-save]             grant exactly what is ticked
- *   [data-consent-open]             re-open the dialog later
+ *   [data-consent-open]             re-open the dialog later; focus
+ *                                   moves into it, Escape closes it
+ *                                   without recording, and focus
+ *                                   returns to the opener
  *   [data-consent-grant="<key>"]    grant one category in place, e.g.
  *                                   on a withheld embed's placeholder;
  *                                   works without a banner on the page
@@ -46,7 +49,8 @@ import { jsonForInlineScript } from "./tags.js";
 
 /**
  * The first-party cookie holding the visitor's decision, as URI-encoded
- * JSON `{granted: string[], policyVersion: number, at: string}`. The API
+ * JSON `{id: string, granted: string[], offered: string[], policyVersion: number,
+ * at: string}`. The API
  * gateway reads it too (via `visitor_consent_rule`, #677), so the server
  * never sets the visitor-id cookie on a decision the browser did not make.
  */
@@ -69,10 +73,14 @@ export interface RuntimeConfig {
  * flashes the banner on every page for visitors who already answered,
  * which reads as a broken site and trains people to dismiss it without
  * looking.
+ *
+ * One hide rule, no show rule (#1139): a show rule has to name a
+ * `display` value, and `revert` resets to the browser default (block),
+ * which overrode the module's own `display:flex` or `grid`. Lifting the
+ * hide leaves the module's layout in charge.
  */
-export const RUNTIME_CSS = `[data-consent-banner]{display:none}
-html.caelo-consent-ask [data-consent-banner]{display:revert}
-html.caelo-consent-open [data-consent-banner]{display:revert}`;
+export const RUNTIME_CSS =
+  "html:not(.caelo-consent-ask):not(.caelo-consent-open) [data-consent-banner]{display:none}";
 
 /**
  * The runtime body. Plain browser JS, no imports, no template literals
@@ -153,11 +161,20 @@ function allKeys() {
   return out;
 }
 
-/** Current choice, or null when none applies to this policy version. */
+/**
+ * Current choice, or null when none applies: made under another policy
+ * version, or before a category was offered that the banner offers now
+ * (a plugin activated since asks for something this visitor never saw).
+ */
 function currentState() {
   var s = readCookie();
   if (!s) return null;
   if (s.policyVersion !== CONFIG.policyVersion) return null;
+  if (!Array.isArray(s.offered)) return null;
+  var keys = allKeys();
+  for (var i = 0; i < keys.length; i++) {
+    if (s.offered.indexOf(keys[i]) === -1) return null;
+  }
   return s;
 }
 
@@ -185,6 +202,32 @@ function somethingLoaded() {
   return doc.querySelector('[data-caelo-hydrated="1"]') !== null;
 }
 
+/**
+ * The id that ties this browser's decisions to their records in the
+ * consent log. It is random, lives only in the consent cookie itself and
+ * survives a new policy version, so the log can show one visitor's
+ * history without the site recognising the visitor for anything else.
+ */
+function consentId() {
+  var s = readCookie();
+  if (s && typeof s.id === "string" && /^[0-9a-f-]{36}$/.test(s.id)) return s.id;
+  // randomUUID exists only in secure contexts; a staging preview served
+  // over plain http still has getRandomValues.
+  if (typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  var b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  b[6] = (b[6] & 15) | 64;
+  b[8] = (b[8] & 63) | 128;
+  var hex = "";
+  for (var i = 0; i < 16; i++) hex += (b[i] < 16 ? "0" : "") + b[i].toString(16);
+  return (
+    hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" +
+    hex.slice(16, 20) + "-" + hex.slice(20)
+  );
+}
+
 function record(keys) {
   var before = granted();
   var revoked = false;
@@ -192,19 +235,31 @@ function record(keys) {
     if (keys.indexOf(before[i]) === -1) revoked = true;
   }
   var state = {
+    id: consentId(),
     granted: keys,
+    offered: allKeys(),
     policyVersion: CONFIG.policyVersion,
     at: new Date().toISOString(),
   };
   writeCookie(state);
+  // The withdrawn categories' cookies go before anything else runs, and
+  // on every decision, not only a narrowing one: a decision under a new
+  // policy version starts from nothing granted, while the cookies the
+  // old consent allowed are still in the jar.
+  expireWithdrawnCookies(keys);
   root.classList.remove("caelo-consent-ask");
   root.classList.remove("caelo-consent-open");
+  restoreFocus();
   apply();
   // Proof-of-consent lives server-side; the cookie is only what the
   // browser needs to act. A failed post must not undo the visitor's
   // choice, so it is reported and not retried into a loop.
   try {
-    var body = JSON.stringify({ granted: keys, policyVersion: CONFIG.policyVersion });
+    var body = JSON.stringify({
+      consentId: state.id,
+      granted: keys,
+      policyVersion: CONFIG.policyVersion,
+    });
     if (navigator.sendBeacon) {
       navigator.sendBeacon(CONFIG.recordEndpoint, new Blob([body], { type: "application/json" }));
     } else {
@@ -230,10 +285,14 @@ function record(keys) {
 
 function tickedKeys(banner) {
   var out = requiredKeys();
+  var offered = allKeys();
   var boxes = banner.querySelectorAll("[data-consent-category]");
   for (var i = 0; i < boxes.length; i++) {
     var key = boxes[i].getAttribute("data-consent-category");
     if (!key || out.indexOf(key) !== -1) continue;
+    // A hand-written checkbox for a category the site does not offer
+    // grants nothing (prefill already warned about it).
+    if (offered.indexOf(key) === -1) continue;
     if (boxes[i].checked) out.push(key);
   }
   return out;
@@ -334,11 +393,69 @@ function bind() {
   }
   var openers = doc.querySelectorAll("[data-consent-open]");
   for (var o = 0; o < openers.length; o++) {
+    if (openers[o].getAttribute("data-consent-bound") === "1") continue;
+    openers[o].setAttribute("data-consent-bound", "1");
     openers[o].addEventListener("click", function (ev) {
       ev.preventDefault();
-      root.classList.add("caelo-consent-open");
+      openBanner(ev.currentTarget);
     });
   }
+  doc.addEventListener("keydown", function (ev) {
+    // Only a banner the visitor reopened can be dismissed: one asking for
+    // a first decision stays until it gets one.
+    if (ev.key !== "Escape" || !root.classList.contains("caelo-consent-open")) return;
+    root.classList.remove("caelo-consent-open");
+    restoreFocus();
+  });
+}
+
+/**
+ * Reopen the dialog (#1134, #1128). The boxes are re-read from the
+ * decision as it stands NOW — it may have changed in this page view or
+ * in another tab since the page loaded — and focus moves into the dialog,
+ * so a keyboard user is not left on the footer link behind it. No focus
+ * trap: the visitor may tab past it (WCAG 2.1.2); Escape closes it.
+ */
+var lastOpener = null;
+function openBanner(opener) {
+  var banners = doc.querySelectorAll("[data-consent-banner]");
+  if (banners.length === 0) {
+    warn("nothing to open: no [data-consent-banner] on this page");
+    return;
+  }
+  for (var b = 0; b < banners.length; b++) prefill(banners[b]);
+  var active = doc.activeElement;
+  lastOpener = opener || (active && active !== doc.body ? active : null);
+  root.classList.add("caelo-consent-open");
+  focusInto(visibleBanner(banners));
+}
+
+/** The banner the visitor can see; a page may carry one per breakpoint. */
+function visibleBanner(banners) {
+  for (var i = 0; i < banners.length; i++) {
+    if (banners[i].getClientRects && banners[i].getClientRects().length > 0) return banners[i];
+  }
+  return banners[0];
+}
+
+var FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+function focusInto(banner) {
+  var target = banner.querySelector(FOCUSABLE);
+  if (!target) {
+    // A dialog with no control of its own still takes focus, so a screen
+    // reader announces it instead of staying behind it.
+    if (!banner.hasAttribute("tabindex")) banner.setAttribute("tabindex", "-1");
+    target = banner;
+  }
+  if (target.focus) target.focus();
+}
+
+/** Back to whatever opened the dialog, if it is still on the page. */
+function restoreFocus() {
+  var opener = lastOpener;
+  lastOpener = null;
+  if (opener && opener.focus && doc.documentElement.contains(opener)) opener.focus();
 }
 
 function bindAll(nodes, keysFn) {
@@ -426,7 +543,7 @@ window.caeloConsent = {
     record(requiredKeys());
   },
   open: function () {
-    root.classList.add("caelo-consent-open");
+    openBanner(null);
   },
 };
 

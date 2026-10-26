@@ -14,6 +14,7 @@
     Moon,
     Package,
     Palette,
+    Puzzle,
     Settings,
     Sun,
     Type,
@@ -34,8 +35,12 @@
     CONTENT_GROUP_ID,
     CONTENT_GROUP_LABEL,
     type MainNavIcon,
+    PLUGINS_GROUP_ID,
+    PLUGINS_GROUP_LABEL,
     visibleMainNav,
   } from "#lib/main-nav.js";
+  import { PANEL_ICONS } from "#lib/components/plugin-panels/panel-icons.js";
+  import type { PluginNavLink } from "#lib/plugin-panels.js";
   import { hasAnySettingsAccess, settingsCrumbLabel } from "#lib/settings-nav.js";
   import { cn } from "#lib/utils.js";
 
@@ -45,6 +50,8 @@
     userEmail?: string | null;
     /** Live "AI spend — last 7 days" readout for the top bar; null hides it. */
     aiSpend7d?: { display: string; costMicrocents: number; days: number } | null;
+    /** Admin pages of active plugins this viewer may open (layout server). */
+    pluginNav: PluginNavLink[];
     children?: import("svelte").Snippet;
   }
   let {
@@ -52,6 +59,7 @@
     csrfToken,
     userEmail = null,
     aiSpend7d = null,
+    pluginNav,
     children,
   }: Props = $props();
 
@@ -71,12 +79,15 @@
     type: Type,
   };
 
-  const nav = $derived(visibleMainNav(permissions, hasAnySettingsAccess(permissions)));
+  const nav = $derived(
+    visibleMainNav(permissions, hasAnySettingsAccess(permissions), pluginNav),
+  );
   const activeHref = $derived(
     activeNavHref(page.url.pathname, [
       ...(nav.liveEdit ? [nav.liveEdit.href] : []),
       nav.dashboard.href,
       ...nav.content.map((l) => l.href),
+      ...nav.plugins.map((l) => l.href),
       ...(nav.settings ? [nav.settings.href] : []),
       "/account",
     ]),
@@ -108,6 +119,28 @@
     contentOpen || nav.content.some((l) => l.href === activeHref),
   );
 
+  // The Plugins group behaves like Content: open by default, remembered.
+  const PLUGINS_GROUP_STORAGE_KEY = `caelo:nav-group:${PLUGINS_GROUP_ID}`;
+  let pluginsOpen = $state(true);
+  onMount(() => {
+    try {
+      if (localStorage.getItem(PLUGINS_GROUP_STORAGE_KEY) === "closed") pluginsOpen = false;
+    } catch {
+      // Storage unavailable: keep the default.
+    }
+  });
+  function togglePlugins() {
+    pluginsOpen = !pluginsOpen;
+    try {
+      localStorage.setItem(PLUGINS_GROUP_STORAGE_KEY, pluginsOpen ? "open" : "closed");
+    } catch {
+      // Storage unavailable: the choice lasts for this page view only.
+    }
+  }
+  const pluginsExpanded = $derived(
+    pluginsOpen || nav.plugins.some((l) => l.href === activeHref),
+  );
+
   const linkClass = (active: boolean) =>
     cn(
       "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors motion-reduce:transition-none",
@@ -125,6 +158,10 @@
    */
   const breadcrumbCrumbs = $derived(
     (() => {
+      // A plugin panel's path has no pages above it (/plugins, /plugins/<slug>):
+      // its one crumb is the panel, named as in the nav.
+      const panel = nav.plugins.find((l) => l.href === page.url.pathname);
+      if (panel) return [{ href: panel.href, label: panel.label }];
       const parts = page.url.pathname.split("/").filter((s) => s.length > 0);
       const out: { href: string; label: string }[] = [];
       let acc = "";
@@ -217,6 +254,38 @@
               class={linkClass(activeHref === item.href)}
             >
               {@render navIcon(item.icon)}
+              {item.label}
+            </a>
+          {/each}
+        </div>
+      {/if}
+      {#if nav.plugins.length > 0}
+        <button
+          type="button"
+          class="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground motion-reduce:transition-none"
+          aria-expanded={pluginsExpanded}
+          aria-controls="nav-group-{PLUGINS_GROUP_ID}"
+          data-testid="nav-plugins"
+          onclick={togglePlugins}
+        >
+          <Puzzle class="size-4" />
+          {PLUGINS_GROUP_LABEL}
+          <ChevronDown
+            class={cn(
+              "ml-auto size-4 transition-transform motion-reduce:transition-none",
+              !pluginsExpanded && "-rotate-90",
+            )}
+          />
+        </button>
+        <div id="nav-group-{PLUGINS_GROUP_ID}" class="space-y-1 pl-4" hidden={!pluginsExpanded}>
+          {#each nav.plugins as item (item.href)}
+            {@const PanelIcon = PANEL_ICONS[item.icon]}
+            <a
+              href={item.href}
+              aria-current={activeHref === item.href ? "page" : undefined}
+              class={linkClass(activeHref === item.href)}
+            >
+              <PanelIcon class="size-4" />
               {item.label}
             </a>
           {/each}

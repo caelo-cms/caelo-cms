@@ -91,13 +91,16 @@ export function estimateGcpCost(inputs: CostEstimateInputs): {
     },
     {
       name: `Cloud Run admin (${adminMemory})`,
+      // FIXME(issue #1140): ~$1 once the admin runs request-billed CPU
+      // (SERVICE_CPU_IDLE). Until then each editing session is billed for
+      // as long as the instance stays up, ~15 minutes past its last request.
       monthlyUsd:
         inputs.adminMinInstances === 0
-          ? 1
+          ? 7
           : Math.round(1 + inputs.adminMinInstances * perMinInstanceUsd),
       notes:
         inputs.adminMinInstances === 0
-          ? "scale-to-zero; ~$1/mo light editorial use"
+          ? "scale-to-zero, CPU always allocated while running; ~$7/mo light editorial use"
           : `${inputs.adminMinInstances} min-instance${inputs.adminMinInstances > 1 ? "s" : ""} (no cold start)`,
     },
     {

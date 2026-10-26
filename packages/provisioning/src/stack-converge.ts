@@ -25,6 +25,8 @@
  *   - {@link planSecretFiles} / {@link planRequestTimeout} (#806): the
  *     gateway's secret file (the remote-MCP OAuth client) and its request
  *     timeout, in the same `services update`.
+ *   - {@link planCpuIdle}: request-based CPU where the contract wants it
+ *     (`SERVICE_CPU_IDLE`), in the same `services update`.
  */
 
 import { removeDefaultFirewallRules } from "./default-firewall.js";
@@ -1149,6 +1151,35 @@ export function planRequestTimeout(live: number | null, desired: number): RollAd
     ok: true,
     flags: [`--timeout=${desired}`],
     changes: [`request timeout: ${live === null ? "(default 300)" : live}s → ${desired}s`],
+  };
+}
+
+/**
+ * Whether a described service gets CPU only during requests. Cloud Run keeps
+ * the setting in the `run.googleapis.com/cpu-throttling` revision
+ * annotation; a missing annotation is Cloud Run's default, throttled.
+ */
+export function liveCpuIdle(serviceJson: string): boolean {
+  const svc = JSON.parse(serviceJson) as {
+    spec?: { template?: { metadata?: { annotations?: Record<string, string> } } };
+  };
+  return (
+    svc.spec?.template?.metadata?.annotations?.["run.googleapis.com/cpu-throttling"] !== "false"
+  );
+}
+
+/**
+ * `--cpu-throttling` when the contract wants request-based CPU and the
+ * service still runs always-on. Never the other way: always-on CPU is
+ * billed around the clock, so a service the operator already moved to
+ * request-based CPU keeps it.
+ */
+export function planCpuIdle(live: boolean, desired: boolean): RollAdditionsPlan {
+  if (!desired || live) return { ok: true, flags: [], changes: [] };
+  return {
+    ok: true,
+    flags: ["--cpu-throttling"],
+    changes: ["CPU: always allocated → only during requests"],
   };
 }
 
