@@ -32,8 +32,23 @@ const URL_PATTERNS: ReadonlyArray<RegExp> = [
   // out of the markup into a field default or a content value, where it
   // sits as a plain JSON string with no `src=` around it — which is
   // precisely the modules this scanner exists for.
-  /(?:https?:)?\/\/[a-z0-9.-]+\.[a-z]{2,}[^\s"'<>)]*/gi,
+  //
+  // Only a URL that reads as one (#1123): with an explicit scheme, or
+  // protocol-relative directly after a quote or backtick, where a string
+  // starts. A bare `//` elsewhere in script is a comment or a regex
+  // (`/^\/\//i.test(k)` reported the host "i.test"), not an address.
+  /\bhttps?:\/\/[a-z0-9.-]+\.[a-z]{2,}[^\s"'`<>)]*/gi,
+  /(?<=["'`])\/\/[a-z0-9.-]+\.[a-z]{2,}[^\s"'`<>)]*/gi,
 ];
+
+/**
+ * JSON-LD `@context` values naming the schema.org vocabulary. The string
+ * is an identifier the structured-data parser compares; nothing fetches
+ * it. A module carrying its own JSON-LD in script was withheld behind
+ * "schema.org" (#1123).
+ */
+const JSON_LD_SCHEMA_CONTEXT_RE =
+  /(["'])@context\1\s*:\s*(["'])(?:https?:)?\/\/(?:www\.)?schema\.org\/?\2/gi;
 
 /**
  * Hosts that are not third parties in the sense that matters here:
@@ -80,7 +95,9 @@ function hostOf(url: string): string | null {
  */
 export function externalHosts(sources: { html?: string; css?: string; js?: string }): string[] {
   const found = new Set<string>();
-  const blob = [sources.html ?? "", sources.css ?? "", sources.js ?? ""].join("\n");
+  const blob = [sources.html ?? "", sources.css ?? "", sources.js ?? ""]
+    .join("\n")
+    .replace(JSON_LD_SCHEMA_CONTEXT_RE, "");
   for (const pattern of URL_PATTERNS) {
     // Fresh lastIndex per use — a shared /g regex is stateful, and
     // reusing one mid-stream skips matches at random.
@@ -94,6 +111,9 @@ export function externalHosts(sources: { html?: string; css?: string; js?: strin
       for (const candidate of raw.split(",")) {
         const url = candidate.trim().split(/\s+/)[0] ?? "";
         if (url.length === 0 || isFirstParty(url)) continue;
+        // `createElementNS("http://www.w3.org/2000/svg", …)` in script is
+        // the same identifier as the markup's xmlns (#1123).
+        if (STANDARD_XML_NAMESPACES.has(url)) continue;
         const host = hostOf(url);
         if (host) found.add(host);
       }
@@ -137,6 +157,30 @@ const STANDARD_XML_NAMESPACES: ReadonlySet<string> = new Set([
   "http://www.w3.org/XML/1998/namespace",
 ]);
 
+/**
+ * Attributes whose values are vocabulary identifiers (microdata, RDFa).
+ * A schema.org URI there names a type or property; no browser requests
+ * it. Only schema.org is exempt: any other value is still an attribute
+ * the module's script could read and fetch.
+ */
+const VOCABULARY_ATTRS: ReadonlySet<string> = new Set([
+  "itemtype",
+  "itemid",
+  "itemprop",
+  "vocab",
+  "typeof",
+  "property",
+]);
+
+/** Whether every token of an attribute value is a schema.org vocabulary URI. */
+function isSchemaOrgVocabulary(value: string): boolean {
+  const tokens = value.trim().split(/\s+/).filter(Boolean);
+  return (
+    tokens.length > 0 &&
+    tokens.every((t) => /^(?:https?:)?\/\/(?:www\.)?schema\.org(?:\/[^\s]*)?$/i.test(t))
+  );
+}
+
 const TAG_RE = /<([a-zA-Z][a-zA-Z0-9-]*)\b((?:"[^"]*"|'[^']*'|[^>"'])*)>/g;
 const ATTR_RE = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
 const PLACEHOLDER_RE = /\{\{\{?\s*[#^/>&]?\s*([a-zA-Z_][a-zA-Z0-9_.-]*)\s*\}?\}\}/g;
@@ -173,6 +217,7 @@ function attrLoads(tag: string, attr: string, attrs: Map<string, string>, hasJs:
     }
     return true; // SVG <image href>, <use href>, …
   }
+  if (VOCABULARY_ATTRS.has(a) && isSchemaOrgVocabulary(attrs.get(a) ?? "")) return false;
   if (a === "action" || a === "formaction") return false; // submits on click only
   if (LOADING_ATTRS.has(a)) return true;
   return hasJs;

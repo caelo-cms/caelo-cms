@@ -40,6 +40,7 @@ const SYS_CTX: ExecutionContext = {
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
 let pageId = "";
+let templateId = "";
 let pluginId = "";
 let videoModuleId = "";
 let plainModuleId = "";
@@ -98,6 +99,12 @@ async function call(operationName: string, args: unknown = {}) {
   });
 }
 
+async function policyVersion(): Promise<number> {
+  const r = await call("consent_status");
+  if (!r.ok) throw new Error(JSON.stringify(r.error));
+  return (r.value as { policyVersion: number }).policyVersion;
+}
+
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
   registry = new OperationRegistry();
@@ -110,7 +117,7 @@ beforeAll(async () => {
     html: `<body><caelo-slot name="content">_</caelo-slot></body>`,
   });
   if (!tpl.ok) throw new Error(JSON.stringify(tpl.error));
-  const templateId = (tpl.value as { templateId: string }).templateId;
+  templateId = (tpl.value as { templateId: string }).templateId;
   await execute(registry, adapter, SYS_CTX, "template_blocks.set", {
     templateId,
     blocks: [{ name: "content", displayName: "Content", position: 0 }],
@@ -235,8 +242,10 @@ describe("#451 — consent-manager", () => {
     const sources = await resolveListSources([pageId], MAIN_RENDER, "directory");
     const items = sources.get(pageId)?.consent_categories;
     expect(items).toBeDefined();
-    // The category key is the stable entry id.
-    expect(items?.map((i) => i.id)).toEqual(["necessary", "functional", "analytics", "marketing"]);
+    // The category key is the stable entry id. Only real choices (#1129):
+    // the page's YouTube embed waits for marketing; no tag or embed uses
+    // functional or analytics, so the banner does not offer them.
+    expect(items?.map((i) => i.id)).toEqual(["necessary", "marketing"]);
     // Every key the banner template needs, and nothing that looks like
     // HTML — the plugin never supplies markup.
     expect(Object.keys(items?.[0]?.values ?? {}).sort()).toEqual([
@@ -244,11 +253,17 @@ describe("#451 — consent-manager", () => {
       "key",
       "label",
       "required",
+      "used",
     ]);
     // `required` is a real boolean now: {{#required}} means what it says.
     expect(items?.find((i) => i.id === "necessary")?.values.required).toBe(true);
     expect(items?.find((i) => i.id === "marketing")?.values.required).toBe(false);
+    expect(items?.find((i) => i.id === "marketing")?.values.used).toBe(true);
     expect(JSON.stringify(items)).not.toContain("<");
+
+    // The cookie declaration rides the same call (#1133).
+    const vendors = sources.get(pageId)?.consent_vendors;
+    expect(vendors?.[0]?.values.cookies).toContain("caelo_consent");
   });
 
   it("bakes the categories and the policy version into the runtime", async () => {
@@ -339,19 +354,25 @@ describe("#451 — consent-manager", () => {
   });
 
   it("pins a tag to a category and injects it only once granted", async () => {
+    const versionBefore = await policyVersion();
     const added = await call("add_tag", {
       name: "GA4",
       vendor: "google-analytics",
-      justification: "Aggregate page popularity.",
+      config: { measurementId: "G-T451ABC" },
     });
     if (!added.ok) throw new Error(JSON.stringify(added.error));
-    // The known vendor supplies the category and the script URL, so the
-    // operator does not have to look either up.
-    expect((added.value as { category: string }).category).toBe("analytics");
+    // The known vendor supplies the category, the code and the cookies,
+    // so the operator only names the id (#1135).
+    const v = added.value as { category: string; policyVersion: number };
+    expect(v.category).toBe("analytics");
+    // A new vendor in a category: earlier consent did not cover it (#1137).
+    expect(v.policyVersion).toBe(versionBefore + 1);
 
     const assets = await collectBuildAssets([pageId], MAIN_RENDER);
     const js = assets.find((a) => a.fileName === "runtime.js")?.content ?? "";
-    expect(js).toContain("googletagmanager.com");
+    expect(js).toContain("googletagmanager.com/gtag/js?id=G-T451ABC");
+    // Its cookies ride along so a withdrawal can delete them (#1136).
+    expect(js).toContain('{"name":"_ga_","prefix":true}');
     // Baked into the RUNTIME, never into the page: a tag in the page's
     // HTML has already run by the time anything could check consent.
     expect(js).toContain('"category":"analytics"');
@@ -378,10 +399,52 @@ describe("#451 — consent-manager", () => {
     const dupe = await call("add_tag", {
       name: "GA4",
       vendor: "google-analytics",
-      justification: "again",
+      config: { measurementId: "G-T451ABC" },
     });
     expect(dupe.ok).toBe(false);
     if (!dupe.ok) expect(dupe.error.message).toContain("already exists");
+  });
+
+  it("changes tags in bulk, re-asking visitors only when consent coverage changes", async () => {
+    const v0 = await policyVersion();
+    // Filling in vendor data changes nothing a visitor agreed to.
+    const filled = await call("update_tags_many", {
+      tags: [{ name: "GA4", vendorInfo: { seat: "Dublin" } }],
+    });
+    if (!filled.ok) throw new Error(JSON.stringify(filled.error));
+    expect(await policyVersion()).toBe(v0);
+    // A scope change does: the tag now runs where it did not before.
+    const scoped = await call("update_tags_many", {
+      tags: [{ name: "GA4", scope: { pageIds: [pageId], locales: ["de"] } }],
+    });
+    if (!scoped.ok) throw new Error(JSON.stringify(scoped.error));
+    expect(await policyVersion()).toBe(v0 + 1);
+    const js =
+      (await collectBuildAssets([pageId], MAIN_RENDER)).find((a) => a.fileName === "runtime.js")
+        ?.content ?? "";
+    // The page id is resolved to its path at build time (#1138).
+    expect(js).toContain('"include":["/t451-page"]');
+    expect(js).toContain('"locales":["de"]');
+
+    // A template scope covers the template's pages, checked against the
+    // templates that exist and resolved at build time too.
+    const byTemplate = await call("update_tags_many", {
+      tags: [{ name: "GA4", scope: { templateIds: [templateId] } }],
+    });
+    if (!byTemplate.ok) throw new Error(JSON.stringify(byTemplate.error));
+    const js2 =
+      (await collectBuildAssets([pageId], MAIN_RENDER)).find((a) => a.fileName === "runtime.js")
+        ?.content ?? "";
+    expect(js2).toContain('"include":["/t451-page"]');
+
+    // An unknown page is refused at the call, not silently ignored.
+    const bad = await call("update_tags_many", {
+      tags: [{ name: "GA4", scope: { pageIds: ["11111111-1111-4111-8111-111111111111"] } }],
+    });
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.error.message).toContain("do not exist");
+    const missing = await call("update_tags_many", { tags: [{ name: "Nope", enabled: false }] });
+    expect(missing.ok).toBe(false);
   });
 
   it("stops injecting a removed tag", async () => {
@@ -391,8 +454,11 @@ describe("#451 — consent-manager", () => {
       "GA4",
     );
 
+    const versionBefore = await policyVersion();
     const removed = await call("remove_tag", { name: "GA4" });
     if (!removed.ok) throw new Error(JSON.stringify(removed.error));
+    // Removing only narrows what runs: nobody is asked again.
+    expect(await policyVersion()).toBe(versionBefore);
     const js =
       (await collectBuildAssets([pageId], MAIN_RENDER)).find((a) => a.fileName === "runtime.js")
         ?.content ?? "";
@@ -430,6 +496,21 @@ describe("#451 — consent-manager", () => {
     // Count WRAPPERS, not occurrences of the attribute name: the
     // runtime is inlined into this page too and mentions the selector.
     expect(html.match(/<div data-caelo-deferred="/g) ?? []).toHaveLength(1);
+  });
+
+  it("reports what is withheld right away, so the AI can tell the operator (#1123)", async () => {
+    const status = await call("consent_status");
+    if (!status.ok) throw new Error(JSON.stringify(status.error));
+    const withheld = (
+      status.value as {
+        withheldNow: Array<{ moduleSlug: string; status: string; category?: string }>;
+      }
+    ).withheldNow;
+    expect(withheld.find((w) => w.moduleSlug === "t451-video")).toMatchObject({
+      status: "gated",
+      category: "marketing",
+    });
+    expect(withheld.some((w) => w.moduleSlug === "t451-plain")).toBe(false);
   });
 
   it("withholds an unrecognised vendor too, until someone rules on it", async () => {
@@ -560,6 +641,18 @@ describe("#451 — consent-manager", () => {
     expect(first).toContain("necessary analytics");
   });
 
+  it("reports how visitors decide, as counts only (#1131)", async () => {
+    const r = await call("consent_stats", { days: 7 });
+    if (!r.ok) throw new Error(JSON.stringify(r.error));
+    const out = r.value as {
+      decisions: number;
+      perCategory: Array<{ key: string; granted: number }>;
+    };
+    expect(out.decisions).toBeGreaterThan(0);
+    expect(out.perCategory.find((c) => c.key === "necessary")?.granted).toBe(out.decisions);
+    expect(JSON.stringify(out)).not.toContain("visitor");
+  });
+
   it("prunes nothing while every record is inside the retention window", async () => {
     const r = await call("prune_log");
     if (!r.ok) throw new Error(JSON.stringify(r.error));
@@ -568,13 +661,14 @@ describe("#451 — consent-manager", () => {
 
   it("re-asks everyone when the policy version is bumped", async () => {
     const before = await collectBuildAssets([pageId], MAIN_RENDER);
+    const current = await policyVersion();
     const r = await call("bump_policy_version");
     if (!r.ok) throw new Error(JSON.stringify(r.error));
-    expect((r.value as { policyVersion: number }).policyVersion).toBe(2);
+    expect((r.value as { policyVersion: number }).policyVersion).toBe(current + 1);
 
     const after = await collectBuildAssets([pageId], MAIN_RENDER);
     const js = after.find((a) => a.fileName === "runtime.js");
-    expect(js?.content).toContain('"policyVersion":2');
+    expect(js?.content).toContain(`"policyVersion":${current + 1}`);
     // A changed runtime must change its hashed filename, or caches keep
     // serving the version that stops asking.
     expect(js?.relPath).not.toBe(before.find((a) => a.fileName === "runtime.js")?.relPath);

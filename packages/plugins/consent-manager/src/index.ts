@@ -29,7 +29,8 @@
  * Consent records are the evidence half of the obligation, so they live
  * in cms_public where the gateway can write them on a visitor request,
  * and they outlive deactivation (uninstall drops the schema — export
- * first; see `export_log`).
+ * first; see `export_log`). They are personal data, so the AI sees them
+ * only as counts (`consent_stats`); the rows are the Owner's.
  */
 
 import {
@@ -38,51 +39,32 @@ import {
   type PluginContextTier1,
   z,
 } from "@caelo-cms/plugin-sdk";
-import { type CategoryRow, DEFAULT_CATEGORIES } from "./categories.js";
+import { DEFAULT_CATEGORIES } from "./categories.js";
+import { consentStats, describeConsentLog } from "./consent-log.js";
+import {
+  CONSENT_VENDOR_FIELDS,
+  consentPurposesOf,
+  usedCategoryKeys,
+  vendorEntries,
+} from "./declaration.js";
 import { defaultPlaceholder } from "./placeholder.js";
 import { buildRuntimeJs, CONSENT_COOKIE, RUNTIME_CSS } from "./runtime.js";
 import { deferralReason, moduleHosts } from "./scan.js";
 import { CONSENT_SKILLS } from "./skills.js";
 import {
-  assertInlineSnippetIsJs,
-  type BakedTag,
-  buildTagInjector,
-  KNOWN_VENDORS,
-  type TagRow,
-} from "./tags.js";
+  adminQueryOf,
+  bumpPolicyVersion,
+  categoriesOf,
+  cmsOf,
+  type GuardRow,
+  settingsOf,
+} from "./storage.js";
+import { addTag, bakeTags, listTags, removeTag, updateTagsMany } from "./tag-ops.js";
+import { buildTagInjector, type TagRow } from "./tags.js";
 import { CONSENT_TOOLS } from "./tools.js";
 
 const SLUG = "consent-manager";
 const RECORD_ENDPOINT = `/api/plugin/${SLUG}/record_consent`;
-
-interface SettingsRow {
-  id: string;
-  policy_version: number;
-  retention_days: number;
-  /** Module rendered in place of anything withheld. */
-  placeholder_module_slug: string;
-}
-
-interface GuardRow {
-  id: string;
-  module_id: string;
-  category_key: string;
-  detected_hosts: string[];
-  status: "pending" | "gated" | "allowed";
-  decided_by: string;
-}
-
-interface CmsHandle {
-  call: <O>(opName: string, input: unknown) => Promise<O>;
-}
-
-function cmsOf(ctx: unknown): CmsHandle {
-  const cms = (ctx as { cms?: CmsHandle }).cms;
-  if (!cms) {
-    throw new Error("consent-manager: ctx.cms missing — the cms_admin capability was not granted");
-  }
-  return cms;
-}
 
 /** A visitor's decision as the runtime posts it through the gateway. */
 const recordConsentArgs = z.object({
@@ -101,6 +83,8 @@ const recordConsentArgs = z.object({
 interface EmbedScan {
   readonly moduleId: string;
   readonly moduleSlug: string;
+  /** Site chrome (header, footer, navigation): withheld, it vanishes from every page. */
+  readonly siteChrome: boolean;
   readonly hosts: string[];
   readonly guard: GuardRow | undefined;
 }
@@ -145,6 +129,7 @@ async function scanEmbeds(ctx: PluginContextTier1): Promise<EmbedScan[]> {
     modules: Array<{
       id: string;
       slug: string;
+      kind: string;
       html: string;
       css: string;
       js: string;
@@ -171,9 +156,43 @@ async function scanEmbeds(ctx: PluginContextTier1): Promise<EmbedScan[]> {
   return modules.modules.map((m) => ({
     moduleId: m.id,
     moduleSlug: m.slug,
+    siteChrome: m.kind === "chrome",
     hosts: moduleHosts({ ...m, contentValues: valuesByModule.get(m.id) ?? [] }),
     guard: byModule.get(m.id),
   }));
+}
+
+/** A module the render-time gate withholds now, and why. */
+interface Withheld {
+  readonly scan: EmbedScan;
+  /** A consent category key, or `unclassified` while nobody has ruled. */
+  readonly reason: string;
+}
+
+/**
+ * Every module the render-time gate would withhold right now — the same
+ * `deferralReason` judgement, over the same scan `list_embeds` reports.
+ */
+async function withheldModules(ctx: PluginContextTier1): Promise<Withheld[]> {
+  const out: Withheld[] = [];
+  for (const scan of await scanEmbeds(ctx)) {
+    const reason = deferralReason(scan.hosts, scan.guard, classifyHosts);
+    if (reason !== null) out.push({ scan, reason });
+  }
+  return out;
+}
+
+/** The categories the banner offers: required ones plus everything something uses. */
+async function offeredCategories(ctx: PluginContextTier1, withheld: ReadonlyArray<Withheld>) {
+  const q = adminQueryOf(ctx);
+  const categories = await categoriesOf(q);
+  const used = await usedCategoryKeys(
+    q,
+    categories,
+    await consentPurposesOf(ctx),
+    new Set(withheld.map((w) => w.reason).filter((r) => r !== "unclassified")),
+  );
+  return { categories, used };
 }
 
 /**
@@ -275,16 +294,6 @@ const HOST_CATEGORIES: Readonly<Record<string, string>> = {
 /** Default placeholder module slug, seeded with the settings row. */
 const DEFAULT_PLACEHOLDER_SLUG = "consent-placeholder";
 
-function adminQueryOf(ctx: unknown): PluginAdminQuery {
-  const q = (ctx as { adminQuery?: PluginAdminQuery }).adminQuery;
-  if (!q) {
-    throw new Error(
-      "consent-manager: ctx.adminQuery missing — the cms_admin_schema capability was not granted",
-    );
-  }
-  return q;
-}
-
 /**
  * Write the create-time defaults — the one settings row and the default
  * categories — when they are missing. Runs from `onActivate`, on main:
@@ -312,29 +321,6 @@ async function seedDefaults(q: PluginAdminQuery): Promise<void> {
       });
     }
   }
-}
-
-/** The settings row. Seeded by `onActivate`; missing means activation did not run. */
-async function settingsOf(q: PluginAdminQuery): Promise<SettingsRow> {
-  const rows = (await q.list("settings", { limit: 1 })) as unknown as SettingsRow[];
-  const row = rows[0];
-  if (!row) {
-    throw new Error("consent-manager: settings row missing — onActivate has not seeded it");
-  }
-  return row;
-}
-
-/** Categories in display order. Seeded by `onActivate`. */
-async function categoriesOf(q: PluginAdminQuery): Promise<CategoryRow[]> {
-  const rows = (await q.list("categories", {
-    limit: 100,
-    orderBy: "position",
-    orderDir: "asc",
-  })) as unknown as CategoryRow[];
-  if (rows.length === 0) {
-    throw new Error("consent-manager: no categories — onActivate has not seeded them");
-  }
-  return rows;
 }
 
 /**
@@ -370,7 +356,6 @@ export default definePlugin<PluginContextTier1>({
       ip_hash: "string",
       granted: "jsonb",
       policy_version: "int",
-      user_agent: "text",
       created_at: "timestamp",
     },
   },
@@ -388,6 +373,8 @@ export default definePlugin<PluginContextTier1>({
       policy_version: "int",
       retention_days: "int",
       placeholder_module_slug: "string",
+      /** Last change to the cookie declaration; the date the privacy page shows. */
+      declaration_updated_at: "timestamp",
       created_at: "timestamp",
     },
     /**
@@ -415,6 +402,15 @@ export default definePlugin<PluginContextTier1>({
        *  may run before anyone is asked. */
       justification: "text",
       enabled: "bool",
+      /** Validated vendor ids (`{measurementId}`) a known vendor's code is built from. */
+      config: "jsonb",
+      /** `[{name, pattern?, lifetime, purpose}]` — declared, and deleted on withdrawal. */
+      cookies: "jsonb",
+      /** Recipient, seat, purpose, legal basis, third country, transfer basis, privacy URL. */
+      vendor_info: "jsonb",
+      /** Where it runs: path globs, page ids, template ids, locales. */
+      scope: "jsonb",
+      updated_at: "timestamp",
       created_at: "timestamp",
     },
   },
@@ -452,8 +448,16 @@ export default definePlugin<PluginContextTier1>({
           { name: "label", label: "Label", type: "text", required: true },
           { name: "description", label: "Description", type: "text", maxLength: 2000 },
           { name: "required", label: "Always on", type: "boolean" },
+          { name: "used", label: "Controls something on this site", type: "boolean" },
         ],
       },
+    },
+    {
+      name: "consent_vendors",
+      label: "Cookie declaration",
+      description:
+        "Every recipient of visitor data and the cookies it sets, grouped by consent category, with the date the declaration last changed. For the privacy page's cookie table.",
+      node: { label: "Recipient", fields: CONSENT_VENDOR_FIELDS },
     },
   ],
   listSourcesOperation: "consent_data_lists",
@@ -486,16 +490,7 @@ export default definePlugin<PluginContextTier1>({
     const q = adminQueryOf(ctx);
     const settings = await settingsOf(q);
     const categories = await categoriesOf(q);
-    const tags = (await q.list("tags", { limit: 200 })) as unknown as TagRow[];
-    const baked: BakedTag[] = tags
-      .filter((t) => t.enabled)
-      .map((t) => ({
-        name: t.name,
-        category: t.category_key,
-        src: t.script_src,
-        inline: t.inline_snippet,
-        position: t.position === "head" ? "head" : "body_end",
-      }));
+    const baked = await bakeTags(ctx);
     return {
       "runtime.js": buildRuntimeJs(
         {
@@ -553,29 +548,44 @@ export default definePlugin<PluginContextTier1>({
         ip_hash: ctx.visitor.ipHash,
         granted: [...new Set(granted)],
         policy_version: policyVersion,
-        user_agent: "",
       });
       return { recorded: true };
     },
 
     consent_data_lists: async (ctx, args) => {
       const { pageIds } = args as { pageIds: string[] };
-      const categories = await categoriesOf(adminQueryOf(ctx));
+      const q = adminQueryOf(ctx);
+      const purposes = await consentPurposesOf(ctx);
+      const { categories, used } = await offeredCategories(ctx, await withheldModules(ctx));
+      // Only real choices (#1129): the required categories, told rather
+      // than asked, plus the ones something on the site is pinned to.
       // The category key is the entry id: stable across renders, and the
       // same thing the banner's data-consent-category hook names.
-      const entries = categories.map((c) => ({
-        id: c.key,
-        values: {
-          key: c.key,
-          label: c.display_name,
-          description: c.description,
-          required: c.required,
-        },
-      }));
-      // The same list on every page: the banner is site chrome, and a
+      const entries = categories
+        .filter((c) => c.required || used.has(c.key))
+        .map((c) => ({
+          id: c.key,
+          values: {
+            key: c.key,
+            label: c.display_name,
+            description: c.description,
+            required: c.required,
+            used: used.has(c.key),
+          },
+        }));
+      const tags = (await q.list("tags", { limit: 200 })) as unknown as TagRow[];
+      const vendors = vendorEntries({
+        categories,
+        tags,
+        purposes,
+        settings: await settingsOf(q),
+      });
+      // The same lists on every page: the banner is site chrome, and a
       // per-page answer would invite placing it per page.
-      const sources: Record<string, Record<string, typeof entries>> = {};
-      for (const id of pageIds) sources[id] = { consent_categories: entries };
+      const sources: Record<string, Record<string, unknown[]>> = {};
+      for (const id of pageIds) {
+        sources[id] = { consent_categories: entries, consent_vendors: vendors };
+      }
       return { sources };
     },
 
@@ -583,7 +593,19 @@ export default definePlugin<PluginContextTier1>({
     consent_status: async (ctx) => {
       const q = adminQueryOf(ctx);
       const settings = await settingsOf(q);
-      const categories = await categoriesOf(q);
+      const withheld = await withheldModules(ctx);
+      const { categories, used } = await offeredCategories(ctx, withheld);
+      // What visitors do not see right now (#1123): reported here so the
+      // AI can tell the operator straight after activation, before they
+      // find a missing header themselves.
+      const withheldNow = withheld.map(({ scan, reason }) => ({
+        moduleId: scan.moduleId,
+        moduleSlug: scan.moduleSlug,
+        hosts: scan.hosts,
+        status: reason === "unclassified" ? "pending" : "gated",
+        ...(reason === "unclassified" ? {} : { category: reason }),
+        siteChrome: scan.siteChrome,
+      }));
       return {
         policyVersion: settings.policy_version,
         retentionDays: settings.retention_days,
@@ -592,9 +614,21 @@ export default definePlugin<PluginContextTier1>({
           displayName: c.display_name,
           description: c.description,
           required: c.required,
+          // Only used and required categories reach the banner's list.
+          used: used.has(c.key),
         })),
+        withheldNow,
+        ...(withheldNow.some((w) => w.siteChrome)
+          ? {
+              withheldNote:
+                "Site chrome (header, footer, navigation) is withheld: visitors see a placeholder instead on EVERY page. Tell the operator now, then resolve each module with classify_external_embed.",
+            }
+          : {}),
+        consentLog: describeConsentLog(settings.retention_days),
         bannerContract: {
-          list: "{{#consent_categories}}…{{/consent_categories}} with key, label, description, required",
+          list: "{{#consent_categories}}…{{/consent_categories}} with key, label, description, required, used — only the required categories and the ones something on the site uses",
+          declaration:
+            "{{#consent_vendors}}…{{/consent_vendors}} with category, category_label, category_first, vendor, vendor_seat, purpose, legal_basis, third_country, transfer_basis, privacy_policy (link), cookies, updated — the cookie declaration for the privacy page",
           hooks: [
             "data-consent-banner (the dialog root)",
             'data-consent-category="<key>" (a checkbox)',
@@ -766,108 +800,15 @@ export default definePlugin<PluginContextTier1>({
         : { moduleId, status: "gated", category: decision.category_key };
     },
 
-    /**
-     * Register a tracking tag. Gated at the tool layer (#452): the SDK
-     * pauses for the Owner's in-chat Approve before this runs.
-     *
-     * The §11.A test is "can the user undo it with one tool call?" —
-     * deleting the tag, yes; the data already sent to the vendor, no.
-     */
-    add_tag: async (ctx, args) => {
-      const { name, vendor, category, scriptSrc, inlineSnippet, position, justification } =
-        args as {
-          name?: unknown;
-          vendor?: unknown;
-          category?: unknown;
-          scriptSrc?: unknown;
-          inlineSnippet?: unknown;
-          position?: unknown;
-          justification?: unknown;
-        };
-      if (typeof name !== "string" || name.trim().length === 0) {
-        throw new Error("add_tag: `name` is required");
-      }
-      const q = adminQueryOf(ctx);
-      const categories = await categoriesOf(q);
-      const known = new Set(categories.map((c) => c.key));
-      const vendorKey = typeof vendor === "string" ? vendor : "";
-      const suggested = KNOWN_VENDORS[vendorKey]?.category;
-      const categoryKey = typeof category === "string" ? category : suggested;
-      if (!categoryKey || !known.has(categoryKey)) {
-        throw new Error(
-          `add_tag: \`category\` must be one of ${[...known].join(", ")}${
-            suggested ? ` (${vendorKey} is normally ${suggested})` : ""
-          }`,
-        );
-      }
-      const src =
-        typeof scriptSrc === "string" && scriptSrc.length > 0
-          ? scriptSrc
-          : (KNOWN_VENDORS[vendorKey]?.scriptSrc ?? "");
-      const inline = typeof inlineSnippet === "string" ? inlineSnippet : "";
-      if (src.length === 0 && inline.length === 0) {
-        throw new Error("add_tag: give the tag something to load — `scriptSrc` or `inlineSnippet`");
-      }
-      assertInlineSnippetIsJs(inline);
-      const reason = typeof justification === "string" ? justification.trim() : "";
-      // A `necessary` tag runs for everyone, unasked. That is right for
-      // a session cookie and wrong for anything that measures or follows
-      // a visitor, so claiming it costs a written reason — otherwise
-      // "necessary" is just the category that makes the banner stop
-      // being an obstacle.
-      if (categoryKey === "necessary" && reason.length < 20) {
-        throw new Error(
-          "add_tag: a tag in `necessary` runs before the visitor is asked, so it needs a written `justification` saying why it is strictly required. If it measures or follows visitors, it belongs in analytics or marketing instead.",
-        );
-      }
-      const existing = (await q.list("tags", { name, limit: 1 })) as unknown as TagRow[];
-      if (existing[0]) {
-        throw new Error(`add_tag: a tag named "${name}" already exists — remove it first`);
-      }
-      const r = await q.insert("tags", {
-        name,
-        vendor: vendorKey,
-        category_key: categoryKey,
-        script_src: src,
-        inline_snippet: inline,
-        position: position === "head" ? "head" : "body_end",
-        justification: reason,
-        enabled: true,
-      });
-      return { tagId: r.id, name, category: categoryKey };
-    },
+    add_tag: async (ctx, args) => addTag(ctx, args),
+    update_tags_many: async (ctx, args) => updateTagsMany(ctx, args),
+    list_tags: async (ctx) => listTags(ctx),
+    remove_tag: async (ctx, args) => removeTag(ctx, args),
 
-    list_tags: async (ctx) => {
-      const q = adminQueryOf(ctx);
-      const tags = (await q.list("tags", { limit: 200 })) as unknown as TagRow[];
-      return {
-        tags: tags.map((t) => ({
-          id: t.id,
-          name: t.name,
-          vendor: t.vendor,
-          category: t.category_key,
-          loads: t.script_src || "(inline snippet)",
-          position: t.position,
-          enabled: t.enabled,
-          justification: t.justification,
-        })),
-        knownVendors: Object.entries(KNOWN_VENDORS).map(([key, v]) => ({
-          vendor: key,
-          category: v.category,
-          note: v.note,
-        })),
-      };
-    },
-
-    remove_tag: async (ctx, args) => {
-      const { name } = args as { name?: unknown };
-      if (typeof name !== "string") throw new Error("remove_tag: `name` is required");
-      const q = adminQueryOf(ctx);
-      const rows = (await q.list("tags", { name, limit: 1 })) as unknown as TagRow[];
-      const row = rows[0];
-      if (!row) throw new Error(`remove_tag: no tag named "${name}"`);
-      await q.delete("tags", row.id);
-      return { removed: name };
+    /** How visitors decide, in aggregate (#1131) — counts only, never a record. */
+    consent_stats: async (ctx, args) => {
+      const { categories, used } = await offeredCategories(ctx, await withheldModules(ctx));
+      return consentStats(ctx.query, args, categories, used);
     },
 
     /**
@@ -880,6 +821,9 @@ export default definePlugin<PluginContextTier1>({
      * Deactivating the plugin stops it running; UNINSTALL drops its
      * schema and takes these rows with it. Export before that, not
      * after: there is no recovery path once the schema is gone.
+     *
+     * No AI tool reaches it: the rows are personal data, so only the
+     * Owner exports them, from the admin panel.
      */
     export_log: async (ctx, args) => {
       const { since, limit } = args as { since?: unknown; limit?: unknown };
@@ -1002,13 +946,9 @@ export default definePlugin<PluginContextTier1>({
      * rewording a description is cosmetic while invalidating consent
      * puts the banner back in front of every visitor.
      */
-    bump_policy_version: async (ctx) => {
-      const q = adminQueryOf(ctx);
-      const settings = await settingsOf(q);
-      const next = settings.policy_version + 1;
-      await q.update("settings", settings.id, { policy_version: next });
-      return { policyVersion: next };
-    },
+    bump_policy_version: async (ctx) => ({
+      policyVersion: await bumpPolicyVersion(adminQueryOf(ctx)),
+    }),
   },
 
   tools: CONSENT_TOOLS,

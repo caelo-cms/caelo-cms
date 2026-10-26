@@ -250,6 +250,54 @@ describe("moduleHosts counts only what loads with the page", () => {
   });
 });
 
+describe("site chrome is not an embed (#1123)", () => {
+  // The three patterns that withheld a header and footer site-wide right
+  // after activation: none of them makes the browser request anything.
+  const mod = (html: string, js: string) =>
+    moduleHosts({ html, css: "", js, fields: [], contentValues: [] });
+
+  it("ignores createElementNS with a standard namespace in module JS", () => {
+    expect(
+      mod(
+        "<nav></nav>",
+        'var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");' +
+          "svg.setAttributeNS('http://www.w3.org/1999/xlink', 'href', '#i');",
+      ),
+    ).toEqual([]);
+  });
+
+  it("does not read regex or comment text as a protocol-relative URL", () => {
+    expect(
+      mod(
+        "<nav></nav>",
+        "function external(k){ return /^\\/\\//i.test(k) || /^https?:\\/\\//i.test(k); } // see //docs",
+      ),
+    ).toEqual([]);
+  });
+
+  it("ignores schema.org vocabulary in microdata and JSON-LD", () => {
+    expect(
+      mod(
+        '<footer itemscope itemtype="https://schema.org/Organization"><span itemprop="name">X</span></footer>',
+        'var ld = {"@context": "https://schema.org", "@type": "Organization"};',
+      ),
+    ).toEqual([]);
+  });
+
+  it("still finds a real vendor next to those patterns", () => {
+    expect(
+      mod(
+        '<footer itemtype="https://schema.org/Organization"></footer>',
+        'document.createElementNS("http://www.w3.org/2000/svg", "svg"); load("//cdn.vendor.example/x.js");',
+      ),
+    ).toEqual(["cdn.vendor.example"]);
+    // A schema.org URL used as an address (not an identifier) still counts.
+    expect(
+      mod("<div></div>", 'fetch("https://schema.org/version/latest/schemaorg.jsonld")'),
+    ).toEqual(["schema.org"]);
+  });
+});
+
 describe("deferralReason (render-time gate)", () => {
   const classify = (hosts: ReadonlyArray<string>) =>
     hosts.every((h) => h === "www.youtube.com") ? "marketing" : null;
