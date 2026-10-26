@@ -2,6 +2,8 @@
 
 import { execute } from "@caelo-cms/query-api";
 import { redirect } from "@sveltejs/kit";
+import { pluginNavLinks } from "#lib/plugin-panels.js";
+import { activePluginPanels } from "#lib/server/plugin-panels.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { LayoutServerLoad } from "./$types";
 
@@ -72,5 +74,9 @@ export const load: LayoutServerLoad = async ({ locals, url }) => {
   return {
     permissions: [...locals.user.permissions].sort(),
     aiSpend7d,
+    // The admin pages active plugins declare, as far as this viewer may
+    // open them. Read from the running host: an inactive plugin is not
+    // loaded, so its pages are not listed.
+    pluginNav: pluginNavLinks(activePluginPanels(), locals.user.permissions),
   };
 };

@@ -168,6 +168,7 @@ function parseListFilter(
   let orderBy: string | null = null;
   let orderDir: "asc" | "desc" = "desc";
   let since: string | null = null;
+  let before: string | null = null;
   const equals: [string, unknown][] = [];
   for (const [k, v] of Object.entries(filter)) {
     if (k === "limit") {
@@ -185,13 +186,17 @@ function parseListFilter(
       if (typeof v !== "string") return `${op}: since must be ISO timestamp string`;
       if (!("created_at" in columns)) return `${op}: \`since\` requires a created_at column`;
       since = v;
+    } else if (k === "before") {
+      if (typeof v !== "string") return `${op}: before must be ISO timestamp string`;
+      if (!("created_at" in columns)) return `${op}: \`before\` requires a created_at column`;
+      before = v;
     } else {
       const problem = checkColumn(op, columns, k) ?? undefinedValueProblem(op, "filter", k, v);
       if (problem) return problem;
       equals.push([k, v]);
     }
   }
-  return { limit, orderBy, orderDir, since, equals };
+  return { limit, orderBy, orderDir, since, before, equals };
 }
 
 function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
@@ -269,6 +274,7 @@ function makeOps(zone: Zone, locker: PluginRowLocker | undefined) {
       if (zone === "private") return ok({ rows: await privateList(tx, ctx, input, plan) });
       const wheres: ReturnType<typeof sql>[] = [];
       if (plan.since !== null) wheres.push(sql`"created_at" > ${plan.since}`);
+      if (plan.before !== null) wheres.push(sql`"created_at" < ${plan.before}`);
       for (const [k, v] of plan.equals) {
         wheres.push(
           v === null

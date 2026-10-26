@@ -332,6 +332,7 @@ Background workers (redeploy orchestrator, plugin host, MCP bridge, GC loops) **
 | Standard | Applies to | Notes |
 |---|---|---|
 | **Scale-to-zero default** | Tier 2, Tier 3 | `min_instances: 0`. Operators bump to `1` to eliminate cold starts. |
+| **Request-based CPU** | Tier 2, Tier 3 | CPU only while a request runs (GCP: `cpuIdle: true`, set explicitly from `SERVICE_CPU_IDLE` — the v2 API reads a missing value as always-on). Background work must not rely on an idle instance's CPU; the admin still does until #1140 moves it to jobs, a scheduler and the plugin host. Clients must not poll the admin on a timer either: every request keeps an instance up. |
 | **Single LB / Front Door / ALB** | Tier 1, Tier 3 | One TLS cert, one IP, one URL map covering both. Don't provision separate LBs per tier. |
 | **Secrets in cloud-native secret manager** | All tiers | Never env-var literal. Cloud Run reads via `secret_environment_variables` mounts; equivalents on AWS/Azure. |
 | **Logs to a single sink** | All tiers | Cloud Logging / CloudWatch / Log Analytics. The analytics plugin queries the sink for edge-event analytics; one sink keeps that query simple. |

@@ -52,7 +52,7 @@ describe("findings shape", () => {
       severity: "warning",
       pageId: P1,
       message: "Label: detail",
-      fix: { tool: "edit_module", hint: "do it" },
+      fix: { tool: "update_modules_many", hint: "do it" },
     };
     expect(findingSchema.safeParse(ok).success).toBe(true);
     expect(findingSchema.safeParse({ ...ok, severity: "fatal" }).success).toBe(false);

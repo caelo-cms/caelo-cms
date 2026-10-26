@@ -118,8 +118,8 @@ test("the pinned chat column never covers the toolbar while the cross-chat banne
       {
         kind: "tool-call",
         id: `tu_bt_${ts}`,
-        name: "edit_module",
-        arguments: { moduleId: ids.mod, html: "<h1>BANNER_TOOLBAR_EDITED</h1>" },
+        name: "update_modules_many",
+        arguments: { items: [{ moduleId: ids.mod, html: "<h1>BANNER_TOOLBAR_EDITED</h1>" }] },
       },
       { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
       { kind: "done", stopReason: "tool_use" },

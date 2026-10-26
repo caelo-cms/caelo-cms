@@ -52,11 +52,10 @@ describe("isWriteTool", () => {
   it("counts real mutations as work", () => {
     for (const name of [
       "build_page",
-      "edit_module",
       "update_modules_many",
       "add_module",
       "add_module_to_layout",
-      "set_page_module_content",
+      "set_page_module_content_many",
       "import_media_from_urls",
       "set_theme_tokens",
       "edit_content",

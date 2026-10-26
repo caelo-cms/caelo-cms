@@ -38,7 +38,7 @@ export const removeModuleFromTool: ToolDefinitionWithHandler<RemoveModuleFromToo
     "The module row itself is NOT deleted, only the reference — it stays available for reuse. " +
     "target='page' drops the page-level reference (from whatever block it's in). " +
     "target='layout' detaches site-wide chrome from every block on the layout ('remove the footer from every page'). " +
-    "To replace a module's content, prefer `edit_module` (keeps the slot) over remove + add.",
+    "To replace a module's content, prefer `update_modules_many` (keeps the slot) over remove + add.",
   schema: removeModuleFromToolInput,
   inputSchema: {
     type: "object",

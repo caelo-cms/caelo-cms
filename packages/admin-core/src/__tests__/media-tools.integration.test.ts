@@ -14,7 +14,7 @@ import { SQL } from "bun";
 import type { ToolContext } from "../ai/tools/dispatch.js";
 import { findMediaTool } from "../ai/tools/find-media.js";
 import { generateImageTool } from "../ai/tools/generate-image.js";
-import { setMediaAltTool } from "../ai/tools/set-media-alt.js";
+import { setMediaAltManyTool } from "../ai/tools/set-media-alt-many.js";
 import { registerAdminOps } from "../register.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
@@ -114,11 +114,11 @@ describe("find_media", () => {
   });
 });
 
-describe("set_media_alt", () => {
+describe("set_media_alt_many", () => {
   it("writes the alt text on an asset", async () => {
-    const r = await setMediaAltTool.handler(
+    const r = await setMediaAltManyTool.handler(
       SYSTEM,
-      { assetId, alt: "A sunlit cafe storefront" },
+      { items: [{ assetId, alt: "A sunlit cafe storefront" }] },
       toolCtx(),
     );
     expect(r.ok).toBe(true);

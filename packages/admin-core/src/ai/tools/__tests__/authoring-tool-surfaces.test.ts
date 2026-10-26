@@ -23,7 +23,6 @@ import { buildPageTool } from "../build-page.js";
 import { updateModulesManyTool } from "../bulk-pages-modules.js";
 import { createLayoutTool } from "../create-layout.js";
 import { createTemplateTool } from "../create-template.js";
-import { editModuleTool } from "../edit-module.js";
 import { loadSkillTool } from "../load-skill.js";
 import { proposeLayoutUpdateTool, proposeTemplateUpdateTool } from "../propose-tools-batch.js";
 import { getQualityAuditTool } from "../quality-audit-tools.js";
@@ -105,7 +104,7 @@ describe("build_page exposes `position` per module entry", () => {
 describe("module authoring tools say html/css are plain source text (no CDATA)", () => {
   const entryProps = (
     tool: { inputSchema: Record<string, unknown> },
-    nested?: "modules" | "updates",
+    nested?: "modules" | "items",
   ) => {
     const props = tool.inputSchema.properties as Props;
     if (nested === undefined) return props;
@@ -113,14 +112,9 @@ describe("module authoring tools say html/css are plain source text (no CDATA)",
   };
   const cases: [string, Props][] = [
     ["add_module", entryProps(addModuleTool)],
-    ["edit_module", entryProps(editModuleTool)],
     ["build_page", entryProps(buildPageTool, "modules")],
   ];
-  const bulkProps = updateModulesManyTool.inputSchema.properties as Props;
-  const bulkArray = Object.values(bulkProps).find(
-    (p) => (p as { type?: string }).type === "array",
-  ) as { items: { properties: Props } };
-  cases.push(["update_modules_many", bulkArray.items.properties]);
+  cases.push(["update_modules_many", entryProps(updateModulesManyTool, "items")]);
 
   for (const [name, props] of cases) {
     it(`${name}: html, css and js descriptions rule out a CDATA wrapper`, () => {
@@ -162,13 +156,16 @@ describe("authoring tools decode a whole-value CDATA envelope around source text
     expect([out.html, out.css, out.js]).toEqual([html, css, js]);
   });
 
-  it("edit_module and update_modules_many", () => {
-    const one = parsed((i) => editModuleTool.schema.safeParse(i), { moduleId, css: wrap(css) });
-    expect(one.css).toBe(css);
+  it("update_modules_many (a css-only item and a full-body item)", () => {
     const bulk = parsed((i) => updateModulesManyTool.schema.safeParse(i), {
-      updates: [{ moduleId, html: wrap(html), css: wrap(css), js: wrap(js) }],
+      items: [
+        { moduleId, css: wrap(css) },
+        { moduleId, html: wrap(html), css: wrap(css), js: wrap(js) },
+      ],
     });
-    expect((bulk.updates as Record<string, unknown>[])[0]).toMatchObject({ html, css, js });
+    const items = bulk.items as Record<string, unknown>[];
+    expect(items[0]?.css).toBe(css);
+    expect(items[1]).toMatchObject({ html, css, js });
   });
 
   it("build_page module entries", () => {
@@ -227,7 +224,7 @@ describe("authoring tools decode a whole-value CDATA envelope around source text
     const guarded = `/*<![CDATA[*/ ${css} /*]]>*/`;
     expect(moduleUpdateSchema.safeParse({ moduleId, css: guarded }).success).toBe(false);
     expect(
-      updateModulesManyTool.schema.safeParse({ updates: [{ moduleId, css: guarded }] }).success,
+      updateModulesManyTool.schema.safeParse({ items: [{ moduleId, css: guarded }] }).success,
     ).toBe(false);
   });
 });

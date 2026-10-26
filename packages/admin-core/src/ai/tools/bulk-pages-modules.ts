@@ -10,7 +10,7 @@
  * Tools added here:
  *   - delete_pages_many — operator's "drop these 12 stale blog posts" case.
  *   - update_pages_many — bulk metadata edits (title/slug/status/template).
- *   - update_modules_many — bulk module body edits.
+ *   - update_modules_many — module structure edits (1..N modules).
  *
  * Each wraps the corresponding *_many op (pages.delete_many,
  * pages.update_many, modules.update_many — all soft-delete /
@@ -26,7 +26,11 @@ import {
   sourceTextArg,
 } from "@caelo-cms/shared";
 import { z } from "zod";
+import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
+import { designGuardSuffix } from "./_design-guard.js";
+import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
+import { LIST_FIELD_CONTRACT } from "./_list-tool-kit.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -36,6 +40,7 @@ import {
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
 } from "./_module-js-contract.js";
+import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 import { countMovedUrls, PAGE_MOVE_APPROVAL_THRESHOLD } from "./move-pages.js";
 
@@ -58,7 +63,7 @@ const deletionItem = z
   .refine((v) => v.disposition !== "redirect" || !!v.redirectTo, {
     message: "disposition 'redirect' requires redirectTo",
   });
-const deleteInput = z.object({ deletions: z.array(deletionItem).min(1).max(200) }).strict();
+const deleteInput = z.object({ items: z.array(deletionItem).min(1).max(200) }).strict();
 type DeleteInput = z.infer<typeof deleteInput>;
 
 /**
@@ -90,12 +95,12 @@ async function countDeletedPages(
   toolCtx: ToolContext,
   input: DeleteInput,
 ): Promise<number> {
-  const cascading = input.deletions.filter((d) => d.children === "delete").map((d) => d.pageId);
-  if (cascading.length === 0) return input.deletions.length;
+  const cascading = input.items.filter((d) => d.children === "delete").map((d) => d.pageId);
+  if (cascading.length === 0) return input.items.length;
   const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.list", {});
   if (!listed.ok) throw new Error(`pages.list failed: ${describeError(listed.error)}`);
   const rows = (listed.value as { pages: { id: string; parentPageId: string | null }[] }).pages;
-  const doomed = new Set(input.deletions.map((d) => d.pageId));
+  const doomed = new Set(input.items.map((d) => d.pageId));
   const queue = [...cascading];
   while (queue.length > 0) {
     const id = queue.shift() as string;
@@ -111,16 +116,14 @@ async function countDeletedPages(
 
 export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
   name: "delete_pages_many",
-  description:
-    "Soft-delete pages — the ONE delete tool, for 1 page or 200 (pass a single-item `deletions` array for one page; there is no separate delete_page tool). " +
-    "Use when the operator says 'delete this page', 'delete these N pages', 'drop these stale posts', 'remove the entire {category} tree'. " +
-    "**Each page needs a `disposition` for its dead URL** — never leave that to chance: " +
-    "`'404'` = the old URL returns not-found; `'redirect'` = a 301 from the old URL to `redirectTo` (required for that item). " +
-    "ALWAYS confirm the disposition with the operator, and when proposing 'redirect' suggest a sensible target (parent section, sibling page, or /). " +
-    "Different pages in one call may take different dispositions. Each page emits its own snapshot, so `propose_revert_site` (or individual `revert_page`) restores them. " +
-    "**Pages with child pages** (nested under them) are refused unless the call also deletes all those children, or the item says what happens to them: `children: 'move-up'` (they move to the deleted page's parent, old URLs 301) or `children: 'delete'` (the whole subtree goes, same disposition). Ask the operator which, when it isn't clear. " +
-    "Result: deleted / alreadyDeleted / notFound counts, plus each refused page with the reason. " +
-    `Deleting ${DELETE_PAGES_MANY_APPROVAL_THRESHOLD}+ pages needs one Owner click in chat before the delete runs.`,
+  description: [
+    "Soft-delete pages — the ONLY page delete tool, one call for 1..N pages (`items[]`).",
+    "CORE RULES:",
+    "- Each item needs a `disposition` for its dead URL: ALWAYS confirm it with the operator; for 'redirect' suggest a target (parent section, sibling, `/`). Items may differ.",
+    "- A page with child pages is refused unless the call also deletes all of them or the item sets `children` — ask the operator which when unclear.",
+    `- Deleting ${DELETE_PAGES_MANY_APPROVAL_THRESHOLD}+ pages (subtrees counted) pauses for one Owner click in chat before it runs.`,
+    "- Each page gets its own snapshot (undo: `propose_revert_site` / `propose_revert_page`). Result: deleted/alreadyDeleted/notFound counts + each refused page with its reason.",
+  ].join("\n"),
   // A `children: "delete"` item deletes its whole subtree: count it.
   needsApproval: async (input, ctx, toolCtx) =>
     (await countDeletedPages(ctx, toolCtx, input)) >= DELETE_PAGES_MANY_APPROVAL_THRESHOLD,
@@ -129,15 +132,15 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
   buildApprovalPreview: async (input, ctx, toolCtx) => ({
     op: "delete_pages_many",
     pageCount: await countDeletedPages(ctx, toolCtx, input),
-    samplePageIds: input.deletions.slice(0, 5).map((d) => d.pageId),
+    samplePageIds: input.items.slice(0, 5).map((d) => d.pageId),
   }),
   schema: deleteInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["deletions"],
+    required: ["items"],
     properties: {
-      deletions: {
+      items: {
         type: "array",
         minItems: 1,
         maxItems: 200,
@@ -150,21 +153,20 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
             disposition: {
               type: "string",
               enum: ["404", "redirect"],
-              description:
-                "What the dead URL does: '404' = not-found; 'redirect' = 301 to redirectTo.",
+              description: "'404' = not-found; 'redirect' = 301 to `redirectTo`.",
             },
             redirectTo: {
               type: "string",
               minLength: 1,
               maxLength: 500,
               description:
-                "Required when disposition='redirect' — the 301 target: a path on this site starting with a single '/' (e.g. '/blog'). Never a full URL or '//host'; external targets are not supported.",
+                "Required for 'redirect': path on this site starting with a single '/' (e.g. '/blog'); never a full URL or '//host'.",
             },
             children: {
               type: "string",
               enum: ["refuse", "move-up", "delete"],
               description:
-                "Only for a page that has child pages: 'move-up' moves them to this page's parent (301s), 'delete' deletes the whole subtree. Default 'refuse'.",
+                "For a page with child pages: 'move-up' -> to this page's parent (old URLs 301); 'delete' -> whole subtree, same disposition.",
             },
           },
         },
@@ -172,7 +174,9 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.delete_many", input);
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.delete_many", {
+      deletions: input.items,
+    });
     if (!r.ok) {
       return { ok: false, content: `pages.delete_many failed: ${describeError(r.error)}` };
     }
@@ -182,7 +186,7 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
       notFound: number;
       refused: { pageId: string; reason: string }[];
     };
-    const redirected = input.deletions.filter((d) => d.disposition === "redirect").length;
+    const redirected = input.items.filter((d) => d.disposition === "redirect").length;
     const refused =
       v.refused.length > 0
         ? `\nNot deleted:\n${v.refused.map((f) => `- ${f.pageId}: ${f.reason}`).join("\n")}`
@@ -214,7 +218,7 @@ const pageUpdateItem = z
     terms: pageUpdateSchema.shape.terms,
   })
   .strict();
-const updateInput = z.object({ updates: z.array(pageUpdateItem).min(1).max(200) }).strict();
+const updateInput = z.object({ items: z.array(pageUpdateItem).min(1).max(200) }).strict();
 type UpdateInput = z.infer<typeof updateInput>;
 
 /** URLs the renames in an update_pages_many call move, summed per item. */
@@ -224,7 +228,7 @@ async function countRenamedUrls(
   input: UpdateInput,
 ): Promise<number> {
   let total = 0;
-  for (const u of input.updates) {
+  for (const u of input.items) {
     if (u.slug === undefined) continue;
     total += (await countMovedUrls(ctx, toolCtx, [{ pageId: u.pageId, newSlug: u.slug }])).count;
   }
@@ -233,20 +237,14 @@ async function countRenamedUrls(
 
 export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
   name: "update_pages_many",
-  description:
-    "Edit page metadata — the ONE tool for it, for 1 page or 200 (pass a single-item `updates` array for one page; there is no separate rename/retitle/reslug tool). " +
-    "Use for 'rename this page', 'change the browser-tab title', 'move this to /pricing', 'archive all draft posts', 'move these pages to the {tpl} template', 'these posts are news articles', 'file this article under Product updates'. " +
-    "**What a page IS:** `pageType` (slug from list_page_types — e.g. turn a plain page into a `news` article; pass `templateId` too when the current template is not one of the new type's templates), `properties` (the page type's fields; merged, null removes one) and `terms` (REPLACES the page's terms: caelo:term/<listId>/<itemId> from the type's vocabularies — get_list on the categories / tags list shows the entry ids). Page queries ('latest news', 'articles in this category') filter on these. " +
-    "**A page has THREE independently-editable identifiers — never substitute one for another:** " +
-    "`name` = the internal editor label (page picker / breadcrumbs; not public), " +
-    "`title` = the HTML <title> tag (browser tab + search results), " +
-    "`slug` = the URL path. If the operator just says 'rename' without saying which, ASK before guessing — 'rename' usually means `name`. " +
-    "**Changing `slug` moves the page's public URL — and the URL of every page nested below it**: a 301 from each old URL is created automatically in the same transaction, for links from outside the site. Links on this site (nav menus, link lists, modules, content) follow the page on their own — do not update them after a rename. " +
-    `A rename that moves ${PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs (the page plus its subtree) needs one Owner click in chat before it runs. ` +
-    "To put a page under another page (or back at the top level) use move_pages, not this tool. " +
-    "Pass `redirectFromOld: 'skip'` ONLY when the operator explicitly says the old URL should 404 — the default keeps inbound links alive. " +
-    "Per-item failures (not-found, version conflict) are reported; the rest of the batch still applies. " +
-    "DO NOT use for SEO sidecar (`pages_seo.set_many`) or modules (`update_modules_many`) — those have their own bulk tools.",
+  description: [
+    "Edit page metadata — the ONLY tool for it, one call for 1..N pages (`items[]`): rename, retitle, reslug, status, template, page type, properties, terms.",
+    "DO NOT USE FOR: nesting under another page / back to top level -> `move_pages`; SEO -> `set_page_seo_many`; modules -> `update_modules_many`.",
+    "CORE RULES:",
+    "- THREE independent identifiers, never substitute one for another: `name` (internal editor label), `title` (HTML <title>), `slug` (URL). Operator says only 'rename' -> ASK which (usually `name`).",
+    `- Changing \`slug\` moves the page's URL AND every nested page's URL; a 301 from each old URL is created in the same transaction. On-site links (menus, link lists, modules, content) follow automatically — do not update them. A slug change moving ${PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs (page + subtree) pauses for one Owner click in chat.`,
+    "- Items apply independently: per-item failures (not found, version conflict) are reported, the rest still applies.",
+  ].join("\n"),
   // §11.A — a rename of a page with a large subtree moves every URL below
   // it; same gate + threshold as move_pages (see move-pages.ts).
   // Items apply independently (one refused rename does not stop the
@@ -262,9 +260,9 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["updates"],
+    required: ["items"],
     properties: {
-      updates: {
+      items: {
         type: "array",
         minItems: 1,
         maxItems: 200,
@@ -279,20 +277,19 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
               type: "string",
               minLength: 1,
               maxLength: 256,
-              description: "Internal editor label (page picker / breadcrumbs). Not public.",
+              description: "Internal editor label (page picker / breadcrumbs); not public.",
             },
             title: {
               type: "string",
               minLength: 1,
               maxLength: 256,
-              description: "HTML <title> — browser tab + search results.",
+              description: "HTML <title>: browser tab + search results.",
             },
             slug: {
               type: "string",
               minLength: 1,
               maxLength: 120,
-              description:
-                "URL path. Changing it auto-creates a 301 from the old URL; links on the site follow the page automatically.",
+              description: "URL path segment.",
             },
             templateId: { type: "string", format: "uuid" },
             status: { type: "string", enum: ["draft", "published", "archived"] },
@@ -300,7 +297,7 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
               type: "string",
               pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
               description:
-                "Page type slug (list_page_types). The template must be one of the type's templates — pass templateId too when it is not.",
+                "What the page IS (slug from `list_page_types`, e.g. `news`); page queries ('latest news', 'articles in this category') filter on type/properties/terms. Template must be one of the type's templates — else pass `templateId` too.",
             },
             properties: {
               type: "object",
@@ -313,13 +310,13 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
               maxItems: 100,
               items: { type: "string", pattern: "^caelo:term/[0-9a-f-]{36}/[0-9a-f-]{36}$" },
               description:
-                "REPLACES the page's terms: caelo:term/<listId>/<itemId> of the page type's vocabularies (categories, tags). [] clears them.",
+                "REPLACES the page's terms: caelo:term/<listId>/<itemId> from the page type's vocabularies (categories, tags; `get_list` shows entry ids). [] clears.",
             },
             redirectFromOld: {
               type: "string",
               enum: ["auto", "skip"],
               description:
-                "Only with `slug`. 'skip' suppresses the 301 — use only if the operator says the old URL should 404.",
+                "Only with `slug`. 'skip' = no 301; ONLY when the operator explicitly says the old URL should 404.",
             },
           },
         },
@@ -327,7 +324,9 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.update_many", input);
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages.update_many", {
+      updates: input.items,
+    });
     if (!r.ok) {
       return { ok: false, content: `pages.update_many failed: ${describeError(r.error)}` };
     }
@@ -349,44 +348,98 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
 
 // ─── update_modules_many ─────────────────────────────────────────────
 
-// audit #4 follow-up — reuse the shared `moduleUpdateSchema` (the SAME schema
-// modules.update / modules.update_many validate against) rather than a
-// hand-written subset. The old subset was `{moduleId, displayName, html, css,
-// js}` — it `.strict()`-rejected `description`/`kind`/`type`/`fields` before
-// they reached the op that DOES support them, so a bulk edit could not change
-// a module's field schema or metadata and the AI had to fall back to N×
-// edit_module (the exact N+1 chain the bulk tool exists to replace). Reusing
-// the shared schema means the tool can never be a subset of the op again.
-// The source fields additionally decode whole-value transport encodings
-// (CDATA, JSON string literal, HTML-escaped), like every other AI authoring
-// surface (`sourceTextArg`); the op's own checks still apply to the result.
-const moduleUpdateItem = moduleUpdateSchema.extend({
-  html: sourceTextArg(moduleUpdateSchema.shape.html.unwrap()).optional(),
-  css: sourceTextArg(moduleUpdateSchema.shape.css.unwrap()).optional(),
-  js: sourceTextArg(moduleUpdateSchema.shape.js.unwrap()).optional(),
-});
-const moduleUpdateInput = z.object({ updates: z.array(moduleUpdateItem).min(1).max(200) }).strict();
+// The ONE module-structure write tool (the former singular edit_module is
+// its n=1 case — retired-tools.ts maps old calls here). Items reuse the
+// shared `moduleUpdateSchema` (the SAME schema modules.update /
+// modules.update_many validate against), so the tool can never be a subset
+// of the op. Source fields decode whole-value transport encodings (CDATA,
+// JSON string literal, HTML-escaped) like every other AI authoring surface
+// (`sourceTextArg`); the op's own checks still apply to the result. An item
+// that changes nothing is refused before any lookup (e2e-livedit run
+// 40351690739: a bare placeholder moduleId came back as "module not found").
+const moduleUpdateItem = moduleUpdateSchema
+  .extend({
+    html: sourceTextArg(moduleUpdateSchema.shape.html.unwrap()).optional(),
+    css: sourceTextArg(moduleUpdateSchema.shape.css.unwrap()).optional(),
+    js: sourceTextArg(moduleUpdateSchema.shape.js.unwrap()).optional(),
+    bindThemeLiterals: z.boolean().optional(),
+  })
+  .strict()
+  .refine((v) => Object.keys(v).some((k) => k !== "moduleId" && k !== "bindThemeLiterals"), {
+    message:
+      "this item changes nothing: pass what to change (html, css, js, fields, displayName, description, kind or type). list_modules shows the modules; add_module creates a new one.",
+  });
+const moduleUpdateInput = z.object({ items: z.array(moduleUpdateItem).min(1).max(200) }).strict();
 type ModuleUpdateInput = z.infer<typeof moduleUpdateInput>;
+type ModuleUpdateItem = z.infer<typeof moduleUpdateItem>;
+
+/** What modules.update_many reports (see ops/content/modules.ts). */
+interface ModuleUpdateManyResult {
+  readonly updated: number;
+  readonly notFoundIds: readonly string[];
+  readonly failed: readonly { moduleId: string; message: string }[];
+  readonly extracted: readonly { moduleId: string; fields: { name: string; kind: string }[] }[];
+}
+
+/**
+ * The hint for an item whose html came without `fields[]`: the extractor
+ * minted heuristic names, which pollute the `list_modules` catalog the AI
+ * later picks modules from (CLAUDE.md §1A). Names them verbatim so the next
+ * call can rename them.
+ */
+export function extractedFieldsHint(fields: readonly { name: string; kind: string }[]): string {
+  const list = fields.map((f) => `${f.name} (${f.kind})`).join(", ");
+  return (
+    ` Extractor fallback used — heuristic field names: ${list}. Next time author \`html\` + \`fields\` together ` +
+    "with semantic snake_case names (e.g. `hero_title`, `primary_cta_href`) so the `list_modules` catalog stays useful; " +
+    "rename them now with a follow-up update_modules_many item carrying explicit `fields` if they are confusing."
+  );
+}
+
+/**
+ * Per-item post-write notes for an updated module: theme-binding report,
+ * unknown css vars against the active theme, and the static design-guard
+ * findings (scope, literals, kit ids, markup reuse) — the same checks the
+ * singular edit ran, now per item.
+ */
+async function updatedItemNotes(
+  ctx: ExecutionContext,
+  toolCtx: ToolContext,
+  item: ModuleUpdateItem,
+  writtenCss: string | undefined,
+  bindingReport: string,
+): Promise<string> {
+  const cssWarn = await cssVarWarningSuffix(ctx, toolCtx, writtenCss);
+  const guard = await designGuardSuffix(ctx, toolCtx, {
+    css: writtenCss,
+    ...(item.html !== undefined
+      ? { html: item.html, excludeModuleIds: [item.moduleId] }
+      : { scopeModuleId: item.moduleId }),
+  });
+  return `${bindingReport}${cssWarn}${guard}`;
+}
 
 export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput> = {
   name: "update_modules_many",
-  description:
-    "Bulk module body edits across 1–200 modules in one tool call. " +
-    "Use when the operator says 'change the CTA in these 5 hero modules', 'fix the typo across these footer modules', " +
-    "'apply this CSS tweak to all card modules'. " +
-    "Each item is the FULL `edit_module` shape (moduleId + optional displayName/description/kind/type/html/css/js/fields) — " +
-    "including `fields` and `kind`/`description`, so a bulk edit can restructure a module's field schema, not just its body. " +
-    "Per-item failures are reported but the rest of the batch still applies. " +
-    "Prefer this over multiple `edit_module` calls when targeting > 1 module. Each updated module emits its own " +
-    "snapshot, so revert_module (or revert_site) can undo the lot. " +
-    "`list` fields take the same shape as in edit_module (listType, bind local | shared | source, list, source, default).",
+  description: [
+    "Edit module structure (`html`, `fields`, `css`, `js`, `displayName`, `description`, `kind`, `type`) — one call for 1..N modules (`items[]`). Every page using a module follows; edits are chat-branched until publish.",
+    "USE FOR: wholesale rewrites, brand-new module bodies, changes to `fields`/`displayName`/`kind`/`type`/`description`, the same fix across several modules.",
+    "DO NOT USE FOR: a TARGETED change to existing `html`/`css`/`js` -> PREFER `edit_content` (surgical string-replace: cheaper, reviewable diff); page/instance content -> `set_page_module_content_many` (per page) or `set_content_instance_values_many` (shared); page metadata -> `update_pages_many`; templates -> `propose_update_template`.",
+    "CORE RULES:",
+    "- AUTHOR EXPLICITLY: `html` with `{{field_name}}` placeholders + explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`). Never omit `fields[]`, never heuristic names (`cta2label2`, `spanText`).",
+    '- LISTS ARE LISTS, NOT NUMBERED SCALARS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:"texts"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.',
+    "- KEEP METADATA FRESH: update `description` + `kind` whenever a module's purpose drifts (`list_modules` relies on them).",
+    "- Items apply independently: a failed item (not found, draft conflict, invalid field) is reported with its reason and the rest still commits; nothing updated -> error. Each module gets its own snapshot.",
+    LIST_FIELD_CONTRACT.trim(),
+    INTERNAL_LINK_CONTRACT.trim(),
+  ].join("\n"),
   schema: moduleUpdateInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["updates"],
+    required: ["items"],
     properties: {
-      updates: {
+      items: {
         type: "array",
         minItems: 1,
         maxItems: 200,
@@ -397,38 +450,76 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
           properties: {
             moduleId: { type: "string", format: "uuid" },
             displayName: { type: "string", minLength: 1, maxLength: 256 },
-            // Same shared meta + fields schemas add_module / edit_module use —
-            // so the bulk tool exposes the identical authoring surface.
+            // Same shared meta + fields schemas add_module / build_page use —
+            // one authoring surface across the module tools.
             ...MODULE_META_JSON_SCHEMA_PROPS,
-            html: { type: "string", description: MODULE_HTML_DESCRIPTION },
-            css: { type: "string", description: MODULE_CSS_DESCRIPTION },
+            html: {
+              type: "string",
+              description: `${MODULE_HTML_DESCRIPTION} Placeholders: \`{{field}}\` primitives, \`{{>field}}\` single nested \`module\`, \`{{#field}}…{{/field}}\` \`list\` and \`module-list\`. Accordion, tabs, carousel, mobile-nav -> \`data-caelo-ui\` markup (see \`js\`) instead of custom JS.`,
+            },
+            css: {
+              type: "string",
+              description: `${MODULE_CSS_DESCRIPTION} MUST scope every selector under the module's root class — bare selectors (\`body\`, \`h1\`, \`.card\`) bleed into other modules and are flagged.`,
+            },
             js: { type: "string", description: MODULE_JS_CONTRACT },
             fields: MODULE_FIELDS_JSON_SCHEMA,
+            bindThemeLiterals: {
+              type: "boolean",
+              description:
+                "Rewrite CSS literals matching a theme token into `var(--…)`. Default true — omit unless keeping a deliberate off-palette literal.",
+            },
           },
         },
       },
     },
   },
   handler: async (ctx, input, toolCtx) => {
-    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.update_many", input);
+    // Mechanical token binding before the write, per item (on unless the
+    // item passes `bindThemeLiterals: false`); the flag never reaches the op.
+    const opItems: Record<string, unknown>[] = [];
+    const bindingReports: string[] = [];
+    for (const item of input.items) {
+      const { bindThemeLiterals, ...opItem } = item;
+      if (bindThemeLiterals !== false && typeof opItem.css === "string") {
+        const bound = await bindCssToTheme(ctx, toolCtx, opItem.css);
+        opItems.push({ ...opItem, css: bound.css });
+        bindingReports.push(bound.report);
+      } else {
+        opItems.push(opItem);
+        bindingReports.push("");
+      }
+    }
+    const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "modules.update_many", {
+      updates: opItems,
+    });
     if (!r.ok) {
       return { ok: false, content: `modules.update_many failed: ${describeError(r.error)}` };
     }
-    const v = r.value as {
-      updated: number;
-      notFound: number;
-      failed: { moduleId: string; message: string }[];
-    };
-    // #1038 — each failed item with its reason, so the AI can fix exactly
-    // that item (re-read after a draft conflict, correct a field) instead
-    // of guessing from a bare id list.
-    const failLines = v.failed.map((f) => `\n- ${f.moduleId}: ${f.message}`).join("");
-    const failMsg = v.failed.length > 0 ? `, failed=${v.failed.length}` : "";
-    return {
-      ok: true,
-      content: `Updated ${v.updated} modules (notFound=${v.notFound}${failMsg}).${
-        v.failed.length > 0 ? `\nNot applied:${failLines}` : ""
-      }`,
-    };
+    const v = r.value as ModuleUpdateManyResult;
+    const notFound = new Set(v.notFoundIds);
+    const failedById = new Map(v.failed.map((f) => [f.moduleId, f.message]));
+    const extractedById = new Map(v.extracted.map((e) => [e.moduleId, e.fields]));
+    // #1038 — one line per item with its outcome, so the AI fixes exactly
+    // the failed item (re-read after a draft conflict, correct a field).
+    const lines: string[] = [];
+    for (const [i, item] of input.items.entries()) {
+      if (notFound.has(item.moduleId)) {
+        lines.push(`- ${item.moduleId}: module not found — check the id with list_modules.`);
+        continue;
+      }
+      const failure = failedById.get(item.moduleId);
+      if (failure !== undefined) {
+        lines.push(`- ${item.moduleId}: not applied — ${failure}`);
+        continue;
+      }
+      const writtenCss = opItems[i]?.css as string | undefined;
+      const notes = await updatedItemNotes(ctx, toolCtx, item, writtenCss, bindingReports[i] ?? "");
+      const extracted = extractedById.get(item.moduleId);
+      lines.push(
+        `- ${item.moduleId}: updated${notes}${extracted && extracted.length > 0 ? extractedFieldsHint(extracted) : ""}`,
+      );
+    }
+    const summary = `Updated ${v.updated} of ${input.items.length} module(s) (notFound=${notFound.size}, failed=${v.failed.length}).`;
+    return { ok: v.updated > 0, content: `${summary}\n${lines.join("\n")}` };
   },
 };

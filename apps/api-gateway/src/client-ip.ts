@@ -109,3 +109,12 @@ export function clientAddress(req: Request, hops: number, peerAddress: string | 
   }
   return ip;
 }
+
+/**
+ * Non-reversible bucket key for a client address: the rate-limit buckets
+ * are keyed by it, so no raw IP lands in `gateway_rate_limit_buckets`.
+ * SHA-256 hex (64 chars) — no 32-bit birthday bound between addresses.
+ */
+export function hashClientAddress(address: string): string {
+  return new Bun.CryptoHasher("sha256").update(address).digest("hex");
+}

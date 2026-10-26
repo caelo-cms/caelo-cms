@@ -783,7 +783,7 @@ export const countBranchChangesOp = defineOperation({
       layoutChrome: z.number().int().nonnegative(),
       /**
        * v0.12.0 — content_instance row-level edits on this branch
-       * (`create_content_instance`, `set_content_instance_values`,
+       * (`create_content_instances`, `set_content_instance_values_many`,
        * `unsync_placement` / `resync_placement` snapshot bumps).
        * Before this entry was added, a re-edit chat that only touched
        * a placement's content_instance.values rendered the toolbar
@@ -827,7 +827,7 @@ export const countBranchChangesOp = defineOperation({
         (SELECT COUNT(DISTINCT page_module_content_id)::int FROM page_module_content_snapshots WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS page_module_content,
         (SELECT COUNT(*)::int FROM branch WHERE op_kind = 'layout_modules.set') AS layout_chrome,
         -- v0.12.0 — see byKind.contentInstances doc above. Dedupe by
-        -- content_instance_id so multiple set_content_instance_values
+        -- content_instance_id so multiple set_content_instance_values_many
         -- calls on the same row count as one change for toolbar UX.
         (SELECT COUNT(DISTINCT content_instance_id)::int
            FROM content_instance_snapshots

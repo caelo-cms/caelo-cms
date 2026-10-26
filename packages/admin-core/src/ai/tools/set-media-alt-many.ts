@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Bulk variant of `set_media_alt` — replaces alt text on N assets in one
- * transaction. Built from the `makeBulkTool` factory; dispatches
- * `media.update_alt_many`. All-or-nothing: any invalid item aborts the batch.
+ * AI tool: set_media_alt_many — replaces alt text on 1..N assets in one
+ * transaction (the former singular set_media_alt is its n=1 case;
+ * retired-tools.ts maps old calls here). Built from the `makeBulkTool`
+ * factory; dispatches `media.update_alt_many`. All-or-nothing.
  */
 
 import { setMediaAltToolInput } from "@caelo-cms/shared";
@@ -11,9 +12,10 @@ import { makeBulkTool } from "./_make-bulk-tool.js";
 
 export const setMediaAltManyTool = makeBulkTool({
   name: "set_media_alt_many",
-  description:
-    "Replace alt text on SEVERAL assets in ONE transaction — prefer this over multiple `set_media_alt` calls whenever you improve a11y on more than one image (§11 bulk-first). All-or-nothing: any invalid item aborts the whole batch. " +
-    "Same rule as the singular tool: if you don't know what an image depicts, do NOT invent alt text — leave that item out. Each item is `{assetId, alt}`; the assetId is the media UUID from a `find_media` row's `id` column (or an `import_media_from_urls` / `generate_image` result).",
+  description: [
+    "Replace assets' alt text — one call for 1..N assets (`items[]`), one all-or-nothing transaction — when you have visual context (or an a11y request) and the alt is missing/unhelpful.",
+    "Never invent alt for an image you can't identify — leave that item out. `assetId`: `id` from `find_media` (or an `import_media_from_urls`/`generate_image` result).",
+  ].join("\n"),
   itemInputSchema: setMediaAltToolInput,
   itemJsonSchema: {
     type: "object",

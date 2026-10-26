@@ -4,13 +4,16 @@
  * @caelo-cms/plugin-forms — Tier-1 plugin: contact + generic form submissions.
  *
  * P12 PR2.1 — first visitor-facing plugin built on the SDK that P11/P11.5/P12
- * pioneered. Validates ctx.query (cms_public RLS-scoped writes), ctx.visitor
- * (records who submitted), ctx.captcha (P12 stub), gateway dispatch via
+ * pioneered. Validates ctx.query (cms_public RLS-scoped writes), ctx.captcha,
+ * gateway dispatch via
  * `POST /api/plugin/forms/submit`, and chat-runner tool registration.
  *
  * Schema (cms_public.plugin_forms.*):
  *   forms              — form definitions (slug, fields)
- *   form_submissions   — visitor-supplied data, status, visitor id
+ *   form_submissions   — visitor-supplied data, status. No visitor id: a
+ *                        submission is answered by what it says, so the
+ *                        plugin declares no consent purpose and never
+ *                        reads `ctx.visitor.id`.
  *
  * Operations:
  *   submit             — PUBLIC. Visitor calls via gateway. Captcha-gated.
@@ -89,8 +92,6 @@ interface SubmissionRow {
   id: string;
   form_slug: string;
   page_id: string | null;
-  /** Null when the visitor had not consented to the visitor-id cookie (#677). */
-  visitor_id: string | null;
   data: Record<string, unknown>;
   status: string;
   submitted_at: string;
@@ -112,7 +113,6 @@ export default definePlugin<PluginContextTier1>({
       id: "uuid",
       form_slug: "string",
       page_id: "string",
-      visitor_id: "string",
       data: "jsonb",
       status: "enum:new,read,archived,spam",
       submitted_at: "timestamp",
@@ -130,9 +130,7 @@ export default definePlugin<PluginContextTier1>({
      *
      * 1. Captcha gate (P12 stub passes everything in dev; P13 hardens).
      * 2. Verify the form definition exists.
-     * 3. Insert into form_submissions with visitor_id from ctx.visitor —
-     *    null when the visitor has not consented to the visitor-id
-     *    cookie (#677); a submission never needs it.
+     * 3. Insert into form_submissions.
      */
     submit: async (ctx, args) => {
       const input = args as SubmitInput;
@@ -157,7 +155,6 @@ export default definePlugin<PluginContextTier1>({
       const r = await ctx.query.insert("form_submissions", {
         form_slug: input.formSlug,
         page_id: input.pageId ?? "",
-        visitor_id: ctx.visitor.id,
         data: input.data,
         status: honeypotTripped ? "spam" : "new",
       });
@@ -285,6 +282,103 @@ export default definePlugin<PluginContextTier1>({
       return { summary: completion.text, totalConsidered: rows.length };
     },
   },
+  /** The submissions inbox in the admin (rendered from this declaration). */
+  adminPanels: [
+    {
+      slug: "submissions",
+      title: "Form submissions",
+      description: "Messages visitors sent through your forms.",
+      icon: "inbox",
+      permission: "settings.write",
+      sections: [
+        {
+          kind: "table",
+          id: "inbox",
+          title: "Inbox",
+          description:
+            "New submissions arrive as new; mark them read or archive them once handled.",
+          operation: "list_submissions",
+          args: { limit: 200 },
+          rowsKey: "submissions",
+          rowKey: "id",
+          emptyMessage: "No submissions in this view.",
+          filters: [
+            {
+              arg: "status",
+              label: "Status",
+              allLabel: "All",
+              options: [
+                { value: "new", label: "New" },
+                { value: "read", label: "Read" },
+                { value: "archived", label: "Archived" },
+                { value: "spam", label: "Spam" },
+              ],
+            },
+          ],
+          columns: [
+            { key: "form_slug", label: "Form", format: "text" },
+            { key: "submitted_at", label: "Submitted", format: "datetime" },
+            {
+              key: "status",
+              label: "Status",
+              format: "badge",
+              badgeVariants: { new: "default", read: "secondary", spam: "destructive" },
+            },
+            { key: "data", label: "Data", format: "json" },
+          ],
+          rowActions: [
+            {
+              id: "mark-read",
+              label: "Mark read",
+              operation: "mark_read",
+              variant: "secondary",
+              rowArgs: { submissionId: "id" },
+              when: [{ key: "status", in: ["new"] }],
+              successMessage: "Marked as read.",
+            },
+            {
+              id: "archive",
+              label: "Archive",
+              operation: "archive",
+              variant: "outline",
+              rowArgs: { submissionId: "id" },
+              when: [{ key: "status", notIn: ["archived"] }],
+              successMessage: "Archived.",
+            },
+          ],
+          bulkActions: [
+            {
+              id: "read-selected",
+              label: "Mark selected read",
+              operation: "set_submission_status",
+              args: { status: "read" },
+              idsArg: "submissionIds",
+              variant: "secondary",
+              successMessage: "Marked {updated} submissions as read.",
+            },
+            {
+              id: "archive-selected",
+              label: "Archive selected",
+              operation: "set_submission_status",
+              args: { status: "archived" },
+              idsArg: "submissionIds",
+              variant: "outline",
+              successMessage: "Archived {updated} submissions.",
+            },
+            {
+              id: "spam-selected",
+              label: "Mark selected as spam",
+              operation: "set_submission_status",
+              args: { status: "spam" },
+              idsArg: "submissionIds",
+              variant: "destructive",
+              successMessage: "Marked {updated} submissions as spam.",
+            },
+          ],
+        },
+      ],
+    },
+  ],
   tools: [
     {
       name: "list_form_submissions",

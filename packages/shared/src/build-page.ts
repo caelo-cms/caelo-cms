@@ -43,10 +43,10 @@ const contentValuesSchema = z.record(z.string(), z.unknown());
  * existing content paths so build_page adds NO new semantics, only batching:
  *
  *   - `inline`   → mint a private (unsynced) content_instance carrying
- *     `values`, exactly what `set_page_module_content` produces for a
+ *     `values`, exactly what `set_page_module_content_many` produces for a
  *     fresh placement.
  *   - `shared`   → mint a reusable content_instance (purpose required —
- *     same decision-support contract as `create_content_instance`) and
+ *     same decision-support contract as `create_content_instances`) and
  *     bind this placement to it, `synced` by default.
  *   - `existing` → bind an already-minted content_instance (reuse-first
  *     per CLAUDE.md §1A) — the batched form of `set_placement_content`.
@@ -94,7 +94,7 @@ export type BuildPageContent = z.infer<typeof buildPageContentSchema>;
  *     extra authoring keys are TOLERATED (§1A/§11 — a placement that can
  *     succeed must not fail over an extra field) but NOT applied; the op
  *     surfaces an info naming any carried field whose value differs from the
- *     module's stored one, pointing at edit_module (§2 — no silent drop).
+ *     module's stored one, pointing at update_modules_many (§2 — no silent drop).
  *
  * The element-level superRefine reports issues WITH the element's array
  * index in the Zod path, so a mode error fails as `modules[3]: …`.
@@ -192,7 +192,7 @@ export const buildPageModuleSchema = z
     // (build_page places; it does not re-author a shared module). To avoid a
     // SILENT dropped change (§2), the HANDLER surfaces an INFO in the result
     // naming any ignored authoring field whose value DIFFERS from the module's
-    // stored one, and points at edit_module. The schema can't do that check (no
+    // stored one, and points at update_modules_many. The schema can't do that check (no
     // DB), so it just allows the entry through.
     if (entry.moduleId !== undefined) return;
     if (entry.displayName === undefined || entry.html === undefined) {

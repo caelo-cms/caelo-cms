@@ -98,7 +98,7 @@ export function repeatedValueHints(
   }
   return [...byModule.entries()].map(
     ([moduleId, m]) =>
-      `${m.fields.map((f) => `\`${f}\``).join(", ")} of module "${m.module}" (${moduleId}) now hold the same value in ${m.count} separate private copies — one change later means ${m.count} rewrites. If the value is the same on every page, put it into the module's HTML (edit_module) instead of a field; if the whole section repeats, bind the placements to ONE shared instance (create_content_instance + set_placement_content with syncMode "synced")`,
+      `${m.fields.map((f) => `\`${f}\``).join(", ")} of module "${m.module}" (${moduleId}) now hold the same value in ${m.count} separate private copies — one change later means ${m.count} rewrites. If the value is the same on every page, put it into the module's HTML (update_modules_many) instead of a field; if the whole section repeats, bind the placements to ONE shared instance (create_content_instances + set_placement_content with syncMode "synced")`,
   );
 }
 

@@ -64,6 +64,21 @@
               </ul>
             </section>
           {/if}
+          {#if item.panels.length}
+            <section class="space-y-2" data-testid="installation-panels-{item.slug}">
+              <h3 class="font-semibold">Admin pages this plugin adds</h3>
+              <p class="text-sm">Shown under Plugins in the menu while the plugin is active. Everyone holding the named permission can open the page and use its buttons.</p>
+              <ul class="space-y-2">
+                {#each item.panels as panel (panel.slug)}
+                  <li class="rounded border p-2">
+                    <p class="font-semibold">{panel.title} <span class="font-mono text-xs">needs {panel.permission}</span></p>
+                    <p class="text-sm">{panel.description}</p>
+                    <p class="text-xs">Runs: {panel.operations.join(", ")}</p>
+                  </li>
+                {/each}
+              </ul>
+            </section>
+          {/if}
           <fieldset class="space-y-2"><legend class="font-semibold">Requested access</legend>
             {#each item.manifest.requestedCapabilities ?? [] as capability}
               <label class="flex items-start gap-2"><input type="checkbox" name="capability" value={capability} required />

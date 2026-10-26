@@ -339,3 +339,53 @@ it("preview denies public/private writes and cross-plugin RPC in the real sandbo
     rows: [{ body: "host result" }],
   });
 });
+
+describe("ctx.consentPurposes through the broker (consent_provider)", () => {
+  const HOST_LIST = [
+    {
+      pluginSlug: "ratings",
+      key: "visitor_id",
+      category: "functional",
+      purpose: "One rating per visitor and page.",
+      cookies: [{ name: "caelo_visitor_id", lifetime: "30 days", purpose: "Remembers it." }],
+    },
+  ];
+  const granted = {
+    ...context,
+    consentPurposes: { list: async () => HOST_LIST },
+  } as PluginContext;
+
+  it("is absent without the grant, so no call reaches the host", async () => {
+    expect(await invoke("return typeof ctx.consentPurposes;")).toBe("undefined");
+  });
+
+  it("returns the host's list to a granted plugin", async () => {
+    expect(await invoke("return await ctx.consentPurposes.list();", { context: granted })).toEqual(
+      HOST_LIST,
+    );
+  });
+
+  it("refuses arguments a plugin could use to spoof another plugin's declarations", async () => {
+    const result = await invoke(
+      `
+      const refused = [];
+      for (const args of [
+        [[{ pluginSlug: "ratings", key: "visitor_id", category: "marketing", purpose: "x", cookies: [] }]],
+        [{ pluginSlug: "comments" }],
+      ]) {
+        try { await ctx.consentPurposes.list(...args); } catch (e) { refused.push(e.message); }
+      }
+      // Changing the copy the child received changes nothing host-side.
+      const first = await ctx.consentPurposes.list();
+      first[0].category = "marketing";
+      first.push({ pluginSlug: "auth", key: "tracking" });
+      return { refused, after: await ctx.consentPurposes.list() };
+    `,
+      { context: granted },
+    );
+    expect(result).toEqual({
+      refused: ["SandboxArgumentsInvalid", "SandboxArgumentsInvalid"],
+      after: HOST_LIST,
+    });
+  });
+});

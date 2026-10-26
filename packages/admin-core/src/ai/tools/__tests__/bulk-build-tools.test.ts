@@ -11,9 +11,9 @@
  *     objects the singular authoring tools use (identity, not deep-equal
  *     copies — a copy is exactly the drift issue #106 fought).
  *  3. §11 bulk-first steering — the bulk tools tell the AI when to
- *     prefer them and the singular tools point at the bulk variants for
- *     multi-element work, so the run-#15 singular-chain pattern can't
- *     silently return.
+ *     prefer them, so the run-#15 singular-chain pattern can't silently
+ *     return. (The singular content tools are retired; each bulk tool is the
+ *     only tool for its job.)
  */
 
 import { describe, expect, it } from "bun:test";
@@ -23,10 +23,8 @@ import {
 } from "../_module-fields-schema.js";
 import { addModuleTool } from "../add-module.js";
 import { buildPageTool } from "../build-page.js";
-import { createContentInstanceTool } from "../create-content-instance.js";
 import { createContentInstancesTool } from "../create-content-instances.js";
 import { createDefaultToolRegistry } from "../index.js";
-import { setPageModuleContentTool } from "../set-page-module-content.js";
 import { setPageModuleContentManyTool } from "../set-page-module-content-many.js";
 
 function moduleItemProps(): Record<string, unknown> {
@@ -81,18 +79,9 @@ describe("§11 bulk-first steering wording", () => {
     expect(addModuleTool.description).toContain("more than one module");
   });
 
-  it("create_content_instance points multi-instance work at the plural tool", () => {
-    expect(createContentInstanceTool.description).toContain("create_content_instances");
-    expect(createContentInstanceTool.description).toContain("build_page");
-  });
-
   it("create_content_instances steers back to build_page for full assembly", () => {
     expect(createContentInstancesTool.description).toContain("build_page");
     expect(createContentInstancesTool.description).toContain("All-or-nothing");
-  });
-
-  it("set_page_module_content points multi-placement passes at the _many variant", () => {
-    expect(setPageModuleContentTool.description).toContain("set_page_module_content_many");
   });
 
   it("set_page_module_content_many carries the abort + synced-placement contract", () => {

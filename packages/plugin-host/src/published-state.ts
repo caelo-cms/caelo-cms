@@ -214,14 +214,19 @@ export function makeProjectedAdminQuery(
       filter?: PluginQueryFilter,
     ): Promise<T[]> => {
       const columns = columnsOf(table);
-      const { limit = 100, orderBy, orderDir = "asc", since, ...equals } = filter ?? {};
+      const { limit = 100, orderBy, orderDir = "asc", since, before, ...equals } = filter ?? {};
       for (const k of [...Object.keys(equals), ...(orderBy ? [orderBy] : [])]) {
         if (!columns.has(k)) {
           throw new Error(`${label}.list: column "${k}" is not in visitorProjection.${table}`);
         }
       }
-      if (since !== undefined && !columns.has("created_at")) {
-        throw new Error(`${label}.list: \`since\` needs created_at in visitorProjection.${table}`);
+      for (const [k, v] of [
+        ["since", since],
+        ["before", before],
+      ] as const) {
+        if (v !== undefined && !columns.has("created_at")) {
+          throw new Error(`${label}.list: \`${k}\` needs created_at in visitorProjection.${table}`);
+        }
       }
       if (typeof limit !== "number" || limit <= 0 || limit > 1000) {
         throw new Error(`${label}.list: limit must be 1..1000`);
@@ -245,6 +250,9 @@ export function makeProjectedAdminQuery(
       out = out.filter((r) => Object.entries(equals).every(([k, v]) => sameValue(r[k], v)));
       if (typeof since === "string") {
         out = out.filter((r) => Date.parse(String(r.created_at)) > Date.parse(since));
+      }
+      if (typeof before === "string") {
+        out = out.filter((r) => Date.parse(String(r.created_at)) < Date.parse(before));
       }
       if (typeof orderBy === "string") {
         const dir = orderDir === "desc" ? -1 : 1;

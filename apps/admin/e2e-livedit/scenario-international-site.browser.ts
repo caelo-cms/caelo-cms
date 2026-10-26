@@ -182,7 +182,7 @@ test("übersetze die Seite ins Deutsche — locale gate, /de/ variant, values-le
   // The plugin ships with Caelo but does not run until an Owner says
   // so. Without this click the AI has no locale tools and no i18n
   // skills — it would improvise a "translation" out of duplicate_page
-  // and set_page_module_content, which is exactly what this scenario
+  // and set_page_module_content_many, which is exactly what this scenario
   // caught before the activation state was made hard.
   await activatePluginAsOwner(page, "international-site");
   await page.goto("/edit");

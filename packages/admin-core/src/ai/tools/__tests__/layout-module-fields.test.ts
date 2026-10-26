@@ -90,7 +90,7 @@ describe("findUnrenderableLayoutFields (#106)", () => {
       { name: "copyright", reason: "`copyright` (kind `text`) has no `default`" },
     ]);
     expect(msg).toContain("field DEFAULTS");
-    expect(msg).toContain("Do NOT call create_content_instance");
+    expect(msg).toContain("Do NOT call create_content_instances");
     expect(msg).toContain("add_module");
   });
 });
@@ -131,7 +131,7 @@ describe("add_module (target='layout') handler enforces the guard (#106)", () =>
     expect(res.ok).toBe(false);
     expect(res.content).toContain("field DEFAULTS");
     expect(res.content).toContain("copyright");
-    expect(res.content).toContain("Do NOT call create_content_instance");
+    expect(res.content).toContain("Do NOT call create_content_instances");
   });
 
   it("rejects a module-list field on layout chrome", async () => {

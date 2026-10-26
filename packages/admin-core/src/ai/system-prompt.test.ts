@@ -3,6 +3,7 @@
 import { describe, expect, it } from "bun:test";
 import { composeSystemPromptChunks } from "./system-prompt.js";
 import { buildPageTool } from "./tools/build-page.js";
+import { RETIRED_TOOLS } from "./tools/retired-tools.js";
 
 describe("composeSystemPromptChunks", () => {
   it("emits base + tool-playbook + module-model + staging + memory as cacheable chunks in stable order", () => {
@@ -39,12 +40,16 @@ describe("composeSystemPromptChunks", () => {
     const body = playbook?.body ?? "";
     // One anchor per workflow: create / modify / extend / import.
     expect(body).toContain("`build_page`");
-    expect(body).toContain("`set_page_module_content`");
+    expect(body).toContain("`set_page_module_content_many`");
     expect(body).toContain("`add_module`");
     expect(body).toContain("`propose_site_import`");
     // The discovery instruction: more tools exist + search loads them.
     expect(body).toContain("NOT the full catalogue");
     expect(body).toContain("tool-search tool");
+    // Retired tool names are aliases only; the playbook teaches the live ones.
+    for (const retired of Object.keys(RETIRED_TOOLS)) {
+      expect(body).not.toMatch(new RegExp(`\\b${retired}\\b`));
+    }
   });
 
   it("is fully static — dynamic context never reaches the system prompt", () => {
@@ -142,20 +147,37 @@ describe("composeSystemPromptChunks", () => {
     ]);
   });
 
-  // v0.5.9 — wording-lock: production silent-fail traced to STAGING_BLOCK
-  // tipping the AI into passive ("I've drafted...") responses. The new
-  // shape leads with "make them via the tools below first" and adds an
-  // anti-pattern callout. This test fails if either is regressed.
-  it("staging chunk leads with action and forbids describing-without-doing", () => {
+  // v0.5.9 — wording-lock: production silent-fail traced to the staging
+  // block tipping the AI into passive ("I've drafted...") responses. The
+  // "a reply that only announces work changes nothing" rule now sits in the
+  // base block (it is not about staging), and staging keeps the contract
+  // every write turn needs.
+  it("base forbids announcing without doing; staging keeps the write-turn contract", () => {
     const chunks = composeSystemPromptChunks([]);
-    const staging = chunks.find((c) => c.label === "staging");
-    expect(staging).toBeDefined();
-    const body = staging?.body ?? "";
-    expect(body).toContain("make them via the tools below first");
-    expect(body).toContain("Anti-pattern");
-    expect(body).toContain("describing what you would do without calling tools");
+    const base = chunks.find((c) => c.label === "base")?.body ?? "";
+    expect(base).toContain("a reply that only announces work changes nothing");
+    const staging = chunks.find((c) => c.label === "staging")?.body ?? "";
+    expect(staging).toContain("SHARED DRAFT");
+    expect(staging).toContain("Publish live is always the user's click");
+    expect(staging).toContain("Create pages Stage-ready");
     // Pre-v0.5.9 example response — must NOT come back.
-    expect(body).not.toContain("I've drafted the change");
+    expect(staging).not.toContain("I've drafted the change");
+  });
+
+  // 2026-10 trim — situational rules live where the AI meets them, not in
+  // the cached prefix: the quality target in the fix request + quality
+  // tools (quality/__tests__/gate.test.ts, quality-gate-tools.test.ts),
+  // conflicts and takeovers in the tool results, the overlap question in
+  // undo_this_chat. Their routing stays in the playbook.
+  it("keeps situational rules out of the prompt but routes to their tools", () => {
+    const chunks = composeSystemPromptChunks([]);
+    const all = chunks.map((c) => c.body).join("\n");
+    expect(all).not.toContain("Lighthouse");
+    expect(all).not.toContain("Conflict");
+    const playbook = chunks.find((c) => c.label === "tool-playbook")?.body ?? "";
+    for (const tool of ["`start_isolated_branch`", "`undo_this_chat`", "`check_links`"]) {
+      expect(playbook).toContain(tool);
+    }
   });
 
   // Epic #1107 — the operator says "menu", "footer links", "categories";
@@ -169,12 +191,11 @@ describe("composeSystemPromptChunks", () => {
     expect(model).toContain(
       "a menu, the navigation, footer links, categories and tags are each a SHARED list",
     );
-    expect(model).toContain("there are no menu tools");
     expect(model).toContain("**local**");
     expect(model).toContain("**shared**");
     expect(model).toContain("**source**");
-    expect(model).toContain("promote_local_list");
-    expect(model).toContain("**Page types**");
+    expect(playbook).toContain("`promote_local_list`");
+    expect(model).toContain("**page type**");
     expect(model).toContain("`term_pages`");
     expect(model).toContain("{{#is_current}}");
     expect(playbook).toContain("`patch_list_items_many`");

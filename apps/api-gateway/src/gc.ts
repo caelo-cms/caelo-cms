@@ -6,7 +6,7 @@
  * The admin's redeploy orchestrator used to sweep the gateway's tables,
  * which meant a scaled-to-zero admin left them growing while the public
  * side kept writing. They live in cms_public now, so the gateway sweeps
- * them itself, hourly, expired rows only — the cms_public RLS policies
+ * them itself, at most hourly, expired rows only — the cms_public RLS policies
  * (migration 0280) let public_role delete nothing younger than these
  * windows, whatever this code asks for.
  *
@@ -14,6 +14,10 @@
  * as the `system` actor, not Query API ops: housekeeping of the gateway's
  * own expired rows takes no input and changes nothing anyone authored, so
  * there is nothing to validate or attribute; RLS bounds it either way.
+ *
+ * The sweep runs inside a request, not on a timer: the gateway gets CPU only
+ * while it handles one (Cloud Run request-based CPU, stack-contract.ts
+ * SERVICE_CPU_IDLE), and the rows only grow when requests arrive anyway.
  */
 
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
@@ -45,13 +49,30 @@ export async function sweepGatewayState(adapter: DatabaseAdapter): Promise<void>
   });
 }
 
-/** Sweep hourly for the process lifetime; a failed sweep is logged and retried next hour. */
-export function startGatewayStateGc(adapter: DatabaseAdapter): void {
-  setInterval(() => {
-    sweepGatewayState(adapter).catch((e: unknown) => {
+/**
+ * Returns a function that runs `sweep` when the last one started at least
+ * `intervalMs` ago, and resolves at once otherwise — also while another
+ * request's sweep is still running, so at most one request per interval
+ * waits on it. A failed sweep is logged and retried after the interval.
+ */
+export function dueSweeper(
+  sweep: () => Promise<void>,
+  intervalMs = GC_INTERVAL_MS,
+  now: () => number = Date.now,
+): () => Promise<void> {
+  let lastStartedAt: number | null = null;
+  return async () => {
+    if (lastStartedAt !== null && now() - lastStartedAt < intervalMs) return;
+    lastStartedAt = now();
+    await sweep().catch((e: unknown) => {
       console.error(
         `[api-gateway] state GC failed: ${e instanceof Error ? e.name : "non-Error thrown"}`,
       );
     });
-  }, GC_INTERVAL_MS);
+  };
+}
+
+/** The gateway's sweep of its own state, run from the request handler when due. */
+export function gatewayStateGc(adapter: DatabaseAdapter): () => Promise<void> {
+  return dueSweeper(() => sweepGatewayState(adapter));
 }

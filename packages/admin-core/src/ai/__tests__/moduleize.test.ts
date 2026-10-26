@@ -14,7 +14,9 @@
  *   - `{ throw: msg }`→ a hard provider/API error (generateObject throws)
  */
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
+import { pluginListSourcesRegistry } from "@caelo-cms/plugin-host";
+import type { PluginListSourceSpec } from "@caelo-cms/plugin-sdk";
 import { type ModuleizeRetryRecord, moduleize } from "../moduleize.js";
 import type {
   AIProvider,
@@ -246,5 +248,42 @@ describe("moduleize — list fields (epic #1107)", () => {
       ],
     });
     expect(r.fields[0]).toMatchObject({ listType: "mega-menu", default: hintDefault });
+  });
+});
+
+describe("moduleize with a plugin list source", () => {
+  afterEach(() => pluginListSourcesRegistry.reset());
+
+  // A consent banner iterates the consent plugin's categories without a
+  // field of its own; the contract check used to reject it on every attempt.
+  const BANNER = {
+    html: `<div data-consent-banner>{{#consent_categories}}<label><input type="checkbox" data-consent-category="{{key}}"> {{label}}</label>{{/consent_categories}}<button data-consent-reject-all>{{reject_label}}</button></div>`,
+    fields: [
+      { name: "reject_label", kind: "text", label: "Reject label", default: "Nur Notwendige" },
+    ],
+    displayName: "Cookie banner",
+    kind: "utility",
+    description: "The site's consent banner.",
+  };
+
+  it("accepts a module that iterates a list source a plugin claims", async () => {
+    pluginListSourcesRegistry.declare("consent-manager", [
+      {
+        name: "consent_categories",
+        label: "Consent categories",
+        description: "The categories the banner offers.",
+        node: { fields: [{ name: "key", type: "text", label: "Key" }] },
+      } as unknown as PluginListSourceSpec,
+    ]);
+    let retried = false;
+    const out = await moduleize({
+      provider: new ObjectFixtureProvider([BANNER]),
+      html: `<div data-consent-banner><button data-consent-reject-all>Nur Notwendige</button></div>`,
+      onRetry: async () => {
+        retried = true;
+      },
+    });
+    expect(out.html).toContain("{{#consent_categories}}");
+    expect(retried).toBe(false);
   });
 });

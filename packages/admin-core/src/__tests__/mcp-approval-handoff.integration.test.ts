@@ -277,7 +277,7 @@ describe("MCP-originated approval → decided in the admin → handed back", () 
       chatSessionId,
       toolName: "delete_pages_many",
       args: {
-        deletions: Array.from({ length: 5 }, () => ({
+        items: Array.from({ length: 5 }, () => ({
           pageId: crypto.randomUUID(),
           disposition: "404",
         })),

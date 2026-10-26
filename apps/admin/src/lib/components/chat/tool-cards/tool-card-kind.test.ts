@@ -17,6 +17,7 @@ describe("toolCardKind (#635)", () => {
     for (const name of [
       "propose_publish_everything",
       "edit_module",
+      "update_modules_many",
       "edit_content",
       "offer_choices",
       "present_design_variants",
@@ -38,6 +39,8 @@ describe("toolCardKind (#635)", () => {
         true,
       ),
     ).toBe("propose");
+    expect(toolCardKind("update_modules_many", "Updated 2 of 2 module(s)", true)).toBe("bulk");
+    // A retired name in an older chat keeps its card.
     expect(toolCardKind("edit_module", "{}", true)).toBe("edit-module");
     expect(toolCardKind("list_pages", "3 pages", true)).toBe("generic");
   });

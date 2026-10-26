@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+import { inactiveRequiredPlugins, requirementsMessage } from "@caelo-cms/plugin-host";
 import {
   externalArtifactDigest,
   validateInstallationPolicy,
@@ -442,6 +443,13 @@ export const finalizePluginInstallationOp = defineOperation({
         message: "Grant receipts changed during preparation",
       });
     const manifest = pluginManifest.parse(row.manifest_json);
+    const missing = await inactiveRequiredPlugins(tx, manifest.requiresPlugins ?? []);
+    if (missing.length > 0)
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.finalize_installation",
+        message: requirementsMessage(manifest.slug, missing),
+      });
     validateSelectedGrants(
       manifest,
       grants.map((g) => g.capability),
