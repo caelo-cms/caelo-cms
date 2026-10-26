@@ -10,7 +10,7 @@
  * is a node filled by a page query (docs/lists.md §3, §6), bind the header
  * and the footer module to that one list, and place each once on the
  * layout (one placement covers the whole site). The follow-up turn
- * ("add Careers under Company") must be an item-level edit of the same
+ * ("add a Sustainability Report link under Company") must be an item-level edit of the same
  * list (`patch_list_items_many`), not a new list or a module rewrite.
  *
  * Seeds: the minimal site, `header` + `footer` layout blocks, the
@@ -49,7 +49,13 @@ const PROMPT =
   "plus a 'Latest news' block that always shows our three newest news articles. " +
   "Show the same menu in the footer on every page.";
 
-const FOLLOW_UP = "Add a Careers link under Company in the menu (create a simple Careers page).";
+// An entry the first prompt never asks for: "Careers" was the original
+// pick, but the AI already put Careers under Company when it built the
+// columns, correctly changed nothing, and the scenario failed on its own
+// premise (PR #1121, run 40298528362). The precondition below pins it.
+const FOLLOW_UP_TERM = "sustainability report";
+const FOLLOW_UP =
+  "Add a 'Sustainability Report' link under Company in the menu (create a simple Sustainability Report page).";
 
 test("#1107: mega menu with three columns + latest news, shared by header and footer", async ({
   page,
@@ -87,6 +93,11 @@ test("#1107: mega menu with three columns + latest news, shared by header and fo
   expect(facts.listHasQueryEntry, "the menu has no latest-news (query) entry").toBe(true);
 
   // Follow-up: maintain the SAME shared list at item level.
+  const before = snapshotListModel({});
+  expect(
+    JSON.stringify(before.lists.find((l) => l.id === facts.listId)?.items ?? []).toLowerCase(),
+    "the follow-up entry already exists — the scenario's premise is broken",
+  ).not.toContain(FOLLOW_UP_TERM);
   const followUpAt = new Date().toISOString();
   await sendChatPromptAndWait(page, FOLLOW_UP);
   const after = snapshotListModel({ toolsSince: followUpAt });
@@ -102,9 +113,9 @@ test("#1107: mega menu with three columns + latest news, shared by header and fo
     flattenItems(company?.children ?? []).some((it) =>
       JSON.stringify(it.values ?? {})
         .toLowerCase()
-        .includes("careers"),
+        .includes(FOLLOW_UP_TERM),
     ),
-    "Careers was not added under Company",
+    "the Sustainability Report link was not added under Company",
   ).toBe(true);
   expect(
     calledTool(after, "patch_list_items_many"),

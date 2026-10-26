@@ -68,7 +68,11 @@ A menu, the navigation, the footer links, categories and tags are all SHARED LIS
 7. LOCAL OR SHARED. A list only one module uses, flat, edited together with that module (three feature bullets, the social icons in one hero) stays LOCAL: the entries live in the module field's value (`bind: "local"`, the default). Navigation of the site, anything shown in more than one place, anything people edit without touching the module, and vocabularies pages are tagged with are SHARED. When a local list turns out to be needed elsewhere ("show the footer links in the mobile menu too"), `promote_local_list({moduleId, field, slug, name, purpose})` makes it a shared list and rebinds the field in one call.
 
 Keep labels short and consistent; match the site's existing capitalisation and voice.$manage_menu_v4$,
-    allowlisted_tools = '["list_lists","get_list","list_list_types","upsert_list_types_many","upsert_lists_many","patch_list_items_many","promote_local_list","preview_list_source","add_module","edit_module","list_modules","list_layouts","list_pages","build_page"]'::jsonb,
+    -- Preload hints only (every tool stays reachable through tool search):
+    -- the everyday menu path. Defining types, previewing sources and
+    -- promoting local lists are rare and their schemas are large, so they
+    -- load on demand instead of on every call of a menu-related turn.
+    allowlisted_tools = '["list_lists","get_list","upsert_lists_many","patch_list_items_many","add_module","edit_module","list_modules","list_layouts","list_pages","build_page"]'::jsonb,
     auto_engagement_hints = '{"keywords":["menu","navigation","navbar","nav menu","header menu","footer menu","mega menu","dropdown","footer links","nav link","menu item","add to the menu","reorder the menu","navigation links"],"chipTrigger":false,"alwaysOn":false}'::jsonb
 WHERE slug = 'manage-menu';
 
