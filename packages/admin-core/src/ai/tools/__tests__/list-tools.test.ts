@@ -320,6 +320,8 @@ describe("list tools (epic #1107)", () => {
       s.safeParse({ source: { kind: "system", name: "breadcrumbs" }, pageId: COMPANY }).success,
     ).toBe(true);
     expect(s.safeParse({ list: "mega", itemId: COMPANY }).success).toBe(true);
+    expect(s.safeParse({ list: "mega", node: "news", value: { limit: 2 } }).success).toBe(true);
+    expect(s.safeParse({ list: "mega", node: "news", itemId: COMPANY }).success).toBe(false);
     expect(
       s.safeParse({ list: "mega", itemId: COMPANY, source: { kind: "system", name: "children" } })
         .success,

@@ -18,6 +18,9 @@
  *    field would declare it, with the placement's overrides;
  *  - `list` + `itemId`: a source node stored in a shared list (a mega
  *    menu's "latest news" column) with its saved query;
+ *  - `list` + `node` (+ `value`): a source node KIND of the list's type
+ *    with the knobs an entry would set — what the list editor previews
+ *    while the operator edits an entry's query, before saving it;
  *  - `moduleId` + `field` (+ `contentInstanceId`): a module's `bind:
  *    "source"` field, with that placement's overrides.
  */
@@ -77,8 +80,10 @@ const inputSchema = z
     vocabulary: z.string().optional(),
     /** A shared list (slug) holding the source node … */
     list: z.string().min(1).max(64).optional(),
-    /** … and the id of that node. */
+    /** … and the id of that node (its saved query) … */
     itemId: z.string().uuid().optional(),
+    /** … or a source node kind of the list's type, with `value` as the entry's knobs. */
+    node: z.string().min(1).max(64).optional(),
     /** A module whose `bind: "source"` list field to preview … */
     moduleId: z.string().uuid().optional(),
     field: z.string().min(1).max(64).optional(),
@@ -89,24 +94,30 @@ const inputSchema = z
   .superRefine((v, ctx) => {
     const modes = [
       v.source !== undefined,
-      v.list !== undefined || v.itemId !== undefined,
+      v.list !== undefined || v.itemId !== undefined || v.node !== undefined,
       v.moduleId !== undefined || v.field !== undefined,
     ].filter(Boolean).length;
     if (modes !== 1) {
       ctx.addIssue({
         code: "custom",
         message:
-          "name the source exactly one way: `source` (a source definition), `list` + `itemId` (a source node of a shared list) or `moduleId` + `field` (a module's source field)",
+          "name the source exactly one way: `source` (a source definition), `list` + `itemId` (a source node of a shared list), `list` + `node` (a source node kind of the list's type) or `moduleId` + `field` (a module's source field)",
       });
     }
-    if ((v.list === undefined) !== (v.itemId === undefined)) {
-      ctx.addIssue({ code: "custom", message: "`list` and `itemId` go together" });
+    if (v.list !== undefined && (v.itemId === undefined) === (v.node === undefined)) {
+      ctx.addIssue({ code: "custom", message: "`list` takes exactly one of `itemId`, `node`" });
+    }
+    if (v.list === undefined && (v.itemId !== undefined || v.node !== undefined)) {
+      ctx.addIssue({ code: "custom", message: "`itemId` / `node` go with `list`" });
     }
     if ((v.moduleId === undefined) !== (v.field === undefined)) {
       ctx.addIssue({ code: "custom", message: "`moduleId` and `field` go together" });
     }
-    if (v.source === undefined && (v.value !== undefined || v.vocabulary !== undefined)) {
-      ctx.addIssue({ code: "custom", message: "`value` and `vocabulary` go with `source` only" });
+    if (v.vocabulary !== undefined && v.source === undefined) {
+      ctx.addIssue({ code: "custom", message: "`vocabulary` goes with `source` only" });
+    }
+    if (v.value !== undefined && v.source === undefined && v.node === undefined) {
+      ctx.addIssue({ code: "custom", message: "`value` goes with `source` or `list` + `node`" });
     }
   });
 
@@ -170,7 +181,7 @@ async function specFor(
       describe: `${input.source.kind} source`,
     };
   }
-  if (input.list !== undefined && input.itemId !== undefined) {
+  if (input.list !== undefined) {
     const list = await loadListEntityBySlug(tx, "list", branchId, input.list);
     if (!list || list.state.deletedAt !== null) {
       return {
@@ -183,6 +194,27 @@ async function specFor(
     const typeSlug = types.find((t) => t.id === list.state.listTypeId)?.state.slug;
     if (typeSlug === undefined) {
       return { ok: false, message: `list "${input.list}" has no list type in this view.` };
+    }
+    if (input.node !== undefined) {
+      // A node kind previews like a source field: the node's source with
+      // the knobs an entry of that kind would store.
+      const def = types.find((t) => t.id === list.state.listTypeId)?.state.definition;
+      const source = def?.nodes[input.node]?.source;
+      if (!source) {
+        const kinds = Object.entries(def?.nodes ?? {})
+          .filter(([, n]) => n.source !== undefined)
+          .map(([k]) => k);
+        return {
+          ok: false,
+          message: `node kind "${input.node}" of list type "${typeSlug}" has no source (source node kinds: ${kinds.join(", ") || "none"}).`,
+        };
+      }
+      return {
+        ok: true,
+        spec: { name: input.list, listType: typeSlug, bind: "source", source },
+        value: input.value,
+        describe: `node "${input.node}" of list "${input.list}"`,
+      };
     }
     return {
       ok: true,
@@ -262,7 +294,7 @@ export const previewListSourceOp = withHumanisedLinks(
     output: z.object({
       source: z.string(),
       count: z.number().int().nonnegative(),
-      entries: z.array(entrySchema),
+      items: z.array(entrySchema),
     }),
     handler: async (ctx, input, tx) => {
       const branchId = branchOf(ctx);
@@ -352,7 +384,7 @@ export const previewListSourceOp = withHumanisedLinks(
       return ok({
         source: spec.describe,
         count: entries.length,
-        entries: entries.map(entryJson),
+        items: entries.map(entryJson),
       });
     },
   }),

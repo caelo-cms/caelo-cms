@@ -25,7 +25,7 @@ import {
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
-/** Part E adds this op; until it is registered the editor says the preview is unavailable. */
+/** What a query entry returns (docs/lists.md §12); `previewAvailable` stays false on a registry without it. */
 const PREVIEW_OP = "lists.preview_source";
 
 export const load: PageServerLoad = async ({ locals }) => {
@@ -108,7 +108,8 @@ export const actions: Actions = {
     }
     const node = String(form.get("node") ?? "");
     const query = jsonField<Record<string, unknown>>(form, "query") ?? {};
-    const r = await runWrite(locals.ctx, PREVIEW_OP, { list: params.slug, node, query });
+    // A node kind of this list's type with the knobs being edited (docs/lists.md §12).
+    const r = await runWrite(locals.ctx, PREVIEW_OP, { list: params.slug, node, value: query });
     if (!r.ok) return { previewUnavailable: r.message };
     return { preview: r.value };
   },

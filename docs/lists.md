@@ -521,12 +521,15 @@ values).
   `vocabulary` (`caelo:list/<id>` for `page_terms`);
 - `list` (slug) + `itemId`: a source node stored in a shared list, with its
   saved `query`;
+- `list` (slug) + `node` (+ `value`): a source node KIND of the list's type
+  with the knobs an entry would store — the list editor's live preview of an
+  entry being edited;
 - `moduleId` + `field` (+ `contentInstanceId`): a module's `bind: "source"`
   field with that placement's value.
 
 `pageId` names the rendering page (breadcrumbs, children, siblings,
 page_terms need one; a query leaves it out by default). The answer is
-`{ source, count, entries }`, each entry `{id, title?, name?, label?, slug?,
+`{ source, count, items }`, each item `{id, title?, name?, label?, slug?,
 link?, published_at?, updated_at?, page_type?, summary?, is_current?}` with
 links as paths. It runs the render's own resolver over
 `loadListRenderData` in the caller's draft view; plugin sources are asked

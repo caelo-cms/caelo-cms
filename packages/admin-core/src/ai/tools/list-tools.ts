@@ -189,16 +189,16 @@ export const previewListSourceTool = makeOpTool({
   name: "preview_list_source",
   description:
     "Show what a generated list returns for a page BEFORE you bind or save it: a page query ('the 3 latest news'), a system source (breadcrumbs, children, siblings, page_terms, term_pages) or a plugin source — the same resolver the preview and the build use, in this chat's draft view. " +
-    "Name it ONE way: `source` (+ `value` overrides, `vocabulary` for page_terms) — e.g. {source:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}}; `list` + `itemId` (a source node of a shared list, e.g. the mega menu's news column); or `moduleId` + `field` (+ `contentInstanceId`) for a module's source field. " +
+    "Name it ONE way: `source` (+ `value` overrides, `vocabulary` for page_terms) — e.g. {source:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}}; `list` + `itemId` (a saved source node of a shared list, e.g. the mega menu's news column); `list` + `node` + `value` (a source node kind of the list's type with the knobs you are about to save); or `moduleId` + `field` (+ `contentInstanceId`) for a module's source field. " +
     "`pageId` = the page it renders on (needed for breadcrumbs / children / siblings / page_terms; a query leaves that page out by default). Only published pages appear. An empty result usually means the filter is wrong (page type slug, terms) or nothing is published yet.",
   opName: "lists.preview_source",
   input: previewListSourceOp.input,
   format: (value) => {
-    const v = value as { source: string; count: number; entries: Record<string, unknown>[] };
+    const v = value as { source: string; count: number; items: Record<string, unknown>[] };
     if (v.count === 0) return `${v.source}: no entries for this page.`;
     return [
       `${v.source}: ${v.count} entr${v.count === 1 ? "y" : "ies"}`,
-      ...v.entries.map((e) => `- ${JSON.stringify(e)}`),
+      ...v.items.map((e) => `- ${JSON.stringify(e)}`),
     ].join("\n");
   },
 });

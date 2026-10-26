@@ -49,7 +49,7 @@ async function fail(ctx: ExecutionContext, name: string, input: unknown): Promis
   return "message" in r.error ? r.error.message : JSON.stringify(r.error);
 }
 
-type Preview = { source: string; count: number; entries: Record<string, unknown>[] };
+type Preview = { source: string; count: number; items: Record<string, unknown>[] };
 
 const NEWS = `${PFX}news`;
 let catGuides = "";
@@ -155,9 +155,9 @@ describe("#1107 lists.preview_source", () => {
         defaults: { page_type: NEWS, order: "title_asc", limit: 3 },
       },
     });
-    expect(v.entries.map((e) => e.title)).toEqual(["Alpha FAQ", "Alpha release", "Beta notes"]);
-    expect(v.entries[1]?.link).toBe(`/${PFX}a`);
-    expect(v.entries[0]?.page_type).toBe(NEWS);
+    expect(v.items.map((e) => e.title)).toEqual(["Alpha FAQ", "Alpha release", "Beta notes"]);
+    expect(v.items[1]?.link).toBe(`/${PFX}a`);
+    expect(v.items[0]?.page_type).toBe(NEWS);
     // The placement may override an editable knob — and only those.
     const two = await op<Preview>(SYS, "lists.preview_source", {
       source: {
@@ -184,7 +184,7 @@ describe("#1107 lists.preview_source", () => {
         defaults: { page_type: NEWS, terms: [catGuides], order: "title_asc", limit: 10 },
       },
     });
-    expect(v.entries.map((e) => e.title)).toEqual(["Alpha release", "Beta notes"]);
+    expect(v.items.map((e) => e.title)).toEqual(["Alpha release", "Beta notes"]);
   });
 
   it("system sources read the given page: breadcrumbs and term_pages", async () => {
@@ -192,13 +192,13 @@ describe("#1107 lists.preview_source", () => {
       pageId: childPageId,
       source: { kind: "system", name: "breadcrumbs" },
     });
-    expect(crumbs.entries.map((e) => e.title)).toEqual(["Alpha release", "Alpha FAQ"]);
-    expect(crumbs.entries[1]?.is_current).toBe(true);
+    expect(crumbs.items.map((e) => e.title)).toEqual(["Alpha release", "Alpha FAQ"]);
+    expect(crumbs.items[1]?.is_current).toBe(true);
     const tagged = await op<Preview>(SYS, "lists.preview_source", {
       source: { kind: "system", name: "term_pages" },
       value: { terms: [catEngineering] },
     });
-    expect(tagged.entries.map((e) => e.title)).toEqual(["Beta notes", "Compiler deep dive"]);
+    expect(tagged.items.map((e) => e.title)).toEqual(["Beta notes", "Compiler deep dive"]);
   });
 
   it("a query node stored in a shared list (a mega menu's latest-news column)", async () => {
@@ -257,7 +257,20 @@ describe("#1107 lists.preview_source", () => {
       itemId: newsNode,
     });
     // The entry's saved query (limit 2) applies over the type's defaults.
-    expect(v.entries.map((e) => e.title)).toEqual(["Alpha FAQ", "Alpha release"]);
+    expect(v.items.map((e) => e.title)).toEqual(["Alpha FAQ", "Alpha release"]);
+    // The list editor previews a node kind with the knobs being edited,
+    // before the entry is saved.
+    const editing = await op<Preview>(SYS, "lists.preview_source", {
+      list: `${PFX}header`,
+      node: "news",
+      value: { limit: 1 },
+    });
+    expect(editing.items.map((e) => e.title)).toEqual(["Alpha FAQ"]);
+    const notSource = await fail(SYS, "lists.preview_source", {
+      list: `${PFX}header`,
+      node: "column",
+    });
+    expect(notSource).toContain("source node kinds: news");
     const missing = await fail(SYS, "lists.preview_source", {
       list: `${PFX}header`,
       itemId: crypto.randomUUID(),

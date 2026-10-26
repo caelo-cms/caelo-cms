@@ -58,20 +58,14 @@
     | { kind: "result"; entries: { title: string; path: string }[] }
   >({ kind: "idle" });
 
-  /** Entries out of whatever shape the preview op answers with (title + link per page). */
+  /** The pages `lists.preview_source` answers with: `{ items: [{ title, link }] }`, links as paths. */
   function entriesOf(value: unknown): { title: string; path: string }[] {
-    const v = value as Record<string, unknown> | null;
-    const list = (v && (v.items ?? v.entries ?? v.pages)) as unknown;
-    if (!Array.isArray(list)) return [];
-    return list.map((e) => {
-      const r = (e ?? {}) as Record<string, unknown>;
-      const vals = (r.values ?? r) as Record<string, unknown>;
-      const link = vals.link as unknown;
-      return {
-        title: String(vals.title ?? vals.name ?? ""),
-        path: typeof link === "string" ? link : String((link as { href?: string } | undefined)?.href ?? vals.path ?? ""),
-      };
-    });
+    const items = (value as { items?: { title?: unknown; link?: unknown }[] } | null)?.items;
+    if (!Array.isArray(items)) return [];
+    return items.map((e) => ({
+      title: typeof e.title === "string" ? e.title : "",
+      path: typeof e.link === "string" ? e.link : "",
+    }));
   }
 
   async function preview(): Promise<void> {
