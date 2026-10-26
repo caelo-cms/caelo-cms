@@ -41,7 +41,7 @@ export type FilteredTool = ToolDefinition & {
  * convention (same convention the v0.6.0 auto-recovery path relies on).
  *
  * Why: engaged-skill allowlists are curated around a workflow's WRITE
- * tools (compose-page lists edit_module, set_page_module_content, …) and
+ * tools (compose-page lists update_modules_many, set_page_module_content_many, …) and
  * historically also stripped every read tool. That blinded the AI
  * mid-session: in migration run #8 the module-lookup tools vanished when
  * a skill engaged, so the AI edited the wrong module (R5), and rebuild

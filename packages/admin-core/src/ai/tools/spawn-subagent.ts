@@ -892,7 +892,7 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
     "Use spawn_subagents (plural) for SEVERAL independent build parcels at once. Not for your own reasoning or research, and not to review your own work — do those yourself. " +
     "BLOCKS until the subagent finishes. Returns the subagent's parsed result + cost + duration. " +
     "The subagent starts with a FRESH context — it knows NOTHING about this chat. Its `task` must be fully self-contained (ids, facts, fetch instructions, return-shape contract). It works on THIS chat's preview branch, so its edits show up in this chat's preview/publish/undo. " +
-    "TOOL ACCESS: by default the subagent gets the full tool catalogue minus the spawn tools (it CAN write). Pass `allowedToolNames` (AI tool names, e.g. list_pages, edit_module) to narrow it, e.g. to read-only tools for review tasks. " +
+    "TOOL ACCESS: by default the subagent gets the full tool catalogue minus the spawn tools (it CAN write). Pass `allowedToolNames` (AI tool names, e.g. list_pages, update_modules_many) to narrow it, e.g. to read-only tools for review tasks. " +
     "DO NOT use for one-line edits or quick lookups — use a regular tool. Subagents earn their cost when work is multi-step + needs an isolated reasoning context. " +
     // v0.2.68 — explicit return-shape schemas. Run #10 D2 — the child
     // now delivers its result via a `submit_result` tool call (the

@@ -103,6 +103,51 @@ export const AI_OP_EXCEPTIONS: Readonly<Record<string, AiOpException>> = {
     by: ["delete_modules_many"],
     note: "bulk-first sibling; both run the same softDeleteModule (branched + AI in-use guard)",
   },
+  "modules.update": {
+    kind: "covered",
+    by: ["update_modules_many"],
+    note: "bulk-first: one module = a one-item update_modules_many (modules.update_many runs the same update path per item)",
+  },
+  "page_module_content.set": {
+    kind: "covered",
+    by: ["set_page_module_content_many"],
+    note: "bulk-first sibling (page_module_content.set_many)",
+  },
+  "content_instances.create": {
+    kind: "covered",
+    by: ["create_content_instances"],
+    note: "bulk-first sibling; content_instances.create_many runs the singular op path per item",
+  },
+  "content_instances.delete": {
+    kind: "covered",
+    by: ["delete_content_instances"],
+    note: "bulk-first sibling (content_instances.delete_many)",
+  },
+  "media.update_alt": {
+    kind: "covered",
+    by: ["set_media_alt_many"],
+    note: "bulk-first sibling (media.update_alt_many)",
+  },
+  "media.set_source": {
+    kind: "covered",
+    by: ["set_media_source_many"],
+    note: "bulk-first sibling (media.set_source_many)",
+  },
+  "pages_seo.set": {
+    kind: "covered",
+    by: ["set_page_seo_many"],
+    note: "bulk-first sibling (pages_seo.set_many)",
+  },
+  "pages_seo.autofill": {
+    kind: "covered",
+    by: ["autofill_page_seo_many"],
+    note: "bulk-first sibling (pages_seo.autofill_many)",
+  },
+  "pages_seo.optimize": {
+    kind: "covered",
+    by: ["bulk_optimize_seo"],
+    note: "bulk-first sibling (pages_seo.optimize_many); the user-supplied context is one top-level field",
+  },
   "media.delete": {
     kind: "covered",
     by: ["delete_media_many"],

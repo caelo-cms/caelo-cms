@@ -105,7 +105,7 @@ describe("reference integrity policy (#724 decisions)", () => {
       const issues = scan(model(placed(ABOUT, `caelo:page/${GONE}`)), env);
       expect(issues).toHaveLength(1);
       expect(issues[0]).toMatchObject({ problem: "missing-target", severity: "block" });
-      expect(issues[0]?.fix.tool).toBe("set_page_module_content");
+      expect(issues[0]?.fix.tool).toBe("set_page_module_content_many");
       expect(issues[0]?.message).toContain('"/about"');
     }
   });
@@ -123,7 +123,7 @@ describe("reference integrity policy (#724 decisions)", () => {
 
   it("a synced placement on one page is fixed on its content instance", () => {
     // Regression (Codex on #893): a synced row placed on a single page was
-    // not "shared", so the fix named set_page_module_content — which
+    // not "shared", so the fix named set_page_module_content_many — which
     // refuses synced placements.
     const synced = placed(ABOUT, `caelo:page/${GONE}`);
     const pl = synced.placements?.[0];
@@ -132,7 +132,7 @@ describe("reference integrity policy (#724 decisions)", () => {
       model({ ...synced, placements: [{ ...pl, syncMode: "synced" }] }),
       "staging",
     );
-    expect(issues[0]?.fix.tool).toBe("set_content_instance_values");
+    expect(issues[0]?.fix.tool).toBe("set_content_instance_values_many");
     expect(issues[0]?.fix.hint).toContain(pl.contentInstanceId ?? "");
   });
 
@@ -494,7 +494,7 @@ describe("list references (epic #1107)", () => {
       expect(issues[0]?.message).toContain('field "nav" of module "Module 1"');
       expect(issues[0]?.message).toContain('"/about"');
       expect(issues[0]?.message).toContain("list_lists");
-      expect(issues[0]?.fix.tool).toBe("set_page_module_content");
+      expect(issues[0]?.fix.tool).toBe("set_page_module_content_many");
     }
   });
 

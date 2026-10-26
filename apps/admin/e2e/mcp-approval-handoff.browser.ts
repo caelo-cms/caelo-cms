@@ -171,7 +171,7 @@ test("an external agent's needs-approval tool call is approved in the chat and h
     approval: { proposalId: string; domain: string } | null;
   }>(request, token, "/api/mcp/tool", {
     toolName: "delete_pages_many",
-    args: { deletions: pageIds.map((pageId) => ({ pageId, disposition: "404" })) },
+    args: { items: pageIds.map((pageId) => ({ pageId, disposition: "404" })) },
     chatSessionId: session.chatSessionId,
   });
   expect(called.ok, called.content).toBe(true);

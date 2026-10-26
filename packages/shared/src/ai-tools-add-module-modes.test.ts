@@ -71,7 +71,7 @@ describe("addModuleToolInput modes (issue #159)", () => {
   it("TOLERATES a moduleId call carrying authoring keys (incl. structural html) — placement-only, handler surfaces the ignored-authoring info", () => {
     // §1A/§11 — a valid placement must never fail over an extra authoring
     // field. moduleId + html passes; the tool handler (not the schema)
-    // reports that html was not applied and points at edit_module.
+    // reports that html was not applied and points at update_modules_many.
     const r = addModuleToolInput.safeParse({
       ...BASE,
       moduleId: "11111111-1111-4111-8111-111111111102",

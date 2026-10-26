@@ -20,7 +20,7 @@ import {
 describe("applyStringEdits", () => {
   // e2e-livedit run 39924464490: the AI filled a module's empty `js` with
   // oldString "" and was refused by the schema, then re-sent the module
-  // through edit_module. An empty field has nothing to anchor on.
+  // through the whole-module edit tool. An empty field has nothing to anchor on.
   it("fills an empty body from an empty oldString", () => {
     const r = applyStringEdits("", [{ oldString: "", newString: "console.log(1);" }]);
     expect(r).toMatchObject({ ok: true, content: "console.log(1);", replacements: 1 });
@@ -53,7 +53,7 @@ describe("applyStringEdits", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toContain("only fills an empty body");
-      expect(r.error).toContain("edit_module");
+      expect(r.error).toContain("update_modules_many");
     }
   });
 

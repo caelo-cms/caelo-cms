@@ -36,7 +36,7 @@ export const deleteMediaManyTool: ToolDefinitionWithHandler<DeleteMediaManyInput
   name: "delete_media_many",
   description:
     "Delete media assets the site no longer uses, in ONE call (a single asset is a one-item array; up to 200). Take ids from `find_media`. " +
-    "Assets still embedded in a module — on the live site or in this chat's unpublished edits — are NOT deleted: they come back as blocked, with the modules that use them. Remove the image from those modules first (`edit_module` / `set_page_module_content`), or tell the operator the asset is still in use; there is no force option. " +
+    "Assets still embedded in a module — on the live site or in this chat's unpublished edits — are NOT deleted: they come back as blocked, with the modules that use them. Remove the image from those modules first (`update_modules_many` / `set_page_module_content_many`), or tell the operator the asset is still in use; there is no force option. " +
     "Use it for library clean-up ('remove the unused stock photos', 'delete the duplicate logos'). To keep an asset but hide it from page placement, use `set_media_visibility_many` (visibility 'reference') instead — deletion cannot be undone from chat.",
   schema: deleteMediaManyInput,
   handler: async (ctx, input, toolCtx) => {

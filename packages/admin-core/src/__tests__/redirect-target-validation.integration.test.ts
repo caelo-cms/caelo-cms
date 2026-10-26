@@ -183,7 +183,7 @@ describe("redirects.create_many — target validation (#657)", () => {
 
   it("bulk_create_redirects surfaces the actionable reason to the AI", async () => {
     const parsed = bulkCreateRedirectsTool.schema.safeParse({
-      redirects: [{ fromPath: `/${PFX}-tool-bad`, toPath: "/https://example.com/x" }],
+      items: [{ fromPath: `/${PFX}-tool-bad`, toPath: "/https://example.com/x" }],
     });
     // The tool's own schema rejects before the op is reached …
     expect(parsed.success).toBe(false);
@@ -192,7 +192,7 @@ describe("redirects.create_many — target validation (#657)", () => {
     const res = await bulkCreateRedirectsTool.handler(
       SYSTEM,
       {
-        redirects: [
+        items: [
           { fromPath: `/${PFX}-tool-bad`, toPath: "/https://example.com/x", statusCode: 301 },
         ],
         upsert: false,

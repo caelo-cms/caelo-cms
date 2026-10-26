@@ -104,8 +104,8 @@ describe("chat.publish", () => {
         {
           kind: "tool-call",
           id: "t1",
-          name: "edit_module",
-          arguments: { moduleId, html: "<p>v1</p>" },
+          name: "update_modules_many",
+          arguments: { items: [{ moduleId, html: "<p>v1</p>" }] },
         },
         { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
         { kind: "done", stopReason: "tool_use" },

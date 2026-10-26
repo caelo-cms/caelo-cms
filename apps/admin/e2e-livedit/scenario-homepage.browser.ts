@@ -138,7 +138,7 @@ function snapshotMostRecentPage(sinceTimestamp: string): PageModuleSnapshot | nu
           // page_modules via pm.content_instance_id), not in the legacy
           // page_module_content table. Read ci.updated_at so the
           // re-edit assertion detects edits the AI persists via
-          // set_content_instance_values.
+          // set_content_instance_values_many.
           const placements = await tx\`
             SELECT
               pm.block_name      AS "blockName",

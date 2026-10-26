@@ -212,7 +212,7 @@ describe("seeded base skills", () => {
     // v0.6.1 — SEO tools (migration 0086). Without them the skill's
     // engaged catalog filters them out and AI reports "tool doesn't
     // exist" when asked to set meta-descriptions on a fresh build.
-    expect(tools).toContain("set_page_seo");
+    expect(tools).toContain("set_page_seo_many");
     // v0.7.5 — add_module_to_layout (migration 0088). Added by 0081,
     // silently dropped by 0083, missed by 0085 + 0086, restored by 0088.
     // 0164 renamed it: the three add_module_to_* tools became one
@@ -238,9 +238,9 @@ describe("seeded base skills", () => {
     const compose = skills.find((s) => s.slug === "compose-page");
     expect(compose).toBeDefined();
     const tools = compose?.allowlistedTools ?? [];
-    expect(tools).toContain("set_page_seo");
-    expect(tools).toContain("autofill_page_seo");
-    expect(tools).toContain("optimize_page_seo");
+    expect(tools).toContain("set_page_seo_many");
+    expect(tools).toContain("autofill_page_seo_many");
+    expect(tools).toContain("bulk_optimize_seo");
     expect(tools).toContain("add_module");
     // The rename must be complete — no dead tool names left in the allowlist.
     expect(tools).not.toContain("add_module_to_layout");
@@ -319,7 +319,7 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     const tools = compose?.allowlistedTools ?? [];
     // Edit-path tools joined by 0168 (dedup-safe union kept the create tools).
     for (const t of [
-      "set_page_module_content",
+      "set_page_module_content_many",
       "set_pages_status_many",
       "update_pages_many",
       "remove_module_from",
@@ -426,7 +426,11 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     // lose the preload hints of every pre-existing chat.
     const history = [
       { toolCalls: [{ id: "t1", name: "load_skill", arguments: { slug: "manage-menu" } }] },
-      { toolCalls: [{ id: "t2", name: "edit_module", arguments: { moduleId: "x" } }] },
+      {
+        toolCalls: [
+          { id: "t2", name: "update_modules_many", arguments: { items: [{ moduleId: "x" }] } },
+        ],
+      },
     ];
     expect(extractLoadedSkillSlugs(history)).toEqual(["manage-menu"]);
 
@@ -456,19 +460,19 @@ describe("skill allowlist validation (issue #301)", () => {
       slug: "test-p10a-badallow",
       displayName: "Bad allowlist",
       body: "Body",
-      allowlistedTools: ["edit_modul"],
+      allowlistedTools: ["update_modules_man"],
     });
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error.kind).toBe("HandlerError");
       if (r.error.kind === "HandlerError") {
-        expect(r.error.message).toContain('"edit_modul"');
-        expect(r.error.message).toContain('"edit_module"');
+        expect(r.error.message).toContain('"update_modules_man"');
+        expect(r.error.message).toContain('"update_modules_many"');
       }
     }
   });
 
-  it("skills.set normalizes op-notation entries to tool names on write", async () => {
+  it("skills.set normalizes op-notation entries and retired tool names to live tool names on write", async () => {
     const r = await execute(registry, adapter, systemCtx, "skills.set", {
       slug: "test-p10a-opnames",
       displayName: "Op notation",
@@ -481,8 +485,13 @@ describe("skill allowlist validation (issue #301)", () => {
     });
     if (!get.ok) return;
     const skill = (get.value as { skill: { allowlistedTools: string[] } | null }).skill;
-    // Translated + deduped; the context-served memory read drops.
-    expect(skill?.allowlistedTools).toEqual(["list_pages", "find_redirects", "edit_module"]);
+    // Translated + deduped; the retired edit_module becomes the tool that
+    // replaced it; the context-served memory read drops.
+    expect(skill?.allowlistedTools).toEqual([
+      "list_pages",
+      "find_redirects",
+      "update_modules_many",
+    ]);
   });
 
   it("skills.propose rejects an unknown allowlist entry at proposal time (AI-actionable failure)", async () => {
@@ -508,8 +517,9 @@ describe("skill allowlist validation (issue #301)", () => {
     const skills = (r.value as { skills: { slug: string; allowlistedTools: string[] }[] }).skills;
     const bySlug = new Map(skills.map((s) => [s.slug, s.allowlistedTools]));
     // 0362 — a chipped element's text is that placement's content, so
-    // scoped-edit preloads set_page_module_content next to the code tools.
-    expect(bySlug.get("scoped-edit")).toContain("set_page_module_content");
+    // scoped-edit preloads set_page_module_content_many next to the code tools
+    // (0364 moved it onto the live name).
+    expect(bySlug.get("scoped-edit")).toContain("set_page_module_content_many");
     // No active skill may carry an op-notation entry at all.
     for (const s of skills) {
       for (const entry of s.allowlistedTools) {

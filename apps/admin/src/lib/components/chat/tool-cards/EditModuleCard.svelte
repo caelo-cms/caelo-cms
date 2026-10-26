@@ -2,11 +2,10 @@
   // SPDX-License-Identifier: MPL-2.0
 
   /**
-   * v0.2.46 — edit_module result card. The plan calls for "module slug
-   * + 3-line excerpt of the new HTML/CSS, with a 'View module' link";
-   * the inline-diff card from item #6 will replace this for the diff
-   * surface, so this card stays small for now (just the action
-   * confirmation, not the full diff).
+   * Result card for the retired `edit_module` tool, kept so older chats
+   * still render their history: the module id, the result line and a
+   * 3-line excerpt of the new HTML. Its successor `update_modules_many`
+   * renders through the bulk card plus one inline diff per item.
    */
 
   import { Pencil } from "lucide-svelte";

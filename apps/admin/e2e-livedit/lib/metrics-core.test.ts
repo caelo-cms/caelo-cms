@@ -104,8 +104,8 @@ const FIXTURE = [
   ]),
   loopLine(S1, 2, "end_turn", [], 45_000, 9000),
   contextSplit(S1, 20_000),
-  loopLine(S1, 0, "tool_use", ["set_page_module_content"], 60_000, 20_000),
-  toolTokens(S1, 0, [["set_page_module_content", 50]]),
+  loopLine(S1, 0, "tool_use", ["set_page_module_content_many"], 60_000, 20_000),
+  toolTokens(S1, 0, [["set_page_module_content_many", 50]]),
   loopLine(S1, 1, "end_turn", [], 62_000, 22_000),
 ].join("\n");
 

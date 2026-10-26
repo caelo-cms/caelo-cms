@@ -525,9 +525,7 @@ export const createModuleOp = defineOperation({
 
 export const updateModuleOp = defineOperation({
   name: "modules.update",
-  // P5: AI in scope for the `edit_module` tool — the only mutation the
-  // AI can reach in this phase. Page / template / cross-module surfaces
-  // stay AI-blocked until their tools land in later phases.
+  // AI in scope: `update_modules_many` and `edit_content` reach this op.
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: moduleUpdateSchema,
@@ -847,7 +845,7 @@ async function softDeleteModule(
           refusal: true,
           message:
             `module "${slug}" is still placed on ${describePlacements(placements)} — deleting it would leave empty slots. ` +
-            "Remove it from each page/layout with remove_module_from first (a nested use: drop it from the parent's module field with set_content_instance_values), or keep it; then delete.",
+            "Remove it from each page/layout with remove_module_from first (a nested use: drop it from the parent's module field with set_content_instance_values_many), or keep it; then delete.",
         },
       };
     }

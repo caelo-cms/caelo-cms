@@ -261,8 +261,8 @@ describe("subagent ops", () => {
           {
             kind: "tool-call",
             id: "tu_p264",
-            name: "edit_module",
-            arguments: { moduleId, html: "<h1>Rebuilt hero</h1>" },
+            name: "update_modules_many",
+            arguments: { items: [{ moduleId, html: "<h1>Rebuilt hero</h1>" }] },
           },
           { kind: "usage", inputTokens: 10, outputTokens: 5, cachedTokens: 0 },
           { kind: "done", stopReason: "tool_use" },

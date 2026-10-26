@@ -4,8 +4,8 @@
  * 2026-07 — add_module carries the placement's initial content IN THE
  * SAME CALL (`values`). Before this, a freshly minted module landed on
  * the page with an EMPTY content_instance and waited for a second
- * set_page_module_content round-trip — the two-step build_page was
- * created to kill, still alive in the singular tool.
+ * content-write round-trip — the two-step build_page was created to
+ * kill, still alive in add_module.
  *
  * ONE rule on every target: content arrives via `values`. page/template
  * fill the placement's content_instance; layout stores the values as
@@ -18,7 +18,7 @@
  *    field names are unknowable up front);
  *  - layout + `values` whose keys match no declared field → rejected;
  *  - layout + `moduleId` reuse + `values` → rejected (a shared module
- *    renders its stored defaults; edit_module changes them).
+ *    renders its stored defaults; update_modules_many changes them).
  * Real Postgres (§6) for the apply paths.
  */
 
@@ -224,7 +224,7 @@ describe("add_module — initial content in the same call", () => {
     });
     expect(parsed.success).toBe(false);
     if (!parsed.success) {
-      expect(JSON.stringify(parsed.error.issues)).toContain("edit_module");
+      expect(JSON.stringify(parsed.error.issues)).toContain("update_modules_many");
     }
   });
 
@@ -297,7 +297,7 @@ describe("add_module — initial content in the same call", () => {
   it("reuse by moduleId carrying a DIFFERING label surfaces an ℹ️ ignored-authoring info (§2 — no silent drop)", async () => {
     // Mint a module first, then re-place it by moduleId while also passing a
     // different displayName + fresh html. Placement-only: those must not be
-    // applied silently — the result names them and points at edit_module.
+    // applied silently — the result names them and points at update_modules_many.
     const mint = await addModuleTool.handler(
       SYSTEM,
       {
@@ -335,7 +335,7 @@ describe("add_module — initial content in the same call", () => {
     expect(reuse.content).toContain("NOT applied");
     expect(reuse.content).toContain("displayName='A Totally Different Label'");
     expect(reuse.content).toContain("html (structural)");
-    expect(reuse.content).toContain("edit_module");
+    expect(reuse.content).toContain("update_modules_many");
   });
 
   it("reuse by moduleId with a MATCHING label surfaces no ignored-authoring info (harmless redundancy)", async () => {

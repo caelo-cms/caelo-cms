@@ -3,7 +3,7 @@
 /**
  * v0.12.0 — `list_content_instances` (2026-07: makeListReadTool — TOON
  * output, uniform filter/limit/offset/full). placementCount = blast
- * radius; check it BEFORE set_content_instance_values.
+ * radius; check it BEFORE set_content_instance_values_many.
  *
  * It is also the decision support the retired `## Content Library`
  * prompt block carried (CLAUDE.md §1A, §11: site state is fetched, never
@@ -38,8 +38,8 @@ export const listContentInstancesTool = makeListReadTool<
   name: "list_content_instances",
   description:
     "List content_instances — the values filling module placeholders (TOON rows: id, module, kind, slug, displayName, purpose, placements, parents), most-placed first. " +
-    "`purpose` says why a shared row exists: read it BEFORE minting a shared instance (create_content_instance) and reuse a row whose purpose and module fit. " +
-    "`placementCount` is the blast radius: >1 means SHARED, editing propagates to every bound page. Check BEFORE set_content_instance_values. " +
+    "`purpose` says why a shared row exists: read it BEFORE minting a shared instance (create_content_instances) and reuse a row whose purpose and module fit. " +
+    "`placementCount` is the blast radius: >1 means SHARED, editing propagates to every bound page. Check BEFORE set_content_instance_values_many. " +
     "`parents` counts instances that show this one inside a module / module-list field; an ORPHAN (safe to delete) has placements=0 AND parents=0. Both counts are as this chat's draft sees them. " +
     "Narrow by `moduleId` / `slug` / `pageId` (instances used on one page), plus the standard list params: `filter`, `limit`/`offset`, `full: true`.",
   opName: "content_instances.list",
@@ -75,5 +75,5 @@ export const listContentInstancesTool = makeListReadTool<
     { key: "placements", value: (i) => i.placementCount },
     { key: "parents", value: (i) => i.nestedParentCount },
   ],
-  emptyMessage: "No content_instances match. Call create_content_instance to mint one.",
+  emptyMessage: "No content_instances match. Call create_content_instances to mint one.",
 });

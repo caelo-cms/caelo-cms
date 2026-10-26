@@ -68,7 +68,7 @@ export interface ChatMessage {
    *  jsonb on the assistant message that produced the call). */
   toolName?: string;
   /** v0.2.46 — original tool-call arguments. The cards use selected
-   *  fields (e.g. moduleId for edit_module, hostname for propose_add_domain)
+   *  fields (e.g. items for update_modules_many, hostname for propose_add_domain)
    *  to render richer summaries than the AI-supplied content string. */
   toolArgs?: Record<string, unknown>;
   /**

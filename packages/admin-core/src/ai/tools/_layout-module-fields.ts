@@ -14,7 +14,7 @@
  *
  * The step-13 walk-through caught the AI authoring a footer whose `nav_links` /
  * `copyright` fields had NO defaults, then routing the real values through
- * `create_content_instance` + (intended) `set_placement_content` — which bind
+ * `create_content_instances` + (intended) `set_placement_content` — which bind
  * PAGE placements only. The values never reached the layout placement, so the
  * footer shipped raw `{{copyright}}` + an empty nav site-wide while the AI
  * reported success. That is the issue-#106 class: a valid-looking AI path that
@@ -103,6 +103,6 @@ export function unrenderableLayoutFieldsError(
     `\n\nRe-call \`${toolName}\` with each field carrying a \`default\` holding the real content, e.g. ` +
     `\`{name:"copyright",kind:"text",label:"Copyright",default:"© 2026 Acme. All rights reserved."}\` and ` +
     `\`{name:"nav_links",kind:"list",listType:"menu",bind:"shared",list:"caelo:list/<id>",label:"Footer navigation"}\` for navigation — a shared list: reuse the site's menu from list_lists, or create it with upsert_lists_many (every internal \`href\` must be the path of a page that exists). A list only this module shows is a local list field whose \`default\` holds the entries. ` +
-    `Do NOT call create_content_instance / set_placement_content for ${surface} chrome.`
+    `Do NOT call create_content_instances / set_placement_content for ${surface} chrome.`
   );
 }
