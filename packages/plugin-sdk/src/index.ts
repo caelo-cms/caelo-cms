@@ -31,6 +31,7 @@ import type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
 // plugin sandbox with everything it imports at runtime.
 import { type ListTypeDef, listTypeDefSchema, nodeDefSchema } from "@caelo-cms/shared/lists-model";
 import { z } from "zod";
+import { checkAdminPanels, type PluginAdminPanel, pluginAdminPanel } from "./admin-panels.js";
 
 /**
  * Epic #1107 — the list model a plugin plans with (`docs/lists.md`): the
@@ -51,6 +52,7 @@ export {
   parseValueAddress,
   validateFieldValue,
 } from "@caelo-cms/shared/lists-model";
+export * from "./admin-panels.js";
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
  *  sandbox validator allowlists only the SDK + component-kit. */
@@ -744,9 +746,15 @@ export const pluginManifest = z
     /** See `PluginDefinition.listResolveOperation`. Requires the
      *  `list_resolve` capability: it changes what lists render as. */
     hasListResolve: z.boolean().default(false),
+    /** See `PluginDefinition.adminPanels`. Data only: the admin renders
+     *  them; part of the artifact the Owner approves. */
+    adminPanels: z.array(pluginAdminPanel).max(8).optional(),
   })
   .strict()
   .superRefine((m, ctx) => {
+    checkAdminPanels(m.adminPanels ?? [], m.operations, (path, message) =>
+      ctx.addIssue({ code: "custom", path: ["adminPanels", ...path], message }),
+    );
     // Epic #1107 — a plugin's list types are its own: the slug prefix
     // keeps them from ever colliding with (or replacing) a site's type.
     for (const [i, t] of (m.listTypes ?? []).entries()) {
@@ -1755,6 +1763,17 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    *   }),
    */
   readonly listResolveOperation?: string;
+  /**
+   * The plugin's pages in the admin (see `./admin-panels.ts`). Declared as
+   * data and rendered by the admin's one generic renderer at
+   * `/plugins/<slug>/<panel>`, listed under "Plugins" in the side nav — only
+   * while the plugin is active, and only for people holding the panel's
+   * `permission`, which also gates every action on it. Every operation a
+   * panel names must be in `operations`; they run as `owner-panel`
+   * invocations by the signed-in person. The same for shipped and
+   * runtime-installed plugins: no plugin ships admin UI code.
+   */
+  readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
 }
 
 /**
@@ -1806,6 +1825,7 @@ export function manifestFromDefinition(def: {
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   readonly publicOperations?: ReadonlyArray<string>;
   readonly visitorProjection?: Readonly<Record<string, ReadonlyArray<string>>>;
+  readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
 }): PluginManifest {
   return pluginManifest.parse({
     slug: def.slug,
@@ -1847,6 +1867,7 @@ export function manifestFromDefinition(def: {
     ...(def.listSources && def.listSources.length > 0 ? { listSources: [...def.listSources] } : {}),
     ...(def.listTypes && def.listTypes.length > 0 ? { listTypes: [...def.listTypes] } : {}),
     ...(def.listExt ? { listExt: def.listExt } : {}),
+    ...(def.adminPanels && def.adminPanels.length > 0 ? { adminPanels: [...def.adminPanels] } : {}),
   });
 }
 

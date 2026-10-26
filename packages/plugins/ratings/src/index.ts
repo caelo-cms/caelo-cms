@@ -128,7 +128,8 @@ export default definePlugin<PluginContextTier1>({
 
     list_aggregates: async (ctx, args) => {
       const input = (args ?? {}) as { pageId?: string };
-      const filter: Record<string, unknown> = { limit: 200 };
+      // Most-rated first: the admin panel lists them in this order.
+      const filter: Record<string, unknown> = { limit: 200, orderBy: "count", orderDir: "desc" };
       if (input.pageId) filter.page_id = input.pageId;
       const rows = await ctx.query.list<"rating_aggregates", AggregateRow>(
         "rating_aggregates",
@@ -201,6 +202,42 @@ export default definePlugin<PluginContextTier1>({
     },
   },
   workers: [{ name: "refresh_aggregates", cron: "*/5 * * * *", operationName: "_refresh" }],
+  /** Page ratings in the admin (rendered from this declaration). */
+  adminPanels: [
+    {
+      slug: "ratings",
+      title: "Ratings",
+      description: "How visitors rate your pages.",
+      icon: "star",
+      permission: "settings.write",
+      sections: [
+        {
+          kind: "table",
+          id: "aggregates",
+          title: "Page ratings",
+          description:
+            "Most-rated pages first. Ratings are recounted every five minutes; refresh to recount now.",
+          operation: "list_aggregates",
+          rowsKey: "aggregates",
+          emptyMessage: "No ratings yet.",
+          columns: [
+            { key: "page_id", label: "Page", format: "code" },
+            { key: "count", label: "Votes", format: "number" },
+            { key: "average", label: "Average", format: "number", divisor: 100, decimals: 2 },
+          ],
+          actions: [
+            {
+              id: "refresh",
+              label: "Refresh now",
+              operation: "_refresh",
+              variant: "secondary",
+              successMessage: "Recounted the ratings of {refreshed} pages.",
+            },
+          ],
+        },
+      ],
+    },
+  ],
   tools: [
     {
       name: "list_rating_aggregates",

@@ -460,6 +460,126 @@ export default definePlugin<PluginContextTier1>({
     _drain_sends: async (ctx, _args) => drainSends(ctx),
   },
   workers: [{ name: "drain_sends", cron: "0 * * * * *", operationName: "_drain_sends" }],
+  /** Campaigns in the admin (rendered from this declaration). */
+  adminPanels: [
+    {
+      slug: "campaigns",
+      title: "Newsletter",
+      description: "Draft campaigns and send them to your subscribers.",
+      icon: "mail",
+      permission: "settings.write",
+      sections: [
+        {
+          kind: "stats",
+          id: "audience",
+          title: "Audience",
+          operation: "list_campaigns",
+          items: [{ key: "subscriberCount", label: "Confirmed subscribers", format: "number" }],
+        },
+        {
+          kind: "form",
+          id: "draft",
+          title: "Draft a new campaign",
+          description:
+            "The AI writes the body from your brief. You review it before anything is sent.",
+          operation: "draft_campaign",
+          fields: [
+            {
+              arg: "slug",
+              label: "Slug",
+              input: "text",
+              required: true,
+              placeholder: "spring-launch",
+              maxLength: 120,
+            },
+            {
+              arg: "subject",
+              label: "Subject",
+              input: "text",
+              required: true,
+              placeholder: "Our spring lineup is here",
+              maxLength: 300,
+            },
+            {
+              arg: "brief",
+              label: "Brief: what should the AI write about?",
+              input: "textarea",
+              required: true,
+              maxLength: 8000,
+            },
+          ],
+          submitLabel: "Draft with AI",
+          successMessage: "Draft created. Review it in the campaign list to send it.",
+        },
+        {
+          kind: "table",
+          id: "campaigns",
+          title: "Campaigns",
+          description:
+            "Sends go out within minutes of your approval. The AI can list, draft and (with your approval) send campaigns too.",
+          operation: "list_campaigns",
+          rowsKey: "campaigns",
+          rowKey: "id",
+          emptyMessage: "No campaigns yet.",
+          columns: [
+            { key: "subject", label: "Subject", format: "text" },
+            { key: "slug", label: "Slug", format: "code" },
+            {
+              key: "status",
+              label: "Status",
+              format: "badge",
+              badgeVariants: { draft: "secondary" },
+            },
+            { key: "approvedSend.status", label: "Send", format: "text" },
+            { key: "approvedSend.processed", label: "Processed", format: "number" },
+            { key: "approvedSend.recipientCount", label: "Recipients", format: "number" },
+            { key: "created_at", label: "Created", format: "datetime" },
+          ],
+          rowActions: [
+            {
+              id: "send",
+              label: "Review and send",
+              operation: "send_campaign",
+              variant: "default",
+              rowArgs: { campaignId: "id" },
+              when: [
+                { key: "status", in: ["draft"] },
+                { key: "approvedSend", in: [null] },
+              ],
+              // #635 — the Owner approves the content and the recipient
+              // bound they saw; send_campaign refuses a draft that changed.
+              review: {
+                operation: "get_campaign",
+                title: "Review before sending",
+                description:
+                  "Exactly this subject and body go to at most {recipientCount} subscriber(s). Emails that went out cannot be recalled.",
+                fields: [
+                  { key: "subject", label: "Subject", format: "text" },
+                  { key: "bodyHtml", label: "Body (HTML source)", format: "multiline" },
+                  { key: "recipientCount", label: "Recipients at most", format: "number" },
+                ],
+                submitArgs: {
+                  campaignId: "id",
+                  subject: "subject",
+                  bodyHtml: "bodyHtml",
+                  recipientCount: "recipientCount",
+                },
+                submitWhen: [{ key: "status", in: ["draft"] }],
+                unavailableMessage: "This campaign is {status}; only drafts can be sent.",
+                submitLabel: "Send exactly this",
+              },
+              confirm: {
+                title: "Send this campaign?",
+                description: "Emails that went out cannot be recalled.",
+                confirmLabel: "Send",
+              },
+              successMessage: "Approved: {queued} emails go out within a few minutes.",
+            },
+          ],
+        },
+      ],
+    },
+  ],
   tools: [
     {
       name: "list_newsletter_campaigns",
