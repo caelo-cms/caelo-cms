@@ -228,12 +228,16 @@ describe("redirect sync on save (#1157)", () => {
 
   it("a failed push is loud, keeps the redirect, is shown and retried until live", async () => {
     await rm(currentDir("production"), { recursive: true, force: true });
-    const r = await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
-    expect(r.ok).toBe(false);
-    if (r.ok || r.error.kind !== "HandlerError") throw new Error("expected a HandlerError");
-    expect(r.error.message).toContain("The change is saved");
-    expect(r.error.message).toContain("retried automatically");
-    expect(r.error.message).not.toContain("Restart the admin server");
+    // The write is saved and answers ok; the AI tool result says why it is not live.
+    const r = await bulkCreateRedirectsTool.handler(
+      SYSTEM,
+      { redirects: [{ fromPath: "/old", toPath: "/about", statusCode: 301 }], upsert: false },
+      { adapter, registry } as ToolContext,
+    );
+    expect(r.ok).toBe(true);
+    expect(r.content).toContain("production (production): NOT live yet");
+    expect(r.content).toContain("serves no files");
+    expect(r.content).toContain("Retried automatically");
 
     const saved = await sys(
       (tx) => tx`SELECT count(*)::int AS n FROM redirects` as unknown as Promise<{ n: number }[]>,

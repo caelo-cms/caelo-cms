@@ -20,9 +20,11 @@
  *     records the attempt (`redirect_syncs`, audit) plus the revision the
  *     target now serves.
  *  3. A failed attempt leaves the target behind (wanted > synced), is shown
- *     in Settings → Redirects and the notification bell, fails the write's
- *     result loudly ("saved, but not live yet"), and is retried with backoff
- *     by the redirect-sync worker. Never silent.
+ *     in Settings → Redirects and the notification bell, is named in the
+ *     redirect tools' results ("NOT live yet" + the error), and is retried
+ *     with backoff by the redirect-sync worker. Never silent. It does not
+ *     turn the write itself into an error: the write is saved, and a page
+ *     slug change must not fail because the hosting was unreachable.
  *
  * Publish live and rollback run the same sync for their target inside their
  * own transaction after the files are live: the build they ship carries the
@@ -122,13 +124,20 @@ export async function requestRedirectSync(
   if (run === null) return;
   afterCommit(tx, {
     label: "put the saved redirects live on your hosting",
-    nextStep:
-      "The redirects stay saved and the push to your hosting is retried automatically; Settings → Redirects shows the status and the error. Fix the cause it names if it is in the redirects (a loop, two rows for one path).",
+    // A failed push does not fail the write that triggered it (a slug change
+    // must not report an error because the hosting was unreachable): it is
+    // recorded, shown in Settings → Redirects and the bell, named in the
+    // redirect tools' results, and retried by the worker.
     run: async () => {
       const outcomes = await run("save");
-      const failed = outcomes.filter((o) => o.status === "failed");
-      if (failed.length > 0) {
-        throw new Error(failed.map((o) => `${o.targetName}: ${o.error}`).join("; "));
+      for (const o of outcomes.filter((x) => x.status === "failed")) {
+        console.error(
+          "[redirect-sync] the saved redirects are not live yet; retried automatically",
+          {
+            target: o.targetName,
+            error: o.error,
+          },
+        );
       }
     },
   });

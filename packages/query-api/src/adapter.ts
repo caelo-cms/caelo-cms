@@ -227,12 +227,7 @@ interface ConnectionIdentity {
  */
 function postCommitFailureMessage(failures: ReadonlyArray<PostCommitFailure>): string {
   const list = failures.map((f) => `${f.effect.label} (${f.message})`).join("; ");
-  const ownSteps = failures.flatMap((f) => (f.effect.nextStep ? [f.effect.nextStep] : []));
-  const restart = failures.some((f) => !f.effect.nextStep)
-    ? " Restart the admin server so the running state is rebuilt from the saved data."
-    : "";
-  const steps = ownSteps.length > 0 ? ` ${ownSteps.join(" ")}` : "";
-  return `The change is saved, but its follow-up in the running server failed: ${list}. Do not repeat the change.${steps}${restart} The failure is in the audit log.`;
+  return `The change is saved, but its follow-up in the running server failed: ${list}. Do not repeat the change. Restart the admin server so the running state is rebuilt from the saved data; the failure is in the audit log.`;
 }
 
 export class DatabaseAdapter {

@@ -41,10 +41,7 @@ async function markerVisible(marker: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-const writeInput = z.object({
-  marker: z.string(),
-  mode: z.enum(["ok", "throw", "fail_effect", "fail_with_step"]),
-});
+const writeInput = z.object({ marker: z.string(), mode: z.enum(["ok", "throw", "fail_effect"]) });
 
 beforeAll(async () => {
   adapter = new DatabaseAdapter({ adminDatabaseUrl: ADMIN_URL, publicDatabaseUrl: PUBLIC_URL });
@@ -67,13 +64,8 @@ beforeAll(async () => {
           label: `effect ${input.marker}`,
           run: async () => {
             ran.push({ label: input.marker, rowVisible: await markerVisible(input.marker) });
-            if (input.mode === "fail_effect" || input.mode === "fail_with_step") {
-              throw new Error("host refused");
-            }
+            if (input.mode === "fail_effect") throw new Error("host refused");
           },
-          ...(input.mode === "fail_with_step"
-            ? { nextStep: "It is retried automatically; Settings shows its status." }
-            : {}),
         });
         if (input.mode === "throw") throw new Error("statement after the effect failed");
         return ok({});
@@ -132,19 +124,6 @@ describe("afterCommit", () => {
     expect(audited).toEqual([
       { succeeded: false, result_summary: "effect effect-fails: host refused" },
     ]);
-  });
-
-  it("a failing effect with its own next step names that step instead of a restart (#1157)", async () => {
-    const r = await execute(registry, adapter, ctx, "post_commit.write", {
-      marker: "effect-own-step",
-      mode: "fail_with_step",
-    });
-    if (r.ok || r.error.kind !== "HandlerError") {
-      throw new Error(`expected a HandlerError, got ${JSON.stringify(r)}`);
-    }
-    expect(r.error.message).toContain("The change is saved");
-    expect(r.error.message).toContain("It is retried automatically; Settings shows its status.");
-    expect(r.error.message).not.toContain("Restart the admin server");
   });
 
   it("withAdminTransaction runs effects after its commit and drops them on a throw", async () => {
