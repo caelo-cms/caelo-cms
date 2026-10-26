@@ -219,7 +219,7 @@ describe("#1107 reference integrity — Stage gate", () => {
     expect(message).toContain("Reference to a deleted list");
     expect(message).toContain(`field "nav" of module "${PFX} Header"`);
     expect(message).toContain(`"/${PFX}-docs"`);
-    expect(message).toContain("set_page_module_content");
+    expect(message).toContain("set_page_module_content_many");
     // Rolled back: the list is still live on main.
     expect((await getList(SYS, slug)).id).toBe(list.id);
   });

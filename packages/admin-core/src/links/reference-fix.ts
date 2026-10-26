@@ -180,7 +180,7 @@ function remedy(problem: ReferenceProblem, target: string, variant: string | nul
  *
  * @param instanceLevel content that must be fixed on its content instance:
  *   shared by several pages, or shown through a synced placement (which
- *   set_page_module_content refuses).
+ *   set_page_module_content_many refuses).
  */
 export function fixFor(
   problem: ReferenceProblem,
@@ -195,13 +195,13 @@ export function fixFor(
     case "content":
       return place.nested || instanceLevel
         ? {
-            tool: "set_content_instance_values",
+            tool: "set_content_instance_values_many",
             hint: clip(
               `in content instance ${place.contentInstanceId} (module "${place.moduleName}"), field "${place.field}": ${what}`,
             ),
           }
         : {
-            tool: "set_page_module_content",
+            tool: "set_page_module_content_many",
             hint: clip(
               `field "${place.field}" of module "${place.moduleName}" on this page: ${what}`,
             ),
@@ -215,7 +215,7 @@ export function fixFor(
       };
     case "module-default":
       return {
-        tool: "edit_module",
+        tool: "update_modules_many",
         hint: clip(`module ${place.moduleId}, default of field "${place.field}": ${what}`),
       };
     case "layout-html":
@@ -237,7 +237,7 @@ export function fixFor(
       };
     case "module-field":
       return {
-        tool: "edit_module",
+        tool: "update_modules_many",
         hint: clip(
           `module ${place.moduleId}, definition of field "${place.field}" (${where}): ${what}`,
         ),

@@ -52,8 +52,8 @@ export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, Me
   name: "find_media",
   description:
     "Search the media library (TOON rows: id, name, mime, dims, alt, url). `filter` matches alt/filename server-side; optional `mime`; `limit`/`offset`/`full` as usual. " +
-    "The `id` column is the media UUID that `set_theme_asset` / `set_media_alt` / `regenerate_media_variants` require — take it from here; never invent one. " +
-    "The `url` column always points at a variant that EXISTS on the asset — use it verbatim in <img src> via edit_module; do NOT rewrite the variant segment. " +
+    "The `id` column is the media UUID that `set_theme_asset` / `set_media_alt_many` / `regenerate_media_variants` require — take it from here; never invent one. " +
+    "The `url` column always points at a variant that EXISTS on the asset — use it verbatim in <img src> via update_modules_many; do NOT rewrite the variant segment. " +
     'Reference images (guides for generate/edit, not placeable on pages) are hidden unless you pass `visibility: "reference"` or `"all"`. ' +
     "Use when the user references an asset by description. This searches the EXISTING Caelo library only — during a site migration it is empty, so import source-site images with import_media_from_urls instead of this tool.",
   opName: "media.list",
@@ -80,7 +80,7 @@ export const findMediaTool = makeListReadTool<z.infer<typeof findMediaInput>, Me
   label: "media",
   rows: (value) => (value as { assets: MediaRow[] }).assets,
   columns: [
-    // The UUID other media tools (set_theme_asset, set_media_alt, …)
+    // The UUID other media tools (set_theme_asset, set_media_alt_many, …)
     // require — issue #411: without it the model had no way to bind
     // what it found.
     { key: "id", value: (a) => a.id },

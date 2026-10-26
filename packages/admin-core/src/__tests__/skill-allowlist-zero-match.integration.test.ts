@@ -187,7 +187,7 @@ describe("skill allowlist resolution (issue #106 / issue #301)", () => {
     expect(byName.has("list_pages")).toBe(true); // core, always loaded
     // Writes are NOT dropped anymore — reachable via Tool Search.
     expect(byName.has("add_module")).toBe(true);
-    expect(byName.has("edit_module")).toBe(true);
+    expect(byName.has("update_modules_many")).toBe(true);
     expect(byName.has("bulk_create_redirects")).toBe(true);
   });
 
@@ -206,16 +206,21 @@ describe("skill allowlist resolution (issue #106 / issue #301)", () => {
   });
 
   it("a VALID partial allowlist PRELOADS the named write; nothing else is removed (run #8 R2b/R5)", async () => {
-    await seedSkill(VALID_SLUG, ["edit_module"], "zzscopededit");
+    // A long-tail write (not in the core set), so its preload can only come
+    // from the allowlist.
+    await seedSkill(VALID_SLUG, ["set_page_seo_many"], "zzscopededit");
     const tools = await captureToolsForTurn(VALID_SLUG);
     const byName = new Map(tools.map((t) => [t.name, t]));
     // The allowlisted write is preloaded (schema up front).
-    expect(byName.get("edit_module")?.alwaysLoaded).toBe(true);
+    expect(byName.get("set_page_seo_many")?.alwaysLoaded).toBe(true);
     // Every OTHER write is STILL present — reachable via Tool Search,
     // just not preloaded. Skill allowlists no longer narrow.
     expect(byName.has("add_module")).toBe(true);
     expect(byName.has("build_page")).toBe(true);
-    expect(byName.has("set_page_module_content")).toBe(true);
+    expect(byName.has("set_page_module_content_many")).toBe(true);
+    // A non-core write outside the allowlist is present but not preloaded.
+    expect(byName.has("bulk_create_redirects")).toBe(true);
+    expect(byName.get("bulk_create_redirects")?.alwaysLoaded).toBeFalsy();
     // Reads + the orchestrator's spawn tools are obviously present too.
     expect(byName.has("list_modules")).toBe(true);
     expect(byName.has("inspect_page_render")).toBe(true);

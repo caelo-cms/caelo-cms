@@ -224,7 +224,7 @@ describe("build_page writes the new page's meta description (fill-once)", () => 
   });
 });
 
-describe("autofill_page_seo fill-once", () => {
+describe("autofill_page_seo_many fill-once", () => {
   let pageId: string;
 
   beforeAll(async () => {
@@ -235,8 +235,8 @@ describe("autofill_page_seo fill-once", () => {
   it("the same text again is a no-op, not a refusal", async () => {
     const tools = createDefaultToolRegistry();
     const r = await tools.dispatch(
-      "autofill_page_seo",
-      { pageId, metaDescription: "Who we are." },
+      "autofill_page_seo_many",
+      { items: [{ pageId, metaDescription: "Who we are." }] },
       SYS,
       { registry, adapter },
     );
@@ -253,7 +253,7 @@ describe("autofill_page_seo fill-once", () => {
     const message = r.ok ? "" : ((r.error as { message?: string }).message ?? "");
     expect(message).toContain("AlreadyAutofilled");
     expect(message).toContain('"Who we are."');
-    expect(message).toContain("optimize_page_seo");
+    expect(message).toContain("bulk_optimize_seo");
     const seo = await op<{ seo: { metaDescription: string } }>("pages_seo.get", { pageId });
     expect(seo.seo.metaDescription).toBe("Who we are.");
   });

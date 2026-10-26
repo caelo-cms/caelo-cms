@@ -49,7 +49,7 @@ export const addPluginToPageTool: ToolDefinitionWithHandler<
   description:
     "Place a plugin's output (comments thread, contact form, ratings widget, newsletter signup, etc.) on ONE page at a chosen block + position. " +
     "Use this for 'add comments to /about' or 'put a ratings widget at the bottom of /blog/spring-launch'. " +
-    "The plugin must already be installed + active — check `# Plugins` in the system prompt for available slugs. " +
+    "The plugin must already be installed + active — check list_plugins for the active slugs. " +
     "For site-wide placement (every blog post, every page on a template) call this tool once per page; a fan-out variant is a follow-up.",
   schema: addPluginToPageToolInput,
   inputSchema: {

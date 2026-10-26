@@ -13,12 +13,14 @@ import { type DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { ok } from "@caelo-cms/shared";
 import { registerAdminOps } from "../../register.js";
+import { updateModulesManyTool } from "../tools/bulk-pages-modules.js";
 import type { ToolContext } from "../tools/dispatch.js";
-import { editModuleTool } from "../tools/edit-module.js";
 import { updateThemeTokensTool } from "../tools/update-theme-tokens.js";
 
 const registry = new OperationRegistry();
 registerAdminOps(registry);
+
+const MODULE_ID = "11111111-1111-4111-8111-111111111101";
 
 const AI: ExecutionContext = {
   actorId: "00000000-0000-0000-0000-000000000a1a",
@@ -36,13 +38,15 @@ const TOKENS = {
 
 function toolCtxWith(overrides: { moduleCss?: string } = {}): ToolContext {
   const adapter = {
-    runOperation: async (op: { name: string }) => {
+    runOperation: async (op: { name: string }, _ctx: unknown, input: unknown) => {
       switch (op.name) {
         case "themes.get_active":
           return ok({ theme: { tokens: TOKENS } });
-        case "modules.update":
-          return ok({});
-        // #158 — a css-only edit_module reads the stored root for the scope check.
+        case "modules.update_many": {
+          const n = (input as { updates: unknown[] }).updates.length;
+          return ok({ updated: n, notFoundIds: [], failed: [], extracted: [] });
+        }
+        // #158 — a css-only module edit reads the stored root for the scope check.
         case "modules.get":
           return ok({ module: { html: '<section class="hero"></section>' } });
         case "themes.update_tokens":
@@ -71,13 +75,10 @@ function toolCtxWith(overrides: { moduleCss?: string } = {}): ToolContext {
 }
 
 describe("authoring-tool css-var warning (issue #156)", () => {
-  it("edit_module flags a typo'd var with a did-you-mean", async () => {
-    const res = await editModuleTool.handler(
+  it("update_modules_many flags a typo'd var with a did-you-mean", async () => {
+    const res = await updateModulesManyTool.handler(
       AI,
-      {
-        moduleId: "11111111-1111-4111-8111-111111111101",
-        css: ".hero{color:var(--color-foregruond)}",
-      },
+      { items: [{ moduleId: MODULE_ID, css: ".hero{color:var(--color-foregruond)}" }] },
       toolCtxWith(),
     );
     expect(res.ok).toBe(true);
@@ -86,12 +87,16 @@ describe("authoring-tool css-var warning (issue #156)", () => {
     expect(res.content).toContain("did you mean `--color-foreground`?");
   });
 
-  it("edit_module stays quiet on clean css and locally-defined props", async () => {
-    const res = await editModuleTool.handler(
+  it("update_modules_many stays quiet on clean css and locally-defined props", async () => {
+    const res = await updateModulesManyTool.handler(
       AI,
       {
-        moduleId: "11111111-1111-4111-8111-111111111101",
-        css: ".hero{--hero-angle:3deg;color:var(--color-primary);rotate:var(--hero-angle)}",
+        items: [
+          {
+            moduleId: MODULE_ID,
+            css: ".hero{--hero-angle:3deg;color:var(--color-primary);rotate:var(--hero-angle)}",
+          },
+        ],
       },
       toolCtxWith(),
     );
@@ -99,14 +104,34 @@ describe("authoring-tool css-var warning (issue #156)", () => {
     expect(res.content).not.toContain("Unknown CSS vars");
   });
 
-  it("edit_module without css never fetches the theme (no scan, no noise)", async () => {
-    const res = await editModuleTool.handler(
+  it("update_modules_many without css never fetches the theme (no scan, no noise)", async () => {
+    const res = await updateModulesManyTool.handler(
       AI,
-      { moduleId: "11111111-1111-4111-8111-111111111101", html: "<p>{{body_text}}</p>" },
+      { items: [{ moduleId: MODULE_ID, html: "<p>{{body_text}}</p>" }] },
       toolCtxWith(),
     );
     expect(res.ok).toBe(true);
-    expect(res.content).toBe("module 11111111-1111-4111-8111-111111111101 updated");
+    expect(res.content).toBe(
+      `Updated 1 of 1 module(s) (notFound=0, failed=0).\n- ${MODULE_ID}: updated`,
+    );
+  });
+
+  it("names the var warning on the item that wrote it, not on its clean neighbour", async () => {
+    const OTHER = "11111111-1111-4111-8111-111111111102";
+    const res = await updateModulesManyTool.handler(
+      AI,
+      {
+        items: [
+          { moduleId: MODULE_ID, css: ".hero{color:var(--color-primary)}" },
+          { moduleId: OTHER, css: ".hero{color:var(--color-foregruond)}" },
+        ],
+      },
+      toolCtxWith(),
+    );
+    expect(res.ok).toBe(true);
+    const lines = res.content.split("\n");
+    expect(lines.find((l) => l.startsWith(`- ${MODULE_ID}`))).not.toContain("Unknown CSS vars");
+    expect(lines.find((l) => l.startsWith(`- ${OTHER}`))).toContain("--color-foregruond");
   });
 });
 

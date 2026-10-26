@@ -580,7 +580,7 @@ function hreflang(
         pageId: f.pageId,
         message: `hreflang to a page search engines may not index: ${target.path} (${a.hreflang}) ${noindex ? "is noindex" : `has its canonical at ${target.canonical?.href}`}. Search engines then discard the alternates of the whole group.`,
         fix: {
-          tool: "set_page_seo",
+          tool: "set_page_seo_many",
           hint: `Make ${target.path} indexable with a self-referencing canonical, or unlink it from the group if it should not be found.`,
         },
       });
@@ -599,7 +599,7 @@ function hreflang(
         pageId: f.pageId,
         message: `Canonical to another language: the ${model.displayName(locale)} version names ${f.canonical.path} (${model.displayName(model.localeOf(canonicalPage))}) as its canonical, so search engines drop this version from the index.`,
         fix: {
-          tool: "set_page_seo",
+          tool: "set_page_seo_many",
           hint: "Remove the canonical override; every language version is canonical to itself.",
         },
       });
@@ -678,7 +678,7 @@ function languageLinks(model: BuildModel, f: PluginAuditPageFacts): PluginAuditF
         severity: "warning",
         message: `Language switch to the home page: the link ${quote(l.text)} in ${whereOf(l.moduleId, l.pluginSlug)} leads to the ${model.displayName(linkLocale)} home page, although the current page has a ${model.displayName(linkLocale)} version. Visitors lose their place.`,
         fix: {
-          tool: "edit_module",
+          tool: "update_modules_many",
           hint: "Build the language switch from the language_links list source ({{#language_links}}…{{/language_links}}): each entry is the current page's own version.",
         },
       });
@@ -689,7 +689,7 @@ function languageLinks(model: BuildModel, f: PluginAuditPageFacts): PluginAuditF
       severity: "error",
       message: `Hardcoded language link: ${quote(l.text || l.href)} → ${l.href} in ${whereOf(l.moduleId, l.pluginSlug)} is a fixed address, so on pages without a ${model.displayName(linkLocale)} version, or with another one, it leads to the wrong page or a 404.`,
       fix: {
-        tool: "edit_module",
+        tool: "update_modules_many",
         hint: 'Replace the fixed link with the language_links list source: <nav>{{#language_links}}<a href="{{href}}" hreflang="{{locale}}">{{label}}</a>{{/language_links}}</nav>. It lists exactly the published versions of each page.',
       },
     });

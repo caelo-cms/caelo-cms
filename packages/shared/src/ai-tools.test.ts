@@ -1,24 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import {
-  chatPublishInput,
-  chatSendMessageInput,
-  editModuleToolInput,
-  siteMemoryProposeToolInput,
-} from "./ai-tools.js";
+import { chatPublishInput, chatSendMessageInput, siteMemoryProposeToolInput } from "./ai-tools.js";
+import { moduleUpdateSchema } from "./content.js";
 
 const UUID = "11111111-1111-4111-8111-111111111111";
 const UUID_2 = "22222222-2222-4222-8222-222222222222";
 
-describe("editModuleToolInput", () => {
+// The per-item shape of update_modules_many (the module-edit tool extends it).
+describe("moduleUpdateSchema (update_modules_many item)", () => {
   it("accepts a minimal valid edit", () => {
-    const r = editModuleToolInput.safeParse({ moduleId: UUID, html: "<p>x</p>" });
+    const r = moduleUpdateSchema.safeParse({ moduleId: UUID, html: "<p>x</p>" });
     expect(r.success).toBe(true);
   });
 
   it("rejects unknown keys (.strict)", () => {
-    const r = editModuleToolInput.safeParse({
+    const r = moduleUpdateSchema.safeParse({
       moduleId: UUID,
       html: "<p>x</p>",
       pageId: UUID_2,
@@ -27,21 +24,11 @@ describe("editModuleToolInput", () => {
   });
 
   it("rejects oversized html", () => {
-    const r = editModuleToolInput.safeParse({
+    const r = moduleUpdateSchema.safeParse({
       moduleId: UUID,
       html: "x".repeat(300_000),
     });
     expect(r.success).toBe(false);
-  });
-
-  // e2e-livedit run 40351690739 — `{moduleId}` alone reached the op.
-  it("refuses an edit that changes nothing, naming what to pass", () => {
-    for (const input of [{ moduleId: UUID }, { moduleId: UUID, bindThemeLiterals: false }]) {
-      const r = editModuleToolInput.safeParse(input);
-      expect(r.success).toBe(false);
-      if (!r.success) expect(r.error.issues[0]?.message).toContain("edit_module changes nothing");
-    }
-    expect(editModuleToolInput.safeParse({ moduleId: UUID, kind: "hero" }).success).toBe(true);
   });
 });
 

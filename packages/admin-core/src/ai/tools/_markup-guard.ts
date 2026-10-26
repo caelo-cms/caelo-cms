@@ -93,7 +93,7 @@ export function moduleReuseHints(
           .sort((a, b) => b.score - a.score)[0];
     if (exact) {
       hints.push(
-        `this markup is structurally identical to the existing module "${exact.m.displayName}" (${exact.m.id}) — place that module by moduleId with this content as values (edit_module it if it must change) instead of keeping a copy; two copies fail the structure quality check`,
+        `this markup is structurally identical to the existing module "${exact.m.displayName}" (${exact.m.id}) — place that module by moduleId with this content as values (update_modules_many it if it must change) instead of keeping a copy; two copies fail the structure quality check`,
       );
     } else if (near) {
       hints.push(

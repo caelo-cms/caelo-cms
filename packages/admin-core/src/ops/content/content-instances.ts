@@ -158,7 +158,7 @@ async function validateNestedRefs(
   values: Record<string, unknown>,
 ): Promise<{ ok: true } | { ok: false; message: string; refusal?: true }> {
   // Read the owning module's fields schema AS THE CALLER SEES IT (#1042):
-  // a chat's `edit_module` lands only in its branch snapshot, so reading
+  // a chat's `update_modules_many` lands only in its branch snapshot, so reading
   // live `modules.fields` validated the values against main's schema — a
   // field the chat had just turned from `module` into `module-list`
   // rejected the list it now declares. Skip if module not found — the
@@ -395,7 +395,7 @@ async function validateNestedRefs(
           message:
             `field "${where}" references module "${m.slug}" (type "${m.type}"), which is not in this field's allowedModuleTypes [${allowed}]. ` +
             `Next step: reference an existing module whose type is one of [${allowed}] (\`list_modules\` shows each module's type and this field's allowedModuleTypes), ` +
-            `or, if this module SHOULD be allowed here, add "${m.type}" to the field's allowedModuleTypes via edit_module on the parent module. ` +
+            `or, if this module SHOULD be allowed here, add "${m.type}" to the field's allowedModuleTypes via update_modules_many on the parent module. ` +
             `Do not ask the operator to fix this — pick a valid module or widen the allowlist and retry.`,
         };
       }
@@ -872,13 +872,16 @@ export const createContentInstancesManyOp = defineOperation({
       if (item === undefined) continue;
       const r = await createContentInstanceOp.handler(ctx, item, tx);
       if (!r.ok) {
-        const inner = r.error as { message?: string };
+        const inner = r.error as { message?: string; refusal?: true };
         const queryError = {
           kind: "HandlerError" as const,
           operation: "content_instances.create_many",
           message: `instances[${i}] (moduleId=${item.moduleId}${item.slug ? `, slug=${item.slug}` : ""}): ${
             inner.message ?? r.error.kind
           }. The whole batch was rolled back — fix this item and resend all ${input.instances.length}.`,
+          // #1091 — an item's guard refusal stays a refusal for the batch
+          // (the guard-refusal capture keys on it), as in `defineBulkOp`.
+          ...(r.error.kind === "HandlerError" && inner.refusal ? { refusal: true as const } : {}),
         };
         if (contentInstanceIds.length > 0) throw new OperationAbortError(queryError);
         return err(queryError);
@@ -1406,7 +1409,7 @@ export const deleteContentInstanceOp = defineOperation({
         kind: "HandlerError",
         operation: "content_instances.delete",
         refusal: true,
-        message: `cannot delete: ${parents.length} content_instance(s) show this one inside a module / module-list field: ${shown}${more}. It renders wherever they render, so it is not an orphan. To delete it, first remove it from each parent's field with set_content_instance_values on the parent (get_content_instance shows the parent's values), then retry the delete.`,
+        message: `cannot delete: ${parents.length} content_instance(s) show this one inside a module / module-list field: ${shown}${more}. It renders wherever they render, so it is not an orphan. To delete it, first remove it from each parent's field with set_content_instance_values_many on the parent (get_content_instance shows the parent's values), then retry the delete.`,
         nextAction: {
           tool: "get_content_instance",
           args: { id: parents[0] },

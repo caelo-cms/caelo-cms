@@ -5,9 +5,10 @@
  * `schema` at registration, so the two can no longer drift.
  *
  * This suite proves equivalence BEFORE trusting the generated schema for the
- * four tools with drift/coercion history (F11/F12/F17 + #245):
- * `fork_placement_content`, `set_content_instance_values`, `offer_choices`,
- * `set_theme_tokens`. Each tool's PRE-DELETION hand-written schema is
+ * tools with drift/coercion history (F11/F12/F17 + #245):
+ * `fork_placement_content`, `offer_choices`, `set_theme_tokens` (plus the
+ * content-instance value edit, now the per-item shape of
+ * `set_content_instance_values_many`). Each tool's PRE-DELETION hand-written schema is
  * embedded below as a fixture; we assert the registry's now-generated
  * `inputSchema` matches its property key set + required set + object shape.
  * A generic pass then asserts generation is robust (no throw, object schema)
@@ -46,10 +47,6 @@ const HANDWRITTEN: Record<string, { keys: string[]; required: string[] }> = {
     keys: ["blockName", "pageId", "position"],
     required: ["blockName", "pageId", "position"],
   },
-  set_content_instance_values: {
-    keys: ["displayName", "expectedVersion", "id", "purpose", "slug", "values"],
-    required: ["id", "values"],
-  },
   offer_choices: {
     keys: ["options", "question"],
     required: ["options", "question"],
@@ -85,10 +82,6 @@ describe("generateInputSchema — a Zod-valid sample round-trips", () => {
       blockName: "header",
       position: 0,
     },
-    set_content_instance_values: {
-      id: "00000000-0000-4000-8000-000000000000",
-      values: { hero_title: "Hi" },
-    },
     offer_choices: {
       question: "Which layout?",
       options: [
@@ -108,6 +101,31 @@ describe("generateInputSchema — a Zod-valid sample round-trips", () => {
       for (const k of Object.keys(sample)) expect(advertised).toContain(k);
     });
   }
+});
+
+describe("set_content_instance_values_many — per-item shape keeps the content-instance edit baseline", () => {
+  // The value edit lives on as the item of the bulk tool; its per-item
+  // provider schema must advertise the same keys the edit always took.
+  const ITEM_BASELINE = {
+    keys: ["displayName", "expectedVersion", "id", "purpose", "slug", "values"],
+    required: ["id", "values"],
+  };
+  const tool = registry.get("set_content_instance_values_many");
+  if (!tool) throw new Error("set_content_instance_values_many is not registered");
+  const props = tool.inputSchema.properties as Record<string, { items: unknown }>;
+  const item = shapeOf(props.items?.items);
+
+  it("advertises exactly the baseline keys + required set on each item", () => {
+    expect(item.keys).toEqual([...ITEM_BASELINE.keys].sort());
+    expect(item.required).toEqual([...ITEM_BASELINE.required].sort());
+    expect(item.strict).toBe(true);
+  });
+
+  it("a one-item sample parses and uses only advertised item keys", () => {
+    const sample = { id: "00000000-0000-4000-8000-000000000000", values: { hero_title: "Hi" } };
+    expect(() => tool.schema.parse({ items: [sample] })).not.toThrow();
+    for (const k of Object.keys(sample)) expect(item.keys).toContain(k);
+  });
 });
 
 describe("generateInputSchema — robust across the whole catalogue", () => {

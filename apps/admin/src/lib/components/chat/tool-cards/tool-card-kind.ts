@@ -39,7 +39,7 @@ const FIND_TOOLS = new Set(["find_media", "find_redirects"]);
  * plugin chooses its tools' names — so a plugin result (#635: possibly
  * visitor-written) is recognised by its content FIRST and always gets the
  * plain-text card, whatever its tool is called. Otherwise a plugin tool
- * named `propose_*` or `edit_module` would put visitor text through a
+ * named `propose_*` or `edit_content` would put visitor text through a
  * card that renders markdown or offers Approve buttons.
  */
 export function toolCardKind(name: string, content: string, ok: boolean): ToolCardKind {
@@ -52,6 +52,8 @@ export function toolCardKind(name: string, content: string, ok: boolean): ToolCa
   }
   if (name === "offer_choices") return "choices";
   if (name === "present_design_variants") return "design-variants";
+  // edit_module is retired (update_modules_many, a bulk tool, replaced
+  // it); older chats still hold its results, so the card stays for them.
   if (name === "edit_module") return "edit-module";
   if (name === "edit_content") return "edit-content";
   if (SCREENSHOT_TOOLS.has(name)) return "screenshot";

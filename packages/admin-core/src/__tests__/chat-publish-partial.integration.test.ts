@@ -116,14 +116,14 @@ describe("chat.publish partial", () => {
         {
           kind: "tool-call",
           id: "ta",
-          name: "edit_module",
-          arguments: { moduleId: modA, html: "<p>a-v1</p>" },
+          name: "update_modules_many",
+          arguments: { items: [{ moduleId: modA, html: "<p>a-v1</p>" }] },
         },
         {
           kind: "tool-call",
           id: "tb",
-          name: "edit_module",
-          arguments: { moduleId: modB, html: "<p>b-v1</p>" },
+          name: "update_modules_many",
+          arguments: { items: [{ moduleId: modB, html: "<p>b-v1</p>" }] },
         },
         { kind: "usage", inputTokens: 1, outputTokens: 1, cachedTokens: 0 },
         { kind: "done", stopReason: "tool_use" },

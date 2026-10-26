@@ -3,7 +3,7 @@
 /**
  * v0.12.0 — AI tool: get_content_instance. Fetch one content_instance
  * row + the list of placements that reference it. Use this to confirm
- * the blast radius of a `set_content_instance_values` edit before
+ * the blast radius of a `set_content_instance_values_many` edit before
  * committing.
  */
 
@@ -18,7 +18,7 @@ export const getContentInstanceTool: ToolDefinitionWithHandler<
 > = {
   name: "get_content_instance",
   description:
-    "Fetch one content_instance by id. Returns the values, the placements (page path + block + position + sync_mode) that bind to it, and the parent instances that show it inside a module / module-list field — all as this chat's draft sees them. Use this to confirm blast radius before set_content_instance_values, and before deleting (orphan = no placements AND no parents).",
+    "Fetch one content_instance by id. Returns the values, the placements (page path + block + position + sync_mode) that bind to it, and the parent instances that show it inside a module / module-list field — all as this chat's draft sees them. Use this to confirm blast radius before set_content_instance_values_many, and before deleting (orphan = no placements AND no parents).",
   schema: getContentInstanceToolInput,
   inputSchema: z.toJSONSchema(getContentInstanceToolInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {
@@ -43,7 +43,7 @@ export const getContentInstanceTool: ToolDefinitionWithHandler<
       const inventory =
         rows.length > 0
           ? `\nExisting instances (first ${rows.length}): ${rows.map((i) => `${i.id} (${i.moduleSlug}${i.displayName ? `, "${i.displayName}"` : ""})`).join("; ")}`
-          : "\nNo content_instances exist (or are visible on this branch) yet — create one via create_content_instance or build_page.";
+          : "\nNo content_instances exist (or are visible on this branch) yet — create one via create_content_instances or build_page.";
       return {
         ok: false,
         content: `content_instances.get failed: ${describeError(r.error)}${inventory}`,

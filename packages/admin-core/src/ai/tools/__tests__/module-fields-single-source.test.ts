@@ -23,7 +23,8 @@ const TOOLS_DIR = join(import.meta.dir, "..");
 const FIELD_AUTHORING_TOOLS = [
   // audit #2 — the ONE module-placement tool (was add-module-to-{page,layout,template}).
   "add-module.ts",
-  "edit-module.ts",
+  // update_modules_many (the module-edit tool) authors per-item fields[].
+  "bulk-pages-modules.ts",
   // issue #299 — build_page authors per-module fields[] too.
   "build-page.ts",
 ] as const;

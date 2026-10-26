@@ -59,6 +59,8 @@ interface PluginListRow {
   status: string;
   tier: 1 | 2;
   health: { state: string; problem: { message: string } | null };
+  requiresPlugins: string[];
+  requiredBy: string[];
 }
 
 export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>, PluginListRow>({
@@ -68,6 +70,7 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
     "`status`: `active` = the Owner wants it running; `awaiting_activation` = installed and verified, but nothing of it is loaded; `disabled` = the Owner stopped it. " +
     "Availability comes from `health`, not from `status`: only `health = running` means its tools and skills are usable right now. `failing` = an active plugin failed to load on a server (`problem` says why) — it is NOT switched off, tell the operator, get_plugin has the details; `unreported` = active, but no server has reported it yet (just activated or starting); `not_running` = not active. Never tell the operator a capability works while its plugin is failing. " +
     "Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. " +
+    "`requires` = plugins that must be active before this one can be activated (activate those first, in that order); `required_by` = active plugins that need this one, so it cannot be disabled or uninstalled until they are. " +
     "Plugins found on disk that failed verification are listed after the table: they are NOT installed — explain why and the fix. " +
     "Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
   opName: "plugins.list",
@@ -79,6 +82,8 @@ export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>
     { key: "status", value: (p) => p.status },
     { key: "version", value: (p) => p.version },
     { key: "health", value: (p) => p.health.state },
+    { key: "requires", value: (p) => p.requiresPlugins.join(" ") },
+    { key: "required_by", value: (p) => p.requiredBy.join(" ") },
     { key: "problem", value: (p) => p.health.problem?.message ?? "" },
   ],
   emptyMessage: "No plugins installed on this site.",

@@ -4,7 +4,7 @@
  * P13 — Proof-of-Work captcha (default provider).
  *
  * Issue:    GET /api/captcha/challenge → { challenge, target, expiresAt }
- *           Stores `(challenge, target, expires_at, visitor_id_hash)` in
+ *           Stores `(challenge, target, expires_at)` in
  *           gateway_pow_challenges (cms_public, #635) so the verify side can
  *           reject replays.
  *
@@ -19,6 +19,14 @@
  *
  * Replay:   used_at flag prevents re-use; the gateway sweeps expired rows
  *           hourly itself (gc.ts).
+ *
+ * Binding:  none. A challenge is redeemable by whichever request presents
+ *           it first, once. Binding it to the visitor cookie protected
+ *           nothing — a bot that drops the cookie got unbound challenges —
+ *           and made the captcha depend on a cookie the visitor may refuse.
+ *           The protection is the work and the single use; the per-address
+ *           rate limit on /api/captcha/challenge bounds how many a client
+ *           can stockpile.
  */
 
 import type { DatabaseAdapter } from "@caelo-cms/query-api";
@@ -43,7 +51,7 @@ export interface CaptchaChallenge {
 
 export async function issuePowChallenge(
   adapter: DatabaseAdapter,
-  args: { config: CaptchaConfig; visitorIdHash: string },
+  args: { config: CaptchaConfig },
 ): Promise<CaptchaChallenge> {
   const challenge = randomChallenge();
   const expiresAt = new Date(Date.now() + CHALLENGE_TTL_SEC * 1000).toISOString();
@@ -55,8 +63,8 @@ export async function issuePowChallenge(
     },
     async (tx) => {
       await tx.execute(sql`
-        INSERT INTO gateway_pow_challenges (challenge, target_hex, expires_at, visitor_id_hash)
-        VALUES (${challenge}, ${args.config.powTargetPrefix}, ${expiresAt}, ${args.visitorIdHash})
+        INSERT INTO gateway_pow_challenges (challenge, target_hex, expires_at)
+        VALUES (${challenge}, ${args.config.powTargetPrefix}, ${expiresAt})
       `);
     },
   );
@@ -72,22 +80,10 @@ export type CaptchaVerifyResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly reason: string };
 
-/**
- * Claim `proof`'s challenge (once) and check its work.
- *
- * Binding: a challenge issued to a visitor id (a consented visitor's signed
- * `caelo_visitor_id` cookie, stored as its hash) is redeemable only by a
- * request carrying that same id. A challenge issued without one (no consent,
- * so no id: `visitor_id_hash = ''`) is redeemable by any request; PoW then
- * protects by cost and single use alone.
- *
- * @param expectedVisitorIdHash the redeeming request's visitor id hash; ""
- *   when it carries none.
- */
+/** Claim `proof`'s challenge (once) and check its work. */
 export async function verifyPowProof(
   adapter: DatabaseAdapter,
   proof: CaptchaProof,
-  expectedVisitorIdHash: string,
 ): Promise<CaptchaVerifyResult> {
   if (typeof proof.challenge !== "string" || typeof proof.nonce !== "string") {
     return { ok: false, reason: "malformed proof" };
@@ -109,13 +105,12 @@ export async function verifyPowProof(
     const stateRows = (await tx.execute(sql`
       SELECT target_hex,
              used_at IS NOT NULL AS used,
-             expires_at <= now() AS expired,
-             (visitor_id_hash <> '' AND visitor_id_hash <> ${expectedVisitorIdHash}) AS other_visitor
+             expires_at <= now() AS expired
         FROM gateway_pow_challenges
        WHERE challenge = ${proof.challenge}
     `)) as unknown as (ChallengeState & { readonly target_hex: string })[];
     const state = stateRows[0] ?? null;
-    if (!state || state.used || state.expired || state.other_visitor) {
+    if (!state || state.used || state.expired) {
       return { ok: false, reason: claimRejectionReason(state) };
     }
     if (!hex.startsWith(state.target_hex)) {
@@ -127,13 +122,12 @@ export async function verifyPowProof(
        WHERE challenge = ${proof.challenge}
          AND used_at IS NULL
          AND expires_at > now()
-         AND (visitor_id_hash = '' OR visitor_id_hash = ${expectedVisitorIdHash})
        RETURNING challenge
     `)) as unknown as { challenge: string }[];
     if (!claimed[0]) {
       return {
         ok: false,
-        reason: claimRejectionReason({ used: true, expired: false, other_visitor: false }),
+        reason: claimRejectionReason({ used: true, expired: false }),
       };
     }
     return { ok: true };
@@ -151,17 +145,9 @@ function randomChallenge(): string {
   return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export function hashVisitorId(visitorId: string): string {
-  // Deterministic 256-bit SHA-256 hex digest (64 chars) for analytics, IP
-  // rate-limit bucketing, and PoW visitor binding without storing the raw
-  // cookie or exposing a 32-bit birthday bound.
-  return new Bun.CryptoHasher("sha256").update(visitorId).digest("hex");
-}
-
 interface ChallengeState {
   readonly used: boolean;
   readonly expired: boolean;
-  readonly other_visitor: boolean;
 }
 
 /** Why a challenge could not be claimed, worded for the visitor's next step. */
@@ -173,9 +159,6 @@ function claimRejectionReason(state: ChallengeState | null): string {
   }
   if (state.expired) {
     return `captcha challenge expired (valid for ${CHALLENGE_TTL_SEC} seconds): ${renew} and submit within that time`;
-  }
-  if (state.other_visitor) {
-    return "captcha challenge was issued to a different visitor: the visitor cookie (caelo_visitor_id) set with the challenge did not come back with this submission. Request the challenge and submit from the same browser session, with cookies allowed for this site";
   }
   // Every claim condition holds as this read runs: a concurrent request
   // with the same proof claimed it first.

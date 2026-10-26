@@ -6,7 +6,7 @@ import { placementTargets } from "./_repeated-value-guard.js";
 import { activatePluginTool } from "./activate-plugin.js";
 import { addModuleTool } from "./add-module.js";
 import { addPluginToPageTool } from "./add-plugin-to-page.js";
-import { autofillPageSeoManyTool, autofillPageSeoTool } from "./autofill-page-seo.js";
+import { autofillPageSeoManyTool } from "./autofill-page-seo.js";
 import { bootstrapSiteScaffoldTool } from "./bootstrap-site-scaffold.js";
 import { bugReportTool } from "./bug-report.js";
 import { buildPageTool, buildPageValues } from "./build-page.js";
@@ -37,11 +37,9 @@ import {
   refreshPagePathTool,
   setSkillPinDefaultsTool,
 } from "./content-maintenance-tools.js";
-import { createContentInstanceTool } from "./create-content-instance.js";
 import { createContentInstancesTool } from "./create-content-instances.js";
 import { createLayoutTool } from "./create-layout.js";
 import { createTemplateTool } from "./create-template.js";
-import { deleteContentInstanceTool } from "./delete-content-instance.js";
 import { deleteContentInstancesTool } from "./delete-content-instances.js";
 import { deleteMediaManyTool } from "./delete-media-many.js";
 import { deleteModulesManyTool } from "./delete-modules-many.js";
@@ -59,7 +57,6 @@ import { duplicatePageTool } from "./duplicate-page.js";
 import { duplicateThemeTool } from "./duplicate-theme.js";
 import { editContentTool } from "./edit-content.js";
 import { editImageTool } from "./edit-image.js";
-import { editModuleTool } from "./edit-module.js";
 import { exportThemeTool } from "./export-theme.js";
 import { findMediaTool } from "./find-media.js";
 import { findRedirectsTool } from "./find-redirects.js";
@@ -141,7 +138,6 @@ import {
   listGatewayRequestsTool,
   listRateLimitProfilesTool,
 } from "./operator-dashboard-tools.js";
-import { optimizePageSeoTool } from "./optimize-page-seo.js";
 import {
   deletePageTypesManyTool,
   listPageTypesTool,
@@ -218,24 +214,18 @@ import { readPageMoreTool } from "./read-page-more.js";
 import { checkPageContentInventoryTool, detectImportBoilerplateTool } from "./rebuild-quality.js";
 import { regenerateMediaVariantsTool } from "./regenerate-media-variants.js";
 import { removeModuleFromTool } from "./remove-module-from.js";
-import { reorderModuleTool } from "./reorder-module.js";
 import { repointPageTemplateTool } from "./repoint-page-template.js";
 import { revertChatChangesTool } from "./revert-chat-changes.js";
 import { screenshotExternalPageTool } from "./screenshot-external-page.js";
 import { screenshotPageTool } from "./screenshot-page.js";
 import { sendTestEmailTool } from "./send-test-email.js";
-import { setContentInstanceValuesTool } from "./set-content-instance-values.js";
 import { setContentInstanceValuesManyTool } from "./set-content-instance-values-many.js";
 import { setHomePageTool } from "./set-home-page.js";
-import { setMediaAltTool } from "./set-media-alt.js";
 import { setMediaAltManyTool } from "./set-media-alt-many.js";
-import { setMediaSourceTool } from "./set-media-source.js";
 import { setMediaSourceManyTool } from "./set-media-source-many.js";
 import { setMediaVisibilityManyTool } from "./set-media-visibility-many.js";
 import { setNotFoundPageTool } from "./set-not-found-page.js";
-import { setPageModuleContentTool } from "./set-page-module-content.js";
 import { setPageModuleContentManyTool } from "./set-page-module-content-many.js";
-import { setPageSeoTool } from "./set-page-seo.js";
 import { setPageSeoManyTool } from "./set-page-seo-many.js";
 import { setPagesStatusManyTool } from "./set-pages-status-many.js";
 import { setPlacementContentTool } from "./set-placement-content.js";
@@ -272,12 +262,10 @@ import { updateThemeTokensTool } from "./update-theme-tokens.js";
  */
 export function createDefaultToolRegistry(): ToolRegistry {
   const registry = new ToolRegistry();
-  // Plugins see the stored module after every module write (write hints).
-  registry.register(withPluginModuleHints(editModuleTool, (i) => [i.moduleId]));
   // Claude-Code-style read/edit/grep over DB-stored bodies (html/css/js).
   // read_content = windowed line-numbered Read; edit_content = surgical
   // string-replace Edit (cheaper + minimal diff than re-emitting via
-  // edit_module); grep_content = catalog-wide search. One registry
+  // update_modules_many); grep_content = catalog-wide search. One registry
   // (content-edit/registry.ts) backs all three (CLAUDE.md §1A DRY).
   registry.register(readContentTool);
   registry.register(
@@ -286,20 +274,13 @@ export function createDefaultToolRegistry(): ToolRegistry {
     ),
   );
   registry.register(grepContentTool);
-  // #820 — every field-value write carries the repeated-markup hint.
-  registry.register(
-    withFieldMarkupGuard(
-      setPageModuleContentTool,
-      (i) => [i.contentValues],
-      (i) => placementTargets([i]),
-    ),
-  );
   // #917 — targeted text edits of one placement (escaped plain text, so no
   // markup guard needed); the same op Live Edit's in-place editing uses.
   registry.register(patchPageModuleFieldsTool);
   // issue #299 — bulk-first build path (CLAUDE.md §11): one call builds a
   // page (modules + content + placements); the _many variants batch
-  // incremental passes on existing pages.
+  // incremental passes on existing pages. #820 — every field-value write
+  // carries the repeated-markup hint (withFieldMarkupGuard).
   registry.register(
     withFieldMarkupGuard(buildPageTool, buildPageValues, (i) => ({
       moduleIds: i.modules.flatMap((m) => (typeof m.moduleId === "string" ? [m.moduleId] : [])),
@@ -315,29 +296,15 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(
     withFieldMarkupGuard(
       createContentInstancesTool,
-      (i) => i.instances.map((x) => x.values),
-      (i) => ({ moduleIds: i.instances.map((x) => x.moduleId) }),
+      (i) => i.items.map((x) => x.values),
+      (i) => ({ moduleIds: i.items.map((x) => x.moduleId) }),
     ),
   );
   // v0.12.0 — content_instances + placement binding tools.
   registry.register(listContentInstancesTool);
   registry.register(getContentInstanceTool);
-  registry.register(
-    withFieldMarkupGuard(
-      createContentInstanceTool,
-      (i) => [i.values],
-      (i) => ({ moduleIds: [i.moduleId] }),
-    ),
-  );
-  registry.register(
-    withFieldMarkupGuard(
-      setContentInstanceValuesTool,
-      (i) => [i.values],
-      (i) => ({ contentInstanceIds: [i.id] }),
-    ),
-  );
-  registry.register(deleteContentInstanceTool);
-  // Bulk `_many` variants via the DRY makeBulkTool factory (CLAUDE.md §11).
+  // `_many` tools via the DRY makeBulkTool factory (CLAUDE.md §11: one item
+  // is the n=1 case; retired singular names alias here — retired-tools.ts).
   registry.register(
     withFieldMarkupGuard(
       setContentInstanceValuesManyTool,
@@ -348,10 +315,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(deleteContentInstancesTool);
   registry.register(setPlacementContentTool);
   registry.register(forkPlacementContentTool);
-  // v0.5.12 — explicit read fallbacks for layouts / templates / pages.
-  // Mirror the system-prompt `# Layouts on this site` / `# Templates →
-  // layouts` / `# All pages` context blocks. Existed only as system-prompt
-  // text before; the AI had no fetch path when it claimed to lack a UUID.
+  // v0.5.12 — read tools for layouts / templates / pages. Once only
+  // system-prompt text (and the AI had no fetch path when it lacked a
+  // UUID); since the prompt became static they are the only source.
   registry.register(listLayoutsTool);
   registry.register(listPluginsTool);
   registry.register(activatePluginTool);
@@ -484,12 +450,10 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(setNotFoundPageTool);
   registry.register(repointPageTemplateTool);
   registry.register(moveModuleTool);
-  registry.register(reorderModuleTool);
   // P7 — media library.
   registry.register(findMediaTool);
-  registry.register(setMediaAltTool);
-  registry.register(setMediaSourceTool);
-  // Bulk `_many` variants via the DRY makeBulkTool factory (CLAUDE.md §11).
+  // `_many` tools via the DRY makeBulkTool factory (CLAUDE.md §11: one item
+  // is the n=1 case; retired singular names alias here — retired-tools.ts).
   registry.register(setMediaAltManyTool);
   registry.register(setMediaSourceManyTool);
   registry.register(setMediaVisibilityManyTool);
@@ -502,12 +466,9 @@ export function createDefaultToolRegistry(): ToolRegistry {
   registry.register(editImageTool);
   registry.register(getImageCapabilitiesTool);
   // P8 — SEO sidecar tools.
-  registry.register(setPageSeoTool);
   // Bulk `_many` variant via the DRY makeBulkTool factory (CLAUDE.md §11).
   registry.register(setPageSeoManyTool);
-  registry.register(autofillPageSeoTool);
   registry.register(autofillPageSeoManyTool);
-  registry.register(optimizePageSeoTool);
   // P8 AI-first review pass — bulk variants + redirect surface.
   registry.register(findRedirectsTool);
   // Epic #724 (rollout F) — reference integrity: what Stage / Publish live say about internal links.
@@ -542,7 +503,7 @@ export function createDefaultToolRegistry(): ToolRegistry {
   // 0263 — nested page URLs: reparent pages (subtree + 301s).
   registry.register(movePagesTool);
   registry.register(
-    withPluginModuleHints(updateModulesManyTool, (i) => i.updates.map((x) => x.moduleId)),
+    withPluginModuleHints(updateModulesManyTool, (i) => i.items.map((x) => x.moduleId)),
   );
   // v0.9.13 — singular + bulk status flip. Drafts are LIVE-EDIT ONLY;
   // only `published` pages ship to Stage / Production. Bulk variant

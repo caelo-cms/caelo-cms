@@ -486,12 +486,12 @@ describe("nested page URLs — move effects + approval sizing", () => {
     const gate = deletePagesManyTool.needsApproval as NonNullable<
       typeof deletePagesManyTool.needsApproval
     >;
-    expect(await gate({ deletions: [{ pageId: root, disposition: "404" }] }, aiCtx, toolCtx)).toBe(
+    expect(await gate({ items: [{ pageId: root, disposition: "404" }] }, aiCtx, toolCtx)).toBe(
       false,
     );
     expect(
       await gate(
-        { deletions: [{ pageId: root, disposition: "404", children: "delete" }] },
+        { items: [{ pageId: root, disposition: "404", children: "delete" }] },
         aiCtx,
         toolCtx,
       ),

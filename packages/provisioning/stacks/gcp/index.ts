@@ -48,6 +48,7 @@ import {
   type RuntimeSecret,
   remoteMcpIdentityStackEnv,
   runtimeSecretBindings,
+  SERVICE_CPU_IDLE,
   STATIC_CDN_POLICY,
   secretFileVolumesTemplate,
 } from "../../dist/stack-contract.js";
@@ -738,7 +739,11 @@ function cloudRunService(args: CloudRunArgs): gcp.cloudrunv2.Service {
               ...(args.mediaVolume?.volumeMounts ?? []),
               ...secretFileVolumesTemplate(args.serviceName, env).volumeMounts,
             ],
-            resources: { limits: { cpu: "1", memory: args.memory } },
+            // Explicit: a missing cpuIdle means always-on CPU (stack-contract.ts).
+            resources: {
+              limits: { cpu: "1", memory: args.memory },
+              cpuIdle: SERVICE_CPU_IDLE[args.serviceName],
+            },
           },
         ],
         vpcAccess: {

@@ -7,9 +7,9 @@
  * whose single argument is `{ items: [...] }` and dispatches the matching
  * `*_many` op in one round-trip.
  *
- * The item schemas are supplied by the caller (the singular tool's Zod schema +
- * its JSON Schema for one item), so the bulk tool advertises the exact same
- * per-item shape the singular tool does — the two can't drift.
+ * The item schemas are supplied by the caller (the op's per-item Zod schema +
+ * its JSON Schema for one item); one item is the n=1 case, so there is no
+ * separate singular tool to drift from.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -22,9 +22,9 @@ import type { ToolContext, ToolDefinitionWithHandler, ToolInputSchema } from "./
 export interface MakeBulkToolConfig<Item> {
   /** The bulk tool name, e.g. `"set_content_instance_values_many"`. */
   readonly name: string;
-  /** AI-facing description (when to use, when to prefer over the singular). */
+  /** AI-facing description (routing + core rules; see the tool-description rulebook). */
   readonly description: string;
-  /** Zod schema for ONE item — the singular tool's schema. */
+  /** Zod schema for ONE item — the op's per-item input. */
   readonly itemInputSchema: z.ZodType<Item>;
   /** JSON Schema for ONE item — becomes the `items` array element schema. */
   readonly itemJsonSchema: ToolInputSchema;
@@ -36,6 +36,13 @@ export interface MakeBulkToolConfig<Item> {
    * changes what a Stage would build.
    */
   readonly resultSuffix?: (ctx: ExecutionContext, toolCtx: ToolContext) => Promise<string>;
+  /**
+   * Optional formatter for a SUCCESSFUL result, given the op's ok-value
+   * (`{ results, count }` from `defineBulkOp`) and the tool input — for
+   * per-item facts the AI must see (where an edit propagated, which item
+   * was already filled). Default: "N item(s) updated."
+   */
+  readonly formatResult?: (value: unknown, input: { items: Item[] }) => string;
 }
 
 /**
@@ -48,7 +55,8 @@ export interface MakeBulkToolConfig<Item> {
 export function makeBulkTool<Item>(
   config: MakeBulkToolConfig<Item>,
 ): ToolDefinitionWithHandler<{ items: Item[] }> {
-  const { name, description, itemInputSchema, itemJsonSchema, opName, resultSuffix } = config;
+  const { name, description, itemInputSchema, itemJsonSchema, opName, resultSuffix, formatResult } =
+    config;
   return {
     name,
     description,
@@ -73,7 +81,10 @@ export function makeBulkTool<Item>(
         };
       }
       const suffix = resultSuffix ? await resultSuffix(ctx, toolCtx) : "";
-      return { ok: true, content: `${toolInput.items.length} item(s) updated.${suffix}` };
+      const head = formatResult
+        ? formatResult(r.value, toolInput)
+        : `${toolInput.items.length} item(s) updated.`;
+      return { ok: true, content: `${head}${suffix}` };
     },
   };
 }

@@ -57,23 +57,16 @@ describe("composeSystemPrompt", () => {
     expect(out).toContain("Never leave the Stage to the user");
   });
 
-  // Issue #667 — the AI staged on its own (fine) and then argued for
-  // accepting the remaining findings ("I'd accept all four"), two of them
-  // Caelo bugs. Issue #727 — an AI also once called a Performance 90 "fine";
-  // the target is 100 / zero findings, and only the truly unfixable goes to
-  // the user as a bulk decision, never as the AI's recommendation. The rule
-  // is static (CLAUDE.md §11: no dynamic prompt blocks).
-  it("holds quality to the optimum and leaves acceptances to the user", () => {
+  // Issue #667 / #727 — the quality target (100 / zero findings, the
+  // truly unfixable to the user as a bulk decision, never recommended) is
+  // carried by every fix request and the quality tools, which the AI reads
+  // exactly when findings exist; the always-cached prompt only has to make
+  // sure a Stage happens and Publish live stays the user's.
+  it("leaves the quality target to the fix request and keeps Publish live the user's", () => {
     const out = composeSystemPrompt([]);
-    expect(out).toContain("100 in every Lighthouse category and zero findings");
-    expect(out).toContain("A score like 90 is NOT acceptable on its own");
-    expect(out).toContain("never run Lighthouse yourself");
-    expect(out).toContain(
-      "offer ONE decision per group of findings with `accept_quality_findings`",
-    );
-    expect(out).toContain("never recommend accepting");
-    expect(out).toContain("CAELO PLATFORM are Caelo bugs: report them with `bug_report`");
-    expect(composeSystemPrompt([])).toBe(out);
+    expect(out).toContain("Publish live is always the user's click");
+    expect(out).toContain("never claim a change is live");
+    expect(out).not.toContain("accept_quality_findings");
   });
 });
 

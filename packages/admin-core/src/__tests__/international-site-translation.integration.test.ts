@@ -465,7 +465,7 @@ describe("#397 — context-aware translation", () => {
       mode: "full",
     });
     expect(again.seo).toBe("marked_stale");
-    expect(again.nextStep).toContain("optimize_page_seo");
+    expect(again.nextStep).toContain("bulk_optimize_seo");
     const kept = await seoOf(variant.pageId);
     expect(kept?.metaDescription).toBe("Faire Preise – für Teams jeder Größe.");
     expect(kept?.optimizedAt).toBeNull();

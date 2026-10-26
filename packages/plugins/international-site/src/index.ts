@@ -1925,7 +1925,7 @@ export default definePlugin<PluginContextTier1>({
       description:
         "Translate ONE variant page from its group's source language — the whole page in a single context-aware pass (module layout locked; glossary + style guide applied; existing human-polished translations preserved where the source did not change). " +
         "Use after create_variant (the draft still carries the source language) and for any variant intl_status marks needs_update. The result stays a DRAFT — review, then publish. " +
-        'The meta description is translated in the same pass: a draft or a variant without one gets it filled; a LIVE variant that already has one keeps it (SEO fill-once) and comes back seo: "marked_stale" with a nextStep — then re-optimize with optimize_page_seo only if the operator wants it. ' +
+        'The meta description is translated in the same pass: a draft or a variant without one gets it filled; a LIVE variant that already has one keeps it (SEO fill-once) and comes back seo: "marked_stale" with a nextStep — then re-optimize with bulk_optimize_seo only if the operator wants it. ' +
         "NOT for many pages at once — prefer translate_all_stale. NOT for the group's source page itself." +
         MCP_TRANSLATE_PAGE,
       operationName: "translate_variant",
@@ -2258,13 +2258,13 @@ export default definePlugin<PluginContextTier1>({
         "You are fixing the language findings of a Stage audit on a multilingual Caelo site (rules plugin.international-site/<rule>). Every error blocks Publish live; warnings are fixed too — the target is a report without findings, never 'good enough'. Fix, Stage again, and repeat until nothing is left. What you cannot fix goes to the operator as one decision (they can accept a finding per rule in the audit).",
         "",
         "Language links:",
-        '- hardcoded-language-link / switcher-to-home: a language switch built from fixed links. Replace it in the named module (edit_module) with the language_links list source: `<nav>{{#language_links}}<a href="{{href}}" hreflang="{{locale}}"{{#is_current}} aria-current="page"{{/is_current}}>{{label}}</a>{{/language_links}}</nav>`. It lists exactly the published versions of the current page, so it never leads to a 404. Never link another language\'s page by a page link either: page links follow the language of the page they are on.',
+        '- hardcoded-language-link / switcher-to-home: a language switch built from fixed links. Replace it in the named module (update_modules_many) with the language_links list source: `<nav>{{#language_links}}<a href="{{href}}" hreflang="{{locale}}"{{#is_current}} aria-current="page"{{/is_current}}>{{label}}</a>{{/language_links}}</nav>`. It lists exactly the published versions of the current page, so it never leads to a 404. Never link another language\'s page by a page link either: page links follow the language of the page they are on.',
         "- switcher-missing: place such a module in the layout (add_module, target layout) — one placement covers every page.",
         "- cross-locale-content-link: link the page itself, not the literal path of another language's page.",
         "",
         "hreflang, canonical, sitemap (the plugin writes them from the language groups):",
         "- hreflang-self-missing / hreflang-missing-version / hreflang-not-reciprocal / hreflang-target-broken: the language group is wrong or a version is not published. Check intl_status; relink with link_page_variants, unlink a wrong page with unlink_page_variants, or publish the missing version.",
-        "- hreflang-target-not-indexable / canonical-cross-locale: a version has noindex or a canonical override pointing elsewhere. Every language version is indexable and canonical to itself (set_page_seo).",
+        "- hreflang-target-not-indexable / canonical-cross-locale: a version has noindex or a canonical override pointing elsewhere. Every language version is indexable and canonical to itself (set_page_seo_many).",
         "- hreflang-invalid-code: fix the language codes with set_locales (approval-gated; en-GB, not en-UK).",
         "- sitemap-alternates-mismatch: a Caelo bug — report it with bug_report.",
         "",

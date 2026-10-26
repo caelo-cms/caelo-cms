@@ -9,7 +9,7 @@
  *     main has no meta description (no pages_seo row, or a blank one);
  *     drafts, deleted pages and chat-branch pages do not count;
  *   - the refusal names each page (title, path, id) and the fix
- *     (autofill_page_seo_many / autofill_page_seo), and is recorded as a
+ *     (autofill_page_seo_many), and is recorded as a
  *     failed run;
  *   - a page whose description was cleared after its first autofill is
  *     flagged as such and pointed at set_page_seo_many (autofill refuses it);
@@ -120,7 +120,7 @@ describe("SEO build gate", () => {
     expect(r.message).toContain(`pageId ${blank}`);
     expect(r.message).not.toContain(draft);
     expect(r.message).toContain("autofill_page_seo_many");
-    expect(r.message).toContain("autofill_page_seo for a single page");
+    expect(r.message).toContain("one call for all of them");
 
     const runs = await withSql(
       (tx) =>

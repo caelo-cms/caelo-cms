@@ -1,37 +1,48 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Who a visitor request comes from — and, since #677, whether the gateway
- * may recognise them at all.
+ * Who a visitor request comes from — and whether the gateway may
+ * recognise them at all (#677).
  *
  * `caelo_visitor_id` is a signed, HttpOnly, 30-day cookie that ties one
- * browser's requests together. It is not strictly necessary for anything
- * a visitor asks the gateway to do, so it is an `analytics` cookie (the
- * consent provider's `visitor_consent_rule` says which category covers it;
- * the reasoning lives there). The gateway therefore:
+ * browser's requests together. Core needs it for nothing: rate limits are
+ * keyed by client address (a cookie the abuser can simply drop is no
+ * limit), and a captcha proof is bound to nothing but its own single use.
+ * It exists only for a plugin that declares the `visitor_id` consent
+ * purpose in its manifest (`consentPurposes`; today: ratings, to keep one
+ * rating per visitor and page) — and that declaration names the consent
+ * category the cookie sits under. The gateway therefore:
  *
- *   - sets it only when the visitor's current decision grants that
- *     category — never on first contact, never after "reject all", and
- *     never on a site with no consent provider (nobody can have agreed);
- *   - ignores an existing one without that consent, so nothing is keyed
- *     to it server-side, and expires it in the same response — consent
- *     withdrawn in the banner reaches the HttpOnly cookie, which the
- *     page's script cannot delete itself, on the next gateway call (the
- *     consent runtime's own `record_consent` beacon is that call).
+ *   - sets it only when some ACTIVE plugin declares `visitor_id` AND the
+ *     visitor's current decision grants that purpose's category (the
+ *     consent provider's `visitor_consent_rule` maps purpose → category
+ *     from the declarations it lists through `ctx.consentPurposes`) —
+ *     never on first contact, never after "reject all", never on a site
+ *     with no consent provider (nobody can have agreed) and never when no
+ *     running plugin asks for it;
+ *   - ignores an existing one otherwise, so nothing is keyed to it, and
+ *     expires it in the same response — consent withdrawn in the banner
+ *     (or the last declaring plugin switched off) reaches the HttpOnly
+ *     cookie, which the page's script cannot delete itself, on the next
+ *     gateway call (the consent runtime's own `record_consent` beacon is
+ *     that call).
  *
- * What depends on the id degrades explicitly when it is absent: the rate
- * limiter keys by client IP (as it always did for unrecognised visitors),
- * plugins see `ctx.visitor.id === null`, and the request log and PoW
- * challenge store an empty visitor hash.
+ * Both answers come from this process: the declarations are read off the
+ * plugins the gateway's dispatch-only host attached from what the admin
+ * published as active, and the rule from the consent provider running in
+ * that same host. Nothing is read from cms_admin (CLAUDE.md §2, #635).
+ *
+ * Without an id, plugins see `ctx.visitor.id === null`.
  */
 
 import {
+  consentPurposeDeclared,
+  declaredConsentPurposes,
   resolveVisitorConsentRule,
   VISITOR_ID_PURPOSE,
   type VisitorConsentRule,
   visitorConsentGranted,
 } from "@caelo-cms/plugin-host";
-import { hashVisitorId } from "./middleware/captcha.js";
 import { verifySignedCookie } from "./middleware/signed-cookie.js";
 
 export const VISITOR_COOKIE = "caelo_visitor_id";
@@ -87,11 +98,23 @@ export function clearVisitorCookieHeader(): string {
   return secureFlag([`${VISITOR_COOKIE}=`, "Path=/", "HttpOnly", "SameSite=Lax", "Max-Age=0"]);
 }
 
-// The provider's rule changes only when the Owner bumps the policy version;
-// the same 5 s ceiling as the gateway's settings keeps a bump from taking
-// effect late while sparing every request a provider round-trip.
+// The provider's rule changes when the Owner bumps the policy version or
+// the set of declared purposes changes. The same 5 s ceiling as the
+// gateway's settings keeps a bump from taking effect late while sparing
+// every request a provider round-trip; a change in the declarations (a
+// plugin activated or switched off) drops the cache at once, so a rule
+// built before a newly declared purpose existed is never applied to it.
 const CONSENT_RULE_TTL_MS = 5_000;
-let cachedRule: { rule: VisitorConsentRule | null; loadedAt: number } | null = null;
+let cachedRule: {
+  rule: VisitorConsentRule | null;
+  loadedAt: number;
+  declarations: string;
+} | null = null;
+
+/** What the cached rule was built from: every declared purpose and its category. */
+function declarationsSignature(): string {
+  return JSON.stringify(declaredConsentPurposes().map((p) => [p.pluginSlug, p.key, p.category]));
+}
 
 /**
  * The consent provider's current rule, cached briefly.
@@ -101,9 +124,16 @@ let cachedRule: { rule: VisitorConsentRule | null; loadedAt: number } | null = n
  *   503 rather than guess the visitor's decision.
  */
 export async function loadVisitorConsentRule(): Promise<VisitorConsentRule | null> {
-  if (cachedRule && Date.now() - cachedRule.loadedAt < CONSENT_RULE_TTL_MS) return cachedRule.rule;
+  const declarations = declarationsSignature();
+  if (
+    cachedRule &&
+    cachedRule.declarations === declarations &&
+    Date.now() - cachedRule.loadedAt < CONSENT_RULE_TTL_MS
+  ) {
+    return cachedRule.rule;
+  }
   const rule = await resolveVisitorConsentRule();
-  cachedRule = { rule, loadedAt: Date.now() };
+  cachedRule = { rule, loadedAt: Date.now(), declarations };
   return rule;
 }
 
@@ -112,18 +142,18 @@ export function invalidateVisitorConsentRule(): void {
   cachedRule = null;
 }
 
+/** Whether an active plugin on this host declares the `visitor_id` purpose. */
+export function visitorIdDeclared(): boolean {
+  return consentPurposeDeclared(VISITOR_ID_PURPOSE);
+}
+
 export interface ResolvedVisitor {
-  /** The visitor id, or null when the visitor has not consented to one. */
+  /** The visitor id, or null when the visitor has not consented to one
+   *  (or no running plugin declares the purpose it serves). */
   readonly visitorId: string | null;
-  /** Non-reversible hash for the request log / PoW row; "" without an id. */
-  readonly visitorIdHash: string;
-  /** True only when the id came from a verified cookie the visitor already
-   *  held — the rate limiter's per-visitor key needs one it did not just
-   *  hand out, or rotating cookies would reset the budget. */
-  readonly recognised: boolean;
   readonly sessionToken: string | null;
   /** Visitor-cookie Set-Cookie headers this response must carry: a freshly
-   *  minted id, or the expiry of one the visitor no longer consents to. */
+   *  minted id, or the expiry of one the visitor may no longer hold. */
   readonly setCookies: readonly string[];
 }
 
@@ -131,27 +161,30 @@ export interface ResolvedVisitor {
  * Resolve the request's visitor under the consent provider's rule.
  *
  * @param rule the provider's rule, or null when no consent provider runs.
+ * @param visitorIdDeclared whether an active plugin declares the
+ *   `visitor_id` purpose; without one the id is never set.
  * @param sign signs a freshly minted id for its cookie.
- * @throws when the rule does not classify the visitor-id purpose.
+ * @throws when a plugin declares the visitor-id purpose but the provider's
+ *   rule does not classify it — a wiring error, not a silent no.
  */
 export async function resolveVisitor(args: {
   readonly req: Request;
   readonly secret: string;
   readonly rule: VisitorConsentRule | null;
+  readonly visitorIdDeclared: boolean;
   readonly sign: (value: string) => Promise<string>;
 }): Promise<ResolvedVisitor> {
   const cookies = parseCookies(args.req.headers.get("cookie"));
   const rawVisitor = cookies[VISITOR_COOKIE] ?? "";
   const sessionToken = await verifiedSessionToken(cookies[SESSION_COOKIE] ?? "", args.secret);
 
-  if (!visitorConsentGranted(args.rule, VISITOR_ID_PURPOSE, cookies)) {
+  if (!args.visitorIdDeclared || !visitorConsentGranted(args.rule, VISITOR_ID_PURPOSE, cookies)) {
     return {
       visitorId: null,
-      visitorIdHash: "",
-      recognised: false,
       sessionToken,
       // Expire whatever the browser still holds — set before the visitor
-      // declined, or under a policy version that no longer counts.
+      // declined, under a policy version that no longer counts, or for a
+      // plugin that no longer runs.
       setCookies: rawVisitor ? [clearVisitorCookieHeader()] : [],
     };
   }
@@ -163,21 +196,13 @@ export async function resolveVisitor(args: {
       maxAgeSeconds: VISITOR_COOKIE_MAX_AGE,
     });
     if (v && /^[0-9a-fA-F-]{36}$/.test(v.value)) {
-      return {
-        visitorId: v.value,
-        visitorIdHash: hashVisitorId(v.value),
-        recognised: true,
-        sessionToken,
-        setCookies: [],
-      };
+      return { visitorId: v.value, sessionToken, setCookies: [] };
     }
   }
   // Consented, but no valid id yet (first contact, expired, tampered).
   const visitorId = crypto.randomUUID();
   return {
     visitorId,
-    visitorIdHash: hashVisitorId(visitorId),
-    recognised: false,
     sessionToken,
     setCookies: [visitorCookieHeader(await args.sign(visitorId))],
   };

@@ -268,8 +268,8 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     "Add ONE module to a page, a layout (site-wide chrome on every page), or a template (fans out to every page of that page-type). " +
     "**Prefer `build_page` when a PAGE needs more than one module** — it places the whole ordered list WITH content in one transaction. " +
     "`target` = 'page' | 'layout' | 'template'. `targetRef` is that page's id or URL path ('/docs/setup'), or the layout's / template's slug or id. A bare page slug works only while it names one page — nested pages can share a slug. " +
-    "Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `list_modules` to place/fan-out a SHARED module without minting a duplicate — a later edit_module then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` is placement-only: if you also pass authoring fields (a different label, new html, …) the call still succeeds but those fields are NOT applied and the result says so — to actually change a shared module, place it by `moduleId` and then call edit_module. " +
-    "**The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; edit_module changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. " +
+    "Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `list_modules` to place/fan-out a SHARED module without minting a duplicate — a later update_modules_many then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` is placement-only: if you also pass authoring fields (a different label, new html, …) the call still succeeds but those fields are NOT applied and the result says so — to actually change a shared module, place it by `moduleId` and then call update_modules_many. " +
+    "**The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; update_modules_many changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. " +
     "`blockName` must be a real block on the target; the handler returns the available block set if it isn't. " +
     'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `"0"`).' +
     LIST_FIELD_CONTRACT +
@@ -277,10 +277,9 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
   // 2026-07 — STATIC on purpose (prompt-cache): the per-turn describe
   // embedded active-page blocks + layout/template slugs into the tool
   // definition, busting Anthropic's tools-prefix cache on every page
-  // switch or structural write. The same facts live in the volatile
-  // `# Current page` / `## Layouts` / `## Templates` context blocks and
-  // list_layouts / list_templates; a blockName mismatch returns a
-  // structured error naming the valid set.
+  // switch or structural write. The same facts live in the `# Current page`
+  // note on the user message and in list_layouts / list_templates; a
+  // blockName mismatch returns a structured error naming the valid set.
   schema: addModuleToolInput,
   inputSchema: {
     type: "object",
@@ -363,7 +362,7 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
     // loudly so an intended change never vanishes silently.
     const ignoredNote =
       mod.ignoredAuthoring.length > 0
-        ? ` ℹ️ placed by moduleId (placement-only) — NOT applied: ${mod.ignoredAuthoring.join(", ")}. To change that shared module, use edit_module.`
+        ? ` ℹ️ placed by moduleId (placement-only) — NOT applied: ${mod.ignoredAuthoring.join(", ")}. To change that shared module, use update_modules_many.`
         : "";
     const suffix = `${cssSuffix}${ignoredNote}`;
     const label = mod.reused ? "existing module" : "module";
@@ -412,7 +411,7 @@ async function placeOnPage(
     return { ok: false, content: `pages.set_modules failed: ${describeError(set.error)}` };
   // 2026-07 — apply the placement's initial content IN THIS CALL (a
   // fresh module must never render empty waiting for a second
-  // set_page_module_content round-trip).
+  // set_page_module_content_many round-trip).
   let valuesNote = "";
   if (input.values !== undefined) {
     const fill = await fillPlacementValues(
@@ -458,7 +457,7 @@ async function fillPlacementValues(
   if (!instanceId) {
     return {
       ok: false,
-      content: `placed the module, but could not resolve the new placement's content_instance to apply \`values\` — fill it via set_page_module_content({pageId: "${pageId}", blockName: "${blockName}", position: ${position}, values: …}).`,
+      content: `placed the module, but could not resolve the new placement's content_instance to apply \`values\` — fill it via set_page_module_content_many({items: [{pageId: "${pageId}", blockName: "${blockName}", position: ${position}, contentValues: …}]}).`,
     };
   }
   const write = await execute(

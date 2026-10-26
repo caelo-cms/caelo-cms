@@ -3,8 +3,8 @@
 /**
  * End-to-end chat turn against a fixture provider:
  *   - User sends "make hero blue"
- *   - Fixture provider returns one edit_module tool call
- *   - Tool dispatch updates the live module via modules.update
+ *   - Fixture provider returns one update_modules_many tool call
+ *   - Tool dispatch updates the module via modules.update_many
  *   - Snapshot lands tagged with the chat's chat_branch_id
  *   - chat_messages has user / assistant / tool rows
  *   - ai_calls row recorded
@@ -72,7 +72,7 @@ afterAll(async () => {
 
 /**
  * Two-loop fixture: first loop emits a tool_use stop so the runner
- * dispatches edit_module; second loop is the model's follow-up text
+ * dispatches update_modules_many; second loop is the model's follow-up text
  * after seeing the tool result, which ends the turn. Real Anthropic
  * responses always pair tool calls with `stop_reason: "tool_use"`.
  */
@@ -83,8 +83,8 @@ function fixtureForOneToolCall(moduleId: string): ProviderEvent[][] {
       {
         kind: "tool-call",
         id: "tu_1",
-        name: "edit_module",
-        arguments: { moduleId, html: '<h1 style="color:blue">Hero</h1>' },
+        name: "update_modules_many",
+        arguments: { items: [{ moduleId, html: '<h1 style="color:blue">Hero</h1>' }] },
       },
       { kind: "usage", inputTokens: 100, outputTokens: 30, cachedTokens: 50 },
       { kind: "done", stopReason: "tool_use" },
@@ -119,8 +119,8 @@ class MultiCallFixtureProvider extends FixtureProvider {
   }
 }
 
-describe("chat send → edit_module → snapshot", () => {
-  it("dispatches edit_module, lands a branch-tagged snapshot, persists the transcript", async () => {
+describe("chat send → update_modules_many → snapshot", () => {
+  it("dispatches update_modules_many, lands a branch-tagged snapshot, persists the transcript", async () => {
     // Seed module.
     const create = await execute(registry, adapter, humanCtx, "modules.create", {
       slug: MOD_SLUG,

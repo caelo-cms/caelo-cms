@@ -189,23 +189,15 @@ export const setPageModuleContentOp = defineOperation({
     .strict(),
   output: z.object({ pageModuleContentId: z.string() }),
   handler: async (ctx, input, tx) => {
-    // v0.12.0 — set_page_module_content is now a routing SHIM. It looks
-    // up the placement's content_instance_id + sync_mode and forwards to
-    // content_instances.set_values for the (much more common) unsynced
-    // case. Synced placements bounce with a structured error pointing
-    // the AI at fork_placement_content or set_content_instance_values
-    // so the operator's "edit this hero" intent doesn't silently
-    // propagate. Locks + branch isolation + snapshot bookkeeping all
-    // live in content_instances.set_values; the shim is concerned only
-    // with the routing decision.
-    //
-    // v0.12.0 — resolve (page, block, position) → content_instance_id
-    // via page_modules.content_instance_id (the new binding column).
-    // For unsynced placements, route to content_instances.set_values.
-    // For synced placements, refuse + point the AI at
-    // set_content_instance_values OR fork_placement_content so the
-    // operator's "edit this hero on /home" intent doesn't silently
-    // propagate to every other page that binds to the same instance.
+    // A routing shim (reached per item from set_page_module_content_many
+    // via page_module_content.set_many). It resolves (page, block,
+    // position) → the placement's content_instance_id + sync_mode and
+    // forwards the unsynced (much more common) case to
+    // content_instances.set_values, which owns locks, branch isolation and
+    // snapshot bookkeeping. A synced placement is refused with a pointer
+    // at fork_placement_content or set_content_instance_values_many, so
+    // the operator's "edit this hero on /home" intent never silently
+    // propagates to every other page bound to the same instance.
     //
     // #1045 — the placement is resolved through the caller's
     // branch-overlaid layout (the same view the preview renders and
@@ -243,9 +235,9 @@ export const setPageModuleContentOp = defineOperation({
         operation: "page_module_content.set",
         message:
           `placement at (${input.blockName}, ${input.position}) on page ${input.pageId} is SYNCED to content_instance ${placement.contentInstanceId}. ` +
-          `Editing via set_page_module_content would propagate to every page bound to the same instance, ` +
+          `Editing via set_page_module_content_many would propagate to every page bound to the same instance, ` +
           `which is rarely the intent of "set the content on this page". ` +
-          `Either (a) call set_content_instance_values({ id: "${placement.contentInstanceId}", values: ... }) to commit to the blast radius, or ` +
+          `Either (a) call set_content_instance_values_many({ items: [{ id: "${placement.contentInstanceId}", values: ... }] }) to commit to the blast radius, or ` +
           `(b) call fork_placement_content first to detach this placement into a private instance, then retry.`,
         nextAction: {
           tool: "fork_placement_content",
@@ -255,7 +247,7 @@ export const setPageModuleContentOp = defineOperation({
             position: input.position,
           },
           reason:
-            "detach this placement so the edit stays local to this page; rerun set_page_module_content after the fork",
+            "detach this placement so the edit stays local to this page; rerun set_page_module_content_many after the fork",
         },
       });
     }
@@ -315,7 +307,7 @@ export const setPageModuleContentOp = defineOperation({
       return err({
         kind: "HandlerError" as const,
         operation: "page_module_content.set",
-        message: inner.message ?? "set_content_instance_values failed",
+        message: inner.message ?? "content_instances.set_values failed",
         nextAction: inner.nextAction,
       });
     }

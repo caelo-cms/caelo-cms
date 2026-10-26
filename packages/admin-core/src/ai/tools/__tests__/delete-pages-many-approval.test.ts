@@ -38,9 +38,9 @@ function ids(n: number): string[] {
   });
 }
 
-/** audit #4 — the tool now takes per-page deletions; each 404s by default here. */
-function dels(n: number): { deletions: { pageId: string; disposition: "404" }[] } {
-  return { deletions: ids(n).map((pageId) => ({ pageId, disposition: "404" as const })) };
+/** audit #4 — the tool now takes per-page items; each 404s by default here. */
+function dels(n: number): { items: { pageId: string; disposition: "404" }[] } {
+  return { items: ids(n).map((pageId) => ({ pageId, disposition: "404" as const })) };
 }
 
 describe("delete_pages_many — W5 reference needsApproval gate", () => {

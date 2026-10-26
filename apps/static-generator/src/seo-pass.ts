@@ -185,7 +185,7 @@ export async function runSeoPass(args: {
       throw new Error(
         `static-generator: the stored file of og:image asset ${v.slug} (${v.variant}) is missing from ${args.mediaRoot}. ` +
           "Next step: find it with list_missing_media and restore it (import_media_from_urls when it came from a URL, " +
-          "or ask the operator to re-upload it), or pick another og:image for the page (set_page_seo).",
+          "or ask the operator to re-upload it), or pick another og:image for the page (set_page_seo_many).",
       );
     }
     const relPath = await writePublishedMedia({

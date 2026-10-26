@@ -76,7 +76,7 @@ export type TranslatedSeoOutcome = "filled" | "unchanged" | "marked_stale" | "un
 
 /** Told to the AI when a live variant's SEO was kept, not overwritten. */
 export const SEO_STALE_NEXT_STEP =
-  "The variant is live and already had a meta description, so the new translation did not overwrite it (SEO fill-once rule). It is now flagged as stale SEO. If the operator wants the translated description, re-optimize it explicitly with optimize_page_seo (seo-optimize skill).";
+  "The variant is live and already had a meta description, so the new translation did not overwrite it (SEO fill-once rule). It is now flagged as stale SEO. If the operator wants the translated description, re-optimize it explicitly with bulk_optimize_seo (page-seo skill).";
 
 /** The next steps a written translation leaves the AI, or undefined. */
 export function outcomeNextStep(o: PageTranslationOutcome): string | undefined {

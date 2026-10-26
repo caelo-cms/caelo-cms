@@ -71,7 +71,7 @@ export const getLinkMigrationReportTool: ToolDefinitionWithHandler<ReportInput> 
     "Content written before that was converted once by the link migration; this tool reports it: links converted per " +
     "place, and every link it could NOT convert (it matched no page or media asset — never guessed), with the module / " +
     "content it sits in. Use when the operator asks about broken or old links after an update, or before fixing " +
-    "links site-wide. Fix each listed link with the normal edit tools (edit_module, set_content_instance_values) " +
+    "links site-wide. Fix each listed link with the normal edit tools (update_modules_many, set_content_instance_values_many) " +
     "by pointing it at an existing page's path (list_pages) or removing it; the edit stores the " +
     "reference. A link in a layout's own HTML (the page frame) is the Owner's to fix under Settings → Layouts: name " +
     "the layout and the path to use. Filter with `search` (matches the link, the label and the field). Running or reverting the migration " +

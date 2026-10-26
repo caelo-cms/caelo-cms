@@ -125,7 +125,7 @@ export async function cloneContentInstancesDeep(
           ok: false,
           message: isRootLevel
             ? `content instance ${id} is ${inst ? "deleted" : "missing"} but still placed on the page; bind the placement to existing content (set_placement_content) before copying`
-            : `nested content instance ${id} is ${inst ? "deleted" : "missing"} but still referenced from a module field; remove or replace that reference (set_content_instance_values) before copying`,
+            : `nested content instance ${id} is ${inst ? "deleted" : "missing"} but still referenced from a module field; remove or replace that reference (set_content_instance_values_many) before copying`,
         };
       }
       inView.set(id, inst);
