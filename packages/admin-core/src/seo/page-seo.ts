@@ -207,10 +207,7 @@ export async function loadPageSeoViews(
 }
 
 /** The SEO fields `next` changes against `base` (a missing row = the defaults). */
-function changedSeoFields(
-  base: PageSeoState | undefined,
-  next: PageSeoState,
-): PageSeoField[] {
+function changedSeoFields(base: PageSeoState | undefined, next: PageSeoState): PageSeoField[] {
   const from = base ?? PAGE_SEO_COLUMN_DEFAULTS;
   return PAGE_SEO_FIELDS.filter((f) => from[f] !== next[f]);
 }
