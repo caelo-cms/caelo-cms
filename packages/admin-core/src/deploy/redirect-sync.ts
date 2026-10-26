@@ -49,7 +49,14 @@ import { lockStagingPublication } from "./staging-publication-lock.js";
 import { loadStaticPublisher, type StaticPublisher } from "./static-publisher.js";
 
 /** Why a sync ran. */
-export type RedirectSyncTrigger = "save" | "publish" | "rollback" | "retry" | "manual";
+export type RedirectSyncTrigger = "save" | "build" | "publish" | "rollback" | "retry" | "manual";
+
+/** Triggers that changed the build a target serves (see {@link syncRedirectsInTx}). */
+const SERVED_BUILD_CHANGED: ReadonlySet<RedirectSyncTrigger> = new Set([
+  "build",
+  "publish",
+  "rollback",
+]);
 
 /**
  * What one sync attempt did for one target. `nothing-live`: the target
@@ -200,6 +207,15 @@ export async function syncRedirectsInTx(
     SELECT id FROM deploy_targets WHERE env IN ${SYNC_ENVS} ${only("id")} ORDER BY id
     ON CONFLICT (target_id) DO NOTHING
   `);
+  // A new served build carries the redirects of its own build time, so the
+  // provider may now serve an older table: the target is behind until this
+  // sync succeeds, and a failure here is retried like a failed save.
+  if (SERVED_BUILD_CHANGED.has(args.trigger)) {
+    await tx.execute(sql`
+      UPDATE redirect_sync_state SET wanted_revision = wanted_revision + 1, updated_at = now()
+      WHERE target_id IN (SELECT id FROM deploy_targets WHERE env IN ${SYNC_ENVS} ${only("id")})
+    `);
+  }
   // The revision first, then the rows (see the module comment).
   const targets = (await tx.execute(sql`
     SELECT t.id::text AS id, t.name, t.env, t.out_dir, t.base_url, t.robots_default,
@@ -284,6 +300,17 @@ async function syncTarget(
       gone: result.goneCount,
       shadowed: result.shadowedCount,
     });
+    if (result.servedLocation !== undefined) {
+      // The served run's build now lives at a new provider location (a new
+      // Firebase Hosting version with the same files). A rollback to that
+      // run reads its recorded location, which release retention may delete
+      // once redirect-only releases pile up — so the run follows its build.
+      await tx.execute(sql`
+        UPDATE deploy_runs
+        SET publish_summary = jsonb_set(publish_summary, '{location}', to_jsonb(${result.servedLocation}::text))
+        WHERE id = ${servedRunId}::uuid AND publish_summary ? 'location'
+      `);
+    }
   } catch (e) {
     outcome = {
       ...base,
@@ -352,7 +379,7 @@ async function record(
       UPDATE redirect_sync_state
       SET failed_attempts = failed_attempts + 1,
           next_attempt_at = clock_timestamp()
-            + make_interval(mins => LEAST(power(2, failed_attempts)::int, ${MAX_BACKOFF_MINUTES})),
+            + make_interval(mins => LEAST(power(2, LEAST(failed_attempts, 10))::int, ${MAX_BACKOFF_MINUTES})),
           last_error = ${o.error},
           updated_at = now()
       WHERE target_id = ${o.targetId}::uuid

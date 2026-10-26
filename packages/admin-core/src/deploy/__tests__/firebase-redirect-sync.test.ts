@@ -161,6 +161,8 @@ describe("syncFirebaseRedirects (#1157)", () => {
       { regex: "^/old/?$", location: "/about/", statusCode: 301 },
     ]);
     expect(result.location).toBe(fake.releases.get("live")?.[0] ?? "");
+    // The served run follows its build to the new version (rollback source).
+    expect(result.servedLocation).toBe(result.location);
     expect(fake.releaseBodies).toEqual([{ message: "Caelo: redirects updated (no build)" }]);
   });
 

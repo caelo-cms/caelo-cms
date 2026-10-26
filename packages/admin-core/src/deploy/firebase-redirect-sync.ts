@@ -158,5 +158,5 @@ export async function syncFirebaseRedirects(args: {
   });
   // The new version serves exactly the same files.
   remember(created.name, files);
-  return { outcome: "applied", ...counts, location: created.name };
+  return { outcome: "applied", ...counts, location: created.name, servedLocation: created.name };
 }

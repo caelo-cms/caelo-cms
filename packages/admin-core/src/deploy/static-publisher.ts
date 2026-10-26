@@ -264,6 +264,13 @@ export interface RedirectSyncResult {
   readonly unservedTargets: readonly UnservedRedirectTarget[];
   /** Provider-native location of what serves the plan (Hosting version, URL map, file). */
   readonly location: string;
+  /**
+   * Set when the sync moved the served build itself to a new location (a
+   * new Firebase Hosting version with the same files): the served deploy
+   * run's `publish_summary.location` follows it, so a rollback to that run
+   * still finds its build after older versions age out.
+   */
+  readonly servedLocation?: string;
 }
 
 /** What {@link StaticPublisher.selectStagingPreview} did with the other previews. */

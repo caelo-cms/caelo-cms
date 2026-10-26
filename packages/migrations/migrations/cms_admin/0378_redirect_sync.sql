@@ -45,7 +45,7 @@ CREATE TABLE redirect_syncs (
   id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   target_id         uuid NOT NULL REFERENCES deploy_targets(id) ON DELETE CASCADE,
   trigger           text NOT NULL
-    CHECK (trigger IN ('save', 'publish', 'rollback', 'retry', 'manual')),
+    CHECK (trigger IN ('save', 'build', 'publish', 'rollback', 'retry', 'manual')),
   status            text NOT NULL
     CHECK (status IN ('applied', 'unchanged', 'not-served', 'nothing-live', 'failed')),
   revision          bigint NOT NULL CHECK (revision >= 0),
@@ -79,11 +79,12 @@ ALTER TABLE redirect_syncs FORCE ROW LEVEL SECURITY;
 CREATE POLICY redirect_syncs_read ON redirect_syncs FOR SELECT
   USING (current_setting('caelo.actor_kind', true) IN ('human', 'ai', 'system'));
 -- A sync runs as `system` (after a save, the retry worker) or inside the
--- human's Publish live / rollback transaction.
+-- transaction of the build that changed what a target serves: a human
+-- Publish live / rollback, or a Stage, which the AI may run.
 CREATE POLICY redirect_syncs_insert ON redirect_syncs FOR INSERT
-  WITH CHECK (current_setting('caelo.actor_kind', true) IN ('human', 'system'));
+  WITH CHECK (current_setting('caelo.actor_kind', true) IN ('human', 'ai', 'system'));
 -- The same sync trims the history to the newest attempts per target.
 CREATE POLICY redirect_syncs_delete ON redirect_syncs FOR DELETE
-  USING (current_setting('caelo.actor_kind', true) IN ('human', 'system'));
+  USING (current_setting('caelo.actor_kind', true) IN ('human', 'ai', 'system'));
 
 COMMIT;

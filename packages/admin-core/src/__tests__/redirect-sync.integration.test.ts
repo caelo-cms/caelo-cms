@@ -204,7 +204,7 @@ describe("redirect sync on save (#1157)", () => {
     const r = await bulkCreateRedirectsTool.handler(
       SYSTEM,
       {
-        redirects: [{ fromPath: "/promo", toPath: "/draft-page", statusCode: 301 }],
+        items: [{ fromPath: "/promo", toPath: "/draft-page", statusCode: 301 }],
         upsert: false,
       },
       { adapter, registry } as ToolContext,
@@ -231,7 +231,7 @@ describe("redirect sync on save (#1157)", () => {
     // The write is saved and answers ok; the AI tool result says why it is not live.
     const r = await bulkCreateRedirectsTool.handler(
       SYSTEM,
-      { redirects: [{ fromPath: "/old", toPath: "/about", statusCode: 301 }], upsert: false },
+      { items: [{ fromPath: "/old", toPath: "/about", statusCode: 301 }], upsert: false },
       { adapter, registry } as ToolContext,
     );
     expect(r.ok).toBe(true);
@@ -329,5 +329,41 @@ describe("redirect sync on save (#1157)", () => {
     expect(await readFile(join(currentDir("production"), "index.html"), "utf8")).toBe("home v1");
     expect(await snippet("production")).toContain("/old");
     expect((await status()).production?.last).toMatchObject({ trigger: "rollback" });
+  });
+
+  it("a publish whose re-sync fails leaves the target behind, so it is retried", async () => {
+    await createRedirects([{ fromPath: "/old", toPath: "/about" }]);
+    expect((await status()).production?.inSync).toBe(true);
+    const runId = (
+      await sys(
+        (tx) =>
+          tx`SELECT id::text AS id FROM deploy_runs WHERE target_id = ${targets.production.id}::uuid` as unknown as Promise<
+            { id: string }[]
+          >,
+      )
+    )[0]!.id;
+    const archive = join(root, targets.production.outDir, "builds", PROD_BUILD);
+    await mkdir(archive, { recursive: true });
+    await writeFile(join(archive, "index.html"), "home v1");
+    // A loop no host can serve, stored behind the ops' back: the re-sync
+    // after the rollback fails.
+    await sys(
+      (tx) => tx`
+        INSERT INTO redirects (from_path, to_path, status_code, created_by)
+        VALUES ('/a', '/b', 301, ${SYSTEM.actorId}::uuid), ('/b', '/a', 301, ${SYSTEM.actorId}::uuid)
+      `,
+    );
+    // Many failures in a row must not overflow the backoff.
+    await sys((tx) => tx`UPDATE redirect_sync_state SET failed_attempts = 40`);
+    const r = await execute(registry, adapter, SYSTEM, "deploy.rollback", {
+      targetName: "production",
+      runId,
+      repoRoot: root,
+    });
+    expect(r.ok).toBe(true);
+    const s = await status();
+    expect(s.production?.inSync).toBe(false);
+    expect(s.production?.lastError).toContain("form a loop");
+    expect(s.production?.nextAttemptAt).not.toBeNull();
   });
 });

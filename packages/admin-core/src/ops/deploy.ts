@@ -1086,6 +1086,14 @@ export const triggerDeployOp = defineOperation({
           parity_manifest = ${parityManifest === null ? null : jsonbParam(parityManifest)}
       WHERE id = ${runId}::uuid
     `);
+    // #1157 — the build read the redirects table when it started; a
+    // redirect saved since then was pushed to what the target served before
+    // this build. Put the table as saved now on the build it serves now.
+    await syncRedirectsInTx(tx, ctx, {
+      trigger: "build",
+      targetIds: [target.id],
+      outputRoot: repoRoot,
+    });
     logRunTimings(runKind, runId, timer, {
       status: "succeeded",
       pageCount: subprocess.result.pageCount,
