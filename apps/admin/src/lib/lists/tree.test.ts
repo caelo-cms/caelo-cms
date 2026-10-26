@@ -211,4 +211,30 @@ describe("saving", () => {
     expect(replaceLevel([p], p.id, [b, a])[0]?.children.map((c) => c.id)).toEqual([b.id, a.id]);
     expect(replaceLevel([p], null, [b]).map((c) => c.id)).toEqual([b.id]);
   });
+
+  test("a drag across an empty child zone never duplicates the entry (PR #1121)", () => {
+    // [Blog, Docs > Guides]; drag Docs up across Blog's empty child zone.
+    const guides = item("entry");
+    const docs = item("entry", [guides]);
+    const blog = item("entry");
+    let tree = [blog, docs];
+    // 1. Blog's child zone takes Docs while the pointer crosses it.
+    tree = replaceLevel(tree, blog.id, [docs]);
+    const staleBlog = tree[0] as EditorItem; // the top zone's copy: Docs inside
+    // 2. The top zone reports from that stale copy, Docs first …
+    tree = replaceLevel(tree, null, [docs, staleBlog]);
+    // 3. … and Blog's child zone lets Docs go.
+    tree = replaceLevel(tree, blog.id, []);
+    const ids: string[] = [];
+    const walk = (level: readonly EditorItem[]) => {
+      for (const it of level) {
+        ids.push(it.id);
+        walk(it.children);
+      }
+    };
+    walk(tree);
+    expect(ids).toEqual([docs.id, guides.id, blog.id]);
+    expect(tree.map((t) => t.id)).toEqual([docs.id, blog.id]);
+    expect(tree[0]?.children.map((c) => c.id)).toEqual([guides.id]);
+  });
 });

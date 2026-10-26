@@ -211,7 +211,9 @@ async function save(page: Page, testId: string): Promise<void> {
     (r) => r.request().method() === "POST" && r.url().includes("?/"),
   );
   await page.getByTestId(testId).click();
-  expect((await done).ok()).toBe(true);
+  const response = await done;
+  // The body carries the server's refusal — the one thing a red run needs.
+  expect(response.ok(), await response.text()).toBe(true);
 }
 
 test("edit a menu: add, nest, reorder, save", async ({ page }) => {
@@ -252,20 +254,33 @@ test("edit a menu: add, nest, reorder, save", async ({ page }) => {
   await expect(entries).toHaveCount(3);
   await expect(entries.first()).toContainText("Blog");
 
-  // Drag and drop: drag "Blog" below "Docs" on the top level.
-  const blog = row("Blog").locator("div").first();
+  // Drag and drop: drag "Docs" (with its nested "Guides") above "Blog".
+  // Upward on purpose: while dragging, the library moves a placeholder
+  // and animates the rows (FLIP). Aiming at the bottom edge of "Docs"
+  // (the earlier version) put the pointer over the nested "Guides" zone
+  // once the rows shifted, so "Blog" sometimes landed INSIDE "Docs".
+  // Dragging up, the shifted pointer lies inside the placeholder itself.
+  const docsId = await row("Docs").getAttribute("data-entry-id");
   const docs = row("Docs").locator("div").first();
-  const from = await blog.boundingBox();
-  const to = await docs.boundingBox();
-  if (!from || !to) throw new Error("rows have no box");
+  const blog = row("Blog").locator("div").first();
+  const from = await docs.boundingBox();
+  const to = await blog.boundingBox();
+  if (!from || !to || !docsId) throw new Error("rows have no box");
   await page.mouse.move(from.x + 10, from.y + from.height / 2);
   await page.mouse.down();
-  await page.mouse.move(from.x + 10, from.y + from.height / 2 + 5, { steps: 5 });
-  await page.mouse.move(to.x + 10, to.y + to.height - 2, { steps: 15 });
+  await page.mouse.move(from.x + 10, from.y + from.height / 2 - 5, { steps: 5 });
+  await page.mouse.move(to.x + 10, to.y + 2, { steps: 15 });
+  // Release only once the placeholder sits first on the top level.
+  await expect(page.locator("ul[aria-label='Entries'] > li").first()).toHaveAttribute(
+    "data-entry-id",
+    docsId,
+  );
   await page.mouse.up();
   await expect(page.getByTestId("save-list")).toBeEnabled();
   await save(page, "save-list");
-  expect(storedMenu().map((i) => i.values.label)).toEqual(["Docs", "Blog"]);
+  const reordered = storedMenu();
+  expect(reordered.map((i) => i.values.label)).toEqual(["Docs", "Blog"]);
+  expect(reordered[0]?.children?.map((i) => i.values.label)).toEqual(["Guides"]);
 });
 
 test("edit its structure: add a field, and confirm removing one with values", async ({ page }) => {
