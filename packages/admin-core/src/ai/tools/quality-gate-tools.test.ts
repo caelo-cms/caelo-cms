@@ -20,27 +20,29 @@ describe("accept_quality_findings description", () => {
   // #727 "optimum, not good enough" — an AI once called a Performance 90
   // fine; sent back, it reached 100.
   it("holds the AI to the optimum before anything goes to the operator", () => {
-    expect(d).toContain("The target is 100 in every Lighthouse category and zero findings");
-    expect(d).toContain("a score like 90 is NOT acceptable on its own");
-    expect(d).toContain("anything you can still fix you fix");
+    expect(d).toContain("Target = 100 per Lighthouse category + zero findings");
+    expect(d).toContain("90 is NOT acceptable on its own");
+    expect(d).toContain("Fix what is fixable");
     expect(d).toContain("never run Lighthouse yourself");
   });
 
   it("hands the truly unfixable to the operator as a bulk decision, never as a recommendation (#667)", () => {
     expect(d).toContain("truly CANNOT be fixed");
-    expect(d).toContain("after explaining WHY a finding cannot be fixed");
-    expect(d).toContain("never as your recommendation");
-    expect(d).toContain("BULK: prefer `groups`");
-    expect(d).toContain("a worse value blocks again");
-    expect(
-      publishDespiteFailedAuditTool.description.startsWith("Only when the editor explicitly wants"),
-    ).toBe(true);
+    expect(d).toContain("after explaining WHY it cannot be fixed");
+    expect(d).toContain("never your recommendation");
+    expect(JSON.stringify(acceptQualityFindingsTool.inputSchema)).toContain(
+      "PREFERRED: one problem across pages",
+    );
+    expect(d).toContain("worse blocks again");
+    expect(publishDespiteFailedAuditTool.description).toContain(
+      "ONLY on the editor's explicit request",
+    );
   });
 
   it("routes Caelo platform findings to bug_report", () => {
-    expect(d).toContain("a Caelo platform issue you reported with bug_report");
+    expect(d).toContain("Caelo platform issue reported via `bug_report`");
     expect(getQualityAuditTool.description).toContain(
-      "report it with bug_report and never edit the site for it",
+      "report via `bug_report`, never edit the site for them",
     );
   });
 
@@ -53,9 +55,9 @@ describe("accept_quality_findings description", () => {
 describe("get_quality_audit holds the AI to 100", () => {
   it("says a 90 is not acceptable and to keep fixing", () => {
     const d = getQualityAuditTool.description;
-    expect(d).toContain("THE TARGET IS 100 IN EVERY CATEGORY AND ZERO FINDINGS");
-    expect(d).toContain("A score like 90 is NOT acceptable on its own");
-    expect(d).toContain("repeat until Performance is 100");
+    expect(d).toContain("TARGET 100 IN EVERY CATEGORY + ZERO FINDINGS");
+    expect(d).toContain("90 is NOT acceptable");
+    expect(d).toContain("repeat until Performance 100");
   });
 });
 
@@ -65,7 +67,7 @@ describe("Lighthouse metrics on the quality read tools", () => {
       expect(tool.description).toContain("LCP");
       expect(tool.description).toContain("CLS");
       expect(tool.description).toContain(
-        "Use this instead of running Lighthouse yourself: the audit runs against the real staged build",
+        "Never run Lighthouse yourself: the audit runs on the real staged build",
       );
     }
   });
@@ -75,7 +77,7 @@ describe("Lighthouse metrics on the quality read tools", () => {
     for (const name of ["get_quality_audit", "check_stage_audit"]) {
       const entry = catalogue.find((t) => t.name === name);
       expect(entry).toBeDefined();
-      expect(entry?.description).toContain("instead of running Lighthouse yourself");
+      expect(entry?.description).toContain("Never run Lighthouse yourself");
       expect(entry?.gated).toBeUndefined();
     }
   });

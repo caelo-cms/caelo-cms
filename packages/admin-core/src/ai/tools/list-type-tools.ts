@@ -14,7 +14,7 @@ import { LIST_TYPE_ROLES } from "@caelo-cms/shared";
 import { z } from "zod";
 import { deleteListTypesManyOp, upsertListTypesManyOp } from "../../ops/lists/list-types.js";
 import { describeError } from "./_describe-error.js";
-import { describeListType, LISTS_ALIAS, makeOpTool, toolNamesIn } from "./_list-tool-kit.js";
+import { describeListType, makeOpTool, toolNamesIn } from "./_list-tool-kit.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listListTypesInput = z
@@ -24,7 +24,7 @@ const listListTypesInput = z
       .min(1)
       .max(64)
       .optional()
-      .describe("One type in detail: its definition plus every list and module using it."),
+      .describe("One type in detail + every list and module using it."),
     role: z.enum(LIST_TYPE_ROLES).optional(),
     query: z.string().min(1).max(128).optional().describe("Free text over slug, name, purpose."),
   })
@@ -54,12 +54,11 @@ function typeFacts(t: ListTypeRow): string {
 export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = {
   name: "list_list_types",
   description:
-    "The list types of this site — the shapes lists take: which node kinds exist, their fields (`*` = required), what may hang under what, and which nodes generate entries from a source (a page query, breadcrumbs, a plugin). " +
-    `${LISTS_ALIAS} ` +
-    "Shipped types: `texts` (plain strings), `links` (label + link), `menu` (nested entries, 3 levels, marks the current page), `categories` / `tags` (vocabularies pages are assigned to). " +
-    "A type that ships with a plugin (marked 'ships with plugin') is read-only: its lists are yours to fill, its definition is not to change. 'Inert plugin settings' are extensions of a plugin that is not active — kept, not applied. " +
-    "Read this before writing a list's entries or a module's `{{#field}}…{{/field}}` template (the node fields are the keys inside the section). Pass `slug` for one type in detail (lists of the type + modules with local lists of it). " +
-    "When no type fits (a mega menu with columns and a latest-news block, a team list with photo + role), create one with upsert_list_types_many instead of bending `links`.",
+    "Read the site's list types — the shapes lists take: node kinds, fields (`*` = required), nesting, nodes that generate entries from a source (page query, breadcrumbs, plugin). Read before writing list entries or a module's `{{#field}}…{{/field}}` template (node fields = keys inside the section).\n" +
+    "- Menus, navigation, footer links, categories, tags = SHARED LISTS of a fitting type; no menu-specific tools. A list ONE module shows stays LOCAL (entries in its `list` field); used in several places, site navigation or a page vocabulary -> SHARED; `promote_local_list` switches local -> shared.\n" +
+    "- Shipped: `texts` (strings), `links` (label + link), `menu` (nested, 3 levels, marks current page), `categories`/`tags` (vocabularies pages are assigned to).\n" +
+    "- 'ships with plugin' = read-only definition (fill its lists). 'Inert plugin settings' = extensions of an inactive plugin, kept, not applied.\n" +
+    "- No type fits (mega menu with columns + latest news, team list with photo + role) -> `upsert_list_types_many`; don't bend `links`.",
   schema: listListTypesInput,
   handler: async (ctx, input, toolCtx) => {
     if (input.slug !== undefined) {
@@ -109,13 +108,16 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
 export const upsertListTypesManyTool = makeOpTool({
   name: "upsert_list_types_many",
   description:
-    "Create or replace list types (1–50 in one call, one transaction). A list type is the SHAPE of a list: `nodes` (node kind → {label, fields[], children?: {name, allow[]}, source?, current_from?}), `root.allow` (node kinds at the top level), `role` (navigation | vocabulary | content), `purpose` (why it exists — later reads decide by it), `max_depth` (required when a node allows itself). " +
-    "Field types: text, richtext, link ({href}), media, select (options), boolean, number, date, icon, module (an embedded module), term (entries of a vocabulary list, `list: <slug>`). Vocabulary types need exactly one node kind with text fields `name` and `slug`. " +
-    "A node with `source` gets generated entries instead of stored children: {kind:'query', editable:[knobs the entry may change], defaults:{page_type:'news', order:'published_desc', limit:3}} for 'latest news', {kind:'system', name:'breadcrumbs'|'children'|'siblings'|'page_terms'|'term_pages'}, or {kind:'plugin', name}. " +
-    'Example — a mega menu: root.allow ["column","link"]; node `column` {fields:[{name:"heading",type:"text",label:"Heading",required:true}], children:{name:"links",allow:["link","news"]}}; node `link` {fields:[label text*, link link*], current_from:"link"}; node `news` {fields:[{name:"heading",type:"text",label:"Heading"}], source:{kind:"query",editable:["limit"],defaults:{page_type:"news",order:"published_desc",limit:3}}}. ' +
-    "Changing a type that has lists is checked against every list of the type (local ones in modules too): a new required field needs a `default`; removing a node kind or field that still has values is refused with the lists named — pass `dropValues: true` only when the operator agreed to lose those values. Pass `expectedVersion` from list_list_types to avoid overwriting a concurrent change. " +
-    "A type that ships with a plugin cannot be changed (by you or the operator) — create your own type under another slug instead. " +
-    "Do NOT create a near-duplicate of a shipped type — reuse `links` / `menu` when they fit.",
+    "Create or replace list types (the SHAPE of a list) in one transaction.\n" +
+    "DO NOT USE FOR: a near-duplicate of a shipped type (reuse `links`/`menu`); changing a plugin-shipped type (create your own slug).\n" +
+    "CORE RULES:\n" +
+    "- `nodes`: node kind -> {label, fields, children:{name, allow}, source, current_from}. `root.allow` = top-level node kinds. `purpose` = why the type exists (later reads decide by it). `max_depth` required when a node allows itself.\n" +
+    "- Field semantics: `link` value = {href}; `module` = embedded module (`accepts`: module types, absent = any); `term` = entries of vocabulary list `list`. `current_from` names the node's link field that marks the current page.\n" +
+    "- Vocabulary types: exactly one node kind, with text fields `name` + `slug`.\n" +
+    "- `source` -> generated entries instead of stored children: `query` (`editable` = knobs an entry may change, `defaults` = query), `system`, `plugin`.\n" +
+    '- Mega menu example: root.allow ["column","link"]; `column` {fields:[heading text*], children:{name:"links", allow:["link","news"]}}; `link` {fields:[label text*, link link*], current_from:"link"}; `news` {fields:[heading text], source:{kind:"query", editable:["limit"], defaults:{page_type:"news", order:"published_desc", limit:3}}} (`*` = required:true).\n' +
+    "- Changes are checked against every list of the type (incl. local lists in modules): a new required field needs a `default`; removing a node kind/field that has values is refused naming the lists -> `dropValues:true` only when the operator agreed to lose them.\n" +
+    "- `expectedVersion` from `list_list_types` prevents overwriting a concurrent change.",
   opName: "list_types.upsert_many",
   input: upsertListTypesManyOp.input,
   format: (value) => {
@@ -136,8 +138,7 @@ export const upsertListTypesManyTool = makeOpTool({
 export const deleteListTypesManyTool = makeOpTool({
   name: "delete_list_types_many",
   description:
-    "Delete list types by slug (1–50). Refused for a type that ships with a plugin, and while any list (shared, or local in a module field) still uses the type — the error names them; delete or convert those lists first. Undoable like every draft change. " +
-    "Do NOT use to empty a list (that is patch_list_items_many / upsert_lists_many) or to drop a list (delete_lists_many).",
+    "Delete list types by slug. Refused for plugin-shipped types and while any list (shared, or local in a module field) uses the type — the error names them; delete or convert those first. Undoable. Not for emptying a list (`patch_list_items_many`/`upsert_lists_many`) or dropping one (`delete_lists_many`).",
   opName: "list_types.delete_many",
   input: deleteListTypesManyOp.input,
   format: (value) =>

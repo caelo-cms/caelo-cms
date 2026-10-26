@@ -14,8 +14,8 @@ import { makeBulkTool } from "./_make-bulk-tool.js";
 export const setPageSeoManyTool = makeBulkTool({
   name: "set_page_seo_many",
   description: [
-    "Set per-page SEO fields to exact values — one call for 1..N pages (`items[]`), one all-or-nothing transaction. ONLY on explicit user instruction (e.g. 'set the home page meta description to X').",
-    "DO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; re-optimization with keyword context -> `bulk_optimize_seo`. Routine content edits (`update_modules_many`/`add_module`) MUST NOT touch SEO fields.",
+    "Set pages' SEO fields to exact values, all-or-nothing. ONLY on explicit user instruction (e.g. 'set the home meta description to X').",
+    "DO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; keyword re-optimization -> `bulk_optimize_seo`; side effect of content edits (never touch SEO then).",
   ].join("\n"),
   itemInputSchema: setPageSeoToolInput,
   itemJsonSchema: {

@@ -17,7 +17,7 @@ const input = z
       .enum(["stage", "publish"])
       .optional()
       .describe(
-        "Which gate to check for. 'publish' (default): Publish live / promote — a link to an unpublished page blocks. 'stage': such a link is only a warning.",
+        "Gate: 'publish' (default; Publish live / promote) -> a link to an unpublished page blocks; 'stage' -> only a warning.",
       ),
     pagePath: z
       .string()
@@ -25,9 +25,9 @@ const input = z
       .max(2000)
       .optional()
       .describe(
-        "Only problems on this page (its path, e.g. '/about'); site-wide places (menus, plugin data) are always included.",
+        "Only this page's problems (path, e.g. '/about'); site-wide places (menus, plugin data) always included.",
       ),
-    blockingOnly: z.boolean().optional().describe("True = only problems that block."),
+    blockingOnly: z.boolean().optional(),
     limit: z.number().int().min(1).max(500).optional(),
   })
   .strict();
@@ -43,11 +43,10 @@ interface Issue {
 export const checkLinksTool = makeReadTool<Input>({
   name: "check_links",
   description:
-    "Check the site's internal links (links between its own pages and media) in the draft you see — every place a link is stored: page content, module HTML, field defaults, layouts, templates, lists (menus, vocabularies), page terms and properties, and plugin data. " +
-    "Reports links to deleted pages or media, links without a page in the linking page's language, and references to a deleted list, a removed vocabulary entry (term) or a deleted module embedded in a list entry (all BLOCK Stage and Publish live), links to unpublished pages (BLOCK Publish live, a warning at Stage), and old plain-path links (warnings). " +
-    "Each problem names the page, where the link is stored and the tool that fixes it. " +
-    "Use it before stage_changes when you deleted, unpublished or translated pages, when a Stage was refused for links, or when the operator asks about broken links. " +
-    "Not for external links or what the built site serves (get_quality_audit has the staged-build link check).",
+    "Check internal links (to own pages/media) in your draft, wherever stored: page content, module HTML, field defaults, layouts, templates, lists (menus, vocabularies), page terms/properties, plugin data. Each problem names the page, storage place and fixing tool.\n" +
+    "Severity: BLOCK Stage + Publish = links to deleted pages/media, links without a page in the linking page's language, refs to a deleted list, removed term or deleted module in a list entry. BLOCK Publish (Stage warning) = links to unpublished pages. Warning = old plain-path links.\n" +
+    "USE FOR: before `stage_changes` after deleting/unpublishing/translating pages; a Stage refused for links; operator asks about broken links.\n" +
+    "DO NOT USE FOR: external links or the built site (`get_quality_audit` checks the staged build).",
   opName: "links.check_references",
   input,
   buildOpInput: (i) => ({

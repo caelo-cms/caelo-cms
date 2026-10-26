@@ -43,10 +43,10 @@ export const proposeSetAiBudgetTool = makeProposeTool({
   opName: "owner_settings.propose_set_ai_budget",
   pendingQueuePath: PENDING_QUEUE,
   when:
-    "Propose AI spend caps: per chat session, per day site-wide (day-global), or per day per person (day-per-actor), each separately for text and image generation. " +
-    "Use when the operator names a budget, or a budget gate blocked/warned and the operator wants it raised or lowered. Several cells go in ONE call (`budgets` array). " +
-    "Caps are microcents (1e-8 USD): $10 = 1000000000; null = unlimited. Never propose an amount the operator did not name — the click confirms their number, not yours. " +
-    "Read the current caps first with get_ai_budgets. Not for a single migration run's ceiling — that is set_migration_budget.",
+    "Propose AI spend caps per chat session, per day site-wide or per day per person; text and image separately.\n" +
+    "USE FOR: operator names a budget, or a budget gate blocked/warned and they want it changed. Read current caps first (`get_ai_budgets`).\n" +
+    "DO NOT USE FOR: one migration run's ceiling -> `set_migration_budget`.\n" +
+    "CORE RULES: several cells -> ONE call. Never propose an amount the operator did not name — the click confirms their number, not yours.",
   schema: proposeAiBudgetInput,
   summarize: (_input, preview) => `AI budget: ${String(preview.summary ?? "change caps")}`,
 });
@@ -56,10 +56,9 @@ export const proposeSetAiPricingTool = makeProposeTool({
   opName: "owner_settings.propose_set_ai_pricing",
   pendingQueuePath: PENDING_QUEUE,
   when:
-    "Propose AI pricing rows (what each provider/model call is billed at — drives cost tracking and every budget gate). " +
-    "Use when a tool reports 'no ai_pricing row' / UNPRICED spend for a model, or the provider changed its prices. Several rows go in ONE call (`rows` array). " +
-    "Units: text rows are microcents PER 1K TOKENS ($3 per million tokens = 300000); an image row's inputMicrocents is the price of ONE generated image ($0.04 = 4000000) with outputMicrocents null. Take rates from the provider's published price list or the operator — never guess; if you do not know the price, ask. " +
-    "For dated prices (intro pricing, an announced change) send one row per window with validFrom/validTo and distinct effectiveFrom. Read the rows in force first with list_ai_pricing.",
+    "Propose AI pricing rows (billing rate per provider/model; drives cost tracking + every budget gate).\n" +
+    "USE FOR: a tool reports 'no ai_pricing row' / UNPRICED spend, or the provider changed prices. Read rows in force first (`list_ai_pricing`).\n" +
+    "CORE RULES: several rows -> ONE call. Rates from the provider's published price list or the operator — never guess; unknown -> ask. Dated prices (intro, announced change) -> one row per window with validFrom/validTo + distinct effectiveFrom.",
   schema: proposeAiPricingInput,
   summarize: (_input, preview) => `AI pricing: ${String(preview.summary ?? "set rates")}`,
 });
@@ -69,9 +68,9 @@ export const proposeSetGatewaySettingsTool = makeProposeTool({
   opName: "owner_settings.propose_set_gateway_settings",
   pendingQueuePath: PENDING_QUEUE,
   when:
-    "Propose a change to the public API gateway: captcha provider + proof-of-work difficulty on visitor writes (forms, comments, signups), the max request body size, and auto-redeploy (publish production automatically after publishable writes, its debounce and which ops count). " +
-    "Read the current values with get_gateway_settings, then send ONLY the settings that change; everything else keeps its current value. Fails loudly if nothing would change. " +
-    "Not for per-plugin rate limits — that is tune_rate_limit.",
+    "Propose public API gateway settings: captcha / proof-of-work on visitor writes (forms, comments, signups), max body size, auto-redeploy.\n" +
+    "DO NOT USE FOR: per-plugin rate limits -> `tune_rate_limit`.\n" +
+    "CORE RULES: read current values (`get_gateway_settings`), send ONLY what changes (rest kept); fails if nothing would change.",
   schema: proposeGatewaySettingsInput,
   summarize: (_input, preview) => `gateway: ${String(preview.summary ?? "settings change")}`,
 });
@@ -81,11 +80,8 @@ export const proposeSetTranslationModelTool = makeProposeTool({
   opName: "owner_settings.propose_set_translation_model",
   pendingQueuePath: PENDING_QUEUE,
   when:
-    "Propose which model page translations run on (the international-site plugin's translate step), on the active AI provider. " +
-    "Default is the chat model; a smaller catalogue model (the provider's 'fast' one) makes translations cheaper. The chat itself is never affected. " +
-    "Use when the operator wants translations cheaper, faster or better, or back on the chat model (`model: null`). " +
-    "Read the active provider's chat model, current translation model and catalogue choices first with list_ai_providers, and pass a catalogue id exactly. " +
-    "The preview shows both models' per-MTok rates.",
+    "Propose the model page translations (international-site plugin) run on, within the active AI provider; chat model unaffected.\n" +
+    "USE FOR: cheaper/faster/better translations, or back to the chat model. Read chat model, current translation model + catalogue first (`list_ai_providers`). Preview shows both models' per-MTok rates.",
   schema: proposeTranslationModelInput,
   summarize: (_input, preview) => String(preview.summary ?? "translation model change"),
 });
@@ -95,10 +91,9 @@ export const proposeSetPluginAiCostCapTool = makeProposeTool({
   opName: "owner_settings.propose_set_plugin_ai_cost_cap",
   pendingQueuePath: PENDING_QUEUE,
   when:
-    "Propose the AI spend cap of ONE plugin (max AI cost per rolling 24h; past it the plugin's AI calls are refused). " +
-    "Use when the operator names a cap for a plugin, or get_plugin shows a plugin at or near its cap and the operator wants it changed. " +
-    "capMicrocents is microcents (1e-8 USD): $5 = 500000000; null removes the cap. Never propose an amount the operator did not name. " +
-    "Read the plugin's current cap and 24h spend first with get_plugin. Site-wide AI caps are propose_set_ai_budget.",
+    "Propose ONE plugin's AI spend cap per rolling 24h (beyond it its AI calls are refused).\n" +
+    "USE FOR: operator names a cap, or `get_plugin` (current cap + spend; read first) shows it at/near its cap. Never propose an amount the operator did not name.\n" +
+    "DO NOT USE FOR: site-wide caps -> `propose_set_ai_budget`.",
   schema: proposePluginAiCostCapInput,
   summarize: (_input, preview) => String(preview.summary ?? "plugin AI cost cap change"),
 });
@@ -107,10 +102,7 @@ export const proposeRotateGatewayCookieSecretTool = makeProposeTool({
   toolName: "propose_rotate_gateway_cookie_secret",
   opName: "owner_settings.propose_rotate_gateway_cookie_secret",
   pendingQueuePath: PENDING_QUEUE,
-  when:
-    "Propose rotating the secret the public API gateway signs visitor cookies with. " +
-    "ONLY when the operator asks for it or the secret may have leaked (logs, a backup, a former contractor): every visitor is re-identified, rate-limit and captcha state restart, and signed-in site visitors sign in again — it cannot be undone. " +
-    "Give the reason in `reason`; it is shown on the approval. You never see the secret.",
+  when: "Propose rotating the secret the public gateway signs visitor cookies with. ONLY when the operator asks or it may have leaked (logs, backup, former contractor): irreversible — every visitor re-identified, rate-limit + captcha state restart, signed-in visitors sign in again. You never see the secret.",
   schema: proposeRotateCookieSecretInput,
   summarize: () => "rotate the gateway cookie secret",
 });
@@ -128,8 +120,7 @@ function usd(microcents: number | null): string {
 export const getAiBudgetsTool = makeReadTool({
   name: "get_ai_budgets",
   description:
-    "Read the AI spend caps and today's spend against them (per session / per day site-wide / per day per person, text and image separately). " +
-    "Use before propose_set_ai_budget, or when a budget warning/block needs explaining. Amounts are shown in USD and raw microcents.",
+    "Read AI spend caps + today's spend (per session / day site-wide / day per person; text + image), in USD and microcents. Use before `propose_set_ai_budget` or to explain a budget warning/block.",
   opName: "ai_budgets.status",
   input: noInput,
   // day-per-actor spend is recorded against the human operator, not the AI
@@ -151,8 +142,7 @@ export const getAiBudgetsTool = makeReadTool({
 export const listAiPricingTool = makeReadTool({
   name: "list_ai_pricing",
   description:
-    "List the AI pricing rows currently in force (provider, model, text/image, rates). Text rates are microcents PER 1K TOKENS ($3/MTok = 300000); an image row's input is microcents per generated image. " +
-    "Use before propose_set_ai_pricing, or when a cost report says a model is unpriced.",
+    "List AI pricing rows in force (text rates = microcents/1K tokens; image input = microcents/image). Use before `propose_set_ai_pricing` or when a model is reported unpriced.",
   opName: "ai_pricing.list",
   input: noInput,
   format: (value) => {
@@ -172,8 +162,7 @@ export const listAiPricingTool = makeReadTool({
 export const getGatewaySettingsTool = makeReadTool({
   name: "get_gateway_settings",
   description:
-    "Read the public API gateway settings: captcha provider + proof-of-work difficulty, max request body, auto-redeploy (on/off, debounce, triggering ops). " +
-    "Use before propose_set_gateway_settings.",
+    "Read public API gateway settings (captcha, proof-of-work, max body, auto-redeploy). Use before `propose_set_gateway_settings`.",
   opName: "gateway.get_settings",
   input: noInput,
   format: (value) => {

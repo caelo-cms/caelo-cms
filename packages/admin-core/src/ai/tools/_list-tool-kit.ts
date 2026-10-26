@@ -23,29 +23,6 @@ import { describeError, forwardRefusal } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 /**
- * The words the operator uses for lists, said once for every list tool:
- * menus, navigation, footer links, categories and tags ARE lists. Without
- * it the AI looks for a menu tool, or hardcodes links into module HTML.
- */
-export const LISTS_ALIAS =
-  "Menus, navigation, footer links, categories and tags are SHARED LISTS of a fitting list type (menu, links, categories, tags, or a custom type such as a mega menu) — there are no menu-specific tools. " +
-  "A list only ONE module shows stays LOCAL (its entries live in that module's `list` field); a list needed in more than one place, the site navigation, or a vocabulary pages are assigned to is SHARED. promote_local_list switches a local list to shared in one call.";
-
-/**
- * The part of the `list` field contract a module-authoring tool call needs
- * at the call site. The full model (template keys, sources, local vs
- * shared) lives once in the static system prompt's module-model section;
- * repeating ~1.3k characters of it in every always-loaded module tool
- * raised the static context of each chat call (PR #1121 e2e-livedit token
- * ceiling), so the tools carry the binding shapes and the routing only.
- */
-export const LIST_FIELD_CONTRACT =
-  " **List fields** (`kind:'list'`, `listType`): repeating content is ONE list field, `{{#field}}…{{/field}}` (system prompt: lists). " +
-  "local (default): the placement value / chrome `default` is the entries, `[{node:'link', values:{label:'Home', link:{href:'/'}}}]`; " +
-  "shared: `bind:'shared'`, `list:'caelo:list/<id>'` — menus, navigation, footer links, categories, tags (list_lists first; entries change via patch_list_items_many; promote_local_list when a second place needs a local list); " +
-  "source: `bind:'source'` with a query / system / plugin `source`.";
-
-/**
  * The list ops write their AI-actionable hints with op names ("create it
  * with lists.upsert_many"); the model calls tools, so the tool layer says
  * the tool. Longest names first so `lists.get` never eats a longer name.

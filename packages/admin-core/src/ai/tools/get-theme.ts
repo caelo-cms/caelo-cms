@@ -41,7 +41,13 @@ const getThemeToolInput = z
       .max(120)
       .regex(/^[a-z0-9][a-z0-9-]*$/)
       .optional(),
-    as: z.enum(AS_VALUES).default("dtcg"),
+    as: z
+      .enum(AS_VALUES)
+      .default("dtcg")
+      .describe(
+        "`dtcg`: full DTCG document | `css-vars`: the rendered `:root{…}` the public site ships; use when writing module CSS with `var(--color-…)` | `tailwind`: `@theme inline{…}` mapping to Tailwind 4 variables | `summary`: `primary=…, body=…, radius=…` + active flag | " +
+          '`font-delivery`: per pinned font file what visitors download (roles using it, axes, operator override, effective per-axis policy full/range/pin + whether derived default, renderable weights or why unknown, slice sizes once a preview/build derived them); read before answering "make the fonts load faster" or changing `set_theme_tokens` `fontAxes`.',
+      ),
   })
   .strict();
 type GetThemeToolInput = z.infer<typeof getThemeToolInput>;
@@ -67,18 +73,7 @@ async function themeInventoryLine(
 
 export const getThemeTool: ToolDefinitionWithHandler<GetThemeToolInput> = {
   name: "get_theme",
-  description:
-    "Read a theme in one of four shapes. OMIT `slug` for the ACTIVE theme (the routine case). " +
-    "Default `as: dtcg` returns the full DTCG document. " +
-    "`css-vars` returns the rendered `:root { … }` block — what the public site ships. " +
-    "`tailwind` returns a `@theme inline { … }` block mapping the tokens to Tailwind 4 " +
-    "variable names. `summary` returns a tiny `'primary=…, body=…, radius=…'` + active flag. " +
-    "`font-delivery` reports what visitors download for each pinned font file: the roles using it, its axes, the " +
-    "operator override, the effective per-axis policy (full / range / pin, with whether it is the derived default), the " +
-    "weights the site can render (or why that is unknown), and slice sizes once a preview/build derived them — read it " +
-    'before answering "make the fonts load faster" or changing set_theme_tokens fontAxes. ' +
-    "Use `css-vars` when writing module HTML that references `var(--color-…)` so you don't " +
-    "have to mentally translate DTCG paths.",
+  description: "Read a theme; omit `slug` for the ACTIVE theme (routine case).",
   schema: getThemeToolInput,
   inputSchema: z.toJSONSchema(getThemeToolInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {

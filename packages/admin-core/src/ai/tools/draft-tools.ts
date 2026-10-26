@@ -60,7 +60,7 @@ const stageInput = z
       .enum(["this_chat", "all_my_chats"])
       .default("this_chat")
       .describe(
-        "this_chat (default) = only this chat's unstaged changes; all_my_chats = every open chat of the operator that has unstaged changes (one build).",
+        "`all_my_chats` = every open chat of the operator with unstaged changes, one build.",
       ),
   })
   .strict();
@@ -68,14 +68,13 @@ const stageInput = z
 export const stageChangesTool: ToolDefinitionWithHandler<z.infer<typeof stageInput>> = {
   name: "stage_changes",
   description:
-    "Stage: merge this chat's unstaged changes into the site and rebuild the STAGING site (noindex, never visitor-facing), then the quality check (Lighthouse) runs on it. " +
-    "Use it when the operator's requested change is done and should be reviewed on staging — 'stage it', 'put it on staging', or as the last step of finished work so the operator can review and Publish live. " +
-    "Changes another chat made to the SAME module/page ride along (the result names them — tell the operator). scope all_my_chats stages every open chat of the operator at once. " +
-    "Only pages with status 'published' are built — the result lists draft pages it left out; publish them with set_pages_status_many first when they should be on staging. " +
-    "The build is REFUSED unless: (1) at least one page is published; (2) a published page serves the site root '/' (the homepage — set_home_page designates one, it keeps its slug); (3) every published page has a meta description (page.metaDescription in build_page, else ONE autofill_page_seo_many call). " +
-    "These cover pages you did not touch too (a homepage left as a draft, an older page without a description): the site-status note at the start of the turn and the results of build_page / set_pages_status_many / set_home_page / autofill_page_seo_many say 'A Stage would be refused right now' with the exact fixes — do those first, then stage once. " +
-    "It does NOT publish: Publish live is the operator's click after the quality check (get_publish_gate says whether it is open; get_quality_audit reads the findings). Never tell the operator the change is live. " +
-    "A failed build returns the generator's error — fix the cause and call again; the changes stay unstaged until a build succeeds.",
+    "Stage: merge this chat's unstaged changes into the site, rebuild the STAGING site (noindex, never visitor-facing), then run the quality check (Lighthouse). Use when the requested change is done and should be reviewed: 'stage it', 'put it on staging', last step of finished work.\n" +
+    "CORE RULES:\n" +
+    "- Other chats' changes to the SAME module/page ride along (result names them -> tell the operator).\n" +
+    "- Only status 'published' pages are built; result lists left-out drafts -> `set_pages_status_many` first if they belong on staging.\n" +
+    "- REFUSED unless: (1) >=1 published page; (2) a published page serves '/' (`set_home_page`, slug kept); (3) every published page has a meta description (`page.metaDescription` in `build_page`, else ONE `autofill_page_seo_many` call). Covers untouched pages too; the turn-start status note and results of `build_page` / `set_pages_status_many` / `set_home_page` / `autofill_page_seo_many` say 'A Stage would be refused right now' + exact fixes -> do them first, then stage once.\n" +
+    "- Does NOT publish: Publish live = operator's click after the check (`get_publish_gate` open?, `get_quality_audit` findings). Never say the change is live.\n" +
+    "- Failed build returns the generator's error -> fix, retry; changes stay unstaged until a build succeeds.",
   schema: stageInput,
   handler: async (ctx, input, toolCtx) => {
     if (!toolCtx.chatSessionId) return { ok: false, content: `stage_changes: ${NO_CHAT}` };
@@ -157,7 +156,7 @@ const undoInput = z
       .boolean()
       .optional()
       .describe(
-        "true ONLY after the operator confirmed that the other chats' later changes named by the previous call may be undone too. Needs the operator's click.",
+        "If another chat later changed the same things, the first call changes NOTHING and lists those chats -> tell the operator 'this also undoes X from chat Y', ask. true ONLY after they agree; that call waits for the operator's click.",
       ),
   })
   .strict();
@@ -165,10 +164,7 @@ const undoInput = z
 export const undoThisChatTool: ToolDefinitionWithHandler<z.infer<typeof undoInput>> = {
   name: "undo_this_chat",
   description:
-    "Undo THIS chat's unstaged changes in the shared draft (everything this chat changed since it was last staged; staged/published changes are not touched — those use the propose_revert_* tools). " +
-    "Use when the operator says 'undo that', 'throw this away', 'go back to how it was before this chat'. " +
-    "If another chat has since changed one of the same things, the first call changes NOTHING and lists those chats: tell the operator 'this also undoes X from chat Y' and ask. Only after the operator agrees call again with confirmOverlap: true — that call waits for the operator's click. " +
-    "Chats on their own experiment/migration branch are discarded from Open changes instead.",
+    "Undo THIS chat's unstaged changes in the shared draft (since its last Stage) — 'undo that', 'throw this away', 'go back to before this chat'. Staged/published changes -> `propose_revert_*`. Chats on their own experiment/migration branch are discarded from Open changes instead.",
   schema: undoInput,
   needsApproval: (input) => input.confirmOverlap === true,
   approverPermissions: ["content.write"],
@@ -224,7 +220,7 @@ const isolateInput = z
     reason: z
       .enum(["experiment", "migration"])
       .describe(
-        "experiment = the operator wants to TRY something (a redesign, an alternative) without touching the shared draft; migration = a site migration/import.",
+        "`experiment` = TRY something without touching the shared draft; `migration` = site migration/import.",
       ),
   })
   .strict();
@@ -232,9 +228,9 @@ const isolateInput = z
 export const startIsolatedBranchTool: ToolDefinitionWithHandler<z.infer<typeof isolateInput>> = {
   name: "start_isolated_branch",
   description:
-    "Move THIS chat onto its own isolated branch before it changes anything. By default every chat works in the site's shared draft, where all chats see each other's unstaged changes. " +
-    "Call it FIRST when the operator explicitly asks to try/experiment ('try a redesign', 'show me an alternative version', 'experiment with…') or when you start a site migration (the site-migrate skill says when). Not for ordinary edits. " +
-    "Works only while this chat has no unstaged changes; otherwise ask the operator to start a new experiment chat (Live edit → New experiment). Your later calls in this conversation then write to the isolated branch.",
+    "Move THIS chat from the shared draft (chats see each other's unstaged changes) onto its own isolated branch; later calls write there.\n" +
+    "USE FOR (call FIRST, before any change): operator explicitly wants to try/experiment ('try a redesign', 'show me an alternative') | starting a site migration (site-migrate skill). Not for ordinary edits.\n" +
+    "Only while this chat has no unstaged changes; else ask the operator to start a new experiment chat (Live edit -> New experiment).",
   schema: isolateInput,
   handler: async (ctx, input, toolCtx) => {
     if (!toolCtx.chatSessionId) return { ok: false, content: `start_isolated_branch: ${NO_CHAT}` };

@@ -64,12 +64,11 @@ interface PluginListRow {
 export const listPluginsTool = makeListReadTool<z.infer<typeof listPluginsInput>, PluginListRow>({
   name: "list_plugins",
   description:
-    "List the plugins installed on this site: their status (the Owner's decision) and their health (what the running servers make of it). " +
-    "`status`: `active` = the Owner wants it running; `awaiting_activation` = installed and verified, but nothing of it is loaded; `disabled` = the Owner stopped it. " +
-    "Availability comes from `health`, not from `status`: only `health = running` means its tools and skills are usable right now. `failing` = an active plugin failed to load on a server (`problem` says why) — it is NOT switched off, tell the operator, get_plugin has the details; `unreported` = active, but no server has reported it yet (just activated or starting); `not_running` = not active. Never tell the operator a capability works while its plugin is failing. " +
-    "Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. " +
-    "Plugins found on disk that failed verification are listed after the table: they are NOT installed — explain why and the fix. " +
-    "Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
+    "Installed plugins with `status` (Owner's decision) and `health` (what running servers make of it).\n" +
+    "- status: `active` = Owner wants it running | `awaiting_activation` = installed + verified, nothing loaded | `disabled` = Owner stopped it.\n" +
+    "- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\n" +
+    "USE FOR a capability you have no tool for (translation, forms, comments, newsletter, ratings): plugin installed-but-inactive -> TELL the operator it exists and one click at /settings/plugins turns it on. Plugins on disk that failed verification follow the table: NOT installed -> explain why + the fix.\n" +
+    "DO NOT USE as a general capability check before routine work — your tool catalogue already reflects everything running.",
   opName: "plugins.list",
   input: listPluginsInput,
   label: "plugins",

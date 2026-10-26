@@ -42,13 +42,13 @@ import {
   findUnrenderableLayoutFields,
   unrenderableLayoutFieldsError,
 } from "./_layout-module-fields.js";
-import { LIST_FIELD_CONTRACT } from "./_list-tool-kit.js";
 import { mintModuleFromHtml } from "./_mint-module.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
 import {
+  MODULE_BIND_THEME_LITERALS_DESCRIPTION,
   MODULE_CSS_DESCRIPTION,
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
@@ -263,16 +263,17 @@ async function resolveModule(
 export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
   name: "add_module",
   usesInstallAi: true,
-  description:
-    "Add ONE module to a page, a layout (site-wide chrome on every page), or a template (fans out to every page of that page-type). " +
-    "**Prefer `build_page` when a PAGE needs more than one module** — it places the whole ordered list WITH content in one transaction. " +
-    "`target` = 'page' | 'layout' | 'template'. `targetRef` is that page's id or URL path ('/docs/setup'), or the layout's / template's slug or id. A bare page slug works only while it names one page — nested pages can share a slug. " +
-    "Two modes, on ALL three targets. **Reuse (check the catalog first):** pass `moduleId` of an existing module from `list_modules` to place/fan-out a SHARED module without minting a duplicate — a later update_modules_many then updates it everywhere at once. **Mint:** pass `html` (+ `displayName`, `kind`, and semantic snake_case `fields`) to author a new module and place it; raw HTML is fine, it is parametrised into {{fields}} automatically. `moduleId` is placement-only: if you also pass authoring fields (a different label, new html, …) the call still succeeds but those fields are NOT applied and the result says so — to actually change a shared module, place it by `moduleId` and then call update_modules_many. " +
-    "**The initial content comes IN THIS CALL, always via `values`** ({fieldName: value, …}): on 'page' it fills the placement's content_instance, on 'template' every fanned-out placement gets it, on 'layout' it is stored as the minted module's field defaults (chrome has no content_instance — so layout `values` require explicit `fields`, and are rejected with `moduleId` reuse: a shared module renders its stored defaults; update_modules_many changes them). A mint with fields but neither `values` nor field defaults is REJECTED — it would render empty placeholders until a second call. " +
-    "`blockName` must be a real block on the target; the handler returns the available block set if it isn't. " +
-    'NOTE on `position`: pass the literal string "top" or "bottom", OR a bare integer (0, 1, 2…). Prefer a bare integer (`0`, not `"0"`).' +
-    LIST_FIELD_CONTRACT +
+  description: [
+    "Add ONE module to a page, a layout (site-wide chrome on every page) or a template (fans out to every page of that page type).",
+    'USE FOR: one incremental module on an existing page; chrome (`target:"layout"`); a module on every page of a template.',
+    "DO NOT USE FOR: a new page or a page needing >1 module -> `build_page` (whole ordered list WITH content, one transaction).",
+    "CORE RULES:",
+    "- Two modes, all targets. Reuse (check `list_modules` first): `moduleId` places a SHARED module without a duplicate; a later `update_modules_many` changes it everywhere. Placement-only: authoring fields passed alongside are NOT applied (result says so) — to change the module, place by `moduleId`, then `update_modules_many`. Mint: `html` + `displayName` + `kind` + `fields[]`.",
+    "- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).",
+    '- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:"texts"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.',
+    "- Initial content comes IN THIS CALL via `values`. A mint with `fields` but neither `values` nor field defaults is REJECTED (would render empty placeholders).",
     INTERNAL_LINK_CONTRACT,
+  ].join("\n"),
   // 2026-07 — STATIC on purpose (prompt-cache): the per-turn describe
   // embedded active-page blocks + layout/template slugs into the tool
   // definition, busting Anthropic's tools-prefix cache on every page
@@ -291,10 +292,16 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
         minLength: 1,
         maxLength: 500,
         description:
-          "Page: its id or URL path (e.g. '/docs/setup'). Layout / template: slug or id.",
+          "Page: id or URL path (e.g. `/docs/setup`); a bare slug only while unique (nested pages can share slugs). Layout/template: slug or id.",
       },
-      blockName: { type: "string", minLength: 1, maxLength: 80 },
+      blockName: {
+        type: "string",
+        minLength: 1,
+        maxLength: 80,
+        description: "Real block on the target; a mismatch error returns the valid set.",
+      },
       position: {
+        description: 'Integer as a bare number (`0`, not `"0"`).',
         oneOf: [
           { type: "string", enum: ["top", "bottom"] },
           { type: "integer", minimum: 0, maximum: 1000 },
@@ -313,15 +320,14 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
       js: { type: "string", maxLength: 50_000, description: MODULE_JS_CONTRACT },
       bindThemeLiterals: {
         type: "boolean",
-        description:
-          "Rewrite CSS literals that equal a theme token value into var(--…). DEFAULT true — omit it. Pass false only to keep a deliberate off-palette literal.",
+        description: MODULE_BIND_THEME_LITERALS_DESCRIPTION,
       },
       fields: MODULE_FIELDS_JSON_SCHEMA,
       values: {
         type: "object",
         additionalProperties: true,
         description:
-          "Initial content, applied in the SAME call ({fieldName: value, …}) — the ONE place content goes on every target. page/template: fills the placement(s). layout: stored as the minted module's field defaults (requires explicit `fields`; not valid with moduleId reuse). A mint with fields but neither values nor defaults is rejected.",
+          "Initial content `{field_name: value}` — the ONE place content goes. page/template: fills the placement(s). layout: stored as the minted module's field defaults (chrome has no content_instance) -> requires explicit `fields`; rejected with `moduleId` reuse (a shared module renders its stored defaults; change them via `update_modules_many`).",
       },
     },
   },

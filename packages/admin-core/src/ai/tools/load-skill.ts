@@ -79,9 +79,8 @@ export const loadSkillTool: ToolDefinitionWithHandler<
 > = {
   name: "load_skill",
   description:
-    "Load skills' full instructions into this conversation. Call this the MOMENT a task matches one or more skills listed in the `## Skills` block — BEFORE doing the work — then follow the instructions it returns. " +
-    "The instructions become part of the conversation and stay for the rest of the chat, so load each skill only ONCE (if it's already loaded above, don't reload it). " +
-    "Input: {slugs} — exact slugs from the `## Skills` block. Pass EVERY skill you already know you need in ONE call; a second call is only for a skill whose relevance you discover later. Unknown or inactive slugs are named back to you along with the list of valid ones.",
+    "Load skills' full instructions into this conversation. Call the MOMENT a task matches skills in the `## Skills` block, BEFORE the work, then follow them. " +
+    "They persist for the whole chat -> load each skill ONCE (never reload one already loaded). Pass EVERY skill you know you need in ONE call; a second call only for one found relevant later.",
   schema: loadSkillToolInput,
   inputSchema: {
     type: "object",
@@ -93,6 +92,8 @@ export const loadSkillTool: ToolDefinitionWithHandler<
         minItems: 1,
         maxItems: LOAD_SKILL_MAX_SLUGS,
         items: { type: "string", pattern: "^[a-z0-9-]+$", minLength: 1, maxLength: 120 },
+        description:
+          "Exact slugs from `## Skills`. Unknown/inactive slugs are named back with the valid list.",
       },
     },
   },

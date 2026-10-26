@@ -17,13 +17,15 @@ export const patchPageModuleFieldsTool: ToolDefinitionWithHandler<
   z.infer<typeof patchPageModuleFieldsInput>
 > = {
   name: "patch_page_module_fields",
-  description:
-    "Change individual values of ONE module placement — a heading, one entry's text or link target in a local `list` field, a `url` field, an `image` field — and leave every other value of that placement untouched. " +
-    "Use this for targeted wording fixes ('the hero says Welcom, fix it', 'rename the second menu item to Pricing', or a reference chip naming `placement=(blockName, position), field=…[entry]`): you send only the changed values instead of the placement's whole contentValues. " +
-    '`text` is the new value: plain text for text fields (it is HTML-escaped for you — never send markup), a path / https URL for `url` / `image` fields and link targets. For a local `list` field, `item` is the entry id and `key` the entry field (e.g. `label`, `text`, `link`); `part: "href"` sets a link field\'s target. Several edits of one placement go in one call (all or none). ' +
-    "Use `set_page_module_content_many` (NOT this tool) to replace placements' values wholesale or to set nested modules; `update_modules_many` for structure. " +
-    'SYNCED placements (content shared with other pages) need `scope`: `"everywhere"` changes it on every page that shows it, `"here"` detaches this page first and changes only it — ask the operator which they mean when it is not clear. ' +
-    'Typical call: `{pageId: "…", blockName: "content", position: 0, edits: [{field: "hero_title", text: "Welcome"}, {field: "nav_items", item: "<entry id>", key: "label", text: "Pricing"}]}`.',
+  description: [
+    "Change individual values of ONE placement (a heading, one local-`list` entry's text or link, a `url`/`image` field); all other values stay untouched.",
+    "USE FOR: targeted wording fixes ('fix Welcom in the hero', 'rename the 2nd menu item to Pricing', a chip naming `placement=(blockName, position), field=…[entry]`).",
+    "DO NOT USE FOR: replacing placements' values wholesale or setting nested modules -> `set_page_module_content_many`; structure -> `update_modules_many`.",
+    "CORE RULES:",
+    "- Several edits of one placement go in one call (all or none).",
+    "- SYNCED placement (content shared with other pages) needs `scope`: `everywhere` = every page showing it | `here` = detach this page first, change only it. Ask the operator when unclear.",
+    'E.g. `{pageId, blockName:"content", position:0, edits:[{field:"hero_title", text:"Welcome"}, {field:"nav_items", item:"<entry id>", key:"label", text:"Pricing"}]}`',
+  ].join("\n"),
   schema: patchPageModuleFieldsInput,
   inputSchema: {
     type: "object",
@@ -43,10 +45,19 @@ export const patchPageModuleFieldsTool: ToolDefinitionWithHandler<
           required: ["field", "text"],
           properties: {
             field: { type: "string", minLength: 1, maxLength: 200 },
-            item: { type: "string", description: "Entry id of a local list field." },
-            key: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-            part: { type: "string", enum: ["href"] },
-            text: { type: "string", maxLength: 10000 },
+            item: { type: "string", description: "Entry id in a local `list` field." },
+            key: {
+              type: "string",
+              pattern: "^[a-z][a-z0-9_]{0,63}$",
+              description: "Entry field, e.g. `label`, `text`, `link`.",
+            },
+            part: { type: "string", enum: ["href"], description: "Set a link field's target." },
+            text: {
+              type: "string",
+              maxLength: 10000,
+              description:
+                "New value: plain text for text fields (HTML-escaped for you — never markup); path / https URL for `url`/`image` fields and link targets.",
+            },
           },
         },
       },

@@ -114,14 +114,11 @@ export async function countMovedUrls(
 export const movePagesTool: ToolDefinitionWithHandler<MoveInput> = {
   name: "move_pages",
   description:
-    "Put pages under other pages (nested URLs), or back at the top level — for 1 page or 200 in one call. " +
-    "Use for 'put Alerts under SEO Monitoring', 'move the pricing page into Products', 'make this a top-level page again', 'group these 5 guides under /guides'. " +
-    "A page's URL is its parent's URL + '/' + its slug, so moving `/alerts` under `/seo-monitoring` makes it `/seo-monitoring/alerts`; every page below a moved page moves with it. " +
-    "Each move: `page` = the page's id or current URL path, `parent` = the new parent's id or path, or null for the top level, optional `newSlug` to rename in the same step. " +
-    "Everything happens in one transaction, with a 301 from every old URL for links from outside the site. Links on this site (nav menus, link lists, module and content links) follow the pages automatically — there is no link-update step after a move. " +
-    "If the target URL is already taken, the call changes nothing and names the clash — retry with `newSlug`. The homepage can neither move under a page nor have child pages; nesting is limited to 6 levels. " +
-    `Moving ${PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs in one call (pages + their subtrees) needs one Owner click in chat before it runs. ` +
-    "To change only a page's name/title/slug use update_pages_many; to create a page under a parent use build_page with page.parentPageId.",
+    "Nest pages under other pages or back to top level, 1..N moves in one transaction ('put Alerts under SEO Monitoring').\n" +
+    "DO NOT USE FOR: only renaming name/title/slug -> `update_pages_many`; new page under a parent -> `build_page` with `page.parentPageId`.\n" +
+    "CORE RULES: URL = parent URL + '/' + slug; subpages move along. 301s from old URLs are automatic; on-site links follow on their own (no link-update step). " +
+    "Target URL taken -> nothing changes, clash named -> retry with `newSlug`. Homepage can't move under a page or have children; max 6 levels. " +
+    `${PAGE_MOVE_APPROVAL_THRESHOLD}+ moved URLs (incl. subtrees) pause for one Owner click in chat.`,
   needsApproval: async (input, ctx, toolCtx) => {
     const resolved = await resolveMoveRefs(ctx, toolCtx, input.moves);
     if (!resolved.ok) return false;
@@ -152,19 +149,16 @@ export const movePagesTool: ToolDefinitionWithHandler<MoveInput> = {
           properties: {
             page: {
               type: "string",
-              description:
-                "The page to move: its id (UUID) or its current URL path (e.g. '/alerts').",
+              description: "Id or current URL path (e.g. '/alerts').",
             },
             parent: {
               type: ["string", "null"],
-              description:
-                "The new parent page: id or URL path (e.g. '/seo-monitoring'). null = top level.",
+              description: "Id or URL path; null = top level.",
             },
             newSlug: {
               type: "string",
               pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
-              description:
-                "Optional rename in the same step (lowercase, digits, hyphens). Required when the target URL is already taken.",
+              description: "Rename in the same step; needed when the target URL is taken.",
             },
           },
         },
@@ -172,8 +166,7 @@ export const movePagesTool: ToolDefinitionWithHandler<MoveInput> = {
       redirectFromOld: {
         type: "string",
         enum: ["auto", "skip"],
-        description:
-          "'skip' suppresses the 301s from the old URLs — only when the operator says the old URLs should 404.",
+        description: "'skip' = no 301s; only when the operator wants old URLs to 404.",
       },
     },
   },

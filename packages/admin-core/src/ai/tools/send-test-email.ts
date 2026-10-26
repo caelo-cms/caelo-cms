@@ -23,7 +23,9 @@ const sendTestEmailInput = z
       .string()
       .email()
       .max(254)
-      .describe("Recipient — must be an address on the sender's (fromAddress) domain."),
+      .describe(
+        "Must be on the sender's (fromAddress) domain (sender noreply@example.com -> team@example.com ok); other addresses -> tell the operator to test from Settings -> Email.",
+      ),
   })
   .strict();
 
@@ -32,10 +34,7 @@ type SendTestEmailInput = z.infer<typeof sendTestEmailInput>;
 export const sendTestEmailTool: ToolDefinitionWithHandler<SendTestEmailInput> = {
   name: "send_test_email",
   description:
-    "Send the fixed 'Caelo email transport test' message through the site's configured email transport and report whether the provider accepted it. " +
-    "Use after an email config change was approved (`propose_set_email_config`), or when password-reset / form emails seem not to arrive. " +
-    "The recipient must be on the sender's own domain (e.g. sender noreply@example.com → you may test to team@example.com); for any other address, tell the operator to send the test from Settings → Email. " +
-    "Subject and body are fixed — this cannot send custom mail. A failure names the provider's reason (bad API key, unverified sender domain, transport 'none'); relay it rather than retrying unchanged.",
+    "Send the fixed 'Caelo email transport test' message (no custom mail) via the configured transport; reports whether the provider accepted it. Use after an approved `propose_set_email_config`, or when reset/form emails don't arrive. A failure names the provider's reason (bad API key, unverified sender domain, transport 'none') — relay it, don't retry unchanged.",
   schema: sendTestEmailInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "email_config.send_test", {

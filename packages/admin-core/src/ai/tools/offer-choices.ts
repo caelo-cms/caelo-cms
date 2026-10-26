@@ -54,15 +54,10 @@ type OfferChoicesInput = z.infer<typeof offerChoicesInput>;
 export const offerChoicesTool: ToolDefinitionWithHandler<OfferChoicesInput> = {
   name: "offer_choices",
   description:
-    "Present the operator a small multiple-choice question as CLICKABLE BUTTONS in the chat. " +
-    "ONLY for a genuine trade-off the operator must decide (design fork, crawl scope, destructive disposition) — " +
-    "NEVER for a step you can safely do yourself and mention afterwards. If the obvious path is clear " +
-    "(e.g. a requested footer links to pages that don't exist yet → CREATE those pages and say so), DO IT — " +
-    "asking would stall the request (CLAUDE.md §1A: the operator describes outcomes; implementation questions are yours). " +
-    "END YOUR TURN right after calling it and WAIT for the click (it arrives as the operator's " +
-    "next message, containing the option's key and label). " +
-    "Do NOT use it for open questions (names, URLs, free text) or when an option list would " +
-    "hide better answers the operator might type.",
+    "Ask the operator a small multiple-choice question as CLICKABLE BUTTONS in chat.\n" +
+    "USE FOR: a genuine trade-off only the operator can decide (design fork, crawl scope, destructive disposition).\n" +
+    "DO NOT USE FOR: steps you can safely do yourself and mention after (e.g. footer links to missing pages -> CREATE those pages and say so; implementation questions are yours) | open questions (names, URLs, free text) | when a fixed list would hide better typed answers.\n" +
+    "CORE RULES: END YOUR TURN right after calling and WAIT; the click arrives as the operator's next message with the option's key + label.",
   schema: offerChoicesInput,
   // issue #251 (WS5) — inputSchema derived from `schema` at registration.
   handler: (_ctx, input) => {

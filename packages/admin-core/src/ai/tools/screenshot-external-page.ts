@@ -55,25 +55,26 @@ const VIEWPORTS = {
 export const screenshotExternalPageTool: ToolDefinitionWithHandler<Input> = {
   name: "screenshot_external_page",
   description:
-    "Render ONE page of an EXTERNAL website in headless Chromium and see it as an image (available to you in THIS turn — analyse it on your next step; do NOT end the turn to wait for it). Use together with `inspect_external_page` when an operator names their existing site — the inventory gives you the facts, this gives you the visual impression the keep-design question depends on. " +
-    "Captures the WHOLE page by default (long pages included, not just the top) — pass `fullPage: false` for a viewport-only glance. Do NOT use for Caelo's own pages — use `screenshot_page`. Do NOT loop it over many URLs — for whole-site work propose the crawl. " +
-    "Only public http(s) URLs; private/internal addresses are refused. Fails loudly when Playwright/Chromium is not installed in this runtime — report that to the operator instead of pretending you saw the page.",
+    "Render ONE page of an EXTERNAL site in headless Chromium; you see the image this turn (analyse it next step; do not end the turn to wait).\n" +
+    "USE FOR: with `inspect_external_page` when an operator names their existing site (inventory = facts, this = visual impression for the keep-design question).\n" +
+    "DO NOT USE FOR: Caelo's own pages (`screenshot_page`); looping over many URLs (propose the crawl: `propose_site_import`).\n" +
+    "Public http(s) URLs only; private/internal refused. Missing Playwright/Chromium -> fails loudly: tell the operator, never pretend you saw the page.",
   schema: input,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["url"],
     properties: {
-      url: { type: "string", description: "Absolute public URL, e.g. https://example.com/" },
+      url: { type: "string" },
       viewport: {
         type: "string",
         enum: ["desktop", "mobile"],
-        description: "Capture viewport width. Defaults to desktop (1280px wide).",
+        description: "Default desktop (1280px wide).",
       },
       fullPage: {
         type: "boolean",
         description:
-          "Capture the whole page (default true). Set false for a viewport-only (1280×800) glance.",
+          "Default true (whole page incl. long pages); false = viewport-only 1280×800 glance.",
       },
     },
   },

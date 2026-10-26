@@ -61,8 +61,8 @@ type SetBudgetInput = z.infer<typeof setBudgetInput>;
 export const setMigrationBudgetTool: ToolDefinitionWithHandler<SetBudgetInput> = {
   name: "set_migration_budget",
   description:
-    "Propose the money ceiling for a migration run, in the currency the operator named. Approving an import proposal already arms a ceiling from the estimate's high end, so call this only when the operator names a DIFFERENT amount — or to RAISE the budget after the gate paused the run ('Cost ceiling reached'), which re-arms it so the run can continue. `ceiling` is the whole-run budget in major units (10 for €10), not per-page. " +
-    "This is a TWO-STEP flow: you propose the amount, the operator clicks Approve on the card in the chat, and only then is the ceiling recorded. Do not claim the budget was applied, and do not carry on as if the higher ceiling were already in force. Never propose an amount the operator has not named — the click confirms their number, it does not authorise yours. Use `check_run_budget` to track spend against the ceiling.",
+    "Propose a migration run's money ceiling in the operator's currency. Approving an import already arms one from the estimate's high end -> call only when the operator names a DIFFERENT amount, or to RAISE it after the gate paused the run ('Cost ceiling reached'), which re-arms it so the run continues. Never propose an amount the operator has not named; the click confirms their number. Track spend with `check_run_budget`.\n" +
+    "APPROVAL-GATED: recorded only after the operator clicks Approve on the in-chat card; never claim it applied or proceed as if the higher ceiling were in force.",
   // Always gated, in both directions. Lowering a ceiling is harmless, but a
   // predicate cannot tell the directions apart: `needsApproval` receives only
   // (input, ctx) — no adapter — so the current ceiling is not readable here.
@@ -88,13 +88,13 @@ export const setMigrationBudgetTool: ToolDefinitionWithHandler<SetBudgetInput> =
         type: "number",
         exclusiveMinimum: 0,
         maximum: 1000000,
-        description: "Whole-run budget in major units the operator confirmed (10 = €10).",
+        description: "Whole-run budget in major units (10 = €10), not per page.",
       },
       currency: {
         type: "string",
         minLength: 2,
         maxLength: 8,
-        description: "Letter currency code the operator named, e.g. EUR, USD, GBP.",
+        description: "Letter code the operator named, e.g. EUR.",
       },
     },
   },
@@ -144,7 +144,8 @@ interface RunCostResult {
 export const checkRunBudgetTool: ToolDefinitionWithHandler<CheckBudgetInput> = {
   name: "check_run_budget",
   description:
-    "Check the migration run's cumulative AI spend (orchestrator + all subagents) against the operator's confirmed budget, and get a progress-weighted estimate of the total cost to finish. This is a PAUSE-AND-ASK gate, NOT an auto-stop: call it BEFORE starting each rebuild batch. If spend has crossed the ceiling, FINISH the page currently in flight, then STOP dispatching new batches and ask the operator — show them what's done, what's spent, and the extrapolated cost to finish — to either raise the budget (set_migration_budget with a new amount) or stop here. Never silently keep spending past the ceiling, and never claim the migration is done while pages remain and the budget is blown. When no budget is set yet, it tells you to record one with set_migration_budget.",
+    "Check a migration run's cumulative AI spend (orchestrator + all subagents) vs the operator's confirmed budget, plus a progress-weighted estimate of the cost to finish.\n" +
+    "PAUSE-AND-ASK gate, not auto-stop: call BEFORE each rebuild batch. Ceiling crossed -> finish the page in flight, dispatch no new batches, show the operator done / spent / extrapolated cost to finish, ask: raise the budget (`set_migration_budget`) or stop. Never keep spending past the ceiling silently; never claim done while pages remain and the budget is blown.",
   schema: checkBudgetInput,
   inputSchema: {
     type: "object",

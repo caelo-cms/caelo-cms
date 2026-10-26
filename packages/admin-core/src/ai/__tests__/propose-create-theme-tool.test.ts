@@ -12,6 +12,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { z } from "zod";
 import { TYPOGRAPHY_COMPOSITION_HINTS } from "../theme-guidance.js";
 import { proposeCreateThemeTool } from "../tools/propose-tools-batch.js";
 import { updateThemeTokensTool } from "../tools/update-theme-tokens.js";
@@ -94,8 +95,16 @@ describe("propose_create_theme tool boundary (issue #112)", () => {
     expect(Object.keys(inputSchema.properties)).not.toContain("preset");
   });
 
-  it("tool description instructs composing the document and bans grayscale defaults", () => {
-    const description = proposeCreateThemeTool.description ?? "";
+  // The composition guidance rides on the `tokens` property (where the model's
+  // attention is while it writes the document); the top level routes.
+  const tokensDescription = () =>
+    String(
+      (proposeCreateThemeTool.inputSchema as { properties: { tokens: { description?: string } } })
+        .properties.tokens.description ?? "",
+    );
+
+  it("tool surface instructs composing the document and bans grayscale defaults", () => {
+    const description = `${proposeCreateThemeTool.description ?? ""}\n${tokensDescription()}`;
     // Document-skeleton hint so the AI lands a valid document first call.
     expect(description).toContain("color");
     expect(description).toContain("typography");
@@ -111,8 +120,14 @@ describe("propose_create_theme tool boundary (issue #112)", () => {
 
 describe("typography intent at authoring boundaries", () => {
   it("provides the same design guidance during creation and later edits", () => {
-    expect(proposeCreateThemeTool.description).toContain(TYPOGRAPHY_COMPOSITION_HINTS);
-    expect(updateThemeTokensTool.description).toContain(TYPOGRAPHY_COMPOSITION_HINTS);
+    const createTokens = (
+      proposeCreateThemeTool.inputSchema as { properties: { tokens: { description?: string } } }
+    ).properties.tokens.description;
+    expect(createTokens).toContain(TYPOGRAPHY_COMPOSITION_HINTS);
+    // Both tools carry the guidance on their `tokens` property.
+    expect(JSON.stringify(z.toJSONSchema(updateThemeTokensTool.schema))).toContain(
+      TYPOGRAPHY_COMPOSITION_HINTS,
+    );
   });
   it("accepts a described display role alongside reading typography", () => {
     const result = proposeCreateThemeTool.schema.safeParse({

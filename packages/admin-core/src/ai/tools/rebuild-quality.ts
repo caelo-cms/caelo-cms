@@ -45,7 +45,8 @@ interface InventoryResult {
 export const checkPageContentInventoryTool: ToolDefinitionWithHandler<InventoryInput> = {
   name: "check_page_content_inventory",
   description:
-    "Verify a rebuilt imported page lost NO content from the source. Call it right AFTER you rebuild a page's modules with `build_page`. It compares the source page's crawled content against the rebuilt modules and returns what is covered plus a LOUD list of every missing heading, paragraph, list item, image, link, or CTA (with the source context so you can find it). Content is sacred: restore anything genuinely dropped, or record WHY you dropped it (add_import_page_notes) so the operator sees it — never let content vanish silently. Chrome (header/footer) is excluded by default because it is layout-owned. `importPageId` accepts the staging import_pages id (from list_import_pages / get_import_page — this ALWAYS resolves) or the built CMS page id (matched by the build_page importPageId link, by slug, or — for the homepage built at a custom slug — by its locale home-page designation). If a built page can't be found (you gave it a custom/translated slug), pass the staging import_pages id instead. Import data does not expire, so a miss is an id/slug mismatch, not staleness.",
+    "Verify a rebuilt imported page lost NO source content — call right AFTER rebuilding it with `build_page`. Returns coverage + a LOUD list of every missing heading, paragraph, list item, image, link or CTA (with source context).\n" +
+    "Content is sacred: restore anything genuinely dropped, or record WHY via `add_import_page_notes` — never let content vanish silently.",
   schema: inventoryInput,
   inputSchema: {
     type: "object",
@@ -56,12 +57,12 @@ export const checkPageContentInventoryTool: ToolDefinitionWithHandler<InventoryI
         type: "string",
         format: "uuid",
         description:
-          "The page to check — pass EITHER the staging import_pages id OR the built CMS page id (accepted_page_id).",
+          "Staging import_pages id (`list_import_pages` / `get_import_page`; ALWAYS resolves) OR built CMS page id (matched via build_page's importPageId link, slug, or home-page designation). Built page not found (custom/translated slug) -> pass the staging id; import data never expires, a miss = id/slug mismatch.",
       },
       includeChrome: {
         type: "boolean",
         description:
-          "Include the source header/footer in the check. Default false — chrome is verified once at the layout, not per page.",
+          "Include source header/footer; default false — chrome is verified once at the layout.",
       },
     },
   },
@@ -136,7 +137,8 @@ interface BoilerplateResult {
 export const detectImportBoilerplateTool: ToolDefinitionWithHandler<BoilerplateInput> = {
   name: "detect_import_boilerplate",
   description:
-    "Find the content blocks that repeat across a crawled run's pages — CTA banners, newsletter boxes, breadcrumb zones, author bios, in-content nav. These are BOILERPLATE, not per-page content: rebuild each as ONE shared module at the suggested level (layout for site-wide chrome, template for a per-page-type block, a shared content_instance for a fixed block recurring on a subset of pages), never copied into every page. Call it AFTER clustering and BEFORE rebuilding the pages, so your rebuild plan reuses instead of duplicates. Returns each candidate with its page count, whether its text is fixed or varies per page (breadcrumbs vary → template values fill per page), and the suggested placement with a reason.",
+    "Find content blocks repeating across a crawled run's pages (CTA banners, newsletter boxes, breadcrumb zones, author bios, in-content nav). BOILERPLATE: rebuild each as ONE shared module at the suggested level (layout = site-wide chrome | template = per-page-type block | shared content_instance = fixed block on a page subset), never copied into every page. Call AFTER clustering, BEFORE rebuilding pages.\n" +
+    "Returns per candidate: page count, fixed vs per-page text (breadcrumbs vary -> template values fill per page), suggested placement + reason.",
   schema: boilerplateInput,
   inputSchema: {
     type: "object",
@@ -148,7 +150,7 @@ export const detectImportBoilerplateTool: ToolDefinitionWithHandler<BoilerplateI
         type: "integer",
         minimum: 2,
         maximum: 500,
-        description: "A block must recur on at least this many pages to count. Default 3.",
+        description: "Min pages a block must recur on. Default 3.",
       },
     },
   },

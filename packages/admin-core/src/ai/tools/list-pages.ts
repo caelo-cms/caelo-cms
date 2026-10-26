@@ -12,8 +12,7 @@ import { makeListReadTool } from "./_make-read-tool.js";
 const listPagesInput = z
   .object({
     includeDeleted: z.boolean().default(false),
-    /** Only the pages below this page (its whole subtree). */
-    underPageId: z.string().uuid().optional(),
+    underPageId: z.string().uuid().optional().describe("Only this page's subtree."),
   })
   .strict();
 
@@ -32,10 +31,7 @@ interface ListedPage {
 export const listPagesTool = makeListReadTool<z.infer<typeof listPagesInput>, ListedPage>({
   name: "list_pages",
   description:
-    "List every page with its URL path, UUID, slug, parent page UUID, nesting depth, title, page type (what the page IS — `news`, `page`, …; list_page_types) and template UUID (TOON rows). " +
-    "Pages nest: a page's URL is its parent's URL + '/' + its slug (`/seo-monitoring/alerts` = slug 'alerts' under the '/seo-monitoring' page); depth 1 = top level. Pass `underPageId` to list one section's subtree. Inside a chat, paths show the chat's pending moves. " +
-    "Standard list params: `filter` (substring across all columns), `limit`/`offset` (pagination), `full: true` (no truncation). " +
-    "Use when you need a page UUID or path. DO NOT ask the operator to paste a UUID.",
+    "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. Use for any page UUID/path; never ask the operator to paste a UUID.",
   opName: "pages.list",
   input: listPagesInput,
   label: "pages",

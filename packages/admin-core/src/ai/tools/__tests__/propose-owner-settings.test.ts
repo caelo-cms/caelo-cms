@@ -10,6 +10,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { OperationRegistry } from "@caelo-cms/query-api";
+import { z } from "zod";
 import { powerToolCatalogue } from "../../../ops/security/mcp_power.js";
 import { registerAdminOps } from "../../../register.js";
 import { buildApprovalPreview } from "../../chat-runner/approval.js";
@@ -150,11 +151,12 @@ describe("owner-settings tools — schemas", () => {
     expect(s.safeParse({ model: "x", name: "openai" }).success).toBe(false);
   });
 
-  it("every description names the approval gate and the units the model must use", () => {
+  it("every description names the approval gate; the schema carries the units the model must use", () => {
+    const schemaText = (t: { schema: z.ZodType }) => JSON.stringify(z.toJSONSchema(t.schema));
     expect(proposeSetAiBudgetTool.description).toContain("APPROVAL-GATED");
-    expect(proposeSetAiBudgetTool.description).toContain("1000000000");
-    expect(proposeSetAiPricingTool.description).toContain("PER 1K TOKENS");
-    expect(proposeSetGatewaySettingsTool.description).toContain("ONLY the settings that change");
+    expect(schemaText(proposeSetAiBudgetTool)).toContain("1000000000");
+    expect(schemaText(proposeSetAiPricingTool)).toContain("PER 1K TOKENS");
+    expect(proposeSetGatewaySettingsTool.description).toContain("send ONLY what changes");
   });
 
   it("the cookie-rotation approval card says every visitor is logged out, irreversibly", () => {

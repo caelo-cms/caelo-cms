@@ -21,18 +21,10 @@ export const proposeSetSiteSeoTool = makeProposeTool({
   opName: "site_defaults.propose_set_seo",
   pendingQueuePath: "/settings/seo",
   when:
-    "Set the site-wide SEO settings: `siteBaseUrl` (the public origin every canonical URL, og:url, hreflang " +
-    "target and sitemap entry is built from — publishing FAILS while it is unset), `sitemapEnabled` (emit " +
-    "sitemap.xml + the robots.txt Sitemap line) and `organizationJson` (Organization JSON-LD: name, url, logo, " +
-    "sameAs — replaces the whole object). Pass only the fields you change; omitted ones keep their value — " +
-    "except while the base URL is unset, when every proposal must include `siteBaseUrl`. " +
-    "Use it when the site status says `Site URL: not configured`, a publish failed with `Site base URL is not " +
-    "configured`, the preview flags `site-base-url-unset`, or the operator names the site's domain or asks for " +
-    "sitemap / organization changes. `siteBaseUrl` must be the bare https origin (`https://www.example.com` — " +
-    "no path, query or trailing page); a localhost address is refused on cloud installs. Take it from the " +
-    "operator's words or the domain they publish under; ask only when you genuinely do not know it. Read the " +
-    "current values with get_site_seo first. NOT for the site language — that is set_site_identity({siteLanguage}); " +
-    "NOT for per-page SEO — that is set_page_seo_many.",
+    "Set site-wide SEO settings. Read current values with `get_site_seo` first.\n" +
+    "USE FOR: site status `Site URL: not configured`; publish failed with `Site base URL is not configured`; preview flags `site-base-url-unset`; operator names the site's domain or asks for sitemap / organization changes.\n" +
+    "DO NOT USE FOR: site language (`set_site_identity`); per-page SEO (`set_page_seo_many`).\n" +
+    "CORE RULES: pass only changed fields (omitted keep their value), except while the base URL is unset every proposal must include `siteBaseUrl`.",
   schema: siteSeoProposalInputSchema,
   inputSchema: {
     type: "object",
@@ -42,11 +34,16 @@ export const proposeSetSiteSeoTool = makeProposeTool({
         type: "string",
         minLength: 1,
         maxLength: 2048,
-        description: "Public origin of the site, e.g. https://www.example.com (https, no path).",
+        description:
+          "Public origin every canonical, og:url, hreflang target and sitemap entry is built from; publishing FAILS while unset. Bare https origin (`https://www.example.com`, no path/query); localhost refused on cloud installs. Take it from the operator's words or their publish domain; ask only if genuinely unknown.",
       },
-      sitemapEnabled: { type: "boolean" },
+      sitemapEnabled: {
+        type: "boolean",
+        description: "Emit sitemap.xml + the robots.txt Sitemap line.",
+      },
       organizationJson: {
         type: "object",
+        description: "Organization JSON-LD; REPLACES the whole object.",
         additionalProperties: false,
         properties: {
           name: { type: "string", maxLength: 256 },
@@ -66,9 +63,7 @@ export const proposeSetSiteSeoTool = makeProposeTool({
 export const getSiteSeoTool = makeReadTool<Record<string, never>>({
   name: "get_site_seo",
   description:
-    "Fetch the CURRENT site-wide SEO settings: siteBaseUrl (null = not configured, publishing fails), " +
-    "sitemapEnabled, organizationJson. Change them with propose_set_site_seo (Owner-approved). " +
-    "Per-page SEO lives on the page (set_page_seo_many); the site language on get_site_defaults / set_site_identity.",
+    "Read site-wide SEO settings: `siteBaseUrl` (null = unset, publishing fails), `sitemapEnabled`, `organizationJson`. Change via `propose_set_site_seo`. Per-page SEO: `get_page_seo`; site language: `get_site_defaults`.",
   opName: "site_defaults.get_seo",
   input: z.object({}).strict(),
   format: (value) => {

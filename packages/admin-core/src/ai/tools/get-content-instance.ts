@@ -18,7 +18,7 @@ export const getContentInstanceTool: ToolDefinitionWithHandler<
 > = {
   name: "get_content_instance",
   description:
-    "Fetch one content_instance by id. Returns the values, the placements (page path + block + position + sync_mode) that bind to it, and the parent instances that show it inside a module / module-list field — all as this chat's draft sees them. Use this to confirm blast radius before set_content_instance_values_many, and before deleting (orphan = no placements AND no parents).",
+    "Fetch one content_instance, as this chat's draft sees it: values, placements (page path, block, position, sync_mode) and parent instances showing it in a `module`/`module-list` field. Check blast radius before `set_content_instance_values_many` and before deleting (orphan = no placements AND no parents).",
   schema: getContentInstanceToolInput,
   inputSchema: z.toJSONSchema(getContentInstanceToolInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {

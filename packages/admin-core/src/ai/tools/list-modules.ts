@@ -93,10 +93,10 @@ export function catalogField(f: CatalogFieldMeta, listSlug: ListSlugLookup = (re
 export const listModulesTool: ToolDefinitionWithHandler<ListModulesInput> = {
   name: "list_modules",
   description:
-    "List the FULL module catalog with decision-support metadata: id, slug, type, kind, description, fields, and placement usage. " +
-    "Call it before placing or nesting an existing module: to find a reuse candidate, to find modules by `kind`/`filter` (plus `limit`/`offset`/`full` as in every list tool), and before filling a `module`/`module-list` field — the fields column shows each nested field's accepted types (`blocks:module-list allowed=faq/cta`; `allowed=any` = no restriction), and a child's `type` must be one of them. " +
-    "`list` fields show their list type and binding: `nav:list(menu) shared=main-nav` (the shared list it shows — edit its entries with patch_list_items_many), `items:list(texts) local` (entries in each placement), `latest:list(links) source=query(page_type=news …)`. " +
-    "Returns metadata only (no HTML/CSS/JS bodies). Prefer placing an existing module (`add_module` with `moduleId`) over minting a near-duplicate.",
+    "List the module catalog (metadata, no HTML/CSS/JS): id, slug, type, kind, description, fields, placement usage.\n" +
+    "USE FOR: a reuse candidate before placing/creating (prefer `add_module` with `moduleId` over a near-duplicate); the accepted child types before filling a `module`/`module-list` field.\n" +
+    "Fields column: `blocks:module-list allowed=faq/cta` -> child `type` must be one of them (`allowed=any` = unrestricted). " +
+    "`nav:list(menu) shared=main-nav` = shared list (edit entries via `patch_list_items_many`) | `items:list(texts) local` = entries per placement | `latest:list(links) source=query(…)`.",
   schema: listModulesInput,
   inputSchema: z.toJSONSchema(listModulesInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {

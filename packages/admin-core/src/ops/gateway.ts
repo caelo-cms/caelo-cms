@@ -111,7 +111,7 @@ export const gatewaySettingsInput = z
       .int()
       .min(512)
       .max(1_048_576)
-      .describe("Largest public POST body the gateway accepts, in bytes."),
+      .describe("Largest public POST body, bytes."),
     autoRedeployEnabled: z
       .boolean()
       .describe("Rebuild + publish production automatically after publishable writes."),
@@ -120,20 +120,20 @@ export const gatewaySettingsInput = z
       .int()
       .min(1000)
       .max(600_000)
-      .describe("Quiet period after the last publishable write before the auto-redeploy fires."),
+      .describe("Quiet period after the last publishable write before auto-redeploy fires."),
     autoRedeployOpKinds: z
       .array(z.string().min(1).max(120))
       .max(50)
       .describe(
-        "Audit op names that count as publishable writes (e.g. a plugin's visitor-write op). Never 'deploy.trigger'.",
+        "Audit op names counting as publishable writes (e.g. a plugin's visitor-write op). Never 'deploy.trigger'.",
       ),
     captchaProvider: captchaProvider.describe(
-      "Challenge on public writes: pow (built-in proof-of-work), turnstile, hcaptcha, or off.",
+      "Challenge on public writes; `pow` = built-in proof-of-work.",
     ),
     captchaPowTargetPrefix: z
       .string()
       .regex(/^[0-9a-f]{1,16}$/)
-      .describe("Proof-of-work difficulty as a hex prefix; longer = harder for bots and visitors."),
+      .describe("Proof-of-work difficulty as hex prefix; longer = harder for bots + visitors."),
   })
   .strict();
 

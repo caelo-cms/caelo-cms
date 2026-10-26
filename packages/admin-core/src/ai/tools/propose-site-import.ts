@@ -188,69 +188,59 @@ async function priceScopeEstimate(
 export const proposeSiteImportTool: ToolDefinitionWithHandler<ProposeSiteImportInput> = {
   name: "propose_site_import",
   description:
-    "TWO-STEP: propose a crawl of an existing site to import pages into Caelo. " +
-    "This QUEUES the proposal; the chat renders it as a card with an APPROVE button — tell the " +
-    "operator to click Approve right there (the /settings/import/pending page works too). The " +
-    "crawler only runs after that click. DO NOT claim the crawl ran. After approval you receive " +
-    "an automatic 'Approved' message; the crawl runs in the BACKGROUND — check `list_import_pages({runId})` for " +
-    "status, and if it is still 'crawling', say so and continue when it is ready_for_review (it also " +
-    "lists every crawled page's importPageId for the rebuild). " +
-    "Use this when the user asks to bring an existing site into Caelo. " +
-    "TWO MODES — pick one, never both:\n" +
-    "• LIST mode — pass `urls` (array of absolute URL strings): the crawl fetches EXACTLY those " +
-    "pages, nothing else. Use this when you ALREADY KNOW which pages to fetch — e.g. after " +
-    "inspecting the homepage you pick one URL per apparent page type (the pilot), or you fetch a " +
-    "scoped set of content pages for one type. This is the preferred pilot: it previews the " +
-    "rebuild across page TYPES instead of whatever the link graph happens to expose. Name the " +
-    "picked URLs in your recap so the Owner approves an informed list. Cap 200 URLs; do NOT set " +
-    "`depth`/`maxPages` in this mode.\n" +
-    "• DEPTH mode — pass `depth` (BFS hops, default 2, cap 5) and/or `maxPages` (default 50, cap " +
-    "2000): a blind same-origin BFS that DISCOVERS pages from `sourceUrl`. Use this only when you " +
-    "do NOT yet know the specific pages and want to discover the site from its root. Do NOT set " +
-    "`urls` in this mode.\n" +
-    "`sourceUrl` is ALWAYS required (origin + robots.txt scoping + run identity), in both modes. " +
-    "SCOPE (issue #425): when the operator migrates ONE language or section of a larger site " +
-    '(“migrate the German site”, “only /docs/”), ALWAYS pass `scope`: `pathPrefix` (e.g. "/de/") ' +
-    "confines the crawl to that path — out-of-scope URLs are reported as skipped, never crawled — " +
-    'and `locale` (e.g. "de") adds hreflang awareness: a page whose markup names a different URL ' +
-    "as the locale's version is skipped and that alternate crawled instead, so samples land in the " +
-    "operator's language even when the language has no path prefix. With a pathPrefix scope, " +
-    "`sourceUrl` must live inside the prefix (crawl the scope root, e.g. https://site.com/de/). " +
-    "The tool returns a page-count + cost estimate: RESTATE the scope, duration, and cost band in " +
-    "your chat message BEFORE pointing at the Approve button — the operator decides with numbers, " +
-    "not vibes.",
+    "Propose a crawl of an existing site to import its pages into Caelo (user wants an existing site brought in).\n" +
+    "CORE RULES:\n" +
+    "- TWO-STEP: QUEUES a proposal shown as an in-chat card with APPROVE (also /settings/import/pending); tell the operator to click it. The crawler runs only after the click; never claim it ran.\n" +
+    "- ONE mode, never both: LIST (`urls`) | DEPTH (`depth`/`maxPages`).\n" +
+    "- Result carries page count + cost estimate: RESTATE scope, duration, cost band in chat BEFORE pointing at Approve.\n" +
+    "- After approval an automatic 'Approved' message arrives; the crawl runs in the BACKGROUND -> `list_import_pages({runId})`; still 'crawling' -> say so, continue at `ready_for_review` (lists each page's importPageId for the rebuild).",
   schema: proposeSiteImportInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["sourceUrl"],
     properties: {
-      sourceUrl: { type: "string", format: "uri" },
-      depth: { type: "integer", minimum: 1, maximum: 5 },
-      maxPages: { type: "integer", minimum: 1, maximum: 2000 },
+      sourceUrl: {
+        type: "string",
+        format: "uri",
+        description: "Both modes: origin, robots.txt scoping, run identity.",
+      },
+      depth: {
+        type: "integer",
+        minimum: 1,
+        maximum: 5,
+        description:
+          "DEPTH mode: BFS hops from `sourceUrl` (default 2); blind same-origin discovery, only when you don't know the pages yet.",
+      },
+      maxPages: {
+        type: "integer",
+        minimum: 1,
+        maximum: 2000,
+        description: "DEPTH mode: page cap (default 50).",
+      },
       urls: {
         type: "array",
         items: { type: "string", format: "uri" },
         minItems: 1,
         maxItems: LIST_MODE_MAX_URLS,
         description:
-          "LIST mode: absolute URLs to fetch EXACTLY (no BFS). Mutually exclusive with depth/maxPages.",
+          "LIST mode: fetch EXACTLY these pages (no BFS). Preferred pilot: one URL per apparent page type (after inspecting the homepage) or one type's content pages -> previews the rebuild across page TYPES. Name the picked URLs in your recap.",
       },
       scope: {
         type: "object",
         additionalProperties: false,
         description:
-          "issue #425 — language/section scope; set it whenever the operator migrates one language/section of a larger site. At least one of pathPrefix/locale.",
+          "ALWAYS set when migrating ONE language/section of a larger site ('migrate the German site', 'only /docs/'). At least one of pathPrefix/locale.",
         properties: {
           pathPrefix: {
             type: "string",
             description:
-              'URL path prefix in-scope pages live under, e.g. "/de/". Out-of-scope URLs are skipped, never crawled; sourceUrl must live inside it.',
+              'Confines the crawl, e.g. "/de/"; out-of-scope URLs reported skipped. `sourceUrl` must lie inside (crawl the scope root, e.g. https://site.com/de/).',
           },
           locale: {
             type: "string",
             description:
-              'Source-site language code, e.g. "de" — hreflang alternates bridge wrong-language samples to this locale\'s version.',
+              "Source language, e.g. \"de\". A page naming another URL as this locale's hreflang version is skipped and that alternate crawled -> samples in the operator's language even without a path prefix.",
           },
         },
       },

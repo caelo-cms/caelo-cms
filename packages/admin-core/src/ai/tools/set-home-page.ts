@@ -16,9 +16,7 @@ export const setHomePageTool: ToolDefinitionWithHandler<
 > = {
   name: "set_home_page",
   description:
-    "Designate a page as the site homepage — it then serves at the site root `/`. " +
-    "Use this instead of relying on a magic `home` slug; any page can be the homepage. The page keeps its own slug. " +
-    "There is exactly ONE homepage — calling this replaces any previous designation.",
+    "Make a page the site homepage, served at `/` (any page; keeps its own slug; no magic `home` slug). Exactly ONE homepage — replaces the previous one.",
   schema: setHomePageToolInput,
   inputSchema: {
     type: "object",

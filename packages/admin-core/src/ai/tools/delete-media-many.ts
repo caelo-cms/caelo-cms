@@ -22,11 +22,7 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const deleteMediaManyInput = z
   .object({
-    assetIds: z
-      .array(z.string().uuid())
-      .min(1)
-      .max(200)
-      .describe("Asset ids from find_media. One asset = a one-item array."),
+    assetIds: z.array(z.string().uuid()).min(1).max(200).describe("From `find_media`."),
   })
   .strict();
 
@@ -35,9 +31,9 @@ type DeleteMediaManyInput = z.infer<typeof deleteMediaManyInput>;
 export const deleteMediaManyTool: ToolDefinitionWithHandler<DeleteMediaManyInput> = {
   name: "delete_media_many",
   description:
-    "Delete media assets the site no longer uses, in ONE call (a single asset is a one-item array; up to 200). Take ids from `find_media`. " +
-    "Assets still embedded in a module — on the live site or in this chat's unpublished edits — are NOT deleted: they come back as blocked, with the modules that use them. Remove the image from those modules first (`update_modules_many` / `set_page_module_content_many`), or tell the operator the asset is still in use; there is no force option. " +
-    "Use it for library clean-up ('remove the unused stock photos', 'delete the duplicate logos'). To keep an asset but hide it from page placement, use `set_media_visibility_many` (visibility 'reference') instead — deletion cannot be undone from chat.",
+    "Delete media assets the site no longer uses (library clean-up, e.g. unused stock photos, duplicate logos). Irreversible from chat.\n" +
+    "DO NOT USE FOR: keeping an asset but hiding it from page placement -> `set_media_visibility_many` (`reference`).\n" +
+    "CORE RULES: assets still embedded in a module (live or in this chat's unpublished edits) are NOT deleted — returned as blocked with their modules. Remove the image there first (`update_modules_many` / `set_page_module_content_many`) or tell the operator it is in use; no force option.",
   schema: deleteMediaManyInput,
   handler: async (ctx, input, toolCtx) => {
     const unique = [...new Set(input.assetIds)];

@@ -32,11 +32,9 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
   name: "generate_image",
   usesInstallAi: true,
   description:
-    "Generate a NEW image from a prompt with the configured image model; the result is saved to the media library and returned as mediaId + url (use the url verbatim in <img src>). " +
-    'Pass `references` (media ids or slugs from find_media — reference images included: find_media with visibility "reference") to keep a character, product or style consistent. ' +
-    "To change an EXISTING image, use edit_image instead. Check limits first with get_image_capabilities (how many references, sizes, resolutions); requests outside them are refused before anything is paid. " +
-    "Each call reserves the image budget before the paid call; when a budget is used up you get `ImageBudgetExceeded` — tell the operator instead of retrying. " +
-    "Verify the prompt is on-brand before calling; image generation is rarely cheap.",
+    "Generate a NEW image from a prompt with the configured image model; saved to the media library, returns mediaId + url (use the url verbatim in `<img src>`). EXISTING image -> `edit_image`.\n" +
+    "- Check `get_image_capabilities` first (reference count, sizes, resolutions); requests outside them are refused before anything is paid.\n" +
+    "- Rarely cheap: verify the prompt is on-brand. Budget reserved per call; `ImageBudgetExceeded` -> tell the operator, don't retry.",
   schema: generateImageInput,
   inputSchema: {
     type: "object",
@@ -50,9 +48,15 @@ export const generateImageTool: ToolDefinitionWithHandler<GenerateImageInput> = 
         type: "string",
         enum: ["1K", "2K", "4K"],
         description:
-          "Native resolution. 2K / 4K only on models whose get_image_capabilities lists them; omit it otherwise. 1K is accepted on every model.",
+          "2K/4K only if `get_image_capabilities` lists them, else omit (1K works on every model).",
       },
-      references: { type: "array", items: { type: "string" }, maxItems: 14 },
+      references: {
+        type: "array",
+        items: { type: "string" },
+        maxItems: 14,
+        description:
+          'Media ids/slugs (`find_media`, incl. `visibility:"reference"`) to keep a character, product or style consistent.',
+      },
       altText: { type: "string" },
     },
   },

@@ -9,15 +9,6 @@
  * shadcn → loose) and the op `themes.import` accepts the pre-parsed
  * `ThemeDocument`. The detected format string flows back to the AI so
  * subsequent turns don't re-detect.
- *
- * Verbatim description text from issue #45's follow-up comment:
- *   "Import a theme from JSON or CSS. Server auto-detects DTCG /
- *    Style Dictionary / Tailwind 4 / shadcn-CSS-vars / loose key-value
- *    formats. Pass the raw text in `body`. Returns the detected format
- *    + the slug of the imported theme."
- *
- * Pinned in tests as a regression guard — the AI-side prompt depends
- * on this exact wording.
  */
 
 import { execute } from "@caelo-cms/query-api";
@@ -43,19 +34,10 @@ const importThemeToolInput = z
   .strict();
 type ImportThemeToolInput = z.infer<typeof importThemeToolInput>;
 
-/**
- * v0.11.1 — verbatim description from issue #45's follow-up comment
- * ("Tool descriptions (verbatim updates)" section). Pinned by the
- * `import-theme.test.ts` regression guard.
- */
-export const IMPORT_THEME_DESCRIPTION =
-  "Import a theme from JSON or CSS. Server auto-detects DTCG / Style Dictionary / " +
-  "Tailwind 4 / shadcn-CSS-vars / loose key-value formats. Pass the raw text in `body`. " +
-  "Returns the detected format + the slug of the imported theme.";
-
 export const importThemeTool: ToolDefinitionWithHandler<ImportThemeToolInput> = {
   name: "import_theme",
-  description: IMPORT_THEME_DESCRIPTION,
+  description:
+    "Replace an EXISTING theme's tokens from raw JSON/CSS `body` (DTCG, Style Dictionary, Tailwind 4, shadcn vars, key-value; auto-detected). New theme -> `propose_create_theme` first.",
   schema: importThemeToolInput,
   inputSchema: {
     type: "object",

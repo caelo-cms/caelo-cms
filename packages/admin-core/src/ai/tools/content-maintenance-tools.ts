@@ -43,8 +43,7 @@ function jsonSchema(schema: z.ZodType): Record<string, unknown> {
 export const listMediaUsagesTool = makeReadTool({
   name: "list_media_usages",
   description:
-    "List the modules whose HTML embeds one media asset (by its id). " +
-    "Use before replacing or deleting an image, or after regenerate_media_variants skipped a variant, to know which modules to edit. Find asset ids with find_media.",
+    "List modules whose HTML embeds one media asset (id from `find_media`). Use before replacing/deleting an image, or after `regenerate_media_variants` skipped a variant, to know which modules to edit.",
   opName: "media.list_usages",
   input: z.object({ assetId: uuid }).strict(),
   format: (value) => {
@@ -80,13 +79,13 @@ function formatSeoPage(p: SeoPage): string {
 
 const getPageSeoInput = z
   .object({
-    pageId: uuid.optional().describe("One page. Pass this OR pageIds."),
+    pageId: uuid.optional().describe("Pass this OR `pageIds`."),
     pageIds: z
       .array(uuid)
       .min(1)
       .max(SEO_GET_MANY_MAX)
       .optional()
-      .describe(`Several pages (up to ${SEO_GET_MANY_MAX}) in one call. Pass this OR pageId.`),
+      .describe("Pass this OR `pageId`."),
   })
   .strict()
   .refine((v) => (v.pageId === undefined) !== (v.pageIds === undefined), {
@@ -96,9 +95,9 @@ const getPageSeoInput = z
 export const getPageSeoTool = makeReadTool({
   name: "get_page_seo",
   description:
-    "Read pages' stored SEO fields (meta description, OG image, canonical URL, noindex, sitemap changefreq/priority, when autofilled / optimized) AND each page's core text: the plain text of the page's own content blocks (headings, paragraphs, list items, link labels; nested cards included; header/footer chrome left out), from THIS chat's draft, capped at ~1500 characters. " +
-    "Use it to read what a page already has AND its core text before writing or optimizing its description — one call for every page (`pageIds`, up to 50), then ONE autofill_page_seo_many (first description) or bulk_optimize_seo / set_page_seo_many. " +
-    "Don't render the page for this (inspect_page_render / screenshot_page are for layout and visual questions). A page without an SEO row shows that autofill_page_seo_many fills it.",
+    "Read pages' stored SEO fields (meta description, OG image, canonical, noindex, sitemap, autofill/optimize times) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars).\n" +
+    "USE FOR: reading before writing/optimizing descriptions — ALL pages in one call, then ONE `autofill_page_seo_many` (first description) or `bulk_optimize_seo`/`set_page_seo_many`.\n" +
+    "DO NOT USE `inspect_page_render`/`screenshot_page` for this (layout/visual only). No SEO row -> `autofill_page_seo_many` fills it.",
   opName: "pages_seo.get_many",
   input: getPageSeoInput,
   buildOpInput: (input) => ({ pageIds: input.pageIds ?? [input.pageId] }),
@@ -112,8 +111,7 @@ export const listStaleSeoPagesTool = makeListReadTool<
 >({
   name: "list_stale_seo_pages",
   description:
-    "List pages whose SEO was never optimized or whose meta description is empty (newest pages first) — the dashboard's 'needs SEO' tile. " +
-    "Use when the operator asks which pages need SEO work; then autofill_page_seo_many for EMPTY descriptions that were never autofilled, bulk_optimize_seo (with their context) to re-optimize, or set_page_seo_many for exact values.",
+    "List pages whose SEO was never optimized or whose meta description is empty (newest first) — the dashboard's 'needs SEO' tile. Then: empty, never-autofilled -> `autofill_page_seo_many`; re-optimize with context -> `bulk_optimize_seo`; exact values -> `set_page_seo_many`.",
   opName: "pages_seo.list_stale",
   input: z.object({}).strict(),
   buildOpInput: (input) => ({ limit: Math.min(200, (input.offset ?? 0) + (input.limit ?? 50)) }),
@@ -137,7 +135,7 @@ const refreshPagePathInput = z
     redirectFromOld: z
       .enum(["auto", "skip"])
       .optional()
-      .describe("'auto' (default) 301s the old URL to the new one when it moved."),
+      .describe("'auto' (default) 301s the old URL when it moved."),
   })
   .strict();
 type RefreshPagePathInput = z.infer<typeof refreshPagePathInput>;
@@ -146,10 +144,8 @@ type RefreshPagePathInput = z.infer<typeof refreshPagePathInput>;
 export const refreshPagePathTool: ToolDefinitionWithHandler<RefreshPagePathInput> = {
   name: "refresh_page_path",
   description:
-    "Recompute ONE page's URL from its current data. A DRAFT page moves right away (it has no public URL yet). " +
-    "A PUBLISHED page whose URL is out of date does not move here: moving a live URL needs the Owner's approval, so the tool reports awaiting a URL migration and you call propose_url_migration (it previews the move and writes the 301s). " +
-    "Linking/unlinking language variants already refreshes the pages they touch — no follow-up call needed. " +
-    "Not for renaming a page (update_pages_many with a new slug does that, with redirects).",
+    "Recompute ONE page's URL from its current data. DRAFT page -> moves now. PUBLISHED page with outdated URL -> not moved; result reports awaiting a URL migration -> call `propose_url_migration` (Owner-approved; previews the move + writes 301s). " +
+    "Linking/unlinking language variants already refreshes touched pages. Not for renaming (`update_pages_many` with a new slug).",
   schema: refreshPagePathInput,
   inputSchema: jsonSchema(refreshPagePathInput),
   handler: async (ctx, input, toolCtx) => {
@@ -186,8 +182,7 @@ export const listImportRunsTool = makeListReadTool<
 >({
   name: "list_import_runs",
   description:
-    "List site-import (migration) runs, newest first: id, source URL, status, pages seen / extracted, and errors. " +
-    "Use to find a run id you did not propose yourself in this chat, or to check whether an approved crawl finished. Detail per run: get_import_run_report.",
+    "List site-import (migration) runs, newest first: id, source URL, status, pages seen/extracted, errors. Use to find a run id not proposed in this chat, or check whether an approved crawl finished. Per-run detail: `get_import_run_report`.",
   opName: "imports.list",
   input: z.object({ status: runStatusFilter.optional() }).strict(),
   buildOpInput: (input) => (input.status ? { status: input.status } : {}),
@@ -214,9 +209,8 @@ type LogImportEventsInput = z.infer<typeof logImportEventsInput>;
 export const logImportEventsTool: ToolDefinitionWithHandler<LogImportEventsInput> = {
   name: "log_import_events",
   description:
-    "Record findings in an import run's event ledger (the migration report the operator reads): skipped assets, fidelity gaps, inventory mismatches, compose problems. " +
-    "Each event: runId, severity (info / warning / error), optional phase (crawl | media | fidelity | inventory | compose | …), message, optional structured detail and pageId. " +
-    "Send ALL findings of a step in ONE call (up to 500, across runs) — they insert together or not at all. For notes on one imported page use add_import_page_notes.",
+    "Record findings in import-run event ledgers (the migration report the operator reads): skipped assets, fidelity gaps, inventory mismatches, compose problems. `phase` e.g. crawl|media|fidelity|inventory|compose; `detail` = optional structured data. " +
+    "Send ALL findings of a step in ONE call (may span runs); all insert or none. Notes on one imported page -> `add_import_page_notes`.",
   schema: logImportEventsInput,
   inputSchema: jsonSchema(logImportEventsInput),
   handler: async (ctx, input, toolCtx) => {
@@ -234,7 +228,7 @@ export const logImportEventsTool: ToolDefinitionWithHandler<LogImportEventsInput
 export const listSkillPinDefaultsTool = makeReadTool<Record<string, never>>({
   name: "list_skill_pin_defaults",
   description:
-    "List the skills the operator has pinned to engage in every new chat. Read before set_skill_pin_defaults (which replaces the whole list).",
+    "List skills pinned to engage in every new chat. Read before `set_skill_pin_defaults` (replaces the whole list).",
   opName: "skills.list_pin_defaults",
   input: z.object({}).strict(),
   format: (value) => {
@@ -250,7 +244,7 @@ const setSkillPinDefaultsInput = z
       .array(z.string().min(1).max(120))
       .max(50)
       .describe(
-        "Active skill slugs to pin. The FULL list — omitted skills are unpinned; [] clears.",
+        "Active skill slugs. FULL list (read `list_skill_pin_defaults` first); omitted ones are unpinned; [] clears.",
       ),
   })
   .strict();
@@ -260,8 +254,7 @@ type SetSkillPinDefaultsInput = z.infer<typeof setSkillPinDefaultsInput>;
 export const setSkillPinDefaultsTool: ToolDefinitionWithHandler<SetSkillPinDefaultsInput> = {
   name: "set_skill_pin_defaults",
   description:
-    "Set which skills engage automatically in every NEW chat of the operator you act for (e.g. 'always pin scoped-edit'). Replaces the whole list: read it with list_skill_pin_defaults, then send the full new list. " +
-    "A per-person preference; the current chat is unaffected (load_skill engages a skill now).",
+    "Set which skills engage automatically in every NEW chat of the operator you act for (e.g. 'always pin scoped-edit'). Per-person; current chat unaffected (`load_skill` engages now).",
   schema: setSkillPinDefaultsInput,
   inputSchema: jsonSchema(setSkillPinDefaultsInput),
   handler: async (ctx, input, toolCtx) => {

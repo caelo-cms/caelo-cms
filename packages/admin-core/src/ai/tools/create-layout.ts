@@ -19,11 +19,7 @@ export const createLayoutTool: ToolDefinitionWithHandler<
 > = {
   name: "create_layout",
   description:
-    "Propose a new layout (site shell). TWO-STEP: this only QUEUES the proposal — approved on the chat's proposal card (queue: /settings/layouts/pending); " +
-    "an Owner must click Approve to actually create the layout. DO NOT claim the layout exists. " +
-    'Use when the user wants a chrome variant that none of the existing layouts cover (e.g. "a campaign layout ' +
-    'with a banner and no footer"). After Approve, you can bind templates to it via `set_template_layout` or ' +
-    "fill its blocks via `add_module` (target='layout').",
+    "Propose a layout (site shell) for a chrome variant no layout covers (e.g. campaign: banner, no footer). APPROVAL-GATED: only queues it for the Owner's click on the chat card; never claim it exists before. Then `set_template_layout` / `add_module` target='layout'.",
   schema: createLayoutToolInput,
   inputSchema: {
     type: "object",
@@ -32,7 +28,12 @@ export const createLayoutTool: ToolDefinitionWithHandler<
     properties: {
       slug: { type: "string", minLength: 1, maxLength: 120 },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
-      html: { type: "string", minLength: 1, maxLength: 50_000 },
+      html: {
+        type: "string",
+        minLength: 1,
+        maxLength: 50_000,
+        description: 'Needs `<caelo-slot name="content"></caelo-slot>` + one slot per block.',
+      },
       css: { type: "string", maxLength: 50_000 },
       blocks: {
         type: "array",

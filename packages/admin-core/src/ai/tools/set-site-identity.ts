@@ -58,18 +58,10 @@ type SetSiteIdentityToolInput = z.infer<typeof setSiteIdentityToolInput>;
 export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolInput> = {
   name: "set_site_identity",
   description:
-    "Record the site's identity (display name + purpose) so future chats inherit the brand context. " +
-    "When the site status note says 'Site identity: not captured', call this in your FIRST " +
-    "turn — infer `siteName` and `sitePurpose` from the operator's chat prompt and capture them BEFORE " +
-    "authoring any modules. Example: operator says 'build me a homepage for an AI-first CMS called Caelo, " +
-    "trustworthy and developer-focused' → call `set_site_identity({siteName: 'Caelo', sitePurpose: 'An " +
-    "AI-first CMS for developers — trustworthy, branched edits, plugin sandbox', siteLanguage: 'en'})` (they wrote in English). If the operator " +
-    "hasn't given you enough to infer (e.g. they ask 'add a contact form' on an unconfigured install), " +
-    "ASK them for the missing essentials before guessing. " +
-    "Pass `null` to clear a field. " +
-    "During Site Genesis, ALSO pass `designBrief` ({audience, moodWords, tone, industry, differentiators, imageryDirection, avoid}) — it feeds the parallel draft subagents and every future design decision. " +
-    "`siteLanguage` is the BCP 47 language the site's content is written in (`en`, `de`, `pt-BR`); every page renders it as `<html lang>` for screen readers and search engines. It has NO default: until it is set, publishing fails and the preview flags `site-language-unset`. Set it in the same call that captures the identity — infer it from the language the operator writes in or wants the copy in, or, when migrating a site, from the `Lang:` that inspect_external_page reports; ask only if those genuinely disagree. " +
-    "On a multilingual site the international-site plugin assigns each translated page its own locale; `siteLanguage` stays the language of the pages it does not assign (the default locale).",
+    "Record the site identity so future chats inherit the brand context. `null` clears a field.\n" +
+    "CORE RULES:\n" +
+    "- Status note 'Site identity: not captured' -> call in your FIRST turn, inferring `siteName`, `sitePurpose`, `siteLanguage` from the operator's prompt, BEFORE authoring modules. E.g. 'homepage for an AI-first CMS called Caelo, trustworthy and developer-focused' -> `{siteName:'Caelo', sitePurpose:'An AI-first CMS for developers — trustworthy, branched edits, plugin sandbox', siteLanguage:'en'}`.\n" +
+    "- Too little to infer (e.g. 'add a contact form' on an unconfigured install) -> ASK for the essentials, don't guess.",
   schema: setSiteIdentityToolInput,
   inputSchema: {
     type: "object",
@@ -77,7 +69,13 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
     properties: {
       siteName: { type: ["string", "null"], minLength: 1, maxLength: 200 },
       sitePurpose: { type: ["string", "null"], minLength: 1, maxLength: 2000 },
-      siteLanguage: { type: "string", minLength: 2, maxLength: 35 },
+      siteLanguage: {
+        type: "string",
+        minLength: 2,
+        maxLength: 35,
+        description:
+          "BCP 47 language of the content (`en`, `de`, `pt-BR`), rendered as `<html lang>` on every page. No default: unset -> publishing fails, preview flags `site-language-unset`. Set it with the identity; infer from the operator's language / desired copy language or, when migrating, the `Lang:` from `inspect_external_page`; ask only if they disagree. Multilingual: the international-site plugin assigns translated pages their locale; this stays the language of unassigned pages.",
+      },
       designBrief: {
         type: ["object", "null"],
         additionalProperties: false,
@@ -94,6 +92,8 @@ export const setSiteIdentityTool: ToolDefinitionWithHandler<SetSiteIdentityToolI
           imageryDirection: { type: "string", minLength: 1, maxLength: 500 },
           avoid: { type: "string", minLength: 1, maxLength: 500 },
         },
+        description:
+          "Pass during Site Genesis: feeds the parallel draft subagents and every future design decision.",
       },
     },
   },

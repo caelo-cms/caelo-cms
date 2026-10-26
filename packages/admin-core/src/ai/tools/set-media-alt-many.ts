@@ -12,10 +12,8 @@ import { makeBulkTool } from "./_make-bulk-tool.js";
 
 export const setMediaAltManyTool = makeBulkTool({
   name: "set_media_alt_many",
-  description: [
-    "Replace assets' alt text — one call for 1..N assets (`items[]`), one all-or-nothing transaction — when you have visual context (or an a11y request) and the alt is missing/unhelpful.",
-    "Never invent alt for an image you can't identify — leave that item out. `assetId`: `id` from `find_media` (or an `import_media_from_urls`/`generate_image` result).",
-  ].join("\n"),
+  description:
+    "Replace alt text on assets (all-or-nothing) when you have visual context or an a11y request and the alt is missing/unhelpful. Never invent alt for an image you can't identify — omit that item. `assetId` = `id` from `find_media` or an `import_media_from_urls`/`generate_image` result.",
   itemInputSchema: setMediaAltToolInput,
   itemJsonSchema: {
     type: "object",

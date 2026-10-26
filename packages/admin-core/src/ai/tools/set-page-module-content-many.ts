@@ -20,13 +20,13 @@ export const setPageModuleContentManyTool: ToolDefinitionWithHandler<
 > = {
   name: "set_page_module_content_many",
   description: [
-    "Set the content values of placements — one call for 1..N (`items[]`, may span pages), one transaction. Content lives in a content_instance bound to the placement.",
+    "Set content values of 1..N placements (may span pages) in one transaction. Content lives in a content_instance bound to the placement.",
     "USE FOR: page-local copy ('change the hero heading on /home to X'), a whole page's text, the same fix across pages.",
-    "DO NOT USE FOR: pages/modules not existing yet -> one `build_page` call (never `add_module` + this tool); one entry's text -> `patch_page_module_fields`; changes for every page using the module (structure/styling/fields) -> `update_modules_many`.",
+    "DO NOT USE FOR: pages/modules not existing yet -> one `build_page` call (never `add_module` + this tool); one entry's text -> `patch_page_module_fields`; every page using the module (structure/styling/fields) -> `update_modules_many`.",
     "CORE RULES:",
-    "- UNSYNCED placements (default) stay local. A SYNCED placement aborts the batch -> `fork_placement_content` it (detach first) or deliberately `set_content_instance_values_many` (propagates everywhere), then resend.",
-    "- All-or-nothing: an invalid item aborts the batch (the error names `items[i]`, the placement and the failing field) and nothing is written.",
-    INTERNAL_LINK_CONTRACT.trim(),
+    "- UNSYNCED placements (default) stay local. A SYNCED placement aborts the batch -> `fork_placement_content` it or deliberately `set_content_instance_values_many` (propagates everywhere), then resend.",
+    "- All-or-nothing: an invalid item aborts the batch (error names `items[i]`, the placement, the failing field); nothing is written.",
+    INTERNAL_LINK_CONTRACT,
   ].join("\n"),
   schema: pageModuleContentSetManySchema,
   inputSchema: {
@@ -50,9 +50,9 @@ export const setPageModuleContentManyTool: ToolDefinitionWithHandler<
               type: "object",
               additionalProperties: true,
               description:
-                "Keyed by the module's declared field names (`{{field}}`); fully replaces the placement's values. Missing fields fall back to the field's `default`; `{}` resets to all defaults. " +
-                'Local `list`: entry array (`[{node:"text", values:{text:"Fast"}}]`, existing entries keep `id`). Shared `list`: `caelo:list/<id>` switches the list shown (its entries change via `patch_list_items_many`, on every page). Source field: its editable knobs (`{limit:5}`). ' +
-                "Nested `module`/`module-list`: `{moduleId, contentInstanceId}` | array; the module's stable `type` must be in the field's `allowedModuleTypes` when set (`list_modules` shows both) — reuse an allowed-type module.",
+                "Keyed by the module's field names; fully replaces the placement's values. Missing fields -> the field's `default`; `{}` resets all. " +
+                'Local `list` -> entries (`[{node:"text", values:{text:"Fast"}}]`, existing entries keep `id`); shared `list` -> `caelo:list/<id>` switches the list shown (entries change via `patch_list_items_many`, on every page); source field -> editable knobs (`{limit:5}`); ' +
+                "nested `module`/`module-list` -> `{moduleId, contentInstanceId}` | array; the module's stable `type` must be in the field's `allowedModuleTypes` when set (`list_modules` shows both).",
             },
           },
         },

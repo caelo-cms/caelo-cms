@@ -39,14 +39,10 @@ export const saveDesignDraftTool: ToolDefinitionWithHandler<
 > = {
   name: "save_design_draft",
   description:
-    "Save ONE design draft. Two scopes, one loop: " +
-    "(a) scope 'site' — Site Genesis / full redesign: a complete self-contained single-file HTML page for one design direction (all CSS inline, real copy, no external scripts/images). " +
-    "(b) scope 'page' or 'module' (growth-time variants): an HTML FRAGMENT restyling an EXISTING page or module — the section's markup + one <style> block styled through the site's `var(--…)` theme tokens, carrying the target's REAL copy and imagery. The preview composes fragments into the site's actual theme shell (real fonts, palette, base styles) at view time, so invented token names render visibly broken. targetPageId/targetModuleId are required per scope. " +
-    "ROUTING: when the operator asks for design proposals, a redesign, or 'options' for something that exists, draft variants with THIS tool first (design-preview skill) — do NOT restyle live modules to demonstrate ideas. A concrete small instruction ('make the button red') needs no draft loop: edit directly. " +
-    "The FIRST save of a round returns `variantSetId`; pass it on every sibling save so the round compares as ONE set, then call present_design_variants. " +
-    "Do NOT paste draft HTML into the chat (it's huge and unreadable there); this tool is where drafts live. " +
-    "To revise a draft after feedback, save a NEW draft in the same set with the same direction and a rationale noting the change. " +
-    "BRING-YOUR-OWN-DESIGN (issue #199, site scope only): when the operator supplied the design, set sourceKind — 'byod_image' for your faithful reproduction of their attached mockup (referenceAssetId REQUIRED: the attachment's assetId; the parity gate then verifies against THEIR image, not your reproduction) or 'byod_html' for HTML they provided (scripts are stripped at the boundary — tell them if theirs relied on scripts).",
+    "Save ONE design draft; drafts live here, never paste draft HTML into chat.\n" +
+    "USE FOR: design proposals, a redesign, 'options' for something existing -> draft variants first (design-preview skill); never restyle live modules to demo ideas.\n" +
+    "DO NOT USE FOR: a concrete small instruction ('make the button red') -> edit directly.\n" +
+    "CORE RULES: one round = one set: the first save returns `variantSetId`; pass it on every sibling save, then call `present_design_variants`. Revise after feedback = a NEW draft in the same set, same direction, rationale noting the change.",
   schema: genesisAddDraftInput,
   inputSchema: {
     type: "object",
@@ -55,39 +51,46 @@ export const saveDesignDraftTool: ToolDefinitionWithHandler<
     properties: {
       direction: { type: "string", minLength: 3, maxLength: 120 },
       rationale: { type: "string", maxLength: 1000 },
-      html: { type: "string", minLength: 200, maxLength: GENESIS_DRAFT_MAX_HTML_BYTES },
+      html: {
+        type: "string",
+        minLength: 200,
+        maxLength: GENESIS_DRAFT_MAX_HTML_BYTES,
+        description:
+          "scope `site`: complete self-contained single-file page for one direction (all CSS inline, real copy, no external scripts/images). scope `page`/`module`: a FRAGMENT restyling the target: its section markup + one `<style>` block using the site's `var(--…)` theme tokens, with the target's REAL copy and imagery; previewed inside the real theme shell, so invented token names render visibly broken.",
+      },
       scope: {
         type: "string",
         enum: ["site", "page", "module"],
         description:
-          "Default 'site' (Genesis / full redesign — complete standalone document). 'page'/'module' = growth-time variant fragment of an existing surface.",
+          "Default `site` (Genesis / full redesign). `page`/`module` = variant of an existing surface.",
       },
       targetPageId: {
         type: "string",
         format: "uuid",
         description:
-          "page scope: REQUIRED — the page this variant redesigns. module scope: optional page context.",
+          "Required for scope `page` (the page redesigned); optional context for `module`.",
       },
       targetModuleId: {
         type: "string",
         format: "uuid",
-        description: "module scope: REQUIRED — the module this variant restyles.",
+        description: "Required for scope `module` (the module restyled).",
       },
       variantSetId: {
         type: "string",
         format: "uuid",
         description:
-          "Omit on the FIRST save of a round (minted + returned); pass that id on every sibling save of the same round.",
+          "Omit on a round's first save (minted + returned); pass it on every sibling save.",
       },
       sourceKind: {
         type: "string",
         enum: ["genesis", "byod_image", "byod_html"],
-        description: "Where this draft came from. Default 'genesis'. byod_* is site-scope only.",
+        description:
+          "Default `genesis`. Site scope only, when the operator supplied the design: `byod_image` = your faithful reproduction of their attached mockup (needs `referenceAssetId`; the parity gate verifies against THEIR image) | `byod_html` = HTML they provided (scripts are stripped; tell them if theirs relied on scripts).",
       },
       referenceAssetId: {
         type: "string",
         format: "uuid",
-        description: "byod_image only: the operator's uploaded mockup asset.",
+        description: "Required for `byod_image`: the attachment's assetId.",
       },
     },
   },
@@ -121,9 +124,8 @@ const listInput = z
 export const listDesignDraftsTool: ToolDefinitionWithHandler<z.infer<typeof listInput>> = {
   name: "list_design_drafts",
   description:
-    "List design drafts (id, scope, target, variant set, direction, rationale, status, size) — metadata only, never the HTML bodies. " +
-    "Filter by scope / variantSetId / target to see one comparison round. " +
-    "Use to check what already exists before drafting new variants, or to fetch the draftId for select_design_draft after the operator picked.",
+    "List design drafts' metadata (id, scope, target, variant set, direction, rationale, status, size; never HTML). Filter to see one comparison round. " +
+    "Use before drafting new variants, or to get the draftId for `select_design_draft` after the operator picked.",
   schema: listInput,
   inputSchema: {
     type: "object",
@@ -193,10 +195,8 @@ const presentInput = z
 export const presentDesignVariantsTool: ToolDefinitionWithHandler<z.infer<typeof presentInput>> = {
   name: "present_design_variants",
   description:
-    "Render a variant set INLINE IN THE CHAT: every draft in the set previews in the site's real theme with a pick button. " +
-    "Call ONCE after saving all of a round's drafts via save_design_draft (prefer 2–4 variants — a single option is a confirmation, not a choice). " +
-    "END YOUR TURN right after: the pick arrives as the operator's next message (containing the draft id); then call select_design_draft and materialise. " +
-    "Prose feedback instead of a pick means iterate: save revised drafts into the SAME set and present again.",
+    "Render a saved variant set INLINE IN CHAT, each draft previewed in the site's real theme with a pick button. Call ONCE after saving all of a round's drafts via `save_design_draft` (prefer 2–4; one option is a confirmation, not a choice).\n" +
+    "Then END YOUR TURN: the pick arrives as the operator's next message (with the draft id) -> `select_design_draft`, then materialise. Prose feedback instead -> save revised drafts into the SAME set, present again.",
   schema: presentInput,
   inputSchema: {
     type: "object",
@@ -241,10 +241,8 @@ const selectInput = z.object({ draftId: z.string().uuid() }).strict();
 export const selectDesignDraftTool: ToolDefinitionWithHandler<z.infer<typeof selectInput>> = {
   name: "select_design_draft",
   description:
-    "Mark ONE design draft as the chosen one of its variant set. ONLY call after the operator EXPLICITLY picked (variant-card button, /design/genesis, or in words) — the design choice is theirs, never yours. " +
-    "Selecting a different draft later is one call (the previous selection reverts to candidate). " +
-    "After selecting a SITE draft: derive the theme from the SELECTED draft's actual palette/typography (propose_create_theme), then build pages that re-express its sections — never invent a different design than the one chosen. " +
-    "After selecting a PAGE/MODULE variant: materialise it on the current chat branch (update_modules_many / the page's modules), transferring the token-bound fragment faithfully — inspect_design_draft({draftId, includeHtml: true}) returns it.",
+    "Mark ONE draft as chosen in its variant set, ONLY after the operator EXPLICITLY picked (variant card, /design/genesis, or in words); the choice is never yours. Re-selecting later is one call (the previous one reverts to candidate).\n" +
+    "After a SITE draft: derive the theme from its actual palette/typography (`propose_create_theme`), build pages re-expressing its sections, never a different design. After a PAGE/MODULE variant: materialise on the chat branch (`update_modules_many` / the page's modules), transferring the token-bound fragment faithfully (`inspect_design_draft({draftId, includeHtml:true})` returns it).",
   schema: selectInput,
   inputSchema: {
     type: "object",

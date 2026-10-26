@@ -27,8 +27,8 @@ export type ReadPageMoreInput = z.infer<typeof readPageMoreInput>;
 export const readPageMoreTool: ToolDefinitionWithHandler<ReadPageMoreInput> = {
   name: "read_page_more",
   description:
-    "Continue reading the Markdown of a page you already fetched with inspect_external_page — pass its `pageRef` handle and the `cursor` from the previous slice's truncation note. Reuses the cached page (NO re-fetch, no extra fetch-budget cost). Returns the next " +
-    `${MARKDOWN_SLICE_CHARS}-char slice plus the next cursor (or a done marker). If the handle has expired, re-run inspect_external_page.`,
+    "Continue reading the Markdown of a page fetched with `inspect_external_page` (cached: no re-fetch, no fetch-budget cost). Returns the next " +
+    `${MARKDOWN_SLICE_CHARS}-char slice + next cursor (or a done marker). Expired handle -> re-run \`inspect_external_page\`.`,
   schema: readPageMoreInput,
   inputSchema: {
     type: "object",
@@ -37,13 +37,12 @@ export const readPageMoreTool: ToolDefinitionWithHandler<ReadPageMoreInput> = {
     properties: {
       pageRef: {
         type: "string",
-        description: "The page handle returned by inspect_external_page (e.g. pg_abc123).",
+        description: "Handle from `inspect_external_page` (e.g. pg_abc123).",
       },
       cursor: {
         type: "integer",
         minimum: 0,
-        description:
-          "Char offset to continue from (the value in the previous slice's truncation note). Omit to start at 0.",
+        description: "Char offset from the previous slice's truncation note; omit = 0.",
       },
     },
   },

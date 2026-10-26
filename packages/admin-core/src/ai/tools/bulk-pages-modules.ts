@@ -30,12 +30,12 @@ import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError } from "./_describe-error.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
-import { LIST_FIELD_CONTRACT } from "./_list-tool-kit.js";
 import {
   MODULE_FIELDS_JSON_SCHEMA,
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
 import {
+  MODULE_BIND_THEME_LITERALS_DESCRIPTION,
   MODULE_CSS_DESCRIPTION,
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
@@ -117,12 +117,12 @@ async function countDeletedPages(
 export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
   name: "delete_pages_many",
   description: [
-    "Soft-delete pages — the ONLY page delete tool, one call for 1..N pages (`items[]`).",
+    "Soft-delete 1..N pages — the ONLY page delete tool.",
     "CORE RULES:",
-    "- Each item needs a `disposition` for its dead URL: ALWAYS confirm it with the operator; for 'redirect' suggest a target (parent section, sibling, `/`). Items may differ.",
+    "- Each item's `disposition` handles its dead URL: ALWAYS confirm it with the operator; for `redirect` suggest a target (parent section, sibling, `/`). Items may differ.",
     "- A page with child pages is refused unless the call also deletes all of them or the item sets `children` — ask the operator which when unclear.",
-    `- Deleting ${DELETE_PAGES_MANY_APPROVAL_THRESHOLD}+ pages (subtrees counted) pauses for one Owner click in chat before it runs.`,
-    "- Each page gets its own snapshot (undo: `propose_revert_site` / `propose_revert_page`). Result: deleted/alreadyDeleted/notFound counts + each refused page with its reason.",
+    `- ${DELETE_PAGES_MANY_APPROVAL_THRESHOLD}+ pages (subtrees counted) pause for one Owner click in chat before running.`,
+    "- One snapshot per page (undo: `propose_revert_site` / `propose_revert_page`). Result: deleted/alreadyDeleted/notFound counts + each refused page with reason.",
   ].join("\n"),
   // A `children: "delete"` item deletes its whole subtree: count it.
   needsApproval: async (input, ctx, toolCtx) =>
@@ -153,20 +153,20 @@ export const deletePagesManyTool: ToolDefinitionWithHandler<DeleteInput> = {
             disposition: {
               type: "string",
               enum: ["404", "redirect"],
-              description: "'404' = not-found; 'redirect' = 301 to `redirectTo`.",
+              description: "`redirect` = 301 to `redirectTo`.",
             },
             redirectTo: {
               type: "string",
               minLength: 1,
               maxLength: 500,
               description:
-                "Required for 'redirect': path on this site starting with a single '/' (e.g. '/blog'); never a full URL or '//host'.",
+                "Required for `redirect`: on-site path with one leading `/` (e.g. `/blog`); never a full URL or `//host`.",
             },
             children: {
               type: "string",
               enum: ["refuse", "move-up", "delete"],
               description:
-                "For a page with child pages: 'move-up' -> to this page's parent (old URLs 301); 'delete' -> whole subtree, same disposition.",
+                "Page with child pages: `move-up` -> to this page's parent (old URLs 301) | `delete` -> whole subtree, same disposition.",
             },
           },
         },
@@ -238,12 +238,12 @@ async function countRenamedUrls(
 export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
   name: "update_pages_many",
   description: [
-    "Edit page metadata — the ONLY tool for it, one call for 1..N pages (`items[]`): rename, retitle, reslug, status, template, page type, properties, terms.",
+    "Edit metadata of 1..N pages — the ONLY tool for it: rename, retitle, reslug, status, template, page type, properties, terms.",
     "DO NOT USE FOR: nesting under another page / back to top level -> `move_pages`; SEO -> `set_page_seo_many`; modules -> `update_modules_many`.",
     "CORE RULES:",
-    "- THREE independent identifiers, never substitute one for another: `name` (internal editor label), `title` (HTML <title>), `slug` (URL). Operator says only 'rename' -> ASK which (usually `name`).",
+    "- THREE independent identifiers, never substitute one for another: `name`, `title`, `slug`. Operator says only 'rename' -> ASK which (usually `name`).",
     `- Changing \`slug\` moves the page's URL AND every nested page's URL; a 301 from each old URL is created in the same transaction. On-site links (menus, link lists, modules, content) follow automatically — do not update them. A slug change moving ${PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs (page + subtree) pauses for one Owner click in chat.`,
-    "- Items apply independently: per-item failures (not found, version conflict) are reported, the rest still applies.",
+    "- Items apply independently: per-item failures (not found, version conflict) are reported, the rest applies.",
   ].join("\n"),
   // §11.A — a rename of a page with a large subtree moves every URL below
   // it; same gate + threshold as move_pages (see move-pages.ts).
@@ -283,7 +283,7 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
               type: "string",
               minLength: 1,
               maxLength: 256,
-              description: "HTML <title>: browser tab + search results.",
+              description: "HTML `<title>`: browser tab + search results.",
             },
             slug: {
               type: "string",
@@ -297,12 +297,12 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
               type: "string",
               pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
               description:
-                "What the page IS (slug from `list_page_types`, e.g. `news`); page queries ('latest news', 'articles in this category') filter on type/properties/terms. Template must be one of the type's templates — else pass `templateId` too.",
+                "What the page IS (`list_page_types` slug, e.g. `news`); page queries ('latest news', 'articles in this category') filter on type/properties/terms. Template must be one of the type's templates, else pass `templateId` too.",
             },
             properties: {
               type: "object",
               description:
-                "Page type properties, merged into the page's (null removes one), e.g. {author: 'Ada', event_date: '2026-11-03'}.",
+                "Page type properties, merged (null removes one), e.g. `{author:'Ada', event_date:'2026-11-03'}`.",
               additionalProperties: true,
             },
             terms: {
@@ -310,13 +310,13 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
               maxItems: 100,
               items: { type: "string", pattern: "^caelo:term/[0-9a-f-]{36}/[0-9a-f-]{36}$" },
               description:
-                "REPLACES the page's terms: caelo:term/<listId>/<itemId> from the page type's vocabularies (categories, tags; `get_list` shows entry ids). [] clears.",
+                "REPLACES the page's terms, from the page type's vocabularies (categories, tags; `get_list` shows entry ids). `[]` clears.",
             },
             redirectFromOld: {
               type: "string",
               enum: ["auto", "skip"],
               description:
-                "Only with `slug`. 'skip' = no 301; ONLY when the operator explicitly says the old URL should 404.",
+                "Only with `slug`. `skip` = no 301 — ONLY when the operator explicitly wants the old URL to 404.",
             },
           },
         },
@@ -416,16 +416,15 @@ async function updatedItemNotes(
 export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput> = {
   name: "update_modules_many",
   description: [
-    "Edit module structure (`html`, `fields`, `css`, `js`, `displayName`, `description`, `kind`, `type`) — one call for 1..N modules (`items[]`). Every page using a module follows; edits are chat-branched until publish.",
-    "USE FOR: wholesale rewrites, brand-new module bodies, changes to `fields`/`displayName`/`kind`/`type`/`description`, the same fix across several modules.",
-    "DO NOT USE FOR: a TARGETED change to existing `html`/`css`/`js` -> PREFER `edit_content` (surgical string-replace: cheaper, reviewable diff); page/instance content -> `set_page_module_content_many` (per page) or `set_content_instance_values_many` (shared); page metadata -> `update_pages_many`; templates -> `propose_update_template`.",
+    "Edit module structure (`html`, `fields`, `css`, `js`, `displayName`, `description`, `kind`, `type`) of 1..N modules. Every page using a module follows; chat-branched until publish.",
+    "USE FOR: wholesale rewrites, new module bodies, changes to `fields`/`displayName`/`kind`/`type`/`description`, the same fix across modules.",
+    "DO NOT USE FOR: a TARGETED change to existing `html`/`css`/`js` -> PREFER `edit_content` (surgical string-replace: cheaper, reviewable diff); page/instance content -> `set_page_module_content_many` (per page) | `set_content_instance_values_many` (shared); page metadata -> `update_pages_many`; templates -> `propose_update_template`.",
     "CORE RULES:",
-    "- AUTHOR EXPLICITLY: `html` with `{{field_name}}` placeholders + explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`). Never omit `fields[]`, never heuristic names (`cta2label2`, `spanText`).",
-    '- LISTS ARE LISTS, NOT NUMBERED SCALARS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:"texts"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.',
-    "- KEEP METADATA FRESH: update `description` + `kind` whenever a module's purpose drifts (`list_modules` relies on them).",
-    "- Items apply independently: a failed item (not found, draft conflict, invalid field) is reported with its reason and the rest still commits; nothing updated -> error. Each module gets its own snapshot.",
-    LIST_FIELD_CONTRACT.trim(),
-    INTERNAL_LINK_CONTRACT.trim(),
+    "- AUTHOR EXPLICITLY: pair `{{field_name}}` placeholders in `html` with explicit `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`, `nav_items`); never heuristic names (`cta2label2`, `spanText`).",
+    '- LISTS ARE LISTS: 10-item menu = ONE `list` field, never `label1`..`label10`; tag cloud = ONE `list` (`listType:"texts"`); multi-part items (image + heading + text) -> custom list type (`upsert_list_types_many`) or a `module-list` of a card module.',
+    "- KEEP METADATA FRESH: update `description` + `kind` when a module's purpose drifts (`list_modules` relies on them).",
+    "- Items apply independently: a failed item (not found, draft conflict, invalid field) is reported with its reason, the rest commits; nothing updated -> error. One snapshot per module.",
+    INTERNAL_LINK_CONTRACT,
   ].join("\n"),
   schema: moduleUpdateInput,
   inputSchema: {
@@ -449,18 +448,17 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
             ...MODULE_META_JSON_SCHEMA_PROPS,
             html: {
               type: "string",
-              description: `${MODULE_HTML_DESCRIPTION} Placeholders: \`{{field}}\` primitives, \`{{>field}}\` single nested \`module\`, \`{{#field}}…{{/field}}\` \`list\` and \`module-list\`. Accordion, tabs, carousel, mobile-nav -> \`data-caelo-ui\` markup (see \`js\`) instead of custom JS.`,
+              description: MODULE_HTML_DESCRIPTION,
             },
             css: {
               type: "string",
-              description: `${MODULE_CSS_DESCRIPTION} MUST scope every selector under the module's root class — bare selectors (\`body\`, \`h1\`, \`.card\`) bleed into other modules and are flagged.`,
+              description: MODULE_CSS_DESCRIPTION,
             },
             js: { type: "string", description: MODULE_JS_CONTRACT },
             fields: MODULE_FIELDS_JSON_SCHEMA,
             bindThemeLiterals: {
               type: "boolean",
-              description:
-                "Rewrite CSS literals matching a theme token into `var(--…)`. Default true — omit unless keeping a deliberate off-palette literal.",
+              description: MODULE_BIND_THEME_LITERALS_DESCRIPTION,
             },
           },
         },

@@ -40,7 +40,7 @@ describe("propose_set_site_seo", () => {
   });
 
   it("routes the site language and per-page SEO to their own tools", () => {
-    expect(proposeSetSiteSeoTool.description).toContain("set_site_identity({siteLanguage})");
+    expect(proposeSetSiteSeoTool.description).toContain("set_site_identity");
     expect(proposeSetSiteSeoTool.description).toContain("set_page_seo_many");
   });
 

@@ -30,7 +30,12 @@ const readContentInput = z
      * (each in its own line-numbered block). offset/limit apply only when a
      * single field is named.
      */
-    field: z.string().min(1).max(32).optional(),
+    field: z
+      .string()
+      .min(1)
+      .max(32)
+      .optional()
+      .describe("`html` | `css` | `js` (templates/layouts: `html` | `css`)."),
     offset: z.number().int().min(1).optional(),
     limit: z.number().int().min(1).max(5000).optional(),
   })
@@ -92,13 +97,12 @@ async function readOne(
 
 export const readContentTool: ToolDefinitionWithHandler<ReadContentInput> = {
   name: "read_content",
-  description:
-    "Read a module's, template's or layout's body (html/css/js) with line numbers — the Read step before a surgical edit_content. " +
-    "Pass `entityKind` ('module' | 'template' | 'layout' — a layout is the chrome shell its templates render in; list_templates shows each template's layoutId) + `entityId`, and optionally `field` ('html'/'css'/'js'; templates and layouts have html/css). " +
-    "Omit `field` to see every body; name a `field` to window a large one via `offset` (1-based line) + `limit`. " +
-    "Each block prints a `sha=` token you can hand back to edit_content as `expectedSha` to guard against a concurrent change. " +
-    "Prefer this over dumping a whole module through list_modules (which returns metadata only). " +
-    "Use edit_content (NOT update_modules_many) to change what you read here surgically.",
+  description: [
+    "Read a module's, template's or layout's body with line numbers — the Read step before a surgical `edit_content` (NOT `update_modules_many`). PREFER over `list_modules` (metadata only).",
+    '- `entityKind:"layout"` = chrome shell its templates render in (`list_templates` shows each template\'s layoutId).',
+    "- Omit `field` -> every body; name one to window a large body via `offset` (1-based line) + `limit`.",
+    "- Each block prints `sha=`; pass it to `edit_content` as `expectedSha` to guard against concurrent changes.",
+  ].join("\n"),
   schema: readContentInput,
   inputSchema: z.toJSONSchema(readContentInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {

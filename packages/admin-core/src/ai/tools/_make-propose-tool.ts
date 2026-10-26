@@ -66,9 +66,8 @@ export interface MakeProposeToolArgs<I> {
  * model neither waits for the secret nor offers to repeat it.
  */
 export const CREDENTIAL_CONTRACT =
-  "CREDENTIALS: the password / token this creates is never shown to you — not in this result, not later, not on request. " +
-  "Never ask for it or offer to tell it. After approval, tell the operator where the approver collects it once in the Caelo admin " +
-  "(the result's `credential` field names the place).";
+  "CREDENTIALS: the created password / token is never shown to you (not now, not later, not on request); never ask for or offer it. " +
+  "After approval, tell the operator where the approver collects it once (the result's `credential` field names the place).";
 
 export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinitionWithHandler<I> {
   // Plan B (SDK approval gate) — every propose op name is `<domain>.propose_*`,
@@ -78,10 +77,9 @@ export function makeProposeTool<I>(args: MakeProposeToolArgs<I>): ToolDefinition
   const domain = args.opName.split(".")[0] ?? "";
   const executeOp = args.executeOpOverride ?? `${domain}.execute_proposal`;
   const description =
-    `${args.when} ` +
-    (args.producesCredential ? `${CREDENTIAL_CONTRACT} ` : "") +
-    `APPROVAL-GATED: calling this PAUSES for the operator's Approve/Reject right in the chat before anything changes. ` +
-    `Do not claim the change is live until it is approved.`;
+    `${args.when}\n` +
+    (args.producesCredential ? `${CREDENTIAL_CONTRACT}\n` : "") +
+    "APPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.";
   return {
     name: args.toolName,
     description,

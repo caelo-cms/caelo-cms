@@ -26,11 +26,8 @@ export type TuneRateLimitInput = z.infer<typeof tuneRateLimitInput>;
 export const tuneRateLimitTool: ToolDefinitionWithHandler<TuneRateLimitInput> = {
   name: "tune_rate_limit",
   description:
-    "TWO-STEP: propose a per-(plugin, operation) rate-limit override. " +
-    "This only QUEUES the proposal — approved on the chat's proposal card (queue: /settings/gateway/pending). " +
-    "DO NOT claim the limit was applied. Use this when monitoring shows abuse on a public " +
-    "plugin endpoint (e.g. forms/submit getting hammered) or when the default 30/60s is too " +
-    "loose/tight. `proposedWindowSec` is 1–3600.",
+    "Propose a per-(plugin, operation) rate-limit override, for abuse on a public plugin endpoint (e.g. forms/submit hammered) or when the default 30/60s is too loose/tight. " +
+    "APPROVAL-GATED: only queues the proposal, approved on the chat's proposal card. Do not claim the limit was applied.",
   schema: tuneRateLimitInput,
   inputSchema: {
     type: "object",

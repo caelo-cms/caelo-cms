@@ -29,13 +29,21 @@ const editContentInput = z
   .object({
     entityKind: z.enum(CONTENT_ENTITY_KINDS),
     entityId: z.string().uuid(),
-    field: z.string().min(1).max(32),
+    field: z
+      .string()
+      .min(1)
+      .max(32)
+      .describe("`html` | `css` | `js` (templates/layouts: `html` | `css`)."),
     edits: z
       .array(
         z
           .object({
             // Empty only to fill an empty field (text-ops.ts applyStringEdits).
-            oldString: z.string(),
+            oldString: z
+              .string()
+              .describe(
+                'Exact text from `read_content` (incl. whitespace); must be UNIQUE in the body (add context) unless `replaceAll:true`. `""` fills an EMPTY field (e.g. no js yet); refused on a non-empty field.',
+              ),
             newString: z.string(),
             replaceAll: z.boolean().optional(),
           })
@@ -48,23 +56,27 @@ const editContentInput = z
      * no longer matches the live body, the edit is rejected so a change by
      * another writer since your read is never silently clobbered.
      */
-    expectedSha: z.string().min(1).max(16).optional(),
+    expectedSha: z
+      .string()
+      .min(1)
+      .max(16)
+      .optional()
+      .describe("`sha=` from `read_content` or the last edit; guards against a concurrent change."),
   })
   .strict();
 type EditContentInput = z.infer<typeof editContentInput>;
 
 export const editContentTool: ToolDefinitionWithHandler<EditContentInput> = {
   name: "edit_content",
-  description:
-    "Surgically edit a module's, template's or layout's body (html/css/js) by string replacement — the cheap, minimal-diff way to change existing code. " +
-    "Pass `entityKind` + `entityId` + `field` + an `edits` array of {oldString, newString, replaceAll?}. Each `oldString` must be UNIQUE in the body (add surrounding context if not) unless `replaceAll:true`; edits apply in order, atomically (all-or-nothing). " +
-    "Read the body first with read_content and copy exact text (incl. whitespace) into `oldString`; optionally pass its `sha=` as `expectedSha` to guard against a concurrent change. " +
-    'To fill an EMPTY field (e.g. a module with no js yet), pass one edit with `oldString: ""` and the new content as `newString`; an empty oldString on a field that has content is refused. ' +
-    "On success it returns the NEW `sha=` plus a line-numbered snippet of each changed region — chain another edit_content in the same turn using that sha and the fresh line numbers, WITHOUT re-reading. " +
-    "PREFER this over update_modules_many for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. " +
-    "Use update_modules_many instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. " +
-    "TEMPLATES AND LAYOUTS ARE GATED: an edit_content on a template or layout is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim such an edit was applied." +
+  description: [
+    "Surgical string-replace in a module's, template's or layout's `html`/`css`/`js` — cheap, minimal-diff edits of existing code.",
+    "PREFER over `update_modules_many` for targeted changes; use `update_modules_many` for wholesale rewrites, new modules, or `fields`/`displayName`/`kind` changes.",
+    "CORE RULES:",
+    "- Read the body first with `read_content`. Edits apply in order, all-or-nothing.",
+    "- Success returns the NEW `sha=` + line-numbered snippets of changed regions: chain further `edit_content` calls with that sha and the fresh line numbers, WITHOUT re-reading.",
+    "- Templates/layouts are APPROVAL-GATED: you propose, the Owner clicks Approve on the card. Do not claim such an edit was applied.",
     INTERNAL_LINK_CONTRACT,
+  ].join("\n"),
   schema: editContentInput,
   inputSchema: z.toJSONSchema(editContentInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {

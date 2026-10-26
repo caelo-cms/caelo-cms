@@ -37,13 +37,8 @@ export const resolveImportLinksTool: ToolDefinitionWithHandler<
 > = {
   name: "resolve_import_links",
   description:
-    "While you rebuild an import run, link to the migrated site's pages by their real paths even before you have built them: " +
-    "a link to a page of THIS run (a crawled page, a page in the run's URL list, or a page the crawled pages link to) is kept " +
-    "as written and recorded against the run instead of refused. A link to any other unknown path is still refused. " +
-    "Call this ONCE when every page of the run is built (before get_import_run_report): it rewrites the recorded content so " +
-    "each link whose page now exists is stored as that page, and lists the links that still match no page, with where they " +
-    "are — fix each (build the page, or point the link at an existing page's path) and call it again. Safe to repeat; the " +
-    "run's cleanup does it too. Do not use it for links outside an import (those are checked when you write them).",
+    "Finish an import-run rebuild's links. During the rebuild, links to the run's pages (crawled, in the run's URL list, or linked from crawled pages) are kept as written and recorded instead of refused; other unknown paths are still refused. " +
+    "Call ONCE when every run page is built (before `get_import_run_report`): rewrites recorded links to now-existing pages and lists still-unmatched links with locations -> fix each (build the page or point at an existing path), call again. Safe to repeat; run cleanup does it too. Not for links outside an import (checked on write).",
   schema: resolveImportLinksInput,
   inputSchema: {
     type: "object",
@@ -79,18 +74,12 @@ export const resolveImportLinksTool: ToolDefinitionWithHandler<
 
 const acceptImportPagesInput = z
   .object({
-    importPageIds: z
-      .array(z.string().uuid())
-      .min(1)
-      .max(50)
-      .describe("Staging import_pages ids from list_import_pages. One page = a one-item array."),
+    importPageIds: z.array(z.string().uuid()).min(1).max(50).describe("From `list_import_pages`."),
     templateId: z
       .string()
       .uuid()
       .optional()
-      .describe(
-        "Template for the new pages (list_templates). Omit to use the site's default template.",
-      ),
+      .describe("From `list_templates`; omit for the site default."),
   })
   .strict();
 
@@ -99,10 +88,10 @@ type AcceptImportPagesInput = z.infer<typeof acceptImportPagesInput>;
 export const acceptImportPagesTool: ToolDefinitionWithHandler<AcceptImportPagesInput> = {
   name: "accept_import_pages",
   description:
-    "Take crawled pages over AS-IS: each becomes a DRAFT page built from the crawl's extracted content blocks (header/footer excluded — the layout owns site chrome), linked to its import row. One call, up to 50 pages, all-or-nothing. " +
-    "Use it when the operator wants pages imported verbatim ('just bring the blog posts over as they are', 'accept the remaining pages'). For a faithful rebuild in the site's own design, use `build_page` with `page.importPageId` instead — that is the normal migration path. " +
-    "Take ids from `list_import_pages`; a page that was already accepted or built is refused (edit that page instead). The template's block names must match the crawl's block names, otherwise the call fails naming the block — pick another template. " +
-    "The new pages land on this chat's preview as drafts; nothing is published.",
+    "Take crawled pages over AS-IS: each becomes a DRAFT page (chat preview, nothing published) from the crawl's content blocks (header/footer excluded — layout owns chrome), linked to its import row. All-or-nothing.\n" +
+    "USE FOR: verbatim import ('bring the blog posts over as they are').\n" +
+    "DO NOT USE FOR: a faithful rebuild in the site's design -> `build_page` with `page.importPageId` (the normal migration path).\n" +
+    "Already accepted/built pages are refused (edit that page). Template block names must match the crawl's, else the call fails naming the block -> pick another template.",
   schema: acceptImportPagesInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "imports.accept_pages", {
@@ -125,7 +114,7 @@ export const acceptImportPagesTool: ToolDefinitionWithHandler<AcceptImportPagesI
 
 const cleanupImportRunInput = z
   .object({
-    runId: z.string().uuid().describe("The import run to close (list_import_pages shows it)."),
+    runId: z.string().uuid().describe("From `list_import_runs`/`list_import_pages`."),
   })
   .strict();
 
@@ -134,9 +123,9 @@ type CleanupImportRunInput = z.infer<typeof cleanupImportRunInput>;
 export const cleanupImportRunTool: ToolDefinitionWithHandler<CleanupImportRunInput> = {
   name: "cleanup_import_run",
   description:
-    "Close a finished site-import run and permanently delete its crawl data for pages that were never accepted or built (staging rows + screenshots). Pages already built from the crawl stay untouched. " +
-    "Use it only when the operator says the migration is done and the leftover crawl can go ('clean up the import', 'discard the rest of the crawl'). It cannot be undone: afterwards `get_import_page` / `list_import_pages` no longer see the dropped pages and a re-crawl costs time and money — if pages still need building, build them first. " +
-    "This is a TWO-STEP flow: your call queues it, the operator clicks Approve on the card in the chat, and only then is the data deleted. Do not claim the run was cleaned up before that.",
+    "Close a finished site-import run and permanently delete crawl data (staging rows + screenshots) of pages never accepted or built; built pages stay.\n" +
+    "USE only when the operator says the migration is done and the leftover crawl can go. Irreversible: `get_import_page`/`list_import_pages` lose the dropped pages and a re-crawl costs time + money -> build still-needed pages first.\n" +
+    "APPROVAL-GATED: your call queues it; data is deleted only after the operator clicks Approve on the in-chat card. Do not claim cleanup before that.",
   needsApproval: () => true,
   // #589 — the same permission the /settings/import panels require.
   approverPermissions: ["settings.write"],

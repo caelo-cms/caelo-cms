@@ -66,17 +66,12 @@ export const bootstrapSiteScaffoldTool: ToolDefinitionWithHandler<
 > = {
   name: "bootstrap_site_scaffold",
   description:
-    "Composite: bootstrap a fresh install (layout + template + site_defaults) in as few steps as the propose/execute gate allows. " +
-    "Idempotent — each call makes forward progress on the next missing stage. " +
-    "Stage 0 (no layout): queues a layouts.create PROPOSAL; the operator approves it on the proposal card in the chat (queue: /settings/layouts/pending). " +
-    "Stage 1+2 (layout exists): creates template + pins site_defaults directly (no human click). " +
-    "Stage 3 (all three exist): no-op. " +
-    "Use on a fresh install when the site status note says 'Site defaults: needs setup'. " +
-    "All inputs optional — sensible defaults yield a header/content/footer layout, a single-block `home` template, and pinned defaults. " +
-    // 2026-07 — STATIC on purpose (prompt-cache): the stage is auto-
-    // detected server-side and the RESULT names the stage that ran plus
-    // the next step, so the description doesn't need live state.
-    "The stage is detected automatically each call; the tool RESULT tells you which stage ran and what to do next (after a Stage-0 proposal is approved, call this tool AGAIN).",
+    "Bootstrap a fresh install (layout + template + site defaults) — when the status note says 'needs setup' for them. Idempotent: each call detects and runs the next missing stage; the RESULT says which ran and what next.\n" +
+    "- No layout: queues a layout PROPOSAL the operator approves on the chat's card. Don't claim it exists; after approval call this tool AGAIN.\n" +
+    "- Layout exists: creates the template + pins site defaults directly. All exist: no-op.\n" +
+    "All inputs optional; defaults = header/content/footer layout, single-block `home` template, pinned defaults.",
+  // Static on purpose (prompt cache): the stage is detected server-side and
+  // the result names the stage that ran plus the next step.
   schema: bootstrapSiteScaffoldToolInput,
   inputSchema: {
     type: "object",

@@ -155,7 +155,9 @@ function sourceMetaDescriptionLine(source: string | null): string {
 export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
   name: "get_import_page",
   description:
-    "Read ONE page's captured content from a completed crawl run as the GIST — the page text as Markdown, the crawled design tokens, and a source-screenshot handle — so you can rebuild it with build_page WITHOUT re-fetching the live site. The DEFAULT view is CONTENT-ONLY: subtrees the run's boilerplate detection classified as layout/template-owned source chrome (header/footer/nav), cookie-consent noise, duplicate mobile-nav DOM, and unreferenced --wp--preset--* token noise are stripped, each reported in a loud 'Stripped from this read' section — chrome binds ONCE at the layout/template (never rebuild it per page), so per-page reads must not repeat it. Pass fullPage: true ONLY when you genuinely need the source chrome or the raw token dump (e.g. you are rebuilding the site header/footer itself); it returns the full stored capture. It NEVER returns the source's raw page-builder HTML in either view (that div-soup is context bloat, and you author fresh semantic modules regardless). Returns: proposed slug + title; the text as Markdown (truncated with a cursor — call read_page_more for the rest); the design tokens (measured samples when captured, otherwise the page's actually-used token values — cite THESE, don't guess); and a `pageRef` so query_page_html can pull ONE specific section of the stored HTML on demand (the pageRef always carries the FULL capture, so stripped sections stay reachable). For the visual, call get_import_page_screenshot. Pass the staging import_pages id (from list_import_pages), the built page id, or a built page whose slug matches the crawl; the result always echoes the resolved staging id for the follow-up calls. Use this in the mass-import step to rebuild each crawled page; for a live URL not in a crawl use inspect_external_page instead.",
+    "Read ONE crawled page's GIST to rebuild it with `build_page` without re-fetching: proposed slug + title, text as Markdown (truncated with cursor -> `read_page_more`), design tokens (measured samples, else actually-used values — cite THESE, don't guess), and a `pageRef` for `query_page_html` to pull one section of the FULL stored HTML (stripped parts stay reachable). Never returns raw page-builder HTML.\n" +
+    "DO NOT USE FOR: the visual -> `get_import_page_screenshot`; a live URL not in a crawl -> `inspect_external_page`.\n" +
+    "Default view strips layout-owned chrome (header/footer/nav), consent noise, duplicate mobile-nav DOM, unreferenced `--wp--preset--*` tokens, reported under 'Stripped from this read'. Chrome binds ONCE at layout/template — never rebuild it per page.",
   schema: input,
   inputSchema: {
     type: "object",
@@ -166,12 +168,12 @@ export const getImportPageTool: ToolDefinitionWithHandler<Input> = {
         type: "string",
         format: "uuid",
         description:
-          "The staging import_pages.id, the built CMS page id, or a slug-matched built page.",
+          "Staging import_pages id (`list_import_pages`), built page id, or slug-matched built page; the result echoes the resolved staging id.",
       },
       fullPage: {
         type: "boolean",
         description:
-          "Default false = content-only view (source chrome, consent noise, duplicate navs and unreferenced preset tokens stripped, with loud counters). Pass true for the full stored capture — only when you genuinely need source chrome or the raw token dump.",
+          "true = full stored capture incl. chrome + raw token dump — only when rebuilding header/footer itself.",
       },
     },
   },

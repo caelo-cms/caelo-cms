@@ -37,8 +37,7 @@ export const listThemeHistoryTool = makeListReadTool<
 >({
   name: "list_theme_history",
   description:
-    "List a theme's edit history (who changed what, when — TOON rows), newest first. Defaults to the ACTIVE theme; pass `themeSlug` for another. " +
-    "Standard list params: `filter`, `limit`/`offset`, `full: true` (op max 100 entries).",
+    "List a theme's edit history (who changed what, when; newest first, max 100). Omit `themeSlug` for the ACTIVE theme.",
   opName: "themes.list_history",
   input: listThemeHistoryInput,
   buildOpInput: (

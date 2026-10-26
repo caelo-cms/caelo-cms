@@ -109,8 +109,9 @@ describe("block roles — page blocks vs layout chrome (#1076)", () => {
     expect(r.content).toContain(
       `home-template,${TEMPLATE_ID},Home (default),${LAYOUT_ID},content,page`,
     );
-    expect(listTemplatesTool.description).toContain("ONLY valid `blockName` values for build_page");
-    expect(listTemplatesTool.description).toContain("site chrome on the template's LAYOUT");
+    // pageBlocks are the only build_page blocks; chrome lives on the layout.
+    expect(listTemplatesTool.description).toContain("ONLY valid `blockName` for `build_page`");
+    expect(listTemplatesTool.description).toContain("layout chrome (`list_layouts`)");
   });
 
   it("list_layouts labels its blocks as layout blocks, not build_page blocks", async () => {
@@ -122,7 +123,7 @@ describe("block roles — page blocks vs layout chrome (#1076)", () => {
     expect(r.ok).toBe(true);
     expect(r.content).toContain("{slug,id,displayName,layoutBlocks(modules)}");
     expect(r.content).toContain("header|content|footer");
-    expect(listLayoutsTool.description).toContain("NOT build_page blockNames");
+    expect(listLayoutsTool.description).toContain("NOT `build_page` blockNames");
     expect(listLayoutsTool.description).not.toContain("context block");
   });
 

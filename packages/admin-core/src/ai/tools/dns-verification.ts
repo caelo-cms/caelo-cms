@@ -37,7 +37,7 @@ const verifyDomainsInput = z
       .min(1)
       .max(MAX_DOMAINS)
       .optional()
-      .describe("Hostnames to check (as shown by list_domains). Omit to check every domain."),
+      .describe("As shown by `list_domains`. Omit for all."),
   })
   .strict();
 
@@ -52,11 +52,10 @@ interface DomainRow {
 export const verifyDomainsTool: ToolDefinitionWithHandler<VerifyDomainsInput> = {
   name: "verify_domains",
   description:
-    "Check whether the site's registered domains resolve in DNS yet (A/AAAA lookup) and refresh each domain's verification stamp + provisional TLS status. " +
-    "Use after the operator says they updated DNS, after a `propose_add_domain` was approved, or when a domain shows TLS 'unknown'/'pending' in `list_domains`. Omit `hostnames` to check all domains at once. " +
-    "On Firebase Hosting installs the result also carries each hosting custom domain's live state; a domain reported 'stuck' is healed with `propose_reconnect_domain`. " +
-    "Read-only diagnostics — safe to call any time. 'not resolved' usually means the registrar change has not propagated yet (minutes to hours); report it instead of retrying in a loop. " +
-    "To check the exact records the installer asked for (CNAME/TXT values), use `verify_dns_records`.",
+    "Check whether registered domains resolve (A/AAAA); refreshes verification stamp + provisional TLS status. Read-only.\n" +
+    "USE FOR: after DNS changes, an approved `propose_add_domain`, or TLS 'unknown'/'pending' in `list_domains`.\n" +
+    "DO NOT USE FOR: exact installer records (CNAME/TXT values) -> `verify_dns_records`.\n" +
+    "'stuck' (Firebase Hosting) -> `propose_reconnect_domain`. 'not resolved' = usually still propagating (minutes-hours): report it, don't retry in a loop.",
   schema: verifyDomainsInput,
   handler: async (ctx, input, toolCtx) => {
     const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "domains.list", {});
@@ -142,12 +141,12 @@ const verifyDnsRecordsInput = z
       .max(MAX_RECORDS)
       .optional()
       .describe(
-        "Records to check. Omit to check every record the installer stored as required for this site (the usual case).",
+        "Omit (usual) = every record the installer stored as required (site/admin A|CNAME, certificate TXT); result names each record's purpose -> tell the operator what to add/fix at the registrar. Explicit records only on the site's own domains (registered, base-URL host, installer records, their subdomains).",
       ),
     environment: z
       .enum(["dev", "staging", "production"])
       .optional()
-      .describe("When records is omitted: only the required records of this environment."),
+      .describe("With `records` omitted: only this environment's records."),
   })
   .strict();
 
@@ -163,10 +162,9 @@ interface RequiredRecord {
 export const verifyDnsRecordsTool: ToolDefinitionWithHandler<VerifyDnsRecordsInput> = {
   name: "verify_dns_records",
   description:
-    "Check that specific DNS records are published with the expected value — status per record: ok | pending (nothing published yet / propagating) | mismatch (a different value is published). " +
-    "Omit `records` to check every record the installer stored as REQUIRED for this site (A/CNAME for the site and admin, TXT for certificate validation); the result names each record's purpose so you can tell the operator exactly which one to add or fix at their registrar. " +
-    "Use when the site or a certificate is not coming up, or after the operator says they changed DNS. Read-only. Explicit `records` must be on this site's own domains (registered domains, the base-URL host, the installer's records, or their subdomains) — other hostnames are refused. " +
-    "For a quick 'does the domain resolve at all' check of registered domains, use `verify_domains`.",
+    "Check DNS records carry the expected value: ok | pending (unpublished/propagating) | mismatch (other value). Read-only.\n" +
+    "USE FOR: site or certificate not coming up; after the operator changed DNS.\n" +
+    "DO NOT USE FOR: a quick 'does it resolve' check of registered domains -> `verify_domains`.",
   schema: verifyDnsRecordsInput,
   handler: async (ctx, input, toolCtx) => {
     let records: (z.infer<typeof dnsRecordInput> & { purpose?: string })[];

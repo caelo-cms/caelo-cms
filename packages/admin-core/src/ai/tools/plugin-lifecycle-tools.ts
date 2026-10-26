@@ -42,8 +42,7 @@ const listGrantsInput = z
 export const listPluginGrantsTool = makeListReadTool<z.infer<typeof listGrantsInput>, GrantRow>({
   name: "list_plugin_grants",
   description:
-    "List the capabilities the Owner has granted to installed (runtime-installed) plugins: one row per grant, with whether it belongs to the current version or a pending update, and the plugin's status (a `disabled` plugin holds grants but is not running). " +
-    "Use before propose_revoke_plugin_capability, or when the operator asks what a plugin is allowed to do.",
+    "Capabilities the Owner granted to runtime-installed plugins: one row per grant, current version vs pending update, plugin status (`disabled` = holds grants, not running). Use before `propose_revoke_plugin_capability` or when asked what a plugin may do.",
   opName: "plugins.list_capability_grants",
   input: listGrantsInput,
   label: "grants",
@@ -62,10 +61,7 @@ export const proposeRevokePluginCapabilityTool = makeProposeTool({
   toolName: "propose_revoke_plugin_capability",
   opName: "plugins.propose_revoke_capability",
   pendingQueuePath: "/settings/plugins/pending",
-  when:
-    "Propose taking one granted capability away from an installed plugin (e.g. its image generation or private file storage). " +
-    "Revoking a grant of the RUNNING version (target `running`, the default) DISABLES the plugin — its data is kept, but running it again needs a new Owner approval; target `pending_update` abandons an update that has not started (it must be staged and approved again). " +
-    "Check list_plugin_grants first, and tell the operator what stops working.",
+  when: "Propose removing one granted capability from an installed plugin (e.g. image generation, private file storage). Check `list_plugin_grants` first; tell the operator what stops working.",
   schema: proposeRevokeCapabilityInput,
   inputSchema: generateInputSchema(proposeRevokeCapabilityInput),
   summarize: (input, preview) =>
@@ -85,8 +81,7 @@ export const listPluginInstallationsTool = makeListReadTool<Record<string, never
   {
     name: "list_plugin_installations",
     description:
-      "List runtime-installed plugin packages by version: each staged artifact's status (pending = waiting for the Owner's review at /settings/plugins/installations, approved, active, retired), its origin (AI-authored or an uploaded package) and the plugin's current status. " +
-      "Use after submit_plugin to tell the operator whether a package or an update to a running plugin still waits for review. Approving it (and choosing its grants) is the Owner's decision; never the agent's.",
+      "Runtime-installed plugin packages by version: artifact status (pending = awaiting Owner review at /settings/plugins/installations), origin (AI-authored | uploaded), plugin status. Use after `submit_plugin` to tell the operator whether a package or update still awaits review. Approving it + choosing grants is the Owner's decision, never yours.",
     opName: "plugins.list_installations",
     input: z.object({}).strict(),
     // The op rows carry every version's full source; keep them out of the transcript.
@@ -112,15 +107,14 @@ const rejectInput = z
       .string()
       .max(2000)
       .optional()
-      .describe("Why — kept on the row so a later fix can address it."),
+      .describe("Kept on the row so a later fix can address it."),
   })
   .strict();
 
 export const rejectPluginTool: ToolDefinitionWithHandler<z.infer<typeof rejectInput>> = {
   name: "reject_plugin",
   description:
-    "Reject a submitted plugin that is NOT running yet (draft or awaiting activation), e.g. when the operator decides against it or you are withdrawing your own submission. " +
-    "Source and validator errors are kept; revalidate_plugin re-files it. Not for running plugins — rejecting does not stop anything.",
+    "Reject a submitted plugin NOT running yet (draft | awaiting activation), e.g. operator decided against it or you withdraw your own. Source + validator errors kept; `revalidate_plugin` re-files it. Not for running plugins (stops nothing).",
   schema: rejectInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.reject", input);
@@ -134,8 +128,7 @@ const revalidateInput = z.object({ slug: z.string().min(1).max(120) }).strict();
 export const revalidatePluginTool: ToolDefinitionWithHandler<z.infer<typeof revalidateInput>> = {
   name: "revalidate_plugin",
   description:
-    "Re-run the plugin validator over a submitted plugin that is NOT running (draft, awaiting activation or rejected) — after a Caelo upgrade, or to re-file a rejected submission. " +
-    "Passing moves it to awaiting activation (activate_plugin then proposes turning it on); failing returns the validator errors to fix. Refused for running or disabled plugins — those are the Owner's call; for an active plugin that fails to load use reload_plugin.",
+    "Re-run the validator on a submitted plugin NOT running (draft | awaiting activation | rejected) — after a Caelo upgrade or to re-file a rejection. Pass -> awaiting activation (`activate_plugin` proposes turning it on); fail -> validator errors to fix. Refused for running/disabled plugins (Owner's call); active plugin failing to load -> `reload_plugin`.",
   schema: revalidateInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.revalidate", input);
@@ -156,7 +149,7 @@ export const revalidatePluginTool: ToolDefinitionWithHandler<z.infer<typeof reva
 };
 
 const reloadInput = z
-  .object({ slug: z.string().min(1).max(120).describe("Plugin slug as list_plugins shows it.") })
+  .object({ slug: z.string().min(1).max(120).describe("As `list_plugins` shows it.") })
   .strict();
 
 /** Health fields `plugins.get` returns that this tool reports. */
@@ -169,10 +162,8 @@ interface ReloadedHealth {
 export const reloadPluginTool: ToolDefinitionWithHandler<z.infer<typeof reloadInput>> = {
   name: "reload_plugin",
   description:
-    "Retry loading an ACTIVE plugin on every server — the fix for a plugin whose health is `failing` (it stays active; servers do not retry on their own). " +
-    "Use after the cause was addressed, or when the problem looks transient, and when the operator asks to reload it. " +
-    "Returns this server's result right away; other servers follow within seconds — check get_plugin for their state. " +
-    "Not for a plugin that is awaiting activation or disabled (activating is the Owner's decision: activate_plugin).",
+    "Retry loading an ACTIVE plugin on every server — the fix for health `failing` (servers don't retry on their own). Use after the cause was fixed, when transient, or when asked. Returns this server's result; others follow within seconds (`get_plugin`). " +
+    "Not for awaiting-activation/disabled plugins (activation = Owner's decision: `activate_plugin`).",
   schema: reloadInput,
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "plugins.reload", input);

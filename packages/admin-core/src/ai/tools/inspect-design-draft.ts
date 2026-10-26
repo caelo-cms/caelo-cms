@@ -40,16 +40,24 @@ type InspectInput = z.infer<typeof inspectInput>;
 export const inspectDesignDraftTool: ToolDefinitionWithHandler<InspectInput> = {
   name: "inspect_design_draft",
   description:
-    "Read a design draft as a design FACT BASE: distinct colors with usage counts + properties, gradients, font families, font-size/spacing/radius histograms, shadows, and the section outline. Without draftId it defaults to the selected SITE draft (the Genesis compiler's source); growth-time page/module variants (#375) are inspected by explicit draftId. " +
-    "This is how you materialise a chosen design: for a SITE draft, derive the theme document from THIS inventory (the draft's exact palette/typefaces — never invent different ones), then re-express the outline's sections as modules; for a page/module variant, the fragment is already token-bound — transfer it faithfully. " +
-    "Pass `includeHtml: true` ONLY when you need the markup itself (building or editing the modules) — the inventory alone answers every theming question at a fraction of the context.",
+    "Read a design draft as a FACT BASE: distinct colors (usage counts, properties), gradients, font families, font-size/spacing/radius histograms, shadows, section outline.\n" +
+    "Materialising: SITE draft -> derive the theme from THIS inventory (exact palette/typefaces, never invent others), then re-express the outline's sections as modules. Page/module variant -> the fragment is token-bound; transfer it faithfully.",
   schema: inspectInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     properties: {
-      draftId: { type: "string", format: "uuid" },
-      includeHtml: { type: "boolean", default: false },
+      draftId: {
+        type: "string",
+        format: "uuid",
+        description: "Omit for the selected SITE draft; page/module variants need it.",
+      },
+      includeHtml: {
+        type: "boolean",
+        default: false,
+        description:
+          "Only when you need the markup (building/editing modules); the inventory answers every theming question far cheaper.",
+      },
     },
   },
   handler: async (ctx, input, toolCtx) => {

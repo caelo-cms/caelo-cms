@@ -25,17 +25,13 @@ export const createTemplateTool: ToolDefinitionWithHandler<
 > = {
   name: "create_template",
   description:
-    "Create a new template (a reusable HTML+CSS shell pages bind to) for a page type. " +
-    "Use when pages need a new shape ('a blog-post template', 'a landing-page layout'). `pageType` = the page type (slug, list_page_types) whose pages may use it — the template is added to that type's templates; omit it for the site's default page type. A new KIND of content (news, products) is a page type first: upsert_page_types_many needs a template id, so create the template with the page type it belongs to, or create the type afterwards listing this template. " +
-    "Do NOT use to create a one-off page — use `build_page` instead. " +
-    "`layoutId` is OPTIONAL when site defaults define a default layout (get_site_defaults) — then omitting it binds to that default. Without a configured default, `layoutId` is REQUIRED: pick a UUID from list_layouts (omitting it fails with a structured 'no defaults' error, no silent fallback). With ZERO layouts on the site, call create_layout first. " +
-    'CRITICAL — block syntax: render slots in `html` MUST be <caelo-slot name="X"></caelo-slot> tags, ' +
-    "NOT HTML comments like <!-- block:X -->. The composer ignores comment-style markers and the page " +
-    "renders empty. Define block rows separately via the templates editor or " +
-    "propose_update_template's `blocks` field — every block name needs a matching <caelo-slot> in html.",
-  // 2026-07 — STATIC on purpose (prompt-cache): all layoutId states are
-  // covered in the description above; live slugs stay in the volatile
-  // context blocks + list_layouts.
+    "Create a template (reusable HTML+CSS shell pages bind to) for a page type, e.g. 'a blog-post template'. NOT for a one-off page (`build_page`).\n" +
+    "CORE RULES:\n" +
+    "- A new KIND of content (news, products) is a page type first: `upsert_page_types_many` needs a template id -> create the template with its `pageType`, or create the type afterwards listing this template.\n" +
+    "- `layoutId`: optional when a default layout exists (`get_site_defaults`; omitted -> that default); else REQUIRED, pick from `list_layouts` (omitting fails with 'no defaults'). Zero layouts -> `create_layout` first.\n" +
+    '- Slots in `html` MUST be `<caelo-slot name="X"></caelo-slot>`, NOT comments like `<!-- block:X -->` (ignored -> page renders empty). Every block name needs a matching slot.',
+  // Static on purpose (prompt cache): every layoutId state is covered in
+  // the description; live layouts come from list_layouts.
   schema: createTemplateToolInput,
   inputSchema: {
     type: "object",
@@ -51,12 +47,12 @@ export const createTemplateTool: ToolDefinitionWithHandler<
         type: "string",
         pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
         description:
-          "Page type slug (list_page_types) this template serves; omit for the site's default page type.",
+          "Page type slug (`list_page_types`); the template joins its templates. Omit = default page type.",
       },
       blocks: {
         type: "array",
         description:
-          'Optional block-set metadata (same shape as create_layout). Omit it to auto-derive one block per <caelo-slot name="X"> in html (displayName = name). Pass it only to give a block a nicer displayName or an explicit position; every `name` MUST match a <caelo-slot> in html.',
+          "Omit to auto-derive one block per `<caelo-slot>` (displayName = name); pass only for nicer displayNames or explicit positions.",
         items: {
           type: "object",
           additionalProperties: false,

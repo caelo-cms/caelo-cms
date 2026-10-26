@@ -11,10 +11,7 @@ import { makeBulkTool } from "./_make-bulk-tool.js";
 
 export const setMediaVisibilityManyTool = makeBulkTool({
   name: "set_media_visibility_many",
-  description:
-    "Mark media assets as `reference` or `library` in ONE transaction (a single asset is a one-item array). " +
-    'Use `reference` for images that only guide image generation or editing — a character sheet, a style sample, a product shot to match — when the operator says so or uploads them as references. Reference images are hidden from `find_media` (unless you pass visibility: "all") and a page that uses one fails its deploy. ' +
-    "Use `library` to make an asset placeable on pages again (e.g. after a deploy error naming a reference image the operator wants published). Each item is `{assetId, visibility}`; take ids from `find_media`.",
+  description: "Mark media assets `reference` or `library` in one tx (ids from `find_media`).",
   itemInputSchema: mediaSetVisibilityInputSchema,
   itemJsonSchema: {
     type: "object",
@@ -22,7 +19,12 @@ export const setMediaVisibilityManyTool = makeBulkTool({
     required: ["assetId", "visibility"],
     properties: {
       assetId: { type: "string", format: "uuid" },
-      visibility: { type: "string", enum: ["library", "reference"] },
+      visibility: {
+        type: "string",
+        enum: ["library", "reference"],
+        description:
+          '`reference`: only guides image generation/editing (character sheet, style sample, product shot to match) — when the operator says so or uploads references; hidden from `find_media` (unless visibility "all"), a page using one fails its deploy. `library`: placeable on pages again (e.g. after a deploy error naming a reference image the operator wants published).',
+      },
     },
   },
   opName: "media.set_visibility_many",

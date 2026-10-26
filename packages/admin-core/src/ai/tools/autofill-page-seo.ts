@@ -18,11 +18,11 @@ import { stageReadinessSuffix } from "./_stage-readiness.js";
 export const autofillPageSeoManyTool = makeBulkTool({
   name: "autofill_page_seo_many",
   description: [
-    "Write the FIRST meta description (+ optional og:image) of pages — one call for 1..N pages (`items[]`), one transaction. A Stage refuses pages without one and names them, so run it after building pages and before Staging.",
-    "DO NOT USE FOR: pages you create with `build_page` -> pass `page.metaDescription` there (same fill-once write, no extra call); changing a filled description -> `bulk_optimize_seo` (re-optimization, only when the user asks) or `set_page_seo_many` (an exact user-dictated value).",
+    "Write pages' FIRST meta description (+ optional og:image), one transaction. A Stage refuses pages without one -> run after building, before Staging.",
+    "DO NOT USE FOR: pages created with `build_page` -> pass `page.metaDescription` there; changing a filled description -> `bulk_optimize_seo` (only when the user asks) or `set_page_seo_many` (exact user-dictated value).",
     "CORE RULES:",
-    "- Write each from that page's actual content, 150–160 chars for a human reading a search result: read all core texts with ONE `get_page_seo({pageIds})`, never by rendering pages; or carry over the source page's description when migrating. Title 50–60 chars via `update_pages_many`.",
-    "- Fill-once: the same text again = no-op (the result says so); a DIFFERENT text for a filled page returns AlreadyAutofilled with the stored text and aborts the whole batch -> leave such pages out.",
+    "- Write each from the page's actual content, 150–160 chars for a human reading a search result: read core texts with ONE `get_page_seo({pageIds})`, never by rendering; or carry over the source description when migrating. Title 50–60 chars via `update_pages_many`.",
+    "- Fill-once: same text again = no-op; a DIFFERENT text for a filled page (AlreadyAutofilled) aborts the whole batch -> leave such pages out.",
   ].join("\n"),
   itemInputSchema: autofillPageSeoToolInput,
   itemJsonSchema: {
