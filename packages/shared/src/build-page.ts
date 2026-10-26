@@ -225,7 +225,8 @@ export const buildPageTargetSchema = z
      * "<parent's path>/<slug>". Create mode only (an existing page moves
      * with `pages.move_many`).
      */
-    parentPageId: z.string().uuid().optional(),
+    // null = top level, same as pages.create (sibling tools must agree — #106 class).
+    parentPageId: z.string().uuid().nullable().optional(),
     /**
      * Epic #1107 — what the new page IS (page type slug), its properties
      * and terms; same semantics as `pages.create` (create mode only — an

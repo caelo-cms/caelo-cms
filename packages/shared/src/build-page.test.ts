@@ -39,6 +39,14 @@ describe("buildPageInputSchema — page target modes", () => {
     expect(r.success).toBe(true);
   });
 
+  it("accepts parentPageId: null as top level, like pages.create (PR #1121 e2e)", () => {
+    const r = buildPageInputSchema.safeParse({
+      page: { slug: "pricing", title: "Pricing", parentPageId: null },
+      modules: [mintModule],
+    });
+    expect(r.success).toBe(true);
+  });
+
   it("accepts existing mode (pageId only)", () => {
     const r = buildPageInputSchema.safeParse({
       page: { pageId: UUID },

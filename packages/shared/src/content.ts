@@ -96,7 +96,47 @@ export const MODULE_JS_MAX = 256 * 1024;
 export const TEMPLATE_HTML_MAX = 512 * 1024;
 export const TEMPLATE_CSS_MAX = 128 * 1024;
 
-const moduleHtml = z.string().max(MODULE_HTML_MAX, `html exceeds ${MODULE_HTML_MAX} bytes`);
+/**
+ * Code payloads a model sometimes corrupts before they reach us, both seen
+ * in PR #1121's real-AI runs and stored verbatim before this guard:
+ * - JSON-encoded: the whole value wrapped in quotes with `\"` escapes
+ *   (`"<footer class=\"x\">…"`) — the page showed literal quotes;
+ * - HTML-escaped markup: `&lt;div&gt;&lt;caelo-slot …` with no real tag
+ *   — a template without a single slot, so it had no blocks at all.
+ * Refusing at the write boundary with the fix turns a broken render the
+ * AI only notices from a screenshot into one corrected call (CLAUDE.md
+ * §2, §11; same reasoning as the CDATA guard below).
+ */
+export function jsonEncodedCodeMessage(field: string, value: string): string | null {
+  const t = value.trim();
+  if (t.length < 2 || !t.startsWith('"') || !t.endsWith('"')) return null;
+  try {
+    if (typeof JSON.parse(t) !== "string") return null;
+  } catch {
+    return null;
+  }
+  return `${field} is JSON-encoded (wrapped in quotes with \\" escapes) — send the raw ${field} itself, not a JSON string of it.`;
+}
+
+/** See {@link jsonEncodedCodeMessage}: markup sent HTML-escaped. */
+export function htmlEscapedMarkupMessage(field: string, value: string): string | null {
+  if (value.includes("<") || !/&lt;\/?[a-zA-Z]/.test(value)) return null;
+  return `${field} is HTML-escaped (&lt;…&gt; instead of <…>) — send the markup itself, unescaped.`;
+}
+
+const noCorruptMarkup = (field: string) => (value: string, ctx: z.RefinementCtx) => {
+  const message = jsonEncodedCodeMessage(field, value) ?? htmlEscapedMarkupMessage(field, value);
+  if (message) ctx.addIssue({ code: "custom", message });
+};
+const noJsonEncodedCode = (field: string) => (value: string, ctx: z.RefinementCtx) => {
+  const message = jsonEncodedCodeMessage(field, value);
+  if (message) ctx.addIssue({ code: "custom", message });
+};
+
+const moduleHtml = z
+  .string()
+  .max(MODULE_HTML_MAX, `html exceeds ${MODULE_HTML_MAX} bytes`)
+  .superRefine(noCorruptMarkup("html"));
 
 /**
  * issue #432 root-cause guard — reject XML CDATA wrappers in module css/js.
@@ -125,11 +165,13 @@ const cdataMessage = (field: "css" | "js"): string =>
 const moduleCss = z
   .string()
   .max(MODULE_CSS_MAX, `css exceeds ${MODULE_CSS_MAX} bytes`)
-  .refine(noCdata, cdataMessage("css"));
+  .refine(noCdata, cdataMessage("css"))
+  .superRefine(noJsonEncodedCode("css"));
 const moduleJs = z
   .string()
   .max(MODULE_JS_MAX, `js exceeds ${MODULE_JS_MAX} bytes`)
-  .refine(noCdata, cdataMessage("js"));
+  .refine(noCdata, cdataMessage("js"))
+  .superRefine(noJsonEncodedCode("js"));
 
 /**
  * v0.4.0 — module field schema. Each field declares one substitution slot in
@@ -508,7 +550,10 @@ export const templateCreateSchema = z
      * render-time fallback).
      */
     pageType: pageTypeSlugSchema.optional(),
-    html: z.string().max(TEMPLATE_HTML_MAX, `html exceeds ${TEMPLATE_HTML_MAX} bytes`),
+    html: z
+      .string()
+      .max(TEMPLATE_HTML_MAX, `html exceeds ${TEMPLATE_HTML_MAX} bytes`)
+      .superRefine(noCorruptMarkup("html")),
     css: z.string().max(TEMPLATE_CSS_MAX, `css exceeds ${TEMPLATE_CSS_MAX} bytes`).default(""),
     /**
      * P6.7.6 — every template binds to one layout. When omitted, the
@@ -551,7 +596,7 @@ export const templateUpdateSchema = z
     displayName: displayNameSchema.optional(),
     /** Epic #1107 — also allow this template for the page type (slug); appended to its `templates`. */
     pageType: pageTypeSlugSchema.optional(),
-    html: z.string().max(TEMPLATE_HTML_MAX).optional(),
+    html: z.string().max(TEMPLATE_HTML_MAX).superRefine(noCorruptMarkup("html")).optional(),
     css: z.string().max(TEMPLATE_CSS_MAX).optional(),
     /** P6.7.6 — re-point the template to a different layout. */
     layoutId: z.string().uuid().optional(),

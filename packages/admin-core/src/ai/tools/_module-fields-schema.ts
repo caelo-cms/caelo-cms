@@ -98,7 +98,11 @@ const TOOL_LIST_ENTRY_SCHEMA = {
     'texts: {node:"text", values:{text}}; links: {node:"link", values:{label, link:{href}}}; menu: {node:"entry", values:{label, link:{href}}, children:[entries]}; a custom type: its fields (list_list_types). Keep `id` when resending an existing entry.',
   properties: {
     id: { type: "string" },
-    node: { type: "string" },
+    node: {
+      type: "string",
+      description:
+        'The NODE kind, not the type slug: "text" (texts), "link" (links), "entry" (menu).',
+    },
     values: { type: "object" },
     children: { type: "array", items: { type: "object" } },
   },
