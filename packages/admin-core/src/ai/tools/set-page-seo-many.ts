@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Bulk variant of `set_page_seo` — sets per-page SEO fields on N pages in one
- * transaction. Built from the `makeBulkTool` factory; dispatches
- * `pages_seo.set_many`. All-or-nothing: any invalid item aborts the whole batch.
+ * AI tool: set_page_seo_many — manual per-page SEO sidecar writes for 1..N
+ * pages in one transaction (the former singular set_page_seo is its n=1
+ * case; retired-tools.ts maps old calls here). Built from the `makeBulkTool`
+ * factory; dispatches `pages_seo.set_many`. It does NOT bump the
+ * autofill/optimize fingerprints (CLAUDE.md §2 SEO fill-once rule).
  */
 
 import { setPageSeoToolInput } from "@caelo-cms/shared";
@@ -11,10 +13,10 @@ import { makeBulkTool } from "./_make-bulk-tool.js";
 
 export const setPageSeoManyTool = makeBulkTool({
   name: "set_page_seo_many",
-  description:
-    "Manually set per-page SEO fields on SEVERAL pages in ONE transaction — prefer this over multiple `set_page_seo` calls whenever you touch more than one page (§11 bulk-first). All-or-nothing: any invalid item aborts the whole batch and nothing is written. " +
-    "Same rules as the singular tool: use ONLY for explicit user instructions; DON'T use for first-publish auto-fill (`autofill_page_seo`) or keyword re-optimization (`optimize_page_seo`); routine content edits MUST NOT touch SEO. " +
-    "Each item is the `set_page_seo` shape: `{pageId, metaDescription?, ogImageAssetId?, canonicalUrl?, noindex?, changefreq?, priority?}`.",
+  description: [
+    "Set per-page SEO fields to exact values — one call for 1..N pages (`items[]`), one all-or-nothing transaction. ONLY on explicit user instruction (e.g. 'set the home page meta description to X').",
+    "DO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; re-optimization with keyword context -> `bulk_optimize_seo`. Routine content edits (`update_modules_many`/`add_module`) MUST NOT touch SEO fields.",
+  ].join("\n"),
   itemInputSchema: setPageSeoToolInput,
   itemJsonSchema: {
     type: "object",

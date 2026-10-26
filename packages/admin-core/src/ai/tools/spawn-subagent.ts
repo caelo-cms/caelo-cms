@@ -66,6 +66,7 @@ import type { AIProvider } from "../provider.js";
 import { getActiveModelTiersRaw, getActiveProviderForModel } from "../provider-resolver.js";
 import { describeError } from "./_describe-error.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
+import { canonicalToolNames } from "./retired-tools.js";
 import {
   type RunBudgetSnapshot,
   runSubagentWaves,
@@ -287,8 +288,15 @@ async function runOneSubagent(
   // (no zero-match fallback there — see buildToolCatalogue), so an
   // allowlist that matches no live tool would strand the subagent with
   // zero tools. Fail here with the fix in the message instead.
-  if (spec.allowedToolNames && spec.allowedToolNames.length > 0 && toolCtx.tools) {
-    const live = spec.allowedToolNames.filter((n) => toolCtx.tools?.get(n) !== undefined);
+  // Retired tool names (retired-tools.ts) become the bulk tool that
+  // replaced them: the child's catalogue filter compares exact names, so an
+  // old name would otherwise narrow the child to nothing for that job.
+  const allowedToolNames =
+    spec.allowedToolNames && spec.allowedToolNames.length > 0
+      ? canonicalToolNames(spec.allowedToolNames, "subagent allowedToolNames")
+      : null;
+  if (allowedToolNames && toolCtx.tools) {
+    const live = allowedToolNames.filter((n) => toolCtx.tools?.get(n) !== undefined);
     if (live.length === 0) {
       return {
         role: spec.role,
@@ -298,8 +306,8 @@ async function runOneSubagent(
         durationMs: Date.now() - startedAt,
         subagentChatSessionId: "",
         errorMessage:
-          `allowedToolNames matched no live tool: [${spec.allowedToolNames.join(", ")}]. ` +
-          "Use AI tool names (e.g. edit_module, set_page_module_content, list_pages), not Query API op names " +
+          `allowedToolNames matched no live tool: [${allowedToolNames.join(", ")}]. ` +
+          "Use AI tool names (e.g. update_modules_many, set_page_module_content_many, list_pages), not Query API op names " +
           "(pages.get, modules.update). Omit allowedToolNames to grant the full catalogue minus the spawn tools.",
       };
     }
@@ -434,8 +442,8 @@ async function runOneSubagent(
         // issue #264 — per-spawn narrowing (hard filter, validated
         // above). Run #10 D2 — submit_result is unioned in so a
         // narrowed child can still deliver its structured result.
-        ...(spec.allowedToolNames && spec.allowedToolNames.length > 0
-          ? { allowedToolNames: new Set([...spec.allowedToolNames, "submit_result"]) }
+        ...(allowedToolNames
+          ? { allowedToolNames: new Set([...allowedToolNames, "submit_result"]) }
           : {}),
         // issue #264 — the child works ON THE PARENT'S BRANCH so its
         // reads see the orchestrator's branched entities and its writes

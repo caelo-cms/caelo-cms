@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Bulk variant of `set_media_source` — records provenance + licence on N assets
- * in one transaction. Built from the `makeBulkTool` factory; dispatches
- * `media.set_source_many`. All-or-nothing: any invalid item aborts the batch.
+ * AI tool: set_media_source_many — records provenance + licence on 1..N
+ * assets in one transaction (the former singular set_media_source is its n=1
+ * case; retired-tools.ts maps old calls here). Built from the `makeBulkTool`
+ * factory; dispatches `media.set_source_many` (COALESCE: omitted fields stay
+ * unchanged). All-or-nothing.
  */
 
 import { setMediaSourceToolInput } from "@caelo-cms/shared";
@@ -11,9 +13,10 @@ import { makeBulkTool } from "./_make-bulk-tool.js";
 
 export const setMediaSourceManyTool = makeBulkTool({
   name: "set_media_source_many",
-  description:
-    "Record provenance + licence on SEVERAL assets in ONE transaction — prefer this over multiple `set_media_source` calls whenever you tag more than one asset (§11 bulk-first). All-or-nothing: any invalid item aborts the whole batch. " +
-    "Same COALESCE semantics as the singular tool: per item, only the fields you pass are updated; omitted fields stay unchanged. Each item is `{assetId, sourceKind?, sourceDetail?, license?}`.",
+  description: [
+    "Record assets' provenance (source URL, AI provider/model, or upload) + licence if the operator states one — one call for 1..N assets (`items[]`), one all-or-nothing transaction.",
+    "Use after importing/generating media or when told a licence. Per item only the passed fields change.",
+  ].join("\n"),
   itemInputSchema: setMediaSourceToolInput,
   itemJsonSchema: {
     type: "object",

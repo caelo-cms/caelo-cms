@@ -871,13 +871,16 @@ export const createContentInstancesManyOp = defineOperation({
       if (item === undefined) continue;
       const r = await createContentInstanceOp.handler(ctx, item, tx);
       if (!r.ok) {
-        const inner = r.error as { message?: string };
+        const inner = r.error as { message?: string; refusal?: true };
         const queryError = {
           kind: "HandlerError" as const,
           operation: "content_instances.create_many",
           message: `instances[${i}] (moduleId=${item.moduleId}${item.slug ? `, slug=${item.slug}` : ""}): ${
             inner.message ?? r.error.kind
           }. The whole batch was rolled back — fix this item and resend all ${input.instances.length}.`,
+          // #1091 — an item's guard refusal stays a refusal for the batch
+          // (the guard-refusal capture keys on it), as in `defineBulkOp`.
+          ...(r.error.kind === "HandlerError" && inner.refusal ? { refusal: true as const } : {}),
         };
         if (contentInstanceIds.length > 0) throw new OperationAbortError(queryError);
         return err(queryError);

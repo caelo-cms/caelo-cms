@@ -119,22 +119,6 @@ export const editModuleToolInput = z
   })
   .strict();
 
-/**
- * v0.4.0 — `set_page_module_content` AI tool. Fills the content values for
- * a module placement on a specific page. Page-bound + branch-isolated per
- * chat until publish (unlike `edit_module` which is global + immediate).
- */
-export const setPageModuleContentToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    blockName: z.string().min(1).max(64),
-    position: z.number().int().nonnegative(),
-    /** Map of module field name → value. Fully replaces existing values. */
-    contentValues: z.record(z.string(), z.unknown()),
-  })
-  .strict();
-export type SetPageModuleContentToolInput = z.infer<typeof setPageModuleContentToolInput>;
-
 export const siteMemoryProposeToolInput = z
   .object({
     slot: z.enum(["purpose", "brand-voice", "tone", "banned-phrases", "instructions", "glossary"]),
@@ -785,25 +769,33 @@ export const repointPageTemplateToolInput = z
   })
   .strict();
 
+/**
+ * `move_module` position: `top` | `bottom` | a 0-based index in the target
+ * block, plus `up` / `down` (one slot within the module's CURRENT block).
+ * Same quote-stripping + numeric-string coercion as `positionInputSchema`.
+ */
+export const movePositionInputSchema = z.preprocess(
+  stripSurroundingQuotes,
+  z.union([
+    z.enum(["top", "bottom", "up", "down"]),
+    z.preprocess(
+      (v) => (typeof v === "string" && /^\d+$/.test(v) ? Number.parseInt(v, 10) : v),
+      z.number().int().min(0).max(1000),
+    ),
+  ]),
+);
+
+/**
+ * `move_module` — moves a placement to `toBlockName` (omitted = the block it
+ * is in now, i.e. a reorder) at `position`. `up` / `down` only make sense
+ * inside the current block; the handler refuses them with another block.
+ */
 export const moveModuleToolInput = z
   .object({
     pageId: z.string().uuid(),
     moduleId: z.string().uuid(),
-    toBlockName: z.string().min(1).max(80),
-    /** "top" | "bottom" | a 0-based index inside the destination block. */
-    position: positionInputSchema,
-  })
-  .strict();
-
-export const reorderModuleToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    moduleId: z.string().uuid(),
-    /**
-     * `up` / `down` shift one slot. An integer is an absolute 0-based
-     * target position within the same block.
-     */
-    direction: z.union([z.enum(["up", "down"]), z.number().int().min(0).max(1000)]),
+    toBlockName: z.string().min(1).max(80).optional(),
+    position: movePositionInputSchema,
   })
   .strict();
 
@@ -937,22 +929,6 @@ export const autofillPageSeoToolInput = z
 export type AutofillPageSeoToolInput = z.infer<typeof autofillPageSeoToolInput>;
 
 /**
- * P8 — `optimize_page_seo`. Explicit re-optimization. Always allowed.
- * Takes optional context (keyword analysis / intent shifts / branding
- * changes). The AI can call this across N pages in one chat turn —
- * the resulting changes batch into one Publish-pill confirm.
- */
-export const optimizePageSeoToolInput = z
-  .object({
-    pageId: z.string().uuid(),
-    metaDescription: z.string().min(1).max(320),
-    ogImageAssetId: z.string().uuid().nullable().optional(),
-    context: z.string().max(4000).optional(),
-  })
-  .strict();
-export type OptimizePageSeoToolInput = z.infer<typeof optimizePageSeoToolInput>;
-
-/**
  * P8 AI-first review pass — bulk variants. Per CLAUDE.md §11, bulk
  * tools save round-trips when the AI knows it has N changes to make
  * in a single turn. The handlers run inside one transaction so the
@@ -971,7 +947,7 @@ export type FindRedirectsToolInput = z.infer<typeof findRedirectsToolInput>;
 
 export const bulkCreateRedirectsToolInput = z
   .object({
-    redirects: z
+    items: z
       .array(
         z
           .object({
@@ -1023,7 +999,7 @@ export type BulkDeleteRedirectsToolInput = z.infer<typeof bulkDeleteRedirectsToo
 
 export const bulkOptimizeSeoToolInput = z
   .object({
-    updates: z
+    items: z
       .array(
         z
           .object({
@@ -1058,7 +1034,6 @@ export type SetSiteDefaultsToolInput = z.infer<typeof setSiteDefaultsToolInput>;
 export type DuplicatePageToolInput = z.infer<typeof duplicatePageToolInput>;
 export type RepointPageTemplateToolInput = z.infer<typeof repointPageTemplateToolInput>;
 export type MoveModuleToolInput = z.infer<typeof moveModuleToolInput>;
-export type ReorderModuleToolInput = z.infer<typeof reorderModuleToolInput>;
 // v0.10.22 — `SetNavMenuToolInput` removed alongside `set_nav_menu` tool.
 
 /**

@@ -1002,12 +1002,21 @@ export const updateModulesManyOp = defineOperation({
   output: z.object({
     updated: z.number().int(),
     notFound: z.number().int(),
+    /** The ids behind `notFound`, so a caller can name them per item. */
+    notFoundIds: z.array(z.string()),
     failed: z.array(z.object({ moduleId: z.string(), message: z.string() })),
+    /**
+     * Fields the extractor minted for an item whose html came without
+     * `fields[]` — the same hand-back `modules.update` gives, per module, so
+     * the AI's next turn uses the inferred names verbatim.
+     */
+    extracted: z.array(z.object({ moduleId: z.string(), fields: z.array(moduleFieldSchema) })),
   }),
   handler: async (ctx, input, tx) => {
     let updated = 0;
-    let notFound = 0;
+    const notFoundIds: string[] = [];
     const failed: { moduleId: string; message: string }[] = [];
+    const extracted: { moduleId: string; fields: ModuleField[] }[] = [];
     const ids = [...new Set(input.updates.map((u) => u.moduleId))];
     const liveRows = (await tx.execute(sql`
       SELECT id::text AS id FROM modules
@@ -1024,7 +1033,7 @@ export const updateModulesManyOp = defineOperation({
     }
     for (const upd of input.updates) {
       if (!existing.has(upd.moduleId)) {
-        notFound += 1;
+        notFoundIds.push(upd.moduleId);
         continue;
       }
       const r = await updateModuleOp.handler(ctx, upd, tx);
@@ -1034,7 +1043,10 @@ export const updateModulesManyOp = defineOperation({
         continue;
       }
       updated += 1;
+      const fields = r.value.extractedFields;
+      if (fields && fields.length > 0) extracted.push({ moduleId: upd.moduleId, fields });
     }
+    const notFound = notFoundIds.length;
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -1043,6 +1055,6 @@ export const updateModulesManyOp = defineOperation({
       succeeded: true,
       resultSummary: `updated=${updated},notFound=${notFound},failed=${failed.length}`,
     });
-    return ok({ updated, notFound, failed });
+    return ok({ updated, notFound, notFoundIds, failed, extracted });
   },
 });
