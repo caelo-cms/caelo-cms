@@ -20,6 +20,7 @@ export const setPageSeoTool: ToolDefinitionWithHandler<
   description:
     "Manually set per-page SEO fields (metaDescription, ogImageAssetId, canonicalUrl, noindex, changefreq, priority). " +
     "Use ONLY for explicit user instructions like 'set the home page meta description to X'. " +
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it). " +
     "Don't use for first-publish auto-fill — call `autofill_page_seo`. " +
     "Don't use for explicit re-optimization with keyword context — call `optimize_page_seo`. " +
     "Routine content edits (edit_module / add_module) MUST NOT touch SEO fields. " +
@@ -45,6 +46,9 @@ export const setPageSeoTool: ToolDefinitionWithHandler<
   handler: async (ctx, input, toolCtx) => {
     const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, "pages_seo.set", input);
     if (!r.ok) return { ok: false, content: `pages_seo.set failed: ${describeError(r.error)}` };
-    return { ok: true, content: `SEO updated on page ${input.pageId}` };
+    return {
+      ok: true,
+      content: `SEO updated on page ${input.pageId} in this chat's draft — live after Stage + Publish live`,
+    };
   },
 };

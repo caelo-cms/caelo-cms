@@ -12,6 +12,12 @@
  *    user-supplied context (keyword analysis, intent shifts).
  *  - `set` is the manual / panel path; doesn't touch fingerprints.
  *
+ * #1156 — SEO is draft state like the rest of the page: in a chat every
+ * write lands on the chat's branch as a pending page change and reaches
+ * the live row only through a Stage (`seo/page-seo-write.ts`); every read
+ * shows the caller's view (`seo/page-seo.ts`). The fill-once rule is
+ * decided on that view, so a chat's own autofill counts before its Stage.
+ *
  * AI cannot inject raw HTML into <head> — every input is a discrete
  * Zod-validated field. Per CLAUDE.md §2.
  */
@@ -29,7 +35,9 @@ import {
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { buildPatchSet } from "../sql-helpers.js";
+import { loadPageSeoViews, PAGE_SEO_FIELDS, pageSeoViewSql } from "../seo/page-seo.js";
+import { commitPageSeoWrites, openPageSeoWrite, sameSeo } from "../seo/page-seo-write.js";
+import type { PageSeoState } from "../snapshots/state.js";
 import { loadPageContentTexts } from "./content/page-content-text.js";
 
 const seoRowOutput = z.object({
@@ -43,38 +51,31 @@ const seoRowOutput = z.object({
   autofilledAt: z.string().nullable(),
   optimizedAt: z.string().nullable(),
   updatedAt: z.string(),
+  /**
+   * #1156 — fields the caller's chat changed that are not staged yet: they
+   * reach the live site with the next Stage and a Publish live.
+   */
+  pendingFields: z.array(z.enum(PAGE_SEO_FIELDS)),
 });
 
-type SeoDbRow = {
-  page_id: string;
-  meta_description: string;
-  og_image_asset_id: string | null;
-  canonical_url: string | null;
-  noindex: boolean;
-  changefreq: string;
-  priority: number | string;
-  autofilled_at: Date | string | null;
-  optimized_at: Date | string | null;
-  updated_at: Date | string;
-};
+type SeoRow = z.infer<typeof seoRowOutput>;
 
 const isoOpt = (v: Date | string | null): string | null =>
   v === null ? null : v instanceof Date ? v.toISOString() : String(v);
-const iso = (v: Date | string): string => (v instanceof Date ? v.toISOString() : String(v));
 
-function rowToSeo(r: SeoDbRow): z.infer<typeof seoRowOutput> {
-  return {
-    pageId: r.page_id,
-    metaDescription: r.meta_description,
-    ogImageAssetId: r.og_image_asset_id,
-    canonicalUrl: r.canonical_url,
-    noindex: r.noindex,
-    changefreq: r.changefreq,
-    priority: Number(r.priority),
-    autofilledAt: isoOpt(r.autofilled_at),
-    optimizedAt: isoOpt(r.optimized_at),
-    updatedAt: iso(r.updated_at),
-  };
+/** The caller's view of these pages' SEO, keyed by page id (absent = no SEO yet). */
+async function loadSeoRows(
+  tx: Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2],
+  pageIds: readonly string[],
+  chatBranchId: string | null | undefined,
+): Promise<Map<string, SeoRow>> {
+  const views = await loadPageSeoViews(tx, pageIds, chatBranchId);
+  return new Map(
+    [...views].map(([pageId, v]) => [
+      pageId,
+      { pageId, ...v.state, updatedAt: v.updatedAt, pendingFields: [...v.pendingFields] },
+    ]),
+  );
 }
 
 // ---------------------------------------------------------------------
@@ -89,19 +90,9 @@ export const pagesSeoGetOp = defineOperation({
   database: "cms_admin",
   input: z.object({ pageId: z.string().uuid() }).strict(),
   output: z.object({ seo: seoRowOutput.nullable() }),
-  handler: async (_ctx, input, tx) => {
-    const rows = (await tx.execute(sql`
-      SELECT
-        page_id::text AS page_id,
-        meta_description, og_image_asset_id::text AS og_image_asset_id,
-        canonical_url, noindex, changefreq, priority,
-        autofilled_at, optimized_at, updated_at
-      FROM pages_seo WHERE page_id = ${input.pageId}::uuid
-      LIMIT 1
-    `)) as unknown as SeoDbRow[];
-    const r = rows[0];
-    if (!r) return ok({ seo: null });
-    return ok({ seo: rowToSeo(r) });
+  handler: async (ctx, input, tx) => {
+    const rows = await loadSeoRows(tx, [input.pageId], ctx.chatBranchId);
+    return ok({ seo: rows.get(input.pageId) ?? null });
   },
 });
 
@@ -143,18 +134,11 @@ export const pagesSeoGetManyOp = defineOperation({
           "(or the Stage-readiness note) and call again.",
       });
     }
-    const rows = (await tx.execute(sql`
-      SELECT
-        page_id::text AS page_id,
-        meta_description, og_image_asset_id::text AS og_image_asset_id,
-        canonical_url, noindex, changefreq, priority,
-        autofilled_at, optimized_at, updated_at
-      FROM pages_seo WHERE page_id IN (${sql.join(
-        texts.pages.map((p) => sql`${p.pageId}::uuid`),
-        sql`, `,
-      )})
-    `)) as unknown as SeoDbRow[];
-    const seoByPage = new Map(rows.map((r) => [r.page_id, rowToSeo(r)]));
+    const seoByPage = await loadSeoRows(
+      tx,
+      texts.pages.map((p) => p.pageId),
+      ctx.chatBranchId,
+    );
     return ok({
       pages: texts.pages.map((p) => ({ ...p, seo: seoByPage.get(p.pageId) ?? null })),
     });
@@ -172,35 +156,29 @@ export const pagesSeoSetOp = defineOperation({
   input: seoSetInputSchema,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    // Ensure the sidecar row exists; subsequent UPDATE patches the
-    // provided fields in a single statement.
-    await tx.execute(sql`
-      INSERT INTO pages_seo (page_id) VALUES (${input.pageId}::uuid)
-      ON CONFLICT (page_id) DO NOTHING
-    `);
-
-    // Build the patch set from the provided fields. Same buildPatchSet
-    // helper that powers modules.update / pages.update so the SET
-    // clause emits cleanly with an `updated_at = now()` tail.
-    const patch: Record<string, unknown> = {
-      meta_description: input.metaDescription,
-      canonical_url: input.canonicalUrl,
-      noindex: input.noindex,
-      changefreq: input.changefreq,
-      priority: input.priority,
+    const patch: Partial<PageSeoState> = {
+      ...(input.metaDescription !== undefined ? { metaDescription: input.metaDescription } : {}),
+      ...(input.ogImageAssetId !== undefined ? { ogImageAssetId: input.ogImageAssetId } : {}),
+      ...(input.canonicalUrl !== undefined ? { canonicalUrl: input.canonicalUrl } : {}),
+      ...(input.noindex !== undefined ? { noindex: input.noindex } : {}),
+      ...(input.changefreq !== undefined ? { changefreq: input.changefreq } : {}),
+      ...(input.priority !== undefined ? { priority: input.priority } : {}),
     };
-    if (input.ogImageAssetId !== undefined) {
-      patch.og_image_asset_id =
-        input.ogImageAssetId === null ? null : sql`${input.ogImageAssetId}::uuid`;
-    }
-    const fieldCount = Object.values(patch).filter((v) => v !== undefined).length;
+    const fieldCount = Object.keys(patch).length;
     if (fieldCount === 0) return ok({});
 
-    const sets = buildPatchSet(patch);
-    await tx.execute(sql`
-      UPDATE pages_seo SET ${sets}, updated_by = ${ctx.actorId}::uuid
-      WHERE page_id = ${input.pageId}::uuid
-    `);
+    const opened = await openPageSeoWrite(ctx, tx, "pages_seo.set", input.pageId);
+    if (!opened.ok) return opened;
+    const next = { ...opened.value.current, ...patch };
+    if (!sameSeo(opened.value.current, next)) {
+      await commitPageSeoWrites(
+        ctx,
+        tx,
+        [{ opened: opened.value, next }],
+        "pages_seo.set",
+        `pages_seo.set slug=${opened.value.page.slug} fields=${fieldCount}`,
+      );
+    }
 
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -209,7 +187,7 @@ export const pagesSeoSetOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.pageId,
-      resultSummary: `fields=${fieldCount}`,
+      resultSummary: `fields=${fieldCount}${ctx.chatBranchId ? " (branched)" : ""}`,
     });
     return ok({});
   },
@@ -233,24 +211,11 @@ export const pagesSeoAutofillOp = defineOperation({
     alreadyFilled: z.boolean(),
   }),
   handler: async (ctx, input, tx) => {
-    // Ensure the sidecar row exists.
-    await tx.execute(sql`
-      INSERT INTO pages_seo (page_id) VALUES (${input.pageId}::uuid)
-      ON CONFLICT (page_id) DO NOTHING
-    `);
-    const rows = (await tx.execute(sql`
-      SELECT autofilled_at, meta_description FROM pages_seo WHERE page_id = ${input.pageId}::uuid
-    `)) as unknown as { autofilled_at: Date | string | null; meta_description: string }[];
-    const target = rows[0];
-    if (!target) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages_seo.autofill",
-        message: "page not found",
-      });
-    }
-    if (target.autofilled_at !== null) {
-      const current = target.meta_description.trim();
+    const opened = await openPageSeoWrite(ctx, tx, "pages_seo.autofill", input.pageId);
+    if (!opened.ok) return opened;
+    const target = opened.value.current;
+    if (target.autofilledAt !== null) {
+      const current = target.metaDescription.trim();
       if (current === input.metaDescription) {
         await recordAudit(tx, {
           actorId: ctx.actorId,
@@ -275,20 +240,27 @@ export const pagesSeoAutofillOp = defineOperation({
         kind: "HandlerError",
         operation: "pages_seo.autofill",
         message:
-          `AlreadyAutofilled: this page's SEO was filled at ${isoOpt(target.autofilled_at)}; ${stored}` +
+          `AlreadyAutofilled: this page's SEO was filled at ${target.autofilledAt}; ${stored}` +
           "To change a filled description, use optimize_page_seo (explicit re-optimization) or set_page_seo_many (an exact text the operator dictated) — never autofill again.",
       });
     }
-    const og = input.ogImageAssetId ?? null;
-    await tx.execute(sql`
-      UPDATE pages_seo SET
-        meta_description = ${input.metaDescription},
-        og_image_asset_id = ${og === null ? null : sql`${og}::uuid`},
-        autofilled_at = now(),
-        updated_at = now(),
-        updated_by = ${ctx.actorId}::uuid
-      WHERE page_id = ${input.pageId}::uuid
-    `);
+    await commitPageSeoWrites(
+      ctx,
+      tx,
+      [
+        {
+          opened: opened.value,
+          next: {
+            ...target,
+            metaDescription: input.metaDescription,
+            ...(input.ogImageAssetId !== undefined ? { ogImageAssetId: input.ogImageAssetId } : {}),
+            autofilledAt: new Date().toISOString(),
+          },
+        },
+      ],
+      "pages_seo.autofill",
+      `pages_seo.autofill slug=${opened.value.page.slug}`,
+    );
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -296,7 +268,7 @@ export const pagesSeoAutofillOp = defineOperation({
       input: { pageId: input.pageId, descLen: input.metaDescription.length },
       succeeded: true,
       entityId: input.pageId,
-      resultSummary: "first-fill",
+      resultSummary: `first-fill${ctx.chatBranchId ? " (branched)" : ""}`,
     });
     return ok({ alreadyFilled: false });
   },
@@ -313,28 +285,15 @@ export const pagesSeoOptimizeOp = defineOperation({
   input: seoOptimizeInputSchema,
   output: z.object({}),
   handler: async (ctx, input, tx) => {
-    await tx.execute(sql`
-      INSERT INTO pages_seo (page_id) VALUES (${input.pageId}::uuid)
-      ON CONFLICT (page_id) DO NOTHING
-    `);
-    const og = input.ogImageAssetId ?? null;
-    const rows = (await tx.execute(sql`
-      UPDATE pages_seo SET
-        meta_description = ${input.metaDescription},
-        og_image_asset_id = ${og === null ? null : sql`${og}::uuid`},
-        optimized_at = now(),
-        updated_at = now(),
-        updated_by = ${ctx.actorId}::uuid
-      WHERE page_id = ${input.pageId}::uuid
-      RETURNING 1
-    `)) as unknown as { exists: number }[];
-    if (rows.length === 0) {
-      return err({
-        kind: "HandlerError",
-        operation: "pages_seo.optimize",
-        message: "page not found",
-      });
-    }
+    const opened = await openPageSeoWrite(ctx, tx, "pages_seo.optimize", input.pageId);
+    if (!opened.ok) return opened;
+    await commitPageSeoWrites(
+      ctx,
+      tx,
+      [{ opened: opened.value, next: optimizedSeo(opened.value.current, input) }],
+      "pages_seo.optimize",
+      `pages_seo.optimize slug=${opened.value.page.slug}`,
+    );
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -351,6 +310,19 @@ export const pagesSeoOptimizeOp = defineOperation({
     return ok({});
   },
 });
+
+/** The SEO a re-optimization leaves: new description (and OG image when given), fresh `optimizedAt`. */
+function optimizedSeo(
+  current: PageSeoState,
+  u: { metaDescription: string; ogImageAssetId?: string | null },
+): PageSeoState {
+  return {
+    ...current,
+    metaDescription: u.metaDescription,
+    ...(u.ogImageAssetId !== undefined ? { ogImageAssetId: u.ogImageAssetId } : {}),
+    optimizedAt: new Date().toISOString(),
+  };
+}
 
 // ---------------------------------------------------------------------
 // pages_seo.apply_translation — the SEO fill-once rule for a translated
@@ -388,46 +360,39 @@ export const pagesSeoApplyTranslationOp = defineOperation({
     .strict(),
   output: z.object({ outcome: z.enum(["filled", "unchanged", "marked_stale"]) }),
   handler: async (ctx, input, tx) => {
-    const pages = (await tx.execute(sql`
-      SELECT status FROM pages WHERE id = ${input.pageId}::uuid AND deleted_at IS NULL
-    `)) as unknown as { status: string }[];
-    const page = pages[0];
-    if (!page) {
+    const opened = await openPageSeoWrite(ctx, tx, "pages_seo.apply_translation", input.pageId);
+    if (!opened.ok) {
       return err({
         kind: "HandlerError",
         operation: "pages_seo.apply_translation",
         message: `page ${input.pageId} not found or deleted — re-read the variant group and retry`,
       });
     }
-    await tx.execute(sql`
-      INSERT INTO pages_seo (page_id) VALUES (${input.pageId}::uuid)
-      ON CONFLICT (page_id) DO NOTHING
-    `);
-    const rows = (await tx.execute(sql`
-      SELECT meta_description FROM pages_seo WHERE page_id = ${input.pageId}::uuid
-    `)) as unknown as { meta_description: string }[];
-    const current = rows[0]?.meta_description ?? "";
+    const { current, page } = opened.value;
 
     let outcome: "filled" | "unchanged" | "marked_stale";
-    if (current === input.metaDescription) {
+    let next: PageSeoState | null = null;
+    if (current.metaDescription === input.metaDescription) {
       outcome = "unchanged";
-    } else if (current !== "" && page.status === "published") {
-      await tx.execute(sql`
-        UPDATE pages_seo SET optimized_at = NULL, updated_at = now(),
-          updated_by = ${ctx.actorId}::uuid
-        WHERE page_id = ${input.pageId}::uuid
-      `);
+    } else if (current.metaDescription !== "" && page.status === "published") {
+      next = { ...current, optimizedAt: null };
       outcome = "marked_stale";
     } else {
-      await tx.execute(sql`
-        UPDATE pages_seo SET
-          meta_description = ${input.metaDescription},
-          autofilled_at = coalesce(autofilled_at, now()),
-          updated_at = now(),
-          updated_by = ${ctx.actorId}::uuid
-        WHERE page_id = ${input.pageId}::uuid
-      `);
+      next = {
+        ...current,
+        metaDescription: input.metaDescription,
+        autofilledAt: current.autofilledAt ?? new Date().toISOString(),
+      };
       outcome = "filled";
+    }
+    if (next && !sameSeo(current, next)) {
+      await commitPageSeoWrites(
+        ctx,
+        tx,
+        [{ opened: opened.value, next }],
+        "pages_seo.apply_translation",
+        `pages_seo.apply_translation slug=${page.slug} outcome=${outcome}`,
+      );
     }
     await recordAudit(tx, {
       actorId: ctx.actorId,
@@ -466,7 +431,8 @@ export const pagesSeoListStaleOp = defineOperation({
   handler: async (ctx, input, tx) => {
     // Main plus the caller's own chat branch, as pages.list: the result feeds
     // SEO writes, and another chat's unpublished page is not the caller's to
-    // touch. Outside a chat (the dashboard tile) that is main only.
+    // touch. Outside a chat (the dashboard tile) that is main only. SEO is
+    // the caller's view too (#1156): a description the chat wrote counts.
     const branchFilter = ctx.chatBranchId
       ? sql`AND (p.chat_branch_id IS NULL OR p.chat_branch_id = ${ctx.chatBranchId}::uuid)`
       : sql`AND p.chat_branch_id IS NULL`;
@@ -475,7 +441,7 @@ export const pagesSeoListStaleOp = defineOperation({
         p.id::text AS page_id, p.slug, p.title,
         s.autofilled_at, s.optimized_at, s.meta_description
       FROM pages p
-      LEFT JOIN pages_seo s ON s.page_id = p.id
+      LEFT JOIN ${pageSeoViewSql(ctx.chatBranchId)} s ON s.page_id = p.id
       WHERE p.deleted_at IS NULL
         ${branchFilter}
         AND (s.optimized_at IS NULL OR s.meta_description = '')
@@ -657,25 +623,21 @@ export const pagesSeoOptimizeManyOp = defineOperation({
     .strict(),
   output: z.object({ updated: z.number().int() }),
   handler: async (ctx, input, tx) => {
-    let updated = 0;
+    const writes: Parameters<typeof commitPageSeoWrites>[2][number][] = [];
     for (const u of input.updates) {
-      await tx.execute(sql`
-        INSERT INTO pages_seo (page_id) VALUES (${u.pageId}::uuid)
-        ON CONFLICT (page_id) DO NOTHING
-      `);
-      const og = u.ogImageAssetId ?? null;
-      const r = (await tx.execute(sql`
-        UPDATE pages_seo SET
-          meta_description = ${u.metaDescription},
-          og_image_asset_id = ${og === null ? null : sql`${og}::uuid`},
-          optimized_at = now(),
-          updated_at = now(),
-          updated_by = ${ctx.actorId}::uuid
-        WHERE page_id = ${u.pageId}::uuid
-        RETURNING 1
-      `)) as unknown as { exists: number }[];
-      updated += r.length;
+      const opened = await openPageSeoWrite(ctx, tx, "pages_seo.optimize_many", u.pageId);
+      // One unknown page aborts the batch: nothing was written yet.
+      if (!opened.ok) return opened;
+      writes.push({ opened: opened.value, next: optimizedSeo(opened.value.current, u) });
     }
+    await commitPageSeoWrites(
+      ctx,
+      tx,
+      writes,
+      "pages_seo.optimize",
+      `pages_seo.optimize_many pages=${writes.length}`,
+    );
+    const updated = writes.length;
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

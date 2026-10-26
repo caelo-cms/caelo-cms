@@ -13,6 +13,7 @@ export const setPageSeoManyTool = makeBulkTool({
   name: "set_page_seo_many",
   description:
     "Manually set per-page SEO fields on SEVERAL pages in ONE transaction — prefer this over multiple `set_page_seo` calls whenever you touch more than one page (§11 bulk-first). All-or-nothing: any invalid item aborts the whole batch and nothing is written. " +
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it). " +
     "Same rules as the singular tool: use ONLY for explicit user instructions; DON'T use for first-publish auto-fill (`autofill_page_seo`) or keyword re-optimization (`optimize_page_seo`); routine content edits MUST NOT touch SEO. " +
     "Each item is the `set_page_seo` shape: `{pageId, metaDescription?, ogImageAssetId?, canonicalUrl?, noindex?, changefreq?, priority?}`.",
   itemInputSchema: setPageSeoToolInput,

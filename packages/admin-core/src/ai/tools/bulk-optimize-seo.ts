@@ -25,6 +25,7 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
     "Each update is { pageId, metaDescription, ogImageAssetId? }. " +
     "Read the pages' current descriptions and core text with ONE `get_page_seo({pageIds})` call first. " +
     "All-or-nothing: a single failed update rolls back the whole batch. " +
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it). " +
     "For a single page, use `optimize_page_seo`.",
   schema: bulkOptimizeSeoToolInput,
   inputSchema: {
@@ -63,7 +64,7 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
     }
     return {
       ok: true,
-      content: `SEO optimized on ${(r.value as { updated: number }).updated} page(s)`,
+      content: `SEO optimized on ${(r.value as { updated: number }).updated} page(s) in this chat's draft — live after Stage + Publish live`,
     };
   },
 };

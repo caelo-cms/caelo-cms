@@ -27,6 +27,7 @@
   import { pinChatParam, unpinChatParam } from "#lib/components/edit/chat-pin.js";
   import CrossChatBanner from "#lib/components/edit/CrossChatBanner.svelte";
   import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
+  import PageSeoInfo from "#lib/components/edit/PageSeoInfo.svelte";
   import PluginPreview from "#lib/components/edit/PluginPreview.svelte";
   import { localPluginPreview, previewFromResult } from "#lib/components/edit/plugin-preview.js";
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
@@ -664,7 +665,12 @@
 
   <div class={pluginPreviewUrl ? "flex min-h-0 flex-1 flex-col md:flex-row" : "contents"}>
   <!-- Full-bleed iframe -->
-  <div class="min-h-0 flex-1">
+  <div class="relative min-h-0 flex-1">
+    <!-- #1156 — head values (title, description, OG) never show in the
+         preview; the corner info opens them, pending changes marked. -->
+    {#if !pluginPreviewUrl && previewSrc && data.pageSeo}
+      <PageSeoInfo info={data.pageSeo} />
+    {/if}
     {#if pluginPreviewUrl}
       <PluginPreview url={pluginPreviewUrl} chatSessionId={data.activeChat.id} onSelection={(selection) => { previewSelection = selection; }} onContext={(context) => { previewContext = context; }} onDocument={openPluginPreview} />
     {:else if previewSrc}

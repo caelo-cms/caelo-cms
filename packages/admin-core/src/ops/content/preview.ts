@@ -79,6 +79,7 @@ import { z } from "zod";
 import { pendingSnapshotSql } from "../../draft.js";
 import { loadPreviewLinkIndex } from "../../links/link-targets.js";
 import { loadListRenderData } from "../../lists/load.js";
+import { pageSeoViewSql } from "../../seo/page-seo.js";
 import { effectiveLayoutModulesSql } from "./layout-overlay.js";
 import { resolvePreviewContentVariants } from "./preview-variants.js";
 import { loadPublishPageUrlStyle } from "./public-urls.js";
@@ -1244,10 +1245,11 @@ export const renderPagePreviewOp = defineOperation({
         });
       }
     }
+    // #1156 — the SEO this render's branch shows (a chat's pending edit).
     const seoRows = (await tx.execute(sql`
-      SELECT meta_description, og_image_asset_id::text AS og_image_asset_id,
-             canonical_url, noindex
-      FROM pages_seo WHERE page_id = ${input.pageId}::uuid LIMIT 1
+      SELECT s.meta_description, s.og_image_asset_id::text AS og_image_asset_id,
+             s.canonical_url, s.noindex
+      FROM ${pageSeoViewSql(chatBranchId, [input.pageId])} s LIMIT 1
     `)) as unknown as {
       meta_description: string;
       og_image_asset_id: string | null;

@@ -375,8 +375,8 @@
 <!-- #553 — what to do when the quality gate keeps Publish live closed:
      retry a failed / missing check, publish anyway over a FAILED check
      (an explicit, recorded human decision). Re-Staging after fixes that do
-     not show as pending changes (SEO texts are written live) is the
-     promote-only toolbar's Stage again (#835). -->
+     not show as pending changes is the promote-only toolbar's Stage again
+     (#835). -->
 {#snippet qualityGateControls()}
   {#if gate && !gate.open}
     <span class="inline-flex items-center gap-2" data-testid="quality-gate-status" data-state={gate.state}>

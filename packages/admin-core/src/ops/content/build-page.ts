@@ -41,6 +41,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { branchVisibilityFilter } from "../../branch.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
+import { pageSeoViewSql } from "../../seo/page-seo.js";
 import {
   emitSnapshot,
   loadPageLayoutState,
@@ -661,9 +662,9 @@ export const buildPageOp = defineOperation({
       const stored = createdPage
         ? []
         : ((await tx.execute(sql`
-            SELECT 1 AS found FROM pages_seo
-            WHERE page_id = ${pageId}::uuid AND btrim(coalesce(meta_description, '')) <> ''
-              AND meta_description <> ${input.page.metaDescription}
+            SELECT 1 AS found FROM ${pageSeoViewSql(ctx.chatBranchId, [pageId])} s
+            WHERE btrim(coalesce(s.meta_description, '')) <> ''
+              AND s.meta_description <> ${input.page.metaDescription}
           `)) as unknown as { found: number }[]);
       if (stored.length > 0) {
         metaDescription = "kept-existing";

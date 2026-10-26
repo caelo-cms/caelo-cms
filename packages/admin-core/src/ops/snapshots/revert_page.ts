@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
+import { applyPageSeoState } from "../../seo/page-seo.js";
 import {
   emitSnapshot,
   loadPageLayoutState,
@@ -85,6 +86,8 @@ export const revertPageOp = defineOperation({
       `);
       // Epic #1107 — the page's terms are part of its state.
       await replacePageTerms(tx, input.pageId, target.terms);
+      // #1156 — SEO is part of the page's state (absent on older snapshots).
+      if (target.seo) await applyPageSeoState(tx, input.pageId, target.seo, ctx.actorId);
       // A restored slug / parent moves the page's URL and its subtree's.
       const recomputed = await recomputeCurrentPathsWithMoves(
         tx,

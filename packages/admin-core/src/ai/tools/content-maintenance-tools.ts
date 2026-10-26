@@ -66,6 +66,9 @@ function formatSeoPage(p: SeoPage): string {
         `noindex: ${seo.noindex}`,
         `sitemap: changefreq ${seo.changefreq}, priority ${seo.priority}`,
         `autofilledAt: ${seo.autofilledAt ?? "never"}; optimizedAt: ${seo.optimizedAt ?? "never"}`,
+        ...(seo.pendingFields.length > 0
+          ? [`pending (not staged): ${seo.pendingFields.join(", ")}`]
+          : []),
       ]
     : ["No SEO row for this page yet — autofill_page_seo_many fills it before first publish."];
   const textHead = p.contentTextTruncated
@@ -96,7 +99,7 @@ const getPageSeoInput = z
 export const getPageSeoTool = makeReadTool({
   name: "get_page_seo",
   description:
-    "Read pages' stored SEO fields (meta description, OG image, canonical URL, noindex, sitemap changefreq/priority, when autofilled / optimized) AND each page's core text: the plain text of the page's own content blocks (headings, paragraphs, list items, link labels; nested cards included; header/footer chrome left out), from THIS chat's draft, capped at ~1500 characters. " +
+    "Read pages' stored SEO fields (meta description, OG image, canonical URL, noindex, sitemap changefreq/priority, when autofilled / optimized) AND each page's core text: the plain text of the page's own content blocks (headings, paragraphs, list items, link labels; nested cards included; header/footer chrome left out), from THIS chat's draft, capped at ~1500 characters. A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live. " +
     "Use it to read what a page already has AND its core text before writing or optimizing its description — one call for every page (`pageIds`, up to 50), then ONE autofill_page_seo_many (first description) or bulk_optimize_seo / set_page_seo_many. " +
     "Don't render the page for this (inspect_page_render / screenshot_page are for layout and visual questions). A page without an SEO row shows that autofill_page_seo_many fills it.",
   opName: "pages_seo.get_many",

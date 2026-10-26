@@ -31,6 +31,7 @@ export const autofillPageSeoTool: ToolDefinitionWithHandler<AutofillPageSeoToolI
   description:
     "Write a page's meta description (and optional og:image) for the FIRST time. " +
     "Every new page needs one before it is Staged — a Stage refuses pages without one. " +
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it). " +
     "Write it from the page's actual content — `get_page_seo` returns the page's core text (or carry over the source page's description when migrating a site). " +
     "Prefer `autofill_page_seo_many` when more than one page needs it. " +
     "For a page you create with build_page, pass `page.metaDescription` there instead — same fill-once write, no extra call. " +
@@ -46,7 +47,7 @@ export const autofillPageSeoTool: ToolDefinitionWithHandler<AutofillPageSeoToolI
     const v = r.value as { alreadyFilled?: boolean };
     const what = v.alreadyFilled
       ? `page ${input.pageId} already had exactly this meta description — nothing changed`
-      : `SEO autofilled on page ${input.pageId}`;
+      : `SEO autofilled on page ${input.pageId} in this chat's draft — live after Stage + Publish live`;
     return { ok: true, content: `${what}.${await stageReadinessSuffix(ctx, toolCtx)}` };
   },
 };
@@ -56,6 +57,7 @@ export const autofillPageSeoManyTool = makeBulkTool({
   description:
     "Write the FIRST meta description for SEVERAL pages in ONE transaction — prefer this over multiple `autofill_page_seo` calls (§11 bulk-first). " +
     "Use it after building pages and before Staging them: a Stage refuses pages without a meta description and names them. " +
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it). " +
     "Write each description from that page's actual content (150–160 characters, for a human reading a search result) — read the core text of all of them with ONE `get_page_seo({pageIds})` call, never by rendering pages — or carry over the source page's description when migrating a site. " +
     "All-or-nothing: a page already autofilled with a DIFFERENT text (AlreadyAutofilled) aborts the whole batch — leave such pages out (the same text again is a no-op); their descriptions change through `optimize_page_seo` / `bulk_optimize_seo` (re-optimization) or `set_page_seo_many` (an exact value the user dictated). " +
     "Each item is the `autofill_page_seo` shape: `{pageId, metaDescription, ogImageAssetId?}`.",

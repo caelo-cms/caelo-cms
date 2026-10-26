@@ -493,6 +493,7 @@ describe("content maintenance tools", () => {
                   autofilledAt: "2026-10-01T00:00:00.000Z",
                   optimizedAt: null,
                   updatedAt: "2026-10-01T00:00:00.000Z",
+                  pendingFields: ["metaDescription"],
                 }
               : null,
           contentText: i === 0 ? "Fast setup\nLive in minutes" : "Long text…",
@@ -505,6 +506,8 @@ describe("content maintenance tools", () => {
     expect(h.calls[0]?.input).toEqual({ pageIds: [U1] });
     expect(one.content).toContain("metaDescription: Stored text.");
     expect(one.content).toContain("Fast setup\nLive in minutes");
+    // A change the chat has not staged yet is named.
+    expect(one.content).toContain("pending (not staged): metaDescription");
 
     const many = await run(getPageSeoTool, { pageIds: [U1, U2] }, h.toolCtx);
     expect(h.calls).toHaveLength(2);

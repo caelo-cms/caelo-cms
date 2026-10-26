@@ -36,6 +36,7 @@ import { pendingSnapshotSql } from "../../draft.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
 import { applyListEntityRow } from "../../lists/store.js";
 import { releaseChatLocks } from "../../locks.js";
+import { applyPageSeoState } from "../../seo/page-seo.js";
 import {
   emitSnapshot,
   parseAndUpgradeListState,
@@ -819,6 +820,9 @@ export async function mergeWindowToMain(
           updated_at     = now()
       `);
       await replacePageTerms(tx, e.entityId, e.state.terms);
+      // #1156 — the page's SEO travels with it (absent on snapshots written
+      // before it did: the live row stays as it is).
+      if (e.state.seo) await applyPageSeoState(tx, e.entityId, e.state.seo, ctx.actorId);
     } else if (e.kind === "pageLayout") {
       // v0.12.0 — page_modules now carries content_instance_id (NOT NULL)
       // and sync_mode. Producers (pages.set_modules) write the placement

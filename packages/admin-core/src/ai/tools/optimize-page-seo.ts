@@ -21,6 +21,7 @@ export const optimizePageSeoTool: ToolDefinitionWithHandler<
     "Explicit re-optimization of per-page meta description (and optional og:image) for ONE page. " +
     "Use ONLY when the user explicitly asks to optimize / re-write SEO and provides context " +
     "(keyword research, intent shift, branding update). Always allowed regardless of fill state. " +
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it). " +
     "Read the page's current description and core text with `get_page_seo` first. " +
     "For 2+ pages prefer `bulk_optimize_seo` — one tool call carrying all updates instead of N round-trips. " +
     "Don't use for first-publish auto-fill — that's `autofill_page_seo`.",
@@ -41,6 +42,9 @@ export const optimizePageSeoTool: ToolDefinitionWithHandler<
     if (!r.ok) {
       return { ok: false, content: `pages_seo.optimize failed: ${describeError(r.error)}` };
     }
-    return { ok: true, content: `SEO optimized on page ${input.pageId}` };
+    return {
+      ok: true,
+      content: `SEO optimized on page ${input.pageId} in this chat's draft — live after Stage + Publish live`,
+    };
   },
 };
