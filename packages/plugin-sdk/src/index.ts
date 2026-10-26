@@ -26,14 +26,10 @@
  * module and ONLY this module — the validator enforces it.
  */
 
-import {
-  type FontMetadata,
-  type FontRef,
-  type ListTypeDef,
-  listTypeDefSchema,
-  nodeDefSchema,
-  type PageUrlStyle,
-} from "@caelo-cms/shared";
+import type { FontMetadata, FontRef, PageUrlStyle } from "@caelo-cms/shared";
+// The list model only (Zod underneath): the SDK is bundled into the
+// plugin sandbox with everything it imports at runtime.
+import { type ListTypeDef, listTypeDefSchema, nodeDefSchema } from "@caelo-cms/shared/lists-model";
 import { z } from "zod";
 
 /**
@@ -49,8 +45,12 @@ export type {
   NodeDef,
   PageTypeDef,
   ValueAddress,
-} from "@caelo-cms/shared";
-export { formatValueAddress, parseValueAddress, validateFieldValue } from "@caelo-cms/shared";
+} from "@caelo-cms/shared/lists-model";
+export {
+  formatValueAddress,
+  parseValueAddress,
+  validateFieldValue,
+} from "@caelo-cms/shared/lists-model";
 /** Re-exported so plugins can validate at their boundaries (CLAUDE.md
  *  §4 "Zod at every boundary") without importing zod directly — the
  *  sandbox validator allowlists only the SDK + component-kit. */
