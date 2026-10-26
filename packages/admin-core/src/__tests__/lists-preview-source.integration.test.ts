@@ -260,6 +260,13 @@ describe("#1107 lists.preview_source", () => {
     });
     // The entry's saved query (limit 2) applies over the type's defaults.
     expect(v.items.map((e) => e.title)).toEqual(["Alpha FAQ", "Alpha release"]);
+    // e2e-livedit run 40344374447 — the list's reference, the form module
+    // fields and `vocabulary` use, names the same list as its slug.
+    const byRef = await op<Preview>(SYS, "lists.preview_source", {
+      list: `caelo:list/${written.lists[0]?.id}`,
+      itemId: newsNode,
+    });
+    expect(byRef.items.map((e) => e.title)).toEqual(["Alpha FAQ", "Alpha release"]);
     // The list editor previews a node kind with the knobs being edited,
     // before the entry is saved.
     const editing = await op<Preview>(SYS, "lists.preview_source", {

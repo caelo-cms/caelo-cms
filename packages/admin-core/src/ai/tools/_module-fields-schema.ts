@@ -95,7 +95,7 @@ const TOOL_LIST_ENTRY_SCHEMA = {
   type: "object",
   required: ["node", "values"],
   description:
-    'texts: {node:"text", values:{text}}; links: {node:"link", values:{label, link:{href}}}; menu: {node:"entry", values:{label, link:{href}}, children:[entries]}; a custom type: its fields (list_list_types). Keep `id` when resending an existing entry.',
+    'texts {node:"text", values:{text}} · links {node:"link", values:{label, link:{href}}} · menu {node:"entry", …, children}; keep `id` on resend.',
   properties: {
     id: { type: "string" },
     node: {
@@ -159,7 +159,7 @@ function moduleFieldItemSchema(): Record<string, unknown> {
       source: {
         type: "object",
         description:
-          'list, bind "source": {kind:"query", editable:[knobs], defaults:{page_type, terms, parent, order, limit}} | {kind:"system", name:"breadcrumbs"|"children"|"siblings"|"page_terms"|"term_pages"} (only these) | {kind:"plugin", name:"<source>"} (e.g. consent_categories — iterating a plugin list needs no field at all).',
+          'bind "source": {kind:"query", editable, defaults} | {kind:"system", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:"plugin", name} (a plugin list iterated by name needs no field).',
       },
       // issue #106 — mirror the Zod bound `z.array(slugSchema).max(32)`.
       allowedModuleTypes: {

@@ -86,7 +86,7 @@ export function dumpChatTranscripts(label: string): void {
 
 /**
  * Truncate the fixtures the real-AI scenarios create so Playwright's
- * `retries: 1` doesn't trip over orphan rows from a prior attempt.
+ * the next scenario (or a local rerun) doesn't trip over orphan rows.
  *
  * Deletes (system context, in one tx):
  *   - chat_entity_locks  — orphan-lock test would see stale rows

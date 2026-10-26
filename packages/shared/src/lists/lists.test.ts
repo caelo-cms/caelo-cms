@@ -208,6 +208,19 @@ describe("list items", () => {
     expect(paths).toContain("items[1].children[0].query.order");
   });
 
+  // e2e-livedit run 40360756064 — the AI restated the type's defaults.
+  it("drops a non-editable query knob that equals the type default", () => {
+    const r = validateListItems(MEGA, [
+      {
+        node: "entry",
+        values: { label: "y" },
+        children: [{ node: "news_feed", values: {}, query: { limit: 3, order: "published_desc" } }],
+      },
+    ]);
+    expect(r.issues).toEqual([]);
+    expect(r.items[0]?.children?.[0]?.query).toEqual({ limit: 3 });
+  });
+
   it("enforces depth and per-level max", () => {
     const menu = listTypeDefSchema.parse(DEFAULT_LIST_TYPES[2]);
     const deep = {

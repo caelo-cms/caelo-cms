@@ -295,7 +295,11 @@ export const getModuleOp = withHumanisedLinks(
     `)) as unknown as ModuleDbRow[];
       const [row] = await overlayBranchEdits(ctx, tx, rows, [input.moduleId]);
       if (!row) {
-        return err({ kind: "HandlerError", operation: "modules.get", message: "module not found" });
+        return err({
+          kind: "HandlerError",
+          operation: "modules.get",
+          message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids).`,
+        });
       }
       return ok({ module: rowToModule(row) });
     },
@@ -577,7 +581,7 @@ export const updateModuleOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "modules.update",
-        message: "module not found",
+        message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids); add_module creates a new one.`,
       });
     }
 
@@ -900,7 +904,7 @@ export const deleteModuleOp = defineOperation({
       return err({
         kind: "HandlerError",
         operation: "modules.delete",
-        message: "module not found",
+        message: `no module ${input.moduleId} in this view — list_modules shows the modules (ids).`,
       });
     }
     await recordAudit(tx, {

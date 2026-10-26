@@ -24,6 +24,11 @@ import {
 import { previewListSourceOp } from "../../ops/lists/preview-source.js";
 import { promoteLocalListOp } from "../../ops/lists/promote-local.js";
 import { LISTS_ALIAS, makeOpTool } from "./_list-tool-kit.js";
+import {
+  PATCH_LIST_ITEMS_JSON_SCHEMA,
+  PREVIEW_LIST_SOURCE_JSON_SCHEMA,
+  UPSERT_LISTS_JSON_SCHEMA,
+} from "./_list-tool-schemas.js";
 import { makeListReadTool } from "./_make-read-tool.js";
 
 interface ListUsageView {
@@ -115,10 +120,13 @@ export const getListTool = makeOpTool({
   format: (value) => {
     const l = (value as { list: ListSummaryRow & { items: ListItemInput[] } }).list;
     const lines = [
-      `list ${l.slug} (${l.id}) — type ${l.type}, ${l.role}, version ${l.version}, ${l.itemCount} entries`,
+      // Read keys mirror the write keys (upsert_lists_many takes `items`;
+      // the role belongs to the type): the AI copied an earlier "entries:"
+      // heading and the role into a write call (release gate, v0.11.0).
+      `list ${l.slug} (${l.id}) — type ${l.type} (role ${l.role}, set by the type), version ${l.version}, ${l.itemCount} entries`,
       `purpose: ${l.purpose}`,
       `used by: ${usedBy(l.usage) || "no module"}; ${l.usage.placementCount} placement(s); sample pages: ${l.usage.samplePages.map((p) => p.path).join(", ") || "none"}`,
-      "entries:",
+      "items:",
     ];
     renderItems(l.items, 0, lines);
     return lines.join("\n");
@@ -128,11 +136,12 @@ export const getListTool = makeOpTool({
 export const upsertListsManyTool = makeOpTool({
   name: "upsert_lists_many",
   description:
-    `Create shared lists, or replace a list's WHOLE entry tree (1–50 lists, one transaction). ${LISTS_ALIAS} ` +
-    "Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree). " +
+    `Create shared lists (menus, footer links, vocabularies), or replace a list's WHOLE entry tree (1–50 lists, one transaction). ` +
+    "Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree) — nothing else: the tree is `items` (not `entries`), and the role comes from the type. " +
     'An entry is {node, values, children?, query?}: `values` keyed by the node\'s fields (links as {"href": "/about"} or an external URL; terms as caelo:term/<listId>/<itemId>), `children` under nodes that allow them, `query` only on source nodes and only with the knobs that node\'s source lists in `editable` (e.g. {limit:5}) — page_type, order and the rest are fixed by the type\'s `defaults`; omit `query` to use them as they are. Keep the `id` of entries that already exist; omit it for new ones. ' +
     'Example (type menu): [{"node":"entry","values":{"label":"Company","link":{"href":"/about"}},"children":[{"node":"entry","values":{"label":"Team","link":{"href":"/about/team"}}}]}]. ' +
     "Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / edit_module), e.g. the header module on the layout.",
+  inputSchema: UPSERT_LISTS_JSON_SCHEMA,
   opName: "lists.upsert_many",
   input: upsertListsManyOp.input,
   format: (value) =>
@@ -165,6 +174,7 @@ export const patchListItemsManyTool = makeOpTool({
     "Patches: {op:'add', parentId?, position?, item:{node, values, children?}} (omit parentId for the top level, position to append), {op:'update', itemId, values} (merged; null removes a value), {op:'move', itemId, parentId?, position}, {op:'remove', itemId} (with its children). " +
     "'Add Careers under Company' = get_list → one add patch with parentId = Company's id. Pass `expectedVersion` from get_list; a conflict means someone changed the list — re-read and redo. " +
     "The result names the ids of added entries. Every page that shows the list updates with it — there is nothing to rewire.",
+  inputSchema: PATCH_LIST_ITEMS_JSON_SCHEMA,
   opName: "lists.patch_items_many",
   input: patchListItemsManyOp.input,
   format: (value) =>
@@ -205,8 +215,9 @@ export const previewListSourceTool = makeOpTool({
   name: "preview_list_source",
   description:
     "Show what a generated list returns for a page BEFORE you bind or save it: a page query ('the 3 latest news'), a system source (breadcrumbs, children, siblings, page_terms, term_pages) or a plugin source — the same resolver the preview and the build use, in this chat's draft view. " +
-    "Name it ONE way: `source` (+ `value` overrides, `vocabulary` for page_terms) — e.g. {source:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}}; `list` + `itemId` (a saved source node of a shared list, e.g. the mega menu's news column); `list` + `node` + `value` (a source node kind of the list's type with the knobs you are about to save); or `moduleId` + `field` (+ `contentInstanceId`) for a module's source field. " +
+    "Name the source ONE way (see the input schema). " +
     "`pageId` = the page it renders on (needed for breadcrumbs / children / siblings / page_terms; a query leaves that page out by default). Only published pages appear. An empty result usually means the filter is wrong (page type slug, terms) or nothing is published yet.",
+  inputSchema: PREVIEW_LIST_SOURCE_JSON_SCHEMA,
   opName: "lists.preview_source",
   input: previewListSourceOp.input,
   format: (value) => {

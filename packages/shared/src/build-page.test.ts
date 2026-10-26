@@ -198,6 +198,29 @@ describe("buildPageInputSchema — module entry modes name the failing index", (
   });
 });
 
+describe("buildPageInputSchema — ref handles", () => {
+  // e2e-livedit run 40336739359 (PR #1143): the AI named three cards
+  // `cardA` / `cardB` / `cardC` and the lowercase-only rule refused the
+  // whole call for a handle that never leaves it.
+  it("accepts mixed-case handles and refuses ones that do not start with a letter", () => {
+    const { blockName: _b, ...detached } = mintModule;
+    for (const ref of ["cardA", "card_b", "feat-1"]) {
+      const r = buildPageInputSchema.safeParse({
+        page: { pageId: UUID },
+        modules: [{ ...detached, ref }],
+      });
+      expect(r.success).toBe(true);
+    }
+    for (const ref of ["1card", "$card", "card a"]) {
+      const r = buildPageInputSchema.safeParse({
+        page: { pageId: UUID },
+        modules: [{ ...detached, ref }],
+      });
+      expect(r.success).toBe(false);
+    }
+  });
+});
+
 describe("buildPageContentSchema — the three sources", () => {
   it("inline requires values", () => {
     expect(buildPageContentSchema.safeParse({ source: "inline" }).success).toBe(false);

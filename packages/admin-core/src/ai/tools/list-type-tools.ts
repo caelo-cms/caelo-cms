@@ -14,7 +14,8 @@ import { LIST_TYPE_ROLES } from "@caelo-cms/shared";
 import { z } from "zod";
 import { deleteListTypesManyOp, upsertListTypesManyOp } from "../../ops/lists/list-types.js";
 import { describeError } from "./_describe-error.js";
-import { describeListType, LISTS_ALIAS, makeOpTool, toolNamesIn } from "./_list-tool-kit.js";
+import { describeListType, makeOpTool, toolNamesIn } from "./_list-tool-kit.js";
+import { UPSERT_LIST_TYPES_JSON_SCHEMA } from "./_list-tool-schemas.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listListTypesInput = z
@@ -55,7 +56,6 @@ export const listListTypesTool: ToolDefinitionWithHandler<ListListTypesInput> = 
   name: "list_list_types",
   description:
     "The list types of this site — the shapes lists take: which node kinds exist, their fields (`*` = required), what may hang under what, and which nodes generate entries from a source (a page query, breadcrumbs, a plugin). " +
-    `${LISTS_ALIAS} ` +
     "Shipped types: `texts` (plain strings), `links` (label + link), `menu` (nested entries, 3 levels, marks the current page), `categories` / `tags` (vocabularies pages are assigned to). " +
     "A type that ships with a plugin (marked 'ships with plugin') is read-only: its lists are yours to fill, its definition is not to change. 'Inert plugin settings' are extensions of a plugin that is not active — kept, not applied. " +
     "Read this before writing a list's entries or a module's `{{#field}}…{{/field}}` template (the node fields are the keys inside the section). Pass `slug` for one type in detail (lists of the type + modules with local lists of it). " +
@@ -112,10 +112,11 @@ export const upsertListTypesManyTool = makeOpTool({
     "Create or replace list types (1–50 in one call, one transaction). A list type is the SHAPE of a list: `nodes` (node kind → {label, fields[], children?: {name, allow[]}, source?, current_from?}), `root.allow` (node kinds at the top level), `role` (navigation | vocabulary | content), `purpose` (why it exists — later reads decide by it), `max_depth` (required when a node allows itself). " +
     "Field types: text, richtext, link ({href}), media, select (options), boolean, number, date, icon, module (an embedded module), term (entries of a vocabulary list, `list: <slug>`). Vocabulary types need exactly one node kind with text fields `name` and `slug`. " +
     "A node with `source` gets generated entries instead of stored children: {kind:'query', editable:[knobs the entry may change], defaults:{page_type:'news', order:'published_desc', limit:3}} for 'latest news', {kind:'system', name:'breadcrumbs'|'children'|'siblings'|'page_terms'|'term_pages'}, or {kind:'plugin', name}. " +
-    'Example — a mega menu: root.allow ["column","link"]; node `column` {fields:[{name:"heading",type:"text",label:"Heading",required:true}], children:{name:"links",allow:["link","news"]}}; node `link` {fields:[label text*, link link*], current_from:"link"}; node `news` {fields:[{name:"heading",type:"text",label:"Heading"}], source:{kind:"query",editable:["limit"],defaults:{page_type:"news",order:"published_desc",limit:3}}}. ' +
+    'Mega menu: root.allow ["column"]; `column` {fields:[heading text], children:{name:"links", allow:["link","news"]}}; `link` {fields:[label text*, link link*], current_from:"link"}; `news` {fields:[heading text], source:{kind:"query", editable:["limit"], defaults:{page_type:"news", order:"published_desc", limit:3}}}. ' +
     "Changing a type that has lists is checked against every list of the type (local ones in modules too): a new required field needs a `default`; removing a node kind or field that still has values is refused with the lists named — pass `dropValues: true` only when the operator agreed to lose those values. Pass `expectedVersion` from list_list_types to avoid overwriting a concurrent change. " +
     "A type that ships with a plugin cannot be changed (by you or the operator) — create your own type under another slug instead. " +
     "Do NOT create a near-duplicate of a shipped type — reuse `links` / `menu` when they fit.",
+  inputSchema: UPSERT_LIST_TYPES_JSON_SCHEMA,
   opName: "list_types.upsert_many",
   input: upsertListTypesManyOp.input,
   format: (value) => {
