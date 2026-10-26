@@ -276,10 +276,9 @@ export const addModuleTool: ToolDefinitionWithHandler<AddModuleToolInput> = {
   // 2026-07 — STATIC on purpose (prompt-cache): the per-turn describe
   // embedded active-page blocks + layout/template slugs into the tool
   // definition, busting Anthropic's tools-prefix cache on every page
-  // switch or structural write. The same facts live in the volatile
-  // `# Current page` / `## Layouts` / `## Templates` context blocks and
-  // list_layouts / list_templates; a blockName mismatch returns a
-  // structured error naming the valid set.
+  // switch or structural write. The same facts live in the `# Current page`
+  // note on the user message and in list_layouts / list_templates; a
+  // blockName mismatch returns a structured error naming the valid set.
   schema: addModuleToolInput,
   inputSchema: {
     type: "object",

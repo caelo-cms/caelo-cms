@@ -502,27 +502,14 @@ describe("skill allowlist validation (issue #301)", () => {
     }
   });
 
-  it("migration 0157: the seeded reviewer skills carry tool-name allowlists", async () => {
+  it("migration 0157: seeded skills carry tool-name allowlists", async () => {
     const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
     if (!r.ok) return;
     const skills = (r.value as { skills: { slug: string; allowlistedTools: string[] }[] }).skills;
     const bySlug = new Map(skills.map((s) => [s.slug, s.allowlistedTools]));
-    // qa-check and menu-auditor named menu tools that epic #1107 removed;
-    // their allowlists are rewritten with the list tools (epic #1107).
-    expect(bySlug.get("legal-check")).toEqual(["inspect_page_render", "list_pages"]);
-    expect(bySlug.get("page-categorizer")).toEqual(["list_pages"]);
-    expect(bySlug.get("menu-auditor")).toEqual([
-      "list_lists",
-      "get_list",
-      "find_redirects",
-      "list_pages",
-    ]);
-    expect(bySlug.get("qa-check")).toEqual([
-      "inspect_page_render",
-      "list_pages",
-      "list_lists",
-      "get_list",
-    ]);
+    // 0362 — a chipped element's text is that placement's content, so
+    // scoped-edit preloads set_page_module_content next to the code tools.
+    expect(bySlug.get("scoped-edit")).toContain("set_page_module_content");
     // No active skill may carry an op-notation entry at all.
     for (const s of skills) {
       for (const entry of s.allowlistedTools) {

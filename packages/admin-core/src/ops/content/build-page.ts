@@ -522,7 +522,7 @@ export const buildPageOp = defineOperation({
         if (!ci) {
           return fail(
             `${moduleLabel(i, entry)}: content_instance ${content.contentInstanceId} not found or deleted — ` +
-              "pick one from `## Content Library` / list_content_instances, or pass content.source='inline' with values instead",
+              "pick one from list_content_instances, or pass content.source='inline' with values instead",
           );
         }
         if (ci.module_id !== moduleId) {

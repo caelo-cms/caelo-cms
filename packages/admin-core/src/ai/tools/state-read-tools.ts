@@ -26,7 +26,7 @@ export const getSiteDefaultsTool = makeReadTool<Record<string, never>>({
   name: "get_site_defaults",
   description:
     "Fetch the CURRENT site defaults + identity: default layout/template (slug + UUID), siteName, sitePurpose, siteLanguage (`<html lang>`), design brief. " +
-    "The `# Site defaults` / `## Site identity` context blocks are a snapshot from turn start — call this when you changed defaults or identity THIS turn (set_site_defaults / set_site_identity) and need the fresh state, instead of repeating the write.",
+    "Call this whenever you need them — they are not in the system prompt — including after set_site_defaults / set_site_identity, instead of repeating the write.",
   opName: "site_defaults.get",
   input: noInput,
   format: (value) => {
@@ -68,7 +68,7 @@ export const listPendingProposalsTool = makeListReadTool<
   name: "list_pending_proposals",
   description:
     "List every proposal currently awaiting Owner approval, across all gated domains (layouts, users, roles, reverts, themes, deploys, …). " +
-    "The `## Pending proposals` context block is a snapshot from turn start — call this BEFORE queueing a proposal you may already have filed this turn (a duplicate is rejected), and after the user says they approved something. " +
+    "Call this BEFORE queueing a proposal you may already have filed (a duplicate is rejected), and after the user says they approved something. " +
     "Rows with requestedBy=external-agent were queued by an external agent over MCP: their decision is handed back to that agent, which continues the work. In the Caelo chat, do not act on or re-propose them.",
   opName: "pending_proposals.list",
   input: noInput,
@@ -139,7 +139,7 @@ export const listUsersTool = makeListReadTool<
   name: "list_users",
   description:
     "List the site's users (email, display name, roles). Read-only — user changes go through propose_create_user / propose_set_user_roles / propose_delete_user (Owner-approved). " +
-    "The `## Users` context block is a snapshot from turn start; call this after an Owner approved a user proposal mid-conversation.",
+    "Call it again after an Owner approved a user proposal mid-conversation.",
   opName: "users.list",
   input: noInput,
   label: "users",
@@ -164,8 +164,7 @@ export const listRolesTool = makeListReadTool<
 >({
   name: "list_roles",
   description:
-    "List the site's roles (name, description, builtin flag). Read-only — role changes go through propose_create_role / propose_update_role_permissions / propose_delete_role (Owner-approved). " +
-    "The `## Roles` context block is a snapshot from turn start.",
+    "List the site's roles (name, description, builtin flag). Read-only — role changes go through propose_create_role / propose_update_role_permissions / propose_delete_role (Owner-approved).",
   opName: "roles.list",
   input: noInput,
   label: "roles",
@@ -241,8 +240,7 @@ export const listDomainsTool = withHostingStatus(
     name: "list_domains",
     description:
       "List the site's domains (hostname, kind, TLS status). Domain changes go through propose_add_domain / propose_remove_domain (Owner-approved). " +
-      "On Firebase Hosting installs it also lists every hosting custom domain with its live state (active / waiting for DNS / verifying / stuck) — when one is 'stuck', propose_reconnect_domain heals it, and the CDN cache is cleared automatically once a domain turns active. " +
-      "The `## Domains` context block is a snapshot from turn start.",
+      "On Firebase Hosting installs it also lists every hosting custom domain with its live state (active / waiting for DNS / verifying / stuck) — when one is 'stuck', propose_reconnect_domain heals it, and the CDN cache is cleared automatically once a domain turns active.",
     opName: "domains.list",
     input: noInput,
     label: "domains",

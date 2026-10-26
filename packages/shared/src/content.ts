@@ -778,9 +778,9 @@ const contentValuesSchema = z.record(z.string(), z.unknown());
 
 /**
  * v0.12.0 — why this row exists as a shared/reusable instance.
- * Surfaced in the `## Content Library` system-prompt block so the AI
- * can decide *reuse the synced row* vs *fork to unsynced* vs *mint
- * new* without a tool round-trip. Required by the AI's
+ * Shown by the AI's list_content_instances tool so the AI can decide
+ * *reuse the synced row* vs *fork to unsynced* vs *mint new* without
+ * asking the operator. Required by the AI's
  * create_content_instance tool description; legacy callers may pass
  * null (the migration-0093 unsynced rows have purpose=NULL).
  * See CLAUDE.md §1A.

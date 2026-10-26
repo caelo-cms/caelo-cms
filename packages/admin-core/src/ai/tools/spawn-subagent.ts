@@ -880,8 +880,8 @@ export function summarize(results: SubagentInvocationResult[]): string {
 export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput> = {
   name: "spawn_subagent",
   description:
-    "Spawn ONE subagent to take a fresh, focused angle on a task — its own context window + tool catalogue + auto-engaged skill. The subagent's matcher engages whichever skill its task wording scores highest against (e.g. role='qa', task='QA the new article' → engages qa-check). " +
-    "Use spawn_subagents (plural) when you need MULTIPLE angles in parallel. Single is for one-off focused tasks — deeper research, or a bounded WRITE task like rebuilding one page cluster during a migration. " +
+    "Spawn ONE subagent for a bounded, multi-step BUILD task that deserves its own isolated context — e.g. rebuilding one page cluster during a migration. It gets its own context window + tool catalogue + the skill its task wording matches best. " +
+    "Use spawn_subagents (plural) for SEVERAL independent build parcels at once. Not for your own reasoning or research, and not to review your own work — do those yourself. " +
     "BLOCKS until the subagent finishes. Returns the subagent's parsed result + cost + duration. " +
     "The subagent starts with a FRESH context — it knows NOTHING about this chat. Its `task` must be fully self-contained (ids, facts, fetch instructions, return-shape contract). It works on THIS chat's preview branch, so its edits show up in this chat's preview/publish/undo. " +
     "TOOL ACCESS: by default the subagent gets the full tool catalogue minus the spawn tools (it CAN write). Pass `allowedToolNames` (AI tool names, e.g. list_pages, edit_module) to narrow it, e.g. to read-only tools for review tasks. " +
@@ -988,7 +988,7 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
   name: "spawn_subagents",
   description:
     "Spawn MULTIPLE subagents that run CONCURRENTLY. Each gets its own context window + auto-engaged skill (matcher fires inside each subagent based on its task wording). This tool BLOCKS until all finish and returns ONE bundled result. " +
-    "Use this when work splits into independent parcels that can run at the same time — e.g. drafting an article and validating it via QA + legal + brand-voice review (3 parallel verdicts), or the big one: a site migration where each of N pages gets its OWN per-page AI pass, all in flight together instead of one-at-a-time. " +
+    "Use this when work splits into independent parcels that can run at the same time — e.g. building 3 unrelated modules at once, or the big one: a site migration where each of N pages gets its OWN per-page AI pass, all in flight together instead of one-at-a-time. Not for your own reasoning and not to review your own work. " +
     "Returns ONE bundled tool result with each subagent's parsed result + cost + duration + a batch cost roll-up, keeping the prompt-cache prefix clean. Each subagent starts FRESH (self-contained task required) and gets the full catalogue minus the spawn tools unless narrowed via allowedToolNames. " +
     // issue #268 — disjoint-work contract. All siblings write to the
     // SAME shared preview branch and the entity-lock system keys on the

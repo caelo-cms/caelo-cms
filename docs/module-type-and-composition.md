@@ -68,10 +68,13 @@ keep working** — a stored `["legacy-exact"]` still matches a module whose
 
 ## Where the AI sees this
 
-- The `## Modules` system-prompt block shows each module's `type` and `slug`
-  distinctly, and renders every `module`/`module-list` field's
-  `allowedModuleTypes` in full (never truncated).
-- The `## Module model` primer states the nested-ref contract: a nested value is
-  `{ moduleId, contentInstanceId }`, the referenced module's `type` must be in
-  the field's `allowedModuleTypes`, and the AI should reuse an existing module of
-  an allowed type rather than minting a near-duplicate.
+- `list_modules` shows each module's `type` and `slug` distinctly, and renders
+  every `module`/`module-list` field's `allowedModuleTypes` in full (never
+  truncated).
+- The `## Site model` system-prompt primer states the nested-ref syntax and
+  value shape (`{ moduleId, contentInstanceId }`); the module tools' own
+  descriptions (`edit_module`, `add_module`, `build_page`,
+  `set_page_module_content`, `set_content_instance_values`) carry the
+  `allowedModuleTypes` rule: the referenced module's `type` must be in the
+  whitelist, and the AI reuses an existing module of an allowed type rather
+  than minting a near-duplicate.
