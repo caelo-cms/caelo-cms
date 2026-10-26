@@ -79,7 +79,7 @@ import {
   GATEWAY_DATABASE_ROLES,
   gatewayDatabaseUrls,
 } from "./database-env.js";
-import { startGatewayStateGc } from "./gc.js";
+import { gatewayStateGc } from "./gc.js";
 import { GATEWAY_HEALTH_PATH, gatewayHealth } from "./health.js";
 import { createMcpRouter, isMcpPath } from "./mcp/routes.js";
 import { readBodyWithCap } from "./middleware/body-cap.js";
@@ -392,10 +392,19 @@ interface RequestLogRow {
 }
 
 let cachedAdapter: DatabaseAdapter | null = null;
+/** The gateway's own state, expired rows only (#763 L4: never waits on the admin). */
+let sweepGatewayStateIfDue: (() => Promise<void>) | null = null;
 export function setGatewayAdapter(adapter: DatabaseAdapter): void {
   cachedAdapter = adapter;
+  sweepGatewayStateIfDue = gatewayStateGc(adapter);
 }
 
+/**
+ * Awaited by every caller before it answers: the gateway gets CPU only while
+ * a request runs (request-based Cloud Run CPU), so a write left running
+ * after the response would stall until the next request, or be lost when
+ * the instance stops first.
+ */
 async function recordRequest(row: RequestLogRow): Promise<void> {
   if (!cachedAdapter) return;
   try {
@@ -505,6 +514,7 @@ export async function handleRequest(
   conn: GatewayConnection = { peerAddress: null },
 ): Promise<Response> {
   const url = new URL(req.url);
+  await sweepGatewayStateIfDue?.();
 
   // #650 — the staging host (gcp-firebase; the stored setting, default
   // staging.<domain>): the access gate + proxy to the staged build. Nothing
@@ -669,7 +679,7 @@ export async function handleRequest(
   // 1. Body size cap.
   const cap = await readBodyWithCap(req, settings.maxBodyBytes);
   if (!cap.ok) {
-    void recordRequest({
+    await recordRequest({
       pluginSlug: slug,
       operation: operationName,
       visitorIdHash: "",
@@ -742,7 +752,7 @@ export async function handleRequest(
       key: ipScopedRateLimitKey(slug, "honeypot", ipHash),
       spec: honeypotSpec,
     }).catch(() => undefined);
-    void recordRequest({
+    await recordRequest({
       pluginSlug: slug,
       operation: operationName,
       visitorIdHash: visitor.visitorIdHash,
@@ -766,7 +776,7 @@ export async function handleRequest(
     spec,
   });
   if (!rl.allowed) {
-    void recordRequest({
+    await recordRequest({
       pluginSlug: slug,
       operation: operationName,
       visitorIdHash: visitor.visitorIdHash,
@@ -798,7 +808,7 @@ export async function handleRequest(
     if (proof) {
       const verify = await verifyPowProof(cachedAdapter, proof, visitor.visitorIdHash);
       if (!verify.ok) {
-        void recordRequest({
+        await recordRequest({
           pluginSlug: slug,
           operation: operationName,
           visitorIdHash: visitor.visitorIdHash,
@@ -869,7 +879,7 @@ export async function handleRequest(
               result.error.kind === "OperationNotPublic"
               ? 404
               : 500;
-    void recordRequest({
+    await recordRequest({
       pluginSlug: slug,
       operation: operationName,
       visitorIdHash: visitor.visitorIdHash,
@@ -883,7 +893,7 @@ export async function handleRequest(
     });
     return jsonResponse({ ok: false, error: result.error }, { status, setCookies: cookies });
   }
-  void recordRequest({
+  await recordRequest({
     pluginSlug: slug,
     operation: operationName,
     visitorIdHash: visitor.visitorIdHash,
@@ -931,8 +941,6 @@ if (import.meta.main) {
   const registry = new OperationRegistry();
   registerGatewayOperations(registry);
   setGatewayAdapter(adapter);
-  // The gateway's own state, expired rows only (#763 L4: never waits on the admin).
-  startGatewayStateGc(adapter);
   // P13 audit re-pass — dedicated long-lived LISTEN connection.
   // Pooled handles return to the pool after each query, dropping any
   // pg_notify subscriptions; so we open a SEPARATE Bun.SQL client that

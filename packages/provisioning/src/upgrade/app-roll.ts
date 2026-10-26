@@ -32,6 +32,7 @@ import {
   type CloudRunEnvVar,
   GATEWAY_TIMEOUT_SECONDS,
   RETIRED_SECRET_FILES,
+  SERVICE_CPU_IDLE,
   SERVICE_SECRET_FILES,
 } from "../stack-contract.js";
 import {
@@ -42,10 +43,12 @@ import {
   type LiveVolumes,
   liveContainerEnv,
   liveContainerMemory,
+  liveCpuIdle,
   liveTimeoutSeconds,
   liveVolumes,
   planAdminMemory,
   planContractEnv,
+  planCpuIdle,
   planMediaVolume,
   planRequestTimeout,
   planSecretFiles,
@@ -105,6 +108,8 @@ export interface ServicePlan {
   readonly liveVolumes: LiveVolumes;
   /** Request timeout now, in seconds (null = Cloud Run's default). */
   readonly liveTimeout: number | null;
+  /** Whether the service gets CPU only during requests now. */
+  readonly liveCpuIdle: boolean;
 }
 
 /** A service plan plus the changes its roll applies. */
@@ -113,7 +118,8 @@ export interface RollPlan extends ServicePlan {
   readonly envChanges: readonly EnvChange[];
   /**
    * #553 — e.g. `--memory=2Gi` when the admin runs below the stack default;
-   * #806 — `--timeout=3600` when the gateway runs below its contract timeout.
+   * #806 — `--timeout=3600` when the gateway runs below its contract timeout;
+   * `--cpu-throttling` when the contract wants request-based CPU.
    */
   readonly resourceFlags: readonly string[];
   readonly resourceChanges: readonly string[];
@@ -203,6 +209,7 @@ export async function planAppRoll(
       liveMemory: liveContainerMemory(json),
       liveVolumes: liveVolumes(json),
       liveTimeout: liveTimeoutSeconds(json),
+      liveCpuIdle: liveCpuIdle(json),
     });
   }
   const env = planEnv(install, services, {});
@@ -264,14 +271,17 @@ export async function planAppRoll(
       s.slug === "gateway" ? planRequestTimeout(s.liveTimeout, GATEWAY_TIMEOUT_SECONDS) : null;
     const memoryFlags = memory?.ok ? memory.flags : [];
     const timeoutFlags = timeout?.ok ? timeout.flags : [];
+    const cpu = planCpuIdle(s.liveCpuIdle, SERVICE_CPU_IDLE[s.slug]);
+    const cpuFlags = cpu.ok ? cpu.flags : [];
     return {
       ...s,
       envFlags: env.services[s.slug].flags,
       envChanges: env.services[s.slug].changes,
-      resourceFlags: [...memoryFlags, ...timeoutFlags],
+      resourceFlags: [...memoryFlags, ...timeoutFlags, ...cpuFlags],
       resourceChanges: [
         ...memoryFlags.map((f) => `${s.liveMemory ?? "(default)"} → ${f}`),
         ...(timeout?.ok ? timeout.changes : []),
+        ...(cpu.ok ? cpu.changes : []),
       ],
       volumeFlags: [...(s.slug === "admin" ? media.flags : []), ...secretFiles[s.slug].flags],
       volumeChanges: [...(s.slug === "admin" ? media.changes : []), ...secretFiles[s.slug].changes],
