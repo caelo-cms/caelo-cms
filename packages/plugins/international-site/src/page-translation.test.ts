@@ -262,7 +262,7 @@ describe("writePageTranslation", () => {
 
   const ids = (p: PreparedPageTranslation) => [...buildSlotIndex(p.sourceSlots).keys()];
 
-  it("writes nested content to the variant's own instance", async () => {
+  it("writes nested content through the variant page's placement", async () => {
     const p = prepared(true);
     const [form, , , card] = ids(p);
     const d = deps();
@@ -288,7 +288,16 @@ describe("writePageTranslation", () => {
           contentValues: { heading: "Jetzt testen", submit_label: "Request a demo" },
         },
       ],
-      ["content_instances.set_values", { id: "ci-card-1", values: { card_title: "Card" } }],
+      [
+        "page_module_content.set",
+        {
+          pageId: "page-en",
+          blockName: "main",
+          position: 2,
+          nestedPath: "cards[0]",
+          contentValues: { card_title: "Card" },
+        },
+      ],
     ]);
     expect(d.statuses).toEqual([{ translation_status: "up_to_date" }]);
   });

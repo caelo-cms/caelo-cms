@@ -436,3 +436,82 @@ describe("placement.fork_content — nested content", () => {
     expect((await valuesOf(SYS, src.ctaCard)).title).toBe("Fork cta");
   });
 });
+
+describe("page_module_content.set — nested content of one page", () => {
+  async function holderPage(slug: string, ctaCard: string): Promise<string> {
+    const pageId = await createPage(slug);
+    await op(SYS, "pages.set_modules", {
+      pageId,
+      blocks: [{ blockName: "content", moduleIds: [holderId] }],
+    });
+    await op(SYS, "page_module_content.set", {
+      pageId,
+      blockName: "content",
+      position: 0,
+      contentValues: {
+        heading: slug,
+        cta: { moduleId: cardId, contentInstanceId: ctaCard },
+        items: [],
+      },
+    });
+    return pageId;
+  }
+
+  it("writes the nested content this page alone renders, and refuses content another page shares", async () => {
+    const own = await instance(cardId, { title: "own cta" });
+    const ownPage = await holderPage("nested-own", own);
+    const nested = (await placementsOf(SYS, ownPage))[0] as unknown as {
+      nested: { path: string; contentInstanceId: string; exclusive: boolean }[];
+    };
+    expect(nested.nested).toEqual([
+      expect.objectContaining({ path: "cta", contentInstanceId: own, exclusive: true }),
+    ]);
+    await op(SYS, "page_module_content.set", {
+      pageId: ownPage,
+      blockName: "content",
+      position: 0,
+      nestedPath: "cta",
+      contentValues: { title: "own cta, translated" },
+    });
+    expect(await valuesOf(SYS, own)).toEqual({ title: "own cta, translated" });
+
+    // Two pages whose holders show the same card: writing it from one
+    // page would change the other.
+    const shared = await instance(cardId, { title: "shared cta" });
+    const first = await holderPage("nested-shared-a", shared);
+    await holderPage("nested-shared-b", shared);
+    const refused = await run(SYS, "page_module_content.set", {
+      pageId: first,
+      blockName: "content",
+      position: 0,
+      nestedPath: "cta",
+      contentValues: { title: "changed" },
+    });
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect(JSON.stringify(refused.error)).toContain("shared with another page");
+      expect(JSON.stringify(refused.error)).toContain("fork_placement_content");
+    }
+    expect(await valuesOf(SYS, shared)).toEqual({ title: "shared cta" });
+
+    const missing = await run(SYS, "page_module_content.set", {
+      pageId: first,
+      blockName: "content",
+      position: 0,
+      nestedPath: "items[3]",
+      contentValues: { title: "x" },
+    });
+    expect(missing.ok).toBe(false);
+  });
+
+  it("content_instances.set_values stays closed to plugins: their writes are bound to a page", async () => {
+    const card = await instance(cardId, { title: "anywhere" });
+    const asPlugin = await run(
+      { actorId: HUMAN, actorKind: "plugin", requestId: "pdup-plugin" },
+      "content_instances.set_values",
+      { id: card, values: { title: "overwritten" } },
+    );
+    expect(asPlugin.ok).toBe(false);
+    expect(await valuesOf(SYS, card)).toEqual({ title: "anywhere" });
+  });
+});

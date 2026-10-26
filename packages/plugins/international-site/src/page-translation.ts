@@ -607,9 +607,12 @@ export async function writePageTranslation(
       sharedNested.push(`${a.target.blockName} #${a.target.position} > ${a.target.nestedPath}`);
       continue;
     }
-    await cms.call("content_instances.set_values", {
-      id: current.nested.contentInstanceId,
-      values: translatedValues(current, source, a.strings),
+    await cms.call("page_module_content.set", {
+      pageId: p.variantPageId,
+      blockName: a.target.blockName,
+      position: a.target.position,
+      nestedPath: a.target.nestedPath,
+      contentValues: translatedValues(current, source, a.strings),
     });
     slotsApplied += 1;
   }

@@ -10,7 +10,7 @@
  * branch-isolated per chat until publish.
  */
 
-import { defineOperation, OperationAbortError } from "@caelo-cms/query-api";
+import { defineOperation, OperationAbortError, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok, pageModuleContentSetManySchema } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -105,6 +105,57 @@ export const getPageModuleContentOp = withHumanisedLinks(
 );
 
 /**
+ * The nested content instance at `path` inside the placement bound to
+ * `rootId`, as the caller sees it — or why it may not be written: it does
+ * not exist, or another page renders it too (`fork` names the remedy).
+ */
+async function resolveNestedTarget(
+  tx: TransactionRunner,
+  chatBranchId: string | null,
+  rootId: string,
+  path: string,
+): Promise<
+  { ok: true; contentInstanceId: string } | { ok: false; message: string; fork: boolean }
+> {
+  const rows = (await tx.execute(sql`
+    SELECT "values" FROM content_instances WHERE id = ${rootId}::uuid AND deleted_at IS NULL
+  `)) as unknown as { values: unknown }[];
+  let values = rows[0]
+    ? (((typeof rows[0].values === "string" ? JSON.parse(rows[0].values) : rows[0].values) ??
+        {}) as Record<string, unknown>)
+    : undefined;
+  if (chatBranchId) {
+    const branched = (await loadContentInstanceBranchStates(tx, [rootId], chatBranchId)).get(
+      rootId,
+    );
+    if (branched)
+      values = branched.deletedAt ? undefined : (branched.values as Record<string, unknown>);
+  }
+  if (values === undefined) {
+    return { ok: false, message: `content instance ${rootId} does not exist`, fork: false };
+  }
+  const tree = await loadNestedContent(tx, chatBranchId, [
+    { key: "root", contentInstanceId: rootId, values },
+  ]);
+  const hit = tree.get("root")?.find((n) => n.path === path);
+  if (!hit) {
+    return {
+      ok: false,
+      message: `no nested content at "${path}" — page_module_content.list_for_page lists the nested paths`,
+      fork: false,
+    };
+  }
+  if (!hit.exclusive) {
+    return {
+      ok: false,
+      message: `the nested content at "${path}" is shared with another page; writing it would change that page too`,
+      fork: true,
+    };
+  }
+  return { ok: true, contentInstanceId: hit.contentInstanceId };
+}
+
+/**
  * Set / upsert the content values for a placement. Emits a snapshot tagged
  * with the caller's `chat_branch_id` so the preview overlay shows the new
  * content only on the chat that authored it; publish merges the branch
@@ -127,6 +178,13 @@ export const setPageModuleContentOp = defineOperation({
        * `page_module_content.get` if they need merge semantics).
        */
       contentValues: z.record(z.string(), z.unknown()),
+      /**
+       * Write the NESTED content at this path inside the placement
+       * (`cards[2]`, `hero>cta`; the paths `list_for_page` returns)
+       * instead of the placement's own. The write is bound to this page:
+       * it is refused when another page renders the same nested instance.
+       */
+      nestedPath: z.string().min(1).max(500).optional(),
     })
     .strict(),
   output: z.object({ pageModuleContentId: z.string() }),
@@ -202,12 +260,47 @@ export const setPageModuleContentOp = defineOperation({
       });
     }
 
+    // Nested content: resolved from THIS placement's tree, written only
+    // when no other page renders it (plugins hold this op, never
+    // content_instances.set_values: a write stays bound to a page).
+    let targetId = placement.contentInstanceId;
+    if (input.nestedPath !== undefined) {
+      const nested = await resolveNestedTarget(
+        tx,
+        ctx.chatBranchId ?? null,
+        placement.contentInstanceId,
+        input.nestedPath,
+      );
+      if (!nested.ok) {
+        return err({
+          kind: "HandlerError",
+          operation: "page_module_content.set",
+          message: `${nested.message} (placement ${input.blockName}#${input.position} on page ${input.pageId})`,
+          ...(nested.fork
+            ? {
+                nextAction: {
+                  tool: "fork_placement_content",
+                  args: {
+                    pageId: input.pageId,
+                    blockName: input.blockName,
+                    position: input.position,
+                  },
+                  reason:
+                    "the fork copies the placement's nested content, so this page owns it; retry the write after the fork",
+                },
+              }
+            : {}),
+        });
+      }
+      targetId = nested.contentInstanceId;
+    }
+
     // Unsynced — write through to content_instances.set_values. The
     // op handles the lock + branch isolation + snapshot.
     const setValuesResult = await setContentInstanceValuesOp.handler(
       ctx,
       {
-        id: placement.contentInstanceId,
+        id: targetId,
         values: input.contentValues,
       },
       tx,

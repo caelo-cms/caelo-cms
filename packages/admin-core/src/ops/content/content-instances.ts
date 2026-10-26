@@ -1078,11 +1078,7 @@ async function nestedParentsInView(
 
 export const setContentInstanceValuesOp = defineOperation({
   name: "content_instances.set_values",
-  // Plugin actors too: international-site's translate_variant writes the
-  // translated text of a variant page's NESTED content (an instance only
-  // that page renders, page_module_content.list_for_page `nested`), which
-  // has no placement of its own to write through.
-  actorScope: ["human", "ai", "plugin", "system"],
+  actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: contentInstanceUpdateSchema,
   output: z.object({
