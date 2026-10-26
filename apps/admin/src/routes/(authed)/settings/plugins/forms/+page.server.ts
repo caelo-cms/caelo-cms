@@ -15,8 +15,6 @@ interface SubmissionRow {
   id: string;
   form_slug: string;
   page_id: string | null;
-  /** Null when the visitor had not consented to the visitor-id cookie (#677). */
-  visitor_id: string | null;
   data: Record<string, unknown>;
   status: string;
   submitted_at: string;

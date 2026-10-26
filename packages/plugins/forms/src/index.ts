@@ -4,13 +4,16 @@
  * @caelo-cms/plugin-forms — Tier-1 plugin: contact + generic form submissions.
  *
  * P12 PR2.1 — first visitor-facing plugin built on the SDK that P11/P11.5/P12
- * pioneered. Validates ctx.query (cms_public RLS-scoped writes), ctx.visitor
- * (records who submitted), ctx.captcha (P12 stub), gateway dispatch via
+ * pioneered. Validates ctx.query (cms_public RLS-scoped writes), ctx.captcha,
+ * gateway dispatch via
  * `POST /api/plugin/forms/submit`, and chat-runner tool registration.
  *
  * Schema (cms_public.plugin_forms.*):
  *   forms              — form definitions (slug, fields)
- *   form_submissions   — visitor-supplied data, status, visitor id
+ *   form_submissions   — visitor-supplied data, status. No visitor id: a
+ *                        submission is answered by what it says, so the
+ *                        plugin declares no consent purpose and never
+ *                        reads `ctx.visitor.id`.
  *
  * Operations:
  *   submit             — PUBLIC. Visitor calls via gateway. Captcha-gated.
@@ -89,8 +92,6 @@ interface SubmissionRow {
   id: string;
   form_slug: string;
   page_id: string | null;
-  /** Null when the visitor had not consented to the visitor-id cookie (#677). */
-  visitor_id: string | null;
   data: Record<string, unknown>;
   status: string;
   submitted_at: string;
@@ -112,7 +113,6 @@ export default definePlugin<PluginContextTier1>({
       id: "uuid",
       form_slug: "string",
       page_id: "string",
-      visitor_id: "string",
       data: "jsonb",
       status: "enum:new,read,archived,spam",
       submitted_at: "timestamp",
@@ -130,9 +130,7 @@ export default definePlugin<PluginContextTier1>({
      *
      * 1. Captcha gate (P12 stub passes everything in dev; P13 hardens).
      * 2. Verify the form definition exists.
-     * 3. Insert into form_submissions with visitor_id from ctx.visitor —
-     *    null when the visitor has not consented to the visitor-id
-     *    cookie (#677); a submission never needs it.
+     * 3. Insert into form_submissions.
      */
     submit: async (ctx, args) => {
       const input = args as SubmitInput;
@@ -157,7 +155,6 @@ export default definePlugin<PluginContextTier1>({
       const r = await ctx.query.insert("form_submissions", {
         form_slug: input.formSlug,
         page_id: input.pageId ?? "",
-        visitor_id: ctx.visitor.id,
         data: input.data,
         status: honeypotTripped ? "spam" : "new",
       });

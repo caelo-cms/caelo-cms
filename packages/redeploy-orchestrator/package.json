@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@caelo-cms/admin-core": "workspace:*",
+    "@caelo-cms/plugin-consent-manager": "workspace:*",
     "@caelo-cms/plugin-host": "workspace:*",
     "@caelo-cms/plugin-ratings": "workspace:*",
     "@caelo-cms/plugin-sandbox": "workspace:*"

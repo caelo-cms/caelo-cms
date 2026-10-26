@@ -127,6 +127,7 @@ export const pluginCapability = z.enum([
   "site_media_read",
   "content_variants",
   "link_resolve",
+  "consent_provider",
 ]);
 
 export type PluginCapability = z.infer<typeof pluginCapability>;
@@ -627,6 +628,92 @@ export interface PluginAuditFindingsArgs {
   readonly pages: readonly { readonly pageId: string; readonly path: string }[];
 }
 
+/** A plugin slug as a reference to another plugin (same shape as `pluginManifest.slug`). */
+const pluginSlugRef = z
+  .string()
+  .min(1)
+  .max(55)
+  .regex(/^[a-z][a-z0-9-]*$/, "must be a plugin slug (lowercase, dash-separated)");
+
+/**
+ * The consent categories a declared purpose may sit under. They are the
+ * consent provider's shipped categories (consent-manager seeds exactly
+ * these keys). `necessary` is listed so the type names the whole set,
+ * but a declaration may not use it — see {@link pluginConsentPurpose}.
+ */
+export const consentCategory = z.enum(["necessary", "functional", "analytics", "marketing"]);
+
+export type ConsentCategory = z.infer<typeof consentCategory>;
+
+/** The cookie the API gateway sets for the `visitor_id` purpose. Host-owned. */
+export const VISITOR_ID_COOKIE = "caelo_visitor_id";
+
+/** The purpose key that makes the gateway set {@link VISITOR_ID_COOKIE}. */
+export const VISITOR_ID_PURPOSE_KEY = "visitor_id";
+
+/** One cookie a declared purpose sets, worded for the banner and the privacy policy. */
+export const pluginConsentCookie = z
+  .object({
+    name: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[A-Za-z0-9_-]+$/, "a plain cookie name"),
+    /** How long it lives, in words ("30 days", "session"). */
+    lifetime: z.string().min(1).max(40),
+    /** What it does, for the visitor. */
+    purpose: z.string().min(1).max(500),
+  })
+  .strict();
+
+/**
+ * Something a plugin needs the visitor's consent for, and the cookies it
+ * sets for it. The consent provider classifies the purpose under
+ * `category`; the visitor's banner decision for that category decides
+ * whether it happens.
+ *
+ * `necessary` is refused: a necessary cookie needs no consent at all, so
+ * a plugin that could declare one would set it for every visitor,
+ * unasked — the opposite of what declaring a purpose is for. Strictly
+ * necessary cookies stay host-owned (the provider's own decision cookie).
+ */
+export const pluginConsentPurpose = z
+  .object({
+    /** Purpose key, e.g. `visitor_id`. The key core acts on is {@link VISITOR_ID_PURPOSE_KEY}. */
+    key: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z][a-z0-9_]*$/, "a snake_case purpose key"),
+    category: consentCategory.exclude(["necessary"], {
+      message:
+        "a declared purpose cannot be `necessary`: necessary cookies are set without consent, so declare the narrowest category the visitor can refuse (functional, analytics or marketing)",
+    }),
+    /** Why the plugin needs it, for the Owner and the banner copy. */
+    purpose: z.string().min(1).max(500),
+    cookies: z.array(pluginConsentCookie).max(10),
+  })
+  .strict();
+
+export type PluginConsentPurpose = z.infer<typeof pluginConsentPurpose>;
+
+/**
+ * One purpose as `ctx.consentPurposes.list()` returns it: a declaration
+ * of an active plugin, tagged by the host with the slug of the plugin
+ * that declared it (never by the plugin itself).
+ */
+export interface DeclaredConsentPurpose {
+  readonly pluginSlug: string;
+  readonly key: string;
+  readonly category: string;
+  readonly purpose: string;
+  readonly cookies: ReadonlyArray<{
+    readonly name: string;
+    readonly lifetime: string;
+    readonly purpose: string;
+  }>;
+}
+
 export const pluginManifest = z
   .object({
     // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
@@ -744,9 +831,65 @@ export const pluginManifest = z
     /** See `PluginDefinition.listResolveOperation`. Requires the
      *  `list_resolve` capability: it changes what lists render as. */
     hasListResolve: z.boolean().default(false),
+    /** See `PluginDefinition.requiresPlugins`. */
+    requiresPlugins: z.array(pluginSlugRef).max(20).optional(),
+    /** See `PluginDefinition.consentPurposes`. Data only — no capability:
+     *  a declaration asks the visitor, it never grants anything. */
+    consentPurposes: z.array(pluginConsentPurpose).max(20).optional(),
   })
   .strict()
   .superRefine((m, ctx) => {
+    const required = new Set<string>();
+    for (const [i, slug] of (m.requiresPlugins ?? []).entries()) {
+      if (slug === m.slug) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["requiresPlugins", i],
+          message: "a plugin cannot require itself",
+        });
+      }
+      if (required.has(slug)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["requiresPlugins", i],
+          message: `"${slug}" is required twice`,
+        });
+      }
+      required.add(slug);
+    }
+    const purposeKeys = new Set<string>();
+    for (const [i, p] of (m.consentPurposes ?? []).entries()) {
+      if (purposeKeys.has(p.key)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["consentPurposes", i, "key"],
+          message: `consent purpose "${p.key}" is declared twice`,
+        });
+      }
+      purposeKeys.add(p.key);
+      // `caelo_` cookies are the host's: a plugin names one only to say it
+      // relies on it, and the one it can rely on is the visitor id.
+      const names = p.cookies.map((c) => c.name);
+      for (const [j, name] of names.entries()) {
+        if (
+          name.startsWith("caelo_") &&
+          !(name === VISITOR_ID_COOKIE && p.key === VISITOR_ID_PURPOSE_KEY)
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["consentPurposes", i, "cookies", j, "name"],
+            message: `"caelo_" cookies are host-owned; only the "${VISITOR_ID_PURPOSE_KEY}" purpose may name ${VISITOR_ID_COOKIE}`,
+          });
+        }
+      }
+      if (p.key === VISITOR_ID_PURPOSE_KEY && !names.includes(VISITOR_ID_COOKIE)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["consentPurposes", i, "cookies"],
+          message: `the "${VISITOR_ID_PURPOSE_KEY}" purpose is the gateway's ${VISITOR_ID_COOKIE} cookie: list it`,
+        });
+      }
+    }
     // Epic #1107 — a plugin's list types are its own: the slug prefix
     // keeps them from ever colliding with (or replacing) a site's type.
     for (const [i, t] of (m.listTypes ?? []).entries()) {
@@ -1036,10 +1179,11 @@ export interface PluginVisitor {
   /** Opaque identifier, stable across requests from one browser for as
    *  long as the `caelo_visitor_id` cookie lives (30 days).
    *
-   *  NULL when the visitor has not consented to being recognised — no
-   *  decision yet, "reject all", or no consent provider on the site
-   *  (#677). The id is an analytics-category cookie, so most visitors in
-   *  the EU will arrive without one. An operation must work without it:
+   *  NULL unless some active plugin declares the `visitor_id` consent
+   *  purpose (`PluginDefinition.consentPurposes`) AND the visitor granted
+   *  the category it sits under — no decision yet, "reject all", no
+   *  consent provider on the site or no declaring plugin all mean null
+   *  (#677). Many visitors will arrive without one. An operation must work without it:
    *  store null, and skip whatever only makes sense for a recognised
    *  visitor (e.g. updating their earlier vote instead of adding one).
    *  Never substitute a value of your own — that would recreate the
@@ -1093,6 +1237,18 @@ export interface PluginEmail {
     html: string;
     replyTo?: string;
   }): Promise<{ messageId: string }>;
+}
+
+/**
+ * What the site's running plugins ask visitors to consent to — the
+ * `consentPurposes` of every ACTIVE (loaded) plugin, each tagged with the
+ * slug of the plugin that declared it. Granted by `consent_provider`: the
+ * plugin holding it decides how the site asks for consent, so it needs to
+ * know everything that has to be asked about. Read-only manifest data; a
+ * caller cannot add to, filter or rewrite it.
+ */
+export interface PluginConsentPurposes {
+  list(): Promise<ReadonlyArray<DeclaredConsentPurpose>>;
 }
 
 /** Tier 1 only — typed Query API call into cms_admin. The host gates
@@ -1449,6 +1605,8 @@ export interface PluginContextTier1 extends PluginContext {
   readonly ai?: PluginAi;
   readonly snapshots?: PluginSnapshots;
   readonly email?: PluginEmail;
+  /** Attached when the manifest holds (and the Owner granted) `consent_provider`. */
+  readonly consentPurposes?: PluginConsentPurposes;
 }
 
 /** Tier 1 only — declarative prompt-context renderer. Each entry on
@@ -1548,6 +1706,36 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
   ) => Promise<ReadonlyMap<string, string>> | ReadonlyMap<string, string>;
   /** Grants this plugin asks for; each is approved by the Owner (§14.5). */
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
+  /**
+   * Slugs of plugins that must be active for this one to run. Activation
+   * is refused until each is active (the error names the one to activate
+   * first), and a required plugin cannot be disabled or uninstalled while
+   * this one is active. A dependency is a promise about the running site,
+   * not a grant: requiring a plugin gives no access to its data or tools.
+   *
+   * @example
+   *   requiresPlugins: ["consent-manager"]
+   */
+  readonly requiresPlugins?: ReadonlyArray<string>;
+  /**
+   * What this plugin needs the visitor's consent for, and the cookies it
+   * sets for it (see {@link pluginConsentPurpose}). The site's consent
+   * provider lists the declarations of every active plugin
+   * (`ctx.consentPurposes`), classifies each under its category and names
+   * the cookies on the banner and in the privacy policy. Declaring the
+   * `visitor_id` purpose is what makes the API gateway set the
+   * `caelo_visitor_id` cookie at all — and only for visitors who granted
+   * its category.
+   *
+   * @example
+   *   consentPurposes: [{
+   *     key: "visitor_id",
+   *     category: "functional",
+   *     purpose: "Keeps one rating per visitor and page.",
+   *     cookies: [{ name: "caelo_visitor_id", lifetime: "30 days", purpose: "…" }],
+   *   }]
+   */
+  readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;
   /**
    * Runs each time the host brings the plugin up — at boot and when an
    * Owner activates it — on main, with `invocation.origin` `"system"`.
@@ -1806,6 +1994,8 @@ export function manifestFromDefinition(def: {
   readonly tools?: ReadonlyArray<PluginToolSpec>;
   readonly publicOperations?: ReadonlyArray<string>;
   readonly visitorProjection?: Readonly<Record<string, ReadonlyArray<string>>>;
+  readonly requiresPlugins?: ReadonlyArray<string>;
+  readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;
 }): PluginManifest {
   return pluginManifest.parse({
     slug: def.slug,
@@ -1847,6 +2037,17 @@ export function manifestFromDefinition(def: {
     ...(def.listSources && def.listSources.length > 0 ? { listSources: [...def.listSources] } : {}),
     ...(def.listTypes && def.listTypes.length > 0 ? { listTypes: [...def.listTypes] } : {}),
     ...(def.listExt ? { listExt: def.listExt } : {}),
+    ...(def.requiresPlugins && def.requiresPlugins.length > 0
+      ? { requiresPlugins: [...def.requiresPlugins] }
+      : {}),
+    ...(def.consentPurposes && def.consentPurposes.length > 0
+      ? {
+          consentPurposes: def.consentPurposes.map((p) => ({
+            ...p,
+            cookies: p.cookies.map((c) => ({ ...c })),
+          })),
+        }
+      : {}),
   });
 }
 

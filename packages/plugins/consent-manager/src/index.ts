@@ -361,6 +361,7 @@ export default definePlugin<PluginContextTier1>({
     "domain_events",
     "background_workers",
     "list_sources",
+    "consent_provider",
   ],
 
   /** Proof of consent. Written by the gateway on a visitor request. */
@@ -582,6 +583,12 @@ export default definePlugin<PluginContextTier1>({
     /** Everything the AI needs to set the banner up, in one call. */
     consent_status: async (ctx) => {
       const q = adminQueryOf(ctx);
+      if (!ctx.consentPurposes) {
+        throw new Error(
+          "consent-manager: ctx.consentPurposes missing — the consent_provider capability was not granted",
+        );
+      }
+      const declared = await ctx.consentPurposes.list();
       const settings = await settingsOf(q);
       const categories = await categoriesOf(q);
       return {
@@ -605,9 +612,11 @@ export default definePlugin<PluginContextTier1>({
           ],
           placement: "Put the banner module in the site LAYOUT — one placement covers every page.",
         },
-        // The cookies Caelo itself sets, so the banner's category copy and
-        // the privacy policy can name them (#677). Registered tags add
-        // their vendors' cookies on top.
+        // The cookies the site's own code sets, so the banner's category
+        // copy and the privacy policy can name them (#677): this plugin's
+        // decision cookie, plus whatever the active plugins declare
+        // (`consentPurposes`). Registered tags add their vendors' cookies
+        // on top.
         siteCookies: [
           {
             name: CONSENT_COOKIE,
@@ -615,13 +624,15 @@ export default definePlugin<PluginContextTier1>({
             lifetime: "1 year",
             purpose: "Remembers the visitor's consent choice.",
           },
-          {
-            name: "caelo_visitor_id",
-            category: "analytics",
-            lifetime: "30 days",
-            purpose:
-              "Recognises the same browser across requests to the site's forms, comments and ratings. Set only after the visitor grants analytics; deleted when they withdraw.",
-          },
+          ...declared.flatMap((p) =>
+            p.cookies.map((c) => ({
+              name: c.name,
+              category: p.category,
+              lifetime: c.lifetime,
+              purpose: c.purpose,
+              declaredBy: p.pluginSlug,
+            })),
+          ),
         ],
       };
     },
@@ -974,26 +985,37 @@ export default definePlugin<PluginContextTier1>({
     /**
      * Core's question to the consent provider (#677): which cookie holds
      * the visitor's decision, which policy version a decision must carry
-     * to count, and which category covers each core visitor-tracking
-     * purpose. The API gateway asks before it sets `caelo_visitor_id`.
+     * to count, and which category covers each purpose the active plugins
+     * declare. The API gateway asks before it sets `caelo_visitor_id`
+     * (the `visitor_id` purpose).
      *
-     * `visitor_id` → `analytics`: the cookie recognises one browser across
-     * visits for 30 days. Nothing the visitor asks for needs it — forms,
-     * comments, ratings and the captcha all work without it, and rate
-     * limiting falls back to the client IP — so it is not `necessary`.
-     * It does not remember a preference the visitor set, so it is not
-     * `functional`. What it does is link one browser's requests together
-     * (the gateway's request log, which submissions and votes came from
-     * the same browser), which is measuring how the site is used: the
-     * narrowest category that fits is `analytics`. Never `marketing`:
-     * nothing leaves the site and no advertising profile is built.
+     * The categories are the declaring plugins' own (`consentPurposes`,
+     * read through `ctx.consentPurposes`): the plugin that needs a purpose
+     * knows what it is for. Two plugins declaring one key under different
+     * categories get the stricter one (marketing > analytics >
+     * functional), so a visitor is never recognised under a looser
+     * consent than one of the uses asks for. No declaring plugin, no
+     * entry — and the gateway sets no cookie for a purpose nobody uses.
      */
     visitor_consent_rule: async (ctx) => {
       const settings = await settingsOf(adminQueryOf(ctx));
+      if (!ctx.consentPurposes) {
+        throw new Error(
+          "consent-manager: ctx.consentPurposes missing — the consent_provider capability was not granted",
+        );
+      }
+      const strictness = ["functional", "analytics", "marketing"];
+      const purposes: Record<string, string> = {};
+      for (const p of await ctx.consentPurposes.list()) {
+        const current = purposes[p.key];
+        if (current === undefined || strictness.indexOf(p.category) > strictness.indexOf(current)) {
+          purposes[p.key] = p.category;
+        }
+      }
       return {
         cookie: CONSENT_COOKIE,
         policyVersion: settings.policy_version,
-        purposes: { visitor_id: "analytics" },
+        purposes,
       };
     },
 

@@ -16,6 +16,7 @@ import consentPlugin from "@caelo-cms/plugin-consent-manager";
 import {
   bootstrap,
   collectBuildAssets,
+  loadedPlugins,
   MAIN_RENDER,
   resetPluginHost,
   resolveListSources,
@@ -215,20 +216,86 @@ describe("#451 — consent-manager", () => {
     expect(v.bannerContract.hooks.join(" ")).toContain("data-consent-accept-all");
   });
 
-  it("tells core which cookie, policy version and category govern the visitor id (#677)", async () => {
+  it("classifies no purpose and names only its own cookie while no plugin declares one", async () => {
     const r = await call("visitor_consent_rule");
     if (!r.ok) throw new Error(JSON.stringify(r.error));
-    expect(r.value).toEqual({
-      cookie: "caelo_consent",
-      policyVersion: 1,
-      purposes: { visitor_id: "analytics" },
-    });
-    // The AI names the same cookie, in the same category, in the banner copy.
+    expect(r.value).toEqual({ cookie: "caelo_consent", policyVersion: 1, purposes: {} });
     const status = await call("consent_status");
     if (!status.ok) throw new Error(JSON.stringify(status.error));
     const cookies = (status.value as { siteCookies: Array<{ name: string; category: string }> })
       .siteCookies;
-    expect(cookies.find((c) => c.name === "caelo_visitor_id")?.category).toBe("analytics");
+    expect(cookies.map((c) => [c.name, c.category])).toEqual([["caelo_consent", "necessary"]]);
+  });
+
+  it("builds the rule and the cookie list from the active plugins' declarations (#677)", async () => {
+    // Two running plugins declare purposes: the visitor id (functional, as
+    // ratings does) and, from another plugin, the same key under a stricter
+    // category plus a purpose of its own.
+    const declare = (slug: string, consentPurposes: unknown[]) =>
+      loadedPlugins.set({
+        pluginId: crypto.randomUUID(),
+        pluginActorId: crypto.randomUUID(),
+        slug,
+        version: "1.0.0",
+        tier: 1,
+        provenance: "release-signed",
+        definition: {
+          slug,
+          version: "1.0.0",
+          tier: 1,
+          schema: {},
+          operations: {},
+          consentPurposes: consentPurposes as never,
+        },
+      });
+    const visitorId = (category: string) => ({
+      key: "visitor_id",
+      category,
+      purpose: "Recognise the visitor.",
+      cookies: [{ name: "caelo_visitor_id", lifetime: "30 days", purpose: "Recognises them." }],
+    });
+    declare("t677-rates", [visitorId("functional")]);
+    try {
+      const r = await call("visitor_consent_rule");
+      if (!r.ok) throw new Error(JSON.stringify(r.error));
+      expect(r.value).toEqual({
+        cookie: "caelo_consent",
+        policyVersion: 1,
+        purposes: { visitor_id: "functional" },
+      });
+      // The AI names the same cookie, in the same category, in the banner copy.
+      const status = await call("consent_status");
+      if (!status.ok) throw new Error(JSON.stringify(status.error));
+      const cookies = (
+        status.value as {
+          siteCookies: Array<{ name: string; category: string; declaredBy?: string }>;
+        }
+      ).siteCookies;
+      expect(cookies.map((c) => [c.name, c.category, c.declaredBy])).toEqual([
+        ["caelo_consent", "necessary", undefined],
+        ["caelo_visitor_id", "functional", "t677-rates"],
+      ]);
+
+      declare("t677-stats", [
+        visitorId("analytics"),
+        {
+          key: "page_views",
+          category: "analytics",
+          purpose: "Count views.",
+          cookies: [{ name: "t677_views", lifetime: "1 year", purpose: "Counts views." }],
+        },
+      ]);
+      const stricter = await call("visitor_consent_rule");
+      if (!stricter.ok) throw new Error(JSON.stringify(stricter.error));
+      // One key, two categories: the stricter one governs it.
+      expect((stricter.value as { purposes: Record<string, string> }).purposes).toEqual({
+        visitor_id: "analytics",
+        page_views: "analytics",
+      });
+    } finally {
+      loadedPlugins.unload("t677-rates");
+      loadedPlugins.unload("t677-stats");
+    }
   });
 
   it("offers the categories to a module as a list source, not as markup", async () => {
