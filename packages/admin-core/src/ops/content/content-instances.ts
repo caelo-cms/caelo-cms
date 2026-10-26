@@ -64,6 +64,7 @@ import {
 } from "../../snapshots/index.js";
 import type { PageLayoutState } from "../../snapshots/state.js";
 import { jsonbParam } from "../../sql-helpers.js";
+import { cloneContentInstancesDeep } from "./content-instance-clone.js";
 import { findContentInstancesContaining } from "./content-instance-refs.js";
 
 // ─── Row shape returned by reads ─────────────────────────────────────
@@ -1672,28 +1673,18 @@ export const forkPlacementContentOp = defineOperation({
       });
     }
 
-    // Read the source instance's values so the fork starts as a deep copy.
-    const source = await loadContentInstanceStateWithBranchOverlay(
-      tx,
-      placement.contentInstanceId,
-      ctx.chatBranchId,
-    );
-    const valuesJson = JSON.stringify(source?.values ?? {});
-
-    // Mint the new (unsynced) content_instance, copy values, and bind
-    // the placement to it.
-    const minted = (await tx.execute(sql`
-      INSERT INTO content_instances
-        (module_id, "values", updated_by, chat_branch_id)
-      VALUES (
-        ${placement.moduleId}::uuid,
-        ${jsonbParam(valuesJson)},
-        ${ctx.actorId}::uuid,
-        ${ctx.chatBranchId ?? null}::uuid
-      )
-      RETURNING id::text AS id
-    `)) as unknown as { id: string }[];
-    const newCiId = minted[0]?.id;
+    // The fork starts as a deep copy of what the placement shows on the
+    // caller's branch — nested module / module-list content included, so
+    // editing the fork's nested sections never edits the shared source's.
+    const forked = await cloneContentInstancesDeep(tx, ctx, [placement.contentInstanceId]);
+    if (!forked.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "placement.fork_content",
+        message: forked.message,
+      });
+    }
+    const newCiId = forked.ids[0];
     if (!newCiId) {
       return err({
         kind: "HandlerError",
