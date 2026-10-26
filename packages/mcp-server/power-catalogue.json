@@ -966,7 +966,7 @@
     },
     {
       "name": "list_plugins",
-      "description": "Installed plugins with `status` (Owner's decision) and `health` (what running servers make of it).\n- status: `active` = Owner wants it running | `awaiting_activation` = installed + verified, nothing loaded | `disabled` = Owner stopped it.\n- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\nUSE FOR a capability you have no tool for (translation, forms, comments, newsletter, ratings): plugin installed-but-inactive -> TELL the operator it exists and one click at /settings/plugins turns it on. Plugins on disk that failed verification follow the table: NOT installed -> explain why + the fix.\nDO NOT USE as a general capability check before routine work — your tool catalogue already reflects everything running.",
+      "description": "Installed plugins with `status` (Owner's decision) and `health` (what running servers make of it).\n- status: `active` = Owner wants it running | `awaiting_activation` = installed + verified, nothing loaded | `disabled` = Owner stopped it.\n- Availability ONLY from health: `running` = tools/skills usable now | `failing` = active but failed to load on a server (`problem` says why; NOT switched off -> tell the operator, details in `get_plugin`) | `unreported` = active, no server reported yet | `not_running` = not active. Never say a capability works while its plugin is failing.\n- `requires` = plugins that must be active first (activate those first, in that order) | `required_by` = active plugins needing this one (it cannot be disabled or uninstalled until they are).\nUSE FOR a capability you have no tool for (translation, forms, comments, newsletter, ratings): plugin installed-but-inactive -> TELL the operator it exists and one click at /settings/plugins turns it on. Plugins on disk that failed verification follow the table: NOT installed -> explain why + the fix.\nDO NOT USE as a general capability check before routine work — your tool catalogue already reflects everything running.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5060,7 +5060,8 @@
               "image_generation",
               "site_media_read",
               "content_variants",
-              "link_resolve"
+              "link_resolve",
+              "consent_provider"
             ]
           },
           "target": {
@@ -6977,7 +6978,7 @@
     },
     {
       "name": "get_plugin",
-      "description": "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, validator findings, declared tools/skills/capabilities, AI spend last 24h vs its cap. Never returns source.\nUSE FOR: when `list_plugins`' summary isn't enough: why it fails or a submission was rejected, what an inactive plugin adds before `activate_plugin`, whether it nears its AI cap.\nErrors: `core` = Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team -> repeat exactly, never say the team knows unless it says sent | `plugin` = the plugin's own code | `transient` = retried. Errors never switch a plugin off.",
+      "description": "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\nUSE FOR: when `list_plugins`' summary isn't enough: why it fails or a submission was rejected, what an inactive plugin adds before `activate_plugin`, whether it nears its AI cap.\nErrors: `core` = Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team -> repeat exactly, never say the team knows unless it says sent | `plugin` = the plugin's own code | `transient` = retried. Errors never switch a plugin off.",
       "inputSchema": {
         "type": "object",
         "properties": {

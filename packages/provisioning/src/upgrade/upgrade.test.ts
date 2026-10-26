@@ -50,7 +50,8 @@ const secretRef = (name: string, secret: string) => ({
 
 /**
  * A described service, as `gcloud run services describe --format=json`
- * returns it. `ingress`: the service-level setting (#732).
+ * returns it. `ingress`: the service-level setting (#732). Always-on CPU,
+ * as every install the stacks created before `cpuIdle` was set runs.
  */
 const serviceJson = (image: string, env: unknown[], ingress = "all") =>
   JSON.stringify({
@@ -59,6 +60,7 @@ const serviceJson = (image: string, env: unknown[], ingress = "all") =>
       template: {
         metadata: {
           annotations: {
+            "run.googleapis.com/cpu-throttling": "false",
             "run.googleapis.com/network-interfaces": JSON.stringify([
               { network: "caelo-production-vpc", subnetwork: "caelo-production-subnet" },
             ]),
@@ -695,6 +697,20 @@ describe("upgradeGcpInstall — converge, then app-roll", () => {
     expect(gateway).toContain("--timeout=3600");
     expect(admin).not.toContain("--timeout");
     // No extra revision: everything rides the image rolls.
+    expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(2);
+  });
+
+  it("moves the gateway to request-based CPU in its image roll; the admin keeps its CPU", async () => {
+    const events: string[] = [];
+    const { deps, calls } = upgradeDeps(events);
+    expect(await upgradeGcpInstall(TARGET, deps)).toBe(true);
+    const rolls = calls.filter((c) =>
+      /^run services update \S+ --region europe-west1 .*--image/.test(c),
+    );
+    const admin = rolls.find((c) => c.startsWith(`run services update ${ADMIN} `)) ?? "";
+    const gateway = rolls.find((c) => c.startsWith(`run services update ${GATEWAY} `)) ?? "";
+    expect(gateway).toContain("--cpu-throttling");
+    expect(admin).not.toContain("cpu-throttling");
     expect(calls.filter((c) => /^run services update /.test(c))).toHaveLength(2);
   });
 

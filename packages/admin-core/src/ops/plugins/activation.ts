@@ -25,6 +25,11 @@
  * hook does it (see `gated-tools.ts`).
  */
 
+import {
+  inactiveRequiredPlugins,
+  requiredPluginsOf,
+  requirementsMessage,
+} from "@caelo-cms/plugin-host";
 import { externalArtifactDigest, validatePlugin } from "@caelo-cms/plugin-sandbox";
 import { defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
@@ -48,6 +53,8 @@ interface ActivationManifest {
   skills?: Array<{ slug?: string }>;
   workers?: unknown[];
   requestedCapabilities?: string[];
+  requiresPlugins?: string[];
+  consentPurposes?: Array<{ key: string; category: string; cookies: Array<{ name: string }> }>;
 }
 
 export const proposePluginActivationOp = defineOperation({
@@ -101,6 +108,17 @@ export const proposePluginActivationOp = defineOperation({
       });
     }
 
+    // A plugin that requires another runs only while that one does: say
+    // which to activate first instead of queueing a card that cannot apply.
+    const missing = await inactiveRequiredPlugins(tx, requiredPluginsOf(plugin.manifest_json));
+    if (missing.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.propose_activation",
+        message: requirementsMessage(input.slug, missing),
+      });
+    }
+
     const manifest = (plugin.manifest_json ?? {}) as ActivationManifest;
     const payload = {
       slug: input.slug,
@@ -121,6 +139,13 @@ export const proposePluginActivationOp = defineOperation({
       backgroundWorkers: (manifest.workers ?? []).length,
       urlSlotsClaimed: (manifest.urlContributions ?? []).map((c) => c.slot),
       capabilities: manifest.requestedCapabilities ?? [],
+      requiresPlugins: manifest.requiresPlugins ?? [],
+      // What visitors will be asked to consent to once it runs.
+      consentPurposes: (manifest.consentPurposes ?? []).map((p) => ({
+        key: p.key,
+        category: p.category,
+        cookies: p.cookies.map((c) => c.name),
+      })),
       schemasProvisioned: [
         ...Object.keys(manifest.schema ?? {}).map((t) => `cms_public.${t}`),
         ...Object.keys(manifest.adminSchema ?? {}).map((t) => `cms_admin.${t}`),
@@ -245,6 +270,14 @@ const executePluginActivationOpDefinition = defineOperation({
     }
 
     const artifact = current[0];
+    const missing = await inactiveRequiredPlugins(tx, requiredPluginsOf(artifact?.manifest_json));
+    if (missing.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.execute_activation",
+        message: requirementsMessage(payload.slug, missing),
+      });
+    }
     if (
       artifact?.tier === 2 &&
       payload.artifactDigest !==

@@ -10,7 +10,9 @@
  *   2. plugin manifest's `gateway.rateLimits[op]`
  *   3. default fallback (30 req / 60s)
  *
- * Key: `gateway:${pluginSlug}:${operation}:${visitorId}`
+ * Key: `gateway-ip:${pluginSlug}:${operation}:${clientAddressHash}` —
+ * never the visitor cookie, which a client sheds at will (see
+ * {@link ipScopedRateLimitKey}).
  *
  * Token-bucket overlay (10 tokens, refill 1/s) lives in the same row's
  * `tokens_remaining` + `last_refill_at` columns; a single tx checks the
@@ -268,25 +270,15 @@ export async function consumeRateLimit(
   };
 }
 
-export function rateLimitKey(pluginSlug: string, operation: string, visitorId: string): string {
-  return `gateway:${pluginSlug}:${operation}:${visitorId}`;
-}
-
 /**
- * P13 audit re-pass — IP-hash rate-limit key.
+ * The rate-limit key: the (plugin, operation) pair and the hash of the
+ * client address the deployment's proxies vouch for.
  *
- * When a visitor presents no signed cookie (fresh visitor OR honeypot
- * branch where we deliberately don't mint one), the bare visitorId
- * is a fresh UUID per request — meaning every bot retry creates a new
- * `gateway_rate_limit_buckets` row + escapes per-visitor throttling. Hashing
- * the request's source IP and combining it with the slug pins the
- * bucket to the (origin, op) pair regardless of cookie state, so a
- * bot can't multiply rows by spinning fresh uuids.
- *
- * Real users behind shared NAT are throttled together, which is the
- * usual + correct trade-off for honeypot / pre-cookie traffic. Once
- * a visitor has a signed cookie we revert to the per-visitor key
- * (fairer rate budgets for legit traffic).
+ * Why not the visitor cookie: a budget keyed by something the client
+ * holds is one the client resets — drop the cookie (or never accept it)
+ * and every request starts a fresh bucket. The address pins the bucket
+ * whatever the cookie state. Real users behind a shared NAT are throttled
+ * together, which is the usual trade-off.
  */
 export function ipScopedRateLimitKey(
   pluginSlug: string,

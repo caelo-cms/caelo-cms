@@ -34,6 +34,11 @@ export {
   type PluginClientAsset,
 } from "./client-assets.js";
 export {
+  consentPurposeDeclared,
+  declaredConsentPurposes,
+  pluginDeclaresConsentPurpose,
+} from "./consent-purposes.js";
+export {
   contentVariantProblemMarker,
   hasContentVariantContributors,
   type ResolvedContentVariant,
@@ -154,6 +159,14 @@ export {
   pluginFailedHereReason,
   pluginRunsHere,
 } from "./local-availability.js";
+export {
+  activeDependentsOf,
+  dependentsMessage,
+  type InactiveRequirement,
+  inactiveRequiredPlugins,
+  requiredPluginsOf,
+  requirementsMessage,
+} from "./plugin-dependencies.js";
 export type { PluginRowLocker } from "./private-storage.js";
 export {
   type PromptContextRenderer,

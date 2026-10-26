@@ -161,11 +161,24 @@ export function formatPluginError(e: {
   return `[${e.phase}, ${e.errorClass}${report ? `, ${report}` : ""}] ${e.occurrences}x, last ${e.lastSeenAt}: ${e.message}`;
 }
 
+/** A manifest's `consentPurposes`, one `key (category): cookie, …` entry each. */
+function consentPurposesLine(raw: unknown): string {
+  if (!Array.isArray(raw) || raw.length === 0) return "(none)";
+  return raw
+    .map((p: { key?: unknown; category?: unknown; cookies?: unknown }) => {
+      const cookies = Array.isArray(p.cookies)
+        ? p.cookies.map((c: { name?: unknown }) => String(c?.name ?? "")).join(", ")
+        : "";
+      return `${String(p.key)} (${String(p.category)}): ${cookies || "no cookies"}`;
+    })
+    .join("; ");
+}
+
 /** One plugin's detail + its last-24h AI spend against its cap. */
 export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
   name: "get_plugin",
   description:
-    "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, validator findings, declared tools/skills/capabilities, AI spend last 24h vs its cap. Never returns source.\n" +
+    "Read one plugin in detail: version, tier, status, signature, health (loaded on the running servers? why not), recent errors, validator findings, declared tools/skills/capabilities, required plugins + active plugins requiring it, what it asks visitors to consent to (purpose, category, cookies), AI spend last 24h vs its cap. Never returns source.\n" +
     "USE FOR: when `list_plugins`' summary isn't enough: why it fails or a submission was rejected, what an inactive plugin adds before `activate_plugin`, whether it nears its AI cap.\n" +
     "Errors: `core` = Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team -> repeat exactly, never say the team knows unless it says sent | `plugin` = the plugin's own code | `transient` = retried. Errors never switch a plugin off.",
   schema: getPluginInput,
@@ -186,6 +199,9 @@ export const getPluginTool: ToolDefinitionWithHandler<GetPluginInput> = {
       `tools: ${names(m.tools).join(", ") || "(none)"}`,
       `skills: ${names(m.skills).join(", ") || "(none)"}`,
       `requested capabilities: ${Array.isArray(m.requestedCapabilities) ? m.requestedCapabilities.join(", ") || "(none)" : "(none)"}`,
+      `requires plugins: ${plugin.requiresPlugins.join(", ") || "(none)"} (each must be active first)`,
+      `required by (active): ${plugin.requiredBy.join(", ") || "(none)"}`,
+      `consent purposes: ${consentPurposesLine(m.consentPurposes)}`,
     ];
     const h = plugin.health;
     lines.push(
