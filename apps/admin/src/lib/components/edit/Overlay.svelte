@@ -35,7 +35,7 @@
     DropdownMenuTrigger,
   } from "#lib/components/ui/dropdown-menu/index.js";
   import { cn } from "#lib/utils.js";
-  import { overlayPositionStyle } from "./overlay-position.js";
+  import { isCompactOverlay, overlayPositionStyle } from "./overlay-position.js";
   import {
     DEFAULT_LAYOUT,
     debounced,
@@ -134,7 +134,7 @@
   // swallows the click and the user can't actually use the toolbar.
   let dragState: { startX: number; startY: number; origX: number; origY: number } | null = null;
   function onPointerDownTitle(e: PointerEvent): void {
-    if (docked || layout.pin !== "floating") return;
+    if (docked || compact || layout.pin !== "floating") return;
     const target = e.target as HTMLElement | null;
     if (target && target.closest("button") !== null) return;
     dragState = {
@@ -231,8 +231,22 @@
     onDragStateChange?.(false);
   }
 
+  // The window size, measured in the browser (undefined during SSR). It keeps
+  // every pin mode on screen and switches phones to the full-width surface.
+  let innerWidth = $state<number | undefined>(undefined);
+  let innerHeight = $state<number | undefined>(undefined);
+  const viewport = $derived(
+    innerWidth !== undefined && innerHeight !== undefined
+      ? { width: innerWidth, height: innerHeight }
+      : undefined,
+  );
+  /** Phone width: one full-width chat under the toolbar; no float / pin / resize. */
+  const compact = $derived(!docked && isCompactOverlay(viewport));
+
   // Position styles per pin mode.
-  const positionStyle = $derived(overlayPositionStyle(layout, { docked, chromeBottom }));
+  const positionStyle = $derived(
+    overlayPositionStyle(layout, { docked, chromeBottom, viewport }),
+  );
 
   function handleToolResult(payload: ToolResultPayload): void {
     onToolResult?.(payload);
@@ -300,6 +314,8 @@
   }
 </script>
 
+<svelte:window bind:innerWidth bind:innerHeight />
+
 {#if layout.collapsed && !docked}
   <button
     type="button"
@@ -316,12 +332,14 @@
   <Card
     class={cn(
       "fixed z-40 flex flex-col overflow-hidden",
-      layout.pin !== "floating" && "rounded-none",
+      (layout.pin !== "floating" || compact) && "rounded-none",
     )}
     style={positionStyle}
+    data-testid="live-edit-overlay"
+    data-compact={compact ? "true" : undefined}
   >
     <!-- Pinned-bottom: top-edge resize handle -->
-    {#if !docked && layout.pin === "pinned-bottom"}
+    {#if !docked && !compact && layout.pin === "pinned-bottom"}
       <button
         type="button"
         aria-label="Resize chat strip height"
@@ -336,7 +354,7 @@
     {/if}
 
     <!-- Pinned-right: left-edge resize handle -->
-    {#if !docked && layout.pin === "pinned-right"}
+    {#if !docked && !compact && layout.pin === "pinned-right"}
       <button
         type="button"
         aria-label="Resize chat strip width"
@@ -357,15 +375,17 @@
       aria-label="Live-edit overlay controls"
       class={cn(
         "flex items-center gap-1 border-b bg-muted/40 px-3 py-1.5",
-        layout.pin === "floating" && "cursor-move",
+        layout.pin === "floating" && !compact && "cursor-move",
       )}
       onpointerdown={onPointerDownTitle}
       onpointermove={onPointerMoveTitle}
       onpointerup={onPointerUpTitle}
       onpointercancel={onPointerUpTitle}
     >
-      <GripHorizontal class="size-4 text-muted-foreground" />
-      <span class="text-xs font-medium text-muted-foreground">Live edit</span>
+      {#if !compact}
+        <GripHorizontal class="size-4 text-muted-foreground" />
+        <span class="text-xs font-medium text-muted-foreground">Live edit</span>
+      {/if}
 
       <!-- Chat picker — page-bound + global, with active-chat label
            visible without requiring the dropdown to open. v0.2.14
@@ -382,7 +402,10 @@
               aria-label="Switch chat"
               title="Switch chat"
               data-testid="chat-picker-trigger"
-              class="ml-1 h-7 max-w-[160px] gap-1.5 px-2 text-xs font-normal"
+              class={cn(
+                "ml-1 h-7 max-w-[160px] gap-1.5 px-2 text-xs font-normal",
+                compact && "ml-0 h-9 max-w-[55vw]",
+              )}
             >
               <History class="size-3 shrink-0" />
               <span class="truncate">{session.title || "chat"}</span>
@@ -504,7 +527,22 @@
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {#if !docked}
+      {#if compact}
+        <!-- Phones: the chat fills the screen under the toolbar, so the one
+             control is "show the page"; the round button brings it back. -->
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onclick={toggleCollapsed}
+          aria-label="Collapse"
+          title="Show the page"
+          class="ml-auto h-9 gap-1.5 px-3 text-xs"
+        >
+          <Minimize2 class="size-4" />
+          Show page
+        </Button>
+      {:else if !docked}
       <div class="ml-auto flex items-center gap-1">
         <Button
           type="button"
@@ -579,7 +617,7 @@
     />
 
     <!-- SE-corner resize (floating mode only) -->
-    {#if !docked && layout.pin === "floating"}
+    {#if !docked && !compact && layout.pin === "floating"}
       <button
         type="button"
         aria-label="Resize overlay"
