@@ -178,7 +178,8 @@ export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTr
       {},
     ),
     cms.call<{ pages: PageInfo[] }>("pages.list", {}),
-    cms.call<{ pageTypes: { slug: string; definition: PageTypeDef }[] }>("page_types.list", {}),
+    // page_types.list returns each definition's fields on the row itself.
+    cms.call<{ pageTypes: PageTypeDef[] }>("page_types.list", {}),
   ]);
   const listTypes = new Map(types.listTypes.map((t) => [t.slug, t.definition]));
   const variants = (await readAll<PageVariantRow>(deps, "page_variants")).filter((v) =>
@@ -242,7 +243,7 @@ export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTr
   }
 
   // Page properties of language versions: the source page's value is the text.
-  const typeBySlug = new Map(pageTypes.pageTypes.map((t) => [t.slug, t.definition]));
+  const typeBySlug = new Map(pageTypes.pageTypes.map((t) => [t.slug, t]));
   const sourceByGroup = new Map(
     variants.filter((v) => v.translation_status === "source").map((v) => [v.group_id, v.page_id]),
   );
