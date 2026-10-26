@@ -158,6 +158,10 @@
    */
   const breadcrumbCrumbs = $derived(
     (() => {
+      // A plugin panel's path has no pages above it (/plugins, /plugins/<slug>):
+      // its one crumb is the panel, named as in the nav.
+      const panel = nav.plugins.find((l) => l.href === page.url.pathname);
+      if (panel) return [{ href: panel.href, label: panel.label }];
       const parts = page.url.pathname.split("/").filter((s) => s.length > 0);
       const out: { href: string; label: string }[] = [];
       let acc = "";

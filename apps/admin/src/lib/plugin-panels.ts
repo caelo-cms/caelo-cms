@@ -131,14 +131,6 @@ export function mapArgs(
   return { ok: true, args };
 }
 
-/**
- * Zod schema for the JSON an action form posts back for `argNames`: an
- * object with exactly those keys. `values` decides what each may hold.
- */
-export function postedArgsSchema(argNames: readonly string[], values: z.ZodType) {
-  return z.strictObject(Object.fromEntries(argNames.map((a) => [a, values])));
-}
-
 /** Primitive argument values a row contributes. */
 export const primitiveValue = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
