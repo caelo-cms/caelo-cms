@@ -30,8 +30,9 @@
  * object storage.
  */
 
-import type { PhaseTiming } from "@caelo-cms/shared";
+import type { PhaseTiming, RedirectTableRow } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
+import type { UnservedRedirectTarget } from "./redirect-sync-plan.js";
 
 /**
  * Per-provider summary of a publish step. Persisted into
@@ -166,6 +167,19 @@ export interface StaticPublisher {
   }): Promise<PromoteSummary>;
 
   /**
+   * #1157 — put the redirects table live on `target` WITHOUT a build: compute
+   * the redirect plan against the files of the build the target serves now
+   * (the live page wins) and write it where this provider answers redirects
+   * (Firebase: a new Hosting release of the served version with the new
+   * `config.redirects`; GCP: the URL map's redirect rules; self-hosted: the
+   * `_redirects.caddy` snippet Caddy reloads). A plan the provider already
+   * answers is not written again (`unchanged`). A target this provider serves
+   * no redirects for answers `not-served`. Throws when the plan cannot be
+   * built (a loop) or written — the caller records the failure and retries.
+   */
+  syncRedirects(args: RedirectSyncArgs): Promise<RedirectSyncResult>;
+
+  /**
    * #650 / #908 / #969 — make `servedRunId`'s public preview the one staging
    * serves, and retire every other one. A preview is created with a short
    * TTL, so a Stage that fails before it is selected leaves nothing that
@@ -222,6 +236,34 @@ export async function loadStaticPublisher(provider?: string): Promise<StaticPubl
         `loadStaticPublisher: unknown CAELO_PROVIDER='${provider}'. Expected one of: self-hosted | gcp | gcp-firebase | aws | azure.`,
       );
   }
+}
+
+/** Input of {@link StaticPublisher.syncRedirects}. */
+export interface RedirectSyncArgs {
+  readonly target: DeployTarget;
+  /** Every row of the redirects table. */
+  readonly rows: readonly RedirectTableRow[];
+  /** The deploy run whose build the target serves (staging: the served preview's run). */
+  readonly servedRunId: string;
+  /** The directory relative `target.outDir` values resolve against (self-hosted). */
+  readonly outputRoot: string;
+}
+
+/** What {@link StaticPublisher.syncRedirects} did. */
+export interface RedirectSyncResult {
+  /**
+   * `applied`: the provider now answers the plan; `unchanged`: it already
+   * did; `not-served`: this provider serves no redirects on this target.
+   */
+  readonly outcome: "applied" | "unchanged" | "not-served";
+  readonly redirectCount: number;
+  readonly goneCount: number;
+  /** Rows left out because a file of the served build answers their path. */
+  readonly shadowedCount: number;
+  /** Redirects whose target the served build does not have (draft pages, until Publish live). */
+  readonly unservedTargets: readonly UnservedRedirectTarget[];
+  /** Provider-native location of what serves the plan (Hosting version, URL map, file). */
+  readonly location: string;
 }
 
 /** What {@link StaticPublisher.selectStagingPreview} did with the other previews. */

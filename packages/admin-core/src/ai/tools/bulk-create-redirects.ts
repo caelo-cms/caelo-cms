@@ -9,6 +9,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { bulkCreateRedirectsToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { redirectSyncNote } from "./_redirect-sync-note.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
@@ -16,12 +17,8 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
 > = {
   name: "bulk_create_redirects",
   description:
-    "Create up to 500 redirects in one transaction. " +
-    "Use when the user provides a list (e.g. 'redirect /old-blog/* to /blog/*' for many paths, " +
-    "or pastes a CSV / table of mappings). " +
-    "Pass `upsert: true` to update existing fromPath rows instead of skipping them. " +
-    "Prefer this over multiple `redirects.create` calls — one round-trip vs N. " +
-    "For a single redirect, use `redirects.create` directly.",
+    "Create up to 500 redirects in one transaction (a pasted list/CSV of old -> new paths, or one). `upsert: true` updates existing fromPath rows instead of skipping them.\n" +
+    "Live on the site when the call returns: pushed to hosting without a build or Publish live. The result says so per target and names redirects whose target page is not published yet (404 there until Publish live).",
   schema: bulkCreateRedirectsToolInput,
   inputSchema: {
     type: "object",
@@ -60,7 +57,7 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
     const v = r.value as { created: number; updated: number; skipped: number };
     return {
       ok: true,
-      content: `redirects: created=${v.created}, updated=${v.updated}, skipped=${v.skipped}`,
+      content: `redirects: created=${v.created}, updated=${v.updated}, skipped=${v.skipped}\n${await redirectSyncNote(ctx, toolCtx)}`,
     };
   },
 };

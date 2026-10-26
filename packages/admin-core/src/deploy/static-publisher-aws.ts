@@ -22,6 +22,7 @@
  *   - AWS region resolved by the SDK from environment.
  *
  * #587 — redirects: the real publisher must also write the redirect plan (`buildRedirectPlan` → `cloudFrontKeyValueEntries`, @caelo-cms/shared) into the stack's CloudFront KeyValueStore after the files are live, or AWS installs answer every recorded 301 with a 404.
+ * #1157 — and `syncRedirects` must write the plan into the KeyValueStore on save, without a build, against the live build's files (see deploy/redirect-sync.ts).
  * FIXME(issue #749): implement with the publisher.
  *
  * Per CLAUDE.md §2 (no fallbacks pre-1.0): the stub throws loudly
@@ -43,6 +44,10 @@ export const s3StaticPublisher: StaticPublisher = {
     throw new Error(NOT_IMPLEMENTED);
   },
   async rollback() {
+    throw new Error(NOT_IMPLEMENTED);
+  },
+  // #1157 — no publisher, so nothing is ever live to sync redirects onto.
+  async syncRedirects() {
     throw new Error(NOT_IMPLEMENTED);
   },
 };

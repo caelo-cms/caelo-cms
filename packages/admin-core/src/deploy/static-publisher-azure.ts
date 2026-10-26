@@ -15,6 +15,7 @@
  *   - storage account credentials via DefaultAzureCredential.
  *
  * #587 — redirects: the real publisher must also replace the stack's Front Door rule set rules with the redirect plan (`buildRedirectPlan` → `frontDoorRedirectRules`, @caelo-cms/shared) after the files are live, or Azure installs answer every recorded 301 with a 404.
+ * #1157 — and `syncRedirects` must replace the rule set rules on save, without a build, against the live build's files (see deploy/redirect-sync.ts).
  * FIXME(issue #750): implement with the publisher.
  *
  * Per CLAUDE.md §2 (no fallbacks pre-1.0): the stub throws loudly
@@ -35,6 +36,10 @@ export const azureStaticPublisher: StaticPublisher = {
     throw new Error(NOT_IMPLEMENTED);
   },
   async rollback() {
+    throw new Error(NOT_IMPLEMENTED);
+  },
+  // #1157 — no publisher, so nothing is ever live to sync redirects onto.
+  async syncRedirects() {
     throw new Error(NOT_IMPLEMENTED);
   },
 };

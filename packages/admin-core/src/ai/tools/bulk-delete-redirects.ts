@@ -9,6 +9,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { bulkDeleteRedirectsToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { redirectSyncNote } from "./_redirect-sync-note.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const bulkDeleteRedirectsTool: ToolDefinitionWithHandler<
@@ -16,15 +17,10 @@ export const bulkDeleteRedirectsTool: ToolDefinitionWithHandler<
 > = {
   name: "bulk_delete_redirects",
   description:
-    "Delete redirects in one tx by id list, fromPath list, or substring match. Provide EXACTLY ONE of " +
-    "`redirectIds`, `fromPaths`, `matches`. " +
-    "Always run `find_redirects` FIRST to preview what will be removed; surface the count to the user " +
-    "before calling this. " +
-    "**`matches` is capped at 10 rows for you** (CLAUDE.md §11.A — a substring match's blast radius is hard to " +
-    "predict, and every deleted 301 strands an inbound link). If it would hit more, the call is REJECTED and " +
-    "nothing is deleted: list them with `find_redirects`, show the operator the list, and delete the confirmed " +
-    "ones by explicit `redirectIds`. That path is uncapped because you enumerated exactly what goes. " +
-    "Don't use for a single deletion — use `redirects.delete` instead.",
+    "Delete redirects in one transaction by EXACTLY ONE of `redirectIds` | `fromPaths` | `matches` (substring of fromPath). " +
+    "Run `find_redirects` first and tell the operator the count.\n" +
+    "`matches` is capped at 10 rows for you (a substring match's blast radius is hard to predict; every deleted 301 strands inbound links): over the cap the call is REJECTED, nothing deleted -> list with `find_redirects`, show the operator, delete the confirmed ones by `redirectIds` (uncapped).\n" +
+    "Gone from the live site when the call returns (pushed to hosting, no build); the result says so per target.",
   schema: bulkDeleteRedirectsToolInput,
   inputSchema: {
     type: "object",
@@ -50,7 +46,7 @@ export const bulkDeleteRedirectsTool: ToolDefinitionWithHandler<
     }
     return {
       ok: true,
-      content: `redirects deleted: ${(r.value as { deleted: number }).deleted}`,
+      content: `redirects deleted: ${(r.value as { deleted: number }).deleted}\n${await redirectSyncNote(ctx, toolCtx)}`,
     };
   },
 };

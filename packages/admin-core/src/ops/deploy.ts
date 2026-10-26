@@ -75,6 +75,7 @@ import {
   describeMissingMetaDescriptions,
   pagesMissingMetaDescription,
 } from "../deploy/missing-seo.js";
+import { resolveOutputRoot } from "../deploy/output-root.js";
 import {
   activePluginProblems,
   deployPluginProblem,
@@ -82,6 +83,7 @@ import {
   stagedWithoutPlugins,
 } from "../deploy/plugin-problems.js";
 import { ProgressThrottle } from "../deploy/progress-throttle.js";
+import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
 import { stagingSiteUrl } from "../deploy/staging-domain.js";
 import { lockStagingPublication } from "../deploy/staging-publication-lock.js";
 import {
@@ -108,24 +110,6 @@ import {
 } from "./quality/production-gate.js";
 import { computeRenderFingerprint } from "./quality/render-fingerprint.js";
 import { setStagingOrigin } from "./staging_access.js";
-
-/**
- * Resolve the root directory that relative `deploy_targets.out_dir`
- * values are joined against.
- *
- * Migration run #9 R10 (issue #262): defaulting straight to
- * `process.cwd()` silently couples build placement to wherever the
- * admin process happens to run. In dev-compose the Caddy containers
- * bind-mount the *checkout's* `apps/admin/output/<env>`, so an admin
- * started from a worktree/tmp copy wrote every build into a directory
- * nothing served — while reporting success. `CAELO_OUTPUT_ROOT` lets an
- * operator pin the output root to the directory the serving layer
- * actually mounts (for the dev compose stack: `<checkout>/apps/admin`).
- * An explicit per-call `repoRoot` (tests) still wins.
- */
-function resolveOutputRoot(explicit?: string): string {
-  return explicit ?? process.env.CAELO_OUTPUT_ROOT ?? process.cwd();
-}
 
 /**
  * The directory a target's builds are written to. v0.2.78 — on Cloud Run
@@ -1401,6 +1385,16 @@ export const promoteDeployOp = defineOperation({
             caelo_version = ${rebuilt ? CAELO_VERSION : sql`(SELECT caelo_version FROM deploy_runs WHERE id = ${fromRunId}::uuid)`}
         WHERE id = ${toRunId}::uuid
       `);
+      // #1157 — the build carries the redirects table as it was at its
+      // Stage; redirects saved since then are already live and must stay
+      // so, and rows a page of this build now serves must step aside. A
+      // provider failure here does not fail the publish (the files are
+      // live): it is recorded, shown in Settings → Redirects and retried.
+      await syncRedirectsInTx(tx, ctx, {
+        trigger: "publish",
+        targetIds: [to.id],
+        outputRoot: root,
+      });
       // Last fallible step done: one line per run, never succeeded + failed.
       logRunTimings("publish-live", toRunId, timer, { status: "succeeded" });
       return ok({ fromRunId, toRunId, buildId: summary.destinationBuildId });
@@ -1681,6 +1675,13 @@ export const rollbackDeployOp = defineOperation({
       RETURNING id::text AS id
     `)) as unknown as { id: string }[];
     const newRunId = newRunRows[0]?.id ?? "";
+    // #1157 — the rolled-back build carries the redirects of its own time;
+    // the provider must serve the table as it is now.
+    await syncRedirectsInTx(tx, ctx, {
+      trigger: "rollback",
+      targetIds: [target.id],
+      outputRoot: root,
+    });
     return ok({ buildId, newRunId });
   },
 });

@@ -50,7 +50,9 @@ import {
   adcComputeApi,
   applyGcpRedirectPlan,
   type GcpComputeApi,
+  type GcpRedirectApplyResult,
 } from "./gcp-url-map-redirects.js";
+import { planRedirectSync } from "./redirect-sync-plan.js";
 import {
   buildFilesKey,
   readStagedBuildFiles,
@@ -336,6 +338,45 @@ export function createGcsStaticPublisher(
       return summary;
     },
 
+    async syncRedirects({ target, rows }) {
+      // The URL map routes the site's host only; staging on gcp is the
+      // admin's staging preview over the staging bucket, which answers no
+      // redirects (the staged plan goes live with Publish live).
+      if (target.env !== "production") {
+        return {
+          outcome: "not-served",
+          redirectCount: 0,
+          goneCount: 0,
+          shadowedCount: 0,
+          unservedTargets: [],
+          location: "staging preview (no redirects on gcp)",
+        };
+      }
+      const h = await bucketHandles();
+      // The live bucket holds exactly the published build (Confirm-publish
+      // and rollback prune everything else) plus the publisher's `_state/`.
+      const [liveFiles] = await h.staticBucket.getFiles();
+      const served = new Set(
+        liveFiles.map((f) => f.name).filter((name) => !name.startsWith("_state/")),
+      );
+      if (served.size === 0) {
+        throw new Error(
+          `static-publisher-gcs: the live bucket gs://${h.staticBucketName}/ is empty, so the redirects cannot be checked against a published build. Publish live first; the redirects go out with it.`,
+        );
+      }
+      const sync = planRedirectSync(rows, target.pageUrlStyle ?? "directory", served);
+      assertGcpRedirectBudget(sync.plan, [{ paths: GCP_PUBLIC_BASE_PATHS }]);
+      const applied = await applyRedirectPlan(sync.plan, await deps.computeApi());
+      return {
+        outcome: applied.changed ? "applied" : "unchanged",
+        redirectCount: sync.redirectCount,
+        goneCount: sync.goneCount,
+        shadowedCount: sync.shadowedCount,
+        unservedTargets: sync.unservedTargets,
+        location: `urlMaps/${applied.urlMap} (${applied.pathMatcher})`,
+      };
+    },
+
     async rollback({ sourceBuildDir, target }): Promise<PublishSummary> {
       // Rollback re-uploads the archived build dir to the static bucket
       // root. Because we don't archive cloud builds today (only the
@@ -455,14 +496,17 @@ async function pruneStaleObjects(
 }
 
 /** Put a plan live on the load balancer routing the site's host. */
-async function applyRedirectPlan(plan: RedirectPlan, api: GcpComputeApi): Promise<void> {
+async function applyRedirectPlan(
+  plan: RedirectPlan,
+  api: GcpComputeApi,
+): Promise<GcpRedirectApplyResult> {
   const siteUrl = process.env.CAELO_SITE_URL;
   if (!siteUrl) {
     throw new Error(
       "static-publisher-gcs: CAELO_SITE_URL not set. The GCP Pulumi stack sets it on the admin Cloud Run service; the redirects are served for that host.",
     );
   }
-  await applyGcpRedirectPlan({
+  return applyGcpRedirectPlan({
     plan,
     siteHost: new URL(siteUrl).host,
     api,

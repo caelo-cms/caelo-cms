@@ -54,6 +54,7 @@ import {
   SVG_PATH_PATTERN,
 } from "@caelo-cms/shared";
 import type { DeployTarget } from "@caelo-cms/static-generator";
+import { syncFirebaseRedirects } from "./firebase-redirect-sync.js";
 import { firebaseRedirectsFromFile } from "./firebase-redirects.js";
 import type {
   PromoteSummary,
@@ -949,6 +950,20 @@ export const firebaseHostingPublisher: StaticPublisher = {
       destinationBuildId: sourceRunId,
     };
     return summary;
+  },
+
+  async syncRedirects({ target, rows, servedRunId }) {
+    const site = siteName();
+    const token = await googleAuthToken();
+    return syncFirebaseRedirects({
+      call: (path, init) => firebaseFetch(path, { ...init, token }),
+      site,
+      // Production is the live channel; staging is the preview channel the
+      // staging host serves (#650), named after its run.
+      channelId: target.env === "production" ? "live" : channelIdFor(servedRunId),
+      target,
+      rows,
+    });
   },
 
   async rollback({ targetBuildId, target, siteBaseUrl, sourceLocation }): Promise<PublishSummary> {

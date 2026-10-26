@@ -33,6 +33,13 @@ export interface PostCommitEffect {
   /** Audit subject (plugin id, page id …), when there is one. */
   readonly entityId?: string | null;
   readonly run: () => void | Promise<void>;
+  /**
+   * What the caller should do when the effect fails, when that is not the
+   * default (restart the admin so the running state is rebuilt) — e.g. an
+   * effect with its own durable retry says it is retried and where its
+   * status shows.
+   */
+  readonly nextStep?: string;
 }
 
 /** An effect that threw after its transaction committed. */

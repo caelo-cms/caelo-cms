@@ -29,6 +29,7 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { requestRedirectSync } from "../../deploy/redirect-sync.js";
 import { createRedirectOp } from "../redirects.js";
 import type { PathMove } from "./current-path.js";
 
@@ -63,6 +64,9 @@ export async function applyPathMoveEffects(
   // by an earlier move away, now moved back) would shadow it — drop it
   // BEFORE collapsing chains, or "new → old" would collapse into a
   // self-loop.
+  // #1157 — the deletes and chain updates below change the redirects table
+  // (the 301s go through redirects.create, which requests the same sync).
+  await requestRedirectSync(tx, ctx);
   const newPaths = new Set(real.map((m) => m.to));
   for (const m of real) {
     await tx.execute(sql`DELETE FROM redirects WHERE from_path = ${m.to}`);

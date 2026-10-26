@@ -151,6 +151,7 @@ export {
   configurePluginUninstallFinalizer,
   type PluginUninstallFinalizer,
 } from "./ops/plugins/uninstall.js";
+export type { RedirectSyncTargetStatus } from "./ops/redirect_sync.js";
 export * from "./ops/roles.js";
 // Issue #806 — remote MCP: the credential an /api/mcp/remote/* request
 // carries into the mcp.* ops, and its request-time resolution.
@@ -216,6 +217,7 @@ export * from "./public-projection.js";
 // #553 — quality-audit worker (Lighthouse after a substantial Stage).
 export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit-worker.js";
 export * from "./rate-limit.js";
+export { startRedirectSyncWorker, stopRedirectSyncWorker } from "./redirect-sync-worker.js";
 export * from "./register.js";
 export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";
 // #914 — Settings → Google sign-in: the install's one Google OAuth client

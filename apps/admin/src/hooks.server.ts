@@ -50,6 +50,7 @@ import {
   startProposalGcWorker,
   startPublicProjectionPublisher,
   startQualityAuditWorker,
+  startRedirectSyncWorker,
   startReleaseCheckWorker,
   transformPluginImage,
 } from "@caelo-cms/admin-core";
@@ -536,6 +537,17 @@ function bootstrapDomainEventGc(): void {
   startDomainEventGcWorker({ adapter });
 }
 
+// #1157 — redirects sync to the hosting provider on save, no build. The
+// worker registers the post-commit push every redirects write runs and
+// retries targets whose provider is behind (Settings → Redirects shows it).
+let redirectSyncBootstrapped = false;
+function bootstrapRedirectSync(): void {
+  if (redirectSyncBootstrapped) return;
+  redirectSyncBootstrapped = true;
+  const { adapter, registry } = getQueryContext();
+  startRedirectSyncWorker({ adapter, registry });
+}
+
 function bootstrapProposalGc(): void {
   if (proposalGcBootstrapped) return;
   proposalGcBootstrapped = true;
@@ -621,6 +633,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   bootstrapChatImageGc();
   bootstrapMcpBridge();
   bootstrapDomainEventGc();
+  bootstrapRedirectSync();
   bootstrapQualityAudits();
   bootstrapBugForwarding();
   // #1008 — wait for the shared plugin-host boot, then follow plugin
