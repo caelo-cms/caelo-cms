@@ -49,7 +49,8 @@ import { jsonForInlineScript } from "./tags.js";
 
 /**
  * The first-party cookie holding the visitor's decision, as URI-encoded
- * JSON `{id: string, granted: string[], policyVersion: number, at: string}`. The API
+ * JSON `{id: string, granted: string[], offered: string[], policyVersion: number,
+ * at: string}`. The API
  * gateway reads it too (via `visitor_consent_rule`, #677), so the server
  * never sets the visitor-id cookie on a decision the browser did not make.
  */
@@ -160,11 +161,20 @@ function allKeys() {
   return out;
 }
 
-/** Current choice, or null when none applies to this policy version. */
+/**
+ * Current choice, or null when none applies: made under another policy
+ * version, or before a category was offered that the banner offers now
+ * (a plugin activated since asks for something this visitor never saw).
+ */
 function currentState() {
   var s = readCookie();
   if (!s) return null;
   if (s.policyVersion !== CONFIG.policyVersion) return null;
+  if (!Array.isArray(s.offered)) return null;
+  var keys = allKeys();
+  for (var i = 0; i < keys.length; i++) {
+    if (s.offered.indexOf(keys[i]) === -1) return null;
+  }
   return s;
 }
 
@@ -227,6 +237,7 @@ function record(keys) {
   var state = {
     id: consentId(),
     granted: keys,
+    offered: allKeys(),
     policyVersion: CONFIG.policyVersion,
     at: new Date().toISOString(),
   };
@@ -274,10 +285,14 @@ function record(keys) {
 
 function tickedKeys(banner) {
   var out = requiredKeys();
+  var offered = allKeys();
   var boxes = banner.querySelectorAll("[data-consent-category]");
   for (var i = 0; i < boxes.length; i++) {
     var key = boxes[i].getAttribute("data-consent-category");
     if (!key || out.indexOf(key) !== -1) continue;
+    // A hand-written checkbox for a category the site does not offer
+    // grants nothing (prefill already warned about it).
+    if (offered.indexOf(key) === -1) continue;
     if (boxes[i].checked) out.push(key);
   }
   return out;

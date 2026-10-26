@@ -194,8 +194,8 @@ const CATEGORIES = [
   { key: "marketing", displayName: "Marketing", required: false },
 ];
 
-function consentCookie(granted: string[]): string {
-  return encodeURIComponent(JSON.stringify({ granted, policyVersion: 1, at: "x" }));
+function consentCookie(granted: string[], offered = CATEGORIES.map((c) => c.key)): string {
+  return encodeURIComponent(JSON.stringify({ granted, offered, policyVersion: 1, at: "x" }));
 }
 
 function boot(opts: {
@@ -549,11 +549,65 @@ describe("the consent id in the decision cookie", () => {
       body: [banner, opener],
       cookies: {
         caelo_consent: encodeURIComponent(
-          JSON.stringify({ id: stored, granted: ["necessary"], policyVersion: 0, at: "x" }),
+          JSON.stringify({
+            id: stored,
+            granted: ["necessary"],
+            offered: ["necessary"],
+            policyVersion: 0,
+            at: "x",
+          }),
         ),
       },
     });
     accept.click();
     expect(idOf(h)).toBe(stored);
+  });
+});
+
+describe("a category offered after the decision", () => {
+  it("asks again: the stored decision never covered what the banner offers now", () => {
+    const { banner, opener } = bannerWithOpener();
+    const h = boot({
+      body: [banner, opener],
+      // Decided when only necessary and analytics were offered; marketing
+      // is offered now (say, an embed was added since).
+      cookies: {
+        caelo_consent: consentCookie(["necessary", "analytics"], ["necessary", "analytics"]),
+      },
+    });
+    expect(h.html.classList.contains("caelo-consent-ask")).toBe(true);
+    expect(h.win.caeloConsent?.isGranted("analytics")).toBe(false);
+  });
+
+  it("records what was offered with every decision", () => {
+    const { banner, accept, opener } = bannerWithOpener();
+    const h = boot({ body: [banner, opener] });
+    accept.click();
+    const state = JSON.parse(decodeURIComponent(h.jar.get("caelo_consent") ?? "")) as {
+      offered: string[];
+      granted: string[];
+    };
+    expect(state.offered).toEqual(["necessary", "analytics", "marketing"]);
+    expect(state.granted).toEqual(state.offered);
+  });
+});
+
+describe("saving ticked boxes", () => {
+  it("grants nothing for a box naming a category the site does not offer", () => {
+    const functional = new FakeEl("input", { "data-consent-category": "functional" });
+    functional.checked = true;
+    const save = new FakeEl("button", { "data-consent-save": "" });
+    const banner = new FakeEl("div", { "data-consent-banner": "" }, [
+      functional,
+      new FakeEl("button", { "data-consent-reject-all": "" }),
+      save,
+    ]);
+    const h = boot({ body: [banner] });
+    functional.checked = true;
+    save.click();
+    const state = JSON.parse(decodeURIComponent(h.jar.get("caelo_consent") ?? "")) as {
+      granted: string[];
+    };
+    expect(state.granted).toEqual(["necessary"]);
   });
 });

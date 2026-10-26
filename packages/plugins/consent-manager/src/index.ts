@@ -494,7 +494,11 @@ export default definePlugin<PluginContextTier1>({
   buildAssets: async (ctx) => {
     const q = adminQueryOf(ctx);
     const settings = await settingsOf(q);
-    const categories = await categoriesOf(q);
+    // Only what the banner offers can be granted: "accept all" must not
+    // record consent to a category the visitor was never shown, or a
+    // plugin activated later would run under a consent nobody gave.
+    const { categories: all, used } = await offeredCategories(ctx, await withheldModules(ctx));
+    const categories = all.filter((c) => c.required || used.has(c.key));
     const baked = await bakeTags(ctx);
     return {
       "runtime.js": buildRuntimeJs(
@@ -1001,7 +1005,9 @@ export default definePlugin<PluginContextTier1>({
           paging: {
             pageSize: 50,
             limitArg: "limit",
-            cursor: { arg: "before", key: "nextBefore" },
+            // The last row's own timestamp is the cursor: `list_log` cuts each
+            // page at a millisecond boundary, so it equals its `nextBefore`.
+            cursor: { arg: "before", key: "recordedAt" },
             hasMoreKey: "hasMore",
           },
           download: {

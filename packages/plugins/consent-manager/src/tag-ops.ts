@@ -202,7 +202,20 @@ export async function updateTagsMany(ctx: unknown, args: unknown) {
       delete base.inlineSnippet;
     }
     if (patch.scriptSrc !== undefined || patch.inlineSnippet !== undefined) delete base.config;
-    const columns = resolveTagColumns("update_tags_many", { ...base, ...patch }, known);
+    // Vendor metadata is updated field by field: a patch naming only a new
+    // privacy URL keeps the stored seat, purpose and transfer details. A
+    // switch to another vendor starts from that vendor's own data.
+    const sameVendor = patch.vendor === undefined || patch.vendor === row.vendor;
+    const vendorInfo =
+      patch.vendorInfo !== undefined && sameVendor && base.vendorInfo
+        ? { vendorInfo: { ...base.vendorInfo, ...patch.vendorInfo } }
+        : {};
+    if (!sameVendor) delete base.vendorInfo;
+    const columns = resolveTagColumns(
+      "update_tags_many",
+      { ...base, ...patch, ...vendorInfo },
+      known,
+    );
     if (patch.scope !== undefined) await assertScopeIds(cms, "update_tags_many", columns.scope);
     const nextEnabled = enabled ?? row.enabled;
     planned.push({

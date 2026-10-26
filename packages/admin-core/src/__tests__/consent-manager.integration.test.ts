@@ -342,7 +342,12 @@ describe("#451 — consent-manager", () => {
     expect(js).toBeDefined();
     expect(css).toBeDefined();
     // Baked, not fetched: the runtime must decide before anything loads.
-    expect(js?.content).toContain('"key":"analytics"');
+    expect(js?.content).toContain('"key":"necessary"');
+    expect(js?.content).toContain('"key":"marketing"');
+    // Only what the banner offers can be granted: "accept all" must not
+    // record a category nothing on the site uses yet.
+    expect(js?.content).not.toContain('"key":"functional"');
+    expect(js?.content).not.toContain('"key":"analytics"');
     expect(js?.content).toContain('"policyVersion":1');
     expect(js?.content).toContain("/api/plugin/consent-manager/record_consent");
     // Hidden before first paint, revealed by the runtime — the other
@@ -529,6 +534,34 @@ describe("#451 — consent-manager", () => {
     if (!bad.ok) expect(bad.error.message).toContain("do not exist");
     const missing = await call("update_tags_many", { tags: [{ name: "Nope", enabled: false }] });
     expect(missing.ok).toBe(false);
+  });
+
+  it("updates one vendor field without losing the others", async () => {
+    const added = await call("add_tag", {
+      name: "Heatmaps",
+      vendor: "acme-heatmaps",
+      category: "analytics",
+      scriptSrc: "https://cdn.acme-heatmaps.example/h.js",
+      vendorInfo: { name: "Acme Heatmaps Ltd", seat: "1 Main St, Dublin", purpose: "Heatmaps" },
+    });
+    if (!added.ok) throw new Error(JSON.stringify(added.error));
+    const updated = await call("update_tags_many", {
+      tags: [{ name: "Heatmaps", vendorInfo: { privacyPolicyUrl: "https://acme.example/privacy" } }],
+    });
+    if (!updated.ok) throw new Error(JSON.stringify(updated.error));
+    const listed = await call("list_tags");
+    if (!listed.ok) throw new Error(JSON.stringify(listed.error));
+    const tag = (
+      listed.value as { tags: Array<{ name: string; vendorInfo: Record<string, string> }> }
+    ).tags.find((t) => t.name === "Heatmaps");
+    expect(tag?.vendorInfo).toMatchObject({
+      name: "Acme Heatmaps Ltd",
+      seat: "1 Main St, Dublin",
+      purpose: "Heatmaps",
+      privacyPolicyUrl: "https://acme.example/privacy",
+    });
+    const removed = await call("remove_tag", { name: "Heatmaps" });
+    if (!removed.ok) throw new Error(JSON.stringify(removed.error));
   });
 
   it("stops injecting a removed tag", async () => {

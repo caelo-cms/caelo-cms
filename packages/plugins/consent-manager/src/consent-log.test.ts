@@ -9,6 +9,7 @@ import { describe, expect, it } from "bun:test";
 import type { PluginQuery } from "@caelo-cms/plugin-sdk";
 import type { CategoryRow } from "./categories.js";
 import { consentLogCsv, consentLogPage, consentStats, describeConsentLog } from "./consent-log.js";
+import consentPlugin from "./index.js";
 
 const CATEGORIES: CategoryRow[] = ["necessary", "functional", "analytics", "marketing"].map(
   (key, position) => ({
@@ -157,6 +158,17 @@ describe("consentLogPage", () => {
     const lines = csv.split("\n");
     expect(lines[0]).toBe("recorded_at,consent_id,policy_version,granted");
     expect(lines).toHaveLength(5);
+  });
+
+  it("hands the panel its cursor on the last row: the declared key equals nextBefore", async () => {
+    const page = await consentLogPage(newestFirst(rows), { limit: 1 });
+    const table = consentPlugin.adminPanels
+      ?.flatMap((p) => p.sections)
+      .find((s) => s.kind === "table" && s.id === "log");
+    if (table?.kind !== "table" || !table.paging)
+      throw new Error("consent log table has no paging");
+    const key = table.paging.cursor.key as keyof (typeof page.rows)[number];
+    expect(page.rows.at(-1)?.[key]).toBe(page.nextBefore);
   });
 
   it("rejects arguments it does not know", async () => {
