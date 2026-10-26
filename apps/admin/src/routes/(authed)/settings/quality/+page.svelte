@@ -260,9 +260,6 @@
                 <TableCell class="text-muted-foreground">{when(r.createdAt)}</TableCell>
                 <TableCell>
                   <Badge variant={statusVariant(r.status)}>{r.status}</Badge>
-                  {#if r.autoPublish?.outcome}
-                    <Badge variant="outline">auto: {r.autoPublish.outcome}</Badge>
-                  {/if}
                 </TableCell>
                 <TableCell>{r.problemCount}</TableCell>
                 <TableCell>

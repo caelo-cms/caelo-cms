@@ -208,7 +208,7 @@ test("add_module (target=layout) reaches every page on the layout", async ({ con
     live: number;
   };
   expect(rows.length, `expected at least one footer module on site-default`).toBeGreaterThan(0);
-  // Not live before a Stage: an automatic production build cannot ship it.
+  // Not live before a Stage: a production build cannot ship it.
   expect(live).toBe(0);
   // v0.12.2 — the extractor templatises literal copy at modules.create
   // so FOOTER_TEXT now lives in a field default, not the raw html.

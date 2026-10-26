@@ -58,11 +58,11 @@ The gateway writes these tables (all in `cms_public`, migration 0280):
 
 The gateway garbage-collects them itself. Every column is bounded by a `CHECK`. `public_role` can insert log and event rows but cannot read them back, and it may insert only their payload columns: `id` comes from the sequence and `created_at` from `now()`.
 
-The redeploy orchestrator keeps a watermark on `gateway_plugin_op_events.id`. It never moves past the sequence's last value, so no row can push it beyond events still to come. It moves only through a contiguous run of ids, because ids commit out of order; a gap closes once the row after it is 30 seconds old.
+Nothing in the admin reads `gateway_plugin_op_events` since the automatic redeploy was removed (#1154); the table stays for the plugin-data build (#1155). Whatever reads it next treats every row as untrusted, as below.
 
 Plugin op records from visitor calls go to `gateway_plugin_op_events`. They never go to `audit_events`: the public side must not be able to forge entries in the admin's audit trail.
 
-`public_role` may insert an op event only for a plugin listed in `published_plugins` (the active plugins the admin published), and only when the slug before the `.` in `operation` is that plugin's slug (cms_public migration 0300). The orchestrator still validates every row it reads: a stale projection can list a plugin that `cms_admin` has since disabled or removed.
+`public_role` may insert an op event only for a plugin listed in `published_plugins` (the active plugins the admin published), and only when the slug before the `.` in `operation` is that plugin's slug (cms_public migration 0300). A reader must still validate every row: a stale projection can list a plugin that `cms_admin` has since disabled or removed.
 
 ### Rate-limit buckets and the visitor's address
 

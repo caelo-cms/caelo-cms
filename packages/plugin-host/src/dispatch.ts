@@ -594,9 +594,8 @@ export async function runPluginOperation(
     );
     if (opts.readOnlyPreview) return { ok: true, value };
     // v0.2.16 — emit an audit_events row so plugin write ops (e.g.
-    // `comments.moderate`) are visible to the redeploy orchestrator's
-    // poll, allowing per-page incremental rebuild on plugin data
-    // change. Best-effort: failure to audit doesn't fail the op.
+    // `comments.moderate`) show in the operator's audit trail.
+    // Best-effort: failure to audit doesn't fail the op.
     try {
       // #635 — on the public side (no cms_admin login) the record lands in
       // cms_public, where the admin reads it back only as untrusted hints.
@@ -711,9 +710,8 @@ export function auditInputDigest(inputArgs: unknown): string {
  * v0.2.16 — write an audit_events row for a plugin op. Mirrors the
  * shape `recordAudit` in admin-core uses, but runs raw SQL because
  * plugin-host is a peer of admin-core (no upward import). The row
- * lets the redeploy orchestrator + the operator's own audit trail
- * see plugin write activity without each plugin author needing to
- * call recordAudit explicitly.
+ * lets the operator's audit trail see plugin write activity without
+ * each plugin author needing to call recordAudit explicitly.
  */
 async function emitPluginAuditRow(
   adapter: DatabaseAdapter,
@@ -752,10 +750,8 @@ async function emitPluginAuditRow(
  * convention: handlers that affect a specific row return an object
  * with a field matching the table's primary key (`commentId`,
  * `ratingId`, `formSubmissionId`, …) OR a generic `id`. The audit
- * row's entity_id then unblocks per-page redeploy resolution in the
- * orchestrator (which queries the plugin's own table by id to find
- * the bound page_id). Falls back to null when the result doesn't
- * look like one of these shapes.
+ * row's entity_id then names the row the op touched. Falls back to
+ * null when the result doesn't look like one of these shapes.
  */
 function extractEntityId(result: unknown): string | null {
   if (result === null || typeof result !== "object") return null;

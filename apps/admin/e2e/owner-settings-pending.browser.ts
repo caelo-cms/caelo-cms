@@ -21,35 +21,35 @@ import { clearLoginRateBucket, runBunInline } from "./helpers.js";
 test.beforeAll(clearLoginRateBucket);
 
 const ts = Date.now();
-// Distinct, valid debounce values so the two proposals never collide.
-const APPROVE_MS = 30_000 + (ts % 1000);
-const REJECT_MS = 40_000 + (ts % 1000);
+// Distinct, valid body caps so the two proposals never collide.
+const APPROVE_BYTES = 30_000 + (ts % 1000);
+const REJECT_BYTES = 40_000 + (ts % 1000);
 
-function seedProposal(debounceMs: number): void {
+function seedProposal(maxBodyBytes: number): void {
   runBunInline(
     `
     import { SQL } from "bun";
     const sql = new SQL(process.env.ADMIN_DATABASE_URL);
-    const ms = Number(process.env.MS);
+    const bytes = Number(process.env.BYTES);
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const actor = (await tx\`SELECT id FROM actors WHERE kind = 'system' LIMIT 1\`)[0].id;
-      const summary = "autoRedeployDebounceMs: 12000 → " + ms;
+      const summary = "maxBodyBytes: 65536 → " + bytes;
       await tx\`
         INSERT INTO owner_settings_pending_actions
           (kind, proposed_by, payload, preview, status, payload_hash)
         VALUES ('set_gateway_settings', \${actor}::uuid,
-                \${JSON.stringify({ autoRedeployDebounceMs: ms })}::jsonb,
-                \${JSON.stringify({ summary, changes: { autoRedeployDebounceMs: { from: 12000, to: ms } } })}::jsonb,
-                'pending', \${"e2e-owner-settings-" + ms})\`;
+                \${JSON.stringify({ maxBodyBytes: bytes })}::jsonb,
+                \${JSON.stringify({ summary, changes: { maxBodyBytes: { from: 65536, to: bytes } } })}::jsonb,
+                'pending', \${"e2e-owner-settings-" + bytes})\`;
     });
     await sql.end();
     `,
-    { MS: String(debounceMs) },
+    { BYTES: String(maxBodyBytes) },
   );
 }
 
-function readDebounce(): number {
+function readBodyCap(): number {
   return Number(
     runBunInline(`
     import { SQL } from "bun";
@@ -57,7 +57,7 @@ function readDebounce(): number {
     let out = 0;
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      out = (await tx\`SELECT auto_redeploy_debounce_ms AS v FROM site_settings WHERE id = 1\`)[0].v;
+      out = (await tx\`SELECT gateway_max_body_bytes AS v FROM site_settings WHERE id = 1\`)[0].v;
     });
     await sql.end();
     process.stdout.write(String(out));
@@ -65,12 +65,12 @@ function readDebounce(): number {
   );
 }
 
-let originalDebounce = 0;
+let originalBodyCap = 0;
 
 test.beforeAll(() => {
-  originalDebounce = readDebounce();
-  seedProposal(APPROVE_MS);
-  seedProposal(REJECT_MS);
+  originalBodyCap = readBodyCap();
+  seedProposal(APPROVE_BYTES);
+  seedProposal(REJECT_BYTES);
 });
 
 test.afterAll(() => {
@@ -81,11 +81,11 @@ test.afterAll(() => {
     await sql.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       await tx\`DELETE FROM owner_settings_pending_actions WHERE payload_hash LIKE 'e2e-owner-settings-%'\`;
-      await tx\`UPDATE site_settings SET auto_redeploy_debounce_ms = \${Number(process.env.MS)} WHERE id = 1\`;
+      await tx\`UPDATE site_settings SET gateway_max_body_bytes = \${Number(process.env.BYTES)} WHERE id = 1\`;
     });
     await sql.end();
     `,
-    { MS: String(originalDebounce) },
+    { BYTES: String(originalBodyCap) },
   );
 });
 
@@ -97,19 +97,19 @@ test("Owner approves one settings proposal and rejects another", async ({ page }
   await expect(page).toHaveURL("/edit", { timeout: 15_000 });
 
   await page.goto("/settings/owner-settings/pending");
-  const card = (ms: number) =>
-    page.getByTestId("owner-settings-proposal").filter({ hasText: `→ ${ms}` });
-  await expect(card(APPROVE_MS)).toBeVisible();
-  await expect(card(REJECT_MS)).toBeVisible();
+  const card = (bytes: number) =>
+    page.getByTestId("owner-settings-proposal").filter({ hasText: `→ ${bytes}` });
+  await expect(card(APPROVE_BYTES)).toBeVisible();
+  await expect(card(REJECT_BYTES)).toBeVisible();
 
-  await card(APPROVE_MS).getByRole("button", { name: "Approve" }).click();
+  await card(APPROVE_BYTES).getByRole("button", { name: "Approve" }).click();
   await expect(page.getByText("Setting applied.")).toBeVisible({ timeout: 15_000 });
-  await expect(card(APPROVE_MS)).toHaveCount(0);
-  expect(readDebounce()).toBe(APPROVE_MS);
+  await expect(card(APPROVE_BYTES)).toHaveCount(0);
+  expect(readBodyCap()).toBe(APPROVE_BYTES);
 
-  await card(REJECT_MS).getByLabel("Reject reason (optional)").fill("not now");
-  await card(REJECT_MS).getByRole("button", { name: "Reject" }).click();
+  await card(REJECT_BYTES).getByLabel("Reject reason (optional)").fill("not now");
+  await card(REJECT_BYTES).getByRole("button", { name: "Reject" }).click();
   await expect(page.getByText("Proposal rejected.")).toBeVisible({ timeout: 15_000 });
-  await expect(card(REJECT_MS)).toHaveCount(0);
-  expect(readDebounce()).toBe(APPROVE_MS);
+  await expect(card(REJECT_BYTES)).toHaveCount(0);
+  expect(readBodyCap()).toBe(APPROVE_BYTES);
 });

@@ -4,7 +4,7 @@
  * issue #425 — locale-aware crawl scope + final-URL provenance, end to
  * end at the DB boundary (the import-list-mode / import-pipeline-stage
  * pattern: real ops against real Postgres, the crawler driven with an
- * injected fixture site exactly the way the orchestrator drives it).
+ * injected fixture site exactly the way the crawl worker drives it).
  *
  * Pins the two dogfood failures:
  *   - REDIRECTING fixture: a sample whose requested URL redirects is
@@ -55,7 +55,7 @@ async function wipe(): Promise<void> {
   }
 }
 
-/** The orchestrator's post-crawl crawl_state slice (#192/#425), verbatim. */
+/** The crawl worker's post-crawl crawl_state slice (#192/#425), verbatim. */
 async function writeCrawlStateSlice(
   runId: string,
   slice: { errors: unknown; skipped: unknown; skippedOutOfScope: number },
@@ -147,7 +147,7 @@ describe("locale-aware scoped import (#425)", () => {
     });
     if (!approved.ok) throw new Error(`execute_proposal ${JSON.stringify(approved.error)}`);
 
-    // Drive the real crawler the way the orchestrator does, against a
+    // Drive the real crawler the way the crawl worker does, against a
     // fixture site with a redirecting sample + an out-of-scope redirect.
     const page = (title: string): string =>
       `<html><head><title>${title}</title></head><body><h1>${title}</h1></body></html>`;
@@ -203,7 +203,7 @@ describe("locale-aware scoped import (#425)", () => {
     expect(fetched.map((u) => new URL(u).pathname)).not.toContain("/en/pricing");
     expect(result.skippedOutOfScope).toBe(2);
 
-    // Persist the orchestrator's post-crawl slice + status flip.
+    // Persist the crawl worker's post-crawl slice + status flip.
     await writeCrawlStateSlice(runId, {
       errors: result.errors,
       skipped: result.skipped,

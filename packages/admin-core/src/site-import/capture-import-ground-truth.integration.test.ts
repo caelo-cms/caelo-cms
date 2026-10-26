@@ -6,13 +6,11 @@
  * in one render session, and a LOUD `screenshot_missing` /
  * `design_tokens_missing` note wherever a page ends up without stored
  * ground truth (no silent skips — F9 regression class). Also keeps the
- * #198 persistence coverage. Real Postgres ops (admin-core is a
- * devDependency for exactly this); screenshotter and storage are
+ * #198 persistence coverage. Real Postgres ops; screenshotter and storage are
  * injected fakes — Chromium has no place in a unit lane.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { registerAdminOps } from "@caelo-cms/admin-core";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import type {
@@ -21,11 +19,12 @@ import type {
   Screenshot,
   Screenshotter,
 } from "@caelo-cms/site-importer";
+import { registerAdminOps } from "../register.js";
 import {
   captureImportGroundTruth,
   persistBatchCapture,
   writeRunDesignTokenAggregate,
-} from "./index.js";
+} from "./ground-truth.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;

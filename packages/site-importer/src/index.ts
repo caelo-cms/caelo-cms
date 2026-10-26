@@ -11,7 +11,7 @@
  * Pure ESM, depends only on htmlparser2 (already in the tree). Does
  * not require Playwright — uses Bun's native `fetch` + same-origin
  * BFS within `depth` + `maxPages` bounds. Screenshot capture +
- * computed-style token sampling (issue #247) run as the orchestrator's
+ * computed-style token sampling (issue #247) run as the crawl worker's
  * always-on ground-truth pass via the Playwright screenshotter in
  * `screenshot.ts`; pages that end up without a screenshot carry a loud
  * `screenshot_missing` note, never a silent skip.

@@ -36,12 +36,6 @@ import {
   pendingSnapshotSql,
   releaseIdleDraftLocks,
 } from "../../draft.js";
-import {
-  AI_MERGE_BUSY_MESSAGE,
-  enterAiMerge,
-  isAiInitiated,
-  recordAiStageHold,
-} from "../../stage/ai-stage-hold.js";
 import { mergeWindowToMain, STAGE_CHANGED_PREFIX } from "./publish.js";
 
 type Tx = Parameters<Parameters<typeof defineOperation>[0]["handler"]>[2];
@@ -152,9 +146,9 @@ async function finalizeDraftSelection(
 export const mergeDraftToMainOp = defineOperation({
   name: "chat.merge_draft_to_main",
   // Issue #620 Part B — the AI may Stage (stage_changes). Staging is not
-  // public, the merge emits a main snapshot (revertable), and an AI merge
-  // opens a production hold in this transaction: it can never reach
-  // production without a human Publish live.
+  // public and the merge emits a main snapshot (revertable). Production is
+  // built only by a human Publish live (#1154: deploy.trigger / promote
+  // refuse every non-human production build).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: z
@@ -168,8 +162,6 @@ export const mergeDraftToMainOp = defineOperation({
        * longer pending refuses the merge ("Conflict: …"; classify again).
        */
       headerIds: headerIdsSchema.optional(),
-      /** The AI initiated this Stage (stage_changes): open the production hold. */
-      aiInitiated: z.boolean().optional(),
     })
     .strict(),
   output: z.object({
@@ -193,14 +185,6 @@ export const mergeDraftToMainOp = defineOperation({
     if (!chats.ok) return err(chats.error);
     const branchId = chats.bindings[0]?.branchId;
     if (!branchId) throw new Error("merge_draft_to_main: empty selection after validation");
-    const ai = isAiInitiated(ctx, input.aiInitiated);
-    if (ai && !(await enterAiMerge(tx))) {
-      return err({
-        kind: "HandlerError",
-        operation: "chat.merge_draft_to_main",
-        message: AI_MERGE_BUSY_MESSAGE,
-      });
-    }
     const mergedAt = await txNow(tx);
     const selection = await draftStageSelection(
       tx,
@@ -236,9 +220,6 @@ export const mergeDraftToMainOp = defineOperation({
     );
     if (!merged.ok) return err(merged.error);
     const { siteSnapshotId, entityCount, linkWarnings } = merged.value;
-    // Even a merge of nothing: the AI still triggers the staging build an
-    // automatic publish would promote.
-    if (ai) await recordAiStageHold(tx, ctx, input.chatSessionIds);
     if (!input.deferConsume) {
       await finalizeDraftSelection(
         tx,

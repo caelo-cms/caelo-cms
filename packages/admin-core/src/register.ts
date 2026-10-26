@@ -428,7 +428,6 @@ import {
   verifyDnsRecordOp,
 } from "./ops/provisioning_outputs.js";
 import { revokeAcceptancesOp } from "./ops/quality/admin.js";
-import { planAutoRedeployOp, settleAutoPublishOp } from "./ops/quality/auto-publish.js";
 import { classifyStageOp } from "./ops/quality/classify_stage.js";
 import {
   ackChatNotificationOp,
@@ -819,8 +818,6 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(executeQualityProposalOp);
   registry.register(rejectQualityProposalOp);
   registry.register(listPendingQualityProposalsOp);
-  registry.register(planAutoRedeployOp);
-  registry.register(settleAutoPublishOp);
   registry.register(revokeAcceptancesOp);
   // P4 snapshots
   registry.register(listSnapshotsOp);
@@ -1003,7 +1000,7 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(updateDeployProgressOp);
   // #1003 — a run's row, committed when it starts (visible while it runs).
   registry.register(beginDeployRunOp);
-  // #969 — the orchestrator's keep-alive for the served staging preview.
+  // #969 — the keep-alive worker's refresh of the served staging preview.
   registry.register(refreshStagingPreviewOp);
   // v0.2.19 — propose/execute pair for promote + rollback. AI proposes
   // (human + ai + system); Owner approves at /settings/deployments/pending

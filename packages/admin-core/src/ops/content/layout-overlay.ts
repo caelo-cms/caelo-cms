@@ -8,8 +8,7 @@
  * pending `layout_module_snapshots` row on the chat's branch. Like every
  * other draft change it shows in that branch's views, a Stage replays it
  * into the live table (chat/publish.ts), and an undo just stops it being
- * pending — nothing reaches main (or an automatic production build)
- * before a Stage.
+ * pending — nothing reaches main (or a production build) before a Stage.
  *
  * {@link effectiveLayoutModulesSql} is the one read every branch-aware
  * caller uses: live rows, with each block a pending branch state exists
