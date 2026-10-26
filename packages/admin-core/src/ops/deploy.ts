@@ -98,6 +98,7 @@ import {
   openAiStageHoldIds,
   releaseAiStageHolds,
 } from "../stage/ai-stage-hold.js";
+import { deployRunStartedAt, stampFirstPublished } from "./content/first-published.js";
 import { json } from "./quality/_shared.js";
 import { publishGateForRun } from "./quality/gate-loader.js";
 import {
@@ -286,8 +287,12 @@ export const listDeployTargetsOp = defineOperation({
 export const listDeployRunsOp = defineOperation({
   name: "deploy.list_runs",
   // CLAUDE.md §11: AI inspects deploy history when troubleshooting
-  // ("did the last build succeed?"). Read-only.
-  actorScope: ["human", "ai", "system"],
+  // ("did the last build succeed?"). Read-only. Plugin actors read it
+  // too (epic #1107): international-site garbage-collects a removed
+  // entry's translations only once a production build after the removal
+  // succeeded — "the removal is live", so an undo before that restores
+  // them.
+  actorScope: ["human", "ai", "plugin", "system"],
   database: "cms_admin",
   input: z.object({ limit: z.number().int().min(1).max(200).default(50) }),
   output: z.object({ runs: z.array(runRow) }),
@@ -423,8 +428,14 @@ async function runGenerator(
      *  static-generator filters its page query to these ids only,
      *  re-baking just the changed pages. */
     changedPageIds?: ReadonlyArray<string>;
+    /** Epic #1107 — changed shared lists / list types: the generator adds
+     *  every page whose render dependencies they reach. */
+    changedListIds?: ReadonlyArray<string>;
+    changedListTypeIds?: ReadonlyArray<string>;
     /** #650 — render this origin instead of the stored site URL. */
     siteBaseUrlOverride?: string;
+    /** Epic #1107 — first-publication time of never-live pages (see generateSite). */
+    publishAt: string;
     /**
      * false: leave `<outDir>/current/` alone — #650 Publish live's rebuild,
      * and #1003 every build on a publisher that does not serve `current/`.
@@ -472,8 +483,15 @@ async function runGenerator(
         target: args.target,
         runId: args.runId,
         repoRoot: args.repoRoot,
+        publishAt: args.publishAt,
         ...(args.changedPageIds && args.changedPageIds.length > 0
           ? { changedPageIds: [...args.changedPageIds] }
+          : {}),
+        ...(args.changedListIds && args.changedListIds.length > 0
+          ? { changedListIds: [...args.changedListIds] }
+          : {}),
+        ...(args.changedListTypeIds && args.changedListTypeIds.length > 0
+          ? { changedListTypeIds: [...args.changedListTypeIds] }
           : {}),
         ...(args.siteBaseUrlOverride ? { siteBaseUrlOverride: args.siteBaseUrlOverride } : {}),
         ...(args.syncCurrent === false ? { syncCurrent: false } : {}),
@@ -587,6 +605,14 @@ export const triggerDeployOp = defineOperation({
      *  Auto-redeploy passes this from the audit_events tail; manual
      *  triggers omit it for full-site rebuild. */
     changedPageIds: z.array(z.string().uuid()).optional(),
+    /**
+     * Epic #1107 — shared lists and list types changed since the last
+     * build. With them (or changedPageIds) the build is incremental: the
+     * generator rebuilds the changed pages plus every page whose recorded
+     * render dependencies the change reaches (`render-deps.json`).
+     */
+    changedListIds: z.array(z.string().uuid()).optional(),
+    changedListTypeIds: z.array(z.string().uuid()).optional(),
     /**
      * #553 — a human's explicit decision to build PRODUCTION although the
      * staged build's quality check failed (no result). Recorded on the
@@ -885,7 +911,10 @@ export const triggerDeployOp = defineOperation({
       runId,
       target: effectiveTarget,
       repoRoot,
+      publishAt: await deployRunStartedAt(tx, runId),
       changedPageIds: input.changedPageIds,
+      changedListIds: input.changedListIds,
+      changedListTypeIds: input.changedListTypeIds,
       ...(stagingOrigin ? { siteBaseUrlOverride: stagingOrigin } : {}),
       syncCurrent: publisher.servesCurrentDir,
     });
@@ -1055,6 +1084,10 @@ export const triggerDeployOp = defineOperation({
     if (target.env === "production" && ctx.actorKind === "human") {
       await releaseAiStageHolds(tx, { holdIds: coveredHolds, productionRunId: runId });
     }
+
+    // Epic #1107 — a production build is a Publish live: pages it ships
+    // for the first time get their first_published_at.
+    if (target.env === "production") await stampFirstPublished(tx, runId);
 
     timer.lap("finish");
     await tx.execute(sql`
@@ -1349,6 +1382,10 @@ export const promoteDeployOp = defineOperation({
           productionRunId: toRunId,
         });
       }
+      // Epic #1107 — Publish live: the pages of the build it ships get
+      // their first_published_at — the staged run's start, which is what
+      // both the staged build and its live rebuild rendered.
+      if (to.env === "production") await stampFirstPublished(tx, fromRunId);
       timer.lap("finish");
       await tx.execute(sql`
         UPDATE deploy_runs
@@ -1452,6 +1489,9 @@ async function rebuildAndPublishLive(
     runId: args.toRunId,
     target,
     repoRoot: args.repoRoot,
+    // The staged build's instant: the parity guard compares the two
+    // renders, and Publish live stores this value (#1121 review).
+    publishAt: await deployRunStartedAt(tx, args.stagingRunId),
     // Nothing may serve this build before the parity guard passed.
     syncCurrent: false,
   });

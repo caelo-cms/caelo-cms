@@ -99,12 +99,21 @@ const SNAPSHOT_TABLES: Partial<Record<LockedEntityKind, readonly SnapshotTable[]
       markColumn: "page_id",
     },
   ],
-  structuredSet: [
+  listType: [
     {
-      table: "structured_set_snapshots",
-      column: "structured_set_id",
-      markKind: "structuredSet",
-      markColumn: "structured_set_id",
+      table: "list_type_snapshots",
+      column: "list_type_id",
+      markKind: "listType",
+      markColumn: "list_type_id",
+    },
+  ],
+  list: [{ table: "list_snapshots", column: "list_id", markKind: "list", markColumn: "list_id" }],
+  pageType: [
+    {
+      table: "page_type_snapshots",
+      column: "page_type_id",
+      markKind: "pageType",
+      markColumn: "page_type_id",
     },
   ],
   contentInstance: [

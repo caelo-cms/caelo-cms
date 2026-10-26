@@ -1,0 +1,122 @@
+// SPDX-License-Identifier: MPL-2.0
+
+/**
+ * Epic #1107 — every page with its type, properties and terms, as the
+ * caller sees the site: live rows (main plus rows the branch created),
+ * each superseded by the branch's newest pending page snapshot. Page
+ * types (re-validating a type's pages), list usage (tagged pages) and the
+ * render-data loader read pages through here so they agree with the
+ * preview.
+ */
+
+import type { TransactionRunner } from "@caelo-cms/query-api";
+import { sql } from "drizzle-orm";
+import { pendingSnapshotSql } from "../draft.js";
+import type { PageState } from "../snapshots/state.js";
+
+/** One page in the caller's view. */
+export interface PageInView {
+  readonly id: string;
+  readonly slug: string;
+  readonly title: string;
+  readonly currentPath: string;
+  readonly parentPageId: string | null;
+  readonly templateId: string;
+  readonly pageTypeId: string;
+  readonly status: "draft" | "published";
+  readonly properties: Readonly<Record<string, unknown>>;
+  readonly terms: readonly string[];
+  readonly version: number;
+  readonly firstPublishedAt: string | null;
+  readonly updatedAt: string;
+}
+
+function iso(v: string | Date | null): string | null {
+  if (v === null) return null;
+  return v instanceof Date ? v.toISOString() : String(v);
+}
+
+/**
+ * Non-deleted pages the caller sees.
+ *
+ * @param opts.pageTypeIds restrict to pages of these types (in the view).
+ */
+export async function loadPagesInView(
+  tx: TransactionRunner,
+  branchId: string | null,
+  opts: { readonly pageTypeIds?: readonly string[] } = {},
+): Promise<PageInView[]> {
+  const visible = branchId
+    ? sql`(p.chat_branch_id IS NULL OR p.chat_branch_id = ${branchId}::uuid)`
+    : sql`p.chat_branch_id IS NULL`;
+  const rows = (await tx.execute(sql`
+    SELECT p.id::text AS id, p.slug, p.title, p.current_path,
+           p.parent_page_id::text AS parent_page_id, p.template_id::text AS template_id,
+           p.page_type_id::text AS page_type_id, p.status, p.properties, p.version,
+           p.first_published_at, p.updated_at, p.deleted_at,
+           COALESCE((
+             SELECT array_agg('caelo:term/' || pt.list_id::text || '/' || pt.item_id::text
+                              ORDER BY pt.created_at, pt.list_id, pt.item_id)
+             FROM page_terms pt WHERE pt.page_id = p.id
+           ), '{}') AS terms
+    FROM pages p
+    WHERE ${visible}
+    ORDER BY p.current_path, p.id
+  `)) as unknown as {
+    id: string;
+    slug: string;
+    title: string;
+    current_path: string;
+    parent_page_id: string | null;
+    template_id: string;
+    page_type_id: string;
+    status: "draft" | "published";
+    properties: unknown;
+    version: number | string;
+    first_published_at: string | Date | null;
+    updated_at: string | Date;
+    deleted_at: string | Date | null;
+    terms: string[];
+  }[];
+  const overlay = new Map<string, PageState>();
+  if (branchId) {
+    const snaps = (await tx.execute(sql`
+      SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS page_id, ps.state
+        FROM page_snapshots ps JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+       WHERE ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
+       ORDER BY ps.page_id, ss.created_at DESC
+    `)) as unknown as { page_id: string; state: unknown }[];
+    for (const s of snaps) {
+      overlay.set(
+        s.page_id,
+        (typeof s.state === "string" ? JSON.parse(s.state) : s.state) as PageState,
+      );
+    }
+  }
+  const out: PageInView[] = [];
+  for (const r of rows) {
+    const o = overlay.get(r.id);
+    const deleted = o ? o.deletedAt !== null : r.deleted_at !== null;
+    if (deleted) continue;
+    const liveProps = typeof r.properties === "string" ? JSON.parse(r.properties) : r.properties;
+    const page: PageInView = {
+      id: r.id,
+      slug: o?.slug ?? r.slug,
+      title: o?.title ?? r.title,
+      currentPath: r.current_path,
+      parentPageId: o?.parentPageId === undefined ? r.parent_page_id : o.parentPageId,
+      templateId: o?.templateId ?? r.template_id,
+      pageTypeId: o?.pageTypeId ?? r.page_type_id,
+      status: o?.status ?? r.status,
+      properties: o?.properties ?? ((liveProps ?? {}) as Record<string, unknown>),
+      terms: o?.terms ?? r.terms,
+      version:
+        o?.version ?? (typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version),
+      firstPublishedAt: iso(r.first_published_at),
+      updatedAt: iso(r.updated_at) ?? "",
+    };
+    if (opts.pageTypeIds && !opts.pageTypeIds.includes(page.pageTypeId)) continue;
+    out.push(page);
+  }
+  return out;
+}

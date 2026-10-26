@@ -19,13 +19,14 @@ import {
   collectContributions,
   MAIN_RENDER,
   resetPluginHost,
-  resolveDataLists,
+  resolveListSources,
   runPluginOperation,
   runPluginStaticRender,
 } from "@caelo-cms/plugin-host";
 import intlPlugin from "@caelo-cms/plugin-international-site";
 import { DatabaseAdapter, execute, OperationRegistry } from "@caelo-cms/query-api";
 import {
+  createListRenderContext,
   type ExecutionContext,
   renderTemplate,
   type SiteDefaultsSetSeoInput,
@@ -33,6 +34,7 @@ import {
 } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { registerAdminOps } from "../register.js";
+import { adoptTemplateIntoDefaultPageType } from "./_template-page-type.js";
 
 const ADMIN_URL = process.env.ADMIN_DATABASE_URL;
 const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
@@ -149,8 +151,9 @@ async function seedPage(slug: string): Promise<string> {
       `INSERT INTO layouts (slug, display_name, html, css) VALUES ('t398-lay', 'L', '<html></html>', '') RETURNING id::text AS id`,
     )) as { id: string }[];
     const tpl = (await tx.unsafe(
-      `INSERT INTO templates (slug, display_name, kind, html, css, layout_id) VALUES ('t398-tpl', 'T', 'content', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
+      `INSERT INTO templates (slug, display_name, html, css, layout_id) VALUES ('t398-tpl', 'T', '<main></main>', '', '${lay[0]?.id}') RETURNING id::text AS id`,
     )) as { id: string }[];
+    await adoptTemplateIntoDefaultPageType(tx, tpl[0]?.id ?? "");
     const id = tpl[0]?.id;
     if (!id) throw new Error("seed failed");
     return id;
@@ -324,23 +327,38 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     await sysOp("pages.set_status", { pageId: sourceId, status: "published" });
     await sysOp("pages.set_status", { pageId: de.pageId, status: "published" });
 
-    const lists = await resolveDataLists([sourceId], MAIN_RENDER, "directory");
+    const lists = await resolveListSources([sourceId], MAIN_RENDER, "directory");
     const items = lists.get(sourceId)?.language_links ?? [];
-    expect(items.map((i) => i.locale).sort()).toEqual(["de", "en"]);
-    // Flat strings only — anything else would substitute as
-    // "[object Object]" into the page.
-    for (const item of items) {
-      for (const v of Object.values(item)) expect(typeof v).toBe("string");
-    }
-    expect(items.find((i) => i.locale === "de")?.label).toBe("Deutsch");
-    expect(items.find((i) => i.locale === "en")?.is_current).toBe("true");
+    // Entries are typed by the source's node definition (epic #1107):
+    // the locale code is the stable id, href a link, is_current a boolean.
+    expect(items.map((i) => i.id).sort()).toEqual(["de", "en"]);
+    expect(items.find((i) => i.id === "de")?.values.label).toBe("Deutsch");
+    expect(items.find((i) => i.id === "en")?.values.is_current).toBe(true);
+    expect(items.find((i) => i.id === "de")?.values.is_current).toBe(false);
+    const deHref = items.find((i) => i.id === "de")?.values.href as { href?: unknown } | undefined;
+    expect(typeof deHref?.href).toBe("string");
 
     // The whole point: the MODULE owns the markup. Nothing about this
     // shape comes from the plugin.
+    // Plugin lists reach the engine as plugin list sources (epic #1107).
+    const listContext = (dormant: Record<string, string> = {}) =>
+      createListRenderContext(
+        {
+          listTypes: new Map(),
+          lists: new Map(),
+          pageTypes: new Map(),
+          pages: new Map(),
+          media: new Map(),
+          siteLanguage: "en",
+        },
+        { dormantPluginSources: dormant },
+      );
     const rendered = renderTemplate({
       html: '<ul>{{#language_links}}<li class="lang"><a href="{{href}}">{{label}}</a></li>{{/language_links}}</ul>',
       fields: [],
-      dataLists: lists.get(sourceId) ?? {},
+      lists: listContext().forPage(sourceId, {
+        pluginSources: lists.get(sourceId) ?? {},
+      }),
     });
     expect(rendered.html).toContain('<li class="lang"><a href="');
     expect(rendered.html).toContain(">Deutsch</a>");
@@ -352,12 +370,11 @@ describe("#398 — hreflang + sitemap contributions, language selector", () => {
     const off = renderTemplate({
       html: "<ul>{{#language_links}}<li>{{label}}</li>{{/language_links}}</ul>",
       fields: [],
-      dataLists: {},
-      dormantDataLists: { language_links: "international-site" },
+      lists: listContext({ language_links: "international-site" }).forPage(sourceId),
     });
     expect(off.html).toContain("{{#language_links}}");
     expect(off.missingSlots).toContain(
-      "plugin-list-unavailable:language_links plugin=international-site",
+      "list-source-unavailable:language_links plugin=international-site",
     );
   }, 60_000);
 });

@@ -5,7 +5,7 @@ import { EDIT_OVERLAY_COLOR } from "./edit-affordances-script.js";
 /**
  * #917 / #918 — in-place editing in the Live Edit preview. The preview
  * marks each placement field's text with comments
- * (`<!--caelo:f p=<block>#<pos> s=<shared pages> f=<field>[.<i>[.<part>]]-->text<!--/caelo:f-->`)
+ * (`<!--caelo:f p=<block>#<pos> s=<shared pages> f=<field>[.<entry id>.<key>[.href]]-->text<!--/caelo:f-->`)
  * and link targets / images / alt text with `data-caelo-fields` on their
  * tag (see `edit-markers.ts` in `@caelo-cms/shared`). This runtime finds
  * the marked field under a right-click or a selection, makes exactly that
@@ -30,12 +30,15 @@ export const FIELD_EDIT_SCRIPT = `
     return !!(ref.compareDocumentPosition(node) & 4);
   }
 
-  // "links.0.href" -> { field: "links", index: 0, part: "href" }
+  // "links.<entry id>.link.href" -> { field: "links", item: "<entry id>", key: "link", part: "href" }
   function parsePath(raw) {
     var path = decodeURIComponent(raw).split(".");
     var out = { field: path[0] };
-    if (path.length > 1) out.index = Number(path[1]);
-    if (path.length > 2) out.part = path[2];
+    if (path.length > 2) {
+      out.item = path[1];
+      out.key = path[2];
+    }
+    if (path.length > 3) out.part = path[3];
     return out;
   }
 
@@ -56,7 +59,8 @@ export const FIELD_EDIT_SCRIPT = `
       position: at.position,
       shared: Number(m[2]),
       field: path.field,
-      index: path.index,
+      item: path.item,
+      key: path.key,
       part: path.part,
     };
   }
@@ -113,13 +117,15 @@ export const FIELD_EDIT_SCRIPT = `
     ref.blockName = f.blockName;
     ref.position = f.position;
     ref.field = f.field;
-    if (f.index !== undefined) ref.index = f.index;
+    if (f.item !== undefined) ref.item = f.item;
+    if (f.key !== undefined) ref.key = f.key;
     return ref;
   }
 
   function edit(path, text) {
     var e = { field: path.field, text: text };
-    if (path.index !== undefined) e.index = path.index;
+    if (path.item !== undefined) e.item = path.item;
+    if (path.key !== undefined) e.key = path.key;
     if (path.part !== undefined) e.part = path.part;
     return e;
   }

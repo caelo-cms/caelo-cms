@@ -19,10 +19,12 @@ import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   type ComposeModuleFailure,
   collectNestedRefs,
-  type ModuleFieldKind,
   type NestedContentInstanceResource,
   type NestedModuleResource,
+  type NestedRefValue,
   type NestedRenderResolver,
+  type TemplateField,
+  templateFieldsFromJson,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 
@@ -34,7 +36,7 @@ const MAX_LOAD_ROUNDS = 8;
 
 /** A module as the composer receives it — what the pass reads refs from. */
 interface ComposeModuleValues {
-  readonly fields?: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[];
+  readonly fields?: readonly (Omit<TemplateField, "kind"> & { readonly kind?: string })[];
   readonly contentValues?: Readonly<Record<string, unknown>>;
 }
 
@@ -54,19 +56,7 @@ function parseJson(raw: unknown): unknown {
 }
 
 function parseFields(raw: unknown): NestedModuleResource["fields"] {
-  const parsed = parseJson(raw);
-  if (!Array.isArray(parsed)) return [];
-  const out: { name: string; kind: ModuleFieldKind; default?: unknown }[] = [];
-  for (const f of parsed) {
-    if (!f || typeof f !== "object") continue;
-    const o = f as { name?: unknown; kind?: unknown; default?: unknown };
-    if (typeof o.name !== "string") continue;
-    // Same deliberate cast as generate.ts' parseModuleFields: an unknown
-    // kind reaches the engine, which reports kind-mismatch loudly.
-    const kind = (typeof o.kind === "string" ? o.kind : "text") as ModuleFieldKind;
-    out.push({ name: o.name, kind, default: o.default });
-  }
-  return out;
+  return templateFieldsFromJson(raw);
 }
 
 /**
@@ -74,6 +64,8 @@ function parseFields(raw: unknown): NestedModuleResource["fields"] {
  * refs from `placed` (the composer-ready modules of every page in the
  * build, after content variants), following refs transitively.
  *
+ * @param listRefs modules embedded in shared list entries
+ *   (`collectListModuleRefs`), which no placement's values carry.
  * @returns a resolver for `ComposeInput.nestedModules`. Refs that point
  *   at deleted or chat-only rows stay unresolved; the renderer reports
  *   them as `module-missing` / `content-instance-missing`.
@@ -81,6 +73,7 @@ function parseFields(raw: unknown): NestedModuleResource["fields"] {
 export async function loadNestedModules(
   tx: TransactionRunner,
   placed: Iterable<ComposeModuleValues>,
+  listRefs: readonly NestedRefValue[] = [],
 ): Promise<NestedRenderResolver> {
   const modules = new Map<string, NestedModuleResource>();
   const instances = new Map<string, NestedContentInstanceResource>();
@@ -94,6 +87,7 @@ export async function loadNestedModules(
     }
   };
   for (const m of placed) enqueue(effectiveValues(m));
+  enqueue({ listRefs });
 
   for (let round = 0; round < MAX_LOAD_ROUNDS; round += 1) {
     if (pendingModules.size === 0 && pendingInstances.size === 0) break;

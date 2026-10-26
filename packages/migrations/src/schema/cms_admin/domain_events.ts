@@ -23,7 +23,18 @@ export const domainEvents = pgTable("domain_events", {
   // the cap. Revisit as a string cursor only if that ever changes.
   id: bigint("id", { mode: "number" }).primaryKey(),
   kind: text("kind", {
-    enum: ["page.created", "page.updated", "page.deleted", "page.published", "module.updated"],
+    enum: [
+      "page.created",
+      "page.updated",
+      "page.deleted",
+      "page.published",
+      "module.updated",
+      "list.items_changed",
+      "list_type.changed",
+      "list.deleted",
+      "page.properties_changed",
+      "page.terms_changed",
+    ],
   }).notNull(),
   entityId: uuid("entity_id").notNull(),
   payload: jsonb("payload").notNull(),

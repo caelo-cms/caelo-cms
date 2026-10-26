@@ -60,6 +60,7 @@ import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { parseCrawlScope } from "./crawl-scope.js";
 import { parseExplicitUrls } from "./explicit-urls.js";
+import { classifyAuditRow, type PendingListChange } from "./render-change.js";
 
 /** issue #423 — deterministic per-URL storage suffix so re-captures and
  *  resume replays overwrite the same object instead of accumulating. */
@@ -491,6 +492,13 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
   // Drained on `fireDeploy()`; passed into deploy.trigger so the static
   // generator only re-bakes the changed subset.
   const pendingPageIds = new Set<string>();
+  // Epic #1107 — lists and list types changed since the last fire; the
+  // generator turns them into the pages that render them.
+  const pendingLists: PendingListChange = {
+    listIds: new Set(),
+    listTypeIds: new Set(),
+    full: false,
+  };
 
   async function loadSettings(): Promise<Settings & { lastSeenAt: Date }> {
     const rows = await cfg.adapter.withAdminTransaction(
@@ -547,10 +555,19 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
 
   async function fireDeploy(): Promise<void> {
     pendingTimer = null;
-    const changed = [...pendingPageIds];
+    const full = pendingLists.full;
+    // A change no id narrows rebuilds every page: an empty change set is
+    // the full build.
+    const changed = full ? [] : [...pendingPageIds];
+    const lists = full
+      ? { listIds: [], listTypeIds: [] }
+      : { listIds: [...pendingLists.listIds], listTypeIds: [...pendingLists.listTypeIds] };
     pendingPageIds.clear();
+    pendingLists.listIds.clear();
+    pendingLists.listTypeIds.clear();
+    pendingLists.full = false;
     try {
-      await redeployThroughQualityGate(cfg, changed);
+      await redeployThroughQualityGate(cfg, changed, lists);
     } catch (e) {
       // Never crash the orchestrator loop; the ops record their own
       // failures (failed deploy runs), this is the last-resort log.
@@ -655,11 +672,24 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
     if (rows.length === 0) return false;
     const matched = new Set<string>();
     for (const r of rows) {
-      if (!r.entity_id) continue;
-      if (r.operation.startsWith("pages.")) {
-        matched.add(r.entity_id);
+      const change = classifyAuditRow(r.operation, r.entity_id);
+      if (change.kind === "page") {
+        matched.add(change.id);
         continue;
       }
+      if (change.kind === "list") {
+        pendingLists.listIds.add(change.id);
+        continue;
+      }
+      if (change.kind === "listType") {
+        pendingLists.listTypeIds.add(change.id);
+        continue;
+      }
+      if (change.kind === "full") {
+        pendingLists.full = true;
+        continue;
+      }
+      if (!r.entity_id) continue;
       const res = await resolvePluginOpPageId(cfg.adapter, r.operation, r.entity_id, "audit");
       if ("pageId" in res && res.pageId) matched.add(res.pageId);
     }
@@ -994,6 +1024,11 @@ export function startRedeployOrchestrator(cfg: OrchestratorConfig): Orchestrator
 export async function redeployThroughQualityGate(
   cfg: Pick<OrchestratorConfig, "adapter" | "registry">,
   changedPageIds: readonly string[],
+  /** Epic #1107 — changed lists / list types; their dependent pages rebuild too. */
+  changedLists: { readonly listIds: readonly string[]; readonly listTypeIds: readonly string[] } = {
+    listIds: [],
+    listTypeIds: [],
+  },
 ): Promise<
   | { path: "production"; ok: boolean }
   | { path: "staged-for-audit"; ok: boolean; auditRunId?: string }
@@ -1022,6 +1057,10 @@ export async function redeployThroughQualityGate(
     const r = await execute(cfg.registry, cfg.adapter, SYSTEM_CTX, "deploy.trigger", {
       targetName: "production",
       ...(changedPageIds.length > 0 ? { changedPageIds: [...changedPageIds] } : {}),
+      ...(changedLists.listIds.length > 0 ? { changedListIds: [...changedLists.listIds] } : {}),
+      ...(changedLists.listTypeIds.length > 0
+        ? { changedListTypeIds: [...changedLists.listTypeIds] }
+        : {}),
     });
     if (!r.ok)
       console.error("[redeploy-orchestrator] production rebuild refused or failed", r.error);

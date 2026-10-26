@@ -79,6 +79,7 @@ describe("main nav model", () => {
     expect(nav.content.map((l) => l.label)).toEqual([
       "Pages",
       "Modules",
+      "Menus & lists",
       "Content library",
       "Media",
       "Templates",

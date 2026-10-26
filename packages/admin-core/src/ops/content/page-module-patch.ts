@@ -3,8 +3,9 @@
 /**
  * #917 — `page_module_content.patch_fields`: change individual values of
  * ONE placement, the way Live Edit's in-place editing does. The operator
- * edits what they see; this op patches exactly those fields (or list
- * items) and leaves every other value of the placement as it is.
+ * edits what they see; this op patches exactly those fields (or values
+ * of local list entries) and leaves every other value of the placement
+ * as it is.
  *
  * Bulk-first (CLAUDE.md §11): `edits` carries one entry per changed value
  * so a link's label + target or an image + its alt text land in one call
@@ -23,7 +24,15 @@
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
-import { err, ok } from "@caelo-cms/shared";
+import {
+  applyListItemPatches,
+  err,
+  findListItem,
+  type ListItem,
+  ListPatchError,
+  listNameSchema,
+  ok,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import {
@@ -59,10 +68,12 @@ const editSchema = z
   .object({
     /** Field name as the module declares it. */
     field: z.string().min(1).max(200),
-    /** Item index for a `text-list` item or a `link-list` entry. */
-    index: z.number().int().nonnegative().optional(),
-    /** Which part of a `link-list` entry: its text (default) or its target. */
-    part: z.enum(["label", "href"]).optional(),
+    /** Entry id in a local `list` field (epic #1107); entry ids never change. */
+    item: z.string().uuid().optional(),
+    /** The entry's field to change (`label`, `text`, `link`, …). */
+    key: listNameSchema.optional(),
+    /** `href`: change a link field's target instead of a text value. */
+    part: z.literal("href").optional(),
     /**
      * The new value as the operator typed it: plain text for text, a URL /
      * path for `url`, `image` and link targets.
@@ -86,46 +97,59 @@ function address(value: string, pattern: RegExp, what: string): Patch {
 }
 
 /** The field's new value with the edit applied, or a reason it cannot be. */
-function applyEdit(kind: string, current: unknown, edit: Edit): Patch {
+function applyEdit(
+  def: { readonly kind?: string; readonly bind?: string },
+  current: unknown,
+  edit: Edit,
+): Patch {
+  const kind = def.kind ?? "text";
   if (kind === "text" || kind === "url" || kind === "image") {
-    if (edit.index !== undefined || edit.part !== undefined) {
-      return { ok: false, message: `a ${kind} field takes no index or part` };
+    if (edit.item !== undefined || edit.key !== undefined || edit.part !== undefined) {
+      return { ok: false, message: `a ${kind} field takes no item, key or part` };
     }
     if (kind === "url") return address(edit.text, TARGET, "link target");
     if (kind === "image") return address(edit.text, IMAGE, "image address");
     return { ok: true, value: escapeFieldText(edit.text) };
   }
-  if (kind !== "text-list" && kind !== "link-list") {
+  if (kind !== "list") {
     return { ok: false, message: `a ${kind} field cannot be edited here` };
   }
-  if (edit.index === undefined) {
-    return { ok: false, message: `a ${kind} field needs the item index` };
-  }
-  const items = Array.isArray(current) ? current : [];
-  if (edit.index >= items.length) {
+  if ((def.bind ?? "local") !== "local") {
     return {
       ok: false,
-      message: `item ${edit.index} does not exist (the list has ${items.length})`,
+      message:
+        "its entries live in a shared list or a source, not in this section — edit the list instead",
     };
   }
-  const next = [...items];
-  if (kind === "text-list") {
-    if (edit.part !== undefined) return { ok: false, message: "a text-list item has no part" };
-    next[edit.index] = escapeFieldText(edit.text);
-    return { ok: true, value: next };
+  if (edit.item === undefined || edit.key === undefined) {
+    return { ok: false, message: "a list field needs the entry (item) and its field (key)" };
   }
-  const item = items[edit.index];
-  if (typeof item !== "object" || item === null) {
-    return { ok: false, message: `item ${edit.index} is not a link` };
-  }
+  const items = (Array.isArray(current) ? current : []) as ListItem[];
+  const entry = findListItem(items, edit.item);
+  if (!entry) return { ok: false, message: `entry ${edit.item} does not exist in the list` };
+  let value: unknown;
   if (edit.part === "href") {
+    const link = entry.values[edit.key];
+    if (typeof link !== "object" || link === null) {
+      return { ok: false, message: `"${edit.key}" of that entry is not a link` };
+    }
     const target = address(edit.text, TARGET, "link target");
     if (!target.ok) return target;
-    next[edit.index] = { ...item, href: target.value };
+    value = { ...(link as Record<string, unknown>), href: target.value };
   } else {
-    next[edit.index] = { ...item, label: escapeFieldText(edit.text) };
+    value = escapeFieldText(edit.text);
   }
-  return { ok: true, value: next };
+  try {
+    return {
+      ok: true,
+      value: applyListItemPatches(items, [
+        { op: "update", itemId: edit.item, values: { [edit.key]: value } },
+      ]),
+    };
+  } catch (e) {
+    if (e instanceof ListPatchError) return { ok: false, message: e.message };
+    throw e;
+  }
 }
 
 function fail(
@@ -209,13 +233,13 @@ export const patchPageModuleFieldsOp = defineOperation({
     const values: Record<string, unknown> = { ...instance.values };
     for (const edit of input.edits) {
       const def = module.fields.find(
-        (f): f is { name: string; kind?: string } =>
+        (f): f is { name: string; kind?: string; bind?: string } =>
           typeof f === "object" && f !== null && (f as { name?: unknown }).name === edit.field,
       );
       if (!def) {
         return fail(`The module has no field "${edit.field}". Reload the preview and try again.`);
       }
-      const patch = applyEdit(def.kind ?? "text", values[edit.field], edit);
+      const patch = applyEdit(def, values[edit.field], edit);
       if (!patch.ok) return fail(`Cannot edit "${edit.field}": ${patch.message}.`);
       values[edit.field] = patch.value;
     }
@@ -237,7 +261,7 @@ export const patchPageModuleFieldsOp = defineOperation({
       input,
       succeeded: true,
       entityId: targetId,
-      resultSummary: `scope=${placement.syncMode === "synced" ? input.scope : "own"} fields=${input.edits.map((e) => (e.index !== undefined ? `${e.field}[${e.index}]` : e.field)).join(",")}`,
+      resultSummary: `scope=${placement.syncMode === "synced" ? input.scope : "own"} fields=${input.edits.map((e) => (e.item !== undefined ? `${e.field}[${e.item}].${e.key}` : e.field)).join(",")}`,
     });
     return ok({ contentInstanceId: targetId, version: written.value.version });
   },

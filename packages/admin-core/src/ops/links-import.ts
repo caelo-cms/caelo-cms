@@ -21,21 +21,22 @@ import {
   collectLinkLiterals,
   type ExecutionContext,
   err,
+  listItemInputSchema,
   moduleUpdateSchema,
   ok,
 } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
-import { pendingSnapshotSql } from "../draft.js";
-import type { ImportLinkEntityKind } from "../links/import-targets.js";
+import { IMPORT_LINK_ENTITY_KINDS, type ImportLinkEntityKind } from "../links/import-targets.js";
+import { loadListEntities, loadListEntity } from "../lists/store.js";
 import {
   loadContentInstanceStateWithBranchOverlay,
   loadModuleStateWithBranchOverlay,
 } from "../snapshots/load.js";
 import { setContentInstanceValuesOp } from "./content/content-instances.js";
 import { updateModuleOp } from "./content/modules.js";
-import { setStructuredSetOp } from "./structured_sets.js";
+import { upsertListsManyOp } from "./lists/lists.js";
 
 /** One recorded link that still matches no page. */
 export interface ImportLinkFinding {
@@ -75,48 +76,6 @@ async function loadRunScope(tx: TransactionRunner, runId: string): Promise<RunSc
   return r ? { status: r.status, branchId: r.branch_id, chatSessionId: r.chat_session_id } : null;
 }
 
-/** A structured set as the chat's branch has it (pending snapshot wins). */
-async function loadSetState(
-  tx: TransactionRunner,
-  setId: string,
-  branchId: string | null,
-): Promise<{ kind: string; slug: string; displayName: string; items: unknown[] } | null> {
-  if (branchId) {
-    const branched = (await tx.execute(sql`
-      SELECT sss.state
-        FROM structured_set_snapshots sss
-        JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-       WHERE sss.structured_set_id = ${setId}::uuid
-         AND ss.chat_branch_id = ${branchId}::uuid AND ${pendingSnapshotSql()}
-       ORDER BY ss.created_at DESC LIMIT 1
-    `)) as unknown as { state: unknown }[];
-    const raw = branched[0]?.state;
-    if (raw !== undefined) {
-      const s = (typeof raw === "string" ? JSON.parse(raw) : raw) as {
-        kind?: string;
-        slug?: string;
-        displayName?: string;
-        items?: unknown[];
-        deletedAt?: string | null;
-      };
-      if (s.deletedAt) return null;
-      if (s.kind && s.slug && s.displayName && Array.isArray(s.items)) {
-        return { kind: s.kind, slug: s.slug, displayName: s.displayName, items: s.items };
-      }
-      throw new ImportLinkFinalisationError(
-        `structured set ${setId}: its latest branch snapshot has no kind/slug/displayName/items`,
-      );
-    }
-  }
-  const rows = (await tx.execute(sql`
-    SELECT kind, slug, display_name, items FROM structured_sets WHERE id = ${setId}::uuid
-  `)) as unknown as { kind: string; slug: string; display_name: string; items: unknown }[];
-  const r = rows[0];
-  if (!r) return null;
-  const items = typeof r.items === "string" ? JSON.parse(r.items) : r.items;
-  return { kind: r.kind, slug: r.slug, displayName: r.display_name, items: items as unknown[] };
-}
-
 /** Load one entity's link-carrying state as the run's chat sees it. */
 async function loadEntity(
   tx: TransactionRunner,
@@ -128,11 +87,12 @@ async function loadEntity(
     const s = await loadContentInstanceStateWithBranchOverlay(tx, id, branchId);
     return s === null || s.deletedAt !== null ? null : s.values;
   }
-  if (kind === "module") {
-    const s = await loadModuleStateWithBranchOverlay(tx, id, branchId);
-    return s === null || s.deletedAt !== null ? null : { html: s.html, fields: s.fields };
+  if (kind === "list") {
+    const l = await loadListEntity(tx, "list", branchId, id);
+    return l === null || l.state.deletedAt !== null ? null : l.state.items;
   }
-  return loadSetState(tx, id, branchId);
+  const s = await loadModuleStateWithBranchOverlay(tx, id, branchId);
+  return s === null || s.deletedAt !== null ? null : { html: s.html, fields: s.fields };
 }
 
 /**
@@ -153,7 +113,9 @@ async function rewriteEntity(
       { id, values: state as Record<string, unknown> },
       tx,
     );
-  } else if (kind === "module") {
+  } else if (kind === "list") {
+    r = await rewriteList(tx, ctx, id);
+  } else {
     const m = state as { html: string; fields: unknown };
     const input = moduleUpdateSchema.safeParse({ moduleId: id, html: m.html, fields: m.fields });
     if (!input.success) {
@@ -164,18 +126,6 @@ async function rewriteEntity(
       );
     }
     r = await updateModuleOp.handler(ctx, input.data, tx);
-  } else {
-    const s = state as { kind: string; slug: string; displayName: string; items: unknown[] };
-    r = await setStructuredSetOp.handler(
-      ctx,
-      {
-        kind: s.kind as Parameters<typeof setStructuredSetOp.handler>[1]["kind"],
-        slug: s.slug,
-        displayName: s.displayName,
-        items: s.items,
-      },
-      tx,
-    );
   }
   if (!r.ok) {
     const e = r.error as { message?: string };
@@ -183,6 +133,43 @@ async function rewriteEntity(
       `rewriting ${kind} ${id} failed: ${e.message ?? JSON.stringify(r.error)}`,
     );
   }
+}
+
+/**
+ * Rewrite a shared list with its stored entries through `lists.upsert_many`
+ * (the run's chat view): the write canonicalises each recorded link
+ * against the pages that exist now.
+ */
+async function rewriteList(
+  tx: TransactionRunner,
+  ctx: ExecutionContext,
+  id: string,
+): Promise<{ ok: true } | { ok: false; error: unknown }> {
+  const branchId = ctx.chatBranchId ?? null;
+  const list = await loadListEntity(tx, "list", branchId, id);
+  const type = list
+    ? (await loadListEntities(tx, "listType", branchId, { ids: [list.state.listTypeId] }))[0]
+    : undefined;
+  if (!list || !type) {
+    return { ok: false, error: { message: `list ${id} or its list type no longer exists` } };
+  }
+  const r = await upsertListsManyOp.handler(
+    ctx,
+    {
+      lists: [
+        {
+          slug: list.state.slug,
+          name: list.state.name,
+          purpose: list.state.purpose,
+          type: type.state.slug,
+          // Stored entries are entries of the input shape (ids kept).
+          items: z.array(listItemInputSchema).parse(list.state.items),
+        },
+      ],
+    },
+    tx,
+  );
+  return r.ok ? { ok: true } : { ok: false, error: r.error };
 }
 
 /**
@@ -265,7 +252,7 @@ export async function finaliseImportLinks(
 
 const unresolvedSchema = z.object({
   value: z.string(),
-  entityKind: z.enum(["content_instance", "module", "structured_set"]),
+  entityKind: z.enum(IMPORT_LINK_ENTITY_KINDS),
   entityId: z.string(),
   location: z.string(),
 });

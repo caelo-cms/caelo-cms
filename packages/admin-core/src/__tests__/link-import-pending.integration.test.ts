@@ -9,7 +9,7 @@
  *     built writes without a refusal; the link is recorded against the
  *     run, and resolve_links stores it as a reference to page 2 — even
  *     though page 2 was rebuilt under a translated slug (its source path
- *     names it), in content values, module HTML and a nav-menu set alike;
+ *     names it), in content values and module HTML alike;
  *   - a path outside the run's plan is still refused;
  *   - a planned page that is never built is a finding of the run (the
  *     resolve output and the run report), with where it is;
@@ -64,6 +64,17 @@ async function run<T>(op: string, input: unknown, ctx: ExecutionContext = SYSTEM
   return r.value as T;
 }
 
+/** A module whose HTML carries one internal link (a link-carrying surface). */
+function linkModule(name: string, href: string): Record<string, unknown> {
+  return {
+    slug: `${PFX}-${name}`,
+    displayName: name,
+    html: `<a href="${href}">link</a>{{note}}`,
+    // Declared fields: the extractor would otherwise lift the link out.
+    fields: [{ name: "note", kind: "text", label: "Note" }],
+  };
+}
+
 async function refusal(op: string, input: unknown, ctx: ExecutionContext): Promise<string> {
   const r = await execute(registry, adapter, ctx, op, input);
   if (r.ok) throw new Error(`${op} unexpectedly succeeded`);
@@ -96,7 +107,6 @@ async function wipe(): Promise<void> {
   await asSystem(async (tx) => {
     await tx`DELETE FROM import_runs WHERE source_url = ${SOURCE}`;
     await tx`DELETE FROM chat_sessions WHERE title LIKE ${`${PFX}%`}`;
-    await tx`DELETE FROM structured_sets WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM page_modules WHERE page_id IN (SELECT id FROM pages WHERE slug LIKE ${`${PFX}%`})`;
     await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE display_name LIKE ${`${PFX}%`})`;
@@ -223,46 +233,21 @@ describe("links to pages an import run has not built yet", () => {
         ai,
       )
     ).pageId;
-    await run(
-      "structured_sets.set",
-      {
-        kind: "nav-menu",
-        slug: `${PFX}-main`,
-        displayName: "Main",
-        items: [{ label: "Pricing", href: `/${PFX}-pricing` }],
-      },
-      ai,
-    );
     expect((await recorded()).map((r) => [r.entity_kind, r.value, r.status])).toEqual([
       ["content_instance", `/${PFX}-pricing`, "pending"],
       ["content_instance", `/${PFX}-pricing#faq`, "pending"],
       ["content_instance", `${SOURCE}/${PFX}-team`, "pending"],
       ["module", `/${PFX}-pricing#plans`, "pending"],
-      ["structured_set", `/${PFX}-pricing`, "pending"],
     ]);
   });
 
   it("still refuses a path outside the run's plan", async () => {
-    const message = await refusal(
-      "structured_sets.set",
-      {
-        kind: "nav-menu",
-        slug: `${PFX}-typo`,
-        displayName: "Typo",
-        items: [{ label: "Pricing", href: `/${PFX}-pricng` }],
-      },
-      ai,
-    );
+    const message = await refusal("modules.create", linkModule("typo", `/${PFX}-pricng`), ai);
     expect(message).toContain(`"/${PFX}-pricng" is not the path of any page`);
     // ...and outside the import's chat, a planned path is no exception.
     const outside = await refusal(
-      "structured_sets.set",
-      {
-        kind: "nav-menu",
-        slug: `${PFX}-outside`,
-        displayName: "Outside",
-        items: [{ label: "Pricing", href: `/${PFX}-pricing` }],
-      },
+      "modules.create",
+      linkModule("outside", `/${PFX}-pricing`),
       SYSTEM,
     );
     expect(outside).toContain("is not the path of any page");
@@ -312,7 +297,7 @@ describe("links to pages an import run has not built yet", () => {
       resolved: number;
       unresolved: { value: string; entityKind: string; location: string }[];
     }>("imports.resolve_links", { runId }, ai);
-    expect(out.resolved).toBe(4);
+    expect(out.resolved).toBe(3);
     expect(out.unresolved.map((u) => [u.entityKind, u.value])).toEqual([
       ["content_instance", `${SOURCE}/${PFX}-team`],
     ]);
@@ -357,18 +342,6 @@ describe("links to pages an import run has not built yet", () => {
     // The never-built page stays as written — a finding, not a guess.
     expect(values.intro_html).toContain(`href="${SOURCE}/${PFX}-team"`);
 
-    const set = (
-      await asSystem(
-        (tx) => tx`SELECT id::text AS id FROM structured_sets WHERE slug = ${`${PFX}-main`}`,
-      )
-    )[0] as { id: string };
-    const setState = (await branchState(
-      "structured_set_snapshots",
-      "structured_set_id",
-      set.id,
-    )) as { items: { href: string }[] };
-    expect(setState.items[0]?.href).toBe(`caelo:page/${pricingPageId}`);
-
     // Reads show the built page's path, never an id (CLAUDE.md §1A).
     const got = await run<{ instance: { values: Record<string, unknown> } }>(
       "content_instances.get",
@@ -382,7 +355,6 @@ describe("links to pages an import run has not built yet", () => {
       ["content_instance", `/${PFX}-pricing#faq`, "resolved"],
       ["content_instance", `${SOURCE}/${PFX}-team`, "unresolved"],
       ["module", `/${PFX}-pricing#plans`, "resolved"],
-      ["structured_set", `/${PFX}-pricing`, "resolved"],
     ]);
 
     const report = await run<{
@@ -394,7 +366,7 @@ describe("links to pages an import run has not built yet", () => {
       };
     }>("imports.get_run_report", { runId }, ai);
     expect(report.internalLinks.pending).toBe(0);
-    expect(report.internalLinks.resolved).toBe(4);
+    expect(report.internalLinks.resolved).toBe(3);
     expect(report.internalLinks.unresolved.map((u) => u.value)).toEqual([`${SOURCE}/${PFX}-team`]);
     expect(report.internalLinks.nextStep).toContain("resolve_import_links");
   });
@@ -411,18 +383,9 @@ describe("links to pages an import run has not built yet", () => {
     expect((await recorded()).find((r) => r.value === `${SOURCE}/${PFX}-team`)?.status).toBe(
       "unresolved",
     );
-    expect(
-      await refusal(
-        "structured_sets.set",
-        {
-          kind: "nav-menu",
-          slug: `${PFX}-after`,
-          displayName: "After",
-          items: [{ label: "Team", href: `/${PFX}-team` }],
-        },
-        ai,
-      ),
-    ).toContain("is not the path of any page");
+    expect(await refusal("modules.create", linkModule("after", `/${PFX}-team`), ai)).toContain(
+      "is not the path of any page",
+    );
     expect(await refusal("imports.resolve_links", { runId }, ai)).toContain(
       "its links were finalised when it ended",
     );

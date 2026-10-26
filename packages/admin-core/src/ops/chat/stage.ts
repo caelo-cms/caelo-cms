@@ -26,7 +26,7 @@
 
 import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { type ChatBinding, chatPendingSql, loadChatBinding } from "../../draft.js";
@@ -46,8 +46,12 @@ const entityRefSchema = z
       "pageLayout",
       "pageModuleContent",
       "layout",
-      "structuredSet",
       "theme",
+      // Epic #1107 — shared lists (the `lists` group), their types and
+      // page types (globals).
+      "list",
+      "listType",
+      "pageType",
       // v0.12.0 — content_instance edits surface in the Stage picker.
       "contentInstance",
       // A plugin private-storage row written on the branch.
@@ -255,31 +259,31 @@ export async function loadPendingChanges(
     stage_state: string;
   }[];
 
-  // v0.5.3 — structured_set snapshots. Theme kind goes in `globals`;
-  // ordered-list kinds (nav-menu / taxonomy / link-list) go in `lists`.
-  const structuredSetRows = (await tx.execute(sql`
-    WITH latest AS (
-      SELECT DISTINCT ON (sss.structured_set_id)
-        sss.structured_set_id::text AS entity_id,
-        sss.state
-      FROM structured_set_snapshots sss
-      JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
-      WHERE ${window}
-      ORDER BY sss.structured_set_id, ss.created_at DESC
-    )
-    SELECT
-      l.entity_id,
-      ss.display_name AS label,
-      (ss.kind || '/' || ss.slug) AS detail,
-      ss.kind AS kind,
-      COALESCE(marks.stage_state, 'pending') AS stage_state
-    FROM latest l
-    LEFT JOIN structured_sets ss ON ss.id::text = l.entity_id
-    LEFT JOIN chat_branch_publish_marks marks
-      ON marks.chat_branch_id = ${branchId}::uuid
-     AND marks.entity_kind = 'structuredSet'
-     AND marks.entity_id::text = l.entity_id
-  `)) as unknown as (Row & { kind: string })[];
+  // Epic #1107 — shared lists, list types and page types.
+  const listRows = await latestLabelled(tx, window, branchId, {
+    table: "list_snapshots",
+    column: "list_id",
+    markKind: "list",
+    label: sql`COALESCE(e.name, e.slug, l.entity_id)`,
+    detail: sql`e.slug`,
+    join: sql`LEFT JOIN lists e ON e.id::text = l.entity_id`,
+  });
+  const listTypeRows = await latestLabelled(tx, window, branchId, {
+    table: "list_type_snapshots",
+    column: "list_type_id",
+    markKind: "listType",
+    label: sql`COALESCE(e.definition->>'name', e.slug, l.entity_id)`,
+    detail: sql`'list type ' || e.slug`,
+    join: sql`LEFT JOIN list_types e ON e.id::text = l.entity_id`,
+  });
+  const pageTypeRows = await latestLabelled(tx, window, branchId, {
+    table: "page_type_snapshots",
+    column: "page_type_id",
+    markKind: "pageType",
+    label: sql`COALESCE(e.definition->>'name', e.slug, l.entity_id)`,
+    detail: sql`'page type ' || e.slug`,
+    join: sql`LEFT JOIN page_types e ON e.id::text = l.entity_id`,
+  });
 
   // v0.12.0 — content_instance edits. Each row carries the module slug
   // + the content_instance's slug/displayName so the Stage picker can
@@ -407,26 +411,9 @@ export async function loadPendingChanges(
     };
   });
 
-  // v0.5.3 — structured_set rows split between globals (theme) and
-  // lists (nav-menu / taxonomy / link-list) based on `kind`.
-  const ssPendingGlobals: EntityRef[] = [];
-  const ssPendingLists: EntityRef[] = [];
-  const ssStagedGlobals: EntityRef[] = [];
-  const ssStagedLists: EntityRef[] = [];
-  for (const r of structuredSetRows) {
-    const ref: EntityRef = {
-      kind: "structuredSet",
-      entityId: r.entity_id,
-      label: r.label ?? r.entity_id,
-      ...(r.detail ? { detail: r.detail } : {}),
-    };
-    const isList = r.kind === "nav-menu" || r.kind === "taxonomy" || r.kind === "link-list";
-    if (r.stage_state === "staged") {
-      (isList ? ssStagedLists : ssStagedGlobals).push(ref);
-    } else if (r.stage_state === "pending") {
-      (isList ? ssPendingLists : ssPendingGlobals).push(ref);
-    }
-  }
+  const lists = bucketize(listRows, "list");
+  const listTypes = bucketize(listTypeRows, "listType");
+  const pageTypes = bucketize(pageTypeRows, "pageType");
 
   return {
     pending: {
@@ -434,27 +421,72 @@ export async function loadPendingChanges(
       globals: [
         ...modules.pending,
         ...templates.pending,
-        ...ssPendingGlobals,
+        ...listTypes.pending,
+        ...pageTypes.pending,
         ...layoutChromePending,
         ...contentInstances.pending,
         ...pluginRows.pending,
         ...themes.pending,
       ],
-      lists: ssPendingLists,
+      lists: lists.pending,
     },
     staged: {
       pages: [...content.staged, ...pages.staged, ...layouts.staged],
       globals: [
         ...modules.staged,
         ...templates.staged,
-        ...ssStagedGlobals,
+        ...listTypes.staged,
+        ...pageTypes.staged,
         ...contentInstances.staged,
         ...pluginRows.staged,
         ...themes.staged,
       ],
-      lists: ssStagedLists,
+      lists: lists.staged,
     },
   };
+}
+
+/**
+ * Latest pending snapshot per entity of one snapshot table, labelled from
+ * its live row and joined with the branch's stage marks — the shared
+ * shape of the list / list type / page type picker rows.
+ */
+async function latestLabelled(
+  tx: TransactionRunner,
+  window: SQL,
+  branchId: string,
+  spec: {
+    readonly table: string;
+    readonly column: string;
+    readonly markKind: string;
+    readonly label: SQL;
+    readonly detail: SQL;
+    readonly join: SQL;
+  },
+): Promise<{ entity_id: string; label: string; detail: string | null; stage_state: string }[]> {
+  return (await tx.execute(sql`
+    WITH latest AS (
+      SELECT DISTINCT ON (es.${sql.raw(spec.column)}) es.${sql.raw(spec.column)}::text AS entity_id
+      FROM ${sql.raw(spec.table)} es
+      JOIN site_snapshots ss ON ss.id = es.site_snapshot_id
+      WHERE ${window}
+      ORDER BY es.${sql.raw(spec.column)}, ss.created_at DESC
+    )
+    SELECT l.entity_id, ${spec.label} AS label, ${spec.detail} AS detail,
+           COALESCE(marks.stage_state, 'pending') AS stage_state
+    FROM latest l
+    ${spec.join}
+    LEFT JOIN chat_branch_publish_marks marks
+      ON marks.chat_branch_id = ${branchId}::uuid
+     AND marks.entity_kind = ${spec.markKind}
+     AND marks.entity_id::text = l.entity_id
+    ORDER BY label, l.entity_id
+  `)) as unknown as {
+    entity_id: string;
+    label: string;
+    detail: string | null;
+    stage_state: string;
+  }[];
 }
 
 const stageInput = z
@@ -540,8 +572,12 @@ export const stageChatChangesOp = defineOperation({
               return "page_layout_snapshots";
             case "pageModuleContent":
               return "page_module_content_snapshots";
-            case "structuredSet":
-              return "structured_set_snapshots";
+            case "list":
+              return "list_snapshots";
+            case "listType":
+              return "list_type_snapshots";
+            case "pageType":
+              return "page_type_snapshots";
             case "contentInstance":
               return "content_instance_snapshots";
             case "pluginRow":
@@ -563,8 +599,12 @@ export const stageChatChangesOp = defineOperation({
               return "page_id";
             case "pageModuleContent":
               return "page_module_content_id";
-            case "structuredSet":
-              return "structured_set_id";
+            case "list":
+              return "list_id";
+            case "listType":
+              return "list_type_id";
+            case "pageType":
+              return "page_type_id";
             case "contentInstance":
               return "content_instance_id";
             case "pluginRow":
@@ -652,16 +692,40 @@ export const stageChatChangesOp = defineOperation({
         ) c
         UNION ALL
         SELECT entity_id, entity_kind, site_snapshot_id FROM (
-          SELECT DISTINCT ON (sss.structured_set_id)
-            sss.structured_set_id::text AS entity_id,
-            'structuredSet'::text AS entity_kind,
-            sss.site_snapshot_id::text AS site_snapshot_id,
+          SELECT DISTINCT ON (lsn.list_id)
+            lsn.list_id::text AS entity_id,
+            'list'::text AS entity_kind,
+            lsn.site_snapshot_id::text AS site_snapshot_id,
             ss.created_at
-          FROM structured_set_snapshots sss
-          JOIN site_snapshots ss ON ss.id = sss.site_snapshot_id
+          FROM list_snapshots lsn
+          JOIN site_snapshots ss ON ss.id = lsn.site_snapshot_id
           WHERE ${window}
-          ORDER BY sss.structured_set_id, ss.created_at DESC
-        ) s
+          ORDER BY lsn.list_id, ss.created_at DESC
+        ) lsn_sub
+        UNION ALL
+        SELECT entity_id, entity_kind, site_snapshot_id FROM (
+          SELECT DISTINCT ON (ltn.list_type_id)
+            ltn.list_type_id::text AS entity_id,
+            'listType'::text AS entity_kind,
+            ltn.site_snapshot_id::text AS site_snapshot_id,
+            ss.created_at
+          FROM list_type_snapshots ltn
+          JOIN site_snapshots ss ON ss.id = ltn.site_snapshot_id
+          WHERE ${window}
+          ORDER BY ltn.list_type_id, ss.created_at DESC
+        ) ltn_sub
+        UNION ALL
+        SELECT entity_id, entity_kind, site_snapshot_id FROM (
+          SELECT DISTINCT ON (ptn.page_type_id)
+            ptn.page_type_id::text AS entity_id,
+            'pageType'::text AS entity_kind,
+            ptn.site_snapshot_id::text AS site_snapshot_id,
+            ss.created_at
+          FROM page_type_snapshots ptn
+          JOIN site_snapshots ss ON ss.id = ptn.site_snapshot_id
+          WHERE ${window}
+          ORDER BY ptn.page_type_id, ss.created_at DESC
+        ) ptn_sub
         UNION ALL
         SELECT entity_id, entity_kind, site_snapshot_id FROM (
           SELECT DISTINCT ON (cis.content_instance_id)

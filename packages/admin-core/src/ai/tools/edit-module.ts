@@ -19,6 +19,7 @@ import { editModuleToolInput } from "@caelo-cms/shared";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { designGuardSuffix } from "./_design-guard.js";
 import { INTERNAL_LINK_CONTRACT } from "./_internal-link-contract.js";
+import { LIST_FIELD_CONTRACT } from "./_list-tool-kit.js";
 import { MODULE_FIELDS_JSON_SCHEMA } from "./_module-fields-schema.js";
 import {
   MODULE_CSS_DESCRIPTION,
@@ -35,9 +36,9 @@ export const editModuleTool: ToolDefinitionWithHandler<
   description:
     "Edit ONE module's structure: HTML template, fields, CSS, JS, displayName, description, or kind. " +
     "**AUTHOR EXPLICITLY (v0.12.0+):** pass `html` with `{{fieldName}}` placeholders + an explicit `fields[]` array with semantic snake_case names (`hero_title`, `primary_cta_href`, `nav_items`), NOT a literal-content fallback. The operator says 'fix the homepage hero copy'; YOU translate that to the right field names. Field names like `cta2label2` or `spanText` are wrong — they leak the extractor heuristic. " +
-    "**Field kinds (v0.12.0):** `text`, `richtext`, `url`, `image`, `number`, `boolean`, `link` (primitives); `text-list` (array of strings, slot `{{#field}}…{{.}}…{{/field}}`); `link-list` (array of `{label, href}`, slot `{{#field}}…{{label}}…{{href}}…{{/field}}` — use for menus, footer columns); `module` (single nested module, slot `{{>field}}`); `module-list` (array of nested modules, slot `{{#field}}…{{/field}}`). " +
+    "**Field kinds:** `text`, `richtext`, `url`, `image`, `number`, `boolean`, `link` (primitives); `list` (entries of a list type — see List fields below); `module` (single nested module, slot `{{>field}}`); `module-list` (array of nested modules, slot `{{#field}}{{/field}}`). " +
     '**Nested fields may declare `allowedModuleTypes`** — a whitelist of stable module `type`s (e.g. `["button"]`), NOT slugs. It matches the referenced module\'s `type`; set it to constrain what can nest in a `module`/`module-list` slot, and widen it here if a valid module is being wrongly rejected. ' +
-    "**Lists are lists, not numbered scalars.** A menu with 10 items is ONE `link-list` field with 10 elements — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `text-list`. Cards with rich per-item structure use `module-list` pointing at a sub-module. " +
+    '**Lists are lists, not numbered scalars.** A menu with 10 items is ONE `list` field with 10 entries — never `label1`, `label2`, …, `label10`. A tag cloud is ONE `list` (listType "texts"). Cards with several parts per item (image + heading + text) use a list type with those fields (upsert_list_types_many) or a `module-list` of a card module. ' +
     "**Update description + kind when the module's purpose drifts.** `list_modules` exposes them to your future self; stale descriptions hurt your own decision-making. " +
     "**Legacy fallback only:** if you pass HTML with literal content and NO `fields[]`, a server-side extractor mints heuristic field names — useful for one-shot drafts but the result hurts the `list_modules` catalog. Treat it as a fallback, not the default path. " +
     "**Scope module CSS under the module's own root class** - bare global selectors (`body`, `h1`, `.card`) bleed into every other module on the page (issue #158); the tool result flags unscoped selectors. " +
@@ -49,6 +50,7 @@ export const editModuleTool: ToolDefinitionWithHandler<
     "DO NOT use this to change what one page shows — use `set_page_module_content` (per-page content) or `set_content_instance_values` (shared content) for that. " +
     "Prefer `update_modules_many` when targeting > 1 module. " +
     "DO NOT use for page metadata (`update_pages_many`) or template-level edits (`propose_update_template`)." +
+    LIST_FIELD_CONTRACT +
     INTERNAL_LINK_CONTRACT,
   schema: editModuleToolInput,
   inputSchema: {

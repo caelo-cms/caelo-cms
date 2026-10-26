@@ -13,6 +13,7 @@
 export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
 export type { ContentVariantPage, ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
 export { pluginManifest } from "@caelo-cms/plugin-sdk";
+export { auditFindingContributors, collectPluginAuditFindings } from "./audit-findings.js";
 export {
   BUILD_PLUGIN_METHODS,
   type BuildPluginMethod,
@@ -39,12 +40,6 @@ export {
   type ResolvedContentVariants,
   resolveContentVariants,
 } from "./content-variants.js";
-export {
-  dormantDataListNames,
-  type ResolvedDataLists,
-  resolveDataLists,
-} from "./data-list-resolution.js";
-export { type DataListItem, pluginDataListsRegistry } from "./data-lists.js";
 export {
   type ResolvedDeferral,
   type ResolvedDeferrals,
@@ -126,6 +121,25 @@ export {
   type ResolvedLinkVariants,
   resolveLinkVariants,
 } from "./link-resolve.js";
+export { type ActiveListExt, activeListExt, compileListExt } from "./list-ext.js";
+export {
+  hasListResolveContributors,
+  LIST_RESOLVE_ANSWER_MAX_BYTES,
+  mergeListOverlays,
+  overlayIssueOwner,
+  type PluginListOverlays,
+  type ResolvedListOverlays,
+  reportListOverlayIssues,
+  resolveListOverlays,
+} from "./list-resolve.js";
+export {
+  checkListSourceEntries,
+  dormantListSourceNames,
+  LIST_SOURCE_ANSWER_MAX_BYTES,
+  type ResolvedListSources,
+  resolveListSources,
+} from "./list-source-resolution.js";
+export { pluginListSourcesRegistry } from "./list-sources.js";
 export {
   activateApprovedExternalPlugin,
   type BootstrapOpts,

@@ -195,6 +195,7 @@ const root = mkdtempSync(join(tmpdir(), "caelo-nested-build-"));
 function build(pageId: string, runId: string): { run: Promise<unknown>; buildDir: string } {
   const run = adapter.withAdminTransaction(SYSTEM, (tx) =>
     generateSite({
+      publishAt: new Date().toISOString(),
       tx,
       adapter,
       plugins: localBuildPluginServices,

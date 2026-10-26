@@ -308,6 +308,7 @@ import {
   revertLinkMigrationOp,
 } from "./ops/links.js";
 import { resolveImportLinksOp } from "./ops/links-import.js";
+import { registerListOps } from "./ops/lists/index.js";
 import { listMcpApprovalHandoffsOp } from "./ops/mcp_approval_handoffs.js";
 import {
   executeMcpTokenProposalOp,
@@ -580,12 +581,6 @@ import {
   setStagingHostOp,
 } from "./ops/staging_access.js";
 import { stepUpConfirmPasswordOp } from "./ops/step-up.js";
-import {
-  deleteStructuredSetOp,
-  getStructuredSetOp,
-  listStructuredSetsOp,
-  setStructuredSetOp,
-} from "./ops/structured_sets.js";
 import {
   aggregateAiCallsForSessionOp,
   createPendingSubagentRunOp,
@@ -1027,14 +1022,12 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(deleteRedirectOp);
   registry.register(createRedirectsManyOp);
   registry.register(deleteRedirectsManyOp);
-  registry.register(setStructuredSetOp);
   // Epic #724 rollout E — literal links → references, report, revert.
   registry.register(migrateLinksToReferencesOp);
   registry.register(getLinkMigrationReportOp);
   registry.register(revertLinkMigrationOp);
-  registry.register(getStructuredSetOp);
-  registry.register(listStructuredSetsOp);
-  registry.register(deleteStructuredSetOp);
+  // Epic #1107 — lists, list types, page types (docs/lists.md §12).
+  registerListOps(registry);
   // v0.11.0 — themes primitive (#45). Routine read + write ops plus
   // the §11.A propose/execute gate for create / activate / delete.
   registry.register(listThemesOp);

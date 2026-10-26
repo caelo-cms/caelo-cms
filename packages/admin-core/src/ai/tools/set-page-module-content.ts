@@ -34,6 +34,7 @@ export const setPageModuleContentTool: ToolDefinitionWithHandler<
     "Use this when the operator says 'change the hero heading on /home to X' or 'set the about page subtitle to Y'. " +
     "Use `edit_module` (NOT this tool) when the change should affect every page using the module (structural / styling / field-schema change). " +
     "`contentValues` is keyed by the module's declared field names (`{{fieldName}}` placeholders). " +
+    "For a `list` field: a local list's value is its entry array (`[{node:'text', values:{text:'Fast'}}]`; existing entries keep their `id` — for one entry's text prefer patch_page_module_fields); a shared list field takes `caelo:list/<id>` to switch which list it shows (the list's own entries change with patch_list_items_many, on every page at once); a source field takes the knobs its source marks editable (`{limit:5}`). " +
     "For nested fields (kind `module` / `module-list`) the value is `{ moduleId, contentInstanceId }` (or an array of them); the referenced module's stable `type` must be in the field's `allowedModuleTypes` when set (reuse a module of an allowed type — `list_modules` shows each module's `type` and each nested field's `allowedModuleTypes`). " +
     "Missing fields fall back to the module field's `default`. " +
     "Pass an empty object to reset a placement to all defaults." +

@@ -18,12 +18,12 @@ export const patchPageModuleFieldsTool: ToolDefinitionWithHandler<
 > = {
   name: "patch_page_module_fields",
   description:
-    "Change individual values of ONE module placement — a heading, one bullet of a text-list, a link-list entry's text or target, a `url` field, an `image` field — and leave every other value of that placement untouched. " +
-    "Use this for targeted wording fixes ('the hero says Welcom, fix it', 'rename the second menu item to Pricing', or a reference chip naming `placement=(blockName, position), field=…[index]`): you send only the changed values instead of the placement's whole contentValues. " +
-    '`text` is the new value: plain text for text fields (it is HTML-escaped for you — never send markup), a path / https URL for `url` / `image` fields and link targets. `index` addresses a `text-list` item or a `link-list` entry; `part: "href"` sets that entry\'s target instead of its text. Several edits of one placement go in one call (all or none). ' +
+    "Change individual values of ONE module placement — a heading, one entry's text or link target in a local `list` field, a `url` field, an `image` field — and leave every other value of that placement untouched. " +
+    "Use this for targeted wording fixes ('the hero says Welcom, fix it', 'rename the second menu item to Pricing', or a reference chip naming `placement=(blockName, position), field=…[entry]`): you send only the changed values instead of the placement's whole contentValues. " +
+    '`text` is the new value: plain text for text fields (it is HTML-escaped for you — never send markup), a path / https URL for `url` / `image` fields and link targets. For a local `list` field, `item` is the entry id and `key` the entry field (e.g. `label`, `text`, `link`); `part: "href"` sets a link field\'s target. Several edits of one placement go in one call (all or none). ' +
     "Use `set_page_module_content` (NOT this tool) to replace a placement's values wholesale or to set nested modules; `set_page_module_content_many` for passes across several placements; `edit_module` for structure. " +
     'SYNCED placements (content shared with other pages) need `scope`: `"everywhere"` changes it on every page that shows it, `"here"` detaches this page first and changes only it — ask the operator which they mean when it is not clear. ' +
-    'Typical call: `{pageId: "…", blockName: "content", position: 0, edits: [{field: "hero_title", text: "Welcome"}, {field: "nav_items", index: 1, text: "Pricing"}]}`.',
+    'Typical call: `{pageId: "…", blockName: "content", position: 0, edits: [{field: "hero_title", text: "Welcome"}, {field: "nav_items", item: "<entry id>", key: "label", text: "Pricing"}]}`.',
   schema: patchPageModuleFieldsInput,
   inputSchema: {
     type: "object",
@@ -43,8 +43,9 @@ export const patchPageModuleFieldsTool: ToolDefinitionWithHandler<
           required: ["field", "text"],
           properties: {
             field: { type: "string", minLength: 1, maxLength: 200 },
-            index: { type: "integer", minimum: 0 },
-            part: { type: "string", enum: ["label", "href"] },
+            item: { type: "string", description: "Entry id of a local list field." },
+            key: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
+            part: { type: "string", enum: ["href"] },
             text: { type: "string", maxLength: 10000 },
           },
         },
@@ -62,7 +63,7 @@ export const patchPageModuleFieldsTool: ToolDefinitionWithHandler<
     );
     if (result.ok) {
       const fields = input.edits
-        .map((e) => (e.index !== undefined ? `${e.field}[${e.index}]` : e.field))
+        .map((e) => (e.item !== undefined ? `${e.field}[${e.item}].${e.key}` : e.field))
         .join(", ");
       return {
         ok: true,

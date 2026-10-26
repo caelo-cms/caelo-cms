@@ -11,7 +11,7 @@
  * `add_module_to_template` carried a restricted 7-primitive enum with no
  * `allowedModuleTypes`/`min`/`max`. With `additionalProperties:false` and a
  * truncated `kind` enum, a provider doing constrained generation literally
- * could not emit a `link-list` (e.g. a footer nav menu — which CLAUDE.md §1A
+ * could not emit a list field (e.g. a footer nav menu — which CLAUDE.md §1A
  * mandates be a single list field, not numbered scalars). The model would
  * narrate the intended action ("adding a footer nav") and then end the turn
  * without emitting a schema-valid tool call. That presented as "the layout
@@ -26,7 +26,7 @@
  * `MODULE_FIELDS_JSON_SCHEMA` so they can never diverge again.
  */
 
-/** The 11 supported field kinds — identical set to `moduleFieldKindSchema`. */
+/** The supported field kinds — identical set to `MODULE_FIELD_KINDS` in `@caelo-cms/shared`. */
 const MODULE_FIELD_KINDS = [
   "text",
   "richtext",
@@ -35,90 +35,212 @@ const MODULE_FIELD_KINDS = [
   "number",
   "boolean",
   "link",
-  "text-list",
-  "link-list",
+  "list",
   "module",
   "module-list",
 ] as const;
 
-/** One field object — mirrors the Zod `moduleFieldSchema` (`.strict()`). */
-const MODULE_FIELD_ITEM_SCHEMA: Record<string, unknown> = {
+const SLUG_PATTERN = "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$";
+const LIST_REF_PATTERN = "^caelo:list/[0-9a-f-]{36}$";
+
+/** A link value of a list entry (`{ href, target? }`, docs/lists.md §2). */
+const LINK_VALUE_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["name", "kind", "label"],
+  required: ["href"],
   properties: {
-    name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
-    kind: { type: "string", enum: [...MODULE_FIELD_KINDS] },
-    label: { type: "string", minLength: 1, maxLength: 128 },
-    // A field's default is the ORIGINAL value the placeholder replaced; its
-    // JSON shape varies by `kind`. This used to be `{}` (accept any) — fine as
-    // a TOOL input (lenient), but the SDK-native structured-output path
-    // (`generateObject` → Anthropic `output_config.format`) REJECTS an empty
-    // `{}` subschema, and a too-generic union let the model emit shapes the
-    // Zod validator (`moduleFieldSchema`) then rejects: for a `link-list` it
-    // produced `default:[{}]`, which Zod's strict `{label,href}[]` refused
-    // ("expected string, received undefined") AND which lost the real nav
-    // values. So each branch is CONCRETE — the object-array branch pins the
-    // link-list element shape to `{label,href}` so Anthropic's structure
-    // enforcement makes the model fill the actual link text + URL, not `[{}]`.
-    // The description states the per-kind shape (Anthropic reads it) so the
-    // JSON schema and the Zod validator can't diverge (issue #106 class).
-    default: {
+    href: { type: "string", minLength: 1, maxLength: 2000 },
+    target: { type: "string", enum: ["_self", "_blank"] },
+  },
+} as const;
+
+/**
+ * The values of a local list entry in the STRICT shape structured output
+ * accepts (every object closed): the fields of the shipped `texts`,
+ * `links` and `menu` types. Moduleize authors those; custom list types
+ * are authored through the module tools (lenient values below).
+ */
+const STRICT_ENTRY_VALUES_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    text: { type: "string" },
+    label: { type: "string" },
+    link: LINK_VALUE_SCHEMA,
+  },
+} as const;
+
+/**
+ * One local list entry for moduleize's structured output, `depth` levels
+ * deep: closed objects (the provider requires them), shipped types only.
+ */
+function listEntrySchema(values: Record<string, unknown>, depth: number): Record<string, unknown> {
+  const properties: Record<string, unknown> = { node: { type: "string" }, values };
+  if (depth > 1) {
+    properties.children = { type: "array", items: listEntrySchema(values, depth - 1) };
+  }
+  return { type: "object", additionalProperties: false, required: ["node", "values"], properties };
+}
+
+/**
+ * A list entry as the module TOOLS take it. Deliberately lenient and
+ * one level deep: this schema rides in every module-authoring tool, which
+ * are always loaded, so each character is paid on every call. The full
+ * three-level, field-by-field version cost ~4.6k characters per tool and
+ * pushed the static context of a chat call up by ~16k tokens (PR #1121
+ * e2e-livedit token ceiling). The handler validates every entry against
+ * its list type with an actionable message, so nothing is lost but bytes.
+ */
+const TOOL_LIST_ENTRY_SCHEMA = {
+  type: "object",
+  required: ["node", "values"],
+  description:
+    'texts {node:"text", values:{text}} · links {node:"link", values:{label, link:{href}}} · menu {node:"entry", …, children}; keep `id` on resend.',
+  properties: {
+    id: { type: "string" },
+    node: {
+      type: "string",
       description:
-        "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder, matching the field's kind: " +
-        "text/richtext/url/image/link/number/boolean → a string (exact text, href, src, or number/bool as text); " +
-        "text-list → an array of strings; " +
-        'link-list → an array of {label, href} objects with the REAL link text + URL, e.g. [{"label":"Home","href":"/"},{"label":"About","href":"/about"}]. ' +
-        "Omit for module / module-list.",
-      anyOf: [
-        { type: "string" },
-        { type: "number" },
-        { type: "boolean" },
-        { type: "array", items: { type: "string" } },
-        {
-          type: "array",
-          items: {
+        'The NODE kind, not the type slug: "text" (texts), "link" (links), "entry" (menu).',
+    },
+    values: { type: "object" },
+    children: { type: "array", items: { type: "object" } },
+  },
+} as const;
+
+/** One field object — mirrors the Zod `moduleFieldSchema` (`.strict()`). */
+function moduleFieldItemSchema(): Record<string, unknown> {
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["name", "kind", "label"],
+    properties: {
+      name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
+      kind: { type: "string", enum: [...MODULE_FIELD_KINDS] },
+      label: { type: "string", minLength: 1, maxLength: 128 },
+      // The ORIGINAL value the placeholder replaced; its JSON shape varies
+      // by `kind`. Each branch is concrete (an empty `{}` subschema is
+      // refused by structured output, and a too-generic union let the model
+      // emit shapes the Zod validator then rejected — issue #106 class).
+      default: {
+        description:
+          "The ORIGINAL value(s) this field replaced, never a placeholder: scalar kinds → a string; " +
+          'list → its entries (local) or "caelo:list/<id>" (shared). Omit for module / module-list and bind "source".',
+        anyOf: [
+          { type: "string" },
+          { type: "number" },
+          { type: "boolean" },
+          { type: "array", items: TOOL_LIST_ENTRY_SCHEMA },
+          {
             type: "object",
             additionalProperties: false,
             required: ["label", "href"],
             properties: { label: { type: "string" }, href: { type: "string" } },
           },
-        },
-        // Singular `link` kind: a single {label, href} default.
-        {
-          type: "object",
-          additionalProperties: false,
-          required: ["label", "href"],
-          properties: { label: { type: "string" }, href: { type: "string" } },
-        },
-      ],
+        ],
+      },
+      // Epic #1107 — a `list` field's binding (docs/lists.md §7).
+      listType: {
+        type: "string",
+        pattern: SLUG_PATTERN,
+        description: 'list: type slug — "texts", "links", "menu", "categories", "tags" or custom.',
+      },
+      bind: {
+        type: "string",
+        enum: ["local", "shared", "source"],
+        description:
+          "list: local (default; entries live with the placement) | shared (a site list: menus, navigation, footer links, categories, tags) | source (generated per page).",
+      },
+      list: {
+        type: "string",
+        pattern: LIST_REF_PATTERN,
+        description: "list, shared: caelo:list/<id>.",
+      },
+      source: {
+        type: "object",
+        description:
+          'bind "source": {kind:"query", editable, defaults} | {kind:"system", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:"plugin", name} (a plugin list iterated by name needs no field).',
+      },
+      // issue #106 — mirror the Zod bound `z.array(slugSchema).max(32)`.
+      allowedModuleTypes: {
+        type: "array",
+        maxItems: 32,
+        items: { type: "string", pattern: SLUG_PATTERN },
+      },
+      // Mirror the Zod list bounds exactly (z.number().int().positive().max(256)).
+      min: { type: "integer", minimum: 0 },
+      max: { type: "integer", minimum: 1, maximum: 256 },
     },
-    // issue #106 — `module`/`module-list` fields constrain nested refs to
-    // modules whose stable `type` is in this allowlist. Mirror the Zod
-    // bound `z.array(slugSchema).max(32)` exactly: a slug-shaped pattern
-    // + maxItems 32 so the provider cannot generate an allowlist entry the
-    // Validator then rejects (the same provider-vs-Zod divergence class the
-    // footer bug came from). slugSchema regex = ^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$.
-    allowedModuleTypes: {
-      type: "array",
-      maxItems: 32,
-      items: { type: "string", pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$" },
-    },
-    // Mirror the Zod list bounds exactly: `min` = nonnegative int,
-    // `max` = positive int capped at 256 (z.number().int().positive().max(256)).
-    // Without the `maximum`, a provider could emit max: 9999 that the JSON
-    // schema allows but the Validator rejects — the provider-vs-Zod divergence
-    // this file exists to prevent.
-    min: { type: "integer", minimum: 0 },
-    max: { type: "integer", minimum: 1, maximum: 256 },
-  },
-};
+  };
+}
 
 /** The `fields` array property shared by every module-authoring tool. */
 export const MODULE_FIELDS_JSON_SCHEMA: Record<string, unknown> = {
   type: "array",
   maxItems: 64,
-  items: MODULE_FIELD_ITEM_SCHEMA,
+  items: moduleFieldItemSchema(),
+};
+
+/** The field kinds moduleize emits (its SYSTEM prompt names exactly these). */
+const MODULEIZE_FIELD_KINDS = [
+  "text",
+  "richtext",
+  "url",
+  "image",
+  "number",
+  "boolean",
+  "link",
+  "list",
+] as const;
+
+/**
+ * The fields array for moduleize's SDK-native structured output
+ * (`generateObject`): every object closed, which Anthropic's
+ * `output_config.format` requires, and ONLY what moduleize produces —
+ * scalar kinds plus local lists of the shipped types. Binding, sources,
+ * min / max and nested-module whitelists are module-tool concerns: carried
+ * here they pushed the schema to 28 optional parameters, past the
+ * provider's grammar limit of 24, and every moduleize call failed with
+ * "Schemas contains too many optional parameters" (PR #1121, e2e-livedit
+ * run 40294659332). `moduleize-schema-budget.test.ts` pins the budget.
+ */
+export const MODULEIZE_FIELDS_JSON_SCHEMA: Record<string, unknown> = {
+  type: "array",
+  maxItems: 64,
+  items: {
+    type: "object",
+    additionalProperties: false,
+    required: ["name", "kind", "label"],
+    properties: {
+      name: { type: "string", pattern: "^[a-z][a-z0-9_]{0,63}$" },
+      kind: { type: "string", enum: [...MODULEIZE_FIELD_KINDS] },
+      label: { type: "string", minLength: 1, maxLength: 128 },
+      default: {
+        description:
+          "The ORIGINAL value(s) this field replaced — NEVER empty/placeholder: " +
+          "text/richtext/url/image/link/number/boolean → a string; " +
+          'list → its entries with the REAL text + URLs, e.g. listType "links": ' +
+          '[{"node":"link","values":{"label":"Home","link":{"href":"/"}}}]; listType "texts": [{"node":"text","values":{"text":"Fast"}}].',
+        anyOf: [
+          { type: "string" },
+          { type: "number" },
+          { type: "boolean" },
+          { type: "array", items: listEntrySchema(STRICT_ENTRY_VALUES_SCHEMA, 2) },
+          {
+            type: "object",
+            additionalProperties: false,
+            required: ["label", "href"],
+            properties: { label: { type: "string" }, href: { type: "string" } },
+          },
+        ],
+      },
+      listType: {
+        type: "string",
+        pattern: SLUG_PATTERN,
+        description: 'list fields: "texts", "links" or "menu" — or the type a field hint names.',
+      },
+    },
+  },
 };
 
 /**

@@ -129,9 +129,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  // Sets, templates and layouts survive the per-file reset: remove ours.
+  // Templates and layouts survive the per-file reset: remove ours.
   await admin(async (tx) => {
-    await tx`DELETE FROM structured_sets WHERE slug LIKE ${`${PFX}%`}`;
     await tx`UPDATE templates SET deleted_at = now() WHERE slug LIKE ${`${PFX}%`}`;
     await tx`UPDATE layouts SET deleted_at = now() WHERE slug LIKE ${`${PFX}%`}`;
   });
@@ -167,37 +166,31 @@ describe("reference integrity — covered surfaces", () => {
         },
       ],
     });
-    // Layout chrome: a header module whose link-list DEFAULT links the page.
+    // Layout chrome: a header module whose list DEFAULT links the page.
     const header = await run<{ moduleId: string }>(SYS, "modules.create", {
       slug: `${PFX}-header`,
       displayName: "RIF Header",
-      html: `<nav>{{#nav_links}}<a href="{{href}}">{{label}}</a>{{/nav_links}}</nav>`,
+      html: `<nav>{{#nav_links}}<a href="{{link}}">{{label}}</a>{{/nav_links}}</nav>`,
       fields: [
         {
           name: "nav_links",
-          kind: "link-list",
+          kind: "list",
+          listType: "links",
           label: "Nav",
-          default: [{ label: "Gone", href: `/${PFX}-gone` }],
+          default: [
+            {
+              id: "00000000-0000-4000-9000-000000000001",
+              node: "link",
+              values: { label: "Gone", link: { href: `/${PFX}-gone` } },
+            },
+          ],
         },
       ],
-    });
-    // The menu renders through its nav-menu module (slug convention).
-    const menu = await run<{ moduleId: string }>(SYS, "modules.create", {
-      slug: `nav-menu-${PFX}-main`,
-      displayName: "RIF Menu",
-      html: "<nav>menu</nav>",
     });
     await run(SYS, "layout_modules.set", {
       layoutId,
       blockName: "header",
-      moduleIds: [header.moduleId, menu.moduleId],
-    });
-    // Navigation set, canonicalised at write.
-    await run(SYS, "structured_sets.set", {
-      kind: "nav-menu",
-      slug: `${PFX}-main`,
-      displayName: "RIF Main menu",
-      items: [{ label: "Gone", href: `/${PFX}-gone` }],
+      moduleIds: [header.moduleId],
     });
     // Layout + template HTML are not write-canonicalised; a stored
     // reference there is what the link migration (rollout E) leaves.
@@ -221,7 +214,7 @@ describe("reference integrity — covered surfaces", () => {
     const issues = await adapter.withAdminTransaction(SYS, (tx) =>
       checkReferences(tx, { branchId: chat.ctx.chatBranchId ?? null, env: "staging" }),
     );
-    // Shipped places only: preserved tables (sets, templates) keep rows of
+    // Shipped places only: preserved tables (templates) keep rows of
     // earlier files whose pages are gone; those render nowhere (warnings).
     const missing = issues.filter((i) => i.problem === "missing-target" && i.shipped);
     for (const i of missing) expect(i.severity).toBe("block");
@@ -232,7 +225,6 @@ describe("reference integrity — covered surfaces", () => {
       "module-default",
       "layout-html",
       "template-html",
-      "structured-set",
     ]) {
       expect(kinds.has(kind)).toBe(true);
     }
@@ -246,8 +238,6 @@ describe("reference integrity — covered surfaces", () => {
     expect(byKind("module-default")?.message).toContain('field "nav_links" of module "RIF Header"');
     expect(byKind("layout-html")?.fix.tool).toBe("propose_update_layout");
     expect(byKind("template-html")?.fix.tool).toBe("edit_content");
-    expect(byKind("structured-set")?.fix.tool).toBe("set_structured_set");
-    expect(byKind("structured-set")?.message).toContain(`nav-menu/${PFX}-main`);
     expect(
       missing.some(
         (i) =>
@@ -265,12 +255,6 @@ describe("reference integrity — covered surfaces", () => {
 
     // Clean up the shared chrome so later tests start from a clean main.
     await run(SYS, "layout_modules.set", { layoutId, blockName: "header", moduleIds: [] });
-    await run(SYS, "structured_sets.set", {
-      kind: "nav-menu",
-      slug: `${PFX}-main`,
-      displayName: "RIF Main menu",
-      items: [],
-    });
     await admin(async (tx) => {
       await tx`UPDATE layouts SET html = replace(html, ${`<a href="caelo:page/${gone.pageId}">gone</a>`}, '')
                WHERE id = ${layoutId}::uuid`;

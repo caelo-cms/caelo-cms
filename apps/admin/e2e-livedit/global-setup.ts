@@ -78,6 +78,31 @@ const RESET_BUG_REPORTS_SCRIPT = `
   await sql.end();
 `;
 
+/**
+ * Turns on forwarding of AI bug reports to the Caelo bug intake for this
+ * run (epic #901), so every report the run files becomes (or joins) a
+ * GitHub issue the way a real install's would; the bug gate then blocks
+ * only a run with more than a handful of new reports (`bug-gate.ts`). The
+ * workflow sets CAELO_E2E_FORWARD_BUGS=1; a local run never files issues.
+ * Mirrors `bug_forwarding.set`: the install id is minted on the first
+ * opt-in, and the worker cannot sign a report without it (run 40360756064
+ * queued its report and never sent it). An install without its settings
+ * row is a broken seed: fail loudly.
+ */
+const ENABLE_BUG_FORWARDING_SCRIPT = `
+  import { SQL } from "bun";
+  const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+  const rows = await sql.begin(async (tx) => {
+    await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+    return await tx\`UPDATE telemetry_settings
+                     SET bug_forwarding_enabled = true, bug_forwarding_decided_at = now(),
+                         install_id = COALESCE(install_id, gen_random_uuid())
+                   WHERE id = 1 RETURNING id\`;
+  });
+  await sql.end();
+  if (rows.length !== 1) throw new Error("telemetry_settings row 1 is missing; cannot enable bug forwarding");
+`;
+
 async function pollAdminReady(): Promise<void> {
   const deadline = Date.now() + ADMIN_READY_TIMEOUT_MS;
   let lastError: string | null = null;
@@ -117,6 +142,7 @@ export default async function globalSetup(): Promise<void> {
 
   runBun(SETUP_SCRIPT);
   runBun(RESET_BUG_REPORTS_SCRIPT);
+  if (process.env.CAELO_E2E_FORWARD_BUGS === "1") runBun(ENABLE_BUG_FORWARDING_SCRIPT);
 
   mkdirSync(ADMIN_LOG_DIR, { recursive: true });
   // Truncate the log between runs so the diag-grep helper only sees

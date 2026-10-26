@@ -2,16 +2,21 @@
 
 /**
  * issue #164 slice 2 — tool-side wrapper for mechanical token binding.
- * Fetches the active theme once and rewrites color/gradient literals
- * that equal token values to `var(--…)`; the caller writes the BOUND
- * css and appends the report so the AI sees exactly what was rewritten.
+ * Fetches the active theme once, rewrites color/gradient literals that
+ * equal token values to `var(--…)` and common role names to the theme's
+ * names (`--color-text` → `--color-foreground`); the caller writes the
+ * BOUND css and appends the report so the AI sees exactly what changed.
  */
 
 import { execute } from "@caelo-cms/query-api";
 import {
   applyThemeLiteralBinding,
   type ExecutionContext,
+  extractCssVarDefinitions,
   formatBindingReport,
+  formatCssVarRenameReport,
+  listThemeCssVarNames,
+  renameCssVarAliases,
   type ThemeDocument,
 } from "@caelo-cms/shared";
 import type { ToolContext } from "./dispatch.js";
@@ -26,5 +31,14 @@ export async function bindCssToTheme(
   const theme = (res.value as { theme: { tokens: ThemeDocument } | null }).theme;
   if (theme === null) return { css, report: "" };
   const bound = applyThemeLiteralBinding(css, theme.tokens);
-  return { css: bound.css, report: formatBindingReport(bound) ?? "" };
+  // Common role names (`--color-text`) → the theme's names (css-var-aliases.ts).
+  const renamed = renameCssVarAliases(
+    bound.css,
+    listThemeCssVarNames(theme.tokens),
+    extractCssVarDefinitions(bound.css),
+  );
+  return {
+    css: renamed.css,
+    report: (formatBindingReport(bound) ?? "") + (formatCssVarRenameReport(renamed.renames) ?? ""),
+  };
 }

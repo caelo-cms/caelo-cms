@@ -202,7 +202,9 @@ describe("seeded base skills", () => {
     expect(tools).toContain("create_layout");
     expect(tools).toContain("create_template");
     expect(tools).toContain("set_site_defaults");
-    expect(tools).toContain("create_page");
+    // create_page was removed (build_page creates pages); 0356 dropped the dead hint.
+    expect(tools).not.toContain("create_page");
+    expect(tools).toContain("build_page");
     // v0.5.12 — list_* fetch tools (close the "I don't have the UUID" gap)
     expect(tools).toContain("list_layouts");
     expect(tools).toContain("list_templates");
@@ -252,7 +254,7 @@ describe("seeded base skills", () => {
 // shape, so the design test of §1A holds: the AI can act without a human
 // round-trip.
 describe("authoring + workflow skills (0168 / 0169)", () => {
-  const CORE_DOMAIN = ["manage-module", "manage-menu"];
+  const CORE_DOMAIN = ["manage-module", "manage-menu", "manage-page-types"];
   const WORKFLOW = [
     "shared-content",
     "manage-media",
@@ -343,7 +345,7 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     expect(idx).toContain("ALWAYS APPLIES");
     expect(idx).toContain("brand-voice-guard");
     // The full body must NOT be in the index (a distinctive manage-menu phrase).
-    expect(idx).not.toContain("UPSERT that REPLACES the whole items list");
+    expect(idx).not.toContain("SMALL CHANGES ARE PATCHES");
     // Nothing loaded yet → no preload, no engaged skills.
     expect(skills.allowedToolNames).toBeNull();
     expect(skills.engagedSkills.length).toBe(0);
@@ -358,9 +360,7 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     if (ok.ok) {
       expect(ok.content).toContain("manage-menu");
       // The actual body, verbatim — this is what lands in history.
-      expect(ok.content).toContain("REPLACES the whole items list");
-      // The allowlisted tools are surfaced so the model knows what it can call.
-      expect(ok.content).toContain("set_structured_set");
+      expect(ok.content).toContain("SMALL CHANGES ARE PATCHES");
     }
     const bad = await loadSkillTool.handler(aiCtx, { slugs: ["does-not-exist"] }, toolCtx);
     expect(bad.ok).toBe(false);
@@ -381,7 +381,7 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     if (res.ok) {
       expect(res.content).toContain("manage-menu");
       expect(res.content).toContain("templates-layouts");
-      expect(res.content).toContain("REPLACES the whole items list");
+      expect(res.content).toContain("SMALL CHANGES ARE PATCHES");
     }
   });
 
@@ -396,7 +396,7 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     );
     expect(res.ok).toBe(true);
     if (res.ok) {
-      expect(res.content).toContain("REPLACES the whole items list");
+      expect(res.content).toContain("SMALL CHANGES ARE PATCHES");
       expect(res.content).toContain('No active skill with slug "does-not-exist"');
     }
   });
@@ -412,7 +412,7 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
     );
     expect(res.ok).toBe(true);
     if (res.ok) {
-      const occurrences = res.content.split("REPLACES the whole items list").length - 1;
+      const occurrences = res.content.split("SMALL CHANGES ARE PATCHES").length - 1;
       expect(occurrences).toBe(1);
     }
   });
@@ -442,8 +442,6 @@ describe("authoring + workflow skills (0168 / 0169)", () => {
       loadedSkillSlugs: ["manage-menu"],
     });
     expect(skills.engagedSkills.map((e) => e.slug)).toContain("manage-menu");
-    // manage-menu's allowlist preloads the structured-set tools.
-    expect(skills.allowedToolNames?.has("set_structured_set")).toBe(true);
   });
 });
 
@@ -475,7 +473,7 @@ describe("skill allowlist validation (issue #301)", () => {
       slug: "test-p10a-opnames",
       displayName: "Op notation",
       body: "Body",
-      allowlistedTools: ["pages.list", "structured_sets.get", "edit_module", "ai_memory.list"],
+      allowlistedTools: ["pages.list", "redirects.list", "edit_module", "ai_memory.list"],
     });
     expect(r.ok).toBe(true);
     const get = await execute(registry, adapter, systemCtx, "skills.get", {
@@ -484,7 +482,7 @@ describe("skill allowlist validation (issue #301)", () => {
     if (!get.ok) return;
     const skill = (get.value as { skill: { allowlistedTools: string[] } | null }).skill;
     // Translated + deduped; the context-served memory read drops.
-    expect(skill?.allowlistedTools).toEqual(["list_pages", "get_structured_set", "edit_module"]);
+    expect(skill?.allowlistedTools).toEqual(["list_pages", "find_redirects", "edit_module"]);
   });
 
   it("skills.propose rejects an unknown allowlist entry at proposal time (AI-actionable failure)", async () => {
@@ -509,25 +507,85 @@ describe("skill allowlist validation (issue #301)", () => {
     if (!r.ok) return;
     const skills = (r.value as { skills: { slug: string; allowlistedTools: string[] }[] }).skills;
     const bySlug = new Map(skills.map((s) => [s.slug, s.allowlistedTools]));
-    expect(bySlug.get("qa-check")).toEqual([
-      "inspect_page_render",
-      "list_pages",
-      "get_structured_set",
-      "list_structured_sets",
-    ]);
+    // qa-check and menu-auditor named menu tools that epic #1107 removed;
+    // their allowlists are rewritten with the list tools (epic #1107).
     expect(bySlug.get("legal-check")).toEqual(["inspect_page_render", "list_pages"]);
+    expect(bySlug.get("page-categorizer")).toEqual(["list_pages"]);
     expect(bySlug.get("menu-auditor")).toEqual([
-      "list_structured_sets",
-      "get_structured_set",
+      "list_lists",
+      "get_list",
       "find_redirects",
       "list_pages",
     ]);
-    expect(bySlug.get("page-categorizer")).toEqual(["list_pages"]);
+    expect(bySlug.get("qa-check")).toEqual([
+      "inspect_page_render",
+      "list_pages",
+      "list_lists",
+      "get_list",
+    ]);
     // No active skill may carry an op-notation entry at all.
     for (const s of skills) {
       for (const entry of s.allowlistedTools) {
         expect(entry).not.toContain(".");
       }
+    }
+  });
+});
+
+// Epic #1107 (migration 0356): no active skill teaches the removed
+// structured sets, text-list / link-list fields or nav-menu slugs, and no
+// allowlist names a tool that is gone.
+describe("list guidance in the seeded skills (epic #1107)", () => {
+  it("no active skill references structured sets or the removed list field kinds", async () => {
+    const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
+    if (!r.ok) throw new Error("skills.list failed");
+    const skills = (
+      r.value as { skills: { slug: string; body: string; allowlistedTools: string[] }[] }
+    ).skills;
+    const live = liveToolNames();
+    for (const s of skills) {
+      for (const stale of [
+        "structured set",
+        "_structured_set",
+        "text-list",
+        "link-list",
+        "nav-menu",
+      ]) {
+        expect({ slug: s.slug, stale, found: s.body.includes(stale) }).toEqual({
+          slug: s.slug,
+          stale,
+          found: false,
+        });
+      }
+      for (const tool of s.allowlistedTools) {
+        expect({ slug: s.slug, tool, isLive: live.has(tool) }).toEqual({
+          slug: s.slug,
+          tool,
+          isLive: true,
+        });
+      }
+    }
+  });
+
+  it("manage-menu maintains shared lists by patch; page-building skills set the page type", async () => {
+    const r = await execute(registry, adapter, systemCtx, "skills.list", { status: "active" });
+    if (!r.ok) throw new Error("skills.list failed");
+    const bySlug = new Map(
+      (r.value as { skills: { slug: string; body: string }[] }).skills.map((s) => [s.slug, s.body]),
+    );
+    const menu = bySlug.get("manage-menu") ?? "";
+    expect(menu).toContain("patch_list_items_many");
+    expect(menu).toContain('bind:"shared"');
+    expect(menu).toContain("promote_local_list");
+    expect(menu).toContain('page_type:"news"');
+    const pageTypes = bySlug.get("manage-page-types") ?? "";
+    expect(pageTypes).toContain("upsert_page_types_many");
+    expect(pageTypes).toContain('name:"term_pages"');
+    for (const slug of ["compose-page", "site-genesis", "site-migrate"]) {
+      expect({ slug, setsPageType: (bySlug.get(slug) ?? "").includes("pageType") }).toEqual({
+        slug,
+        setsPageType: true,
+      });
     }
   });
 });
@@ -549,7 +607,10 @@ describe("field-naming guidance appended to authoring skills (#417)", () => {
       // The three rules the subsection must teach (issue #417 scope).
       expect(skill?.body).toContain("module-list");
       expect(skill?.body).toContain("never numbered scalars");
-      expect(skill?.body).toContain("prefer `text-list`/`link-list`");
+      expect(skill?.body).toContain("prefer a `list` field (`texts` / `links`)");
+      // Epic #1107 (migration 0356): the removed field kinds are gone from the guidance.
+      expect(skill?.body).not.toContain("text-list");
+      expect(skill?.body).not.toContain("link-list");
     }
   });
 });

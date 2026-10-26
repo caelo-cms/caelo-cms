@@ -6,8 +6,8 @@ import { chatSessions } from "./chat_sessions.js";
 /**
  * v0.5.0 — Per-entity write locks for global entities.
  *
- * When a chat writes to a module / template / layout / structured_set
- * / redirect, the entity is locked to that chat's session until the
+ * When a chat writes to a module / template / layout / list / list type
+ * / page type / redirect, the entity is locked to that chat's session until the
  * chat stages, publishes or is discarded. Since issue #620 another chat
  * writing the entity TAKES IT OVER (adopting the holder's unstaged change,
  * recorded in `chat_lock_takeovers`) instead of being refused — the lock
