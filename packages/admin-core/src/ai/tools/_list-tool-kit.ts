@@ -32,15 +32,18 @@ export const LISTS_ALIAS =
   "A list only ONE module shows stays LOCAL (its entries live in that module's `list` field); a list needed in more than one place, the site navigation, or a vocabulary pages are assigned to is SHARED. promote_local_list switches a local list to shared in one call.";
 
 /**
- * How a module's `list` field works, said identically by every tool that
- * authors module fields or fills their values (add_module, edit_module,
- * update_modules_many, the content-value tools): the template syntax, the
- * three bindings and their value shapes, and when local vs shared.
+ * The part of the `list` field contract a module-authoring tool call needs
+ * at the call site. The full model (template keys, sources, local vs
+ * shared) lives once in the static system prompt's module-model section;
+ * repeating ~1.3k characters of it in every always-loaded module tool
+ * raised the static context of each chat call (PR #1121 e2e-livedit token
+ * ceiling), so the tools carry the binding shapes and the routing only.
  */
 export const LIST_FIELD_CONTRACT =
-  " **List fields** (`kind:'list'`, `listType` = a list type slug, list_list_types): repeating content — menu entries, footer links, feature bullets, FAQ rows — is ONE list field iterated with `{{#field}}…{{/field}}`; inside, the entry's own fields are the keys (`texts`: `{{text}}`; `links`: `{{label}}` `{{link}}`; `menu`: also `{{#children}}…{{/children}}` and `{{#is_current}}`; a source node: `{{#items}}<a href='{{link}}'>{{title}}</a>{{/items}}`). " +
-  "Bindings: **local** (default) — the entries are this placement's value, e.g. `[{node:'link', values:{label:'Home', link:{href:'/'}}}]` (on layout chrome: the field `default`); **shared** — `bind:'shared'` with `list:'caelo:list/<id>'` on the field (fixed for every placement — the site menu) or the placement value `caelo:list/<id>`; **source** — `bind:'source'` with `source:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}` or `{kind:'system', name:'breadcrumbs'}`, and the placement value may override the editable knobs (`{limit:5}`). " +
-  "Menus, navigation, footer links, categories and tags are SHARED (list_lists first — reuse the site's list, create it with upsert_lists_many); a list only this module shows stays LOCAL; promote_local_list switches when a second place needs it. Entries of a shared list are edited with patch_list_items_many, never through the module.";
+  " **List fields** (`kind:'list'`, `listType`): repeating content is ONE list field, `{{#field}}…{{/field}}` (system prompt: lists). " +
+  "local (default): the placement value / chrome `default` is the entries, `[{node:'link', values:{label:'Home', link:{href:'/'}}}]`; " +
+  "shared: `bind:'shared'`, `list:'caelo:list/<id>'` — menus, navigation, footer links, categories, tags (list_lists first; entries change via patch_list_items_many; promote_local_list when a second place needs a local list); " +
+  "source: `bind:'source'` with a query / system / plugin `source`.";
 
 /**
  * The list ops write their AI-actionable hints with op names ("create it
@@ -82,6 +85,12 @@ export interface MakeOpToolArgs<I> {
   readonly input: z.ZodType<I>;
   /** Render the op's ok-value as the tool's text result. */
   readonly format: (value: unknown, input: I) => string;
+  /**
+   * A compact JSON Schema the provider sees instead of the one generated
+   * from `input` (which still validates every call). For tools whose
+   * generated schema is large — see `_list-tool-schemas.ts`.
+   */
+  readonly inputSchema?: Record<string, unknown>;
 }
 
 /**
@@ -93,6 +102,7 @@ export function makeOpTool<I>(args: MakeOpToolArgs<I>): ToolDefinitionWithHandle
     name: args.name,
     description: args.description,
     schema: args.input,
+    ...(args.inputSchema ? { inputSchema: args.inputSchema } : {}),
     handler: async (ctx, input, toolCtx) => {
       const r = await execute(toolCtx.registry, toolCtx.adapter, ctx, args.opName, input);
       if (!r.ok) {

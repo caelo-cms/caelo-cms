@@ -229,7 +229,9 @@ describe("#1107 lists.preview_source", () => {
         },
       ],
     });
-    await op(SYS, "lists.upsert_many", {
+    const written = await op<{
+      lists: { id: string; sourceEntries: { id: string; node: string }[] }[];
+    }>(SYS, "lists.upsert_many", {
       lists: [
         {
           slug: `${PFX}header`,
@@ -258,6 +260,13 @@ describe("#1107 lists.preview_source", () => {
     });
     // The entry's saved query (limit 2) applies over the type's defaults.
     expect(v.items.map((e) => e.title)).toEqual(["Alpha FAQ", "Alpha release"]);
+    // e2e-livedit run 40344374447 — the list's reference, the form module
+    // fields and `vocabulary` use, names the same list as its slug.
+    const byRef = await op<Preview>(SYS, "lists.preview_source", {
+      list: `caelo:list/${written.lists[0]?.id}`,
+      itemId: newsNode,
+    });
+    expect(byRef.items.map((e) => e.title)).toEqual(["Alpha FAQ", "Alpha release"]);
     // The list editor previews a node kind with the knobs being edited,
     // before the entry is saved.
     const editing = await op<Preview>(SYS, "lists.preview_source", {
@@ -276,6 +285,15 @@ describe("#1107 lists.preview_source", () => {
       itemId: crypto.randomUUID(),
     });
     expect(missing).toContain("no such entry");
+    // PR #1121 e2e — the write result names the source entries, and the
+    // list's own id passed as itemId is refused with the right ids.
+    expect(written.lists[0]?.sourceEntries).toEqual([{ id: newsNode, node: "news" }]);
+    const ownId = await fail(SYS, "lists.preview_source", {
+      list: `${PFX}header`,
+      itemId: written.lists[0]?.id,
+    });
+    expect(ownId).toContain("the list's own id");
+    expect(ownId).toContain(`${newsNode} (news)`);
   });
 
   it("a module's source field, with a placement's overrides; a stored field is refused", async () => {

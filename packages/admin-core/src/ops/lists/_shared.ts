@@ -295,6 +295,27 @@ async function moduleTypesById(tx: Tx, ids: readonly string[]): Promise<Map<stri
   return new Map(rows.map((r) => [r.id, r.type]));
 }
 
+/**
+ * The entries of a list whose node kind is filled from a source (a mega
+ * menu's "latest news" column): the ids preview_list_source takes as
+ * `itemId`. Named in write results and in the preview's refusal, so the
+ * AI never has to guess one (PR #1121 e2e: it passed the list's own id).
+ */
+export function sourceEntriesOf(
+  def: ListTypeDef,
+  items: readonly ListItem[],
+): { id: string; node: string }[] {
+  const out: { id: string; node: string }[] = [];
+  const walk = (level: readonly ListItem[]): void => {
+    for (const it of level) {
+      if (def.nodes[it.node]?.source !== undefined) out.push({ id: it.id, node: it.node });
+      if (it.children) walk(it.children);
+    }
+  };
+  walk(items);
+  return out;
+}
+
 /** The list types the caller sees, keyed by slug. */
 export async function listTypesBySlug(
   tx: Tx,

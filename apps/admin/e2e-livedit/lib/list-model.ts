@@ -242,7 +242,13 @@ export function chromeBoundLists(snap: ListModelSnapshot, blockName: string): st
 export interface MegaMenuFacts {
   /** A shared list bound in BOTH header and footer (null when none). */
   readonly listId: string | null;
-  /** Top-level entries of that list whose node takes children (the columns). */
+  /**
+   * Entries at any depth that hold links: at least one child that is a leaf
+   * and not a query node. Top-level columns and columns inside one "Menu"
+   * trigger entry both count — the prompt asks for three columns, not for
+   * where the menu's root sits (e2e-livedit run 40360756064 built the
+   * three columns under one trigger entry and was counted as one).
+   */
   readonly columnCount: number;
   /** The list's type has a node kind filled by a page query. */
   readonly typeHasQueryNode: boolean;
@@ -267,7 +273,9 @@ export function megaMenuFacts(snap: ListModelSnapshot): MegaMenuFacts {
           .filter(([, n]) => n.source?.kind === "query")
           .map(([k]) => k),
       );
-      const columnCount = list.items.filter((it) => type.def.nodes[it.node]?.children).length;
+      const columnCount = flattenItems(list.items).filter((it) =>
+        (it.children ?? []).some((c) => (c.children ?? []).length === 0 && !queryNodes.has(c.node)),
+      ).length;
       return {
         listId: id,
         columnCount,

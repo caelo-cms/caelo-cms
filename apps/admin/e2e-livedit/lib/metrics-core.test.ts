@@ -224,29 +224,30 @@ describe("thresholds (issue #432 re-derived ceilings)", () => {
   const { loops, tools, splits } = parseChatLog(FIXTURE);
   const m = aggregate(loops, tools, splits);
 
-  it("homepage ceilings sit above the measured healthy band and below the spiral band", () => {
+  it("homepage ceilings sit above the measured healthy band and below the broken runs", () => {
     const th = THRESHOLDS.homepage;
-    expect(th?.maxInputTokens).toBe(2_000_000);
+    expect(th?.maxNewInputTokens).toBe(300_000);
     expect(th?.maxLoops).toBe(26);
-    // Worst measured HEALTHY first attempt (1646.5k / 21 loops) must pass…
-    expect(1_646_500).toBeLessThan(th?.maxInputTokens ?? 0);
-    expect(21).toBeLessThan(th?.maxLoops ?? 0);
-    // …and every observed corruption-spiral attempt must still fail.
-    for (const [input, loopCount] of [
-      [2_176_900, 27],
-      [2_505_600, 31],
-      [2_660_400, 33],
-    ] as const) {
-      const breachedInput = input > (th?.maxInputTokens ?? Number.POSITIVE_INFINITY);
-      const breachedLoops = loopCount > (th?.maxLoops ?? Number.POSITIVE_INFINITY);
-      expect(breachedInput || breachedLoops).toBe(true);
+    expect(th).not.toHaveProperty("maxInputTokens");
+    // Worst measured HEALTHY attempts (269k new input; 25 loops) pass…
+    expect(269_000).toBeLessThan(th?.maxNewInputTokens ?? 0);
+    expect(25).toBeLessThan(th?.maxLoops ?? 0);
+    // …the two broken-cache attempts and every repair spiral fail.
+    for (const newInput of [411_000, 439_000]) {
+      expect(newInput).toBeGreaterThan(th?.maxNewInputTokens ?? Number.POSITIVE_INFINITY);
+    }
+    for (const loopCount of [27, 31, 33]) {
+      expect(loopCount).toBeGreaterThan(th?.maxLoops ?? Number.POSITIVE_INFINITY);
     }
   });
 
-  it("checkThresholds flags input + loop ceilings with actionable messages", () => {
-    const v = checkThresholds(m, { maxInputTokens: 100_000, maxLoops: 3 });
-    expect(v.map((x) => x.metric).sort()).toEqual(["inputTokens", "loops"]);
-    expect(v.find((x) => x.metric === "inputTokens")?.message).toContain("ceiling");
+  it("checkThresholds counts cache writes + uncached input, not cache reads", () => {
+    const newInput = m.totals.freshIn + m.totals.cacheWrite;
+    expect(m.totals.inCall).toBeGreaterThan(newInput);
+    const v = checkThresholds(m, { maxNewInputTokens: newInput - 1, maxLoops: 3 });
+    expect(v.map((x) => x.metric).sort()).toEqual(["loops", "newInputTokens"]);
+    expect(v.find((x) => x.metric === "newInputTokens")?.message).toContain("ceiling");
+    expect(checkThresholds(m, { maxNewInputTokens: newInput })).toEqual([]);
   });
 
   it("passes when under all thresholds", () => {

@@ -131,7 +131,10 @@ export const buildPageModuleSchema = z
      */
     ref: z
       .string()
-      .regex(/^[a-z][a-z0-9_-]{0,31}$/, "ref must be a short lowercase handle")
+      .regex(
+        /^[A-Za-z][A-Za-z0-9_-]{0,31}$/,
+        "ref must be a short handle: a letter, then letters, digits, _ or -",
+      )
       .optional(),
     /**
      * Place mode: an existing module from `list_modules` (UUID), or a
@@ -225,7 +228,8 @@ export const buildPageTargetSchema = z
      * "<parent's path>/<slug>". Create mode only (an existing page moves
      * with `pages.move_many`).
      */
-    parentPageId: z.string().uuid().optional(),
+    // null = top level, same as pages.create (sibling tools must agree — #106 class).
+    parentPageId: z.string().uuid().nullable().optional(),
     /**
      * Epic #1107 — what the new page IS (page type slug), its properties
      * and terms; same semantics as `pages.create` (create mode only — an

@@ -10,6 +10,7 @@ import {
   pageUpdateSchema,
   slugSchema,
   templateBlocksSetSchema,
+  templateCreateSchema,
 } from "./content.js";
 
 describe("slugSchema", () => {
@@ -321,5 +322,39 @@ describe("templateBlocksSetSchema", () => {
       ],
     });
     expect(r.success).toBe(true);
+  });
+});
+
+describe("corrupted code payloads are refused at the boundary (PR #1121 e2e)", () => {
+  const base = { slug: "footer", displayName: "Footer", html: "<footer>x</footer>" };
+  it("refuses JSON-encoded html and css with the fix in the message", () => {
+    const html = moduleCreateSchema.safeParse({
+      ...base,
+      html: JSON.stringify('<footer class="x">{{#links}}{{label}}{{/links}}</footer>'),
+    });
+    expect(html.success).toBe(false);
+    expect(html.error?.issues[0]?.message).toContain("JSON-encoded");
+    const css = moduleCreateSchema.safeParse({
+      ...base,
+      css: JSON.stringify(".x { color: red; }"),
+    });
+    expect(css.success).toBe(false);
+  });
+  it("refuses HTML-escaped template markup", () => {
+    const r = templateCreateSchema.safeParse({
+      slug: "page",
+      displayName: "Page",
+      html: '&lt;div&gt;&lt;caelo-slot name="content"&gt;&lt;/caelo-slot&gt;&lt;/div&gt;',
+    });
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0]?.message).toContain("HTML-escaped");
+  });
+  it("keeps legitimate markup: entities inside real tags, a quote-led text node", () => {
+    expect(
+      moduleCreateSchema.safeParse({ ...base, html: "<pre>&lt;div&gt; is a tag</pre>" }).success,
+    ).toBe(true);
+    expect(moduleCreateSchema.safeParse({ ...base, html: '"Quoted" <em>text</em>' }).success).toBe(
+      true,
+    );
   });
 });

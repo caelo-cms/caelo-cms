@@ -85,13 +85,40 @@ export function toSavedItems(def: ListTypeDef, items: readonly EditorItem[]): Li
   });
 }
 
-/** The tree with the level under `parentId` (null = top) replaced by `level`. */
+/**
+ * The tree with the level under `parentId` (null = top) replaced by
+ * `level` — a drag-and-drop zone's report of its entries.
+ *
+ * A zone reports from its own snapshot, which can be stale below the level
+ * it owns: dragging an entry across an empty child zone and on, the top
+ * zone still held the old copy of the entry it passed, WITH the dragged
+ * entry as its child, and taking that copy put the entry in the tree twice
+ * (the save was refused for duplicate ids — PR #1121). So the level's
+ * entries keep the children the CURRENT tree has for them, and every id
+ * in the level is removed from everywhere else: an entry lives once.
+ */
 export function replaceLevel(
   items: readonly EditorItem[],
   parentId: string | null,
   level: EditorItem[],
 ): EditorItem[] {
-  return mapLevel(items, parentId, () => level);
+  const incoming = new Set(level.map((it) => it.id));
+  const fresh = level.map((it) => {
+    const current = findItem(items, it.id);
+    return { ...it, children: withoutIds(current ? current.children : it.children, incoming) };
+  });
+  const pruned = withoutIds(items, incoming);
+  // A level inside one of its own entries cannot exist (canPlace refuses
+  // such drops); keep the tree rather than lose the subtree.
+  if (parentId !== null && findItem(pruned, parentId) === null) return [...items];
+  return mapLevel(pruned, parentId, () => fresh);
+}
+
+/** `items` without any entry whose id is in `ids`, at any depth. */
+function withoutIds(items: readonly EditorItem[], ids: ReadonlySet<string>): EditorItem[] {
+  return items
+    .filter((it) => !ids.has(it.id))
+    .map((it) => ({ ...it, children: withoutIds(it.children, ids) }));
 }
 
 /** The entry with `id`, or null. */

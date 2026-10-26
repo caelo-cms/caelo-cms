@@ -357,9 +357,9 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
 // a module's field schema or metadata and the AI had to fall back to N×
 // edit_module (the exact N+1 chain the bulk tool exists to replace). Reusing
 // the shared schema means the tool can never be a subset of the op again.
-// The source fields additionally decode a whole-value CDATA envelope, like
-// every other AI authoring surface (`sourceTextArg`); the op's own refusal
-// of any other CDATA marker still applies to the decoded value.
+// The source fields additionally decode whole-value transport encodings
+// (CDATA, JSON string literal, HTML-escaped), like every other AI authoring
+// surface (`sourceTextArg`); the op's own checks still apply to the result.
 const moduleUpdateItem = moduleUpdateSchema.extend({
   html: sourceTextArg(moduleUpdateSchema.shape.html.unwrap()).optional(),
   css: sourceTextArg(moduleUpdateSchema.shape.css.unwrap()).optional(),

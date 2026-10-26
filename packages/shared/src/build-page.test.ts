@@ -39,6 +39,14 @@ describe("buildPageInputSchema — page target modes", () => {
     expect(r.success).toBe(true);
   });
 
+  it("accepts parentPageId: null as top level, like pages.create (PR #1121 e2e)", () => {
+    const r = buildPageInputSchema.safeParse({
+      page: { slug: "pricing", title: "Pricing", parentPageId: null },
+      modules: [mintModule],
+    });
+    expect(r.success).toBe(true);
+  });
+
   it("accepts existing mode (pageId only)", () => {
     const r = buildPageInputSchema.safeParse({
       page: { pageId: UUID },
@@ -187,6 +195,29 @@ describe("buildPageInputSchema — module entry modes name the failing index", (
     });
     expect(r.success).toBe(false);
     if (!r.success) expect(r.error.issues[0]?.message).toContain("DETACHED");
+  });
+});
+
+describe("buildPageInputSchema — ref handles", () => {
+  // e2e-livedit run 40336739359 (PR #1143): the AI named three cards
+  // `cardA` / `cardB` / `cardC` and the lowercase-only rule refused the
+  // whole call for a handle that never leaves it.
+  it("accepts mixed-case handles and refuses ones that do not start with a letter", () => {
+    const { blockName: _b, ...detached } = mintModule;
+    for (const ref of ["cardA", "card_b", "feat-1"]) {
+      const r = buildPageInputSchema.safeParse({
+        page: { pageId: UUID },
+        modules: [{ ...detached, ref }],
+      });
+      expect(r.success).toBe(true);
+    }
+    for (const ref of ["1card", "$card", "card a"]) {
+      const r = buildPageInputSchema.safeParse({
+        page: { pageId: UUID },
+        modules: [{ ...detached, ref }],
+      });
+      expect(r.success).toBe(false);
+    }
   });
 });
 
