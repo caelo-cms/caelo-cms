@@ -20,6 +20,8 @@ import type { ExecutionContext } from "@caelo-cms/shared";
 import { SQL } from "bun";
 import { bulkCreateRedirectsTool } from "../ai/tools/bulk-create-redirects.js";
 import type { ToolContext } from "../ai/tools/dispatch.js";
+import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
+import type { StaticPublisher } from "../deploy/static-publisher.js";
 import type { RedirectSyncTargetStatus } from "../ops/redirect_sync.js";
 import {
   _redirectSyncPollOnceForTests,
@@ -351,6 +353,80 @@ describe("redirect sync on save (#1157)", () => {
     expect(await readFile(join(currentDir("production"), "index.html"), "utf8")).toBe("home v1");
     expect(await snippet("production")).toContain("/old");
     expect((await status()).production?.last).toMatchObject({ trigger: "rollback" });
+  });
+
+  it("a build re-sync puts the table as saved now on the new build, even when the target reads in sync", async () => {
+    // A redirect saved while a build ran was pushed to the build served
+    // before it; the new build carries the table from its start. Simulated:
+    // the row is in the table, the target reads in sync, the served files
+    // lack it.
+    await sys(
+      (tx) => tx`
+        INSERT INTO redirects (from_path, to_path, status_code, created_by)
+        VALUES ('/saved-during-build', '/about', 301, ${SYSTEM.actorId}::uuid)
+      `,
+    );
+    expect((await status()).production?.inSync).toBe(true);
+    const outcomes = await adapter.withAdminTransaction(SYSTEM, (tx) =>
+      syncRedirectsInTx(tx, SYSTEM, { trigger: "build", targetIds: [targets.production.id] }),
+    );
+    expect(outcomes.map((o) => o.status)).toEqual(["applied"]);
+    expect(await snippet("production")).toContain("/saved-during-build");
+    expect((await status()).production?.last).toMatchObject({
+      trigger: "build",
+      status: "applied",
+    });
+  });
+
+  it("a moved Firebase build moves only the run that recorded the copied version", async () => {
+    await sys(
+      (tx) => tx`
+        UPDATE deploy_runs SET publish_summary = '{"provider":"gcp-firebase","location":"sites/s/versions/live-1"}'::jsonb
+        WHERE target_id = ${targets.production.id}::uuid
+      `,
+    );
+    // A newer-started run whose recorded version is a different one.
+    await sys(
+      (tx) => tx`
+        INSERT INTO deploy_runs (target_id, actor_id, status, started_at, finished_at, build_id, publish_summary)
+        VALUES (${targets.production.id}::uuid, ${SYSTEM.actorId}::uuid, 'succeeded',
+                now() + interval '1 minute', now() - interval '1 hour', 'older-release',
+                '{"provider":"gcp-firebase","location":"sites/s/versions/old-9"}'::jsonb)
+      `,
+    );
+    const fake: StaticPublisher = {
+      servesCurrentDir: false,
+      publishStaging: () => Promise.reject(new Error("unused")),
+      promoteToProduction: () => Promise.reject(new Error("unused")),
+      rollback: () => Promise.reject(new Error("unused")),
+      syncRedirects: async () => ({
+        outcome: "applied",
+        redirectCount: 0,
+        goneCount: 0,
+        shadowedCount: 0,
+        unservedTargets: [],
+        location: "sites/s/versions/live-2",
+        movedServedBuild: { from: "sites/s/versions/live-1", to: "sites/s/versions/live-2" },
+      }),
+    };
+    await adapter.withAdminTransaction(SYSTEM, (tx) =>
+      syncRedirectsInTx(tx, SYSTEM, {
+        trigger: "manual",
+        targetIds: [targets.production.id],
+        publisher: fake,
+      }),
+    );
+    const locations = await sys(
+      (tx) =>
+        tx`SELECT build_id, publish_summary->>'location' AS location FROM deploy_runs
+           WHERE target_id = ${targets.production.id}::uuid ORDER BY build_id` as unknown as Promise<
+          { build_id: string; location: string }[]
+        >,
+    );
+    expect(locations).toEqual([
+      { build_id: PROD_BUILD, location: "sites/s/versions/live-2" },
+      { build_id: "older-release", location: "sites/s/versions/old-9" },
+    ]);
   });
 
   it("a publish whose re-sync fails leaves the target behind, so it is retried", async () => {
