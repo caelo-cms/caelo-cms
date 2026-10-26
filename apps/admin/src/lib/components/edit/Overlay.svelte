@@ -35,7 +35,7 @@
     DropdownMenuTrigger,
   } from "#lib/components/ui/dropdown-menu/index.js";
   import { cn } from "#lib/utils.js";
-  import { isCompactOverlay, overlayPositionStyle } from "./overlay-position.js";
+  import { floatingRect, isCompactOverlay, overlayPositionStyle } from "./overlay-position.js";
   import {
     DEFAULT_LAYOUT,
     debounced,
@@ -137,11 +137,14 @@
     if (docked || compact || layout.pin !== "floating") return;
     const target = e.target as HTMLElement | null;
     if (target && target.closest("button") !== null) return;
+    // Start from where the box is drawn (clamped to the viewport), not from
+    // a stored position that may lie off-screen after the window narrowed.
+    const drawn = floatingRect(layout, viewport);
     dragState = {
       startX: e.clientX,
       startY: e.clientY,
-      origX: layout.x,
-      origY: layout.y,
+      origX: drawn.x,
+      origY: drawn.y,
     };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     onDragStateChange?.(true);
@@ -150,11 +153,13 @@
     if (!dragState) return;
     const dx = e.clientX - dragState.startX;
     const dy = e.clientY - dragState.startY;
-    layout = {
-      ...layout,
-      x: Math.max(0, dragState.origX + dx),
-      y: Math.max(0, dragState.origY + dy),
-    };
+    // Store what is drawn: a drag past the edge does not bank an
+    // off-screen offset the next drag would have to undo.
+    const next = floatingRect(
+      { ...layout, x: dragState.origX + dx, y: dragState.origY + dy },
+      viewport,
+    );
+    layout = { ...layout, x: Math.max(0, next.x), y: Math.max(0, next.y) };
   }
   function onPointerUpTitle(e: PointerEvent): void {
     if (dragState === null) return;

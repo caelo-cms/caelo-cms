@@ -132,6 +132,16 @@ test("a floating chat stays on screen when the window narrows, and is the phone 
   expect(narrowed.x + narrowed.width).toBeLessThanOrEqual(900);
   expect(narrowed.y + narrowed.height).toBeLessThanOrEqual(700);
   await expect(page.getByRole("button", { name: "Collapse" })).toBeInViewport();
+  // A drag from there moves the box from where it is drawn (PR #1166
+  // review): 100 px left lands 100 px left, no jump to the stored x.
+  const handle = await page.getByLabel("Live-edit overlay controls").boundingBox();
+  if (!handle) throw new Error("no title bar");
+  await page.mouse.move(handle.x + 20, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x - 80, handle.y + handle.height / 2, { steps: 8 });
+  await page.mouse.up();
+  const dragged = await overlayBox(page);
+  expect(Math.round(narrowed.x - dragged.x)).toBe(100);
 
   // A phone: the full-width surface, whatever the stored float position.
   await page.setViewportSize(PHONE);

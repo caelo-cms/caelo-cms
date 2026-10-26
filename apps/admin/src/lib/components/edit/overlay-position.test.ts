@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, expect, it } from "bun:test";
-import { isCompactOverlay, overlayPositionStyle } from "./overlay-position.js";
+import { floatingRect, isCompactOverlay, overlayPositionStyle } from "./overlay-position.js";
 import type { OverlayLayout } from "./use-overlay-layout.svelte.js";
 
 const LAYOUT: OverlayLayout = {
@@ -92,5 +92,17 @@ describe("overlayPositionStyle", () => {
     expect(isCompactOverlay({ width: 390, height: 844 })).toBe(true);
     expect(isCompactOverlay({ width: 767, height: 1024 })).toBe(true);
     expect(isCompactOverlay({ width: 768, height: 1024 })).toBe(false);
+  });
+
+  // PR #1166 review: a drag starts from the drawn (clamped) rectangle.
+  it("floatingRect is the drawn rectangle the drag starts from", () => {
+    const stored = { x: 900, y: 80, width: 400, height: 560 };
+    expect(floatingRect(stored, { width: 1000, height: 900 })).toEqual({
+      x: 600,
+      y: 80,
+      width: 400,
+      height: 560,
+    });
+    expect(floatingRect(stored, undefined)).toEqual(stored);
   });
 });

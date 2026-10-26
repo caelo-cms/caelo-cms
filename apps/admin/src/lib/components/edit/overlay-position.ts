@@ -75,12 +75,27 @@ export function overlayPositionStyle(
     const width = vp ? Math.min(layout.pinnedWidth, vp.width) : layout.pinnedWidth;
     return `right: 0; top: ${top}px; bottom: 0; width: ${width}px;`;
   }
-  if (!vp) {
-    return `left: ${layout.x}px; top: ${layout.y}px; width: ${layout.width}px; height: ${layout.height}px;`;
-  }
-  const width = Math.min(layout.width, vp.width);
-  const height = Math.min(layout.height, vp.height);
-  const x = clamp(layout.x, 0, vp.width - width);
-  const y = clamp(layout.y, 0, vp.height - height);
-  return `left: ${x}px; top: ${y}px; width: ${width}px; height: ${height}px;`;
+  const r = floatingRect(layout, vp);
+  return `left: ${r.x}px; top: ${r.y}px; width: ${r.width}px; height: ${r.height}px;`;
+}
+
+/**
+ * Where a floating overlay is drawn: the stored position and size, pulled
+ * inside the viewport when it is known. A drag starts from (and stores)
+ * this rectangle, so a box drawn back on screen moves from where the
+ * operator sees it rather than from its off-screen stored position.
+ */
+export function floatingRect(
+  layout: Pick<OverlayLayout, "x" | "y" | "width" | "height">,
+  viewport: OverlayViewport | undefined,
+): { x: number; y: number; width: number; height: number } {
+  if (!viewport) return { x: layout.x, y: layout.y, width: layout.width, height: layout.height };
+  const width = Math.min(layout.width, viewport.width);
+  const height = Math.min(layout.height, viewport.height);
+  return {
+    x: clamp(layout.x, 0, viewport.width - width),
+    y: clamp(layout.y, 0, viewport.height - height),
+    width,
+    height,
+  };
 }
