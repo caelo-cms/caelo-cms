@@ -219,6 +219,14 @@ export interface ToolUsage {
  * estimator error make up the rest).
  */
 export interface InputAttribution {
+  /**
+   * REAL provider input of the scenario's first call: the static context
+   * (system prompt, loaded tools, skills index) plus the short opening
+   * message, before any history exists. The honest "what does every call
+   * cost at minimum" figure; the per-component numbers below are chars/4
+   * estimates, because the provider reports only a total per call.
+   */
+  firstCallInputTokens: number;
   /** Static context re-sent with every call: system + tools + blocks + skills (per-call est). */
   staticPerCallTokens: number;
   systemPromptTokens: number;
@@ -313,7 +321,9 @@ function buildAttribution(turns: TurnMetrics[], totals: Totals): InputAttributio
   }
 
   const first = withSplit[0]?.split;
+  const firstRow = turns[0]?.rows[0];
   return {
+    firstCallInputTokens: firstRow && Number.isFinite(firstRow.inCall) ? firstRow.inCall : 0,
     staticPerCallTokens: first ? staticPerCall(first) : 0,
     systemPromptTokens: first?.systemPromptTokens ?? 0,
     toolCatalogueTokens: first?.toolCatalogueTokens ?? 0,
@@ -649,11 +659,25 @@ export const THRESHOLDS: Record<string, ScenarioThresholds> = {
   // worst healthy loop count and below the observed spiral counts (27+).
   // Both therefore still catch every observed degraded run while no longer
   // failing on healthy variance.
+  //
+  // Re-derived 2026-10-26 (epic #1107 lists, PRs #1121 / #1143): the
+  // homepage now builds its navigation as a shared list (find / create the
+  // list, bind the header module), and the catalogue grew by the list and
+  // page-type tools — static context ~89k → ~95k tokens per call after the
+  // compaction in #1143. Healthy first attempts with zero detected bugs:
+  // 1740.0k/14, 1861.4k/16, 1969.4k/16, 2038.5k/19, 2219.7k/19 (runs
+  // 40310437365, 40305583343, 40324346694 and #1143's). maxInputTokens =
+  // 2.4M ≈ 1.08× the worst of those (measured BEFORE the compaction, so
+  // ~1.15× what the same run costs now). The input ceiling alone no longer
+  // separates the old spiral floor (2176.9k/27) from healthy runs; maxLoops
+  // (26) does — every observed spiral took 27+ loops, every healthy run
+  // ≤ 21 — so the pair still fails every observed degraded attempt (pinned
+  // in metrics-core.test.ts).
   homepage: {
     minBuildTurnCacheHitPct: 75,
     minCacheHitPct: 60,
     maxFreshPct: 10,
-    maxInputTokens: 2_000_000,
+    maxInputTokens: 2_400_000,
     maxLoops: 26,
   },
 };

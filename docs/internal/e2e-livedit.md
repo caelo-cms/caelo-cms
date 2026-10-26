@@ -176,7 +176,10 @@ lever** — every extra loop re-bills the whole context.
 scenario; the ceilings were re-derived 2026-08-05 from measured
 baselines (healthy first attempts ~1.0–1.65M input / 16–21 loops;
 stored-corruption repair spirals 2.18–2.66M / 27–33 — see the rationale
-comment at the constant and issue #432). Every scenario attempt's
+comment at the constant and issue #432) and again 2026-10-26 for the lists
+epic (#1107: navigation as a shared list, larger catalogue; healthy
+1.74–2.22M / 14–19 loops → input ceiling 2.4M; the loop ceiling of 26 is
+what separates every observed spiral). Every scenario attempt's
 violations persist into `scenario-metrics.jsonl`, and global-teardown
 emits a GitHub `::warning` annotation per breached attempt **even when a
 Playwright retry passed** — a green check with annotations means "look

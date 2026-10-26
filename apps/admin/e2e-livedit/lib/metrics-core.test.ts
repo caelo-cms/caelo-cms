@@ -226,11 +226,17 @@ describe("thresholds (issue #432 re-derived ceilings)", () => {
 
   it("homepage ceilings sit above the measured healthy band and below the spiral band", () => {
     const th = THRESHOLDS.homepage;
-    expect(th?.maxInputTokens).toBe(2_000_000);
+    expect(th?.maxInputTokens).toBe(2_400_000);
     expect(th?.maxLoops).toBe(26);
-    // Worst measured HEALTHY first attempt (1646.5k / 21 loops) must pass…
-    expect(1_646_500).toBeLessThan(th?.maxInputTokens ?? 0);
-    expect(21).toBeLessThan(th?.maxLoops ?? 0);
+    // Worst measured HEALTHY first attempts must pass: 1646.5k / 21 loops
+    // (2026-08) and 2219.7k / 19 loops (lists epic, 2026-10-26)…
+    for (const [input, loopCount] of [
+      [1_646_500, 21],
+      [2_219_700, 19],
+    ] as const) {
+      expect(input).toBeLessThan(th?.maxInputTokens ?? 0);
+      expect(loopCount).toBeLessThan(th?.maxLoops ?? 0);
+    }
     // …and every observed corruption-spiral attempt must still fail.
     for (const [input, loopCount] of [
       [2_176_900, 27],

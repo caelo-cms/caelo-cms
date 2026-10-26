@@ -272,8 +272,10 @@ export function formatBreakdownSection(rows: ScenarioSummary[]): string[] {
   const lines: string[] = [];
   lines.push("### Input-token breakdown (per scenario attempt)");
   lines.push("");
-  lines.push("| Scenario | Loops | Input | Static/call (est) | History end (est) | Thresholds |");
-  lines.push("| --- | --- | --- | --- | --- | --- |");
+  lines.push(
+    "| Scenario | Loops | Input | First call (real) | Static/call (est) | History end (est) | Thresholds |",
+  );
+  lines.push("| --- | --- | --- | --- | --- | --- | --- |");
   const attemptNo = new Map<string, number>();
   for (const r of rows) {
     const n = (attemptNo.get(r.scenario) ?? 0) + 1;
@@ -281,13 +283,14 @@ export function formatBreakdownSection(rows: ScenarioSummary[]): string[] {
     const name = n === 1 ? r.scenario : `${r.scenario} (attempt ${n})`;
     const a = r.attribution;
     const staticCall = a ? k(a.staticPerCallTokens) : "—";
+    const firstCall = a && a.firstCallInputTokens > 0 ? k(a.firstCallInputTokens) : "—";
     const histEnd = a ? k(a.historyEndTokens) : "—";
     const status =
       Array.isArray(r.violations) && r.violations.length > 0
         ? `**breached:** ${r.violations.map((v) => v.message).join("; ")}`
         : "ok";
     lines.push(
-      `| ${name} | ${r.loops} | ${k(r.inputTokens)} | ${staticCall} | ${histEnd} | ${status} |`,
+      `| ${name} | ${r.loops} | ${k(r.inputTokens)} | ${firstCall} | ${staticCall} | ${histEnd} | ${status} |`,
     );
   }
   lines.push("");

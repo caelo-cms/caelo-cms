@@ -50,7 +50,7 @@
           },
           "js": {
             "type": "string",
-            "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (a menu that collapses behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\"{{#is_current}} aria-current=\"page\"{{/is_current}}>{{label}}</a>{{#has_children}}<ul>{{#children}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/children}}</ul>{{/has_children}}</li>{{/menu}}</ul></nav>` around the module's menu `list` field (usually bound to the site's shared menu; `menu` here is that field's name). Write module JS only for behaviour the kit does not cover."
+            "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field. Write module JS only for behaviour the kit does not cover."
           },
           "fields": {
             "type": "array",
@@ -108,7 +108,7 @@
                           "node",
                           "values"
                         ],
-                        "description": "texts: {node:\"text\", values:{text}}; links: {node:\"link\", values:{label, link:{href}}}; menu: {node:\"entry\", values:{label, link:{href}}, children:[entries]}; a custom type: its fields (list_list_types). Keep `id` when resending an existing entry.",
+                        "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep `id` on resend.",
                         "properties": {
                           "id": {
                             "type": "string"
@@ -168,7 +168,7 @@
                 },
                 "source": {
                   "type": "object",
-                  "description": "list, bind \"source\": {kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}} | {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} (only these) | {kind:\"plugin\", name:\"<source>\"} (e.g. consent_categories — iterating a plugin list needs no field at all)."
+                  "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
                 },
                 "allowedModuleTypes": {
                   "type": "array",
@@ -635,7 +635,7 @@
                 "js": {
                   "type": "string",
                   "maxLength": 50000,
-                  "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (a menu that collapses behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\"{{#is_current}} aria-current=\"page\"{{/is_current}}>{{label}}</a>{{#has_children}}<ul>{{#children}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/children}}</ul>{{/has_children}}</li>{{/menu}}</ul></nav>` around the module's menu `list` field (usually bound to the site's shared menu; `menu` here is that field's name). Write module JS only for behaviour the kit does not cover."
+                  "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field. Write module JS only for behaviour the kit does not cover."
                 },
                 "fields": {
                   "type": "array",
@@ -693,7 +693,7 @@
                                 "node",
                                 "values"
                               ],
-                              "description": "texts: {node:\"text\", values:{text}}; links: {node:\"link\", values:{label, link:{href}}}; menu: {node:\"entry\", values:{label, link:{href}}, children:[entries]}; a custom type: its fields (list_list_types). Keep `id` when resending an existing entry.",
+                              "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep `id` on resend.",
                               "properties": {
                                 "id": {
                                   "type": "string"
@@ -753,7 +753,7 @@
                       },
                       "source": {
                         "type": "object",
-                        "description": "list, bind \"source\": {kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}} | {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} (only these) | {kind:\"plugin\", name:\"<source>\"} (e.g. consent_categories — iterating a plugin list needs no field at all)."
+                        "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
                       },
                       "allowedModuleTypes": {
                         "type": "array",
@@ -2684,7 +2684,7 @@
           "js": {
             "type": "string",
             "maxLength": 50000,
-            "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (a menu that collapses behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\"{{#is_current}} aria-current=\"page\"{{/is_current}}>{{label}}</a>{{#has_children}}<ul>{{#children}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/children}}</ul>{{/has_children}}</li>{{/menu}}</ul></nav>` around the module's menu `list` field (usually bound to the site's shared menu; `menu` here is that field's name). Write module JS only for behaviour the kit does not cover."
+            "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field. Write module JS only for behaviour the kit does not cover."
           },
           "bindThemeLiterals": {
             "type": "boolean",
@@ -2746,7 +2746,7 @@
                           "node",
                           "values"
                         ],
-                        "description": "texts: {node:\"text\", values:{text}}; links: {node:\"link\", values:{label, link:{href}}}; menu: {node:\"entry\", values:{label, link:{href}}, children:[entries]}; a custom type: its fields (list_list_types). Keep `id` when resending an existing entry.",
+                        "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep `id` on resend.",
                         "properties": {
                           "id": {
                             "type": "string"
@@ -2806,7 +2806,7 @@
                 },
                 "source": {
                   "type": "object",
-                  "description": "list, bind \"source\": {kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}} | {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} (only these) | {kind:\"plugin\", name:\"<source>\"} (e.g. consent_categories — iterating a plugin list needs no field at all)."
+                  "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
                 },
                 "allowedModuleTypes": {
                   "type": "array",
@@ -5112,7 +5112,7 @@
                 },
                 "js": {
                   "type": "string",
-                  "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (a menu that collapses behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li><a href=\"{{link}}\"{{#is_current}} aria-current=\"page\"{{/is_current}}>{{label}}</a>{{#has_children}}<ul>{{#children}}<li><a href=\"{{link}}\">{{label}}</a></li>{{/children}}</ul>{{/has_children}}</li>{{/menu}}</ul></nav>` around the module's menu `list` field (usually bound to the site's shared menu; `menu` here is that field's name). Write module JS only for behaviour the kit does not cover."
+                  "description": "Vanilla JS. Emitted ONCE per page into a single shared <script defer> concatenated with every other module's JS — top-level scope is SHARED and there is NO implicit binding: `root`, `el`, `module`, and `this` are NOT defined. Wrap everything in an IIFE, select elements with document.querySelectorAll('.your-module-root-class …'), and iterate the matches so multiple placements of the module on one page all work. Omit entirely for purely presentational modules. Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping). **Vetted interactions - use these instead of writing JS for them.** Add `data-caelo-ui=\"<id>\"` to the markup and Caelo ships accessible, dependency-free behaviour once per page; style it freely in the module CSS. `accordion` (FAQ, collapsible sections): `<div data-caelo-ui=\"accordion\" data-single>` containing `<details id=\"...\"><summary>Question</summary><div>Answer</div></details>` items - `data-single` keeps one open; a link to `#<details id>` opens it. `tabs`: `<div data-caelo-ui=\"tabs\"><div role=\"tablist\" aria-label=\"...\"><button type=\"button\" role=\"tab\" id=\"t1\" aria-controls=\"p1\" aria-selected=\"true\">...</button><button type=\"button\" role=\"tab\" id=\"t2\" aria-controls=\"p2\" aria-selected=\"false\" tabindex=\"-1\">...</button></div><div role=\"tabpanel\" id=\"p1\" aria-labelledby=\"t1\">...</div><div role=\"tabpanel\" id=\"p2\" aria-labelledby=\"t2\" hidden>...</div></div>` - ids must be unique on the page. `carousel` (slider, testimonials): `<section data-caelo-ui=\"carousel\" aria-roledescription=\"carousel\" aria-label=\"...\"><div data-caelo-carousel-track tabindex=\"0\"><div role=\"group\" aria-roledescription=\"slide\" aria-label=\"1 of 3\">...</div>...</div><button type=\"button\" data-caelo-carousel-prev aria-label=\"Previous slide\"><span aria-hidden=\"true\">&lsaquo;</span></button><button type=\"button\" data-caelo-carousel-next aria-label=\"Next slide\"><span aria-hidden=\"true\">&rsaquo;</span></button></section>` (an icon button keeps its visible content aria-hidden; a text button needs no aria-label) - one slide per view by default; set the slides' `flex-basis` in module CSS to show more. `mobile-nav` (menu collapsing behind a toggle on small screens): `<nav class=\"caelo-nav-menu\" data-caelo-ui=\"mobile-nav\" data-nav-open=\"false\"><button type=\"button\" class=\"caelo-nav-toggle\" aria-expanded=\"false\" aria-label=\"Menu\"><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span><span class=\"caelo-nav-bar\"></span></button><ul>{{#menu}}<li>…</li>{{/menu}}</ul></nav>` around the module's menu `list` field. Write module JS only for behaviour the kit does not cover."
                 },
                 "fields": {
                   "type": "array",
@@ -5170,7 +5170,7 @@
                                 "node",
                                 "values"
                               ],
-                              "description": "texts: {node:\"text\", values:{text}}; links: {node:\"link\", values:{label, link:{href}}}; menu: {node:\"entry\", values:{label, link:{href}}, children:[entries]}; a custom type: its fields (list_list_types). Keep `id` when resending an existing entry.",
+                              "description": "texts {node:\"text\", values:{text}} · links {node:\"link\", values:{label, link:{href}}} · menu {node:\"entry\", …, children}; keep `id` on resend.",
                               "properties": {
                                 "id": {
                                   "type": "string"
@@ -5230,7 +5230,7 @@
                       },
                       "source": {
                         "type": "object",
-                        "description": "list, bind \"source\": {kind:\"query\", editable:[knobs], defaults:{page_type, terms, parent, order, limit}} | {kind:\"system\", name:\"breadcrumbs\"|\"children\"|\"siblings\"|\"page_terms\"|\"term_pages\"} (only these) | {kind:\"plugin\", name:\"<source>\"} (e.g. consent_categories — iterating a plugin list needs no field at all)."
+                        "description": "bind \"source\": {kind:\"query\", editable, defaults} | {kind:\"system\", name: breadcrumbs|children|siblings|page_terms|term_pages} | {kind:\"plugin\", name} (a plugin list iterated by name needs no field)."
                       },
                       "allowedModuleTypes": {
                         "type": "array",
@@ -8287,7 +8287,7 @@
     },
     {
       "name": "list_list_types",
-      "description": "The list types of this site — the shapes lists take: which node kinds exist, their fields (`*` = required), what may hang under what, and which nodes generate entries from a source (a page query, breadcrumbs, a plugin). Menus, navigation, footer links, categories and tags are SHARED LISTS of a fitting list type (menu, links, categories, tags, or a custom type such as a mega menu) — there are no menu-specific tools. A list only ONE module shows stays LOCAL (its entries live in that module's `list` field); a list needed in more than one place, the site navigation, or a vocabulary pages are assigned to is SHARED. promote_local_list switches a local list to shared in one call. Shipped types: `texts` (plain strings), `links` (label + link), `menu` (nested entries, 3 levels, marks the current page), `categories` / `tags` (vocabularies pages are assigned to). A type that ships with a plugin (marked 'ships with plugin') is read-only: its lists are yours to fill, its definition is not to change. 'Inert plugin settings' are extensions of a plugin that is not active — kept, not applied. Read this before writing a list's entries or a module's `{{#field}}…{{/field}}` template (the node fields are the keys inside the section). Pass `slug` for one type in detail (lists of the type + modules with local lists of it). When no type fits (a mega menu with columns and a latest-news block, a team list with photo + role), create one with upsert_list_types_many instead of bending `links`.",
+      "description": "The list types of this site — the shapes lists take: which node kinds exist, their fields (`*` = required), what may hang under what, and which nodes generate entries from a source (a page query, breadcrumbs, a plugin). Shipped types: `texts` (plain strings), `links` (label + link), `menu` (nested entries, 3 levels, marks the current page), `categories` / `tags` (vocabularies pages are assigned to). A type that ships with a plugin (marked 'ships with plugin') is read-only: its lists are yours to fill, its definition is not to change. 'Inert plugin settings' are extensions of a plugin that is not active — kept, not applied. Read this before writing a list's entries or a module's `{{#field}}…{{/field}}` template (the node fields are the keys inside the section). Pass `slug` for one type in detail (lists of the type + modules with local lists of it). When no type fits (a mega menu with columns and a latest-news block, a team list with photo + role), create one with upsert_list_types_many instead of bending `links`.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -8317,30 +8317,37 @@
     },
     {
       "name": "upsert_list_types_many",
-      "description": "Create or replace list types (1–50 in one call, one transaction). A list type is the SHAPE of a list: `nodes` (node kind → {label, fields[], children?: {name, allow[]}, source?, current_from?}), `root.allow` (node kinds at the top level), `role` (navigation | vocabulary | content), `purpose` (why it exists — later reads decide by it), `max_depth` (required when a node allows itself). Field types: text, richtext, link ({href}), media, select (options), boolean, number, date, icon, module (an embedded module), term (entries of a vocabulary list, `list: <slug>`). Vocabulary types need exactly one node kind with text fields `name` and `slug`. A node with `source` gets generated entries instead of stored children: {kind:'query', editable:[knobs the entry may change], defaults:{page_type:'news', order:'published_desc', limit:3}} for 'latest news', {kind:'system', name:'breadcrumbs'|'children'|'siblings'|'page_terms'|'term_pages'}, or {kind:'plugin', name}. Example — a mega menu: root.allow [\"column\",\"link\"]; node `column` {fields:[{name:\"heading\",type:\"text\",label:\"Heading\",required:true}], children:{name:\"links\",allow:[\"link\",\"news\"]}}; node `link` {fields:[label text*, link link*], current_from:\"link\"}; node `news` {fields:[{name:\"heading\",type:\"text\",label:\"Heading\"}], source:{kind:\"query\",editable:[\"limit\"],defaults:{page_type:\"news\",order:\"published_desc\",limit:3}}}. Changing a type that has lists is checked against every list of the type (local ones in modules too): a new required field needs a `default`; removing a node kind or field that still has values is refused with the lists named — pass `dropValues: true` only when the operator agreed to lose those values. Pass `expectedVersion` from list_list_types to avoid overwriting a concurrent change. A type that ships with a plugin cannot be changed (by you or the operator) — create your own type under another slug instead. Do NOT create a near-duplicate of a shipped type — reuse `links` / `menu` when they fit.",
+      "description": "Create or replace list types (1–50 in one call, one transaction). A list type is the SHAPE of a list: `nodes` (node kind → {label, fields[], children?: {name, allow[]}, source?, current_from?}), `root.allow` (node kinds at the top level), `role` (navigation | vocabulary | content), `purpose` (why it exists — later reads decide by it), `max_depth` (required when a node allows itself). Field types: text, richtext, link ({href}), media, select (options), boolean, number, date, icon, module (an embedded module), term (entries of a vocabulary list, `list: <slug>`). Vocabulary types need exactly one node kind with text fields `name` and `slug`. A node with `source` gets generated entries instead of stored children: {kind:'query', editable:[knobs the entry may change], defaults:{page_type:'news', order:'published_desc', limit:3}} for 'latest news', {kind:'system', name:'breadcrumbs'|'children'|'siblings'|'page_terms'|'term_pages'}, or {kind:'plugin', name}. Mega menu: root.allow [\"column\"]; `column` {fields:[heading text], children:{name:\"links\", allow:[\"link\",\"news\"]}}; `link` {fields:[label text*, link link*], current_from:\"link\"}; `news` {fields:[heading text], source:{kind:\"query\", editable:[\"limit\"], defaults:{page_type:\"news\", order:\"published_desc\", limit:3}}}. Changing a type that has lists is checked against every list of the type (local ones in modules too): a new required field needs a `default`; removing a node kind or field that still has values is refused with the lists named — pass `dropValues: true` only when the operator agreed to lose those values. Pass `expectedVersion` from list_list_types to avoid overwriting a concurrent change. A type that ships with a plugin cannot be changed (by you or the operator) — create your own type under another slug instead. Do NOT create a near-duplicate of a shipped type — reuse `links` / `menu` when they fit.",
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "listTypes"
+        ],
         "properties": {
           "listTypes": {
-            "minItems": 1,
-            "maxItems": 50,
             "type": "array",
+            "minItems": 1,
             "items": {
               "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "slug",
+                "name",
+                "purpose",
+                "role",
+                "root",
+                "nodes"
+              ],
               "properties": {
                 "slug": {
-                  "type": "string",
-                  "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+                  "type": "string"
                 },
                 "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 200
+                  "type": "string"
                 },
                 "purpose": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 1000
+                  "type": "string"
                 },
                 "role": {
                   "type": "string",
@@ -8352,696 +8359,38 @@
                 },
                 "root": {
                   "type": "object",
-                  "properties": {
-                    "allow": {
-                      "minItems": 1,
-                      "maxItems": 32,
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                      }
-                    },
-                    "max": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 500
-                    }
-                  },
                   "required": [
                     "allow"
                   ],
-                  "additionalProperties": false
+                  "properties": {
+                    "allow": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "max": {
+                      "type": "integer"
+                    }
+                  }
                 },
                 "nodes": {
                   "type": "object",
-                  "propertyNames": {
-                    "type": "string",
-                    "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                  },
-                  "additionalProperties": {
-                    "type": "object",
-                    "properties": {
-                      "label": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 128
-                      },
-                      "fields": {
-                        "maxItems": 32,
-                        "type": "array",
-                        "items": {
-                          "oneOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "text"
-                                },
-                                "maxLength": {
-                                  "type": "integer",
-                                  "minimum": 1,
-                                  "maximum": 2000
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "richtext"
-                                },
-                                "maxLength": {
-                                  "type": "integer",
-                                  "minimum": 1,
-                                  "maximum": 20000
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "link"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "media"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "select"
-                                },
-                                "options": {
-                                  "minItems": 1,
-                                  "maxItems": 64,
-                                  "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                  }
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type",
-                                "options"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "boolean"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "number"
-                                },
-                                "min": {
-                                  "type": "number"
-                                },
-                                "max": {
-                                  "type": "number"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "date"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "icon"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "module"
-                                },
-                                "accepts": {
-                                  "maxItems": 32,
-                                  "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  }
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "term"
-                                },
-                                "list": {
-                                  "type": "string",
-                                  "pattern": "^[a-z0-9-]+$"
-                                },
-                                "multiple": {
-                                  "type": "boolean"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type",
-                                "list"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        }
-                      },
-                      "children": {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "allow": {
-                            "minItems": 1,
-                            "maxItems": 32,
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                            }
-                          },
-                          "max": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 500
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "allow"
-                        ],
-                        "additionalProperties": false
-                      },
-                      "current_from": {
-                        "type": "string",
-                        "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                      },
-                      "source": {
-                        "oneOf": [
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "const": "query"
-                              },
-                              "editable": {
-                                "maxItems": 7,
-                                "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "enum": [
-                                    "page_type",
-                                    "terms",
-                                    "terms_mode",
-                                    "parent",
-                                    "exclude_current",
-                                    "order",
-                                    "limit"
-                                  ]
-                                }
-                              },
-                              "defaults": {
-                                "type": "object",
-                                "properties": {
-                                  "page_type": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "terms": {
-                                    "maxItems": 20,
-                                    "type": "array",
-                                    "items": {
-                                      "type": "string",
-                                      "pattern": "^caelo:term\\/[0-9a-f-]{36}\\/[0-9a-f-]{36}$"
-                                    }
-                                  },
-                                  "terms_mode": {
-                                    "type": "string",
-                                    "enum": [
-                                      "any",
-                                      "all"
-                                    ]
-                                  },
-                                  "parent": {
-                                    "type": "string",
-                                    "pattern": "^caelo:page\\/[0-9a-f-]{36}$"
-                                  },
-                                  "exclude_current": {
-                                    "type": "boolean"
-                                  },
-                                  "order": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string",
-                                        "enum": [
-                                          "published_desc",
-                                          "published_asc",
-                                          "title_asc"
-                                        ]
-                                      },
-                                      {
-                                        "type": "string",
-                                        "pattern": "^prop_(?:desc|asc):[a-z][a-z0-9_]{0,63}$"
-                                      }
-                                    ]
-                                  },
-                                  "limit": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "maximum": 50
-                                  }
-                                },
-                                "additionalProperties": false
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "editable",
-                              "defaults"
-                            ],
-                            "additionalProperties": false
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "const": "system"
-                              },
-                              "name": {
-                                "type": "string",
-                                "enum": [
-                                  "breadcrumbs",
-                                  "children",
-                                  "siblings",
-                                  "page_terms",
-                                  "term_pages"
-                                ]
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "name"
-                            ],
-                            "additionalProperties": false
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "const": "plugin"
-                              },
-                              "name": {
-                                "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "name"
-                            ],
-                            "additionalProperties": false
-                          }
-                        ]
-                      },
-                      "ext": {
-                        "type": "object",
-                        "propertyNames": {
-                          "type": "string",
-                          "pattern": "^[a-z0-9-]+$"
-                        },
-                        "additionalProperties": {}
-                      }
-                    },
-                    "required": [
-                      "label",
-                      "fields"
-                    ],
-                    "additionalProperties": false
-                  }
+                  "description": "{<kind>: {label, fields:[{name, label, type, required?, default?, options?, list?, multiple?, accepts?, ext?}], children?:{name, allow, max?}, current_from?, source?}}"
                 },
                 "max_depth": {
-                  "type": "integer",
-                  "minimum": 1,
-                  "maximum": 8
+                  "type": "integer"
                 },
                 "expectedVersion": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "type": "integer"
                 }
-              },
-              "required": [
-                "slug",
-                "name",
-                "purpose",
-                "role",
-                "root",
-                "nodes"
-              ],
-              "additionalProperties": false
+              }
             }
           },
           "dropValues": {
-            "default": false,
             "type": "boolean"
           }
-        },
-        "required": [
-          "listTypes"
-        ],
-        "additionalProperties": false
+        }
       }
     },
     {
@@ -9139,49 +8488,21 @@
     },
     {
       "name": "upsert_lists_many",
-      "description": "Create shared lists, or replace a list's WHOLE entry tree (1–50 lists, one transaction). Menus, navigation, footer links, categories and tags are SHARED LISTS of a fitting list type (menu, links, categories, tags, or a custom type such as a mega menu) — there are no menu-specific tools. A list only ONE module shows stays LOCAL (its entries live in that module's `list` field); a list needed in more than one place, the site navigation, or a vocabulary pages are assigned to is SHARED. promote_local_list switches a local list to shared in one call. Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree) — nothing else: the tree is `items` (not `entries`), and the role comes from the type. An entry is {node, values, children?, query?}: `values` keyed by the node's fields (links as {\"href\": \"/about\"} or an external URL; terms as caelo:term/<listId>/<itemId>), `children` under nodes that allow them, `query` only on source nodes (the knobs the type marks editable). Keep the `id` of entries that already exist; omit it for new ones. Example (type menu): [{\"node\":\"entry\",\"values\":{\"label\":\"Company\",\"link\":{\"href\":\"/about\"}},\"children\":[{\"node\":\"entry\",\"values\":{\"label\":\"Team\",\"link\":{\"href\":\"/about/team\"}}}]}]. Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / edit_module), e.g. the header module on the layout.",
+      "description": "Create shared lists (menus, footer links, vocabularies), or replace a list's WHOLE entry tree (1–50 lists, one transaction). Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree) — nothing else: the tree is `items` (not `entries`), and the role comes from the type. An entry is {node, values, children?, query?}: `values` keyed by the node's fields (links as {\"href\": \"/about\"} or an external URL; terms as caelo:term/<listId>/<itemId>), `children` under nodes that allow them, `query` only on source nodes (the knobs the type marks editable). Keep the `id` of entries that already exist; omit it for new ones. Example (type menu): [{\"node\":\"entry\",\"values\":{\"label\":\"Company\",\"link\":{\"href\":\"/about\"}},\"children\":[{\"node\":\"entry\",\"values\":{\"label\":\"Team\",\"link\":{\"href\":\"/about/team\"}}}]}]. Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / edit_module), e.g. the header module on the layout.",
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lists"
+        ],
         "properties": {
           "lists": {
+            "type": "array",
             "minItems": 1,
             "maxItems": 50,
-            "type": "array",
             "items": {
               "type": "object",
-              "properties": {
-                "slug": {
-                  "type": "string",
-                  "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 200
-                },
-                "purpose": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 1000
-                },
-                "type": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 64
-                },
-                "items": {
-                  "maxItems": 500,
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/$defs/__schema0"
-                  }
-                },
-                "expectedVersion": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
-                }
-              },
+              "additionalProperties": false,
               "required": [
                 "slug",
                 "name",
@@ -9189,53 +8510,32 @@
                 "type",
                 "items"
               ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "lists"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-              },
-              "node": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 64
-              },
-              "values": {
-                "default": {},
-                "type": "object",
-                "propertyNames": {
+              "properties": {
+                "slug": {
                   "type": "string"
                 },
-                "additionalProperties": {}
-              },
-              "children": {
-                "type": "array",
+                "name": {
+                  "type": "string"
+                },
+                "purpose": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "list type slug"
+                },
                 "items": {
-                  "$ref": "#/$defs/__schema0"
-                }
-              },
-              "query": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "{node, values, children?, query?, id?} — node = the node KIND (list_list_types); values keyed by its fields; keep `id` of existing entries."
+                  }
                 },
-                "additionalProperties": {}
+                "expectedVersion": {
+                  "type": "integer"
+                }
               }
-            },
-            "required": [
-              "node"
-            ],
-            "additionalProperties": false
+            }
           }
         }
       }
@@ -9245,215 +8545,52 @@
       "description": "Edit entries of shared lists by id — the routine way to maintain a menu, footer links or a vocabulary (1–50 lists, up to 200 patches each, one transaction). Patches: {op:'add', parentId?, position?, item:{node, values, children?}} (omit parentId for the top level, position to append), {op:'update', itemId, values} (merged; null removes a value), {op:'move', itemId, parentId?, position}, {op:'remove', itemId} (with its children). 'Add Careers under Company' = get_list → one add patch with parentId = Company's id. Pass `expectedVersion` from get_list; a conflict means someone changed the list — re-read and redo. The result names the ids of added entries. Every page that shows the list updates with it — there is nothing to rewire.",
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lists"
+        ],
         "properties": {
           "lists": {
+            "type": "array",
             "minItems": 1,
             "maxItems": 50,
-            "type": "array",
             "items": {
               "type": "object",
-              "properties": {
-                "slug": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 64
-                },
-                "expectedVersion": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
-                },
-                "patches": {
-                  "minItems": 1,
-                  "maxItems": 200,
-                  "type": "array",
-                  "items": {
-                    "oneOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "op": {
-                            "type": "string",
-                            "const": "add"
-                          },
-                          "parentId": {
-                            "anyOf": [
-                              {
-                                "type": "string",
-                                "format": "uuid",
-                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "position": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          },
-                          "item": {
-                            "$ref": "#/$defs/__schema0"
-                          }
-                        },
-                        "required": [
-                          "op",
-                          "item"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "op": {
-                            "type": "string",
-                            "const": "update"
-                          },
-                          "itemId": {
-                            "type": "string",
-                            "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                          },
-                          "values": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "query": {
-                            "anyOf": [
-                              {
-                                "type": "object",
-                                "propertyNames": {
-                                  "type": "string"
-                                },
-                                "additionalProperties": {}
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          }
-                        },
-                        "required": [
-                          "op",
-                          "itemId"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "op": {
-                            "type": "string",
-                            "const": "move"
-                          },
-                          "itemId": {
-                            "type": "string",
-                            "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                          },
-                          "parentId": {
-                            "anyOf": [
-                              {
-                                "type": "string",
-                                "format": "uuid",
-                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "position": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          }
-                        },
-                        "required": [
-                          "op",
-                          "itemId",
-                          "position"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "op": {
-                            "type": "string",
-                            "const": "remove"
-                          },
-                          "itemId": {
-                            "type": "string",
-                            "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                          }
-                        },
-                        "required": [
-                          "op",
-                          "itemId"
-                        ],
-                        "additionalProperties": false
-                      }
-                    ]
-                  }
-                }
-              },
+              "additionalProperties": false,
               "required": [
                 "slug",
                 "patches"
               ],
-              "additionalProperties": false
-            }
-          }
-        },
-        "required": [
-          "lists"
-        ],
-        "additionalProperties": false,
-        "$defs": {
-          "__schema0": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string",
-                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-              },
-              "node": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 64
-              },
-              "values": {
-                "default": {},
-                "type": "object",
-                "propertyNames": {
+              "properties": {
+                "slug": {
                   "type": "string"
                 },
-                "additionalProperties": {}
-              },
-              "children": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/$defs/__schema0"
+                "expectedVersion": {
+                  "type": "integer"
+                },
+                "patches": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "op"
+                    ],
+                    "description": "{op:\"add\", parentId?, position?, item} | {op:\"update\", itemId, values?, query?} | {op:\"move\", itemId, parentId?, position} | {op:\"remove\", itemId}",
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "enum": [
+                          "add",
+                          "update",
+                          "move",
+                          "remove"
+                        ]
+                      }
+                    }
+                  }
                 }
-              },
-              "query": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
               }
-            },
-            "required": [
-              "node"
-            ],
-            "additionalProperties": false
+            }
           }
         }
       }
@@ -9524,187 +8661,46 @@
     },
     {
       "name": "preview_list_source",
-      "description": "Show what a generated list returns for a page BEFORE you bind or save it: a page query ('the 3 latest news'), a system source (breadcrumbs, children, siblings, page_terms, term_pages) or a plugin source — the same resolver the preview and the build use, in this chat's draft view. Name it ONE way: `source` (+ `value` overrides, `vocabulary` for page_terms) — e.g. {source:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}}; `list` + `itemId` (a saved source node of a shared list, e.g. the mega menu's news column); `list` + `node` + `value` (a source node kind of the list's type with the knobs you are about to save); or `moduleId` + `field` (+ `contentInstanceId`) for a module's source field. `pageId` = the page it renders on (needed for breadcrumbs / children / siblings / page_terms; a query leaves that page out by default). Only published pages appear. An empty result usually means the filter is wrong (page type slug, terms) or nothing is published yet.",
+      "description": "Show what a generated list returns for a page BEFORE you bind or save it: a page query ('the 3 latest news'), a system source (breadcrumbs, children, siblings, page_terms, term_pages) or a plugin source — the same resolver the preview and the build use, in this chat's draft view. Name the source ONE way (see the input schema). `pageId` = the page it renders on (needed for breadcrumbs / children / siblings / page_terms; a query leaves that page out by default). Only published pages appear. An empty result usually means the filter is wrong (page type slug, terms) or nothing is published yet.",
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
+        "description": "Name the source ONE way: `source` (+ value, vocabulary) | `list` + `itemId` (a saved source entry) | `list` + `node` (+ value) | `moduleId` + `field` (+ contentInstanceId).",
         "properties": {
           "pageId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "description": "the page the entries are generated for"
           },
           "source": {
-            "oneOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "query"
-                  },
-                  "editable": {
-                    "maxItems": 7,
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "enum": [
-                        "page_type",
-                        "terms",
-                        "terms_mode",
-                        "parent",
-                        "exclude_current",
-                        "order",
-                        "limit"
-                      ]
-                    }
-                  },
-                  "defaults": {
-                    "type": "object",
-                    "properties": {
-                      "page_type": {
-                        "type": "string",
-                        "pattern": "^[a-z0-9-]+$"
-                      },
-                      "terms": {
-                        "maxItems": 20,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "pattern": "^caelo:term\\/[0-9a-f-]{36}\\/[0-9a-f-]{36}$"
-                        }
-                      },
-                      "terms_mode": {
-                        "type": "string",
-                        "enum": [
-                          "any",
-                          "all"
-                        ]
-                      },
-                      "parent": {
-                        "type": "string",
-                        "pattern": "^caelo:page\\/[0-9a-f-]{36}$"
-                      },
-                      "exclude_current": {
-                        "type": "boolean"
-                      },
-                      "order": {
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "enum": [
-                              "published_desc",
-                              "published_asc",
-                              "title_asc"
-                            ]
-                          },
-                          {
-                            "type": "string",
-                            "pattern": "^prop_(?:desc|asc):[a-z][a-z0-9_]{0,63}$"
-                          }
-                        ]
-                      },
-                      "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 50
-                      }
-                    },
-                    "additionalProperties": false
-                  }
-                },
-                "required": [
-                  "kind",
-                  "editable",
-                  "defaults"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "system"
-                  },
-                  "name": {
-                    "type": "string",
-                    "enum": [
-                      "breadcrumbs",
-                      "children",
-                      "siblings",
-                      "page_terms",
-                      "term_pages"
-                    ]
-                  }
-                },
-                "required": [
-                  "kind",
-                  "name"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "plugin"
-                  },
-                  "name": {
-                    "type": "string",
-                    "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "name"
-                ],
-                "additionalProperties": false
-              }
-            ]
+            "type": "object",
+            "description": "a source definition (query / system / plugin)"
           },
           "value": {
             "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
-            "additionalProperties": {}
+            "description": "query knob overrides, or {terms} for term_pages"
           },
           "vocabulary": {
             "type": "string"
           },
           "list": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64
+            "type": "string"
           },
           "itemId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "type": "string"
           },
           "node": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64
+            "type": "string"
           },
           "moduleId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "type": "string"
           },
           "field": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 64
+            "type": "string"
           },
           "contentInstanceId": {
-            "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "type": "string"
           }
-        },
-        "additionalProperties": false
+        }
       }
     },
     {
@@ -9734,526 +8730,17 @@
       "description": "Create or replace page types (1–50, one transaction) — when the operator starts a new kind of content ('I need a news section with categories', 'a job board'). Each: `slug`, `name`, `purpose`, `templates` (template ids from list_templates, at least one; create one with create_template pageType first when none fits), `defaultTemplate` (one of them), `properties` (fields every page of the type carries, e.g. {name:'author', type:'text', label:'Author'}, {name:'event_date', type:'date', label:'Date'}; no `module` fields), `vocabularies` ([{list: <vocabulary list id from list_lists>, cardinality:'one'|'many', required?}]). Order for 'news with categories': upsert_lists_many (a `categories` list) → create_template (pageType 'news') or reuse a template → upsert_page_types_many → build_page / update_pages_many with pageType, properties, terms. Changing a type that pages use re-checks them: a new property's default is written into them; dropping a template they use is refused (move them first); dropping a property or vocabulary they hold values for needs `dropValues: true` (only with the operator's agreement). Pass `expectedVersion` from list_page_types.",
       "inputSchema": {
         "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "pageTypes"
+        ],
         "properties": {
           "pageTypes": {
-            "minItems": 1,
-            "maxItems": 50,
             "type": "array",
+            "minItems": 1,
             "items": {
               "type": "object",
-              "properties": {
-                "slug": {
-                  "type": "string",
-                  "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
-                },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 200
-                },
-                "purpose": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 1000
-                },
-                "templates": {
-                  "minItems": 1,
-                  "maxItems": 64,
-                  "type": "array",
-                  "items": {
-                    "type": "string",
-                    "format": "uuid",
-                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                  }
-                },
-                "defaultTemplate": {
-                  "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                },
-                "properties": {
-                  "default": [],
-                  "maxItems": 32,
-                  "type": "array",
-                  "items": {
-                    "oneOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "text"
-                          },
-                          "maxLength": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 2000
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "richtext"
-                          },
-                          "maxLength": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 20000
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "link"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "media"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "select"
-                          },
-                          "options": {
-                            "minItems": 1,
-                            "maxItems": 64,
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                            }
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type",
-                          "options"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "boolean"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "number"
-                          },
-                          "min": {
-                            "type": "number"
-                          },
-                          "max": {
-                            "type": "number"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "date"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "icon"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "module"
-                          },
-                          "accepts": {
-                            "maxItems": 32,
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            }
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "term"
-                          },
-                          "list": {
-                            "type": "string",
-                            "pattern": "^[a-z0-9-]+$"
-                          },
-                          "multiple": {
-                            "type": "boolean"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type",
-                          "list"
-                        ],
-                        "additionalProperties": false
-                      }
-                    ]
-                  }
-                },
-                "vocabularies": {
-                  "default": [],
-                  "maxItems": 16,
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "list": {
-                        "type": "string",
-                        "format": "uuid",
-                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                      },
-                      "cardinality": {
-                        "type": "string",
-                        "enum": [
-                          "one",
-                          "many"
-                        ]
-                      },
-                      "required": {
-                        "type": "boolean"
-                      }
-                    },
-                    "required": [
-                      "list",
-                      "cardinality"
-                    ],
-                    "additionalProperties": false
-                  }
-                },
-                "expectedVersion": {
-                  "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
-                }
-              },
+              "additionalProperties": false,
               "required": [
                 "slug",
                 "name",
@@ -10261,18 +8748,49 @@
                 "templates",
                 "defaultTemplate"
               ],
-              "additionalProperties": false
+              "properties": {
+                "slug": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "purpose": {
+                  "type": "string"
+                },
+                "templates": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "defaultTemplate": {
+                  "type": "string"
+                },
+                "properties": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "a field: {name, label, type, required?, default?, options?, …}"
+                  }
+                },
+                "vocabularies": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "{list: <vocabulary list id>, cardinality: one|many, required?}"
+                  }
+                },
+                "expectedVersion": {
+                  "type": "integer"
+                }
+              }
             }
           },
           "dropValues": {
-            "default": false,
             "type": "boolean"
           }
-        },
-        "required": [
-          "pageTypes"
-        ],
-        "additionalProperties": false
+        }
       }
     },
     {

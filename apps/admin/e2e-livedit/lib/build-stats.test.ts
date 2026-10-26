@@ -220,7 +220,11 @@ describe("buildReport integration", () => {
         scenario: "homepage",
         loops: 33,
         inputTokens: 2_660_400,
-        attribution: { staticPerCallTokens: 52_600, historyEndTokens: 62_400 },
+        attribution: {
+          firstCallInputTokens: 58_100,
+          staticPerCallTokens: 52_600,
+          historyEndTokens: 62_400,
+        },
         violations: [
           {
             metric: "inputTokens",
@@ -240,7 +244,7 @@ describe("buildReport integration", () => {
     ]);
     const md = buildReport({ log: LOOP_LOG, reportRaw: REPORT, aiCostRaw: "", metricsRaw });
     expect(md).toContain("### Input-token breakdown (per scenario attempt)");
-    expect(md).toContain("| homepage | 33 | 2660.4k | 52.6k | 62.4k |");
+    expect(md).toContain("| homepage | 33 | 2660.4k | 58.1k | 52.6k | 62.4k |");
     expect(md).toContain("**breached:** total input 2660.4k > ceiling 2000.0k");
     expect(md).toContain("| homepage (attempt 2) | 18 |");
     expect(md).toContain("1 attempt(s) breached token/loop thresholds");
