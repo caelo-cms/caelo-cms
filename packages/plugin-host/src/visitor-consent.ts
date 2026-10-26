@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Whether a visitor has consented to being recognised by the
- * `caelo_visitor_id` cookie (#677).
+ * Whether a visitor has consented to a declared purpose — today the one
+ * core acts on: being recognised by the `caelo_visitor_id` cookie (#677).
  *
- * The API gateway used to mint that cookie on every visitor call — a form
- * submission, a comment, a captcha challenge, even consent-manager's own
- * `record_consent` after the visitor clicked "reject all". A persistent
- * identifier that is not strictly necessary needs prior consent (TTDSG
- * §25(1) / ePrivacy Art. 5(3)). Nothing a visitor asks for depends on it —
- * rate limiting falls back to the client-IP bucket, the captcha proof is a
- * one-time token, forms and comments do not need to know who came back —
- * so it is not strictly necessary, and the gateway may only set it when
- * the visitor granted the category that covers it.
+ * A persistent identifier that is not strictly necessary needs prior
+ * consent (TTDSG §25(1) / ePrivacy Art. 5(3)). Core itself needs no
+ * visitor id — rate limits are keyed by client address and a captcha
+ * proof by its single use — so the gateway sets the cookie only for a
+ * plugin that declares the `visitor_id` purpose in its manifest
+ * (`consentPurposes`), and only when the visitor granted the category
+ * that declaration names.
  *
  * ## Who answers
  *
@@ -21,14 +19,16 @@
  * decision to the first-party `caelo_consent` cookie as URI-encoded JSON
  * `{granted: string[], policyVersion: number}`, and its
  * `visitor_consent_rule` operation tells core which cookie that is, which
- * policy version is current, and which of its categories covers the
- * visitor id. A decision counts only under the current policy version —
- * the same rule its runtime applies before it re-asks the visitor.
+ * policy version is current, and which of its categories covers each
+ * purpose. It builds that purpose map from the declarations of the active
+ * plugins, which it reads through `ctx.consentPurposes` (capability
+ * `consent_provider`). A decision counts only under the current policy
+ * version — the same rule its runtime applies before it re-asks the
+ * visitor.
  *
  * FIXME(issue #676): epic #676 PR-D replaces the fixed provider slug
  * below with the declared `visitorConsent` composition point, so any
- * plugin can be the site's consent provider and consumer plugins declare
- * their own purposes. The rule shape here is the one PR-D formalises.
+ * plugin can be the site's consent provider.
  *
  * ## Privacy by default
  *
@@ -38,6 +38,7 @@
  * answer is an error (thrown), never a yes.
  */
 
+import { VISITOR_ID_PURPOSE_KEY } from "@caelo-cms/plugin-sdk";
 import { z } from "zod";
 import {
   hostSystemActorId,
@@ -46,14 +47,14 @@ import {
   runPluginOperation,
 } from "./dispatch.js";
 
-/** The plugin that governs visitor consent until PR-D (#676) makes it declarable. */
+/** The plugin that governs visitor consent until PR-D (#676) makes the provider declarable. */
 export const VISITOR_CONSENT_PROVIDER_SLUG = "consent-manager";
 
 /** The provider operation core reads the rule from. Not visitor-facing. */
 export const VISITOR_CONSENT_RULE_OPERATION = "visitor_consent_rule";
 
 /** The purpose key for the gateway's `caelo_visitor_id` cookie. */
-export const VISITOR_ID_PURPOSE = "visitor_id";
+export const VISITOR_ID_PURPOSE = VISITOR_ID_PURPOSE_KEY;
 
 /** What the provider's `visitor_consent_rule` operation returns. */
 export const visitorConsentRule = z
@@ -66,7 +67,8 @@ export const visitorConsentRule = z
       .regex(/^[A-Za-z0-9_-]+$/, "a plain cookie name"),
     /** A decision counts only when it carries this version. */
     policyVersion: z.number().int().positive(),
-    /** Purpose key → the provider's category that covers it. */
+    /** Purpose key → the provider's category that covers it, one entry per
+     *  purpose an active plugin declares. */
     purposes: z.record(
       z.string().regex(/^[a-z][a-z0-9_]*$/, "a purpose key"),
       z
@@ -116,9 +118,10 @@ export async function resolveVisitorConsentRule(): Promise<VisitorConsentRule | 
  * @param rule the provider's rule, or null when no provider runs.
  * @param purpose a purpose key, e.g. {@link VISITOR_ID_PURPOSE}.
  * @param cookies the request's cookies, already decoded.
- * @throws when the provider's rule does not cover `purpose` — the provider
- *   governs consent for the site, so a purpose it never classified is a
- *   wiring error, not a silent no.
+ * @throws when the provider's rule does not cover `purpose` — callers ask
+ *   only about a purpose an active plugin declares, and the provider
+ *   classifies every declaration, so a gap is a wiring error, not a
+ *   silent no.
  */
 export function visitorConsentGranted(
   rule: VisitorConsentRule | null,

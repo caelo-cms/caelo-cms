@@ -13,7 +13,11 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { injectPluginAssets, type PluginClientAsset } from "./client-assets.js";
+import {
+  INLINE_CSS_MAX_BYTES,
+  injectPluginAssets,
+  type PluginClientAsset,
+} from "./client-assets.js";
 
 const DOC = "<html><head><title>t</title></head><body><main>x</main></body></html>";
 
@@ -38,7 +42,8 @@ describe("plugin client assets — page injection", () => {
         asset({
           fileName: "runtime.css",
           kind: "css",
-          content: ".x{}",
+          // Above the inline limit, so it is linked (#1124 inlines smaller ones).
+          content: `.x{}${" ".repeat(INLINE_CSS_MAX_BYTES)}`,
           publicPath: "/_caelo/plugin/consent-manager/runtime.def456.css",
         }),
       ],
@@ -51,6 +56,48 @@ describe("plugin client assets — page injection", () => {
     // Placement, not just presence.
     expect(html.indexOf('<link rel="stylesheet"')).toBeLessThan(html.indexOf("</head>"));
     expect(html.indexOf("<script defer")).toBeGreaterThan(html.indexOf("<main>"));
+  });
+
+  it("inlines a small stylesheet on a deployed page instead of a blocking link (#1124)", () => {
+    const html = injectPluginAssets(
+      DOC,
+      [asset({ fileName: "runtime.css", kind: "css", content: "[data-x]{display:none}" })],
+      "linked",
+    );
+    expect(html).not.toContain('rel="stylesheet"');
+    expect(html).toContain(
+      '<style data-caelo-plugin="consent-manager">\n[data-x]{display:none}\n</style>',
+    );
+    expect(html.indexOf("<style")).toBeLessThan(html.indexOf("</head>"));
+  });
+
+  it("still links a stylesheet above the inline limit", () => {
+    const content = `.x{}${" ".repeat(INLINE_CSS_MAX_BYTES)}`;
+    const html = injectPluginAssets(
+      DOC,
+      [
+        asset({
+          fileName: "runtime.css",
+          kind: "css",
+          content,
+          publicPath: "/_caelo/plugin/consent-manager/runtime.def456.css",
+        }),
+      ],
+      "linked",
+    );
+    expect(html).toContain(
+      '<link rel="stylesheet" href="/_caelo/plugin/consent-manager/runtime.def456.css"',
+    );
+    expect(html).not.toContain("<style");
+  });
+
+  it("escapes a closing </style> in a small stylesheet inlined on a deployed page", () => {
+    const html = injectPluginAssets(
+      DOC,
+      [asset({ kind: "css", content: ".x{content:'</style><script>evil()</script>'}" })],
+      "linked",
+    );
+    expect(html).not.toContain("</style><script>");
   });
 
   it("inlines the identical content for the preview", () => {

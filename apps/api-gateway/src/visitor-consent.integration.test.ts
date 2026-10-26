@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Issue #677 — the gateway sets `caelo_visitor_id` only with the visitor's
- * consent, read the way the consent-manager plugin defines it.
+ * Issue #677 — the gateway sets `caelo_visitor_id` only for a plugin that
+ * declares the `visitor_id` consent purpose (ratings, under `functional`)
+ * and only with the visitor's consent to that category, read the way the
+ * consent-manager plugin defines it.
  *
  * Production wiring: the real consent-manager and ratings plugins are
  * registered + provisioned by an admin-side host, then served by the
@@ -12,10 +14,15 @@
  *
  *   - no decision yet           → no cookie, plugins see no id
  *   - "reject all"              → no cookie, even on record_consent itself
- *   - accepted (analytics)      → cookie minted, then recognised
+ *   - accepted (functional)     → cookie minted, then recognised
+ *   - analytics/marketing only  → no cookie: not the declared category
  *   - withdrawn after accepting → cookie expired, id no longer read
  *   - decision under an old policy version → counts as no decision
  *   - provider unable to answer → 503, never a guess
+ *   - no active plugin declares the purpose → never set, a held one expired
+ *
+ * Plus what no longer depends on the cookie: rate limits are per client
+ * address and a captcha challenge is bound to nobody.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -27,8 +34,10 @@ import {
   registerGatewayOperations,
   resetDispatchOnlyHost,
   resetPluginHost,
+  syncDispatchPlugins,
 } from "@caelo-cms/plugin-host";
 import ratingsPlugin from "@caelo-cms/plugin-ratings";
+import { definePlugin, type PluginContextTier1 } from "@caelo-cms/plugin-sdk";
 import { DatabaseAdapter, OperationRegistry } from "@caelo-cms/query-api";
 import { SQL } from "bun";
 import { invalidateRateLimitSpecCache } from "./middleware/rate-limit.js";
@@ -51,8 +60,25 @@ if (!ADMIN_URL || !PUBLIC_ADMIN_URL || !PUBLIC_URL) {
 }
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
-const SLUGS = ["consent-manager", "ratings"] as const;
+const SLUGS = ["consent-manager", "ratings", "visitor-echo"] as const;
+
+/**
+ * A plugin that declares no consent purpose and answers with the visitor
+ * id it was handed: the id must reach only the plugin that asked for it.
+ */
+const echoPlugin = definePlugin<PluginContextTier1>({
+  slug: "visitor-echo",
+  version: "0.0.1",
+  tier: 1,
+  schema: {},
+  publicOperations: ["whoami"],
+  operations: {
+    whoami: async (ctx) => ({ visitorId: ctx.visitor.id }),
+  },
+});
 const RECORD = "/api/plugin/consent-manager/record_consent";
+/** The random id the banner keeps in caelo_consent and posts with every decision. */
+const CONSENT_ID = "0b1c2d3e-4f50-4617-8899-aabbccddeeff";
 const RATE = "/api/plugin/ratings/submit";
 
 let adminAdapter: DatabaseAdapter;
@@ -169,6 +195,20 @@ function post(path: string, body: unknown, cookies: string[] = []): Request {
   });
 }
 
+/** A visitor POST from a fixed client address, carrying `cookies`. */
+function postFrom(ip: string, path: string, body: unknown, cookies: string[] = []): Request {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "X-Forwarded-For": ip,
+  };
+  if (cookies.length > 0) headers.cookie = cookies.join("; ");
+  return new Request(`http://localhost${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+}
+
 /** A captcha challenge request from its own client IP, carrying `cookies`. */
 function challengeReq(cookies: string[] = []): Request {
   clientIp++;
@@ -243,7 +283,11 @@ beforeAll(async () => {
     infra: { adapter: adminAdapter, registry: new OperationRegistry() },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
-    testPlugins: [{ definition: consentPlugin }, { definition: ratingsPlugin }],
+    testPlugins: [
+      { definition: consentPlugin },
+      { definition: ratingsPlugin },
+      { definition: echoPlugin },
+    ],
   });
   expect(adminReport.failed).toEqual([]);
   await publishProjectionOnce(adminAdapter, { declarations: DECLARATIONS });
@@ -273,7 +317,11 @@ beforeAll(async () => {
     infra: { adapter: gatewayAdapter, registry },
     pluginsRoot: "/dev/null/unused",
     systemActorId: SYSTEM_ACTOR_ID,
-    testPlugins: [{ definition: consentPlugin }, { definition: ratingsPlugin }],
+    testPlugins: [
+      { definition: consentPlugin },
+      { definition: ratingsPlugin },
+      { definition: echoPlugin },
+    ],
   });
   expect(report.failed).toEqual([]);
   // Ratings asks for a captcha proof; the proof path has its own tests.
@@ -318,17 +366,17 @@ describe("no consent decision yet (#677)", () => {
 describe("rejected (#677)", () => {
   it("records the rejection without setting or storing a visitor id", async () => {
     const r = await handleRequest(
-      post(RECORD, { granted: ["necessary"], policyVersion: 1 }, [DECLINED]),
+      post(RECORD, { consentId: CONSENT_ID, granted: ["necessary"], policyVersion: 1 }, [DECLINED]),
     );
     await expectStatus(r, 200);
     expect(r.headers.getSetCookie()).toEqual([]);
-    const log = await publicRows<{ visitor_id: string | null; granted: string[] }>(
+    const log = await publicRows<{ consent_id: string; granted: string[] }>(
       "consent-manager",
       "consent_log",
     );
     const last = log.at(-1);
     expect(last?.granted).toEqual(["necessary"]);
-    expect(last?.visitor_id).toBeNull();
+    expectsOnlyTheConsentId(last);
   });
 
   it("keeps a rejecting visitor's ratings unlinked, one row per vote", async () => {
@@ -344,11 +392,15 @@ describe("rejected (#677)", () => {
 describe("accepted, then withdrawn (#677)", () => {
   let visitorCookie = "";
 
-  it("mints the visitor cookie with the decision that grants analytics", async () => {
+  it("mints the visitor cookie with the decision that grants functional", async () => {
     const r = await handleRequest(
       post(
         RECORD,
-        { granted: ["necessary", "functional", "analytics", "marketing"], policyVersion: 1 },
+        {
+          consentId: CONSENT_ID,
+          granted: ["necessary", "functional", "analytics", "marketing"],
+          policyVersion: 1,
+        },
         [ACCEPTED],
       ),
     );
@@ -358,8 +410,10 @@ describe("accepted, then withdrawn (#677)", () => {
     const set = r.headers.getSetCookie().find((c) => c.startsWith("caelo_visitor_id="));
     expect(set).toContain("HttpOnly");
     expect(set).toContain("Max-Age=2592000");
-    const log = await publicRows<{ visitor_id: string | null }>("consent-manager", "consent_log");
-    expect(log.at(-1)?.visitor_id).toBe(visitorCookie.split(".")[0] ?? "");
+    // The visitor id is ratings' purpose, not proof of consent: the record
+    // keeps the banner's own id even when the decision mints the cookie.
+    const log = await publicRows<{ consent_id: string }>("consent-manager", "consent_log");
+    expectsOnlyTheConsentId(log.at(-1));
   });
 
   it("recognises the visitor afterwards: no new cookie, their vote is updated", async () => {
@@ -373,19 +427,27 @@ describe("accepted, then withdrawn (#677)", () => {
     expect(((await second.json()) as { data: { mode: string } }).data.mode).toBe("updated");
   });
 
+  it("hands the id only to the plugin that declared it, not to every plugin", async () => {
+    const r = await handleRequest(
+      post("/api/plugin/visitor-echo/whoami", {}, [ACCEPTED, `caelo_visitor_id=${visitorCookie}`]),
+    );
+    await expectStatus(r, 200);
+    expect(((await r.json()) as { data: { visitorId: string | null } }).data.visitorId).toBeNull();
+  });
+
   it("expires the cookie when the visitor withdraws, and stops reading it", async () => {
     // The banner rewrote caelo_consent; the HttpOnly id is still in the
     // browser until the gateway expires it — on the record_consent beacon.
     const r = await handleRequest(
-      post(RECORD, { granted: ["necessary"], policyVersion: 1 }, [
+      post(RECORD, { consentId: CONSENT_ID, granted: ["necessary"], policyVersion: 1 }, [
         DECLINED,
         `caelo_visitor_id=${visitorCookie}`,
       ]),
     );
     await expectStatus(r, 200);
     expectsVisitorCookieExpired(r);
-    const log = await publicRows<{ visitor_id: string | null }>("consent-manager", "consent_log");
-    expect(log.at(-1)?.visitor_id).toBeNull();
+    const log = await publicRows<{ consent_id: string }>("consent-manager", "consent_log");
+    expectsOnlyTheConsentId(log.at(-1));
 
     // A browser that still sends it (the expiry not applied yet) is not
     // recognised: the earlier vote is not found and updated.
@@ -398,6 +460,18 @@ describe("accepted, then withdrawn (#677)", () => {
     await expectStatus(vote, 200);
     expectsVisitorCookieExpired(vote);
     expect(((await vote.json()) as { data: { mode: string } }).data.mode).toBe("inserted");
+  });
+});
+
+describe("a decision without the declared category", () => {
+  it("sets no visitor cookie when the visitor granted analytics and marketing but not functional", async () => {
+    const r = await handleRequest(
+      post(RATE, { pageId: "p-analytics", score: 4 }, [
+        consentCookie(["necessary", "analytics", "marketing"]),
+      ]),
+    );
+    await expectStatus(r, 200);
+    expect(r.headers.getSetCookie()).toEqual([]);
   });
 });
 
@@ -419,7 +493,7 @@ describe("a decision under an outdated policy version (#677)", () => {
       expectsVisitorCookieExpired(held);
       // Re-consenting under the current version counts again.
       const renewed = await handleRequest(
-        post(RATE, { pageId: "p-policy", score: 4 }, [consentCookie(["analytics"], 2)]),
+        post(RATE, { pageId: "p-policy", score: 4 }, [consentCookie(["functional"], 2)]),
       );
       expect(mintedVisitorCookie(renewed)).not.toBeNull();
     } finally {
@@ -458,64 +532,152 @@ describe("a consent provider that cannot answer (#677)", () => {
   });
 });
 
-describe("a captcha challenge is bound to the consented visitor it was issued to (#845)", () => {
-  /** A consented visitor's signed id cookie, minted on the consent beacon. */
-  async function consentedVisitor(): Promise<string> {
-    const r = await handleRequest(
-      post(
-        RECORD,
-        { granted: ["necessary", "functional", "analytics", "marketing"], policyVersion: 1 },
-        [ACCEPTED],
-      ),
-    );
-    await expectStatus(r, 200);
-    const cookie = mintedVisitorCookie(r);
-    if (!cookie) throw new Error("no visitor cookie minted");
-    return `caelo_visitor_id=${cookie}`;
-  }
+/** A consent record holds the banner's consent id and no visitor or address data. */
+function expectsOnlyTheConsentId(row: Record<string, unknown> | undefined): void {
+  expect(row?.consent_id).toBe(CONSENT_ID);
+  expect(Object.keys(row ?? {})).not.toContain("visitor_id");
+  expect(Object.keys(row ?? {})).not.toContain("ip_hash");
+}
 
-  it("redeems for the same visitor; refuses another visitor, or a lost cookie, saying why", async () => {
+/** A consented visitor's signed id cookie, minted on the consent beacon. */
+async function consentedVisitor(): Promise<string> {
+  const r = await handleRequest(
+    post(
+      RECORD,
+      {
+        consentId: CONSENT_ID,
+        granted: ["necessary", "functional", "analytics", "marketing"],
+        policyVersion: 1,
+      },
+      [ACCEPTED],
+    ),
+  );
+  await expectStatus(r, 200);
+  const cookie = mintedVisitorCookie(r);
+  if (!cookie) throw new Error("no visitor cookie minted");
+  return `caelo_visitor_id=${cookie}`;
+}
+
+describe("a captcha challenge is bound to nobody", () => {
+  it("is redeemable once by whichever request presents it, with or without a visitor cookie", async () => {
     const alice = [ACCEPTED, await consentedVisitor()];
     const bob = [ACCEPTED, await consentedVisitor()];
     await setCaptcha("pow");
     try {
+      // Issued to Alice's browser, presented by Bob's: the work was done,
+      // and that is the protection — the cookie never was one.
       const proof = await solvedProof(alice);
-      // Another consented visitor presents Alice's solved challenge.
-      const stolen = await handleRequest(
-        post(RATE, { pageId: "p-bound", score: 4, _caelo_captcha: proof }, bob),
+      const bobs = await handleRequest(
+        post(RATE, { pageId: "p-unbound", score: 4, _caelo_captcha: proof }, bob),
       );
-      await expectStatus(stolen, 403);
-      const err = ((await stolen.json()) as { error: { kind: string; message: string } }).error;
-      expect(err.kind).toBe("CaptchaFailed");
-      expect(err.message).toContain("issued to a different visitor");
-      // Alice's browser lost the cookie: the gateway mints a new id, so the
-      // challenge is not hers any more, and the message says what happened.
-      const lost = await handleRequest(
-        post(RATE, { pageId: "p-bound", score: 4, _caelo_captcha: proof }, [ACCEPTED]),
+      await expectStatus(bobs, 200);
+      // Single use: Alice cannot redeem it after him.
+      const replay = await handleRequest(
+        post(RATE, { pageId: "p-unbound", score: 4, _caelo_captcha: proof }, alice),
       );
-      await expectStatus(lost, 403);
-      expect(await lost.text()).toContain("did not come back with this submission");
-      // Neither refusal used it up: Alice still can.
-      const own = await handleRequest(
-        post(RATE, { pageId: "p-bound", score: 4, _caelo_captcha: proof }, alice),
+      await expectStatus(replay, 403);
+      expect(await replay.text()).toContain("already used");
+      // A visitor without any cookie solves and redeems their own.
+      const anon = await solvedProof([]);
+      const anons = await handleRequest(
+        post(RATE, { pageId: "p-unbound", score: 3, _caelo_captcha: anon }, []),
       );
-      await expectStatus(own, 200);
+      await expectStatus(anons, 200);
     } finally {
       await setCaptcha("off");
     }
   });
+});
 
-  it("a challenge issued without a visitor id (no consent) binds to nobody", async () => {
-    const alice = [ACCEPTED, await consentedVisitor()];
-    await setCaptcha("pow");
+describe("rate limits are per client address, never per visitor cookie", () => {
+  it("throttles one address whatever cookie each request carries", async () => {
+    await asAdmin(async (tx) => {
+      await tx`INSERT INTO plugin_rate_limit_overrides (plugin_slug, operation, per_visitor_max, window_seconds)
+               VALUES ('ratings', 'submit', 2, 60)
+               ON CONFLICT (plugin_slug, operation) DO UPDATE SET per_visitor_max = 2, window_seconds = 60`;
+    });
+    await publish();
+    invalidateRateLimitSpecCache();
     try {
-      const proof = await solvedProof([]);
-      const r = await handleRequest(
-        post(RATE, { pageId: "p-unbound", score: 3, _caelo_captcha: proof }, alice),
+      const ip = "198.51.100.77";
+      const alice = [ACCEPTED, await consentedVisitor()];
+      const bob = [ACCEPTED, await consentedVisitor()];
+      await expectStatus(
+        await handleRequest(postFrom(ip, RATE, { pageId: "p-rl", score: 1 }, alice)),
+        200,
       );
-      await expectStatus(r, 200);
+      await expectStatus(
+        await handleRequest(postFrom(ip, RATE, { pageId: "p-rl", score: 2 }, bob)),
+        200,
+      );
+      // A third request from the same address: a fresh cookie, none at all,
+      // or a recognised one — the budget is the address's, so all are refused.
+      for (const cookies of [[], [ACCEPTED], alice]) {
+        const r = await handleRequest(postFrom(ip, RATE, { pageId: "p-rl", score: 3 }, cookies));
+        await expectStatus(r, 429);
+      }
+      // Another address has its own budget.
+      await expectStatus(
+        await handleRequest(postFrom("198.51.100.78", RATE, { pageId: "p-rl", score: 4 }, alice)),
+        200,
+      );
     } finally {
-      await setCaptcha("off");
+      await asAdmin(async (tx) => {
+        await tx`DELETE FROM plugin_rate_limit_overrides WHERE plugin_slug = 'ratings' AND operation = 'submit'`;
+      });
+      await publish();
+      invalidateRateLimitSpecCache();
     }
+  });
+});
+
+describe("no active plugin declares the visitor-id purpose", () => {
+  it("never sets the cookie, and expires one the browser still holds", async () => {
+    const held = await consentedVisitor();
+    // The Owner switches ratings — the only declaring plugin — off.
+    await asAdmin(async (tx) => {
+      await tx`UPDATE plugins SET status = 'disabled' WHERE slug = 'ratings'`;
+    });
+    await publish();
+    await syncDispatchPlugins({ force: true });
+    try {
+      const fresh = await handleRequest(
+        post(
+          RECORD,
+          {
+            consentId: CONSENT_ID,
+            granted: ["necessary", "functional", "analytics", "marketing"],
+            policyVersion: 1,
+          },
+          [ACCEPTED],
+        ),
+      );
+      await expectStatus(fresh, 200);
+      expect(fresh.headers.getSetCookie()).toEqual([]);
+      const log = await publicRows<{ consent_id: string }>("consent-manager", "consent_log");
+      expectsOnlyTheConsentId(log.at(-1));
+
+      const stale = await handleRequest(
+        post(
+          RECORD,
+          {
+            consentId: CONSENT_ID,
+            granted: ["necessary", "functional", "analytics", "marketing"],
+            policyVersion: 1,
+          },
+          [ACCEPTED, held],
+        ),
+      );
+      await expectStatus(stale, 200);
+      expectsVisitorCookieExpired(stale);
+    } finally {
+      await asAdmin(async (tx) => {
+        await tx`UPDATE plugins SET status = 'active' WHERE slug = 'ratings'`;
+      });
+      await publish();
+      await syncDispatchPlugins({ force: true });
+    }
+    // Back on: the declaration returns and with it the cookie.
+    expect(await consentedVisitor()).toStartWith("caelo_visitor_id=");
   });
 });

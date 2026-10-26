@@ -39,6 +39,7 @@ export const sandboxMethod = z.enum([
   "api.list",
   "api.get",
   "captcha.requireProof",
+  "consentPurposes.list",
 ]);
 
 export const sandboxMessage = z.discriminatedUnion("kind", [

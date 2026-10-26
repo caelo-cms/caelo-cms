@@ -29,7 +29,7 @@
  * with the schema left in place, never half-applied silently.
  */
 
-import { loadedPlugins } from "@caelo-cms/plugin-host";
+import { activeDependentsOf, dependentsMessage, loadedPlugins } from "@caelo-cms/plugin-host";
 import { afterCommit, defineOperation } from "@caelo-cms/query-api";
 import { err, ok } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
@@ -88,6 +88,14 @@ export const proposeUninstallPluginOp = defineOperation({
         kind: "HandlerError",
         operation: "plugins.propose_uninstall",
         message: `no plugin with slug "${input.slug}"`,
+      });
+    }
+    const dependents = await activeDependentsOf(tx, input.slug);
+    if (dependents.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.propose_uninstall",
+        message: dependentsMessage(input.slug, dependents, "uninstalled"),
       });
     }
     const manifest = (plugin.manifest_json ?? {}) as {
@@ -229,6 +237,16 @@ const executeUninstallPluginOpDefinition = defineOperation({
     }
     const payload = row.payload as { slug: string; pluginId: string };
     const slug = payload.slug;
+    // Re-checked at the click: a dependent may have been activated since
+    // the proposal was made.
+    const dependents = await activeDependentsOf(tx, slug);
+    if (dependents.length > 0) {
+      return err({
+        kind: "HandlerError",
+        operation: "plugins.execute_proposal",
+        message: dependentsMessage(slug, dependents, "uninstalled"),
+      });
+    }
     if (!finalizer) {
       return err({
         kind: "HandlerError",

@@ -66,6 +66,7 @@ describe("main nav model", () => {
     const nav = visibleMainNav(
       ["content.read", "content.write", "roles.manage", "settings.read"],
       true,
+      [],
     );
     expect(nav.liveEdit?.href).toBe("/edit");
     expect(nav.content.map((l) => l.href)).toEqual(CONTENT_LINKS.map((l) => l.href));
@@ -73,7 +74,7 @@ describe("main nav model", () => {
   });
 
   it("hides Live edit, Open changes and design pages from a read-only reviewer", () => {
-    const nav = visibleMainNav(new Set(["content.read"]), false);
+    const nav = visibleMainNav(new Set(["content.read"]), false, []);
     expect(nav.liveEdit).toBeNull();
     expect(nav.settings).toBeNull();
     expect(nav.content.map((l) => l.label)).toEqual([
@@ -84,6 +85,16 @@ describe("main nav model", () => {
       "Media",
       "Templates",
     ]);
+  });
+
+  it("has a Plugins group only when the viewer may open a plugin panel", () => {
+    expect(visibleMainNav(new Set(["content.read"]), false, []).plugins).toEqual([]);
+    const link = {
+      href: "/plugins/forms/submissions",
+      label: "Form submissions",
+      icon: "inbox" as const,
+    };
+    expect(visibleMainNav(new Set(["content.read"]), false, [link]).plugins).toEqual([link]);
   });
 });
 
