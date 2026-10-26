@@ -3,7 +3,9 @@
 /**
  * #678 — the Power-MCP server tells the client when the admin's tool
  * catalogue changed (an upgrade, an activated plugin), so new tools show
- * up without the operator reconnecting the MCP server (`/mcp`).
+ * up without the operator reconnecting the MCP server (`/mcp`). It re-reads
+ * only when the agent uses it: an idle server sends nothing, because every
+ * request keeps the admin's Cloud Run instance running.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -12,7 +14,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import {
   catalogueSignature,
-  resolveCatalogueRefreshMs,
+  resolveCatalogueMaxAgeMs,
   startAdminMcpServer,
 } from "./admin-server.js";
 
@@ -24,7 +26,7 @@ const NEW_TOOL = {
   gated: true,
 };
 
-describe("catalogueSignature / resolveCatalogueRefreshMs", () => {
+describe("catalogueSignature / resolveCatalogueMaxAgeMs", () => {
   it("ignores order and notices any change a client sees", () => {
     expect(catalogueSignature([OLD_TOOL, NEW_TOOL])).toBe(catalogueSignature([NEW_TOOL, OLD_TOOL]));
     expect(catalogueSignature([OLD_TOOL])).not.toBe(
@@ -33,23 +35,27 @@ describe("catalogueSignature / resolveCatalogueRefreshMs", () => {
   });
 
   it("takes the option, then the env var, then 5 minutes", () => {
-    expect(resolveCatalogueRefreshMs(0, "100")).toBe(0);
-    expect(resolveCatalogueRefreshMs(undefined, "100")).toBe(100);
-    expect(resolveCatalogueRefreshMs(undefined, "nonsense")).toBe(300_000);
-    expect(resolveCatalogueRefreshMs(undefined, undefined)).toBe(300_000);
+    expect(resolveCatalogueMaxAgeMs(0, "100")).toBe(0);
+    expect(resolveCatalogueMaxAgeMs(undefined, "100")).toBe(100);
+    expect(resolveCatalogueMaxAgeMs(undefined, "nonsense")).toBe(300_000);
+    expect(resolveCatalogueMaxAgeMs(undefined, undefined)).toBe(300_000);
   });
 });
 
 describe("tool list changes reach the client", () => {
   let stub: ReturnType<typeof Bun.serve>;
   let tools: unknown[] = [OLD_TOOL];
+  let catalogueReads = 0;
 
   beforeAll(() => {
     stub = Bun.serve({
       port: 0,
       fetch: async (req) => {
         const path = new URL(req.url).pathname;
-        if (path === "/api/mcp/tools") return Response.json({ tools });
+        if (path === "/api/mcp/tools") {
+          catalogueReads++;
+          return Response.json({ tools });
+        }
         if (path === "/api/mcp/session") {
           return Response.json({
             chatSessionId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
@@ -77,13 +83,13 @@ describe("tool list changes reach the client", () => {
     stub.stop(true);
   });
 
-  async function connect(refreshMs: number): Promise<{ client: Client; changed: () => number }> {
+  async function connect(maxAgeMs: number): Promise<{ client: Client; changed: () => number }> {
     const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
     await startAdminMcpServer({
       adminUrl: `http://127.0.0.1:${stub.port}`,
       token: "mcp_test",
       transport: serverSide,
-      catalogueRefreshMs: refreshMs,
+      catalogueMaxAgeMs: maxAgeMs,
     });
     const client = new Client({ name: "test", version: "0.0.0" });
     let count = 0;
@@ -94,27 +100,54 @@ describe("tool list changes reach the client", () => {
     return { client, changed: () => count };
   }
 
-  it("announces listChanged and notifies after a periodic refresh finds new tools", async () => {
+  it("sends nothing while idle, however long the catalogue has been stale", async () => {
+    tools = [OLD_TOOL];
+    const { client } = await connect(20);
+    const before = catalogueReads;
+    await Bun.sleep(200);
+    expect(catalogueReads).toBe(before);
+    await client.close();
+  });
+
+  it("re-reads a stale catalogue on the next use and notifies when it changed", async () => {
     tools = [OLD_TOOL];
     const { client, changed } = await connect(20);
     expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
     expect((await client.listTools()).tools.some((t) => t.name === NEW_TOOL.name)).toBe(false);
 
+    // A tool call the agent makes anyway carries the re-read.
     tools = [OLD_TOOL, NEW_TOOL];
+    await Bun.sleep(40);
+    await client.callTool({ name: "caelo_open_session", arguments: {} });
     const deadline = Date.now() + 2000;
     while (changed() === 0 && Date.now() < deadline) await Bun.sleep(10);
     expect(changed()).toBe(1);
     expect((await client.listTools()).tools.some((t) => t.name === NEW_TOOL.name)).toBe(true);
 
-    // An unchanged catalogue is not announced again.
-    await Bun.sleep(100);
+    // A fresh catalogue is not re-read, and an unchanged one not announced.
+    const reads = catalogueReads;
+    await client.callTool({ name: OLD_TOOL.name, arguments: {} });
+    expect(catalogueReads).toBe(reads);
+    await Bun.sleep(40);
+    await client.callTool({ name: OLD_TOOL.name, arguments: {} });
+    await Bun.sleep(50);
+    expect(catalogueReads).toBe(reads + 1);
     expect(changed()).toBe(1);
+    await client.close();
+  });
+
+  it("answers a listing with the current catalogue once it is stale", async () => {
+    tools = [OLD_TOOL];
+    const { client } = await connect(20);
+    tools = [OLD_TOOL, NEW_TOOL];
+    await Bun.sleep(40);
+    expect((await client.listTools()).tools.some((t) => t.name === NEW_TOOL.name)).toBe(true);
     await client.close();
   });
 
   it("refreshes on an unknown tool name instead of refusing a tool the admin gained", async () => {
     tools = [OLD_TOOL];
-    const { client, changed } = await connect(0);
+    const { client, changed } = await connect(60_000);
     await client.callTool({ name: "caelo_open_session", arguments: {} });
     tools = [OLD_TOOL, NEW_TOOL];
     const r = await client.callTool({ name: NEW_TOOL.name, arguments: {} });

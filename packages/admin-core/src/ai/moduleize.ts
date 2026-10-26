@@ -31,6 +31,7 @@ import {
 } from "@caelo-cms/shared";
 import { z } from "zod";
 import { validateTemplatizedModule } from "../ops/content/extract-module-structure.js";
+import { claimedListSourceNames } from "../ops/content/list-source-names.js";
 import type { AIProvider } from "./provider.js";
 import {
   MODULE_META_JSON_SCHEMA_PROPS,
@@ -258,7 +259,14 @@ function validate(
       error: `module object invalid: ${parsed.error.message.slice(0, 400)}`,
     };
   }
-  const contract = validateTemplatizedModule(parsed.data.html, parsed.data.fields);
+  // A plugin's list source (`{{#consent_categories}}`) is iterated without a
+  // field of its own; without the claimed names every such module failed
+  // here three times and moduleize gave up.
+  const contract = validateTemplatizedModule(
+    parsed.data.html,
+    parsed.data.fields,
+    claimedListSourceNames(),
+  );
   if (!contract.ok) return { ok: false, error: contract.message };
   const lists = checkListFields(parsed.data.fields, hint);
   if (!lists.ok) return lists;

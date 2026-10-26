@@ -17,8 +17,11 @@
  *
  * - the catalogue is fetched live from `/api/mcp/tools` at startup (an
  *   admin-scoped token is required; 'chat' tokens get a 401 with the fix)
- *   and re-read periodically (#678) — a change reaches the client through
- *   `notifications/tools/list_changed`, an unknown tool name refreshes too;
+ *   and re-read on use once it is older than its max age (#678) — a change
+ *   reaches the client through `notifications/tools/list_changed`, an
+ *   unknown tool name refreshes too. Never on a timer: every request wakes
+ *   the admin's Cloud Run instance, and an idle session left open overnight
+ *   kept it running around the clock;
  * - the work session `caelo_open_session` opened is held in process state
  *   so the agent doesn't thread it through every call; it also rides the
  *   response so a restarted server can resume a specific session via
@@ -47,25 +50,25 @@ export interface StartAdminOpts {
   /** Poll interval while waiting on an approval; tests shorten it. */
   readonly approvalPollMs?: number;
   /**
-   * #678 — how often the live catalogue is re-read so a changed admin
-   * (an upgrade, an activated plugin) reaches the client through
-   * `notifications/tools/list_changed`. Default
-   * `CAELO_MCP_CATALOGUE_REFRESH_MS` or 5 minutes; 0 disables the timer
-   * (an unknown tool name still triggers a refresh).
+   * #678 — how old the catalogue may get before the next use of this server
+   * re-reads it, so a changed admin (an upgrade, an activated plugin)
+   * reaches the client through `notifications/tools/list_changed`. Default
+   * `CAELO_MCP_CATALOGUE_MAX_AGE_MS` or 5 minutes; 0 re-reads on every use.
+   * An unknown tool name re-reads regardless.
    */
-  readonly catalogueRefreshMs?: number;
+  readonly catalogueMaxAgeMs?: number;
 }
 
-const DEFAULT_CATALOGUE_REFRESH_MS = 5 * 60_000;
+const DEFAULT_CATALOGUE_MAX_AGE_MS = 5 * 60_000;
 
-/** The refresh interval: the option, else the env var, else 5 minutes. */
-export function resolveCatalogueRefreshMs(
+/** The catalogue's max age: the option, else the env var, else 5 minutes. */
+export function resolveCatalogueMaxAgeMs(
   option: number | undefined,
-  env: string | undefined = process.env.CAELO_MCP_CATALOGUE_REFRESH_MS,
+  env: string | undefined = process.env.CAELO_MCP_CATALOGUE_MAX_AGE_MS,
 ): number {
   if (option !== undefined) return option;
   const n = env === undefined ? Number.NaN : Number(env);
-  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_CATALOGUE_REFRESH_MS;
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_CATALOGUE_MAX_AGE_MS;
 }
 
 /**
@@ -92,8 +95,10 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   // Fetch the live catalogue up front — a bad URL or a chat-scoped token
   // should fail loudly at startup, not on the first tool call.
   let catalogue = await fetchCatalogue();
+  let fetchedAt = Date.now();
   let remoteByName = new Map(catalogue.tools.map((t) => [t.name, t]));
   let signature = catalogueSignature(catalogue.tools);
+  const maxAgeMs = resolveCatalogueMaxAgeMs(opts.catalogueMaxAgeMs);
 
   let currentSession: OpenSessionResponse | null = null;
   let connected = false;
@@ -104,15 +109,22 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   // re-list when we say so, instead of the operator reconnecting (/mcp).
   const server = createAdminMcpServer(
     {
-      listCatalogue: async () => catalogue.tools,
+      listCatalogue: async () => {
+        // The client is listing right now: answer with the current list.
+        if (isStale()) await refreshCatalogue();
+        return catalogue.tools;
+      },
       findTool: async (name) => {
         if (!remoteByName.has(name)) {
           // The admin may have gained the tool since we last listed (#678).
           await refreshCatalogue();
+        } else {
+          refreshInBackgroundIfStale();
         }
         return remoteByName.get(name);
       },
       openSession: async (input) => {
+        refreshInBackgroundIfStale();
         currentSession = await postAdmin<OpenSessionResponse>({
           ...target,
           path: "/api/mcp/session",
@@ -157,6 +169,7 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
   const refreshCatalogue = (): Promise<boolean> => {
     refreshing ??= (async () => {
       const next = await fetchCatalogue();
+      fetchedAt = Date.now();
       const nextSignature = catalogueSignature(next.tools);
       if (nextSignature === signature) return false;
       catalogue = next;
@@ -169,22 +182,17 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
     });
     return refreshing;
   };
-  const refreshMs = resolveCatalogueRefreshMs(opts.catalogueRefreshMs);
-  const timer =
-    refreshMs > 0
-      ? setInterval(() => {
-          refreshCatalogue().catch((e: unknown) => {
-            // stderr: stdout is the stdio transport. A failed refresh keeps
-            // the last catalogue; the next tick (or an unknown tool) retries.
-            console.error(
-              `[caelo-admin-mcp] tool catalogue refresh failed: ${e instanceof Error ? e.message : String(e)}`,
-            );
-          });
-        }, refreshMs)
-      : null;
-  timer?.unref?.();
-  server.onclose = () => {
-    if (timer) clearInterval(timer);
+  const isStale = (): boolean => Date.now() - fetchedAt >= maxAgeMs;
+  /** A call the agent makes anyway carries the re-read; it never waits on it. */
+  const refreshInBackgroundIfStale = (): void => {
+    if (!isStale()) return;
+    refreshCatalogue().catch((e: unknown) => {
+      // stderr: stdout is the stdio transport. A failed refresh keeps the
+      // last catalogue; the next use (or an unknown tool) retries.
+      console.error(
+        `[caelo-admin-mcp] tool catalogue refresh failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    });
   };
 
   await server.connect(opts.transport ?? new StdioServerTransport());

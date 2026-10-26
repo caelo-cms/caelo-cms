@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
-import { csvCell } from "./index.js";
+import { csvCell } from "./consent-log.js";
 
 describe("csvCell (#635)", () => {
   it("quotes every cell and doubles its quotes", () => {

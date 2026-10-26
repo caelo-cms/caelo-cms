@@ -101,6 +101,14 @@ async function broker(ctx: PluginContext, method: string, args: unknown[]): Prom
         throw new Error("SandboxMethodDenied");
     }
   }
+  if (method === "consentPurposes.list") {
+    const purposes = (ctx as PluginContextTier1).consentPurposes;
+    if (!purposes) throw new Error("SandboxCapabilityDenied: consent_provider");
+    // Takes nothing: the list is the host's view of the loaded plugins,
+    // and no argument the child sends may filter, extend or rename it.
+    if (args.length !== 0) throw new Error("SandboxArgumentsInvalid");
+    return purposes.list();
+  }
   if (method.startsWith("adminQuery.")) {
     const adminQuery = (ctx as PluginContextTier1).adminQuery;
     if (!adminQuery) throw new Error("SandboxCapabilityDenied: cms_admin_schema");
@@ -332,6 +340,7 @@ export async function runSandboxWithBundler(
       hasFonts: Boolean((context as PluginContextTier1).fonts),
       hasPrivateFiles: Boolean((context as PluginContextTier1).privateFiles),
       hasSiteMedia: Boolean((context as PluginContextTier1).siteMedia),
+      hasConsentPurposes: Boolean((context as PluginContextTier1).consentPurposes),
       // No sessionToken: it is the visitor's HttpOnly `caelo_session`
       // bearer credential. Handing it to runtime-authored code would let
       // a plugin collect tokens in its own schema and replay them to take

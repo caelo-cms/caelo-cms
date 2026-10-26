@@ -351,7 +351,12 @@ describe("#605 — the published site carries every plugin's output", () => {
     expect(runtime?.[1]).toBeDefined();
     const runtimeFile = published((runtime?.[1] ?? "").replace(/^\//, ""));
     expect(runtimeFile).toContain("/api/plugin/consent-manager/record_consent");
-    expect(home).toMatch(/<link[^>]+href="\/_caelo\/plugin\/consent-manager\/[^"]+\.css"/);
+    // The runtime's few CSS rules ride inline, so they do not block first
+    // paint (#1124).
+    expect(home).toContain(
+      '<style data-caelo-plugin="consent-manager">\nhtml:not(.caelo-consent-ask):not(.caelo-consent-open) [data-consent-banner]{display:none}',
+    );
+    expect(home).not.toMatch(/<link[^>]+href="\/_caelo\/plugin\/consent-manager\/[^"]+\.css"/);
     expect(home).toContain('data-caelo-deferred="consent-manager"');
     expect(home.indexOf("youtube.com/embed")).toBeGreaterThan(
       home.indexOf("<template data-caelo-deferred-content>"),
