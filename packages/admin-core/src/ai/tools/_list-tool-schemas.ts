@@ -93,7 +93,7 @@ export const PREVIEW_LIST_SOURCE_JSON_SCHEMA = {
     source: { type: "object", description: "a source definition (query / system / plugin)" },
     value: { type: "object", description: "query knob overrides, or {terms} for term_pages" },
     vocabulary: { type: "string" },
-    list: { type: "string" },
+    list: { type: "string", description: "slug or caelo:list/<id>" },
     itemId: { type: "string" },
     node: { type: "string" },
     moduleId: { type: "string" },

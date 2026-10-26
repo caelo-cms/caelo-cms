@@ -12,6 +12,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { createLayoutToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { SHELL_CSS_DESCRIPTION, SHELL_HTML_DESCRIPTION } from "./_module-js-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const createLayoutTool: ToolDefinitionWithHandler<
@@ -32,8 +33,13 @@ export const createLayoutTool: ToolDefinitionWithHandler<
     properties: {
       slug: { type: "string", minLength: 1, maxLength: 120 },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
-      html: { type: "string", minLength: 1, maxLength: 50_000 },
-      css: { type: "string", maxLength: 50_000 },
+      html: {
+        type: "string",
+        minLength: 1,
+        maxLength: 50_000,
+        description: SHELL_HTML_DESCRIPTION,
+      },
+      css: { type: "string", maxLength: 50_000, description: SHELL_CSS_DESCRIPTION },
       blocks: {
         type: "array",
         minItems: 1,
