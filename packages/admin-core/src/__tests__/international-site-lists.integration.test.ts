@@ -555,6 +555,40 @@ describe("international-site lists — tools", () => {
     expect(bad).toContain("default language");
   });
 
+  it("offers a German version's page properties for translation", async () => {
+    // page_types.list returns each definition's fields on the row itself;
+    // reading `.definition` found no property and offered nothing.
+    const tpl = (await sqlSystem(
+      (tx) => tx`SELECT template_id::text AS id FROM pages WHERE id = ${ids.en}::uuid`,
+    )) as unknown as { id: string }[];
+    const templateId = tpl[0]?.id ?? "";
+    await sysOp("page_types.upsert_many", {
+      pageTypes: [
+        {
+          slug: `${PFX}-article`,
+          name: "Article",
+          purpose: "Test articles with an author line",
+          templates: [templateId],
+          defaultTemplate: templateId,
+          properties: [{ name: "author", label: "Author", type: "text" }],
+          vocabularies: [],
+        },
+      ],
+    });
+    await sysOp("pages.update", {
+      pageId: ids.en,
+      pageType: `${PFX}-article`,
+      properties: { author: "Ann" },
+    });
+    await sysOp("pages.update", { pageId: ids.de, pageType: `${PFX}-article` });
+    await tick();
+    await op("translate_chrome", { localeCode: "de" });
+    const props = (await rows("page_prop_translations")).filter(
+      (r) => r.locale_code === "de" && r.page_id === ids.de,
+    );
+    expect(props.map((r) => r.field)).toEqual(["author"]);
+  });
+
   it("with the plugin not running there are no variants: the stored values render", async () => {
     resetPluginHost();
     expect(await menu(ids.de)).toEqual(["Prices", "About us"]);

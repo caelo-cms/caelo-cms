@@ -34,6 +34,7 @@ import {
   contentInstancesCreateManySchema,
   contentInstanceUpdateSchema,
   describeMalformedUuid,
+  type ExecutionContext,
   err,
   forkPlacementContentSchema,
   moduleRefSchema,
@@ -406,13 +407,14 @@ async function validateNestedRefs(
 /** The module's fields in the caller's view, then {@link normaliseListFieldValues}. */
 async function normaliseInstanceListValues(
   tx: Tx,
+  ctx: ExecutionContext,
   branchId: string | null,
   moduleId: string,
   values: Record<string, unknown>,
 ): Promise<{ ok: true } | { ok: false; message: string }> {
   const owner = await loadModuleStateWithBranchOverlay(tx, moduleId, branchId);
   if (owner === null) return { ok: true };
-  return normaliseListFieldValues(tx, branchId, owner.fields, values);
+  return normaliseListFieldValues(tx, ctx, branchId, owner.fields, values);
 }
 
 function rowToContentInstance(
@@ -749,6 +751,7 @@ export const createContentInstanceOp = defineOperation({
     // Epic #1107 — `list` field values: entries validated, ids assigned.
     const listValues = await normaliseInstanceListValues(
       tx,
+      ctx,
       ctx.chatBranchId ?? null,
       input.moduleId,
       input.values,
@@ -1163,7 +1166,13 @@ export const setContentInstanceValuesOp = defineOperation({
     }
     Object.assign(input.values, linkCanon.value);
     // Epic #1107 — `list` field values: entries validated, ids assigned.
-    const listValues = await normaliseInstanceListValues(tx, branchId, prev.moduleId, input.values);
+    const listValues = await normaliseInstanceListValues(
+      tx,
+      ctx,
+      branchId,
+      prev.moduleId,
+      input.values,
+    );
     if (!listValues.ok) {
       return err({
         kind: "HandlerError",

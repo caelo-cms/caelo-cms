@@ -189,6 +189,7 @@ async function buildHtml(pageId: string, pagePath: string, runId: string): Promi
   };
   await adapter.withAdminTransaction(SYSTEM, (tx) =>
     generateSite({
+      publishAt: new Date().toISOString(),
       tx,
       adapter,
       plugins: localBuildPluginServices,

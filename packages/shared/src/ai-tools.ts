@@ -20,6 +20,7 @@ import {
   MODULE_CSS_MAX,
   MODULE_HTML_MAX,
   MODULE_JS_MAX,
+  type ModuleField,
   moduleFieldSchema,
   pageTypeSlugSchema,
   setPlacementContentSchema,
@@ -276,17 +277,25 @@ export const addModuleToolInput = z
     // the exact two-step build_page was created to kill. Only enforced
     // when the caller authored explicit fields; the raw-HTML path goes
     // through moduleize, which enforces defaults itself.
+    // A `list` field bound to a shared list the module fixes (`list`), or
+    // fed by a source, already has its content: requiring a default there
+    // refused the very footer-bound-to-the-menu call the manage-menu skill
+    // prescribes (PR #1121 e2e-livedit run 40297574140).
+    const carriesContent = (f: ModuleField): boolean =>
+      ("default" in f && f.default !== undefined) ||
+      (f.kind === "list" && (f.bind === "source" || (f.bind === "shared" && f.list !== undefined)));
     if (
       input.fields !== undefined &&
       input.fields.length > 0 &&
       input.values === undefined &&
-      !input.fields.some((f) => "default" in f && f.default !== undefined)
+      !input.fields.some(carriesContent)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
           "A minted module needs its initial content IN THIS CALL: pass `values` " +
           "({fieldName: value, …}) for this placement, or give the fields `default`s. " +
+          'A list field bound to a site list carries its content through `list` ({kind:"list", bind:"shared", list:"caelo:list/<id>"} — create the list first with upsert_lists_many). ' +
           "Without either, the module renders empty placeholders until a second call.",
       });
     }

@@ -55,6 +55,8 @@ async function op<T>(name: string, input: unknown): Promise<T> {
 
 async function wipe(): Promise<void> {
   await asSystem(async (tx) => {
+    await tx`DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE display_name LIKE ${`${PFX}%`})`;
+    await tx`DELETE FROM modules WHERE display_name LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM lists WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM list_types WHERE slug LIKE ${`${PFX}%`}`;
     await tx`DELETE FROM pages WHERE slug LIKE ${`${PFX}%`}`;
@@ -240,5 +242,69 @@ describe("#1107 lists — humanised read, written back", () => {
     });
     const read = (await op<ListRead>("lists.get", { slug: `${PFX}-flags` })).list;
     expect(read.items[0]?.values.tone).toBe("calm");
+  });
+});
+
+describe("#1107 local list values (PR #1121 review)", () => {
+  it("a content instance's local list with a media field survives a read-modify-write", async () => {
+    // The generic value canonicaliser only knows link-ish KEY names; a
+    // media field called `image` came back humanised and failed the media
+    // check on write.
+    const mod = await op<{ moduleId: string }>("modules.create", {
+      slug: `${PFX}-cards-mod`,
+      displayName: `${PFX} Cards`,
+      html: "<div>{{#cards}}<h3>{{title}}</h3>{{/cards}}</div>",
+      fields: [{ name: "cards", kind: "list", label: "Cards", listType: `${PFX}-cards` }],
+    });
+    const { contentInstanceId } = await op<{ contentInstanceId: string }>(
+      "content_instances.create",
+      {
+        moduleId: mod.moduleId,
+        values: {
+          cards: [{ node: "card", values: { title: "Hero", image: `caelo:media/${mediaId}` } }],
+        },
+      },
+    );
+    const read = await op<{
+      instance: { values: { cards: { values: { image: string } }[] }; version: number };
+    }>("content_instances.get", { id: contentInstanceId });
+    expect(read.instance.values.cards[0]?.values.image).toStartWith("/_caelo/media/");
+    await op("content_instances.set_values", {
+      id: contentInstanceId,
+      values: read.instance.values,
+    });
+    const stored = (await asSystem(
+      (tx) => tx`SELECT "values" FROM content_instances WHERE id = ${contentInstanceId}::uuid`,
+    )) as { values: { cards: { values: { image: string } }[] } }[];
+    expect(stored[0]?.values.cards[0]?.values.image).toBe(`caelo:media/${mediaId}`);
+  });
+
+  it("a term_pages source field accepts per-placement terms and refuses other knobs", async () => {
+    const mod = await op<{ moduleId: string }>("modules.create", {
+      slug: `${PFX}-related-mod`,
+      displayName: `${PFX} Related`,
+      html: "<ul>{{#related}}<li>{{title}}</li>{{/related}}</ul>",
+      fields: [
+        {
+          name: "related",
+          kind: "list",
+          label: "Related",
+          listType: "links",
+          bind: "source",
+          source: { kind: "system", name: "term_pages" },
+        },
+      ],
+    });
+    const term = `caelo:term/${"1".repeat(8)}-1111-4111-8111-${"1".repeat(12)}/${"2".repeat(8)}-2222-4222-8222-${"2".repeat(12)}`;
+    await op("content_instances.create", {
+      moduleId: mod.moduleId,
+      values: { related: { terms: [term] } },
+    });
+    const refused = await execute(registry, adapter, SYSTEM, "content_instances.create", {
+      moduleId: mod.moduleId,
+      values: { related: { limit: 3 } },
+    });
+    expect(refused.ok).toBe(false);
+    expect(JSON.stringify(refused.ok ? null : refused.error)).toContain("accepted: terms");
   });
 });

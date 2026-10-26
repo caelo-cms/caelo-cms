@@ -92,6 +92,20 @@ export async function canonicaliseItemsForWrite(
   return { ok: true, items: outcome.value, pending: outcome.pending };
 }
 
+/**
+ * Turn humanised links in entries (`/about`, `/_caelo/media/<slug>`, a
+ * query's parent path) back into references, field type by field type.
+ * Pure over the run; local list values use it too (lists/field-values.ts).
+ */
+export function canonicaliseEntryLinks(
+  def: ListTypeDef,
+  items: readonly ListItem[],
+  run: LinkCanonicaliseRun,
+  at: string,
+): ListItem[] {
+  return canonicaliseEntries(def, items, run, at);
+}
+
 function canonicaliseEntries(
   def: ListTypeDef,
   items: readonly ListItem[],

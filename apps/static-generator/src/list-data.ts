@@ -226,7 +226,12 @@ function json<T>(v: unknown): T {
  */
 export async function loadBuildListRenderData(
   tx: TransactionRunner,
-  opts: { readonly env: "dev" | "staging" | "production"; readonly plugins: BuildPluginServices },
+  opts: {
+    readonly env: "dev" | "staging" | "production";
+    readonly plugins: BuildPluginServices;
+    /** First-publication time of published pages that were never live (see generateSite). */
+    readonly publishAt: string;
+  },
 ): Promise<LoadedListRenderData> {
   const live = sql`chat_branch_id IS NULL AND deleted_at IS NULL`;
   const listTypes = (await tx.execute(sql`
@@ -295,7 +300,10 @@ export async function loadBuildListRenderData(
       pageTypeId: p.page_type_id,
       properties: json<Record<string, unknown>>(p.properties) ?? {},
       terms: p.terms,
-      firstPublishedAt: iso(p.first_published_at),
+      // A published page this build ships for the first time carries the
+      // instant Publish live will store for it.
+      firstPublishedAt:
+        iso(p.first_published_at) ?? (p.status === "published" ? opts.publishAt : null),
       updatedAt: iso(p.updated_at) ?? "",
       published: p.status === "published",
     })),

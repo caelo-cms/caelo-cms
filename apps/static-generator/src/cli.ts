@@ -15,7 +15,7 @@
  * Protocol (JSON lines, Maps encoded by `encodeBuildPayload`):
  *
  *   stdin, first line — the config:
- *     { adminDatabaseUrl, publicDatabaseUrl, target, runId, repoRoot,
+ *     { adminDatabaseUrl, publicDatabaseUrl, target, runId, repoRoot, publishAt,
  *       changedPageIds?, siteBaseUrlOverride?, syncCurrent? }
  *   stdout — progress and the outcome:
  *     {kind:"progress", pagesDone, pagesTotal}
@@ -53,6 +53,8 @@ interface CliInput {
   /** P13 ideas-pass — incremental rebuild whitelist (page ids).
    *  Empty/missing = full-site rebuild. */
   changedPageIds?: string[];
+  /** Epic #1107 — first-publication time of never-live pages (see generateSite). */
+  publishAt: string;
   /** Epic #1107 — shared lists / list types changed since the last build. */
   changedListIds?: string[];
   changedListTypeIds?: string[];
@@ -139,6 +141,7 @@ async function main(): Promise<void> {
           target: input.target,
           runId: input.runId,
           repoRoot: input.repoRoot,
+          publishAt: input.publishAt,
           changedPageIds: input.changedPageIds,
           changedListIds: input.changedListIds,
           changedListTypeIds: input.changedListTypeIds,

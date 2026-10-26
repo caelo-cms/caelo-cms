@@ -63,6 +63,7 @@ function generateInto(runId: string): { run: Promise<unknown>; buildDir: string 
   const root = mkdtempSync(join(tmpdir(), "caelo-seo-settings-"));
   const run = adapter.withAdminTransaction(systemCtx, (tx) =>
     generateSite({
+      publishAt: new Date().toISOString(),
       tx,
       adapter,
       plugins: localBuildPluginServices,

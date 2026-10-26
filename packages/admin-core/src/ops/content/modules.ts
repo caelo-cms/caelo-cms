@@ -409,6 +409,7 @@ export const createModuleOp = defineOperation({
     // Epic #1107 — `list` field defaults: entries validated, ids assigned.
     const listDefaults = await normaliseListFieldDefaults(
       tx,
+      ctx,
       ctx.chatBranchId ?? null,
       linkCanon.value.fields as ModuleField[],
     );
@@ -679,7 +680,7 @@ export const updateModuleOp = defineOperation({
     let persistedFields = linkCanon.value.fields;
     if (persistedFields !== undefined) {
       // Epic #1107 — `list` field defaults: entries validated, ids assigned.
-      const listDefaults = await normaliseListFieldDefaults(tx, branchId, persistedFields);
+      const listDefaults = await normaliseListFieldDefaults(tx, ctx, branchId, persistedFields);
       if (!listDefaults.ok) {
         return err({
           kind: "HandlerError",

@@ -12,15 +12,18 @@
  *     the field's `min` / `max` and the DB-backed entry checks;
  *   - `shared`: `caelo:list/<id>` of an existing list of the field's type
  *     (a placement value only when the module did not fix `list`);
- *   - `source`: the knobs a placement overrides, only the editable ones.
+ *   - `source`: a query's editable knobs, or `terms` for the term_pages
+ *     system source (the only per-placement input a system source reads).
  *
  * Everything is read in the caller's branch view. Messages name the field
  * and the next step.
  */
 
 import type { TransactionRunner } from "@caelo-cms/query-api";
-import { pageQueryPartialSchema, validateListItems } from "@caelo-cms/shared";
-import { checkEntryRefs, describeIssues } from "../ops/lists/_shared.js";
+import type { ExecutionContext, ListItem } from "@caelo-cms/shared";
+import { pageQueryPartialSchema, TERM_REF_RE, validateListItems } from "@caelo-cms/shared";
+import { canonicaliseLinksForWrite } from "../links/canonicalise.js";
+import { canonicaliseEntryLinks, checkEntryRefs, describeIssues } from "../ops/lists/_shared.js";
 import { bindingOf, type ListFieldDef, listFieldsOf, parseListRef } from "./local.js";
 import { loadListEntities, loadListEntity } from "./store.js";
 
@@ -28,6 +31,7 @@ type Outcome<T> = { ok: true; value: T } | { ok: false; message: string };
 
 async function normaliseOne(
   tx: TransactionRunner,
+  ctx: ExecutionContext,
   branchId: string | null,
   field: ListFieldDef,
   value: unknown,
@@ -43,7 +47,24 @@ async function normaliseOne(
   }
   const bind = bindingOf(field);
   if (bind === "local") {
-    const validated = validateListItems(type.state.definition, value, { path: where });
+    // Reads humanise entry links (`/_caelo/media/<slug>` for a media field
+    // of any name), and the generic value canonicaliser only knows link-ish
+    // KEY names — so a read-modify-write would fail the media check
+    // (#1121 review). Canonicalise by the list type's field declarations
+    // first, like shared lists. `report` mode: links to pages an import
+    // will still build were already decided by the caller's own pass.
+    let input = value;
+    if (Array.isArray(value) && value.every((e) => typeof e === "object" && e !== null)) {
+      const def = type.state.definition;
+      const canon = await canonicaliseLinksForWrite(
+        tx,
+        ctx,
+        (run) => canonicaliseEntryLinks(def, value as ListItem[], run, where),
+        { mode: "report" },
+      );
+      if (canon.ok) input = canon.value;
+    }
+    const validated = validateListItems(type.state.definition, input, { path: where });
     if (validated.issues.length > 0) {
       return {
         ok: false,
@@ -90,7 +111,36 @@ async function normaliseOne(
     }
     return { ok: true, value };
   }
-  // source: knob overrides.
+  // source: a system source takes only what the resolver reads from the
+  // placement — `terms` for term_pages (#1121 review); no other system
+  // or plugin source has per-placement knobs.
+  if (field.source !== undefined && field.source.kind !== "query") {
+    const overrides = (value ?? {}) as Record<string, unknown>;
+    if (typeof overrides !== "object" || Array.isArray(overrides)) {
+      return { ok: false, message: `${where}: a source override is an object.` };
+    }
+    const allowed =
+      field.source.kind === "system" && field.source.name === "term_pages" ? ["terms"] : [];
+    const bad = Object.keys(overrides).filter((k) => !allowed.includes(k));
+    if (bad.length > 0) {
+      return {
+        ok: false,
+        message: `${where}: ${bad.join(", ")} cannot be set per placement on this ${field.source.kind} source — accepted: ${allowed.join(", ") || "nothing"}.`,
+      };
+    }
+    const terms = overrides.terms;
+    if (
+      terms !== undefined &&
+      (!Array.isArray(terms) || terms.some((t) => typeof t !== "string" || !TERM_REF_RE.test(t)))
+    ) {
+      return {
+        ok: false,
+        message: `${where}: terms must be term references (caelo:term/<listId>/<itemId>) — get_list on the vocabulary shows its entry ids.`,
+      };
+    }
+    return { ok: true, value: overrides };
+  }
+  // query source: knob overrides.
   const parsed = pageQueryPartialSchema.safeParse(value);
   if (!parsed.success) {
     return {
@@ -115,6 +165,7 @@ async function normaliseOne(
  */
 export async function normaliseListFieldDefaults<F>(
   tx: TransactionRunner,
+  ctx: ExecutionContext,
   branchId: string | null,
   fields: readonly F[],
 ): Promise<Outcome<F[]>> {
@@ -126,14 +177,14 @@ export async function normaliseListFieldDefaults<F>(
       continue;
     }
     if (lf.list !== undefined && bindingOf(lf) === "shared") {
-      const fixed = await normaliseOne(tx, branchId, lf, lf.list, `fields.${lf.name}.list`);
+      const fixed = await normaliseOne(tx, ctx, branchId, lf, lf.list, `fields.${lf.name}.list`);
       if (!fixed.ok) return fixed;
     }
     if (lf.default === undefined) {
       out.push(f);
       continue;
     }
-    const r = await normaliseOne(tx, branchId, lf, lf.default, `fields.${lf.name}.default`);
+    const r = await normaliseOne(tx, ctx, branchId, lf, lf.default, `fields.${lf.name}.default`);
     if (!r.ok) return r;
     out.push({ ...(f as object), default: r.value } as F);
   }
@@ -147,6 +198,7 @@ export async function normaliseListFieldDefaults<F>(
  */
 export async function normaliseListFieldValues(
   tx: TransactionRunner,
+  ctx: ExecutionContext,
   branchId: string | null,
   moduleFields: readonly unknown[],
   values: Record<string, unknown>,
@@ -160,7 +212,7 @@ export async function normaliseListFieldValues(
         message: `values.${f.name}: the module binds this field to ${f.list} for every placement — edit that list (lists.patch_items_many) instead of setting a value here.`,
       };
     }
-    const r = await normaliseOne(tx, branchId, f, v, `values.${f.name}`);
+    const r = await normaliseOne(tx, ctx, branchId, f, v, `values.${f.name}`);
     if (!r.ok) return r;
     values[f.name] = r.value;
   }
