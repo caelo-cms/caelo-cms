@@ -39,6 +39,7 @@ const AI: ExecutionContext = {
   actorKind: "ai",
   requestId: "list-tools-test",
 };
+const NEWS_ENTRY = "33333333-3333-4333-8333-333333333333";
 const LIST_ID = "6f1f2d3a-4b5c-4d6e-8f70-112233445566";
 const COMPANY = "0a1b2c3d-4e5f-4a6b-8c7d-8e9fa0b1c2d3";
 
@@ -212,7 +213,16 @@ describe("list tools (epic #1107)", () => {
   it("upsert_lists_many accepts a nested entry tree and returns the list ref for binding", async () => {
     const { toolCtx } = harness({
       "lists.upsert_many": {
-        lists: [{ id: LIST_ID, slug: "footer-links", version: 1, created: true, itemCount: 2 }],
+        lists: [
+          {
+            id: LIST_ID,
+            slug: "footer-links",
+            version: 1,
+            created: true,
+            itemCount: 2,
+            sourceEntries: [{ id: NEWS_ENTRY, node: "news" }],
+          },
+        ],
       },
     });
     const input = {
@@ -237,6 +247,10 @@ describe("list tools (epic #1107)", () => {
     expect(upsertListsManyTool.schema.safeParse(input).success).toBe(true);
     const r = await upsertListsManyTool.handler(AI, input as never, toolCtx);
     expect(r.content).toContain(`ref=caelo:list/${LIST_ID}`);
+    // The ids preview_list_source takes are in the result (PR #1121 e2e).
+    expect(r.content).toContain(
+      `source entries (preview_list_source itemId): ${NEWS_ENTRY} (news)`,
+    );
   });
 
   it("op-name hints come back as tool names", async () => {
