@@ -31,16 +31,7 @@ import { INTERACTION_MARKUP_CONTRACT } from "@caelo-cms/shared";
  * in CSS / JS is still refused by the op (shared `content.ts`).
  */
 export const MODULE_SOURCE_VALUE_NOTE =
-  "Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (`&lt;div&gt;` is wrong, `<div>` is right) (the tool input is JSON — the string needs nothing beyond JSON escaping).";
-
-/**
- * `html` / `css` parameter description for the template and layout tools.
- * They took plain strings without saying so, and the AI sent a template
- * body HTML-escaped as a whole (e2e-livedit run 40344374447) — the same
- * class the module tools already state up front.
- */
-export const SHELL_HTML_DESCRIPTION = `Template / layout HTML: render slots are <caelo-slot name="X"></caelo-slot> tags. ${MODULE_SOURCE_VALUE_NOTE}`;
-export const SHELL_CSS_DESCRIPTION = `Template / layout CSS. ${MODULE_SOURCE_VALUE_NOTE}`;
+  "Plain source text exactly as it is served: no `<![CDATA[ … ]]>` wrapper and no escaping of the whole value (the tool input is JSON — the string needs nothing beyond JSON escaping).";
 
 /** `html` parameter description for every module-authoring tool. */
 export const MODULE_HTML_DESCRIPTION = `Module HTML. ${MODULE_SOURCE_VALUE_NOTE}`;

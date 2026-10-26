@@ -18,7 +18,6 @@ import { execute } from "@caelo-cms/query-api";
 import { createTemplateToolInput } from "@caelo-cms/shared";
 import { cssVarWarningSuffix } from "./_css-var-warnings.js";
 import { describeError, forwardNextAction } from "./_describe-error.js";
-import { SHELL_CSS_DESCRIPTION, SHELL_HTML_DESCRIPTION } from "./_module-js-contract.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const createTemplateTool: ToolDefinitionWithHandler<
@@ -45,8 +44,8 @@ export const createTemplateTool: ToolDefinitionWithHandler<
     properties: {
       slug: { type: "string", minLength: 1, maxLength: 120 },
       displayName: { type: "string", minLength: 1, maxLength: 256 },
-      html: { type: "string", minLength: 1, description: SHELL_HTML_DESCRIPTION },
-      css: { type: "string", description: SHELL_CSS_DESCRIPTION },
+      html: { type: "string", minLength: 1 },
+      css: { type: "string" },
       layoutId: { type: "string", format: "uuid" },
       pageType: {
         type: "string",

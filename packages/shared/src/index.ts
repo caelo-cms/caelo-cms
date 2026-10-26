@@ -73,6 +73,7 @@ export * from "./screenshot-capture.js";
 export * from "./seo.js";
 export * from "./skills.js";
 export * from "./snapshots.js";
+export * from "./source-text-transport.js";
 export * from "./staging-gate.js";
 export * from "./static-cache-policy.js";
 export * from "./static-security-headers.js";

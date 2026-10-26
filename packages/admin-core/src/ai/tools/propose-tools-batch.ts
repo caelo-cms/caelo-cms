@@ -39,7 +39,6 @@ import {
   TYPOGRAPHY_COMPOSITION_HINTS,
 } from "../theme-guidance.js";
 import { makeProposeTool } from "./_make-propose-tool.js";
-import { SHELL_CSS_DESCRIPTION, SHELL_HTML_DESCRIPTION } from "./_module-js-contract.js";
 
 const uuid = z.string().uuid();
 
@@ -86,8 +85,8 @@ export const proposeLayoutUpdateTool = makeProposeTool({
     properties: {
       layoutId: { type: "string", format: "uuid" },
       displayName: { type: "string", minLength: 1, maxLength: 200 },
-      html: { type: "string", maxLength: 50_000, description: SHELL_HTML_DESCRIPTION },
-      css: { type: "string", maxLength: 50_000, description: SHELL_CSS_DESCRIPTION },
+      html: { type: "string", maxLength: 50_000 },
+      css: { type: "string", maxLength: 50_000 },
       blocks: {
         type: "array",
         description:
@@ -591,9 +590,10 @@ export const proposeTemplateUpdateTool = makeProposeTool({
       displayName: { type: "string", minLength: 1, maxLength: 200 },
       html: {
         type: "string",
-        description: `${SHELL_HTML_DESCRIPTION} NOT HTML comments; one slot per block declared in \`blocks\`.`,
+        description:
+          'Template HTML. Render slots use <caelo-slot name="X"></caelo-slot> tags (NOT HTML comments). One slot per block declared in `blocks`.',
       },
-      css: { type: "string", description: SHELL_CSS_DESCRIPTION },
+      css: { type: "string" },
       layoutId: { type: "string", format: "uuid" },
       pageType: {
         type: "string",

@@ -29,7 +29,7 @@ import {
 import { LIST_ITEM_ATTR_RE } from "./lists/item-attr.js";
 import { pluginPreviewSelectionSchema } from "./plugin-preview.js";
 import { redirectTargetPathSchema } from "./redirect-target.js";
-import { unwrapCdataEnvelope } from "./strip-cdata.js";
+import { decodeSourceTextTransport } from "./source-text-transport.js";
 
 /**
  * v0.6.2 — `position` argument shared across the three `add_module_to_*`
@@ -64,15 +64,16 @@ function stripSurroundingQuotes(v: unknown): unknown {
 }
 /**
  * An AI tool argument holding source text (html / css / js): the given
- * string schema, with a whole-value `<![CDATA[ … ]]>` transport envelope
- * decoded first (see `unwrapCdataEnvelope`). Every AI authoring surface for
- * module, template and layout source uses it, so one encoding habit of the
- * model is handled in one place instead of refused per tool.
+ * string schema, with whole-value transport encodings decoded first — a
+ * CDATA envelope, a JSON string literal, HTML-escaped markup (see
+ * `decodeSourceTextTransport`). Every AI authoring surface for module,
+ * template and layout source uses it, so one encoding habit of the model
+ * is handled in one place instead of refused per tool.
  *
  * @param schema - the string schema (length caps, min) the decoded value must satisfy.
  */
 export function sourceTextArg<T extends z.ZodType<string>>(schema: T) {
-  return z.preprocess(unwrapCdataEnvelope, schema);
+  return z.preprocess(decodeSourceTextTransport, schema);
 }
 
 export const positionInputSchema = z.preprocess(
