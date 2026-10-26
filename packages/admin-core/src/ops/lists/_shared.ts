@@ -103,10 +103,17 @@ function canonicaliseEntries(
     const node = def.nodes[it.node];
     const values: Record<string, unknown> = { ...it.values };
     for (const f of node?.fields ?? []) {
-      const v = values[f.name];
-      values[f.name] = canonicaliseFieldValue(f, v, run, `${where}.values.${f.name}`);
+      // An absent value stays absent: validation fills the field's default
+      // only for a key the entry does not have.
+      if (!Object.hasOwn(values, f.name)) continue;
+      values[f.name] = canonicaliseFieldValue(f, values[f.name], run, `${where}.values.${f.name}`);
     }
     const out: { -readonly [K in keyof ListItem]: ListItem[K] } = { ...it, values };
+    // A query's `parent` is a page reference; reads show it as the page's path.
+    const parent = it.query?.parent;
+    if (typeof parent === "string") {
+      out.query = { ...it.query, parent: canonicaliseUrl(parent, run, `${where}.query.parent`) };
+    }
     if (it.children) out.children = canonicaliseEntries(def, it.children, run, `${where}.children`);
     return out;
   });

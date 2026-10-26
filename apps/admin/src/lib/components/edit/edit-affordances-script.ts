@@ -167,13 +167,34 @@ export const EDIT_AFFORDANCES_SCRIPT = `
   // The reference points at the outlined element (targetOf); the
   // context stays the surrounding block's text, so an image in a <p> or
   // <a> still tells the AI what it sits next to.
+  // Epic #1107 — the stored list entry el sits in (data-caelo-list-item,
+  // stamped by the template engine on each entry's root), the innermost
+  // one inside this module, or null.
+  function listItemOf(el, moduleEl) {
+    var cur = el;
+    while (cur && cur.nodeType === 1) {
+      var v = cur.getAttribute("data-caelo-list-item");
+      if (v) return { el: cur, value: v };
+      if (cur === moduleEl) break;
+      cur = cur.parentNode;
+    }
+    return null;
+  }
+
   function buildRef(el, moduleEl, selectedText) {
     var block = blockFor(el, moduleEl);
+    var entry = listItemOf(el, moduleEl);
+    var label = labelFor(moduleEl);
+    if (entry) {
+      var entryText = clip(entry.el.textContent, 40);
+      label = (entryText ? "Entry \u201c" + entryText + "\u201d" : "Entry") + " \u00b7 " + label;
+    }
     var ref = {
       moduleId: moduleEl.getAttribute("data-caelo-module-id") || "",
       selector: selectorFor(targetOf(el, moduleEl), moduleEl),
-      label: clip(labelFor(moduleEl), LIMITS.label),
+      label: clip(label, LIMITS.label),
     };
+    if (entry) ref.listItem = entry.value;
     if (selectedText) ref.selectedText = clip(selectedText, LIMITS.selectedText);
     var context = clip(block.textContent, LIMITS.context);
     if (context && context !== ref.selectedText) ref.context = context;
@@ -285,6 +306,7 @@ export const EDIT_AFFORDANCES_SCRIPT = `
     };
     if (ref.selectedText) msg.selectedText = ref.selectedText;
     if (ref.context) msg.context = ref.context;
+    if (ref.listItem) msg.listItem = ref.listItem;
     if (ref.field) {
       msg.blockName = ref.blockName;
       msg.position = ref.position;
