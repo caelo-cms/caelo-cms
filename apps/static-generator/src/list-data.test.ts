@@ -53,7 +53,7 @@ function data(postInBuild: boolean): ListRenderData {
   };
 }
 
-const NONE = { lists: [], listTypes: [], queries: [], pageTree: false };
+const NONE = { lists: [], listTypes: [], queries: [], pageTree: false, pages: [] };
 // The last build: home shows the menu, the news index shows "latest news".
 const deps = mergeRenderDeps(
   null,

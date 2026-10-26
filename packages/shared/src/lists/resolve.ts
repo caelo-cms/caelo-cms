@@ -419,6 +419,12 @@ function createPageContext(
     { pageType: string | null; terms: readonly string[]; parent: string | null }
   >();
   let depTree = false;
+  const depPages = new Set<string>();
+  /** Entries of a page-shaped system source: their pages become deps. */
+  const readPages = (pages: ListPageRecord[]): ListPageRecord[] => {
+    for (const pg of pages) depPages.add(pg.id);
+    return pages;
+  };
 
   const urlOf = (href: string): string | null => {
     const ref = parseLinkRef(href);
@@ -786,14 +792,16 @@ function createPageContext(
           seen.add(p.id);
           p = p.parentId === null ? undefined : data.pages.get(p.parentId);
         }
-        return listValue(pageEntries(chain));
+        return listValue(pageEntries(readPages(chain)));
       }
       case "children": {
         depTree = true;
         if (!current) return EMPTY_LIST;
         return listValue(
           pageEntries(
-            s.pageList.filter((p) => p.inBuild && p.parentId === current.id).sort(byTitle),
+            readPages(
+              s.pageList.filter((p) => p.inBuild && p.parentId === current.id).sort(byTitle),
+            ),
           ),
         );
       }
@@ -802,7 +810,9 @@ function createPageContext(
         if (!current) return EMPTY_LIST;
         return listValue(
           pageEntries(
-            s.pageList.filter((p) => p.inBuild && p.parentId === current.parentId).sort(byTitle),
+            readPages(
+              s.pageList.filter((p) => p.inBuild && p.parentId === current.parentId).sort(byTitle),
+            ),
           ),
         );
       }
@@ -1052,6 +1062,7 @@ function createPageContext(
       listTypes: [...depTypes].sort(),
       queries: [...depQueries.values()],
       pageTree: depTree,
+      pages: [...depPages].sort(),
     }),
     overlayIssues: () => [...renderIssues, ...pageIssues],
   };

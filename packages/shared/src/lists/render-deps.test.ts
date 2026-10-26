@@ -16,7 +16,7 @@ import {
   selectDependentPages,
 } from "./render-deps.js";
 
-const NONE: ListRenderDeps = { lists: [], listTypes: [], queries: [], pageTree: false };
+const NONE: ListRenderDeps = { lists: [], listTypes: [], queries: [], pageTree: false, pages: [] };
 const LIST_A = "00000000-0000-4000-8000-00000000aaaa";
 
 const deps = mergeRenderDeps(
@@ -96,6 +96,23 @@ describe("selectDependentPages", () => {
 });
 
 describe("render-deps.json", () => {
+  it("a property-only edit of a page a system source rendered rebuilds that reader (#1121 review)", () => {
+    // Team lists its children; News is one of them. Editing News' props
+    // changes no tree attribute, but Team shows News' values.
+    const withChildren = mergeRenderDeps(
+      deps,
+      new Map([[PAGE.team, { ...NONE, pageTree: true, pages: [PAGE.news] }]]),
+      PAGES,
+    );
+    const got = selectDependentPages(
+      withChildren,
+      { pageIds: [PAGE.news], listIds: [], listTypeSlugs: [] },
+      current(),
+    );
+    expect(got.has(PAGE.team)).toBe(true);
+    expect(got.has(PAGE.about)).toBe(false);
+  });
+
   it("round-trips and merges an incremental build into the previous file", () => {
     const parsed = parseRenderDeps(JSON.stringify(deps));
     expect(parsed).toEqual(deps);

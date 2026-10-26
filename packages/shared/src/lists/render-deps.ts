@@ -20,7 +20,7 @@
 import type { ListPageRecord, ListRenderDeps } from "./render-data.js";
 
 export const RENDER_DEPS_FILE = "render-deps.json";
-export const RENDER_DEPS_VERSION = 1;
+export const RENDER_DEPS_VERSION = 2;
 
 /** A page's filter-relevant attributes as of a build. */
 export interface RenderDepsPageAttrs {
@@ -93,7 +93,9 @@ export interface RenderChange {
  *   changed inside the filter);
  * - every page with page-tree deps (breadcrumbs, children, siblings,
  *   term pages) when a changed page's title, parent or build membership
- *   changed.
+ *   changed;
+ * - every page whose system source rendered a changed page as an entry
+ *   (its `props`, `terms`, `updated_at` show there).
  *
  * `current` is the page index as the new build sees it.
  */
@@ -105,6 +107,7 @@ export function selectDependentPages(
   const out = new Set<string>();
   const lists = new Set(change.listIds);
   const types = new Set(change.listTypeSlugs);
+  const changedPages = new Set(change.pageIds);
   const states: RenderDepsPageAttrs[] = [];
   let treeChanged = false;
   for (const id of change.pageIds) {
@@ -131,6 +134,7 @@ export function selectDependentPages(
       d.lists.some((l) => lists.has(l)) ||
       d.listTypes.some((t) => types.has(t)) ||
       (treeChanged && d.pageTree) ||
+      d.pages.some((id) => changedPages.has(id)) ||
       (states.length > 0 && d.queries.some((q) => states.some((s) => matches(q, s))))
     ) {
       out.add(pageId);

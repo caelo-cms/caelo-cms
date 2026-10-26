@@ -115,4 +115,11 @@ export interface ListRenderDeps {
   }[];
   /** System sources that depend on the page tree (breadcrumbs, children, siblings, term_pages). */
   readonly pageTree: boolean;
+  /**
+   * Pages a system source (breadcrumbs, children, siblings) rendered as
+   * entries. Those entries expose the page's values (`props`, `terms`,
+   * `updated_at`), so editing any of them must rebuild this page too —
+   * `pageTree` alone only covers title / parent / build membership.
+   */
+  readonly pages: readonly string[];
 }

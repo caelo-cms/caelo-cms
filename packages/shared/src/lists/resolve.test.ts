@@ -263,6 +263,8 @@ describe("render dependencies", () => {
       listTypes: ["menu"],
       queries: [{ pageType: "news", terms: [TERM.event], parent: null }],
       pageTree: true,
+      // The breadcrumb trail's pages: their values render as entries.
+      pages: [PAGE.about, PAGE.team].sort(),
     });
   });
 
