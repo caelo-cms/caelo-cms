@@ -129,6 +129,7 @@ function world() {
             pages: Object.entries(titles).map(([id, title]) => ({
               id,
               title,
+              shortTitle: title,
               currentPath: id === DE ? "/de/pricing" : "/pricing",
               pageType: "page",
               properties: {},
@@ -253,6 +254,7 @@ const op = (name: string) => {
 
 const PAGE_ANSWER = {
   title: "Preise",
+  shortTitle: "Preise",
   metaDescription: "Faire Tarife für jedes Team",
   slots: [{ slot: "s0", values: [{ field: "hero_title", value: "Hallo" }] }],
 };
@@ -299,6 +301,7 @@ describe("delegated translate_variant", () => {
         targetLocale: "de",
         targetLocaleDisplayName: "German",
         sourceTitle: "Pricing",
+        sourceShortTitle: "Pricing",
         sourceMetaDescription: "Fair plans for every team",
         sourceSlots: w.placements[SRC] as Placement[],
         glossary: [],

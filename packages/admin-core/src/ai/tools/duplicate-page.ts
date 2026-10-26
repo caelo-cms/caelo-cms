@@ -35,8 +35,14 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
     properties: {
       sourcePageId: { type: "string", format: "uuid" },
       newSlug: { type: "string", minLength: 1, maxLength: 120 },
-      newName: { type: "string", minLength: 1, maxLength: 256 },
       newTitle: { type: "string", minLength: 1, maxLength: 256 },
+      newShortTitle: {
+        type: "string",
+        minLength: 1,
+        maxLength: 80,
+        description:
+          "The copy's breadcrumb / navigation label. Omitted: newTitle when given, else the source's short title.",
+      },
       targetTemplateId: { type: "string", format: "uuid" },
       newParentPageId: {
         type: ["string", "null"],

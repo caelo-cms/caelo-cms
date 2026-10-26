@@ -224,6 +224,7 @@ describe("#397 — context-aware translation", () => {
     // --- Structural-lock refusal: a response inventing a slot never lands.
     aiScript.push(() => ({
       title: "Preise",
+      shortTitle: "Preise",
       slots: [
         { slot: "s0", values: fields({ headline: "Willkommen" }) },
         // An id that was never offered — the module slug is what a
@@ -244,6 +245,7 @@ describe("#397 — context-aware translation", () => {
     // --- Full-mode translation.
     aiScript.push(() => ({
       title: "Preise",
+      shortTitle: "Tarife",
       slots: [
         {
           slot: "s0",
@@ -265,11 +267,16 @@ describe("#397 — context-aware translation", () => {
     expect(prompt?.system).toContain('"world" → "Welt" (greeting)');
     expect(prompt?.system).toContain("Use informal du.");
     expect(prompt?.user).toContain("Title: Pricing");
+    expect(prompt?.user).toContain("Short title: Pricing");
     expect(prompt?.user).toContain("<p>Hello <b>world</b></p>");
     // The source has no meta description, so the request neither asks
     // for one nor lets the model return one — the live failures were the
     // model answering an invented description, or "" for "none".
-    expect(Object.keys(prompt?.jsonSchema.properties ?? {})).toEqual(["title", "slots"]);
+    expect(Object.keys(prompt?.jsonSchema.properties ?? {})).toEqual([
+      "title",
+      "shortTitle",
+      "slots",
+    ]);
     expect(prompt?.system).not.toMatch(/meta ?description/i);
     expect(prompt?.user).not.toMatch(/meta ?description/i);
     // #593 — declared as a translation call, so the host can route it to
@@ -289,15 +296,17 @@ describe("#397 — context-aware translation", () => {
     const applied = await sqlSystem(
       async (tx) =>
         (await tx.unsafe(
-          `SELECT p.title, ci."values"->>'headline' AS headline, ci."values"->>'body_html' AS body
+          `SELECT p.title, p.short_title, ci."values"->>'headline' AS headline, ci."values"->>'body_html' AS body
            FROM pages p
            JOIN page_modules pm ON pm.page_id = p.id
            JOIN content_instances ci ON ci.id = pm.content_instance_id
            WHERE p.id = '${variant.pageId}'`,
-        )) as { title: string; headline: string; body: string }[],
+        )) as { title: string; short_title: string; headline: string; body: string }[],
     );
     expect(applied[0]).toEqual({
       title: "Preise",
+      // #1142 — the breadcrumb label is translated with the page.
+      short_title: "Tarife",
       headline: "Willkommen",
       body: "<p>Hallo <b>Welt</b></p>",
     });
@@ -346,6 +355,7 @@ describe("#397 — context-aware translation", () => {
     // --- Bulk pass in UPDATE mode (variant already differs from source).
     aiScript.push(() => ({
       title: "Preise v2",
+      shortTitle: "Preise v2",
       slots: [{ slot: "s0", values: fields({ headline: "Willkommen v2" }) }],
     }));
     const bulk = await op<{ translated: number; paused: boolean; remaining: number }>(
@@ -420,6 +430,7 @@ describe("#397 — context-aware translation", () => {
     };
     const translation = (meta: string) => () => ({
       title: "Preise",
+      shortTitle: "Preise",
       metaDescription: meta,
       slots: [
         { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo</p>" }) },
@@ -557,6 +568,7 @@ describe("#397 — context-aware translation", () => {
     // The correctly named call translates the variant.
     aiScript.push(() => ({
       title: "Preise",
+      shortTitle: "Preise",
       slots: [
         { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo Welt</p>" }) },
       ],

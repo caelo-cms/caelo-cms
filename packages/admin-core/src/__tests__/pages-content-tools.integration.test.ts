@@ -106,7 +106,7 @@ describe("duplicate_page", () => {
   it("clones a page under a new slug", async () => {
     const r = await duplicatePageTool.handler(
       SYSTEM,
-      { sourcePageId: pageId, newSlug: `${PFX}-clone`, newName: "Clone" },
+      { sourcePageId: pageId, newSlug: `${PFX}-clone`, newShortTitle: "Clone" },
       toolCtx(),
     );
     expect(r.ok).toBe(true);

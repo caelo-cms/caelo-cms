@@ -44,6 +44,7 @@ const contract = (mode: "full" | "update", sourceMeta: string, variantMeta = "")
 
 const answer = {
   title: "Preise",
+  shortTitle: "Preise",
   slots: [{ slot: "s0", values: [{ field: "headline", value: "Willkommen" }] }],
 };
 
@@ -55,8 +56,8 @@ describe("source page without a meta description", () => {
       properties: Record<string, unknown>;
       required: string[];
     };
-    expect(Object.keys(schema.properties)).toEqual(["title", "slots"]);
-    expect(schema.required).toEqual(["title", "slots"]);
+    expect(Object.keys(schema.properties)).toEqual(["title", "shortTitle", "slots"]);
+    expect(schema.required).toEqual(["title", "shortTitle", "slots"]);
   });
 
   it("the prompt never mentions one (full and update mode)", () => {
@@ -64,6 +65,7 @@ describe("source page without a meta description", () => {
       sourceLocale: "en",
       targetLocale: "de",
       sourceTitle: "Pricing",
+      sourceShortTitle: "Pricing",
       sourceMetaDescription: "",
       sourceSlots: source,
       glossary: [],
@@ -74,6 +76,7 @@ describe("source page without a meta description", () => {
     const update = buildUpdateTranslationPrompt({
       ...base,
       variantTitle: "Preise",
+      variantShortTitle: "Preise",
       variantMetaDescription: "",
       variantSlots: variant,
       alignment: alignSlots(source, variant),
@@ -112,13 +115,14 @@ describe("source page with a meta description", () => {
     const zod = translationAnswerSchema(c);
     expect(zod.safeParse({ ...answer, metaDescription: "" }).success).toBe(false);
     const kept = toTranslationPayload(
-      zod.parse({ ...answer, title: null, metaDescription: null }) as Parameters<
+      zod.parse({ ...answer, title: null, shortTitle: null, metaDescription: null }) as Parameters<
         typeof toTranslationPayload
       >[0],
     );
     expect(kept).toEqual({ slots: [{ slot: "s0", values: { headline: "Willkommen" } }] });
     expect("metaDescription" in kept).toBe(false);
     expect("title" in kept).toBe(false);
+    expect("shortTitle" in kept).toBe(false);
   });
 
   it("update mode of a variant without one requires it", () => {
@@ -164,6 +168,7 @@ describe("slots", () => {
     expect(() =>
       toTranslationPayload({
         title: "T",
+        shortTitle: "T",
         slots: [
           {
             slot: "s0",

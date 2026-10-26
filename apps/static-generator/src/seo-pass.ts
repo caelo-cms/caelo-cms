@@ -34,6 +34,8 @@ import { type BuildPluginServices, composeHeadBlock } from "@caelo-cms/plugin-ho
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import {
   applyDocumentLanguage,
+  type BreadcrumbJsonLdItem,
+  breadcrumbJsonLdItems,
   injectSeoIntoHead,
   type PageUrlStyle,
   renderSeoHead,
@@ -49,6 +51,7 @@ interface PageSeoBundle {
   /** The composed public path (pages.current_path, #390). */
   currentPath: string;
   title: string;
+  shortTitle: string;
   metaDescription: string;
   noindex: boolean;
   changefreq: string;
@@ -63,6 +66,8 @@ export interface SeoPagesContext {
   pageSlug: string;
   pageTitle: string;
   html: string;
+  /** #1142 — the trail the page's breadcrumbs rendered (`ListPageContext.breadcrumbTrail`). */
+  breadcrumbTrail?: readonly string[] | null;
 }
 
 export async function runSeoPass(args: {
@@ -93,7 +98,7 @@ export async function runSeoPass(args: {
   for (const pageId of args.pages.map((p) => p.pageId)) {
     const rows = (await args.tx.execute(sql`
       SELECT
-        p.id::text AS page_id, p.slug, p.current_path, p.title,
+        p.id::text AS page_id, p.slug, p.current_path, p.title, p.short_title,
         coalesce(s.meta_description, '') AS meta_description,
         coalesce(s.noindex, false) AS noindex,
         coalesce(s.changefreq, 'weekly') AS changefreq,
@@ -110,6 +115,7 @@ export async function runSeoPass(args: {
       slug: string;
       current_path: string;
       title: string;
+      short_title: string;
       meta_description: string;
       noindex: boolean;
       changefreq: string;
@@ -125,6 +131,7 @@ export async function runSeoPass(args: {
       slug: r.slug,
       currentPath: r.current_path,
       title: r.title,
+      shortTitle: r.short_title,
       metaDescription: r.meta_description,
       noindex: r.noindex,
       changefreq: r.changefreq,
@@ -212,8 +219,9 @@ export async function runSeoPass(args: {
   // #590 — canonical and sitemap `<loc>` come from the ONE public URL
   // builder plugins also use for hreflang, so they agree byte for byte
   // (host-strategy locales included).
+  const crumbPages = await loadCrumbPages(args.tx, args.pages, seoBundles);
   const publicUrls = await args.plugins.resolvePublicPageUrls(
-    seoBundles.map((b) => ({
+    [...seoBundles, ...crumbPages].map((b) => ({
       id: b.pageId,
       slug: b.slug,
       currentPath: b.currentPath,
@@ -231,6 +239,14 @@ export async function runSeoPass(args: {
   // designation, prefixes, and slug formats are already baked into
   // pages.current_path by the write ops.
   const bundleById = new Map<string, PageSeoBundle>(seoBundles.map((b) => [b.pageId, b]));
+  const crumbById = new Map<string, CrumbPage>(
+    [...seoBundles, ...crumbPages].map((b) => [b.pageId, b]),
+  );
+  const crumbOf = (pageId: string): BreadcrumbJsonLdItem | null => {
+    const c = crumbById.get(pageId);
+    const url = c ? publicUrls.get(pageId) : undefined;
+    return c && url !== undefined ? { name: c.shortTitle, url } : null;
+  };
   for (const p of args.pages) {
     const bundle = bundleById.get(p.pageId);
     if (!bundle) continue;
@@ -245,7 +261,11 @@ export async function runSeoPass(args: {
       organization: args.settings.organization,
       ...(isNotFoundPage
         ? notFoundPageSeo()
-        : { canonical: publicUrlOf(bundle), noindex: bundle.noindex }),
+        : {
+            canonical: publicUrlOf(bundle),
+            noindex: bundle.noindex,
+            breadcrumbs: breadcrumbJsonLdItems(p.breadcrumbTrail ?? null, crumbOf),
+          }),
     });
     p.html = injectSeoIntoHead(
       p.html,
@@ -443,4 +463,55 @@ export function buildRobotsTxtWithSitemap(
   if (!sitemapEmitted) return "User-agent: *\nAllow: /\n";
   const base = siteBaseUrl.replace(/\/$/, "");
   return `User-agent: *\nAllow: /\n\nSitemap: ${base}/sitemap.xml\n`;
+}
+
+/** What a crumb needs: its label and the inputs of the public URL builder. */
+type CrumbPage = Pick<
+  PageSeoBundle,
+  "pageId" | "slug" | "currentPath" | "shortTitle" | "canonicalOverride"
+>;
+
+/**
+ * The trail pages (#1142) this pass has no bundle for — an incremental
+ * build re-renders a page without its unchanged ancestors. Only pages
+ * published on the main line count: a draft ancestor has no public URL,
+ * and its crumb is left out of the JSON-LD (see `breadcrumbJsonLdItems`).
+ */
+async function loadCrumbPages(
+  tx: TransactionRunner,
+  pages: readonly SeoPagesContext[],
+  bundles: readonly PageSeoBundle[],
+): Promise<CrumbPage[]> {
+  const have = new Set(bundles.map((b) => b.pageId));
+  const want = new Set<string>();
+  for (const p of pages) for (const id of p.breadcrumbTrail ?? []) if (!have.has(id)) want.add(id);
+  const out: CrumbPage[] = [];
+  // Per-id query — same Bun-SQL constraint as the bundle loop above.
+  for (const id of want) {
+    const rows = (await tx.execute(sql`
+      SELECT p.id::text AS page_id, p.slug, p.current_path, p.short_title,
+             s.canonical_url AS canonical_override
+      FROM pages p
+      LEFT JOIN pages_seo s ON s.page_id = p.id
+      WHERE p.id = ${id}::uuid AND p.deleted_at IS NULL AND p.chat_branch_id IS NULL
+        AND p.status = 'published'
+      LIMIT 1
+    `)) as unknown as {
+      page_id: string;
+      slug: string;
+      current_path: string;
+      short_title: string;
+      canonical_override: string | null;
+    }[];
+    const r = rows[0];
+    if (!r) continue;
+    out.push({
+      pageId: r.page_id,
+      slug: r.slug,
+      currentPath: r.current_path,
+      shortTitle: r.short_title,
+      canonicalOverride: r.canonical_override,
+    });
+  }
+  return out;
 }

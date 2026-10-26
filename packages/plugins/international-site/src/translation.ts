@@ -105,6 +105,8 @@ export function buildSlotIndex(
  */
 export interface TranslationResultPayload {
   readonly title?: string;
+  /** #1142 — the translated short title (breadcrumb / menu label). */
+  readonly shortTitle?: string;
   /** #591 — the translated meta description (also the og:description). */
   readonly metaDescription?: string;
   readonly slots: ReadonlyArray<{
@@ -172,6 +174,8 @@ export interface FullPromptInput {
   targetLocale: string;
   targetLocaleDisplayName?: string;
   sourceTitle: string;
+  /** #1142 — the source page's short title (its breadcrumb / menu label). */
+  sourceShortTitle: string;
   /** The source page's meta description; "" when it has none (#591). */
   sourceMetaDescription: string;
   sourceSlots: readonly ContentSlot[];
@@ -190,7 +194,7 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
     `Source locale: ${input.sourceLocale}.`,
     `Target locale: ${input.targetLocale} (${targetLabel}).`,
     "",
-    `STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Translate ONLY the content fields of each existing module, plus the page title${input.sourceMetaDescription.length > 0 ? " and the meta description (write it as a search-result snippet in the target language, not a word-for-word rendering)" : ""}.`,
+    `STRUCTURAL LOCK — the page's module layout (block names + positions) is identical across locales. You may NOT add, remove, or reorder modules. Translate ONLY the content fields of each existing module, plus the page title and its short title (the label in breadcrumbs and menus — keep it as short as the source's)${input.sourceMetaDescription.length > 0 ? " and the meta description (write it as a search-result snippet in the target language, not a word-for-word rendering)" : ""}.`,
     "",
     `${translationContractText(
       translationContractOf({
@@ -210,6 +214,7 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
     `# Source page (${input.sourceLocale} → ${input.targetLocale})`,
     "",
     `Title: ${input.sourceTitle}`,
+    `Short title: ${input.sourceShortTitle}`,
     ...metaDescriptionLines(input.sourceMetaDescription),
     "",
     renderSlots(input.sourceSlots, bySourceOrder),
@@ -219,6 +224,7 @@ export function buildFullTranslationPrompt(input: FullPromptInput): {
 
 export interface UpdatePromptInput extends FullPromptInput {
   variantTitle: string;
+  variantShortTitle: string;
   /** The variant's current meta description; "" when it has none. */
   variantMetaDescription: string;
   variantSlots: readonly ContentSlot[];
@@ -260,6 +266,7 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     "## Current source (full, for context)",
     "",
     `Title: ${input.sourceTitle}`,
+    `Short title: ${input.sourceShortTitle}`,
     ...metaDescriptionLines(input.sourceMetaDescription),
     "",
     renderSlots(input.sourceSlots, bySourceOrder),
@@ -267,6 +274,7 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
     "## Existing translation (preserve unchanged slots verbatim)",
     "",
     `Title: ${input.variantTitle}`,
+    `Short title: ${input.variantShortTitle}`,
     ...(input.variantMetaDescription.length === 0 && input.sourceMetaDescription.length > 0
       ? ["Meta description: (none yet — translate the source's into metaDescription)"]
       : metaDescriptionLines(input.variantMetaDescription)),

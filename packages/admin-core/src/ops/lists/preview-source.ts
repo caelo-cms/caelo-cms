@@ -56,6 +56,7 @@ const OP = "lists.preview_source";
 /** Keys a generated entry is shown with (page-shaped, term-shaped and plugin entries). */
 const ENTRY_KEYS = [
   "title",
+  "short_title",
   "name",
   "label",
   "slug",

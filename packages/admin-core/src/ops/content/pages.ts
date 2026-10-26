@@ -20,6 +20,7 @@ import {
   ok,
   pageCreateSchema,
   pageSetModulesSchema,
+  pageShortTitleSchema,
   pageUpdateSchema,
   type Result,
   redirectTargetPathSchema,
@@ -68,9 +69,9 @@ const pageRowSchema = z.object({
   currentPath: z.string(),
   /** 0263 — the parent page (nested URLs), null at the top level. */
   parentPageId: z.string().nullable(),
-  /** P6.7.5 — internal editor label, distinct from `title` and `slug`. */
-  name: z.string(),
   title: z.string(),
+  /** #1142 — the public breadcrumb / navigation label, translated with the page. */
+  shortTitle: z.string(),
   templateId: z.string(),
   /**
    * Epic #1107 — what the page IS (page type slug), in the caller's view.
@@ -135,8 +136,8 @@ type RawPageRow = {
   slug: string;
   current_path: string;
   parent_page_id: string | null;
-  name: string | null;
   title: string;
+  short_title: string;
   template_id: string;
   page_type_id: string;
   properties: unknown;
@@ -231,12 +232,8 @@ function rowToPage(r: RawPageRow, bound: TypeBound | undefined): z.infer<typeof 
     slug: r.slug,
     currentPath: r.current_path,
     parentPageId: r.parent_page_id,
-    // P6.7.5 — legacy rows + raw INSERTs may leave `name` null. The
-    // rest of the codebase treats name as a non-null friendly label,
-    // so we fall back to title here so the editor never shows a blank
-    // page picker entry.
-    name: r.name ?? r.title,
     title: r.title,
+    shortTitle: r.short_title,
     templateId: r.template_id,
     pageType: bound?.pageType ?? r.page_type_id,
     pageTypeId: bound?.pageTypeId ?? r.page_type_id,
@@ -289,7 +286,7 @@ export const listPagesOp = defineOperation({
     }
     const rows = (await tx.execute(sql`
       SELECT pages.id::text AS id, pages.slug, pages.current_path,
-             pages.parent_page_id::text AS parent_page_id, pages.name, pages.title,
+             pages.parent_page_id::text AS parent_page_id, pages.title, pages.short_title,
              pages.template_id::text AS template_id,
              pages.page_type_id::text AS page_type_id, pages.properties, pages.first_published_at,
              pages.status, pages.version,
@@ -328,6 +325,7 @@ export const listPagesOp = defineOperation({
             slug?: string;
             parentPageId?: string | null;
             title?: string;
+            shortTitle?: string;
             templateId?: string;
             status?: "draft" | "published";
             version?: number;
@@ -339,6 +337,7 @@ export const listPagesOp = defineOperation({
             slug: s.slug ?? row.slug,
             parent_page_id: s.parentPageId === undefined ? row.parent_page_id : s.parentPageId,
             title: s.title ?? row.title,
+            short_title: s.shortTitle ?? row.short_title,
             template_id: s.templateId ?? row.template_id,
             status: s.status ?? row.status,
             version: s.version ?? row.version,
@@ -418,7 +417,7 @@ export const getPageOp = defineOperation({
     const branchFilter = branchVisibilityFilter(ctx);
     const rows = (await tx.execute(sql`
       SELECT id::text AS id, slug, current_path, parent_page_id::text AS parent_page_id,
-             name, title, template_id::text AS template_id,
+             title, short_title, template_id::text AS template_id,
              page_type_id::text AS page_type_id, properties, first_published_at,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
@@ -452,7 +451,7 @@ export const getPageWithModulesOp = withHumanisedLinks(
       const branchFilter = branchVisibilityFilter(ctx);
       const pageRows = (await tx.execute(sql`
       SELECT id::text AS id, slug, current_path, parent_page_id::text AS parent_page_id,
-             name, title, template_id::text AS template_id,
+             title, short_title, template_id::text AS template_id,
              page_type_id::text AS page_type_id, properties, first_published_at,
              status, version, created_at, updated_at, deleted_at
       FROM pages WHERE id = ${input.pageId}::uuid ${branchFilter} LIMIT 1
@@ -672,6 +671,7 @@ export const getPageWithModulesOp = withHumanisedLinks(
         if (pageState) {
           if (pageState.slug) pageRow.slug = pageState.slug;
           if (pageState.title) pageRow.title = pageState.title;
+          pageRow.short_title = pageState.shortTitle;
         }
       }
       // 0184 — is this page the designated homepage (site root)?
@@ -1025,12 +1025,12 @@ export const createPageOp = defineOperation({
       resolvedStatus = pub[0]?.has_published ? "draft" : "published";
     }
     const rows = (await tx.execute(sql`
-      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id, current_path,
+      INSERT INTO pages (slug, title, short_title, template_id, status, chat_branch_id, parent_page_id, current_path,
                          page_type_id, properties)
       VALUES (
         ${input.slug},
-        ${input.name ?? input.title},
         ${input.title},
+        ${input.shortTitle ?? input.title},
         ${templateId}::uuid,
         ${resolvedStatus},
         ${ctx.chatBranchId ?? null}::uuid,
@@ -1090,8 +1090,9 @@ export const updatePageOp = defineOperation({
   name: "pages.update",
   // #397 — plugin actors update too (the translator writes the
   // variant's translated title).
-  // P6.7.5 — the three identifiers (name / title / slug) are separate optional
-  // fields so a caller can never silently substitute one for another. A `slug`
+  // P6.7.5 / #1142 — the identifiers (title / short title / slug) are
+  // separate optional fields so a caller can never silently substitute one
+  // for another. A `slug`
   // change additionally fires the URL side-effects (301, chain collapse) in
   // this same transaction — see applyPathMoveEffects (path-moves.ts).
   actorScope: ["human", "ai", "plugin", "system"],
@@ -1232,6 +1233,7 @@ export const updatePageOp = defineOperation({
         ...(pendingRedirects ? { pendingRedirects } : {}),
         slug: input.slug ?? base.slug,
         title: input.title ?? base.title,
+        shortTitle: input.shortTitle ?? base.shortTitle,
         templateId: input.templateId ?? base.templateId,
         status: input.status ?? base.status,
         version: currentVersion + 1,
@@ -1242,8 +1244,8 @@ export const updatePageOp = defineOperation({
       };
     } else {
       const sets = buildPatchSet({
-        name: input.name,
         title: input.title,
+        short_title: input.shortTitle,
         slug: input.slug,
         template_id: input.templateId !== undefined ? sql`${input.templateId}::uuid` : undefined,
         status: input.status,
@@ -2055,8 +2057,9 @@ export const duplicatePageOp = defineOperation({
     .object({
       sourcePageId: z.string().uuid(),
       newSlug: slugSchema,
-      newName: z.string().min(1).max(256).optional(),
       newTitle: z.string().min(1).max(256).optional(),
+      /** #1142 — omitted = `newTitle` when given, else the source's short title. */
+      newShortTitle: pageShortTitleSchema.optional(),
       targetTemplateId: z.string().uuid().optional(),
       /**
        * 0264 — where the copy sits: a parent page id, or null for the
@@ -2068,13 +2071,12 @@ export const duplicatePageOp = defineOperation({
   output: z.object({ pageId: z.string() }),
   handler: async (ctx, input, tx) => {
     const sourceRows = (await tx.execute(sql`
-      SELECT id::text AS id, slug, name, title,
+      SELECT id::text AS id, slug, title,
              template_id::text AS template_id
       FROM pages WHERE id = ${input.sourcePageId}::uuid AND deleted_at IS NULL LIMIT 1
     `)) as unknown as {
       id: string;
       slug: string;
-      name: string | null;
       title: string;
       template_id: string;
     }[];
@@ -2117,7 +2119,6 @@ export const duplicatePageOp = defineOperation({
     }
     const dupPath = dupPlan.plan.pathsAfter.get(dupTempId) ?? null;
     const title = input.newTitle ?? source.title;
-    const name = input.newName ?? title;
     // Epic #1107 — the copy is the same kind of page (type, properties,
     // terms as the caller sees the source); another template keeps the
     // type when the type allows it, else takes the one type listing it.
@@ -2133,6 +2134,11 @@ export const duplicatePageOp = defineOperation({
         message: "source page not found",
       });
     }
+    // A new title without a new short title means a page about something
+    // else: its crumb follows the new title, not the source's label.
+    const shortTitle =
+      input.newShortTitle ??
+      (input.newTitle !== undefined ? input.newTitle : sourceState.shortTitle);
     const dupType = await nextTypeBound(
       tx,
       ctx,
@@ -2145,10 +2151,10 @@ export const duplicatePageOp = defineOperation({
     // Branched like pages.create: a copy made in a chat is that chat's
     // page until publish, not a live draft other chats and the site see.
     const inserted = (await tx.execute(sql`
-      INSERT INTO pages (slug, name, title, template_id, status, chat_branch_id, parent_page_id, current_path,
+      INSERT INTO pages (slug, title, short_title, template_id, status, chat_branch_id, parent_page_id, current_path,
                          page_type_id, properties)
       VALUES (
-        ${input.newSlug}, ${name}, ${title},
+        ${input.newSlug}, ${title}, ${shortTitle},
         ${targetTemplateId}::uuid, 'draft',
         ${ctx.chatBranchId ?? null}::uuid,
         ${dupParent}::uuid,

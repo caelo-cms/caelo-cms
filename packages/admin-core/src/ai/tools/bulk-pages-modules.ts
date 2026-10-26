@@ -200,8 +200,8 @@ const pageUpdateItem = z
   .object({
     pageId: uuid,
     expectedVersion: z.number().int().nonnegative().optional(),
-    name: z.string().min(1).max(256).optional(),
     title: z.string().min(1).max(256).optional(),
+    shortTitle: pageUpdateSchema.shape.shortTitle,
     slug: z.string().min(1).max(120).optional(),
     templateId: uuid.optional(),
     status: z.enum(["draft", "published", "archived"]).optional(),
@@ -238,9 +238,9 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
     "Use for 'rename this page', 'change the browser-tab title', 'move this to /pricing', 'archive all draft posts', 'move these pages to the {tpl} template', 'these posts are news articles', 'file this article under Product updates'. " +
     "**What a page IS:** `pageType` (slug from list_page_types — e.g. turn a plain page into a `news` article; pass `templateId` too when the current template is not one of the new type's templates), `properties` (the page type's fields; merged, null removes one) and `terms` (REPLACES the page's terms: caelo:term/<listId>/<itemId> from the type's vocabularies — get_list on the categories / tags list shows the entry ids). Page queries ('latest news', 'articles in this category') filter on these. " +
     "**A page has THREE independently-editable identifiers — never substitute one for another:** " +
-    "`name` = the internal editor label (page picker / breadcrumbs; not public), " +
     "`title` = the HTML <title> tag (browser tab + search results), " +
-    "`slug` = the URL path. If the operator just says 'rename' without saying which, ASK before guessing — 'rename' usually means `name`. " +
+    "`shortTitle` = the page's short public label in breadcrumbs, navigation and the page picker (translated with the page), " +
+    "`slug` = the URL path. 'Rename this page' means `title` and `shortTitle` together; change the URL only when the operator asks for it. " +
     "**Changing `slug` moves the page's public URL — and the URL of every page nested below it**: a 301 from each old URL is created automatically in the same transaction, for links from outside the site. Links on this site (nav menus, link lists, modules, content) follow the page on their own — do not update them after a rename. " +
     `A rename that moves ${PAGE_MOVE_APPROVAL_THRESHOLD}+ URLs (the page plus its subtree) needs one Owner click in chat before it runs. ` +
     "To put a page under another page (or back at the top level) use move_pages, not this tool. " +
@@ -275,17 +275,18 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
           properties: {
             pageId: { type: "string", format: "uuid" },
             expectedVersion: { type: "integer", minimum: 0 },
-            name: {
-              type: "string",
-              minLength: 1,
-              maxLength: 256,
-              description: "Internal editor label (page picker / breadcrumbs). Not public.",
-            },
             title: {
               type: "string",
               minLength: 1,
               maxLength: 256,
               description: "HTML <title> — browser tab + search results.",
+            },
+            shortTitle: {
+              type: "string",
+              minLength: 1,
+              maxLength: 80,
+              description:
+                "Short public label in breadcrumbs, navigation and the page picker. Every trail showing the page follows it.",
             },
             slug: {
               type: "string",

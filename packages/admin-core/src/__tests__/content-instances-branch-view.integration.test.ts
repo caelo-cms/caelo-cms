@@ -87,7 +87,7 @@ async function createModule(
 async function livePage(slug: string, titles: string[]): Promise<string> {
   const { pageId } = await op<{ pageId: string }>(SYS, "pages.create", {
     slug: `cibv-${slug}-${TS}`,
-    name: slug,
+    shortTitle: slug,
     title: slug,
     templateId,
   });

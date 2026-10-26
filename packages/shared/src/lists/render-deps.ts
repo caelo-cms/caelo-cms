@@ -20,7 +20,7 @@
 import type { ListPageRecord, ListRenderDeps } from "./render-data.js";
 
 export const RENDER_DEPS_FILE = "render-deps.json";
-export const RENDER_DEPS_VERSION = 2;
+export const RENDER_DEPS_VERSION = 3;
 
 /** A page's filter-relevant attributes as of a build. */
 export interface RenderDepsPageAttrs {
@@ -28,6 +28,7 @@ export interface RenderDepsPageAttrs {
   readonly terms: readonly string[];
   readonly parent: string | null;
   readonly title: string;
+  readonly shortTitle: string;
   readonly inBuild: boolean;
 }
 
@@ -47,6 +48,7 @@ export function renderDepsAttrs(p: ListPageRecord): RenderDepsPageAttrs {
     terms: [...p.terms].sort(),
     parent: p.parentId,
     title: p.title,
+    shortTitle: p.shortTitle,
     inBuild: p.inBuild,
   };
 }
@@ -92,8 +94,8 @@ export interface RenderChange {
  *   page's attributes before OR after the change (entered, left or
  *   changed inside the filter);
  * - every page with page-tree deps (breadcrumbs, children, siblings,
- *   term pages) when a changed page's title, parent or build membership
- *   changed;
+ *   term pages) when a changed page's title, short title, parent or
+ *   build membership changed;
  * - every page whose system source rendered a changed page as an entry
  *   (its `props`, `terms`, `updated_at` show there).
  *
@@ -119,6 +121,7 @@ export function selectDependentPages(
       !before ||
       !after ||
       before.title !== after.title ||
+      before.shortTitle !== after.shortTitle ||
       before.parent !== after.parent ||
       before.inBuild !== after.inBuild
     ) {

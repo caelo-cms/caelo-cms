@@ -155,7 +155,7 @@ describe("#389 — plugin-owned cms_admin schema", () => {
         `UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb('${tpl[0]?.id}'::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)`,
       );
       const pg = (await tx.unsafe(
-        `INSERT INTO pages (slug, name, title, template_id, status) VALUES ('t389-page', 'P', 'P', '${tpl[0]?.id}', 'draft') RETURNING id::text AS id`,
+        `INSERT INTO pages (slug, short_title, title, template_id, status) VALUES ('t389-page', 'P', 'P', '${tpl[0]?.id}', 'draft') RETURNING id::text AS id`,
       )) as { id: string }[];
       const id = pg[0]?.id;
       if (!id) throw new Error("page insert failed");
@@ -221,7 +221,7 @@ describe("#389 — plugin-owned cms_admin schema", () => {
         `UPDATE page_types SET definition = jsonb_set(definition, '{templates}', (definition->'templates') || to_jsonb('${tpl[0]?.id}'::text)) WHERE id = (SELECT default_page_type_id FROM site_defaults WHERE id = 1)`,
       );
       const pg = (await tx.unsafe(
-        `INSERT INTO pages (slug, name, title, template_id, status) VALUES ('t389-page2', 'P', 'P', '${tpl[0]?.id}', 'draft') RETURNING id::text AS id`,
+        `INSERT INTO pages (slug, short_title, title, template_id, status) VALUES ('t389-page2', 'P', 'P', '${tpl[0]?.id}', 'draft') RETURNING id::text AS id`,
       )) as { id: string }[];
       const id = pg[0]?.id;
       if (!id) throw new Error("page insert failed");

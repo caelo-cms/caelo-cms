@@ -265,6 +265,40 @@ export interface SeoMetaInput {
   noindex: boolean;
   ogImageUrl: string | null;
   organization: SiteSeoSettings["organization"];
+  /**
+   * #1142 — the breadcrumb trail the page SHOWS (home → current), as
+   * built by {@link breadcrumbJsonLdItems}; null or empty = the page shows
+   * none and gets no `BreadcrumbList`, so structured data never claims a
+   * trail a visitor cannot see.
+   */
+  breadcrumbs?: readonly BreadcrumbJsonLdItem[] | null;
+}
+
+/** One crumb of a `BreadcrumbList`: the page's short title and public URL. */
+export interface BreadcrumbJsonLdItem {
+  readonly name: string;
+  readonly url: string;
+}
+
+/**
+ * The `BreadcrumbList` items of a rendered trail (#1142). `lookup` answers
+ * a trail page's short title and public URL, or null when the page has no
+ * public URL in this render (not published). Such a crumb is left out:
+ * its visible link is already flagged by the unpublished-link gate, and a
+ * `ListItem` without a URL is only valid in the last position. The
+ * generator and the editor preview both build their items through here.
+ */
+export function breadcrumbJsonLdItems(
+  trail: readonly string[] | null,
+  lookup: (pageId: string) => BreadcrumbJsonLdItem | null,
+): BreadcrumbJsonLdItem[] {
+  if (trail === null) return [];
+  const out: BreadcrumbJsonLdItem[] = [];
+  for (const id of trail) {
+    const item = lookup(id);
+    if (item !== null) out.push(item);
+  }
+  return out;
 }
 
 /**
@@ -330,6 +364,21 @@ export function renderSeoHead(input: SeoMetaInput): string {
   lines.push(
     `<script type="application/ld+json">${JSON.stringify(ld).replace(/</g, "\\u003c")}</script>`,
   );
+  if (input.breadcrumbs && input.breadcrumbs.length > 0) {
+    const list = {
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      itemListElement: input.breadcrumbs.map((b, i) => ({
+        "@type": "ListItem",
+        position: i + 1,
+        name: b.name,
+        item: b.url,
+      })),
+    };
+    lines.push(
+      `<script type="application/ld+json">${JSON.stringify(list).replace(/</g, "\\u003c")}</script>`,
+    );
+  }
   return lines.join("\n");
 }
 

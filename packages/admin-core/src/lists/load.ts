@@ -96,6 +96,7 @@ export async function loadListRenderData(
     pages: pages.map((p) => ({
       id: p.id,
       title: p.title,
+      shortTitle: p.shortTitle,
       parentId: p.parentPageId,
       pageTypeId: p.pageTypeId,
       properties: p.properties,

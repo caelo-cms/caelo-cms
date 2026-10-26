@@ -1542,7 +1542,6 @@ async function acceptImportedPage(
       page: {
         slug: r.proposed_slug,
         title,
-        name: title,
         status: "draft",
         importPageId: input.importPageId,
         ...(input.templateId ? { templateId: input.templateId } : {}),

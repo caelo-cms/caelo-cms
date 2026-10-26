@@ -787,13 +787,13 @@ export async function mergeWindowToMain(
       // v0.9.0 — pages.create now branches; merge UPSERTs the live row
       // AND clears chat_branch_id to graduate to main.
       await tx.execute(sql`
-        INSERT INTO pages (id, slug, name, title, template_id, status, deleted_at, version, chat_branch_id, parent_page_id,
+        INSERT INTO pages (id, slug, title, short_title, template_id, status, deleted_at, version, chat_branch_id, parent_page_id,
                            page_type_id, properties)
         VALUES (
           ${e.entityId}::uuid,
           ${e.state.slug},
           ${e.state.title},
-          ${e.state.title},
+          ${e.state.shortTitle},
           ${e.state.templateId}::uuid,
           ${e.state.status},
           ${e.state.deletedAt ? sql`now()` : sql`NULL`},
@@ -809,6 +809,7 @@ export async function mergeWindowToMain(
           -- keep the live one rather than invent a value.
           parent_page_id = ${e.state.parentPageId === undefined ? sql`pages.parent_page_id` : sql`EXCLUDED.parent_page_id`},
           title          = EXCLUDED.title,
+          short_title    = EXCLUDED.short_title,
           template_id    = EXCLUDED.template_id,
           page_type_id   = EXCLUDED.page_type_id,
           properties     = EXCLUDED.properties,

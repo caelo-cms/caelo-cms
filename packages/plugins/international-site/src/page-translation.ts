@@ -86,6 +86,8 @@ export interface PreparedPageTranslation {
   readonly prompt: { readonly system: string; readonly user: string };
   readonly sourceTitle: string;
   readonly variantTitle: string;
+  readonly sourceShortTitle: string;
+  readonly variantShortTitle: string;
   readonly sourceMetaDescription: string;
   readonly variantMetaDescription: string;
   readonly sourceSlots: readonly ContentSlot[];
@@ -166,9 +168,16 @@ export async function preparePageTranslation(
   }
 
   // Page titles via the open read surface.
-  const pages = await cms.call<{ pages: { id: string; title: string }[] }>("pages.list", {});
-  const sourceTitle = pages.pages.find((p) => p.id === sourceRow.page_id)?.title ?? "";
-  const variantTitle = pages.pages.find((p) => p.id === args.variantPageId)?.title ?? "";
+  const pages = await cms.call<{ pages: { id: string; title: string; shortTitle: string }[] }>(
+    "pages.list",
+    {},
+  );
+  const sourcePage = pages.pages.find((p) => p.id === sourceRow.page_id);
+  const variantPage = pages.pages.find((p) => p.id === args.variantPageId);
+  const sourceTitle = sourcePage?.title ?? "";
+  const variantTitle = variantPage?.title ?? "";
+  const sourceShortTitle = sourcePage?.shortTitle ?? "";
+  const variantShortTitle = variantPage?.shortTitle ?? "";
 
   const sourceMetaDescription = await loadMetaDescription(deps, sourceRow.page_id);
   const variantMetaDescription = await loadMetaDescription(deps, args.variantPageId);
@@ -216,6 +225,7 @@ export async function preparePageTranslation(
           targetLocale: targetLocale.code,
           targetLocaleDisplayName: targetLocale.display_name,
           sourceTitle,
+          sourceShortTitle,
           sourceMetaDescription,
           sourceSlots,
           glossary,
@@ -226,9 +236,11 @@ export async function preparePageTranslation(
           targetLocale: targetLocale.code,
           targetLocaleDisplayName: targetLocale.display_name,
           sourceTitle,
+          sourceShortTitle,
           sourceMetaDescription,
           sourceSlots,
           variantTitle,
+          variantShortTitle,
           variantMetaDescription,
           variantSlots,
           alignment,
@@ -245,6 +257,8 @@ export async function preparePageTranslation(
     prompt,
     sourceTitle,
     variantTitle,
+    sourceShortTitle,
+    variantShortTitle,
     sourceMetaDescription,
     variantMetaDescription,
     sourceSlots,
@@ -270,6 +284,8 @@ export function pageTranslationBasis(p: PreparedPageTranslation): Promise<string
     targetLocale: p.targetLocale.code,
     sourceTitle: p.sourceTitle,
     variantTitle: p.variantTitle,
+    sourceShortTitle: p.sourceShortTitle,
+    variantShortTitle: p.variantShortTitle,
     sourceMetaDescription: p.sourceMetaDescription,
     variantMetaDescription: p.variantMetaDescription,
     sourceSlots: p.sourceSlots,
@@ -374,8 +390,17 @@ export async function writePageTranslation(
     slotsApplied += 1;
   }
   let titleApplied = false;
-  if (payload.title && payload.title !== p.variantTitle) {
-    await cms.call("pages.update", { pageId: p.variantPageId, title: payload.title });
+  const title = payload.title && payload.title !== p.variantTitle ? payload.title : undefined;
+  const shortTitle =
+    payload.shortTitle && payload.shortTitle !== p.variantShortTitle
+      ? payload.shortTitle
+      : undefined;
+  if (title !== undefined || shortTitle !== undefined) {
+    await cms.call("pages.update", {
+      pageId: p.variantPageId,
+      ...(title !== undefined ? { title } : {}),
+      ...(shortTitle !== undefined ? { shortTitle } : {}),
+    });
     titleApplied = true;
   }
   let seo: TranslatedSeoOutcome = "untranslated";

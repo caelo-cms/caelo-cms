@@ -85,6 +85,8 @@ const pageStateV1 = z.preprocess(
       schemaVersion: z.literal(1),
       slug: z.string(),
       title: z.string(),
+      // #1142 — migration 0358 backfilled every older snapshot from `title`.
+      shortTitle: z.string(),
       templateId: z.string().uuid(),
       status: z.enum(["draft", "published"]),
       version: z.number().int().nonnegative(),

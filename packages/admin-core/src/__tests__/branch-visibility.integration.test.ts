@@ -148,7 +148,7 @@ beforeAll(async () => {
       RETURNING id::text AS id
     `) as unknown as { id: string }[];
     const page = (await tx`
-      INSERT INTO pages (slug, name, title, template_id)
+      INSERT INTO pages (slug, short_title, title, template_id)
       VALUES (${`${PFX}page`}, 'T569', 'T569', ${templateId}::uuid)
       RETURNING id::text AS id
     `) as unknown as { id: string }[];

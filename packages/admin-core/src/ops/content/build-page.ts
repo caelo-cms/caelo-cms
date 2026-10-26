@@ -246,7 +246,7 @@ export const buildPageOp = defineOperation({
       const parsed = pageCreateSchema.safeParse({
         slug: input.page.slug,
         title: input.page.title,
-        ...(input.page.name !== undefined ? { name: input.page.name } : {}),
+        ...(input.page.shortTitle !== undefined ? { shortTitle: input.page.shortTitle } : {}),
         ...(input.page.templateId !== undefined ? { templateId: input.page.templateId } : {}),
         ...(input.page.status !== undefined ? { status: input.page.status } : {}),
         ...(input.page.parentPageId !== undefined ? { parentPageId: input.page.parentPageId } : {}),
