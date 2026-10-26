@@ -16,6 +16,8 @@
  *                         set_values_many, page_module_content.*, build_page)
  *   - module HTML + field defaults   modules.create / .update (and update_many)
  *   - layout HTML         layouts.create / .update
+ *   - shared list entries lists.upsert_many / .patch_items_many / .promote_local
+ *                         (ops/lists/_shared.ts)
  *
  * NOT covered (deliberately, out of scope for rollout C): CSS `url(...)`
  * media references — in inline `style` attributes and in the module /
@@ -26,7 +28,7 @@
  * Inside a chat that rebuilds an active site import, a link to one of
  * that run's planned-but-unbuilt pages is kept literal and recorded
  * against the run (`import-targets.ts`) instead of refused, for the
- * content values and module code the run's
+ * content values, module code and shared lists the run's
  * finalisation (`imports.resolve_links`) can rewrite. Layout HTML and
  * plugin-owned values keep the strict refusal.
  *

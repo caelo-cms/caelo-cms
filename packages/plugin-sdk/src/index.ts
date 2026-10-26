@@ -498,6 +498,45 @@ export const pluginLinkLocations = z
   .object({ locations: z.array(pluginLinkLocation).max(10_000) })
   .strict();
 
+/**
+ * Epic #1107 — one Stage-audit finding a plugin contributes through its
+ * `auditFindingsOperation` (see {@link PluginDefinition.auditFindingsOperation}).
+ * Core files it under the rule `plugin.<slug>/<rule>` in the same audit
+ * report as its own checks: an `error` blocks Publish live until fixed or
+ * accepted by the Owner, `warning` / `info` are reported.
+ */
+export const pluginAuditFinding = z
+  .object({
+    /** Lower-case kebab words (`translation-missing`). */
+    rule: z.string().regex(/^[a-z][a-z0-9-]{0,59}$/),
+    severity: z.enum(["error", "warning", "info"]),
+    /** A page of the staged build (one of the `pages` passed in); absent = site-wide. */
+    pageId: z.string().uuid().optional(),
+    /**
+     * AI-actionable: lead with a short label before the first colon
+     * ("Translation missing: …"), then what is wrong and why it matters.
+     */
+    message: z.string().min(1).max(1000),
+    /** The AI tool that fixes it (the plugin's own or a core tool) and one sentence of how. */
+    fix: z
+      .object({ tool: z.string().min(1).max(80), hint: z.string().min(1).max(500) })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type PluginAuditFinding = z.infer<typeof pluginAuditFinding>;
+
+/** What an `auditFindingsOperation` returns. */
+export const pluginAuditFindings = z
+  .object({ findings: z.array(pluginAuditFinding).max(499) })
+  .strict();
+
+/** What an `auditFindingsOperation` is called with: the staged build's pages. */
+export interface PluginAuditFindingsArgs {
+  readonly pages: readonly { readonly pageId: string; readonly path: string }[];
+}
+
 export const pluginManifest = z
   .object({
     // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
@@ -557,6 +596,10 @@ export const pluginManifest = z
      *  `link_resolve` capability: it changes where every internal link
      *  on a page goes. */
     hasLinkResolve: z.boolean().default(false),
+    /** See `PluginDefinition.auditFindingsOperation` (epic #1107). Must
+     *  name one of `operations`. Needs no capability: it reads like a
+     *  render and only adds findings to the Stage audit. */
+    auditFindingsOperation: z.string().min(1).max(120).optional(),
     /** Grants this plugin asks for. A request grants nothing: the Owner
      *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
@@ -600,6 +643,16 @@ export const pluginManifest = z
   })
   .strict()
   .superRefine((m, ctx) => {
+    if (
+      m.auditFindingsOperation !== undefined &&
+      !m.operations.includes(m.auditFindingsOperation)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["auditFindingsOperation"],
+        message: `auditFindingsOperation "${m.auditFindingsOperation}" is not one of the plugin's operations`,
+      });
+    }
     // #635 — the projection can only name what private storage declares.
     for (const [table, columns] of Object.entries(m.visitorProjection ?? {})) {
       const declared = m.adminSchema?.[table];
@@ -1500,6 +1553,28 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    */
   readonly linkLocationsOperation?: string;
   /**
+   * Epic #1107 — Stage-audit contributions: an operation in `operations`
+   * taking {@link PluginAuditFindingsArgs} (`{pages: [{pageId, path}]}`,
+   * the published pages of the staged build) and returning
+   * `{findings: PluginAuditFinding[]}` (see {@link pluginAuditFinding}).
+   * Core calls it once per Stage audit as a render (read-only) invocation
+   * on the main line — what the staged build was rendered from — and
+   * files each finding under `plugin.<slug>/<rule>` in the same report
+   * as core's checks. A finding may name only a page passed in. A
+   * failing call or a malformed answer fails the audit loudly (no
+   * silent "no findings").
+   *
+   * @example
+   *   audit_findings: async (_ctx, { pages }) => ({
+   *     findings: [{
+   *       rule: "translation-missing", severity: "error", pageId: pages[0].pageId,
+   *       message: "Translation missing: the German version of the menu entry \"Docs\" is empty.",
+   *       fix: { tool: "translate_variant", hint: "translate the entry, then Stage again" },
+   *     }],
+   *   }),
+   */
+  readonly auditFindingsOperation?: string;
+  /**
    * The I/O half of `dataLists`: an operation in `operations` taking
    * `{pageIds: string[], pageUrlStyle: PageUrlStyle}` (page links come
    * from `pages.resolve_public_urls`, as for head contributions) and returning
@@ -1547,6 +1622,7 @@ export function manifestFromDefinition(def: {
   readonly deferralsOperation?: string;
   readonly contentVariantsOperation?: string;
   readonly linkResolveOperation?: string;
+  readonly auditFindingsOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
   readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
@@ -1580,6 +1656,7 @@ export function manifestFromDefinition(def: {
     hasDeferrals: Boolean(def.deferralsOperation),
     hasContentVariants: Boolean(def.contentVariantsOperation),
     hasLinkResolve: Boolean(def.linkResolveOperation),
+    ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
     ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),
