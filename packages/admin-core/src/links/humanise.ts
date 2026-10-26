@@ -5,7 +5,7 @@
  *
  * Stored content carries `caelo:page/<id>` / `caelo:media/<id>`
  * references (rollout C). Every read op that hands content to the AI or
- * the editor — module code, content values, structured-set items, page
+ * the editor — module code, content values, page
  * module listings — passes its result through {@link humaniseForRead},
  * so the AI and the operator see `/about#team` and `/_caelo/media/hero`
  * and never have to learn the grammar (CLAUDE.md §1A). Writing the

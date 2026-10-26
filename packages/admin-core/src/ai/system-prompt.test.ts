@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import { composeSystemPromptChunks } from "./system-prompt.js";
+import { buildPageTool } from "./tools/build-page.js";
 
 describe("composeSystemPromptChunks", () => {
   it("emits base + tool-playbook + module-model + staging + memory as cacheable chunks in stable order", () => {
@@ -155,5 +156,51 @@ describe("composeSystemPromptChunks", () => {
     expect(body).toContain("describing what you would do without calling tools");
     // Pre-v0.5.9 example response — must NOT come back.
     expect(body).not.toContain("I've drafted the change");
+  });
+
+  // Epic #1107 — the operator says "menu", "footer links", "categories";
+  // the prompt maps those words onto shared lists and names the tools, and
+  // nothing teaches the removed structured sets / text-list / link-list /
+  // template kind any more.
+  it("module model + playbook teach lists, list types and page types (epic #1107)", () => {
+    const chunks = composeSystemPromptChunks([]);
+    const model = chunks.find((c) => c.label === "module-model")?.body ?? "";
+    const playbook = chunks.find((c) => c.label === "tool-playbook")?.body ?? "";
+    expect(model).toContain(
+      "a menu, the navigation, footer links, categories and tags are each a SHARED list",
+    );
+    expect(model).toContain("there are no menu tools");
+    expect(model).toContain("**local**");
+    expect(model).toContain("**shared**");
+    expect(model).toContain("**source**");
+    expect(model).toContain("promote_local_list");
+    expect(model).toContain("**Page types**");
+    expect(model).toContain("`term_pages`");
+    expect(model).toContain("{{#is_current}}");
+    expect(playbook).toContain("`patch_list_items_many`");
+    expect(playbook).toContain("`upsert_page_types_many`");
+    expect(playbook).toContain("`preview_list_source`");
+    const all = chunks.map((c) => c.body).join("\n");
+    for (const gone of ["structured set", "structured_set", "text-list", "link-list", "nav-menu"]) {
+      expect(all).not.toContain(gone);
+    }
+  });
+
+  // e2e-livedit run 40336739359 (PR #1143): the prompt cited `page` as a
+  // page type and asked to type every page, so the AI passed
+  // `pageType:"page"` on a site whose types are content / home — no site
+  // has a `page` type. Ordinary pages omit the type and get the default.
+  it("never names a `page` page type and tells the AI to omit the type for an ordinary page", () => {
+    const model = composeSystemPromptChunks([]).find((c) => c.label === "module-model")?.body ?? "";
+    const pageTypeInput = JSON.stringify(
+      (buildPageTool.inputSchema as { properties: { page: unknown } }).properties.page,
+    );
+    for (const text of [model, buildPageTool.description, pageTypeInput]) {
+      expect(text).not.toContain("`page`, `news`");
+      expect(text).not.toContain("'page' for a plain page");
+    }
+    expect(model).toContain("an ordinary page omits pageType");
+    expect(buildPageTool.description).toContain("an ordinary page omits pageType");
+    expect(pageTypeInput).toContain("Omit it for an ordinary page");
   });
 });

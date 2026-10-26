@@ -29,6 +29,7 @@ import { BASE_TECHNICAL_CSS } from "./base-css.js";
 import type { ModuleFieldKind } from "./content.js";
 import { findInteractionIds, interactionAssets } from "./interactions.js";
 import { type LinkResolver, resolveLinkRefsInHtml } from "./link-refs.js";
+import type { ListPageContext } from "./lists/resolve.js";
 import { tagModuleId } from "./module-id-tag.js";
 import {
   type NestedModuleResource,
@@ -60,8 +61,8 @@ export interface ComposeModule {
   readonly js: string;
   /**
    * v0.4.0 module-field schema, extended in #71 to carry `kind` so
-   * the shared template engine can dispatch text-list / link-list /
-   * module-list / module sections. `kind` is optional for back-compat
+   * the shared template engine can dispatch list / module-list /
+   * module sections (a `list` field carries its binding too). `kind` is optional for back-compat
    * with callers that haven't been updated; the engine treats absent
    * kinds as primitives (the legacy compose-path behaviour).
    *
@@ -76,7 +77,7 @@ export interface ComposeModule {
    * here via the `contentValues` field below. Nested-module refs
    * render through `ComposeInput.nestedModules`.
    */
-  readonly fields?: readonly { name: string; kind?: ModuleFieldKind; default?: unknown }[];
+  readonly fields?: readonly ComposeField[];
   /**
    * PR #61 follow-up — per-placement content values from the bound
    * `content_instances.values` jsonb. When present, the composer
@@ -87,18 +88,21 @@ export interface ComposeModule {
    * visitors — the bug e2e-livedit's second Stage caught.
    */
   readonly contentValues?: Readonly<Record<string, unknown>>;
+  /**
+   * The stored content instance `contentValues` come from — the address
+   * of the module's local list entries (overlays, `data-caelo-list-item`).
+   * Absent for site chrome rendered from field defaults and for content
+   * variants, which are no stored instance.
+   */
+  readonly contentInstanceId?: string;
 }
+
+/** A module field as the composer passes it to the engine; `kind` absent = primitive. */
+export type ComposeField = Omit<TemplateField, "kind"> & { readonly kind?: ModuleFieldKind };
 
 export interface ComposeBlock {
   readonly blockName: string;
   readonly modules: readonly ComposeModule[];
-}
-
-/** P6.7.5 — structured sets carried into the composer so nav-menu
- *  modules render from typed items and theme tokens flow into <head>. */
-export interface ComposeStructuredSets {
-  /** Map keyed by `<kind>/<slug>` (e.g. `nav-menu/header-main`). */
-  readonly byKindSlug: Readonly<Record<string, readonly unknown[]>>;
 }
 
 /**
@@ -149,7 +153,6 @@ export interface ComposeInput {
   readonly templateHtml: string;
   readonly templateCss: string;
   readonly blocks: readonly ComposeBlock[];
-  readonly structuredSets?: ComposeStructuredSets;
   /**
    * v0.11.0 — active theme threaded through from the preview op + static
    * generator. Undefined when no theme row exists OR when the caller
@@ -160,13 +163,14 @@ export interface ComposeInput {
   /** issue #150 — resolved web fonts; undefined = system stacks only. */
   readonly fonts?: ComposeFonts;
   /**
-   * Plugin-provided lists for the page being composed, plus the names
-   * declared by installed-but-inactive plugins. Threaded so a module
-   * iterating `{{#language_links}}` renders the same on deploy as in
-   * the editor — including the loud marker when its plugin is off.
+   * The list view of the page being composed (`lists/resolve.ts`
+   * `createListRenderContext(data).forPage(pageId, …)`): resolves `list`
+   * fields — local, shared, query, system and plugin sources — and
+   * `{{page.*}}` in every placed, nested and chrome module alike, so a
+   * menu renders the same in the editor and on deploy, including the
+   * loud marker when its plugin source is off.
    */
-  readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
-  readonly dormantDataLists?: Readonly<Record<string, string>>;
+  readonly lists?: ListPageContext;
   /**
    * #450 — modules withheld by a plugin, keyed by module id. Resolved
    * by the host before composing; absent means the module renders
@@ -186,7 +190,7 @@ export interface ComposeInput {
   /**
    * Epic #724 — resolves internal references (`caelo:page/<id>`,
    * `caelo:media/<id>`) for THIS page: in every placed and nested
-   * module and in nav-menu items. A broken reference becomes a
+   * module and in list entries. A broken reference becomes a
    * `link-target-missing:<kind>/<id>` module failure; without a resolver
    * every reference fails with `link-resolver-unavailable` (loud — a
    * deploy refuses it).
@@ -291,25 +295,11 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
     // P6.7 — tag every module's outermost element with
     // `data-caelo-module-id="<uuid>"` so the live-edit overlay's iframe
     // hover affordances can identify the clicked module.
-    //
-    // P6.7.5 — modules whose slug matches a `nav-menu/<slug>` set get
-    // their HTML replaced by a fresh render of the menu items. That's
-    // what makes a slug change update every menu without touching
-    // module HTML.
     const renderedModuleHtml = block.modules.map((m) => {
-      const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
-      let baseHtml: string;
-      if (navMenuItems !== null) {
-        const nav = renderNavMenuHtml(navMenuItems, input.linkResolver);
-        baseHtml = nav.html;
-        recordFailures(moduleFailures, block.blockName, m, nav.failures);
-      } else {
-        const rendered = renderModuleFields(m, input);
-        baseHtml = rendered.html;
-        recordFailures(moduleFailures, block.blockName, m, rendered.failures);
-        nestedAssetIds.push(...rendered.nestedModuleIds);
-      }
-      return tagModuleId(baseHtml, m.moduleId);
+      const rendered = renderModuleFields(m, input);
+      recordFailures(moduleFailures, block.blockName, m, rendered.failures);
+      nestedAssetIds.push(...rendered.nestedModuleIds);
+      return tagModuleId(rendered.html, m.moduleId);
     });
     const html = renderedModuleHtml.join("\n");
     contentByName.set(block.blockName, html);
@@ -388,33 +378,6 @@ export function composePagePreview(input: ComposeInput): ComposeOutput {
   };
 }
 
-/**
- * P6.7.5 — return the items for a `nav-menu/<slug>` set when a module's
- * slug starts with `nav-menu-`. Returns null when the module is not a
- * nav menu (so the composer falls back to its stored HTML).
- *
- * Convention: a module slug `nav-menu-header-main` resolves to
- * structuredSets[`nav-menu/header-main`].
- */
-function lookupNavMenuItems(
-  moduleSlug: string,
-  sets: ComposeStructuredSets | undefined,
-): readonly unknown[] | null {
-  if (!sets) return null;
-  const prefix = "nav-menu-";
-  if (!moduleSlug.startsWith(prefix)) return null;
-  const setSlug = moduleSlug.slice(prefix.length);
-  const items = sets.byKindSlug[`nav-menu/${setSlug}`];
-  return items ?? null;
-}
-
-interface NavMenuItem {
-  label: string;
-  href: string;
-  target?: "_self" | "_blank";
-  children?: NavMenuItem[];
-}
-
 function escapeAttr(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -422,49 +385,6 @@ function escapeAttr(s: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
-function escapeText(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-/**
- * Render a nav-menu's typed items into HTML. Recursively handles
- * children for submenus. Plain `<nav><ul><li>` so site CSS can theme
- * it via the `caelo-nav-menu` class.
- *
- * Epic #724 — item hrefs may be internal references; they resolve
- * through `resolver` like module content, and a broken one is returned
- * as a failure attributed to the nav-menu module.
- */
-function renderNavMenuHtml(
-  items: readonly unknown[],
-  resolver: LinkResolver | undefined,
-): { html: string; failures: NestedRenderFailure[] } {
-  const missing: string[] = [];
-  const renderNavItem = (item: NavMenuItem): string => {
-    const target = item.target === "_blank" ? ' target="_blank" rel="noopener"' : "";
-    const inner =
-      item.children && item.children.length > 0
-        ? `<ul>${item.children.map(renderNavItem).join("")}</ul>`
-        : "";
-    const href = resolveLinkRefsInHtml(item.href, resolver, missing);
-    return `<li><a href="${escapeAttr(href)}"${target}>${escapeText(item.label)}</a>${inner}</li>`;
-  };
-  const safeItems = items.filter((it): it is NavMenuItem => {
-    if (!it || typeof it !== "object") return false;
-    const o = it as { label?: unknown; href?: unknown };
-    return typeof o.label === "string" && typeof o.href === "string";
-  });
-  // issue #160 — mobile-ready markup: toggle button (three functional
-  // bars via currentColor) + collapsible list. `data-caelo-ui` pulls the
-  // functional CSS/JS from ./interactions.ts in once per page.
-  const toggle =
-    '<button type="button" class="caelo-nav-toggle" aria-expanded="false" aria-label="Menu">' +
-    '<span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span><span class="caelo-nav-bar"></span>' +
-    "</button>";
-  const html = `<nav class="caelo-nav-menu" data-caelo-ui="mobile-nav" data-nav-open="false">${toggle}<ul>${safeItems.map(renderNavItem).join("")}</ul></nav>`;
-  return { html, failures: missing.map((reason) => ({ field: "", reason })) };
-}
-
 /**
  * v0.11.0 — Render the active theme's DTCG tokens as `:root { … }` (+
  * optional `:root.dark { … }`) CSS. Returns null when no active theme
@@ -516,19 +436,16 @@ function renderModuleFields(
   m: ComposeModule,
   input: {
     readonly theme?: ComposeTheme;
-    readonly dataLists?: Readonly<Record<string, ReadonlyArray<Readonly<Record<string, string>>>>>;
-    readonly dormantDataLists?: Readonly<Record<string, string>>;
+    readonly lists?: ListPageContext;
     readonly nestedModules?: NestedRenderResolver;
     readonly linkResolver?: LinkResolver;
   },
 ): RenderedModuleFields {
   // The substitution engine (renderTemplate) already unwraps CDATA
   // guards; cover the no-op early-return path so a chrome module with no
-  // fields/values/theme is cleaned too.
-  const hasLists =
-    Object.keys(input.dataLists ?? {}).length > 0 ||
-    Object.keys(input.dormantDataLists ?? {}).length > 0;
-  if (!m.fields && !m.contentValues && !input.theme && !hasLists) {
+  // fields/values/theme is cleaned too. A list context means the HTML
+  // may iterate a plugin source or read `{{page.*}}` without any field.
+  if (!m.fields && !m.contentValues && !input.theme && !input.lists) {
     // Still resolve references: pre-rendered (editor preview) and
     // field-less chrome modules carry links in their raw HTML too.
     const missing: string[] = [];
@@ -539,11 +456,7 @@ function renderModuleFields(
       nestedModuleIds: [],
     };
   }
-  const fields: TemplateField[] = (m.fields ?? []).map((f) => ({
-    name: f.name,
-    kind: f.kind ?? "text",
-    default: f.default,
-  }));
+  const fields: TemplateField[] = (m.fields ?? []).map((f) => ({ ...f, kind: f.kind ?? "text" }));
   // v0.11.1 (issue #76) — thread the active theme's asset URLs so
   // module HTML carrying `{{theme_logo_url}}` etc. resolves. Unbound
   // slots emit loud-raw + `theme-asset-unbound:<slot>` markers.
@@ -565,9 +478,9 @@ function renderModuleFields(
       input.nestedModules,
       {
         themeAssets,
-        dataLists: input.dataLists,
-        dormantDataLists: input.dormantDataLists,
-        linkResolver: input.linkResolver,
+        ...(input.lists ? { lists: input.lists } : {}),
+        ...(m.contentInstanceId ? { contentInstanceId: m.contentInstanceId } : {}),
+        ...(input.linkResolver ? { linkResolver: input.linkResolver } : {}),
       },
     );
     return { html: r.html, failures: r.failures, nestedModuleIds: [...r.touchedModuleIds] };
@@ -576,8 +489,8 @@ function renderModuleFields(
     html: m.html,
     fields,
     contentValues: m.contentValues,
-    dataLists: input.dataLists,
-    dormantDataLists: input.dormantDataLists,
+    ...(input.lists ? { lists: input.lists } : {}),
+    listHolder: { contentInstanceId: m.contentInstanceId ?? null },
     themeAssets,
     linkResolver: input.linkResolver,
   });
@@ -796,35 +709,27 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
     const deferral = input.deferredModules?.[m.moduleId];
     // Nested modules rendered inside THIS placement when it is withheld.
     const gatedNestedIds = new Set<string>();
-    const navMenuItems = lookupNavMenuItems(m.slug, input.structuredSets);
-    let baseHtml: string;
-    if (navMenuItems !== null) {
-      const nav = renderNavMenuHtml(navMenuItems, input.linkResolver);
-      baseHtml = nav.html;
-      recordFailures(moduleFailures, blockName, m, nav.failures);
-    } else {
-      const rendered = renderModuleFields(m, input);
-      baseHtml = rendered.html;
-      recordFailures(moduleFailures, blockName, m, rendered.failures);
-      for (const id of rendered.nestedModuleIds) {
-        const nestedDeferral = input.deferredModules?.[id];
-        if (nestedDeferral) {
-          const nestedSlug = input.nestedModules?.getModule(id)?.slug ?? id;
-          throw new ComposeError(
-            "nested-module-deferred",
-            `module "${nestedSlug}" is withheld by plugin "${nestedDeferral.pluginSlug}" (${nestedDeferral.reason}) but sits inside module "${m.slug}" in block "${blockName}", where it cannot be gated — ` +
-              "place it on the page directly instead of inside another module's field",
-            input.layoutSlug,
-          );
-        }
-        // Inside a withheld parent the nested module is withheld too:
-        // its CSS/JS go into the parent's <template>, never the page-wide
-        // bundles, or its `fetch()` / `url(…)` would run before consent.
-        if (deferral) {
-          if (id !== m.moduleId) gatedNestedIds.add(id);
-        } else {
-          nestedAssetIds.push(id);
-        }
+    const rendered = renderModuleFields(m, input);
+    const baseHtml = rendered.html;
+    recordFailures(moduleFailures, blockName, m, rendered.failures);
+    for (const id of rendered.nestedModuleIds) {
+      const nestedDeferral = input.deferredModules?.[id];
+      if (nestedDeferral) {
+        const nestedSlug = input.nestedModules?.getModule(id)?.slug ?? id;
+        throw new ComposeError(
+          "nested-module-deferred",
+          `module "${nestedSlug}" is withheld by plugin "${nestedDeferral.pluginSlug}" (${nestedDeferral.reason}) but sits inside module "${m.slug}" in block "${blockName}", where it cannot be gated — ` +
+            "place it on the page directly instead of inside another module's field",
+          input.layoutSlug,
+        );
+      }
+      // Inside a withheld parent the nested module is withheld too:
+      // its CSS/JS go into the parent's <template>, never the page-wide
+      // bundles, or its `fetch()` / `url(…)` would run before consent.
+      if (deferral) {
+        if (id !== m.moduleId) gatedNestedIds.add(id);
+      } else {
+        nestedAssetIds.push(id);
       }
     }
     const tagged = tagModuleId(baseHtml, m.moduleId);
@@ -905,8 +810,8 @@ export function composePageWithLayout(input: ComposeWithLayoutInput): ComposeOut
   let html = replaced.html;
 
   // issue #160 — every vetted interaction the page's markup asks for
-  // (`data-caelo-ui="…"`, from modules, the nav renderer, the layout or
-  // the template, withheld modules included) ships once, after module
+  // (`data-caelo-ui="…"`, from modules, the layout or the template,
+  // withheld modules included) ships once, after module
   // CSS/JS so its functional rules win over a module's display rules.
   const interactions = interactionAssets(new Set(findInteractionIds(html).known));
   cssParts.push(...interactions.css);

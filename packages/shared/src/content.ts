@@ -11,6 +11,9 @@
  */
 
 import { z } from "zod";
+import { listItemInputSchema } from "./lists/items.js";
+import { LIST_MAX_ITEMS, sourceDefSchema } from "./lists/list-type.js";
+import { LIST_REF_RE } from "./lists/refs.js";
 
 /** Lowercase slug, hyphenated, 1–64 chars, no leading/trailing hyphen. */
 export const slugSchema = z
@@ -93,7 +96,49 @@ export const MODULE_JS_MAX = 256 * 1024;
 export const TEMPLATE_HTML_MAX = 512 * 1024;
 export const TEMPLATE_CSS_MAX = 128 * 1024;
 
-const moduleHtml = z.string().max(MODULE_HTML_MAX, `html exceeds ${MODULE_HTML_MAX} bytes`);
+/**
+ * Code payloads a model sometimes corrupts before they reach us, both seen
+ * in PR #1121's real-AI runs and stored verbatim before this guard:
+ * - JSON-encoded: the whole value wrapped in quotes with `\"` escapes
+ *   (`"<footer class=\"x\">…"`) — the page showed literal quotes;
+ * - HTML-escaped markup: `&lt;div&gt;&lt;caelo-slot …` with no real tag
+ *   — a template without a single slot, so it had no blocks at all.
+ * Refusing at the write boundary with the fix turns a broken render the
+ * AI only notices from a screenshot into one corrected call (CLAUDE.md
+ * §2, §11; same reasoning as the CDATA guard below). AI tool arguments
+ * never reach this in that shape: `sourceTextArg` decodes both encodings
+ * first (`source-text-transport.ts`); this guards every other writer.
+ */
+export function jsonEncodedCodeMessage(field: string, value: string): string | null {
+  const t = value.trim();
+  if (t.length < 2 || !t.startsWith('"') || !t.endsWith('"')) return null;
+  try {
+    if (typeof JSON.parse(t) !== "string") return null;
+  } catch {
+    return null;
+  }
+  return `${field} is JSON-encoded (wrapped in quotes with \\" escapes) — send the raw ${field} itself, not a JSON string of it.`;
+}
+
+/** See {@link jsonEncodedCodeMessage}: markup sent HTML-escaped. */
+export function htmlEscapedMarkupMessage(field: string, value: string): string | null {
+  if (value.includes("<") || !/&lt;\/?[a-zA-Z]/.test(value)) return null;
+  return `${field} is HTML-escaped (&lt;…&gt; instead of <…>) — send the markup itself, unescaped.`;
+}
+
+const noCorruptMarkup = (field: string) => (value: string, ctx: z.RefinementCtx) => {
+  const message = jsonEncodedCodeMessage(field, value) ?? htmlEscapedMarkupMessage(field, value);
+  if (message) ctx.addIssue({ code: "custom", message });
+};
+const noJsonEncodedCode = (field: string) => (value: string, ctx: z.RefinementCtx) => {
+  const message = jsonEncodedCodeMessage(field, value);
+  if (message) ctx.addIssue({ code: "custom", message });
+};
+
+const moduleHtml = z
+  .string()
+  .max(MODULE_HTML_MAX, `html exceeds ${MODULE_HTML_MAX} bytes`)
+  .superRefine(noCorruptMarkup("html"));
 
 /**
  * issue #432 root-cause guard — reject XML CDATA wrappers in module css/js.
@@ -122,11 +167,13 @@ const cdataMessage = (field: "css" | "js"): string =>
 const moduleCss = z
   .string()
   .max(MODULE_CSS_MAX, `css exceeds ${MODULE_CSS_MAX} bytes`)
-  .refine(noCdata, cdataMessage("css"));
+  .refine(noCdata, cdataMessage("css"))
+  .superRefine(noJsonEncodedCode("css"));
 const moduleJs = z
   .string()
   .max(MODULE_JS_MAX, `js exceeds ${MODULE_JS_MAX} bytes`)
-  .refine(noCdata, cdataMessage("js"));
+  .refine(noCdata, cdataMessage("js"))
+  .superRefine(noJsonEncodedCode("js"));
 
 /**
  * v0.4.0 — module field schema. Each field declares one substitution slot in
@@ -161,29 +208,29 @@ export const MODULE_FIELD_PRIMITIVE_KINDS = [
 ] as const;
 
 /**
- * v0.12.0 — list-of-primitive field kinds. The grammar mirrors
- * `module-list`'s `{{#field}}{{/field}}` iteration but the elements
- * are primitives (or a fixed {label,href} pair for link-list), not
- * `{moduleId, contentInstanceId}` refs.
+ * Epic #1107 — the data-list field kind (`docs/lists.md` §7). One kind
+ * for every repeated piece of data: feature bullets, a footer link group,
+ * a three-level menu, a mega dropdown, a "latest news" block. The entry
+ * shape comes from a LIST TYPE (`listType`, a slug); the entries come from
+ * the field's binding:
  *
- * Use `text-list` for "list of strings" — menu labels, tag chips,
- * bullet points where each item is just text. Inner template
- * references `{{.}}` (Mustache convention) or `{{item}}` to mean
- * the current element.
+ *   - `local`  (default) — entries stored in the placement's value
+ *                          (`ListItem[]`), only this module shows them;
+ *   - `shared` — a `caelo:list/<id>` list, fixed on the field (`list`) or
+ *                chosen per placement; navigation and anything needed in
+ *                more than one place;
+ *   - `source` — entries generated per page from `source` (a page query,
+ *                a system source like breadcrumbs, a plugin source).
  *
- * Use `link-list` for "list of links" — primary nav, footer columns,
- * sidebar menus. Each element is `{href, label}`. Inner template
- * uses `{{href}}` + `{{label}}` per iteration.
- *
- * For lists with richer per-item structure (cards with image + title
- * + body + CTA), use `module-list` pointing at a sub-module — that's
- * what nested modules are for.
+ * The template iterates `{{#field}}…{{/field}}` the same way for every
+ * binding. `module-list` stays: it composes modules, lists carry data.
+ * Replaces the `text-list` / `link-list` kinds.
  */
-export const MODULE_FIELD_LIST_KINDS = ["text-list", "link-list"] as const;
+export const MODULE_FIELD_LIST_KINDS = ["list"] as const;
 
 export const MODULE_FIELD_NESTED_KINDS = ["module", "module-list"] as const;
 
-/** All eleven v0.12.0 kinds. */
+/** Every module field kind. */
 export const MODULE_FIELD_KINDS = [
   ...MODULE_FIELD_PRIMITIVE_KINDS,
   ...MODULE_FIELD_LIST_KINDS,
@@ -200,10 +247,9 @@ export type ModuleFieldKind = (typeof MODULE_FIELD_KINDS)[number];
 
 /**
  * Field kinds the shared template engine iterates via the
- * `{{#name}}…{{/name}}` Mustache-section operator. Adding a new
- * list-shaped kind to MODULE_FIELD_LIST_KINDS / MODULE_FIELD_NESTED_KINDS
- * automatically extends this set; the engine's section-dispatch branch
- * keys off it (`packages/shared/src/template-engine.ts`).
+ * `{{#name}}…{{/name}}` Mustache-section operator (`list` and
+ * `module-list`); the engine's section-dispatch keys off it
+ * (`packages/shared/src/template-engine.ts`).
  */
 export const MODULE_FIELD_SECTION_KINDS = [...MODULE_FIELD_LIST_KINDS, "module-list"] as const;
 
@@ -255,43 +301,84 @@ const moduleFieldModuleListSchema = z
   .strict();
 
 /**
- * v0.12.0 — list-of-strings field. Inner template uses `{{.}}` (or
- * the alias `{{item}}`) to reference the current element. Default
- * is an optional array of strings rendered when the placement's
- * content_instance has no override.
+ * Epic #1107 — a `list` field (`docs/lists.md` §7). The static schema
+ * checks the SHAPE: the binding's parts fit together and a local default
+ * is well-formed entries. Whether those entries fit the named list type
+ * (nodes, fields, depth) needs the type, which is stored data — the op
+ * layer validates that with `validateListItems` when the module is
+ * written, and the renderer reports `list-type-missing:<slug>` for a type
+ * that is gone.
  */
-const moduleFieldTextListSchema = z
+const moduleFieldListSchema = z
   .object({
     name: moduleFieldName,
-    kind: z.literal("text-list"),
+    kind: z.literal("list"),
     label: moduleFieldLabel,
+    /** Slug of the list type that defines the entries. */
+    listType: slugSchema,
+    bind: z.enum(["local", "shared", "source"]).optional(),
+    /** `bind: "shared"` — fix the list for every placement (`caelo:list/<id>`). */
+    list: z.string().regex(LIST_REF_RE, "list must be caelo:list/<id>").optional(),
+    /** `bind: "source"` — where generated entries come from. */
+    source: sourceDefSchema.optional(),
     min: z.number().int().nonnegative().optional(),
-    max: z.number().int().positive().max(256).optional(),
-    default: z.array(z.string()).optional(),
+    max: z.number().int().positive().max(LIST_MAX_ITEMS).optional(),
+    /** `local`: entries; `shared`: `caelo:list/<id>`. */
+    default: z
+      .union([
+        z.array(listItemInputSchema),
+        z.string().regex(LIST_REF_RE, "a shared default must be caelo:list/<id>"),
+      ])
+      .optional(),
   })
   .strict();
 
-/**
- * v0.12.0 — list-of-{label,href} field. Inner template uses
- * `{{label}}` + `{{href}}` per iteration. Targets the common
- * primary-nav / footer-column / sidebar-menu pattern without
- * forcing a sub-module per link.
- */
-const moduleFieldLinkListSchema = z
-  .object({
-    name: moduleFieldName,
-    kind: z.literal("link-list"),
-    label: moduleFieldLabel,
-    min: z.number().int().nonnegative().optional(),
-    max: z.number().int().positive().max(256).optional(),
-    default: z.array(z.object({ label: z.string(), href: z.string() }).strict()).optional(),
-  })
-  .strict();
+/** Binding consistency of one `list` field; every problem, AI-actionable. */
+function listFieldIssues(f: z.infer<typeof moduleFieldListSchema>): string[] {
+  const bind = f.bind ?? "local";
+  const issues: string[] = [];
+  if (bind === "source" && f.source === undefined) {
+    issues.push(`list field "${f.name}": bind "source" needs a source (query, system or plugin).`);
+  }
+  if (bind !== "source" && f.source !== undefined) {
+    issues.push(`list field "${f.name}": source is only allowed with bind "source".`);
+  }
+  if (bind === "local" && f.list !== undefined) {
+    issues.push(
+      `list field "${f.name}": list is only allowed with bind "shared" — a local list stores its entries in the placement.`,
+    );
+  }
+  if (bind === "source" && f.list !== undefined && f.source?.kind !== "system") {
+    issues.push(
+      `list field "${f.name}": list on a source field names the vocabulary of a page_terms source only.`,
+    );
+  }
+  if (f.default !== undefined) {
+    if (bind === "local" && typeof f.default === "string") {
+      issues.push(
+        `list field "${f.name}": a local default is an array of entries, not a list reference.`,
+      );
+    }
+    if (bind === "shared" && Array.isArray(f.default)) {
+      issues.push(
+        `list field "${f.name}": a shared default is caelo:list/<id> — create the list with upsert_lists_many first.`,
+      );
+    }
+    if (bind === "source") {
+      issues.push(
+        `list field "${f.name}": a source field has no default; its entries are generated.`,
+      );
+    }
+  }
+  if (f.min !== undefined && f.max !== undefined && f.min > f.max) {
+    issues.push(`list field "${f.name}": min is greater than max.`);
+  }
+  return issues;
+}
 
 export const moduleFieldSchema = z.discriminatedUnion("kind", [
   moduleFieldPrimitiveSchema,
-  moduleFieldTextListSchema,
-  moduleFieldLinkListSchema,
+  moduleFieldListSchema,
   moduleFieldModuleSchema,
   moduleFieldModuleListSchema,
 ]);
@@ -368,6 +455,11 @@ const moduleFieldsArray = z
         return;
       }
       seen.add(f.name);
+      if (f.kind === "list") {
+        for (const message of listFieldIssues(f)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message });
+        }
+      }
     }
     for (const run of findNumberedScalarFanoutRuns(arr)) {
       ctx.addIssue({
@@ -375,8 +467,9 @@ const moduleFieldsArray = z
         message:
           `numbered-scalar fanout: ${run.map((n) => `"${n}"`).join(", ")} repeat one role as ` +
           "numbered scalar fields — repeating content is ONE list field, never numbered scalars " +
-          '(CLAUDE.md §1A). Replace the run with a single field: kind "text-list" (list of ' +
-          'strings, inner template iterates {{.}}), "link-list" (list of {label, href}), or ' +
+          '(CLAUDE.md §1A). Replace the run with a single field: kind "list" with a list type ' +
+          '(listType "texts" for plain strings — the template iterates {{#f}}{{text}}{{/f}}; ' +
+          '"links" for label + link — {{#f}}<a href="{{link}}">{{label}}</a>{{/f}}), or ' +
           '"module-list" (rich per-item structure: mint a card sub-module and reference it per ' +
           "item — in build_page, author the card detached with `ref` and pass " +
           '[{"$ref": "<ref>"}, …] as the field value). A two-field split like col1/col2 is fine; ' +
@@ -440,31 +533,29 @@ export const moduleUpdateSchema = z
   })
   .strict();
 
-/**
- * v0.12.0 — page-type tag pages inherit from their template.
- * Constrained by templates_kind_check in migration 0096. Surfaced
- * in the AI's `## Pages` block so the AI sees three modules-on-
- * product-pages as a pattern. See CLAUDE.md §1A.
- */
-export const TEMPLATE_KINDS = [
-  "home",
-  "landing",
-  "product",
-  "blog",
-  "doc",
-  "content",
-  "utility",
-] as const;
-export const templateKindSchema = z.enum(TEMPLATE_KINDS);
-export type TemplateKind = (typeof TEMPLATE_KINDS)[number];
+/** A page type slug (epic #1107, docs/lists.md §5). */
+export const pageTypeSlugSchema = z
+  .string()
+  .regex(
+    /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/,
+    "page type slug: lowercase letters, digits, hyphens",
+  );
 
 export const templateCreateSchema = z
   .object({
     slug: slugSchema,
     displayName: displayNameSchema,
-    /** v0.12.0 — what kind of page binds to this template. */
-    kind: templateKindSchema.default("content"),
-    html: z.string().max(TEMPLATE_HTML_MAX, `html exceeds ${TEMPLATE_HTML_MAX} bytes`),
+    /**
+     * Epic #1107 — the page type (slug) this template serves; the template
+     * is appended to that type's `templates`. Omit for the site's default
+     * page type (`site_defaults.default_page_type_id`, stored data — not a
+     * render-time fallback).
+     */
+    pageType: pageTypeSlugSchema.optional(),
+    html: z
+      .string()
+      .max(TEMPLATE_HTML_MAX, `html exceeds ${TEMPLATE_HTML_MAX} bytes`)
+      .superRefine(noCorruptMarkup("html")),
     css: z.string().max(TEMPLATE_CSS_MAX, `css exceeds ${TEMPLATE_CSS_MAX} bytes`).default(""),
     /**
      * P6.7.6 — every template binds to one layout. When omitted, the
@@ -505,9 +596,9 @@ export const templateUpdateSchema = z
   .object({
     templateId: z.string().uuid(),
     displayName: displayNameSchema.optional(),
-    /** v0.12.0 — re-classify the template's page-type kind. */
-    kind: templateKindSchema.optional(),
-    html: z.string().max(TEMPLATE_HTML_MAX).optional(),
+    /** Epic #1107 — also allow this template for the page type (slug); appended to its `templates`. */
+    pageType: pageTypeSlugSchema.optional(),
+    html: z.string().max(TEMPLATE_HTML_MAX).superRefine(noCorruptMarkup("html")).optional(),
     css: z.string().max(TEMPLATE_CSS_MAX).optional(),
     /** P6.7.6 — re-point the template to a different layout. */
     layoutId: z.string().uuid().optional(),
@@ -568,6 +659,16 @@ export const pageCreateSchema = z
      * becomes "<parent's path>/<slug>". Omit (or null) for a top-level page.
      */
     parentPageId: z.string().uuid().nullable().optional(),
+    /**
+     * Epic #1107 — what the page IS (page type slug). Omit to take the type
+     * whose `templates` contain the template; with neither `pageType` nor
+     * `templateId`, the site's default page type and its default template.
+     */
+    pageType: pageTypeSlugSchema.optional(),
+    /** Property values, validated against the page type. */
+    properties: z.record(z.string(), z.unknown()).optional(),
+    /** Terms (`caelo:term/<listId>/<itemId>`) from the page type's vocabularies. */
+    terms: z.array(z.string().max(120)).max(100).optional(),
   })
   .strict();
 
@@ -620,6 +721,16 @@ export const pageUpdateSchema = z
      * every inbound link, which is never a safe default (CLAUDE.md §2).
      */
     redirectFromOld: z.enum(["auto", "skip"]).optional(),
+    /**
+     * Epic #1107 — switch the page type (slug). The template must be one of
+     * the type's templates (pass `templateId` too when it is not), and the
+     * page's properties and terms must fit the new type.
+     */
+    pageType: pageTypeSlugSchema.optional(),
+    /** Merged into the page's properties; `null` removes a property. */
+    properties: z.record(z.string(), z.unknown()).optional(),
+    /** Replaces the page's terms (`caelo:term/<listId>/<itemId>`). */
+    terms: z.array(z.string().max(120)).max(100).optional(),
   })
   .strict();
 

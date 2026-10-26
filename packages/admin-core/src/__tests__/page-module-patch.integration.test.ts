@@ -5,7 +5,7 @@
  * and the preview's edit markers.
  *
  * Pins: only the edited fields/items change, all edits of a call or none; the operator's plain
- * text is escaped once; non-text kinds, bad indexes and synced
+ * text is escaped once; non-text kinds, unknown list entries and synced
  * placements are refused with an operator-readable message; a branched
  * edit stays on the chat's branch; `pages.render_preview` emits markers
  * only when asked.
@@ -77,13 +77,19 @@ async function must<T>(op: string, input: unknown, branchId?: string): Promise<T
 }
 
 /** The page as the preview renders it (on the branch when given). */
+/** Entry ids of the local lists (epic #1107): edits address entries by id. */
+const TAG1 = "00000000-0000-4000-9000-000000000001";
+const TAG2 = "00000000-0000-4000-9000-000000000002";
+const LINK1 = "00000000-0000-4000-9000-000000000003";
+
 async function previewHtml(page: string, branchId?: string): Promise<string> {
   const preview = await must<{ html: string }>(
     "pages.render_preview",
     { pageId: page, ...(branchId ? { chatBranchId: branchId } : {}) },
     branchId,
   );
-  return preview.html;
+  // List entries carry their item address; these assertions read the markup.
+  return preview.html.replace(/ data-caelo-list-item="[^"]*"/g, "");
 }
 
 beforeAll(async () => {
@@ -105,13 +111,13 @@ beforeAll(async () => {
   const { moduleId } = await must<{ moduleId: string }>("modules.create", {
     slug: MOD_SLUG,
     displayName: "patch_fields mod",
-    html: '<section><h1>{{title}}</h1><ul>{{#tags}}<li>{{.}}</li>{{/tags}}</ul><nav>{{#links}}<a href="{{href}}">{{label}}</a>{{/links}}</nav><img src="{{photo}}" alt="{{title}}"><a class="cta" href="{{cta}}">Go</a><b>{{count}}</b></section>',
+    html: '<section><h1>{{title}}</h1><ul>{{#tags}}<li>{{text}}</li>{{/tags}}</ul><nav>{{#links}}<a href="{{link}}">{{label}}</a>{{/links}}</nav><img src="{{photo}}" alt="{{title}}"><a class="cta" href="{{cta}}">Go</a><b>{{count}}</b></section>',
     css: "",
     js: "",
     fields: [
       { name: "title", kind: "text", label: "Title" },
-      { name: "tags", kind: "text-list", label: "Tags" },
-      { name: "links", kind: "link-list", label: "Links" },
+      { name: "tags", kind: "list", listType: "texts", label: "Tags" },
+      { name: "links", kind: "list", listType: "links", label: "Links" },
       { name: "photo", kind: "image", label: "Photo" },
       { name: "cta", kind: "url", label: "Button target" },
       { name: "count", kind: "number", label: "Count" },
@@ -138,8 +144,17 @@ beforeAll(async () => {
     position: 0,
     contentValues: {
       title: "Welcome",
-      tags: ["one", "two"],
-      links: [{ label: "Docs", href: "https://example.com/docs" }],
+      tags: [
+        { id: TAG1, node: "text", values: { text: "one" } },
+        { id: TAG2, node: "text", values: { text: "two" } },
+      ],
+      links: [
+        {
+          id: LINK1,
+          node: "link",
+          values: { label: "Docs", link: { href: "https://example.com/docs" } },
+        },
+      ],
       photo: "https://example.com/p.png",
       cta: "https://example.com/start",
       count: 3,
@@ -186,23 +201,23 @@ describe("page_module_content.patch_fields (#917)", () => {
     expect(html).toContain('src="https://example.com/p.png"');
   });
 
-  it("changes a text-list item and a link-list label by index", async () => {
+  it("changes a list entry's text and a link label by entry id", async () => {
     await must("page_module_content.patch_fields", {
       pageId,
       ...at,
-      edits: [{ field: "tags", index: 1, text: "zwei" }],
+      edits: [{ field: "tags", item: TAG2, key: "text", text: "zwei" }],
     });
     await must("page_module_content.patch_fields", {
       pageId,
       ...at,
-      edits: [{ field: "links", index: 0, text: "Handbook" }],
+      edits: [{ field: "links", item: LINK1, key: "label", text: "Handbook" }],
     });
     const html = await previewHtml(pageId);
     expect(html).toContain("<li>one</li><li>zwei</li>");
     expect(html).toContain('<a href="https://example.com/docs">Handbook</a>');
   });
 
-  it("refuses non-text kinds, bad indexes, unknown fields and synced placements", async () => {
+  it("refuses non-text kinds, unknown entries, unknown fields and synced placements", async () => {
     const refused = async (input: Record<string, unknown>, pattern: RegExp) => {
       const { pageId: page = pageId, ...edit } = input;
       const r = await run("page_module_content.patch_fields", {
@@ -214,15 +229,18 @@ describe("page_module_content.patch_fields (#917)", () => {
       if (!r.ok) expect((r.error as { message?: string }).message ?? "").toMatch(pattern);
     };
     await refused({ field: "count" }, /cannot be edited here/);
-    await refused({ field: "tags", index: 9 }, /item 9 does not exist/);
-    await refused({ field: "tags" }, /needs the item index/);
-    await refused({ field: "title", index: 0 }, /takes no index or part/);
+    await refused(
+      { field: "tags", item: "00000000-0000-4000-9000-000000000099", key: "text" },
+      /entry 00000000-0000-4000-9000-000000000099 does not exist/,
+    );
+    await refused({ field: "tags" }, /needs the entry \(item\) and its field \(key\)/);
+    await refused({ field: "title", item: TAG1, key: "text" }, /takes no item, key or part/);
     await refused({ field: "nope" }, /no field "nope"/);
     await refused({ pageId: sharedPageId, field: "title" }, /shared with other pages/);
     await refused({ field: "cta", text: "javascript:alert(1)" }, /not a valid link target/);
     await refused({ field: "cta", text: '/x" onmouseover="alert(1)' }, /not a valid link target/);
     await refused(
-      { field: "links", index: 0, part: "href", text: "no spaces allowed" },
+      { field: "links", item: LINK1, key: "link", part: "href", text: "no spaces allowed" },
       /not a valid link target/,
     );
     await refused({ field: "photo", text: "mailto:a@b.c" }, /not a valid image address/);
@@ -233,8 +251,8 @@ describe("page_module_content.patch_fields (#917)", () => {
       pageId,
       ...at,
       edits: [
-        { field: "tags", index: 0, text: "uno" },
-        { field: "links", index: 0, text: "Guide" },
+        { field: "tags", item: TAG1, key: "text", text: "uno" },
+        { field: "links", item: LINK1, key: "label", text: "Guide" },
       ],
     });
     const html = await previewHtml(pageId);
@@ -305,7 +323,7 @@ describe("links, images and shared content (#918)", () => {
       pageId,
       ...at,
       edits: [
-        { field: "links", index: 0, part: "href", text: ` /${SHARED_PAGE_SLUG} ` },
+        { field: "links", item: LINK1, key: "link", part: "href", text: ` /${SHARED_PAGE_SLUG} ` },
         { field: "cta", text: "https://example.com/start?a=1" },
         { field: "photo", text: "https://example.com/m/cup.webp" },
       ],
@@ -324,7 +342,7 @@ describe("links, images and shared content (#918)", () => {
     const r = await run("page_module_content.patch_fields", {
       pageId,
       ...at,
-      edits: [{ field: "links", index: 0, part: "href", text: "/no-such-page" }],
+      edits: [{ field: "links", item: LINK1, key: "link", part: "href", text: "/no-such-page" }],
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(JSON.stringify(r.error)).toContain("is not the path of any page");
@@ -395,9 +413,13 @@ describe("pages.render_preview edit markers (#917)", () => {
     expect(marked.html).toContain(
       "<h1><!--caelo:f p=content%230 s=0 f=title-->Fish &amp; &lt;chips&gt;<!--/caelo:f--></h1>",
     );
-    expect(marked.html).toContain("<!--caelo:f p=content%230 s=0 f=tags.1-->zwei<!--/caelo:f-->");
+    // List entries are marked by entry id (`-` encoded as %2D in comments).
+    const enc = (path: string) => encodeURIComponent(path).replace(/-/g, "%2D");
     expect(marked.html).toContain(
-      "<!--caelo:f p=content%230 s=0 f=links.0.label-->Guide<!--/caelo:f-->",
+      `<!--caelo:f p=content%230 s=0 f=${enc(`tags.${TAG2}.text`)}-->zwei<!--/caelo:f-->`,
+    );
+    expect(marked.html).toContain(
+      `<!--caelo:f p=content%230 s=0 f=${enc(`links.${LINK1}.label`)}-->Guide<!--/caelo:f-->`,
     );
     expect(marked.html).toContain('alt="Fish &amp; &lt;chips&gt;"');
     expect(marked.html).not.toMatch(/[\uE000-\uE002]/);

@@ -27,7 +27,7 @@ import { pendingSnapshotSql } from "../../draft.js";
 
 const foreignLockSchema = z
   .object({
-    /** Lock table's entity kind (module | template | page | layout | structuredSet | theme | contentInstance | ...). */
+    /** Lock table's entity kind (module | template | page | layout | list | listType | pageType | theme | contentInstance | ...). */
     entityKind: z.string(),
     entityId: z.string().uuid(),
     /** Human label for the locked entity (slug/title/display name); falls back to the id. */
@@ -109,7 +109,8 @@ export const listForeignLocksOp = defineOperation({
         COALESCE(
           m.display_name, t.display_name,
           COALESCE(pg.title, pg.slug),
-          la.display_name, sset.display_name, th.display_name,
+          la.display_name, COALESCE(lt.definition->>'name', lt.slug), COALESCE(li.name, li.slug),
+          COALESCE(pt.definition->>'name', pt.slug), th.display_name,
           -- content_instances often have neither display_name nor slug
           -- (per-placement rows); the owning module's slug is the next
           -- most recognisable handle.
@@ -123,7 +124,9 @@ export const listForeignLocksOp = defineOperation({
       LEFT JOIN templates t ON l.entity_kind = 'template' AND t.id = l.entity_id
       LEFT JOIN pages pg ON l.entity_kind IN ('page', 'pageLayout') AND pg.id = l.entity_id
       LEFT JOIN layouts la ON l.entity_kind = 'layout' AND la.id = l.entity_id
-      LEFT JOIN structured_sets sset ON l.entity_kind = 'structuredSet' AND sset.id = l.entity_id
+      LEFT JOIN list_types lt ON l.entity_kind = 'listType' AND lt.id = l.entity_id
+      LEFT JOIN lists li ON l.entity_kind = 'list' AND li.id = l.entity_id
+      LEFT JOIN page_types pt ON l.entity_kind = 'pageType' AND pt.id = l.entity_id
       LEFT JOIN themes th ON l.entity_kind = 'theme' AND th.id = l.entity_id
       LEFT JOIN content_instances ci ON l.entity_kind = 'contentInstance' AND ci.id = l.entity_id
       LEFT JOIN modules ci_module ON ci_module.id = ci.module_id

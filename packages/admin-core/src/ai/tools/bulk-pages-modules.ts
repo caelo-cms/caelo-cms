@@ -19,7 +19,12 @@
 
 import { execute } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
-import { moduleUpdateSchema, redirectTargetPathSchema, sourceTextArg } from "@caelo-cms/shared";
+import {
+  moduleUpdateSchema,
+  pageUpdateSchema,
+  redirectTargetPathSchema,
+  sourceTextArg,
+} from "@caelo-cms/shared";
 import { z } from "zod";
 import { describeError } from "./_describe-error.js";
 import {
@@ -202,6 +207,11 @@ const pageUpdateItem = z
     status: z.enum(["draft", "published", "archived"]).optional(),
     /** Only meaningful with `slug`. 'skip' suppresses the automatic 301. */
     redirectFromOld: z.enum(["auto", "skip"]).optional(),
+    // Epic #1107 — what the page IS, its properties and its terms; the op
+    // (`pageUpdateSchema`) owns the semantics.
+    pageType: pageUpdateSchema.shape.pageType,
+    properties: pageUpdateSchema.shape.properties,
+    terms: pageUpdateSchema.shape.terms,
   })
   .strict();
 const updateInput = z.object({ updates: z.array(pageUpdateItem).min(1).max(200) }).strict();
@@ -225,7 +235,8 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
   name: "update_pages_many",
   description:
     "Edit page metadata — the ONE tool for it, for 1 page or 200 (pass a single-item `updates` array for one page; there is no separate rename/retitle/reslug tool). " +
-    "Use for 'rename this page', 'change the browser-tab title', 'move this to /pricing', 'archive all draft posts', 'move these pages to the {tpl} template'. " +
+    "Use for 'rename this page', 'change the browser-tab title', 'move this to /pricing', 'archive all draft posts', 'move these pages to the {tpl} template', 'these posts are news articles', 'file this article under Product updates'. " +
+    "**What a page IS:** `pageType` (slug from list_page_types — e.g. turn a plain page into a `news` article; pass `templateId` too when the current template is not one of the new type's templates), `properties` (the page type's fields; merged, null removes one) and `terms` (REPLACES the page's terms: caelo:term/<listId>/<itemId> from the type's vocabularies — get_list on the categories / tags list shows the entry ids). Page queries ('latest news', 'articles in this category') filter on these. " +
     "**A page has THREE independently-editable identifiers — never substitute one for another:** " +
     "`name` = the internal editor label (page picker / breadcrumbs; not public), " +
     "`title` = the HTML <title> tag (browser tab + search results), " +
@@ -285,6 +296,25 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
             },
             templateId: { type: "string", format: "uuid" },
             status: { type: "string", enum: ["draft", "published", "archived"] },
+            pageType: {
+              type: "string",
+              pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+              description:
+                "Page type slug (list_page_types). The template must be one of the type's templates — pass templateId too when it is not.",
+            },
+            properties: {
+              type: "object",
+              description:
+                "Page type properties, merged into the page's (null removes one), e.g. {author: 'Ada', event_date: '2026-11-03'}.",
+              additionalProperties: true,
+            },
+            terms: {
+              type: "array",
+              maxItems: 100,
+              items: { type: "string", pattern: "^caelo:term/[0-9a-f-]{36}/[0-9a-f-]{36}$" },
+              description:
+                "REPLACES the page's terms: caelo:term/<listId>/<itemId> of the page type's vocabularies (categories, tags). [] clears them.",
+            },
             redirectFromOld: {
               type: "string",
               enum: ["auto", "skip"],
@@ -327,9 +357,9 @@ export const updatePagesManyTool: ToolDefinitionWithHandler<UpdateInput> = {
 // a module's field schema or metadata and the AI had to fall back to N×
 // edit_module (the exact N+1 chain the bulk tool exists to replace). Reusing
 // the shared schema means the tool can never be a subset of the op again.
-// The source fields additionally decode a whole-value CDATA envelope, like
-// every other AI authoring surface (`sourceTextArg`); the op's own refusal
-// of any other CDATA marker still applies to the decoded value.
+// The source fields additionally decode whole-value transport encodings
+// (CDATA, JSON string literal, HTML-escaped), like every other AI authoring
+// surface (`sourceTextArg`); the op's own checks still apply to the result.
 const moduleUpdateItem = moduleUpdateSchema.extend({
   html: sourceTextArg(moduleUpdateSchema.shape.html.unwrap()).optional(),
   css: sourceTextArg(moduleUpdateSchema.shape.css.unwrap()).optional(),
@@ -348,7 +378,8 @@ export const updateModulesManyTool: ToolDefinitionWithHandler<ModuleUpdateInput>
     "including `fields` and `kind`/`description`, so a bulk edit can restructure a module's field schema, not just its body. " +
     "Per-item failures are reported but the rest of the batch still applies. " +
     "Prefer this over multiple `edit_module` calls when targeting > 1 module. Each updated module emits its own " +
-    "snapshot, so revert_module (or revert_site) can undo the lot.",
+    "snapshot, so revert_module (or revert_site) can undo the lot. " +
+    "`list` fields take the same shape as in edit_module (listType, bind local | shared | source, list, source, default).",
   schema: moduleUpdateInput,
   inputSchema: {
     type: "object",

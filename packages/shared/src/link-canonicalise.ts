@@ -14,7 +14,7 @@
  *   - a WHOLE value that is a URL: `url` / `link` / `image` fields, any
  *     field or object key named `href` / `src` / `url` / `link` or ending
  *     in `_href` / `_url` / `_link` / `_src` (`primary_cta_href`), the
- *     `href` of `link-list` items and structured-set items (any depth);
+ *     `href` of a list entry's `link` value (`values.<f>.href`, any depth);
  *   - HTML anywhere (module HTML, rich text, any string value carrying
  *     markup): `href` (pages and media), `src` / `poster` / `srcset`
  *     (media only — a `src="/x"` that is not media is not a page link).
@@ -587,6 +587,11 @@ function canonicaliseFieldValue(
   urlNames: ReadonlySet<string> | undefined,
 ): unknown {
   if (field && NESTED_KINDS.has(field.kind)) return value;
+  // A list (epic #1107) is never a URL as a whole, whatever its name or
+  // where its section sits: its entries decide per value key — a `link`
+  // value's `href` canonicalises, a label stays text. A shared list's
+  // `caelo:list/<id>` is no link at all.
+  if (field?.kind === "list") return canonicaliseJsonLinks(value, run, where, false);
   const asUrl =
     (field !== undefined && URL_KINDS.has(field.kind)) ||
     isLinkKeyName(name) ||

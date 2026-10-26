@@ -25,6 +25,7 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
     "Use when the user says 'make a copy of this page' or 'duplicate the about page'. " +
     "If cloning to a different page-type via `targetTemplateId`, block names must align — if they don't, modules in " +
     "unmatched blocks orphan immediately. Follow up with `repoint_page_template` to migrate or drop those orphans. " +
+    "The copy is the same kind of page: it keeps the source's page type, properties and terms (categories / tags); with a `targetTemplateId` of another page type it takes that type — change type, properties or terms afterwards with update_pages_many. " +
     "Soft-deleted modules on the source are filtered out at clone time; the audit log surfaces the dropped count.",
   schema: duplicatePageToolInput,
   inputSchema: {

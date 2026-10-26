@@ -139,7 +139,8 @@ export async function loadPageState(
 ): Promise<PageState | null> {
   const rows = (await tx.execute(sql`
     SELECT slug, title, template_id, status, version, deleted_at,
-           parent_page_id::text AS parent_page_id
+           parent_page_id::text AS parent_page_id, page_type_id::text AS page_type_id,
+           properties
     FROM pages WHERE id = ${pageId}::uuid LIMIT 1
   `)) as unknown as {
     parent_page_id: string | null;
@@ -149,9 +150,17 @@ export async function loadPageState(
     status: "draft" | "published";
     version: number | string;
     deleted_at: string | Date | null;
+    page_type_id: string;
+    properties: unknown;
   }[];
   const r = rows[0];
   if (!r) return null;
+  const terms = (await tx.execute(sql`
+    SELECT 'caelo:term/' || list_id::text || '/' || item_id::text AS ref
+    FROM page_terms WHERE page_id = ${pageId}::uuid
+    ORDER BY created_at, list_id, item_id
+  `)) as unknown as { ref: string }[];
+  const properties = typeof r.properties === "string" ? JSON.parse(r.properties) : r.properties;
   return {
     schemaVersion: 1,
     slug: r.slug,
@@ -161,6 +170,9 @@ export async function loadPageState(
     version: typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version,
     deletedAt: iso(r.deleted_at),
     parentPageId: r.parent_page_id,
+    pageTypeId: r.page_type_id,
+    properties: (properties ?? {}) as Record<string, unknown>,
+    terms: terms.map((t) => t.ref),
   };
 }
 

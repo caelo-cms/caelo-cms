@@ -11,6 +11,8 @@
  * field-by-field translation.
  */
 
+import type { ListItem, ListTypeDef, PageTypeDef } from "@caelo-cms/shared";
+
 export type StateSchemaVersion = 1;
 
 export interface ModuleState {
@@ -78,6 +80,12 @@ export interface PageState {
    * makes the move live honours it. Never set on live-state snapshots.
    */
   readonly pendingRedirects?: "skip";
+  /** Epic #1107 — the page type (0351 backfilled every older snapshot). */
+  readonly pageTypeId: string;
+  /** Property values, validated against the page type. */
+  readonly properties: Readonly<Record<string, unknown>>;
+  /** Terms as `caelo:term/<listId>/<itemId>`, materialised into `page_terms` at merge. */
+  readonly terms: readonly string[];
 }
 
 /**
@@ -112,21 +120,6 @@ export interface PageLayoutState {
 }
 
 /**
- * v0.5.3 — Whole-blob branched state for structured_sets (theme tokens,
- * nav menu, taxonomy, link list). The branched snapshot is authoritative
- * for reads; per-item ops in structured_set_operations are the picker's
- * stage-granularity layer.
- */
-export interface StructuredSetState {
-  readonly schemaVersion: StateSchemaVersion;
-  readonly kind: string;
-  readonly slug: string;
-  readonly displayName: string;
-  readonly items: readonly unknown[];
-  readonly deletedAt: string | null;
-}
-
-/**
  * v0.12.0 — content_instance state. One row per identity-bearing content
  * instance. Reverting copies back into the live `content_instances` row;
  * for branch overlays, the renderer reads this state via
@@ -151,8 +144,7 @@ export interface ContentInstanceState {
  * snapshot copies the values back into the live row.
  *
  * Theme is small enough (one DTCG document + four media FK ids) that
- * we don't shard per-token snapshot ops the way structured_set
- * carries per-item op rows — whole-blob is sufficient for revert.
+ * whole-blob is sufficient for revert.
  */
 export interface ThemeState {
   readonly schemaVersion: StateSchemaVersion;
@@ -174,5 +166,38 @@ export interface ThemeState {
     readonly favicon: string | null;
     readonly socialShare: string | null;
   };
+  readonly deletedAt: string | null;
+}
+
+/**
+ * Epic #1107 — whole-entity state of a list type (`list_types` row). The
+ * definition is the full ListTypeDef (`@caelo-cms/shared` lists).
+ */
+export interface ListTypeState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly slug: string;
+  readonly definition: ListTypeDef;
+  readonly version: number;
+  readonly deletedAt: string | null;
+}
+
+/** Epic #1107 — whole-entity state of a shared list (`lists` row). */
+export interface ListState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly slug: string;
+  readonly name: string;
+  readonly purpose: string;
+  readonly listTypeId: string;
+  readonly items: readonly ListItem[];
+  readonly version: number;
+  readonly deletedAt: string | null;
+}
+
+/** Epic #1107 — whole-entity state of a page type (`page_types` row). */
+export interface PageTypeState {
+  readonly schemaVersion: StateSchemaVersion;
+  readonly slug: string;
+  readonly definition: PageTypeDef;
+  readonly version: number;
   readonly deletedAt: string | null;
 }

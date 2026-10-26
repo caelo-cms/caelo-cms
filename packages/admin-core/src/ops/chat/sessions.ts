@@ -197,7 +197,7 @@ export const createChatSessionOp = defineOperation({
     // so the operator gets pointed at the existing chat instead.
     //
     // Global chats (pageId IS NULL) stay unrestricted — globals like
-    // theme / structured-sets / modules cross many pages, and the
+    // theme / lists / modules cross many pages, and the
     // per-entity lock + staging picker handle their conflict surface.
     if (pageId) {
       const existing = (await tx.execute(sql`
@@ -794,6 +794,8 @@ export const countBranchChangesOp = defineOperation({
       contentInstances: z.number().int().nonnegative(),
       /** Plugin private-storage rows written on this branch, deduped by row. */
       pluginRows: z.number().int().nonnegative(),
+      /** Epic #1107 — shared lists, list types and page types, deduped by entity. */
+      lists: z.number().int().nonnegative(),
     }),
   }),
   handler: async (_ctx, input, tx) => {
@@ -832,7 +834,13 @@ export const countBranchChangesOp = defineOperation({
           WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS content_instances,
         (SELECT COUNT(DISTINCT row_id)::int
            FROM plugin_row_snapshots
-          WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS plugin_rows
+          WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS plugin_rows,
+        (SELECT COUNT(DISTINCT list_id)::int FROM list_snapshots
+          WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch))
+        + (SELECT COUNT(DISTINCT list_type_id)::int FROM list_type_snapshots
+          WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch))
+        + (SELECT COUNT(DISTINCT page_type_id)::int FROM page_type_snapshots
+          WHERE site_snapshot_id IN (SELECT snapshot_id FROM branch)) AS lists
     `)) as unknown as {
       modules: number;
       pages: number;
@@ -842,6 +850,7 @@ export const countBranchChangesOp = defineOperation({
       layout_chrome: number;
       content_instances: number;
       plugin_rows: number;
+      lists: number;
     }[];
     const r = rows[0] ?? {
       modules: 0,
@@ -852,6 +861,7 @@ export const countBranchChangesOp = defineOperation({
       layout_chrome: 0,
       content_instances: 0,
       plugin_rows: 0,
+      lists: 0,
     };
     return ok({
       count:
@@ -862,7 +872,8 @@ export const countBranchChangesOp = defineOperation({
         r.page_module_content +
         r.layout_chrome +
         r.content_instances +
-        r.plugin_rows,
+        r.plugin_rows +
+        r.lists,
       byKind: {
         modules: r.modules,
         pages: r.pages,
@@ -872,6 +883,7 @@ export const countBranchChangesOp = defineOperation({
         layoutChrome: r.layout_chrome,
         contentInstances: r.content_instances,
         pluginRows: r.plugin_rows,
+        lists: r.lists,
       },
     });
   },
@@ -994,6 +1006,15 @@ export const listOpenChatsWithPendingOp = defineOperation({
               WHERE ${sessionPendingSql()}) +
             (SELECT COUNT(DISTINCT prs.row_id)::int FROM plugin_row_snapshots prs
               JOIN site_snapshots ss ON ss.id = prs.site_snapshot_id
+              WHERE ${sessionPendingSql()}) +
+            (SELECT COUNT(DISTINCT lsn.list_id)::int FROM list_snapshots lsn
+              JOIN site_snapshots ss ON ss.id = lsn.site_snapshot_id
+              WHERE ${sessionPendingSql()}) +
+            (SELECT COUNT(DISTINCT lts.list_type_id)::int FROM list_type_snapshots lts
+              JOIN site_snapshots ss ON ss.id = lts.site_snapshot_id
+              WHERE ${sessionPendingSql()}) +
+            (SELECT COUNT(DISTINCT pts.page_type_id)::int FROM page_type_snapshots pts
+              JOIN site_snapshots ss ON ss.id = pts.site_snapshot_id
               WHERE ${sessionPendingSql()}) +
             (SELECT COUNT(*)::int FROM site_snapshots ss
               WHERE ${sessionPendingSql()} AND ss.op_kind = 'layout_modules.set')

@@ -15,6 +15,8 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { fixtureData } from "./lists/list-fixtures.test.js";
+import { createListRenderContext } from "./lists/resolve.js";
 import { renderTemplate, type TemplateField } from "./template-engine.js";
 
 describe("renderTemplate — primitive substitution", () => {
@@ -89,95 +91,64 @@ describe("renderTemplate — primitive substitution", () => {
   });
 });
 
-describe("renderTemplate — text-list section", () => {
-  const textListField: TemplateField = { name: "items", kind: "text-list" };
+// A `list` field over the shipped `texts` / `links` types (epic #1107);
+// the full list syntax lives in template-engine-lists.test.ts.
+const lists = createListRenderContext(fixtureData()).forPage(null);
+const uid = (n: number) => `00000000-0000-4000-9000-${String(n).padStart(12, "0")}`;
+const texts = (...t: string[]) =>
+  t.map((text, i) => ({ id: uid(i + 1), node: "text", values: { text } }));
+const unstamp = (html: string) => html.replace(/ data-caelo-list-item="[^"]*"/g, "");
 
-  it("iterates with {{.}} per element", () => {
+describe("renderTemplate — list section", () => {
+  const listField: TemplateField = { name: "items", kind: "list", listType: "texts" };
+
+  it("iterates a local list per entry", () => {
     const r = renderTemplate({
-      html: "<ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>",
-      fields: [textListField],
-      contentValues: { items: ["a", "b", "c"] },
+      html: "<ul>{{#items}}<li>{{text}}</li>{{/items}}</ul>",
+      fields: [listField],
+      contentValues: { items: texts("a", "b", "c") },
+      lists,
     });
-    expect(r.html).toBe("<ul><li>a</li><li>b</li><li>c</li></ul>");
+    expect(unstamp(r.html)).toBe("<ul><li>a</li><li>b</li><li>c</li></ul>");
     expect(r.missingSlots).toEqual([]);
-  });
-
-  it("iterates with {{item}} alias per element", () => {
-    const r = renderTemplate({
-      html: "<ul>{{#items}}<li>{{item}}</li>{{/items}}</ul>",
-      fields: [textListField],
-      contentValues: { items: ["a", "b", "c"] },
-    });
-    expect(r.html).toBe("<ul><li>a</li><li>b</li><li>c</li></ul>");
-  });
-
-  it("coerces numeric + boolean elements to strings", () => {
-    const r = renderTemplate({
-      html: "<ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>",
-      fields: [textListField],
-      contentValues: { items: [1, true, "x"] },
-    });
-    expect(r.html).toBe("<ul><li>1</li><li>true</li><li>x</li></ul>");
   });
 
   it("empty array renders as empty section, no missingSlots", () => {
     const r = renderTemplate({
-      html: "<ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>",
-      fields: [textListField],
+      html: "<ul>{{#items}}<li>{{text}}</li>{{/items}}</ul>",
+      fields: [listField],
       contentValues: { items: [] },
+      lists,
     });
     expect(r.html).toBe("<ul></ul>");
     expect(r.missingSlots).toEqual([]);
   });
 
-  it("per-element malformed object becomes loud comment + tracks text-list-malformed", () => {
+  it("a malformed entry becomes a loud raw section + tracks list-malformed", () => {
     const r = renderTemplate({
-      html: "<ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>",
-      fields: [textListField],
-      contentValues: { items: ["a", { bogus: true }, "c"] },
+      html: "<ul>{{#items}}<li>{{text}}</li>{{/items}}</ul>",
+      fields: [listField],
+      contentValues: { items: [...texts("a"), { bogus: true }] },
+      lists,
     });
-    expect(r.html).toContain("<li>a</li>");
-    expect(r.html).toContain("<li>c</li>");
-    expect(r.html).toContain("<!-- caelo:missing reason=text-list-malformed items[1] -->");
-    expect(r.missingSlots).toContain("text-list-malformed:items[1]");
+    expect(r.html).toBe("<ul>{{#items}}<li>{{text}}</li>{{/items}}</ul>");
+    expect(r.missingSlots).toEqual(["list-malformed:items[items[1]]"]);
   });
-});
 
-describe("renderTemplate — link-list section (AC #1)", () => {
-  const linkListField: TemplateField = { name: "nav_items", kind: "link-list" };
-
-  it("AC #1 verbatim fixture", () => {
+  it("links: label + link per entry (AC #1, list kind)", () => {
     const r = renderTemplate({
-      html: '<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>',
-      fields: [linkListField],
+      html: '<nav>{{#nav_items}}<a href="{{link}}">{{label}}</a>{{/nav_items}}</nav>',
+      fields: [{ name: "nav_items", kind: "list", listType: "links" }],
       contentValues: {
         nav_items: [
-          { label: "Docs", href: "/docs" },
-          { label: "Blog", href: "/blog" },
+          { id: uid(1), node: "link", values: { label: "Docs", link: { href: "/docs" } } },
+          { id: uid(2), node: "link", values: { label: "Blog", link: { href: "/blog" } } },
         ],
       },
+      lists,
     });
-    expect(r.html).toBe('<nav><a href="/docs">Docs</a><a href="/blog">Blog</a></nav>');
-    expect(r.html).not.toMatch(/\{\{[#/]/);
-    expect(r.html).not.toMatch(/\{\{label/);
-    expect(r.html).not.toMatch(/\{\{href/);
+    expect(unstamp(r.html)).toBe('<nav><a href="/docs">Docs</a><a href="/blog">Blog</a></nav>');
     expect(r.missingSlots).toEqual([]);
-  });
-
-  it("per-element malformed (missing href) becomes loud comment + tracks link-list-malformed", () => {
-    const r = renderTemplate({
-      html: '<nav>{{#nav_items}}<a href="{{href}}">{{label}}</a>{{/nav_items}}</nav>',
-      fields: [linkListField],
-      contentValues: {
-        nav_items: [
-          { label: "OK", href: "/a" },
-          { label: "OK only" }, // missing href
-        ],
-      },
-    });
-    expect(r.html).toContain('<a href="/a">OK</a>');
-    expect(r.html).toContain("<!-- caelo:missing reason=link-list-malformed nav_items[1] -->");
-    expect(r.missingSlots).toContain("link-list-malformed:nav_items[1]");
   });
 });
 
@@ -305,23 +276,33 @@ describe("renderTemplate — empty single module field (#1041)", () => {
 });
 
 describe("renderTemplate — literal braces in content are data (#1053)", () => {
-  it("a text-list item keeps a literal {{Page URL}}", () => {
+  it("a list entry keeps a literal {{Page URL}}", () => {
     const r = renderTemplate({
-      html: "<ul>{{#items}}<li>{{.}}</li>{{/items}}</ul>",
-      fields: [{ name: "items", kind: "text-list" }],
-      contentValues: { items: ["link.href = '{{Page URL}}';", "{{title}}"] },
+      html: "<ul>{{#items}}<li>{{text}}</li>{{/items}}</ul>",
+      fields: [{ name: "items", kind: "list", listType: "texts" }],
+      contentValues: { items: texts("link.href = '{{Page URL}}';", "{{title}}") },
+      lists,
     });
-    expect(r.html).toBe("<ul><li>link.href = '{{Page URL}}';</li><li>{{title}}</li></ul>");
+    expect(unstamp(r.html)).toBe("<ul><li>link.href = '{{Page URL}}';</li><li>{{title}}</li></ul>");
     expect(r.missingSlots).toEqual([]);
   });
 
-  it("a link-list label is never re-substituted as a placeholder", () => {
+  it("a list entry's label is never re-substituted as a placeholder", () => {
     const r = renderTemplate({
-      html: '<nav>{{#nav}}<a href="{{href}}">{{label}}</a>{{/nav}}</nav>',
-      fields: [{ name: "nav", kind: "link-list" }],
-      contentValues: { nav: [{ label: "{{href}} {{Click URL}}", href: "/x" }] },
+      html: '<nav>{{#nav}}<a href="{{link}}">{{label}}</a>{{/nav}}</nav>',
+      fields: [{ name: "nav", kind: "list", listType: "links" }],
+      contentValues: {
+        nav: [
+          {
+            id: uid(1),
+            node: "link",
+            values: { label: "{{link}} {{Click URL}}", link: { href: "/x" } },
+          },
+        ],
+      },
+      lists,
     });
-    expect(r.html).toBe('<nav><a href="/x">{{href}} {{Click URL}}</a></nav>');
+    expect(unstamp(r.html)).toBe('<nav><a href="/x">{{link}} {{Click URL}}</a></nav>');
   });
 
   it("rendered nested module HTML is pasted verbatim, not parsed again", () => {
@@ -393,11 +374,12 @@ describe("renderTemplate — whitespace tolerance in markers", () => {
 
   it("section {{ #items }}…{{ /items }} (whitespace inside braces) iterates normally", () => {
     const r = renderTemplate({
-      html: "<ul>{{ #items }}<li>{{ . }}</li>{{ /items }}</ul>",
-      fields: [{ name: "items", kind: "text-list" }],
-      contentValues: { items: ["a", "b"] },
+      html: "<ul>{{ #items }}<li>{{ text }}</li>{{ /items }}</ul>",
+      fields: [{ name: "items", kind: "list", listType: "texts" }],
+      contentValues: { items: texts("a", "b") },
+      lists,
     });
-    expect(r.html).toBe("<ul><li>a</li><li>b</li></ul>");
+    expect(unstamp(r.html)).toBe("<ul><li>a</li><li>b</li></ul>");
   });
 
   it("partial {{ > hero }} (whitespace inside braces) resolves normally", () => {
@@ -456,10 +438,10 @@ describe("renderTemplate — failure-marker parity", () => {
   it("kind-mismatch on {{>name}} against a list field", () => {
     const r = renderTemplate({
       html: "<aside>{{>items}}</aside>",
-      fields: [{ name: "items", kind: "text-list" }],
+      fields: [{ name: "items", kind: "list", listType: "texts" }],
       contentValues: {},
     });
-    const expected = "kind-mismatch:items expected=module actual=text-list";
+    const expected = "kind-mismatch:items expected=module actual=list";
     expect(r.html).toBe(`<aside><!-- caelo:missing reason=${expected} --></aside>`);
     expect(r.missingSlots).toContain(expected);
   });

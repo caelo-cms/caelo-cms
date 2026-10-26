@@ -181,6 +181,20 @@ describe("page identity is the id; the URL path is unique", () => {
     expect(byId).toEqual({ ok: true, pageId: xa });
   });
 
+  it('"/<homepage slug>" names the homepage, which is served at / (PR #1121 e2e)', async () => {
+    const home = await makePage("start");
+    const set = await execute(registry, adapter, SYSTEM, "pages.set_home_page", { pageId: home });
+    if (!set.ok) throw new Error(JSON.stringify(set.error));
+    expect(await pathOf(home)).toBe("/");
+    const toolCtx = { registry, adapter } as Parameters<typeof resolvePageRef>[1];
+    expect(await resolvePageRef(SYSTEM, toolCtx, `/${PFX}-start`)).toEqual({
+      ok: true,
+      pageId: home,
+    });
+    const missing = await resolvePageRef(SYSTEM, toolCtx, `/${PFX}-nowhere`);
+    expect(missing.ok).toBe(false);
+  });
+
   it("a module-delete refusal names the placing pages by path", async () => {
     const mod = await execute(registry, adapter, SYSTEM, "modules.create", {
       slug: `${PFX}-mod`,

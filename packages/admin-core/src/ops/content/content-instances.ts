@@ -34,6 +34,7 @@ import {
   contentInstancesCreateManySchema,
   contentInstanceUpdateSchema,
   describeMalformedUuid,
+  type ExecutionContext,
   err,
   forkPlacementContentSchema,
   moduleRefSchema,
@@ -50,6 +51,7 @@ import { pendingSnapshotSql } from "../../draft.js";
 import { canonicaliseInstanceValues } from "../../links/canonicalise-writes.js";
 import { withHumanisedLinks } from "../../links/humanise.js";
 import { recordPendingImportLinks } from "../../links/import-targets.js";
+import { normaliseListFieldValues } from "../../lists/field-values.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../../locks.js";
 import {
   emitSnapshot,
@@ -401,6 +403,19 @@ async function validateNestedRefs(
   return { ok: true };
 }
 
+/** The module's fields in the caller's view, then {@link normaliseListFieldValues}. */
+async function normaliseInstanceListValues(
+  tx: Tx,
+  ctx: ExecutionContext,
+  branchId: string | null,
+  moduleId: string,
+  values: Record<string, unknown>,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const owner = await loadModuleStateWithBranchOverlay(tx, moduleId, branchId);
+  if (owner === null) return { ok: true };
+  return normaliseListFieldValues(tx, ctx, branchId, owner.fields, values);
+}
+
 function rowToContentInstance(
   r: ContentInstanceRowSql,
   placementCount: number,
@@ -732,6 +747,21 @@ export const createContentInstanceOp = defineOperation({
       });
     }
     Object.assign(input.values, linkCanon.value);
+    // Epic #1107 — `list` field values: entries validated, ids assigned.
+    const listValues = await normaliseInstanceListValues(
+      tx,
+      ctx,
+      ctx.chatBranchId ?? null,
+      input.moduleId,
+      input.values,
+    );
+    if (!listValues.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "content_instances.create",
+        message: listValues.message,
+      });
+    }
 
     // v0.12.1 — validate nested-module-ref shapes against the module's
     // declared fields[] BEFORE persisting so bad refs fail at write time
@@ -1130,6 +1160,21 @@ export const setContentInstanceValuesOp = defineOperation({
       });
     }
     Object.assign(input.values, linkCanon.value);
+    // Epic #1107 — `list` field values: entries validated, ids assigned.
+    const listValues = await normaliseInstanceListValues(
+      tx,
+      ctx,
+      branchId,
+      prev.moduleId,
+      input.values,
+    );
+    if (!listValues.ok) {
+      return err({
+        kind: "HandlerError",
+        operation: "content_instances.set_values",
+        message: listValues.message,
+      });
+    }
 
     // v0.12.1 — validate nested-module-ref shapes against the owning
     // module's fields[] so bad refs fail at write time, not render time.

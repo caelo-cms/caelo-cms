@@ -141,8 +141,26 @@ describe("parseAndUpgradePageState", () => {
       status: "draft",
       version: 0,
       deletedAt: null,
+      pageTypeId: "22222222-2222-4222-8222-222222222222",
+      properties: { teaser: "x" },
+      terms: [],
     });
     expect(r.status).toBe("draft");
+    expect(r.properties).toEqual({ teaser: "x" });
+  });
+
+  it("refuses a snapshot without a page type (0351 backfilled every one it could)", () => {
+    expect(() =>
+      parseAndUpgradePageState({
+        schemaVersion: 1,
+        slug: "home",
+        title: "Home",
+        templateId: "11111111-1111-4111-8111-111111111111",
+        status: "draft",
+        version: 0,
+        deletedAt: null,
+      }),
+    ).toThrow(SnapshotSchemaError);
   });
 
   it("rejects a non-uuid templateId", () => {
@@ -155,6 +173,9 @@ describe("parseAndUpgradePageState", () => {
         status: "draft",
         version: 0,
         deletedAt: null,
+        pageTypeId: "22222222-2222-4222-8222-222222222222",
+        properties: {},
+        terms: [],
       }),
     ).toThrow(SnapshotSchemaError);
   });

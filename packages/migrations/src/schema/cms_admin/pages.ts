@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
-import { type AnyPgColumn, bigint, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import {
+  type AnyPgColumn,
+  bigint,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { templates } from "./templates.js";
 
 /**
@@ -31,6 +39,15 @@ export const pages = pgTable(
     templateId: uuid("template_id")
       .notNull()
       .references(() => templates.id),
+    /**
+     * Epic #1107 (0351) — what the page IS. `page_types` has no drizzle
+     * mirror; the FK lives in SQL.
+     */
+    pageTypeId: uuid("page_type_id").notNull(),
+    /** Property values, validated against the page type by the ops. */
+    properties: jsonb("properties").notNull().default({}),
+    /** Set by the first Publish live, never by the AI. */
+    firstPublishedAt: timestamp("first_published_at", { withTimezone: true }),
     status: text("status", { enum: ["draft", "published"] })
       .notNull()
       .default("draft"),

@@ -9,7 +9,7 @@
  *   - module change → pages_using_module
  *   - template change → pages_on_template
  *   - layout change → pages_on_templates_using_layout
- *   - structured_set change → fullSite=true
+ *   - list / list type / page type change → fullSite=true
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -186,9 +186,9 @@ describe("snapshots.publish_impact_pages", () => {
     expect(new Set(v.pageIds)).toEqual(new Set([pageA1Id, pageA2Id, pageBId]));
   });
 
-  it("returns fullSite=true when any structured_set is in scope", async () => {
+  it("returns fullSite=true when any list is in scope", async () => {
     const r = await execute(registry, adapter, SYS, "snapshots.publish_impact_pages", {
-      structuredSetSlugs: ["header-main"],
+      listIds: ["00000000-0000-4000-8000-000000000001"],
     });
     expect(r.ok).toBe(true);
     if (!r.ok) return;

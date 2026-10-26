@@ -25,8 +25,8 @@ export const createTemplateTool: ToolDefinitionWithHandler<
 > = {
   name: "create_template",
   description:
-    "Create a new page-type template (a reusable HTML+CSS shell other pages bind to). " +
-    "Use when the user wants a NEW page-type ('create a blog-post template', 'a landing-page layout'). " +
+    "Create a new template (a reusable HTML+CSS shell pages bind to) for a page type. " +
+    "Use when pages need a new shape ('a blog-post template', 'a landing-page layout'). `pageType` = the page type (slug, list_page_types) whose pages may use it — the template is added to that type's templates; omit it for the site's default page type. A new KIND of content (news, products) is a page type first: upsert_page_types_many needs a template id, so create the template with the page type it belongs to, or create the type afterwards listing this template. " +
     "Do NOT use to create a one-off page — use `build_page` instead. " +
     "`layoutId` is OPTIONAL when site defaults define a default layout (see `## Site defaults` / get_site_defaults) — then omitting it binds to that default. Without a configured default, `layoutId` is REQUIRED: pick a UUID from `## Layouts on this site` / list_layouts (omitting it fails with a structured 'no defaults' error, no silent fallback). With ZERO layouts on the site, call create_layout first. " +
     'CRITICAL — block syntax: render slots in `html` MUST be <caelo-slot name="X"></caelo-slot> tags, ' +
@@ -47,6 +47,12 @@ export const createTemplateTool: ToolDefinitionWithHandler<
       html: { type: "string", minLength: 1 },
       css: { type: "string" },
       layoutId: { type: "string", format: "uuid" },
+      pageType: {
+        type: "string",
+        pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+        description:
+          "Page type slug (list_page_types) this template serves; omit for the site's default page type.",
+      },
       blocks: {
         type: "array",
         description:

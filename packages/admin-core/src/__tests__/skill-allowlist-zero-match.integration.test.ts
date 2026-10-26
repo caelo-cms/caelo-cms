@@ -174,27 +174,21 @@ async function captureToolsForTurn(slug: string): Promise<CapturedTool[]> {
 
 describe("skill allowlist resolution (issue #106 / issue #301)", () => {
   it("an op-notation allowlist TRANSLATES and PRELOADS — nothing drops (run #15 regression)", async () => {
-    // The pre-0157 menu-auditor shape, seeded via raw SQL exactly like
-    // migration 0033 did. The entries still translate (structured_sets.list
-    // → list_structured_sets, pages.list → list_pages, redirects.list →
-    // find_redirects); post-Tool-Search they PRELOAD those tools rather
+    // An op-notation allowlist, seeded via raw SQL exactly like migration
+    // 0033 did. The entries still translate (pages.list → list_pages,
+    // redirects.list → find_redirects); post-Tool-Search they PRELOAD those tools rather
     // than narrowing the catalogue. Every other tool stays reachable via
     // search — a skill can no longer strand the model.
-    await seedSkill(
-      ZERO_SLUG,
-      ["structured_sets.list", "pages.list", "redirects.list"],
-      "zzbogusaudit",
-    );
+    await seedSkill(ZERO_SLUG, ["pages.list", "redirects.list"], "zzbogusaudit");
     const tools = await captureToolsForTurn(ZERO_SLUG);
     const byName = new Map(tools.map((t) => [t.name, t]));
     // The translated entries are present AND preloaded (alwaysLoaded).
-    expect(byName.get("list_structured_sets")?.alwaysLoaded).toBe(true);
     expect(byName.get("find_redirects")?.alwaysLoaded).toBe(true);
     expect(byName.has("list_pages")).toBe(true); // core, always loaded
     // Writes are NOT dropped anymore — reachable via Tool Search.
     expect(byName.has("add_module")).toBe(true);
     expect(byName.has("edit_module")).toBe(true);
-    expect(byName.has("set_structured_set")).toBe(true);
+    expect(byName.has("bulk_create_redirects")).toBe(true);
   });
 
   it("an allowlist resolving to ZERO live tools keeps the full catalogue (defect, never zero tools)", async () => {

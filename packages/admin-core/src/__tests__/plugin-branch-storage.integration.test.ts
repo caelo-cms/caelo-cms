@@ -22,7 +22,7 @@ import {
   MAIN_RENDER,
   type PluginHostInfra,
   resetPluginHost,
-  resolveDataLists,
+  resolveListSources,
   runPluginOperation,
 } from "@caelo-cms/plugin-host";
 import {
@@ -70,9 +70,16 @@ const plugin = definePlugin({
   tier: 1,
   schema: {},
   adminSchema: { notes: { label: "string" } },
-  requestedCapabilities: ["cms_admin_schema", "cms_admin"],
-  dataLists: [{ name: "pbs_notes", description: "Every note label.", itemFields: ["label"] }],
-  dataListsOperation: "note_lists",
+  requestedCapabilities: ["cms_admin_schema", "cms_admin", "list_sources"],
+  listSources: [
+    {
+      name: "pbs_notes",
+      label: "Notes",
+      description: "Every note label.",
+      node: { label: "Note", fields: [{ name: "label", label: "Label", type: "text" }] },
+    },
+  ],
+  listSourcesOperation: "note_lists",
   onActivate: async (ctx) => {
     const existing = await q(ctx).list("notes", { limit: 1 });
     if (existing.length === 0) await q(ctx).insert("notes", { label: "seed" });
@@ -100,9 +107,9 @@ const plugin = definePlugin({
     list: async (ctx) => q(ctx).list("notes", { orderBy: "label", orderDir: "asc" }),
     note_lists: async (ctx, args) => {
       const notes = await q(ctx).list("notes", { orderBy: "label", orderDir: "asc" });
-      const items = notes.map((n) => ({ label: String(n.label) }));
+      const items = notes.map((n) => ({ id: String(n.id), values: { label: String(n.label) } }));
       const pageIds = (args as { pageIds: string[] }).pageIds;
-      return { lists: Object.fromEntries(pageIds.map((id) => [id, { pbs_notes: items }])) };
+      return { sources: Object.fromEntries(pageIds.map((id) => [id, { pbs_notes: items }])) };
     },
     retitle_page: async (ctx, args) => {
       const cms = (ctx as Ctx).cms;
@@ -267,8 +274,8 @@ describe("branch-aware plugin storage", () => {
     const PAGE = "00000000-0000-4000-8000-0000000000aa";
     const listed = async (chatBranchId: string | null) =>
       (
-        (await resolveDataLists([PAGE], { chatBranchId }, "directory")).get(PAGE)?.pbs_notes ?? []
-      ).map((i) => i.label);
+        (await resolveListSources([PAGE], { chatBranchId }, "directory")).get(PAGE)?.pbs_notes ?? []
+      ).map((i) => i.values.label);
     expect(await listed(a.chatBranchId)).toEqual(["a-new", "seed-a"]);
     expect(await listed(MAIN_RENDER.chatBranchId)).toEqual(["seed"]);
 

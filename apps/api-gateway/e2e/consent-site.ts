@@ -175,6 +175,7 @@ async function prepare(): Promise<{ buildDir: string; gatewayAdapter: DatabaseAd
   const runId = `${PFX}-run`;
   const built = await adminAdapter.withAdminTransaction(SYSTEM, (tx) =>
     generateSite({
+      publishAt: new Date().toISOString(),
       tx,
       adapter: adminAdapter,
       plugins: localBuildPluginServices,

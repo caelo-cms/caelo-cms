@@ -59,8 +59,8 @@ describe("remote ↔ served build plugin calls", () => {
       m: "staticRender",
       args: ["international-site", "p1", "directory"],
     } as unknown as string);
-    expect(await remote.declaredDataListNames()).toEqual({
-      m: "declaredDataListNames",
+    expect(await remote.declaredListSourceNames()).toEqual({
+      m: "declaredListSourceNames",
       args: [],
     } as unknown as string[]);
   });

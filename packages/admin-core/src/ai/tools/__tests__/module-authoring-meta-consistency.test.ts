@@ -16,7 +16,7 @@
  *     pattern (CLAUDE.md §1A) is never rejected with `unrecognized_keys`.
  *  2. RECOVERY — an invalid call hands back an AI-actionable error naming the
  *     bad key + the expected argument set, and a nesting-intent key (`children`)
- *     steers the model to a `fields` link-list instead (CLAUDE.md §11).
+ *     steers the model to a `fields` list field instead (CLAUDE.md §11).
  */
 
 import { describe, expect, it } from "bun:test";
@@ -135,7 +135,7 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     expect(res.content).not.toContain('"code":"unrecognized_keys"');
   });
 
-  it("a `children` key steers to a `fields` link-list (nesting intent)", async () => {
+  it("a `children` key steers to a `fields` list field (nesting intent)", async () => {
     const res = await registry.dispatch(
       "add_module",
       {
@@ -146,7 +146,7 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
         displayName: "Site Header",
         html: "<header><nav></nav></header>",
         // The observed failure: the model tries to nest a nav via `children`
-        // instead of a `fields` link-list, then re-sends it until the loop cap.
+        // instead of a `fields` list field, then re-sends it until the loop cap.
         children: [{ type: "nav-link", label: "Home", href: "/" }],
       },
       dummyCtx,
@@ -156,7 +156,7 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     // names the offending key AND the correct mechanism
     expect(res.content).toContain("children");
     expect(res.content).toContain("`fields`");
-    expect(res.content).toContain("link-list");
+    expect(res.content).toContain('kind:"list"');
     // gives a concrete, copyable field example so it re-emits in one turn
     expect(res.content).toContain("nav_links");
     expect(res.content).toContain("{{#nav_links}}");
@@ -182,7 +182,7 @@ describe("dispatcher rejection is AI-actionable (#106 recovery surface)", () => 
     expect(res.ok).toBe(false);
     expect(res.content).toContain("wobble");
     // No nesting-mechanism noise for a non-nesting key.
-    expect(res.content).not.toContain("link-list");
+    expect(res.content).not.toContain('kind:"list"');
     expect(res.content).not.toContain("{{#nav_links}}");
   });
 });

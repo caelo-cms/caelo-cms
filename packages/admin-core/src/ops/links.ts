@@ -34,7 +34,7 @@ import { jsonbParam } from "../sql-helpers.js";
 
 const unresolvedLink = z.object({
   surface: z.string(),
-  entityKind: z.enum(["module", "contentInstance", "structuredSet", "layout", "pluginRow"]),
+  entityKind: z.enum(["module", "contentInstance", "layout", "pluginRow"]),
   entityId: z.string(),
   branchId: z.string().nullable(),
   label: z.string(),

@@ -29,7 +29,15 @@ export function validateInstallationPolicy(manifest: PluginManifest): void {
   requireCapability(Boolean(manifest.contributes?.length), "head_contributions");
   requireCapability(Boolean(manifest.urlContributions?.length), "url_slots");
   requireCapability(manifest.hasBuildAssets || manifest.hasDeferrals, "client_assets");
-  requireCapability(Boolean(manifest.dataLists?.length), "data_lists");
+  requireCapability(Boolean(manifest.listSources?.length), "list_sources");
+  requireCapability(Boolean(manifest.listTypes?.length), "list_types");
+  requireCapability(manifest.hasListResolve, "list_resolve");
+  // Definition extensions are data core validates and never interprets,
+  // so they need no grant — but the schema is compiled in the host, so it
+  // keeps to the same safe subset as tool schemas.
+  for (const schema of [manifest.listExt?.field, manifest.listExt?.node]) {
+    if (schema !== undefined) validateExternalToolSchema(schema);
+  }
   requireCapability(manifest.hasContentVariants, "content_variants");
   requireCapability(manifest.hasLinkResolve, "link_resolve");
   requireCapability(Boolean(manifest.skills?.length), "companion_skills");
@@ -108,8 +116,12 @@ export function validateSelectedGrants(
   }
 }
 
-/** External schemas are compiled in the host, so disallow executable regex/ref expansion. */
-function validateExternalToolSchema(schema: Record<string, unknown>): void {
+/**
+ * External schemas are compiled in the host, so disallow executable
+ * regex/ref expansion. Used for tool input schemas and for `listExt`
+ * definition-extension schemas.
+ */
+export function validateExternalToolSchema(schema: Record<string, unknown>): void {
   if (JSON.stringify(schema).length > 32_000) throw new Error("External tool schema exceeds 32 KB");
   const keywords = new Set([
     "$schema",

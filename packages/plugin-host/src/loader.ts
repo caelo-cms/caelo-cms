@@ -54,7 +54,6 @@ import { execute } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { makePluginContext } from "./capabilities.js";
-import { pluginDataListsRegistry } from "./data-lists.js";
 import {
   hostSystemActorId,
   type LoadedPlugin,
@@ -69,6 +68,8 @@ import {
 } from "./dispatch.js";
 import { readExternalApproval } from "./external-authorization.js";
 import { externalPluginDefinition } from "./external-plugin.js";
+import { compileListExt } from "./list-ext.js";
+import { pluginListSourcesRegistry } from "./list-sources.js";
 import { describeLoadError } from "./load-error.js";
 import { loadReported, reportLoadFailure } from "./load-outcome.js";
 import { resetLocalLoadOutcomes } from "./local-availability.js";
@@ -948,27 +949,59 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     );
   }
 
+  // Epic #1107 — list sources, list types and list-resolve overlays each
+  // change what pages render, so each needs its own grant; refused here,
+  // before any side effect, like tools and workers above.
+  if ((def.listTypes?.length ?? 0) > 0 && !grantedCaps.has("list_types")) {
+    throw new Error(
+      `plugin "${def.slug}" declares listTypes without the list_types capability — registration refused`,
+    );
+  }
+  if (def.listResolveOperation !== undefined) {
+    if (!grantedCaps.has("list_resolve")) {
+      throw new Error(
+        `plugin "${def.slug}" answers list-resolve without the list_resolve capability — registration refused`,
+      );
+    }
+    if (!def.operations[def.listResolveOperation]) {
+      throw new Error(
+        `plugin "${def.slug}" names listResolveOperation "${def.listResolveOperation}", which is not one of its operations`,
+      );
+    }
+  }
+  if (def.listExt) {
+    // Compiled now so a schema the host cannot compile fails the load,
+    // not the first list-type write that meets it.
+    try {
+      compileListExt(def.listExt);
+    } catch (e) {
+      throw new Error(`plugin "${def.slug}" declares a listExt schema the host cannot compile`, {
+        cause: e,
+      });
+    }
+  }
+
   // Declared BEFORE the activation gate on purpose. An inactive plugin
   // contributes nothing, but a module written while it ran still says
-  // `{{#its_list}}`; remembering the name lets the renderer report "that
-  // plugin is switched off" instead of "unknown field".
-  if (def.dataLists && def.dataLists.length > 0) {
-    if (def.tier !== 1) {
+  // `{{#its_source}}`; remembering the name lets the renderer report
+  // "that plugin is switched off" instead of "unknown source".
+  if (def.listSources && def.listSources.length > 0) {
+    if (!grantedCaps.has("list_sources")) {
       throw new Error(
-        `plugin "${def.slug}" declares dataLists but is not release-signed — refused`,
+        `plugin "${def.slug}" declares listSources without the list_sources capability — registration refused`,
       );
     }
-    if (!def.dataListsOperation) {
+    if (!def.listSourcesOperation) {
       throw new Error(
-        `plugin "${def.slug}" declares dataLists without a dataListsOperation to resolve them`,
+        `plugin "${def.slug}" declares listSources without a listSourcesOperation to resolve them`,
       );
     }
-    if (!def.operations[def.dataListsOperation]) {
+    if (!def.operations[def.listSourcesOperation]) {
       throw new Error(
-        `plugin "${def.slug}" names dataListsOperation "${def.dataListsOperation}", which is not one of its operations`,
+        `plugin "${def.slug}" names listSourcesOperation "${def.listSourcesOperation}", which is not one of its operations`,
       );
     }
-    pluginDataListsRegistry.declare(def.slug, def.dataLists);
+    pluginListSourcesRegistry.declare(def.slug, def.listSources);
   }
 
   // Upsert the plugins row + actor row; reuses migration 0036's partial unique index.
@@ -1155,6 +1188,35 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
     }
   }
 
+  // Epic #1107 — the plugin's list types go live with it, like its
+  // skills: core's own op writes them (validated against every list of
+  // the type, snapshotted, owned by this plugin), refreshed from the
+  // verified manifest on every load. Availability then follows the
+  // plugin's status (`plugin_list_type_available`), so a disable
+  // archives them without touching a row.
+  if (def.listTypes && def.listTypes.length > 0) {
+    await inPhase("activate", async () => {
+      const r = await execute(
+        opts.infra.registry,
+        opts.infra.adapter,
+        {
+          actorId: opts.systemActorId,
+          actorKind: "system",
+          requestId: `plugin-list-types-${def.slug}`,
+        },
+        "list_types.sync_plugin_types",
+        { pluginId, listTypes: def.listTypes },
+      );
+      if (!r.ok) {
+        loadedPlugins.unload(def.slug);
+        urlContributionsRegistry.unregisterPlugin(def.slug);
+        throw new Error(
+          `plugin "${def.slug}" list types could not be stored: ${"message" in r.error ? (r.error as { message: string }).message : r.error.kind}`,
+        );
+      }
+    });
+  }
+
   // #1077 — this instance now holds the plugin's verified definition, so
   // its publisher can (re)publish the plugin's visitor projection. A
   // publisher that does not have a plugin leaves its section alone, so
@@ -1185,8 +1247,8 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   for (const tool of def.tools ?? []) {
     pluginToolsRegistry.register(def.slug, tool);
   }
-  if (def.dataLists && def.dataLists.length > 0 && def.dataListsOperation) {
-    pluginDataListsRegistry.register(def.slug, def.dataLists, def.dataListsOperation);
+  if (def.listSources && def.listSources.length > 0 && def.listSourcesOperation) {
+    pluginListSourcesRegistry.register(def.slug, def.listSources, def.listSourcesOperation);
   }
   for (const renderer of def.promptContext ?? []) {
     pluginPromptContextRegistry.register({
@@ -1285,7 +1347,7 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
 export function resetPluginHost(): void {
   pluginWorkerScheduler.shutdown();
   pluginToolsRegistry.reset();
-  pluginDataListsRegistry.reset();
+  pluginListSourcesRegistry.reset();
   pluginPromptContextRegistry.reset();
   urlContributionsRegistry.reset();
   loadedPlugins.reset();

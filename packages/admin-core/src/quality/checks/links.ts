@@ -8,7 +8,7 @@
  *
  * The staged build is the ground truth. The DB-level scan
  * (ops/content/link-integrity.ts) reads stored values and misses layouts,
- * structured sets, field defaults and plugin output (#724, #846); here the
+ * field defaults and plugin output (#724, #846); here the
  * question is only "does a visitor following this URL get a 404?".
  *
  * Rules:
@@ -95,12 +95,15 @@ export interface ReportedDraftLink {
 export type ReportedDraftLinkOrigin =
   /** A module's HTML, field value or field default. */
   | { readonly kind: "module"; readonly moduleId: string }
-  /** A nav-menu structured set, rendered by the module with this slug. */
-  | { readonly kind: "nav-menu"; readonly moduleSlug: string }
   /** Plugin data named through the link-locations hook. */
   | { readonly kind: "plugin"; readonly pluginSlug: string }
   /** Layout or template markup: outside every module. */
-  | { readonly kind: "chrome" };
+  | { readonly kind: "chrome" }
+  /**
+   * Shared list entries, list type sources or page properties (epic
+   * #1107): data any module on the page may render, so inside some module.
+   */
+  | { readonly kind: "list-data" };
 
 /** What one same-site URL resolved to. */
 type Resolution =
@@ -124,6 +127,7 @@ interface Occurrence {
   readonly navigational: boolean;
   readonly moduleId: string | null;
   readonly pluginSlug: string | null;
+  readonly listItem: string | null;
   readonly target: SameSiteUrl;
 }
 
@@ -308,7 +312,7 @@ function linkProblems(
     if (
       ruleId === "links/broken-internal" &&
       r?.kind === "missing" &&
-      (reportedByPath.get(pathKey(r.path)) ?? []).some((d) => reportedHere(d, o, ctx))
+      (reportedByPath.get(pathKey(r.path)) ?? []).some((d) => reportedHere(d, o))
     ) {
       continue;
     }
@@ -333,21 +337,17 @@ function linkProblems(
 }
 
 /** True when the rendered link `o` is the stored draft link `d` renders. */
-function reportedHere(d: ReportedDraftLink, o: Occurrence, ctx: OriginContext): boolean {
+function reportedHere(d: ReportedDraftLink, o: Occurrence): boolean {
   if (d.pageIds.length > 0 && !d.pageIds.includes(o.page.pageId)) return false;
   switch (d.origin.kind) {
     case "plugin":
       return o.pluginSlug === d.origin.pluginSlug;
     case "module":
       return o.pluginSlug === null && o.moduleId === d.origin.moduleId;
-    case "nav-menu":
-      return (
-        o.pluginSlug === null &&
-        o.moduleId !== null &&
-        ctx.modules.get(o.moduleId)?.slug === d.origin.moduleSlug
-      );
     case "chrome":
       return o.pluginSlug === null && o.moduleId === null;
+    case "list-data":
+      return o.pluginSlug === null && o.moduleId !== null;
   }
 }
 
@@ -415,8 +415,8 @@ function orphanPages(
       message:
         "Orphan page: no other page of the staged build links here (navigation included), so visitors cannot reach it and crawlers find it only through the sitemap.",
       fix: {
-        tool: "set_structured_set",
-        hint: "add the page to a navigation menu (structured set nav-menu/<slug>) or link it from a related page's content with set_page_module_content; a page meant to stay unlinked (an ad landing page) can keep this warning",
+        tool: "set_page_module_content",
+        hint: "link the page from a menu list or from a related page's content (set_page_module_content); a page meant to stay unlinked (an ad landing page) can keep this warning",
       },
     }));
 }

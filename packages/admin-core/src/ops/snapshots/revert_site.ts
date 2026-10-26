@@ -5,19 +5,25 @@ import { err, ok, revertSiteInput } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
+import { replacePageTerms } from "../../lists/page-terms.js";
+import { applyListEntityRow, type ListSnapshotEntity } from "../../lists/store.js";
 import {
   emitSnapshot,
   loadModuleState,
   loadPageLayoutState,
   loadPageState,
   loadTemplateState,
+  parseAndUpgradeListState,
+  parseAndUpgradeListTypeState,
   parseAndUpgradeModuleState,
   parseAndUpgradePageLayoutState,
   parseAndUpgradePageState,
+  parseAndUpgradePageTypeState,
   parseAndUpgradeTemplateState,
   parseSnapshotState,
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
+import { jsonbParam } from "../../sql-helpers.js";
 import { recomputeCurrentPathsWithMoves } from "../content/current-path.js";
 import { applyPathMoveEffects } from "../content/path-moves.js";
 
@@ -65,6 +71,57 @@ export const revertSiteOp = defineOperation({
       SELECT page_id::text AS entity_id, state FROM page_layout_snapshots
       WHERE site_snapshot_id = ${input.snapshotId}::uuid
     `)) as unknown as Row[];
+
+    // Epic #1107 — list types, lists and page types under the target.
+    const listEntityRows: {
+      kind: "listType" | "list" | "pageType";
+      table: string;
+      column: string;
+    }[] = [
+      { kind: "listType", table: "list_type_snapshots", column: "list_type_id" },
+      { kind: "list", table: "list_snapshots", column: "list_id" },
+      { kind: "pageType", table: "page_type_snapshots", column: "page_type_id" },
+    ];
+    const listStates: ListSnapshotEntity[] = [];
+    try {
+      for (const spec of listEntityRows) {
+        const rows = (await tx.execute(sql`
+          SELECT ${sql.raw(spec.column)}::text AS entity_id, state FROM ${sql.raw(spec.table)}
+          WHERE site_snapshot_id = ${input.snapshotId}::uuid
+        `)) as unknown as Row[];
+        for (const r of rows) {
+          const raw = parseSnapshotState(r.state);
+          if (spec.kind === "listType") {
+            listStates.push({
+              kind: "listType",
+              entityId: r.entity_id,
+              state: parseAndUpgradeListTypeState(raw),
+            });
+          } else if (spec.kind === "list") {
+            listStates.push({
+              kind: "list",
+              entityId: r.entity_id,
+              state: parseAndUpgradeListState(raw),
+            });
+          } else {
+            listStates.push({
+              kind: "pageType",
+              entityId: r.entity_id,
+              state: parseAndUpgradePageTypeState(raw),
+            });
+          }
+        }
+      }
+    } catch (e) {
+      if (e instanceof SnapshotSchemaError) {
+        return err({
+          kind: "HandlerError",
+          operation: "snapshots.revert_site",
+          message: e.message,
+        });
+      }
+      throw e;
+    }
 
     // Validate every state payload up-front so a schema-mismatch fails the
     // whole revert before we touch live tables — atomic semantics still hold
@@ -135,6 +192,9 @@ export const revertSiteOp = defineOperation({
         `);
       }
     }
+    // Types before lists before pages: a restored list / page may name a
+    // type the same revert restores.
+    for (const e of listStates) await applyListEntityRow(tx, ctx.actorId, e, null);
     for (const r of parsedPages) {
       const t = r.state;
       await tx.execute(sql`
@@ -142,9 +202,11 @@ export const revertSiteOp = defineOperation({
           slug = ${t.slug}, title = ${t.title},
           template_id = ${t.templateId}::uuid, status = ${t.status},
           ${t.parentPageId === undefined ? sql`` : sql`parent_page_id = ${t.parentPageId}::uuid,`}
+          page_type_id = ${t.pageTypeId}::uuid, properties = ${jsonbParam(t.properties)},
           deleted_at = ${t.deletedAt}, updated_at = now(), version = version + 1
         WHERE id = ${r.entity_id}::uuid
       `);
+      await replacePageTerms(tx, r.entity_id, t.terms);
     }
     // Restored slugs / parents move URLs (subtrees included): recompose
     // and give every moved URL its 301.
@@ -222,7 +284,7 @@ export const revertSiteOp = defineOperation({
       input,
       succeeded: true,
       entityId: input.snapshotId,
-      resultSummary: `m=${ms.length},t=${ts.length},p=${ps.length},pl=${pls.length}`,
+      resultSummary: `m=${ms.length},t=${ts.length},p=${ps.length},pl=${pls.length},lists=${listStates.length}`,
     });
 
     // Build fresh state for the audit snapshot. Falls back to the validated
@@ -274,6 +336,7 @@ export const revertSiteOp = defineOperation({
         entityId: l.pageId,
         state: l.state,
       })),
+      ...listStates,
     ];
     const result = await emitSnapshot(tx, {
       actorId: ctx.actorId,
