@@ -53,6 +53,7 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { runActivationSerialized } from "./activation-lock.js";
 import { makePluginContext } from "./capabilities.js";
 import {
   hostSystemActorId,
@@ -1204,14 +1205,18 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   }
 
   // Create-time defaults, on main, before anything can read them.
-  if (def.onActivate) {
+  const onActivate = def.onActivate;
+  if (onActivate) {
     const ctx = await makePluginContext({
       plugin: lp,
       infra: opts.infra,
       invocation: { origin: "system", actorId: hostSystemActorId() },
     });
     try {
-      await def.onActivate(ctx);
+      // #1144 — one activation of this plugin at a time across processes.
+      await runActivationSerialized(opts.infra, opts.systemActorId, def.slug, async () => {
+        await onActivate(ctx);
+      });
     } catch (e) {
       loadedPlugins.unload(def.slug);
       throw new PluginLoadError(
