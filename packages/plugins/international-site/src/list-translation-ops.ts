@@ -196,7 +196,12 @@ export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTr
     groupLocales.set(v.group_id, set);
   }
 
-  // Local lists: the instances placed on pages of a non-default language.
+  // Local lists: instances shared between the default language and other
+  // languages. An instance that renders only on pages of other languages
+  // (a variant page's own copy, made by create_variant / translate_variant)
+  // already holds that language's text — translating it again would hide
+  // its entries as "missing" on the very pages it was written for.
+  const defaultCode = def?.code ?? null;
   const pagesOfInstance = new Map(
     shared.listInstances.map((r) => [r.contentInstanceId, r.pageIds]),
   );
@@ -205,8 +210,10 @@ export async function loadListTranslationState(deps: ChromeDeps): Promise<ListTr
   for (const ci of instances.instances) {
     const pageIds = pagesOfInstance.get(ci.id);
     if (!pageIds) continue;
+    const pageLocales = pageIds.map(localeOfPage);
+    if (defaultCode === null || !pageLocales.includes(defaultCode)) continue;
     const locales = new Set(
-      pageIds.map(localeOfPage).filter((l): l is string => l !== null && nonDefault.includes(l)),
+      pageLocales.filter((l): l is string => l !== null && nonDefault.includes(l)),
     );
     if (locales.size === 0) continue;
     const listFields = (moduleById.get(ci.moduleId)?.fields ?? []).flatMap((f) => {
