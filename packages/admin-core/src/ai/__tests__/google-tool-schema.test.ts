@@ -40,6 +40,53 @@ test("Google tool schemas retain types without mutating canonical enum validatio
   expect(schema.properties.enum.enum).toEqual([301, 302]);
 });
 
+test("Google tool schemas split a nullable type list into a bare null branch", () => {
+  // The model-facing compaction writes nullable fields as `type: [t, "null"]`
+  // (an enum gains null); Google gets an anyOf with the annotations outside.
+  expect(
+    googleToolSchema({
+      type: ["string", "null"],
+      description: "Order.",
+      enum: ["asc", "desc", null],
+      maxLength: 4,
+    }),
+  ).toEqual({
+    description: "Order.",
+    anyOf: [{ type: "string", enum: ["asc", "desc"], maxLength: 4 }, { type: "null" }],
+  });
+  expect(
+    googleToolSchema({
+      type: ["integer", "null"],
+      enum: [301, 302, null],
+      minimum: 1,
+      default: null,
+    }),
+  ).toEqual({
+    default: null,
+    anyOf: [
+      { type: "integer", minimum: 1, description: "Allowed values: 301, 302." },
+      { type: "null" },
+    ],
+  });
+  expect(
+    googleToolSchema({
+      type: ["object", "null"],
+      properties: { a: { type: ["boolean", "null"] } },
+      additionalProperties: false,
+      pattern: "^x$",
+    }),
+  ).toEqual({
+    anyOf: [
+      {
+        type: "object",
+        properties: { a: { anyOf: [{ type: "boolean" }, { type: "null" }] } },
+        additionalProperties: false,
+      },
+      { type: "null" },
+    ],
+  });
+});
+
 test("actual Google SDK sends redirect tools without non-string enums", async () => {
   let captured = "";
   const provider = new GeminiProvider({

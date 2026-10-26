@@ -5,7 +5,6 @@
       "name": "read_content",
       "description": "Read a module's, template's or layout's body (html/css/js) with line numbers — the Read step before a surgical edit_content. Pass `entityKind` ('module' | 'template' | 'layout' — a layout is the chrome shell its templates render in; list_templates shows each template's layoutId) + `entityId`, and optionally `field` ('html'/'css'/'js'; templates and layouts have html/css). Omit `field` to see every body; name a `field` to window a large one via `offset` (1-based line) + `limit`. Each block prints a `sha=` token you can hand back to edit_content as `expectedSha` to guard against a concurrent change. Prefer this over dumping a whole module through list_modules (which returns metadata only). Use edit_content (NOT update_modules_many) to change what you read here surgically.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "entityKind": {
@@ -18,8 +17,7 @@
           },
           "entityId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "field": {
             "type": "string",
@@ -28,8 +26,7 @@
           },
           "offset": {
             "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
+            "minimum": 1
           },
           "limit": {
             "type": "integer",
@@ -48,7 +45,6 @@
       "name": "edit_content",
       "description": "Surgically edit a module's, template's or layout's body (html/css/js) by string replacement — the cheap, minimal-diff way to change existing code. Pass `entityKind` + `entityId` + `field` + an `edits` array of {oldString, newString, replaceAll?}. Each `oldString` must be UNIQUE in the body (add surrounding context if not) unless `replaceAll:true`; edits apply in order, atomically (all-or-nothing). Read the body first with read_content and copy exact text (incl. whitespace) into `oldString`; optionally pass its `sha=` as `expectedSha` to guard against a concurrent change. To fill an EMPTY field (e.g. a module with no js yet), pass one edit with `oldString: \"\"` and the new content as `newString`; an empty oldString on a field that has content is refused. On success it returns the NEW `sha=` plus a line-numbered snippet of each changed region — chain another edit_content in the same turn using that sha and the fresh line numbers, WITHOUT re-reading. PREFER this over update_modules_many for targeted changes to existing html/css/js — it is far cheaper and the diff is reviewable. Use update_modules_many instead for a wholesale rewrite, a new module, or field-schema / displayName / kind changes. TEMPLATES AND LAYOUTS ARE GATED: an edit_content on a template or layout is a TWO-STEP §11.A flow — you propose, the Owner clicks Approve on the proposal card. Do not claim such an edit was applied. **Internal links** (`href`s in HTML, `url`/`link` fields, the links of list entries): write the page's path, e.g. `/about` — it must be an EXISTING page (list_pages); a link to a page that does not exist yet is refused, so create the target first (`build_page({page:{slug, title}, modules: []})` makes an empty page shell in one call), or add the link after. The site root `/` (also `/#section`) is always valid, even before the homepage is built. Exception, a site import you are rebuilding in this chat: a link to a page of that import run is kept and resolved by resolve_import_links at the end. Images/files: their media URL (find_media). Other sites: the full https:// URL.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "entityKind": {
@@ -61,8 +57,7 @@
           },
           "entityId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "field": {
             "type": "string",
@@ -112,7 +107,6 @@
       "name": "grep_content",
       "description": "Search every module, template and layout body for a string or regex — find WHERE to edit before calling edit_content. Pass `pattern` (literal substring, or a JS regex with `isRegex:true`), optional `ignoreCase`, and narrow with `entityKind` and/or `field` (html/css/js). Returns matching lines as `<kind> <slug> (<id>) <field>:<lineNo>: <text>` so you can jump straight to read_content + edit_content on the right entity. Use when the operator says 'change X everywhere it appears' or you need to locate a class / string across the catalog.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "pattern": {
@@ -552,96 +546,56 @@
                 },
                 "content": {
                   "description": "The placement's content. Omit for an empty private instance. source='inline' → page-local values; source='shared' → mint a REUSABLE instance (purpose required) bound synced; source='existing' → bind an instance from list_content_instances.",
-                  "oneOf": [
-                    {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "source",
-                        "values"
-                      ],
-                      "properties": {
-                        "source": {
-                          "type": "string",
-                          "enum": [
-                            "inline"
-                          ]
-                        },
-                        "values": {
-                          "type": "object",
-                          "additionalProperties": true
-                        }
-                      }
+                  "type": "object",
+                  "properties": {
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "inline",
+                        "shared",
+                        "existing"
+                      ]
                     },
-                    {
+                    "values": {
                       "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "source",
-                        "purpose"
-                      ],
-                      "properties": {
-                        "source": {
-                          "type": "string",
-                          "enum": [
-                            "shared"
-                          ]
-                        },
-                        "values": {
-                          "type": "object",
-                          "additionalProperties": true
-                        },
-                        "purpose": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 1000
-                        },
-                        "slug": {
-                          "type": "string",
-                          "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
-                        },
-                        "displayName": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 128
-                        },
-                        "syncMode": {
-                          "type": "string",
-                          "enum": [
-                            "synced",
-                            "unsynced"
-                          ]
-                        }
-                      }
+                      "additionalProperties": true,
+                      "description": "Required when `source`: `inline`."
                     },
-                    {
-                      "type": "object",
-                      "additionalProperties": false,
-                      "required": [
-                        "source",
-                        "contentInstanceId"
+                    "purpose": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 1000,
+                      "description": "Required when `source`: `shared`."
+                    },
+                    "slug": {
+                      "type": "string",
+                      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+                      "description": "For `source`: `shared`."
+                    },
+                    "displayName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "description": "For `source`: `shared`."
+                    },
+                    "syncMode": {
+                      "type": "string",
+                      "enum": [
+                        "synced",
+                        "unsynced"
                       ],
-                      "properties": {
-                        "source": {
-                          "type": "string",
-                          "enum": [
-                            "existing"
-                          ]
-                        },
-                        "contentInstanceId": {
-                          "type": "string",
-                          "format": "uuid"
-                        },
-                        "syncMode": {
-                          "type": "string",
-                          "enum": [
-                            "synced",
-                            "unsynced"
-                          ]
-                        }
-                      }
+                      "description": "For `source`: `shared`|`existing`."
+                    },
+                    "contentInstanceId": {
+                      "type": "string",
+                      "format": "uuid",
+                      "description": "Required when `source`: `existing`."
                     }
-                  ]
+                  },
+                  "required": [
+                    "source"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }
@@ -752,13 +706,11 @@
       "name": "list_content_instances",
       "description": "List content_instances — the values filling module placeholders (TOON rows: id, module, kind, slug, displayName, purpose, placements, parents), most-placed first. `purpose` says why a shared row exists: read it BEFORE minting a shared instance (create_content_instances) and reuse a row whose purpose and module fit. `placementCount` is the blast radius: >1 means SHARED, editing propagates to every bound page. Check BEFORE set_content_instance_values_many. `parents` counts instances that show this one inside a module / module-list field; an ORPHAN (safe to delete) has placements=0 AND parents=0. Both counts are as this chat's draft sees them. Narrow by `moduleId` / `slug` / `pageId` (instances used on one page), plus the standard list params: `filter`, `limit`/`offset`, `full: true`.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "moduleId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "slug": {
             "type": "string",
@@ -767,8 +719,7 @@
           },
           "pageId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "filter": {
             "description": "Case-insensitive substring filter applied across all output columns.",
@@ -784,8 +735,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -799,13 +749,11 @@
       "name": "get_content_instance",
       "description": "Fetch one content_instance by id. Returns the values, the placements (page path + block + position + sync_mode) that bind to it, and the parent instances that show it inside a module / module-list field — all as this chat's draft sees them. Use this to confirm blast radius before set_content_instance_values_many, and before deleting (orphan = no placements AND no parents).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "id": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           }
         },
         "required": [
@@ -954,8 +902,7 @@
         "properties": {
           "pageId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "blockName": {
             "type": "string",
@@ -964,8 +911,7 @@
           },
           "position": {
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           }
         },
         "required": [
@@ -980,7 +926,6 @@
       "name": "list_layouts",
       "description": "List every layout with UUID, slug, display name, and its LAYOUT blocks INCLUDING the chrome modules placed in each (`header(main-menu)|content|footer(site-footer)`). One read answers \"is module X already on the layout?\". Layout blocks are site chrome: place a header / footer / nav into them ONCE for every page with add_module target='layout'. They are NOT build_page blockNames — a page places into its TEMPLATE's blocks (list_templates `pageBlocks`, usually just `content`); the layout's `content` block is where the template renders. Standard list params: `filter`, `limit`/`offset`, `full: true`. Use when you need a layout UUID or slug (e.g. right after an Owner approved a layout-create proposal). DO NOT ask the operator to paste a UUID.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "includeDeleted": {
@@ -1001,8 +946,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -1019,7 +963,6 @@
       "name": "list_plugins",
       "description": "List the plugins installed on this site: their status (the Owner's decision) and their health (what the running servers make of it). `status`: `active` = the Owner wants it running; `awaiting_activation` = installed and verified, but nothing of it is loaded; `disabled` = the Owner stopped it. Availability comes from `health`, not from `status`: only `health = running` means its tools and skills are usable right now. `failing` = an active plugin failed to load on a server (`problem` says why) — it is NOT switched off, tell the operator, get_plugin has the details; `unreported` = active, but no server has reported it yet (just activated or starting); `not_running` = not active. Never tell the operator a capability works while its plugin is failing. Use when the operator asks for a capability you have no tool for (translation, forms, comments, newsletter, ratings): check whether a plugin for it is installed-but-inactive, and if so TELL the operator it exists and that one click at /settings/plugins turns it on. Plugins found on disk that failed verification are listed after the table: they are NOT installed — explain why and the fix. Do NOT use it as a general capability check before routine content work — your tool catalogue already reflects everything that is running.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -1036,8 +979,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -1073,7 +1015,6 @@
       "name": "list_templates",
       "description": "List every template with UUID, slug, display name, bound layout UUID, `pageBlocks` and `pageTypes` (the page types whose pages may use it — list_page_types) (TOON rows). `pageBlocks` are the blocks a page on that template places modules into — the ONLY valid `blockName` values for build_page and add_module target='page' (usually just `content`). Header / footer / nav are NOT page blocks: they are site chrome on the template's LAYOUT (list_layouts), placed once with add_module target='layout'. Standard list params: `filter`, `limit`/`offset`, `full: true`. Use when you need a template UUID or its blocks before building a page. DO NOT ask the operator to paste a UUID.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "includeDeleted": {
@@ -1094,8 +1035,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -1112,7 +1052,6 @@
       "name": "list_pages",
       "description": "List every page with its URL path, UUID, slug, parent page UUID, nesting depth, title, page type (what the page IS — `news`, `page`, …; list_page_types) and template UUID (TOON rows). Pages nest: a page's URL is its parent's URL + '/' + its slug (`/seo-monitoring/alerts` = slug 'alerts' under the '/seo-monitoring' page); depth 1 = top level. Pass `underPageId` to list one section's subtree. Inside a chat, paths show the chat's pending moves. Standard list params: `filter` (substring across all columns), `limit`/`offset` (pagination), `full: true` (no truncation). Use when you need a page UUID or path. DO NOT ask the operator to paste a UUID.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "includeDeleted": {
@@ -1121,8 +1060,7 @@
           },
           "underPageId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "filter": {
             "description": "Case-insensitive substring filter applied across all output columns.",
@@ -1138,8 +1076,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -1180,7 +1117,6 @@
       "name": "list_modules",
       "description": "List the FULL module catalog with decision-support metadata: id, slug, type, kind, description, fields, and placement usage. Call it before placing or nesting an existing module: to find a reuse candidate, to find modules by `kind`/`filter` (plus `limit`/`offset`/`full` as in every list tool), and before filling a `module`/`module-list` field — the fields column shows each nested field's accepted types (`blocks:module-list allowed=faq/cta`; `allowed=any` = no restriction), and a child's `type` must be one of them. `list` fields show their list type and binding: `nav:list(menu) shared=main-nav` (the shared list it shows — edit its entries with patch_list_items_many), `items:list(texts) local` (entries in each placement), `latest:list(links) source=query(page_type=news …)`. Returns metadata only (no HTML/CSS/JS bodies). Prefer placing an existing module (`add_module` with `moduleId`) over minting a near-duplicate.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "kind": {
@@ -1207,8 +1143,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -1827,13 +1762,11 @@
       "name": "get_page_log",
       "description": "Read a page's durable work-history log BEFORE you change it — why it was edited, decisions taken, operator answers, open questions. Essential when you start fresh on a page (e.g. a subagent with no memory of the chat that first built it): it hands you the intent without re-reading a whole prior conversation. Returns newest-first; pass `limit` to widen (default 20). Empty is normal for a page nobody has logged yet. After your own meaningful change, record it with `log_page_edit`.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "pageId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "limit": {
             "type": "integer",
@@ -1984,7 +1917,6 @@
       "name": "get_site_defaults",
       "description": "Fetch the CURRENT site defaults + identity: default layout/template (slug + UUID), siteName, sitePurpose, siteLanguage (`<html lang>`), design brief. Call this whenever you need them — they are not in the system prompt — including after set_site_defaults / set_site_identity, instead of repeating the write.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -1994,7 +1926,6 @@
       "name": "list_pending_proposals",
       "description": "List every proposal currently awaiting Owner approval, across all gated domains (layouts, users, roles, reverts, themes, deploys, …). Call this BEFORE queueing a proposal you may already have filed (a duplicate is rejected), and after the user says they approved something. Rows with requestedBy=external-agent were queued by an external agent over MCP: their decision is handed back to that agent, which continues the work. In the Caelo chat, do not act on or re-propose them.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -2011,8 +1942,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -2026,7 +1956,6 @@
       "name": "list_entity_locks",
       "description": "List entities currently held by OTHER chat sessions (module/page/template/… + which chat holds it). A held entity is not blocked: writing it ADOPTS that chat's unstaged change on it into this chat (nothing is lost; your write builds on it, and the tool result tells you so — tell the operator). Call this before planning edits on entities another chat may be working on, so you can say up front which chat's work you will take over. For every open chat's unstaged changes use list_unpublished_changes({ allChats: true }).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -2043,8 +1972,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -2058,7 +1986,6 @@
       "name": "list_users",
       "description": "List the site's users (email, display name, roles). Read-only — user changes go through propose_create_user / propose_set_user_roles / propose_delete_user (Owner-approved). Call it again after an Owner approved a user proposal mid-conversation.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -2075,8 +2002,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -2090,7 +2016,6 @@
       "name": "list_roles",
       "description": "List the site's roles (name, description, builtin flag). Read-only — role changes go through propose_create_role / propose_update_role_permissions / propose_delete_role (Owner-approved).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -2107,8 +2032,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -2122,7 +2046,6 @@
       "name": "list_ai_providers",
       "description": "List configured AI providers (display name, active flag, whether a key is configured, chat model, translation model and the catalogue models a translation model may be set to). Key values are never returned. Provider changes go through propose_set_ai_provider / propose_clear_ai_provider_key; the translation model through propose_set_translation_model (all Owner-approved).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -2139,8 +2062,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -2154,7 +2076,6 @@
       "name": "list_domains",
       "description": "List the site's domains (hostname, kind, TLS status). Domain changes go through propose_add_domain / propose_remove_domain (Owner-approved). On Firebase Hosting installs it also lists every hosting custom domain with its live state (active / waiting for DNS / verifying / stuck) — when one is 'stuck', propose_reconnect_domain heals it, and the CDN cache is cleared automatically once a domain turns active.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -2171,8 +2092,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -2186,7 +2106,6 @@
       "name": "get_caelo_version",
       "description": "Which Caelo version this site runs, the newest Caelo release, and whether an update is available (with the release-notes link). Use when the operator asks about the Caelo version, updates, upgrades or a new release, or when a missing feature may simply need a newer Caelo. Read-only: you cannot install updates — the Owner installs them at Settings → Updates (/settings/updates); tell the operator that and link the page.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -2196,7 +2115,6 @@
       "name": "list_caelo_updates",
       "description": "History of Caelo update installs on this site (newest first): which version, who asked, and how it ended (installed, rolled back, failed, refused, or waiting for Cloud Shell). Use when the operator asks whether an update went through, why one failed, or what changed recently. For which version runs now and whether a newer one exists, use get_caelo_version. Read-only.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "limit": {
@@ -2212,13 +2130,11 @@
       "name": "get_caelo_update",
       "description": "The step-by-step timeline of one Caelo update install (signature check, backup, migrations, roll, health check, rollback) — the most recent one when requestId is omitted. Use to explain what happened during an update or why it stopped; ids come from list_caelo_updates. Read-only.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "requestId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           }
         },
         "additionalProperties": false
@@ -2228,7 +2144,6 @@
       "name": "get_caelo_update_policy",
       "description": "Whether Caelo updates install automatically on this site or the Owner is only notified (new releases, security fixes included, are always announced), and which kinds (security fixes, patch, minor; never major), the maintenance window, the soak periods, and whether automatic installs are paused (by the Owner, or after a failure). For what the scheduler last decided about the newest release and which update emails went out, use get_caelo_auto_update_status. Read-only.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -2238,7 +2153,6 @@
       "name": "get_caelo_update_agent",
       "description": "Self-hosted installs only: whether the update agent on the server is running, so the Owner can install Caelo updates from Settings → Updates — or what is wrong on the server (agent not set up, not running, cosign or Docker missing). Use when the operator asks why Install update is missing or why an update did not start on a self-hosted site. Read-only.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -2248,7 +2162,6 @@
       "name": "get_caelo_auto_update_status",
       "description": "What Caelo's automatic-update scheduler last decided about the newest release (installing, waiting for the soak period or maintenance window, paused, or why it will not install it on its own) and the update emails sent to the Owner, with whether each was delivered. Use when the operator asks whether or when an update will install by itself, or why they did (not) get an update email. For the policy itself use get_caelo_update_policy. Read-only.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -3089,44 +3002,26 @@
             "format": "uuid"
           },
           "orphanDisposition": {
-            "oneOf": [
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "kind"
-                ],
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "enum": [
-                      "drop"
-                    ]
-                  }
-                }
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "drop",
+                  "preserve-as-block"
+                ]
               },
-              {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "kind",
-                  "blockName"
-                ],
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "enum": [
-                      "preserve-as-block"
-                    ]
-                  },
-                  "blockName": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 120
-                  }
-                }
+              "blockName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "description": "Required when `kind`: `preserve-as-block`."
               }
-            ]
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
           }
         }
       }
@@ -3183,7 +3078,6 @@
       "name": "find_media",
       "description": "Search the media library (TOON rows: id, name, mime, dims, alt, url). `filter` matches alt/filename server-side; optional `mime`; `limit`/`offset`/`full` as usual. The `id` column is the media UUID that `set_theme_asset` / `set_media_alt_many` / `regenerate_media_variants` require — take it from here; never invent one. The `url` column always points at a variant that EXISTS on the asset — use it verbatim in <img src> via update_modules_many; do NOT rewrite the variant segment. Reference images (guides for generate/edit, not placeable on pages) are hidden unless you pass `visibility: \"reference\"` or `\"all\"`. Use when the user references an asset by description. This searches the EXISTING Caelo library only — during a site migration it is empty, so import source-site images with import_media_from_urls instead of this tool.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "mime": {
@@ -3222,8 +3116,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -3379,7 +3272,6 @@
       "name": "list_missing_media",
       "description": "List media library assets whose stored image files are missing (the row exists, the bytes are gone — e.g. after media was lost from a cloud container's disk). Use when Stage/deploy fails with 'stored files of … media asset(s) are missing', or before publishing after such a failure. For each asset: if `source` is a URL it was imported from, restore it with import_media_from_urls on that URL (the same bytes refill the same asset, every page using it is fixed); otherwise ask the operator to re-upload the same file at /content/media (identical files reuse the asset). If the asset cannot be restored, take it off the pages that use it (media.list_usages) and delete it with delete_media_many. Not for missing derived variants of an existing file — that is regenerate_media_variants.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "limit": {
@@ -3621,7 +3513,6 @@
       "name": "find_redirects",
       "description": "Search redirects (TOON rows: fromPath, toPath, status). `filter` matches fromPath/toPath server-side across the whole table; optional `statusCode`; `limit`/`offset`/`full` as usual. Use as a pre-flight check before `bulk_delete_redirects` so the user sees what will be removed.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "statusCode": {
@@ -3662,8 +3553,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -3677,7 +3567,6 @@
       "name": "check_links",
       "description": "Check the site's internal links (links between its own pages and media) in the draft you see — every place a link is stored: page content, module HTML, field defaults, layouts, templates, lists (menus, vocabularies), page terms and properties, and plugin data. Reports links to deleted pages or media, links without a page in the linking page's language, and references to a deleted list, a removed vocabulary entry (term) or a deleted module embedded in a list entry (all BLOCK Stage and Publish live), links to unpublished pages (BLOCK Publish live, a warning at Stage), and old plain-path links (warnings). Each problem names the page, where the link is stored and the tool that fixes it. Use it before stage_changes when you deleted, unpublished or translated pages, when a Stage was refused for links, or when the operator asks about broken links. Not for external links or what the built site serves (get_quality_audit has the staged-build link check).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "for": {
@@ -3711,26 +3600,22 @@
       "name": "get_quality_audit",
       "description": "Read the quality check of the staged site: the page checks plugins add (such as SEO checks; when an active plugin adds any) that read EVERY page on every Stage, plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores (the target is 100 in every category), the Performance metrics behind the Performance score (FCP, LCP, TBT, CLS, Speed Index: the best run's value with Lighthouse's rating, plus the LCP element, the LCP breakdown and the elements that shifted with their causes), every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`<check>/<rule>`, e.g. `seo-check/title-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, and infrastructure errors. THE TARGET IS 100 IN EVERY CATEGORY AND ZERO FINDINGS: every category below 100, every scored Lighthouse audit below a perfect score, and every page-check error is a PROBLEM that blocks Publish live. A score like 90 is NOT acceptable on its own — keep fixing until 100 wherever achievable. Problems an editor accepted are marked ACCEPTED and do not block (a worse value than accepted blocks again). Warnings and hints never block. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. To make a page faster, read its metrics here and fix the worst one in the module that renders the named element, then Stage again and re-read — repeat until Performance is 100. Use this instead of running Lighthouse yourself: the audit runs against the real staged build, which no other URL serves. Only what truly cannot be fixed goes to the operator, as one decision per group (accept_quality_findings with groups), with the reason why. A finding marked CAELO PLATFORM (back/forward cache, caching of Caelo's own files, server response, compression, redirects) is decided by Caelo's hosting/build setup, not by the site: report it with bug_report and never edit the site for it; it blocks until Caelo fixes it or the operator decides to accept it. Without an open operator chat (Power-MCP) a call on a queued or running audit waits for its result (up to ~50 s; call again if it is still running). Typical input: {}, { auditRunId }, or { pageId } to read only one page's section (from list_pages).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "auditRunId": {
             "description": "A specific audit run (from list_quality_audits).",
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "deployRunId": {
             "description": "The newest audit of this staging deploy run.",
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "pageId": {
             "description": "Only this page's section (scores, metrics, problems); the run summary and site-wide checks stay.",
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           }
         },
         "additionalProperties": false
@@ -3740,7 +3625,6 @@
       "name": "check_stage_audit",
       "description": "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (Plugin page checks, when any is active, read every page on EVERY Stage regardless.) Lighthouse runs for: new or changed module html/css/js, layout / template / theme changes, new pages, plugin configuration. Not for: only text and field values, placing or moving existing modules, SEO texts, redirects. Lists the deciding changes and the pages the check would cover, plus the last measured Performance metrics (FCP, LCP, TBT, CLS, Speed Index; LCP element, layout shifts) of those pages and the homepage — the starting point for a speed fix (the target is Performance 100). Use this instead of running Lighthouse yourself: the audit runs against the real staged build. Takes no input (uses the current chat).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -3750,7 +3634,6 @@
       "name": "list_quality_audits",
       "description": "List recent quality audits of staging deploys, newest first (TOON rows: id, status, problems, pages, deployRunId, reasons, created). Use to find an audit id for get_quality_audit, or to check whether the last Stage's audit is still running. Optional `status`, `thisChatOnly`; `filter`/`limit`/`offset`/`full` as usual.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "status": {
@@ -3784,8 +3667,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -3799,14 +3681,12 @@
       "name": "list_quality_acceptances",
       "description": "List quality findings, category scores below 100 and page-check rules editors accepted (TOON rows: page, kind, auditId, category, acceptedScore, acceptedCount, reason, acceptedAt, revoked). An acceptance applies ONLY to its page (page `site-wide` = a site-wide page-check rule): the same finding on another page is still a problem there. It records the value accepted — a `score` acceptance the category score, a `finding` acceptance the audit's score in points (acceptedScore), a `check` acceptance up to acceptedCount errors of its rule (auditId holds the rule id) — and a worse value blocks again. Check this before asking the operator to decide on something again. `filter` searches the audit/rule id, reason and page path server-side; optional `pageId`, `includeRevoked`.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "pageId": {
             "description": "Only this page's acceptances.",
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "includeRevoked": {
             "description": "Also show acceptances the Owner revoked.",
@@ -3826,8 +3706,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -3841,7 +3720,6 @@
       "name": "get_publish_gate",
       "description": "Check whether Publish live is open for the current staged build, and if not why and what to do next (quality problems to fix — the target is 100 and zero findings — or, if truly unfixable, to hand to the operator as a decision; a failed check to retry; a check still running). Call before telling the operator they can publish. For the findings themselves use get_quality_audit.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -3851,7 +3729,6 @@
       "name": "retry_quality_audit",
       "description": "Re-run the quality check of the current staged build when it FAILED (browser, timeout, staging unreachable) or never ran. It changes nothing on the site. Do not use it to re-check after fixes — fixes reach staging only through a new Stage, which audits by itself.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -3861,13 +3738,11 @@
       "name": "accept_quality_findings",
       "description": "Hand the operator a decision on quality findings that truly CANNOT be fixed, or record the acceptance the operator explicitly asked for (\"accept it\", \"leave the contrast as it is\", \"ship it anyway\"). The target is 100 in every Lighthouse category and zero findings: a score like 90 is NOT acceptable on its own, and anything you can still fix you fix (read the metrics in get_quality_audit; never run Lighthouse yourself). Use it on your own only after explaining WHY a finding cannot be fixed (a third-party embed, a brand colour the operator confirmed, a Caelo platform issue you reported with bug_report), and phrase it as the operator's choice, never as your recommendation. BULK: prefer `groups` — one problem across pages in one entry (`{ ruleId: \"seo-check/description-missing\" }` = every page it is open on; add `pagePaths` for a subset; a Lighthouse audit by `auditId`, a category below 100 by `category`). Use `items` only for single findings on named pages. Bundle every group of one decision into ONE call. What is accepted is the value measured now (score, audit score, error count): a worse value blocks again, a better one tightens the acceptance. An acceptance applies ONLY to its pages. Check list_quality_acceptances first; never ask twice. Take auditRunId, page paths and audit / rule ids from get_quality_audit; the reason is the operator's or the plain fact why it cannot be fixed. Once approved, an acceptance counts at once — Publish live opens without a new Stage. Do NOT call stage_changes afterwards just to 'pick up' the acceptance: a Stage with nothing new still re-runs the whole quality check, which can report fresh findings and start another fix round. APPROVAL-GATED: calling this PAUSES for the operator's Approve/Reject right in the chat before anything changes. Do not claim the change is live until it is approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "auditRunId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "items": {
             "minItems": 1,
@@ -4044,13 +3919,11 @@
       "name": "publish_despite_failed_audit",
       "description": "Only when the editor explicitly wants to publish although the quality check FAILED to run (no result — not when it found problems): publishes the staged build live and records the editor's reason. Try retry_quality_audit first. Take auditRunId from get_publish_gate. APPROVAL-GATED: calling this PAUSES for the operator's Approve/Reject right in the chat before anything changes. Do not claim the change is live until it is approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "auditRunId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "reason": {
             "type": "string",
@@ -5081,7 +4954,6 @@
       "name": "list_plugin_grants",
       "description": "List the capabilities the Owner has granted to installed (runtime-installed) plugins: one row per grant, with whether it belongs to the current version or a pending update, and the plugin's status (a `disabled` plugin holds grants but is not running). Use before propose_revoke_plugin_capability, or when the operator asks what a plugin is allowed to do.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "slug": {
@@ -5104,8 +4976,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -5119,7 +4990,6 @@
       "name": "list_plugin_installations",
       "description": "List runtime-installed plugin packages by version: each staged artifact's status (pending = waiting for the Owner's review at /settings/plugins/installations, approved, active, retired), its origin (AI-authored or an uploaded package) and the plugin's current status. Use after submit_plugin to tell the operator whether a package or an update to a running plugin still waits for review. Approving it (and choosing its grants) is the Owner's decision; never the agent's.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -5136,8 +5006,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -5862,7 +5731,6 @@
       "name": "get_site_seo",
       "description": "Fetch the CURRENT site-wide SEO settings: siteBaseUrl (null = not configured, publishing fails), sitemapEnabled, organizationJson. Change them with propose_set_site_seo (Owner-approved). Per-page SEO lives on the page (set_page_seo_many); the site language on get_site_defaults / set_site_identity.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -5872,7 +5740,6 @@
       "name": "get_ai_budgets",
       "description": "Read the AI spend caps and today's spend against them (per session / per day site-wide / per day per person, text and image separately). Use before propose_set_ai_budget, or when a budget warning/block needs explaining. Amounts are shown in USD and raw microcents.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -5882,7 +5749,6 @@
       "name": "list_ai_pricing",
       "description": "List the AI pricing rows currently in force (provider, model, text/image, rates). Text rates are microcents PER 1K TOKENS ($3/MTok = 300000); an image row's input is microcents per generated image. Use before propose_set_ai_pricing, or when a cost report says a model is unpriced.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -5892,7 +5758,6 @@
       "name": "get_gateway_settings",
       "description": "Read the public API gateway settings: captcha provider + proof-of-work difficulty, max request body, auto-redeploy (on/off, debounce, triggering ops). Use before propose_set_gateway_settings.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -5927,17 +5792,12 @@
                   ]
                 },
                 "capMicrocents": {
-                  "anyOf": [
-                    {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    },
-                    {
-                      "type": "null"
-                    }
+                  "description": "Cap in microcents (1e-8 USD): $10 = 1000000000. null = unlimited.",
+                  "type": [
+                    "integer",
+                    "null"
                   ],
-                  "description": "Cap in microcents (1e-8 USD): $10 = 1000000000. null = unlimited."
+                  "minimum": 0
                 },
                 "warnAtPct": {
                   "description": "Fraction of the cap at which the chat warns. Omit to keep the current threshold.",
@@ -5995,79 +5855,52 @@
                 "inputMicrocents": {
                   "type": "integer",
                   "minimum": 0,
-                  "maximum": 9007199254740991,
                   "description": "text: input rate in microcents PER 1K TOKENS ($3 per million tokens = 300000). image: the price of ONE generated image in microcents ($0.04 = 4000000)."
                 },
                 "outputMicrocents": {
-                  "anyOf": [
-                    {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    },
-                    {
-                      "type": "null"
-                    }
+                  "description": "text: output rate, microcents per 1K tokens. image: null (priced per image).",
+                  "type": [
+                    "integer",
+                    "null"
                   ],
-                  "description": "text: output rate, microcents per 1K tokens. image: null (priced per image)."
+                  "minimum": 0
                 },
                 "cachedMicrocents": {
-                  "anyOf": [
-                    {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    },
-                    {
-                      "type": "null"
-                    }
+                  "description": "Cache-READ rate, microcents per 1K tokens; null if the provider has none.",
+                  "type": [
+                    "integer",
+                    "null"
                   ],
-                  "description": "Cache-READ rate, microcents per 1K tokens; null if the provider has none."
+                  "minimum": 0
                 },
                 "cacheCreationMicrocents": {
                   "description": "Cache-WRITE rate, microcents per 1K tokens; null/omitted bills 1.25x input.",
-                  "anyOf": [
-                    {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 9007199254740991
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
                 },
                 "effectiveFrom": {
                   "description": "ISO timestamp the row takes effect; omitted = now. Part of the row key.",
                   "type": "string",
-                  "format": "date-time",
-                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                  "format": "date-time"
                 },
                 "validFrom": {
                   "description": "Start of a dated price window (e.g. intro pricing); null = open.",
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
                 },
                 "validTo": {
                   "description": "End of a dated price window; null = open-ended.",
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "format": "date-time",
-                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ]
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "format": "date-time"
                 }
               },
               "required": [
@@ -6148,17 +5981,13 @@
         "type": "object",
         "properties": {
           "model": {
-            "anyOf": [
-              {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 128
-              },
-              {
-                "type": "null"
-              }
+            "description": "Model id from the active provider's catalogue (list_ai_providers shows the choices), or null for 'same as the chat model'.",
+            "type": [
+              "string",
+              "null"
             ],
-            "description": "Model id from the active provider's catalogue (list_ai_providers shows the choices), or null for 'same as the chat model'."
+            "minLength": 1,
+            "maxLength": 128
           }
         },
         "required": [
@@ -6181,17 +6010,12 @@
             "description": "Plugin slug as list_plugins shows it."
           },
           "capMicrocents": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 9007199254740991
-              },
-              {
-                "type": "null"
-              }
+            "description": "Max AI spend per rolling 24h in microcents (1e-8 USD): $5 = 500000000. null removes the cap.",
+            "type": [
+              "integer",
+              "null"
             ],
-            "description": "Max AI spend per rolling 24h in microcents (1e-8 USD): $5 = 500000000. null removes the cap."
+            "minimum": 0
           }
         },
         "required": [
@@ -6226,7 +6050,6 @@
       "name": "get_staging_access",
       "description": "Read the protected staging site: its URL (https://staging.<domain>), whether a staged build is served, and which access modes let people and crawlers in (admin 'Open staging' cookie, basic auth, secret header, IP allowlist). Use when the operator asks where to look at staging, how a crawler (e.g. a searchVIU dev crawl) gets in, or before propose_set_staging_access. You never see the basic-auth password or the secret header value: when the operator needs them, tell them to copy them from Settings → Staging access (/settings/staging).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -6370,13 +6193,11 @@
       "name": "inspect_font",
       "description": "Inspect a pinned font face: family, format, weight, axes, license, embedding restrictions and provenance. Missing or mismatched revisions fail.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "id": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "sha256": {
             "type": "string",
@@ -6394,13 +6215,11 @@
       "name": "preview_typography",
       "description": "Validate a pinned font for the actual specimen text, required web/document use and supported formats. Rejects missing glyphs or forbidden embedding. Open /design/fonts for the real loaded-face preview; does not send specimen text to a remote font provider.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "id": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "sha256": {
             "type": "string",
@@ -6489,7 +6308,6 @@
       "name": "list_themes",
       "description": "List every theme with UUID, slug, display name, and active flag (TOON rows). Standard list params: `filter`, `limit`/`offset`, `full: true`. propose_activate_theme requires the UUID listed here.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -6506,8 +6324,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -6521,7 +6338,6 @@
       "name": "get_theme",
       "description": "Read a theme in one of four shapes. OMIT `slug` for the ACTIVE theme (the routine case). Default `as: dtcg` returns the full DTCG document. `css-vars` returns the rendered `:root { … }` block — what the public site ships. `tailwind` returns a `@theme inline { … }` block mapping the tokens to Tailwind 4 variable names. `summary` returns a tiny `'primary=…, body=…, radius=…'` + active flag. `font-delivery` reports what visitors download for each pinned font file: the roles using it, its axes, the operator override, the effective per-axis policy (full / range / pin, with whether it is the derived default), the weights the site can render (or why that is unknown), and slice sizes once a preview/build derived them — read it before answering \"make the fonts load faster\" or changing set_theme_tokens fontAxes. Use `css-vars` when writing module HTML that references `var(--color-…)` so you don't have to mentally translate DTCG paths.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "slug": {
@@ -6571,8 +6387,7 @@
               "properties": {
                 "id": {
                   "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  "format": "uuid"
                 },
                 "sha256": {
                   "type": "string",
@@ -6593,63 +6408,51 @@
               "pattern": "^[a-zA-Z][a-zA-Z0-9-]{0,79}$"
             },
             "additionalProperties": {
-              "anyOf": [
-                {
-                  "type": "object",
-                  "propertyNames": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9]{4}$"
+              },
+              "additionalProperties": {
+                "anyOf": [
+                  {
                     "type": "string",
-                    "pattern": "^[A-Za-z0-9]{4}$"
+                    "const": "full"
                   },
-                  "additionalProperties": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "const": "full"
+                  {
+                    "type": "object",
+                    "properties": {
+                      "min": {
+                        "type": "number"
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "min": {
-                            "type": "number"
-                          },
-                          "max": {
-                            "type": "number"
-                          }
-                        },
-                        "required": [
-                          "min",
-                          "max"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
+                      "max": {
                         "type": "number"
                       }
-                    ]
+                    },
+                    "required": [
+                      "min",
+                      "max"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "number"
                   }
-                },
-                {
-                  "type": "null"
-                }
-              ]
+                ]
+              }
             }
           },
           "set": {
-            "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
-            "additionalProperties": {}
+            "type": "object"
           },
           "tokens": {
             "description": "A (partial) DTCG token document, the same shape get_theme shows and propose_create_theme takes (`{color: {primary: {$value: '#4338ca', $description: '…'}}, typography: {…}}`). Every `{$value}` leaf is upserted at its path — use it to write a whole composed palette in one call. Loose names go in `set`.",
             "anyOf": [
               {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
+                "type": "object"
               },
               {
                 "type": "string"
@@ -6697,7 +6500,6 @@
       "name": "list_theme_history",
       "description": "List a theme's edit history (who changed what, when — TOON rows), newest first. Defaults to the ACTIVE theme; pass `themeSlug` for another. Standard list params: `filter`, `limit`/`offset`, `full: true` (op max 100 entries).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "themeSlug": {
@@ -6720,8 +6522,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -7021,8 +6822,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "format": "uuid",
-              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              "format": "uuid"
             },
             "description": "Asset ids from find_media. One asset = a one-item array."
           }
@@ -7045,8 +6845,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "format": "uuid",
-              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              "format": "uuid"
             },
             "description": "Module ids from list_modules. One module = a one-item array."
           }
@@ -7069,16 +6868,14 @@
             "type": "array",
             "items": {
               "type": "string",
-              "format": "uuid",
-              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              "format": "uuid"
             },
             "description": "Staging import_pages ids from list_import_pages. One page = a one-item array."
           },
           "templateId": {
             "description": "Template for the new pages (list_templates). Omit to use the site's default template.",
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           }
         },
         "required": [
@@ -7096,7 +6893,6 @@
           "runId": {
             "type": "string",
             "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
             "description": "The import run to close (list_import_pages shows it)."
           }
         },
@@ -7133,7 +6929,6 @@
             "type": "string",
             "maxLength": 254,
             "format": "email",
-            "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$",
             "description": "Recipient — must be an address on the sender's (fromAddress) domain."
           }
         },
@@ -7147,7 +6942,6 @@
       "name": "get_ai_spend",
       "description": "Report AI spend over a window (default the last 30 days): total cost + tokens, text vs image, per provider/model, per source (plugin, person, subagent), the most recent days, and which admin domains the AI's tool calls went to (op counts + failures). Use when the operator asks what AI costs, why a budget warned, or which feature is expensive. Not for the caps themselves (get_ai_budgets) or one plugin's spend against its cap (get_plugin).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "sinceDays": {
@@ -7164,7 +6958,6 @@
       "name": "get_plugin",
       "description": "Read one plugin in detail: version, tier, status, signature, health (whether the running servers have it loaded, and why not), its recent errors, the validator's findings, the tools / skills / capabilities its manifest declares, and its AI spend over the last 24h against its AI cost cap. Use when list_plugins' one-line summary is not enough — e.g. why a plugin is failing or a submission was rejected, what an inactive plugin would add before proposing activate_plugin, or whether a plugin is near its AI cap. A `core` error is Caelo's fault; its line says whether the bug report was only recorded on this site or sent to the Caelo team — repeat that exactly, never say the team knows unless it says sent; a `plugin` error comes from the plugin's own code; `transient` ones were retried. Errors never switch a plugin off. Never returns the plugin's source.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "slug": {
@@ -7184,7 +6977,6 @@
       "name": "get_gateway_analytics",
       "description": "Traffic on the public API gateway (visitor writes to plugin endpoints: forms, comments, signups) over a rolling window: requests, p95 latency, errors, throttled and honeypot-caught counts overall and for the busiest (plugin, operation) pairs. Use when the operator asks whether a form is being spammed or a public endpoint is slow, and before proposing a rate limit with tune_rate_limit. For individual requests use list_gateway_requests.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "windowSec": {
@@ -7206,7 +6998,6 @@
       "name": "list_gateway_requests",
       "description": "List the most recent requests to the public API gateway (newest first): plugin, operation, status, duration, body size, and whether it was rate-limited, honeypot-caught or passed the captcha. Narrow with pluginSlug / onlyErrors. Use to diagnose a failing or abused public endpoint; for totals use get_gateway_analytics.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "pluginSlug": {
@@ -7232,8 +7023,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -7247,7 +7037,6 @@
       "name": "list_rate_limit_profiles",
       "description": "List the named rate-limit profiles (per-visitor max per window) and how many plugin endpoints use each. Read before proposing a per-endpoint limit with tune_rate_limit, so the proposal fits the limits already in use.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -7264,8 +7053,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -7279,7 +7067,6 @@
       "name": "get_email_config",
       "description": "Read how the site sends email: transport (none / smtp / resend / ses), from-address and transport settings. Credentials read as \"[redacted]\" when set — you see THAT a key is configured, never the key. Use before propose_set_email_config, or when a form or newsletter mail did not arrive (then send_test_email checks delivery).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -7289,7 +7076,6 @@
       "name": "list_bug_reports",
       "description": "List the defect reports already filed against Caelo (by you via bug_report, or auto-captured by the chat), newest first. Call BEFORE bug_report to see whether the problem is already reported; filter by status (new / triaged / fixed / invalid). The forwarding column says where each report went: local_only = stored on this site only, the Caelo team has NOT seen it; queued = will be sent to the Caelo team; sent = the Caelo team received it; failed = sending failed, stored here only. local_only and failed reports reach the Caelo team only when the Owner clicks \"Send unsent reports\" on Settings → Detected bugs (with sending turned on); you cannot send them yourself. Never tell the operator the Caelo team knows about a report unless its forwarding is sent.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "status": {
@@ -7315,8 +7101,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -7330,7 +7115,6 @@
       "name": "get_media_settings",
       "description": "Read the media CDN settings: whether heavily used images are copied to the CDN and the usage count at which they are. Changing them is an Owner decision (billing/infrastructure) at /settings/media.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -7340,28 +7124,23 @@
       "name": "list_snapshots",
       "description": "List the site's edit history (snapshots), newest first: id, when, what kind of change, how many modules/templates/pages it touched. Filter to one module / page / template, or page backwards with `before` (ISO time). Use to find the snapshotId a propose_revert_* tool needs, or to answer 'what changed on this page lately?'. Inspect one with get_snapshot.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "before": {
             "type": "string",
-            "format": "date-time",
-            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+            "format": "date-time"
           },
           "forModuleId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "forPageId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "forTemplateId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "includeArchived": {
             "default": false,
@@ -7381,8 +7160,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -7396,13 +7174,11 @@
       "name": "get_snapshot",
       "description": "Inspect one snapshot: its description, author and chat, and the state it recorded for each module, template, page and page layout it touched (labels + a truncated state preview). Use before proposing a revert to confirm the snapshot holds the version the operator means. Find ids with list_snapshots.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "snapshotId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           }
         },
         "required": [
@@ -7415,13 +7191,11 @@
       "name": "get_module_impact",
       "description": "Blast radius of editing one module: every live page that places it (page slug, template, block) plus a severity (low / medium / high) and the reasons. Use BEFORE editing a module that may be shared (header, footer, CTA) to tell the operator what else changes, or to decide whether to fork_placement_content instead.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "moduleId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           }
         },
         "required": [
@@ -7434,7 +7208,6 @@
       "name": "list_unpublished_changes",
       "description": "List what THIS chat session changed that is not published yet — pages, site-wide pieces (modules, templates, layouts, theme) and lists — split into not-yet-staged and already staged. Use before telling the operator the work is ready to publish, to summarise what publishing will ship, or to check an edit landed on the branch. With allChats: true it lists EVERY open chat's unstaged changes and the entities each holds (all editors) — use it when the operator asks what is still open across chats, or before touching something another chat may be working on.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "allChats": {
@@ -7503,13 +7276,11 @@
       "name": "list_media_usages",
       "description": "List the modules whose HTML embeds one media asset (by its id). Use before replacing or deleting an image, or after regenerate_media_variants skipped a variant, to know which modules to edit. Find asset ids with find_media.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "assetId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           }
         },
         "required": [
@@ -7522,14 +7293,12 @@
       "name": "get_page_seo",
       "description": "Read pages' stored SEO fields (meta description, OG image, canonical URL, noindex, sitemap changefreq/priority, when autofilled / optimized) AND each page's core text: the plain text of the page's own content blocks (headings, paragraphs, list items, link labels; nested cards included; header/footer chrome left out), from THIS chat's draft, capped at ~1500 characters. Use it to read what a page already has AND its core text before writing or optimizing its description — one call for every page (`pageIds`, up to 50), then ONE autofill_page_seo_many (first description) or bulk_optimize_seo / set_page_seo_many. Don't render the page for this (inspect_page_render / screenshot_page are for layout and visual questions). A page without an SEO row shows that autofill_page_seo_many fills it.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "pageId": {
             "description": "One page. Pass this OR pageIds.",
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "pageIds": {
             "description": "Several pages (up to 50) in one call. Pass this OR pageId.",
@@ -7538,8 +7307,7 @@
             "type": "array",
             "items": {
               "type": "string",
-              "format": "uuid",
-              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              "format": "uuid"
             }
           }
         },
@@ -7550,7 +7318,6 @@
       "name": "list_stale_seo_pages",
       "description": "List pages whose SEO was never optimized or whose meta description is empty (newest pages first) — the dashboard's 'needs SEO' tile. Use when the operator asks which pages need SEO work; then autofill_page_seo_many for EMPTY descriptions that were never autofilled, bulk_optimize_seo (with their context) to re-optimize, or set_page_seo_many for exact values.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "filter": {
@@ -7567,8 +7334,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -7582,13 +7348,11 @@
       "name": "refresh_page_path",
       "description": "Recompute ONE page's URL from its current data. A DRAFT page moves right away (it has no public URL yet). A PUBLISHED page whose URL is out of date does not move here: moving a live URL needs the Owner's approval, so the tool reports awaiting a URL migration and you call propose_url_migration (it previews the move and writes the 301s). Linking/unlinking language variants already refreshes the pages they touch — no follow-up call needed. Not for renaming a page (update_pages_many with a new slug does that, with redirects).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "pageId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "redirectFromOld": {
             "description": "'auto' (default) 301s the old URL to the new one when it moved.",
@@ -7609,7 +7373,6 @@
       "name": "list_import_runs",
       "description": "List site-import (migration) runs, newest first: id, source URL, status, pages seen / extracted, and errors. Use to find a run id you did not propose yourself in this chat, or to check whether an approved crawl finished. Detail per run: get_import_run_report.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "status": {
@@ -7636,8 +7399,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -7651,7 +7413,6 @@
       "name": "log_import_events",
       "description": "Record findings in an import run's event ledger (the migration report the operator reads): skipped assets, fidelity gaps, inventory mismatches, compose problems. Each event: runId, severity (info / warning / error), optional phase (crawl | media | fidelity | inventory | compose | …), message, optional structured detail and pageId. Send ALL findings of a step in ONE call (up to 500, across runs) — they insert together or not at all. For notes on one imported page use add_import_page_notes.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "events": {
@@ -7663,8 +7424,7 @@
               "properties": {
                 "runId": {
                   "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  "format": "uuid"
                 },
                 "severity": {
                   "type": "string",
@@ -7687,8 +7447,7 @@
                 "detail": {},
                 "pageId": {
                   "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  "format": "uuid"
                 }
               },
               "required": [
@@ -7710,7 +7469,6 @@
       "name": "list_skill_pin_defaults",
       "description": "List the skills the operator has pinned to engage in every new chat. Read before set_skill_pin_defaults (which replaces the whole list).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {},
         "additionalProperties": false
@@ -7720,7 +7478,6 @@
       "name": "set_skill_pin_defaults",
       "description": "Set which skills engage automatically in every NEW chat of the operator you act for (e.g. 'always pin scoped-edit'). Replaces the whole list: read it with list_skill_pin_defaults, then send the full new list. A per-person preference; the current chat is unaffected (load_skill engages a skill now).",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "slugs": {
@@ -7846,446 +7603,89 @@
                         "maxItems": 32,
                         "type": "array",
                         "items": {
-                          "oneOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "text"
-                                },
-                                "maxLength": {
-                                  "type": "integer",
-                                  "minimum": 1,
-                                  "maximum": 2000
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
+                          "type": "object",
+                          "properties": {
+                            "name": {
+                              "type": "string",
+                              "pattern": "^[a-z][a-z0-9_]{0,63}$"
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "richtext"
-                                },
-                                "maxLength": {
-                                  "type": "integer",
-                                  "minimum": 1,
-                                  "maximum": 20000
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
+                            "label": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "link"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
+                            "required": {
+                              "type": "boolean"
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "media"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
+                            "default": {},
+                            "ext": {
+                              "type": "object"
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "select"
-                                },
-                                "options": {
-                                  "minItems": 1,
-                                  "maxItems": 64,
-                                  "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                  }
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type",
-                                "options"
-                              ],
-                              "additionalProperties": false
+                            "type": {
+                              "type": "string",
+                              "enum": [
+                                "text",
+                                "richtext",
+                                "link",
+                                "media",
+                                "select",
+                                "boolean",
+                                "number",
+                                "date",
+                                "icon",
+                                "module",
+                                "term"
+                              ]
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "boolean"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
+                            "maxLength": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 20000,
+                              "description": "`text` <= 2000, `richtext` <= 20000. For `type`: `text`|`richtext`."
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "number"
-                                },
-                                "min": {
-                                  "type": "number"
-                                },
-                                "max": {
-                                  "type": "number"
-                                }
+                            "options": {
+                              "minItems": 1,
+                              "maxItems": 64,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "pattern": "^[a-z][a-z0-9_]{0,63}$"
                               },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
+                              "description": "Required when `type`: `select`."
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "date"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
+                            "min": {
+                              "type": "number",
+                              "description": "For `type`: `number`."
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "icon"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
+                            "max": {
+                              "type": "number",
+                              "description": "For `type`: `number`."
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "module"
-                                },
-                                "accepts": {
-                                  "maxItems": 32,
-                                  "type": "array",
-                                  "items": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  }
-                                }
+                            "accepts": {
+                              "maxItems": 32,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "pattern": "^[a-z0-9-]+$"
                               },
-                              "required": [
-                                "name",
-                                "label",
-                                "type"
-                              ],
-                              "additionalProperties": false
+                              "description": "For `type`: `module`."
                             },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "name": {
-                                  "type": "string",
-                                  "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                                },
-                                "label": {
-                                  "type": "string",
-                                  "minLength": 1,
-                                  "maxLength": 128
-                                },
-                                "required": {
-                                  "type": "boolean"
-                                },
-                                "default": {},
-                                "ext": {
-                                  "type": "object",
-                                  "propertyNames": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "additionalProperties": {}
-                                },
-                                "type": {
-                                  "type": "string",
-                                  "const": "term"
-                                },
-                                "list": {
-                                  "type": "string",
-                                  "pattern": "^[a-z0-9-]+$"
-                                },
-                                "multiple": {
-                                  "type": "boolean"
-                                }
-                              },
-                              "required": [
-                                "name",
-                                "label",
-                                "type",
-                                "list"
-                              ],
-                              "additionalProperties": false
+                            "list": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9-]+$",
+                              "description": "Required when `type`: `term`."
+                            },
+                            "multiple": {
+                              "type": "boolean",
+                              "description": "For `type`: `term`."
                             }
-                          ]
+                          },
+                          "required": [
+                            "type",
+                            "name",
+                            "label"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "children": {
@@ -8321,142 +7721,87 @@
                         "pattern": "^[a-z][a-z0-9_]{0,63}$"
                       },
                       "source": {
-                        "oneOf": [
-                          {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "query",
+                              "system",
+                              "plugin"
+                            ]
+                          },
+                          "editable": {
+                            "maxItems": 7,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "page_type",
+                                "terms",
+                                "terms_mode",
+                                "parent",
+                                "exclude_current",
+                                "order",
+                                "limit"
+                              ]
+                            },
+                            "description": "Required when `kind`: `query`."
+                          },
+                          "defaults": {
                             "type": "object",
                             "properties": {
-                              "kind": {
+                              "page_type": {
                                 "type": "string",
-                                "const": "query"
+                                "pattern": "^[a-z0-9-]+$"
                               },
-                              "editable": {
-                                "maxItems": 7,
+                              "terms": {
+                                "maxItems": 20,
                                 "type": "array",
                                 "items": {
                                   "type": "string",
-                                  "enum": [
-                                    "page_type",
-                                    "terms",
-                                    "terms_mode",
-                                    "parent",
-                                    "exclude_current",
-                                    "order",
-                                    "limit"
-                                  ]
+                                  "pattern": "^caelo:term\\/[0-9a-f-]{36}\\/[0-9a-f-]{36}$"
                                 }
                               },
-                              "defaults": {
-                                "type": "object",
-                                "properties": {
-                                  "page_type": {
-                                    "type": "string",
-                                    "pattern": "^[a-z0-9-]+$"
-                                  },
-                                  "terms": {
-                                    "maxItems": 20,
-                                    "type": "array",
-                                    "items": {
-                                      "type": "string",
-                                      "pattern": "^caelo:term\\/[0-9a-f-]{36}\\/[0-9a-f-]{36}$"
-                                    }
-                                  },
-                                  "terms_mode": {
-                                    "type": "string",
-                                    "enum": [
-                                      "any",
-                                      "all"
-                                    ]
-                                  },
-                                  "parent": {
-                                    "type": "string",
-                                    "pattern": "^caelo:page\\/[0-9a-f-]{36}$"
-                                  },
-                                  "exclude_current": {
-                                    "type": "boolean"
-                                  },
-                                  "order": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string",
-                                        "enum": [
-                                          "published_desc",
-                                          "published_asc",
-                                          "title_asc"
-                                        ]
-                                      },
-                                      {
-                                        "type": "string",
-                                        "pattern": "^prop_(?:desc|asc):[a-z][a-z0-9_]{0,63}$"
-                                      }
-                                    ]
-                                  },
-                                  "limit": {
-                                    "type": "integer",
-                                    "minimum": 1,
-                                    "maximum": 50
-                                  }
-                                },
-                                "additionalProperties": false
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "editable",
-                              "defaults"
-                            ],
-                            "additionalProperties": false
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "const": "system"
-                              },
-                              "name": {
+                              "terms_mode": {
                                 "type": "string",
                                 "enum": [
-                                  "breadcrumbs",
-                                  "children",
-                                  "siblings",
-                                  "page_terms",
-                                  "term_pages"
+                                  "any",
+                                  "all"
                                 ]
-                              }
-                            },
-                            "required": [
-                              "kind",
-                              "name"
-                            ],
-                            "additionalProperties": false
-                          },
-                          {
-                            "type": "object",
-                            "properties": {
-                              "kind": {
-                                "type": "string",
-                                "const": "plugin"
                               },
-                              "name": {
+                              "parent": {
                                 "type": "string",
-                                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                                "pattern": "^caelo:page\\/[0-9a-f-]{36}$"
+                              },
+                              "exclude_current": {
+                                "type": "boolean"
+                              },
+                              "order": {
+                                "type": "string",
+                                "pattern": "^(?:published_desc|published_asc|title_asc|prop_(?:desc|asc):[a-z][a-z0-9_]{0,63})$"
+                              },
+                              "limit": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 50
                               }
                             },
-                            "required": [
-                              "kind",
-                              "name"
-                            ],
-                            "additionalProperties": false
+                            "additionalProperties": false,
+                            "description": "Required when `kind`: `query`."
+                          },
+                          "name": {
+                            "type": "string",
+                            "description": "`system`: `breadcrumbs`|`children`|`siblings`|`page_terms`|`term_pages`; `plugin`: pattern `^[a-z][a-z0-9_]{0,63}$`. Required when `kind`: `system`|`plugin`."
                           }
-                        ]
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "additionalProperties": false
                       },
                       "ext": {
-                        "type": "object",
-                        "propertyNames": {
-                          "type": "string",
-                          "pattern": "^[a-z0-9-]+$"
-                        },
-                        "additionalProperties": {}
+                        "type": "object"
                       }
                     },
                     "required": [
@@ -8473,8 +7818,7 @@
                 },
                 "expectedVersion": {
                   "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "minimum": 1
                 }
               },
               "required": [
@@ -8526,7 +7870,6 @@
       "name": "list_lists",
       "description": "The shared lists of this site (TOON rows): slug, type, role, entry count, purpose, which module fields bind it (module.field), placements, sample pages, vocabulary use (page types + tagged pages), last edit. Menus, navigation, footer links, categories and tags are SHARED LISTS of a fitting list type (menu, links, categories, tags, or a custom type such as a mega menu) — there are no menu-specific tools. A list only ONE module shows stays LOCAL (its entries live in that module's `list` field); a list needed in more than one place, the site navigation, or a vocabulary pages are assigned to is SHARED. promote_local_list switches a local list to shared in one call. Call it BEFORE creating a list — when the operator says 'add Careers to the menu', the header's list is here (usedBy shows the header module), so you patch it instead of minting a second menu. Filters: `type` (list type slug), `role` (navigation | vocabulary | content), `query` (free text over slug, name, purpose and entry text), plus the standard list params. Entries are in get_list; local lists (inside one module) are not listed here — list_modules shows them.",
       "inputSchema": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
           "type": {
@@ -8561,8 +7904,7 @@
           "offset": {
             "description": "Rows to skip (pagination).",
             "type": "integer",
-            "minimum": 0,
-            "maximum": 9007199254740991
+            "minimum": 0
           },
           "full": {
             "description": "true disables truncation entirely: all rows, no char cap.",
@@ -8585,8 +7927,7 @@
           },
           "id": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           }
         },
         "additionalProperties": false
@@ -8594,7 +7935,7 @@
     },
     {
       "name": "upsert_lists_many",
-      "description": "Create shared lists, or replace a list's WHOLE entry tree (1–50 lists, one transaction). Menus, navigation, footer links, categories and tags are SHARED LISTS of a fitting list type (menu, links, categories, tags, or a custom type such as a mega menu) — there are no menu-specific tools. A list only ONE module shows stays LOCAL (its entries live in that module's `list` field); a list needed in more than one place, the site navigation, or a vocabulary pages are assigned to is SHARED. promote_local_list switches a local list to shared in one call. Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree). An entry is {node, values, children?, query?}: `values` keyed by the node's fields (links as {\"href\": \"/about\"} or an external URL; terms as caelo:term/<listId>/<itemId>), `children` under nodes that allow them, `query` only on source nodes (the knobs the type marks editable). Keep the `id` of entries that already exist; omit it for new ones. Example (type menu): [{\"node\":\"entry\",\"values\":{\"label\":\"Company\",\"link\":{\"href\":\"/about\"}},\"children\":[{\"node\":\"entry\",\"values\":{\"label\":\"Team\",\"link\":{\"href\":\"/about/team\"}}}]}]. Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / update_modules_many), e.g. the header module on the layout.",
+      "description": "Create shared lists, or replace a list's WHOLE entry tree (1–50 lists, one transaction). Menus, navigation, footer links, categories and tags are SHARED LISTS of a fitting list type (menu, links, categories, tags, or a custom type such as a mega menu) — there are no menu-specific tools. A list only ONE module shows stays LOCAL (its entries live in that module's `list` field); a list needed in more than one place, the site navigation, or a vocabulary pages are assigned to is SHARED. promote_local_list switches a local list to shared in one call. Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree). An entry is {node, values, children?, query?}: `values` keyed by the node's fields (links as {\"href\": \"/about\"} or an external URL; terms as caelo:term/<listId>/<itemId>), `children` under nodes that allow them, `query` only on source nodes and only with the knobs that node's source lists in `editable` (e.g. {limit:5}) — page_type, order and the rest are fixed by the type's `defaults`; omit `query` to use them as they are. Keep the `id` of entries that already exist; omit it for new ones. Example (type menu): [{\"node\":\"entry\",\"values\":{\"label\":\"Company\",\"link\":{\"href\":\"/about\"}},\"children\":[{\"node\":\"entry\",\"values\":{\"label\":\"Team\",\"link\":{\"href\":\"/about/team\"}}}]}]. Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / update_modules_many), e.g. the header module on the layout.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -8633,8 +7974,7 @@
                 },
                 "expectedVersion": {
                   "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "minimum": 1
                 }
               },
               "required": [
@@ -8667,11 +8007,7 @@
               },
               "values": {
                 "default": {},
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
+                "type": "object"
               },
               "children": {
                 "type": "array",
@@ -8680,11 +8016,7 @@
                 }
               },
               "query": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
+                "type": "object"
               }
             },
             "required": [
@@ -8715,146 +8047,62 @@
                 },
                 "expectedVersion": {
                   "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "minimum": 1
                 },
                 "patches": {
                   "minItems": 1,
                   "maxItems": 200,
                   "type": "array",
                   "items": {
-                    "oneOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "op": {
-                            "type": "string",
-                            "const": "add"
-                          },
-                          "parentId": {
-                            "anyOf": [
-                              {
-                                "type": "string",
-                                "format": "uuid",
-                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "position": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          },
-                          "item": {
-                            "$ref": "#/$defs/__schema0"
-                          }
-                        },
-                        "required": [
-                          "op",
-                          "item"
-                        ],
-                        "additionalProperties": false
+                    "type": "object",
+                    "properties": {
+                      "op": {
+                        "type": "string",
+                        "enum": [
+                          "add",
+                          "update",
+                          "move",
+                          "remove"
+                        ]
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "op": {
-                            "type": "string",
-                            "const": "update"
-                          },
-                          "itemId": {
-                            "type": "string",
-                            "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                          },
-                          "values": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "query": {
-                            "anyOf": [
-                              {
-                                "type": "object",
-                                "propertyNames": {
-                                  "type": "string"
-                                },
-                                "additionalProperties": {}
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          }
-                        },
-                        "required": [
-                          "op",
-                          "itemId"
+                      "parentId": {
+                        "type": [
+                          "string",
+                          "null"
                         ],
-                        "additionalProperties": false
+                        "format": "uuid",
+                        "description": "For `op`: `add`|`move`."
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "op": {
-                            "type": "string",
-                            "const": "move"
-                          },
-                          "itemId": {
-                            "type": "string",
-                            "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                          },
-                          "parentId": {
-                            "anyOf": [
-                              {
-                                "type": "string",
-                                "format": "uuid",
-                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          },
-                          "position": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "maximum": 9007199254740991
-                          }
-                        },
-                        "required": [
-                          "op",
-                          "itemId",
-                          "position"
-                        ],
-                        "additionalProperties": false
+                      "position": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Required when `op`: `move`."
                       },
-                      {
+                      "item": {
+                        "$ref": "#/$defs/__schema0",
+                        "description": "Required when `op`: `add`."
+                      },
+                      "itemId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "description": "Required when `op`: `update`|`move`|`remove`."
+                      },
+                      "values": {
                         "type": "object",
-                        "properties": {
-                          "op": {
-                            "type": "string",
-                            "const": "remove"
-                          },
-                          "itemId": {
-                            "type": "string",
-                            "format": "uuid",
-                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                          }
-                        },
-                        "required": [
-                          "op",
-                          "itemId"
+                        "description": "For `op`: `update`."
+                      },
+                      "query": {
+                        "type": [
+                          "object",
+                          "null"
                         ],
-                        "additionalProperties": false
+                        "description": "For `op`: `update`."
                       }
-                    ]
+                    },
+                    "required": [
+                      "op"
+                    ],
+                    "additionalProperties": false
                   }
                 }
               },
@@ -8885,11 +8133,7 @@
               },
               "values": {
                 "default": {},
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
+                "type": "object"
               },
               "children": {
                 "type": "array",
@@ -8898,11 +8142,7 @@
                 }
               },
               "query": {
-                "type": "object",
-                "propertyNames": {
-                  "type": "string"
-                },
-                "additionalProperties": {}
+                "type": "object"
               }
             },
             "required": [
@@ -8944,8 +8184,7 @@
         "properties": {
           "moduleId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "field": {
             "type": "string",
@@ -8985,145 +8224,90 @@
         "properties": {
           "pageId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "source": {
-            "oneOf": [
-              {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "query",
+                  "system",
+                  "plugin"
+                ]
+              },
+              "editable": {
+                "maxItems": 7,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "page_type",
+                    "terms",
+                    "terms_mode",
+                    "parent",
+                    "exclude_current",
+                    "order",
+                    "limit"
+                  ]
+                },
+                "description": "Required when `kind`: `query`."
+              },
+              "defaults": {
                 "type": "object",
                 "properties": {
-                  "kind": {
+                  "page_type": {
                     "type": "string",
-                    "const": "query"
+                    "pattern": "^[a-z0-9-]+$"
                   },
-                  "editable": {
-                    "maxItems": 7,
+                  "terms": {
+                    "maxItems": 20,
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "enum": [
-                        "page_type",
-                        "terms",
-                        "terms_mode",
-                        "parent",
-                        "exclude_current",
-                        "order",
-                        "limit"
-                      ]
+                      "pattern": "^caelo:term\\/[0-9a-f-]{36}\\/[0-9a-f-]{36}$"
                     }
                   },
-                  "defaults": {
-                    "type": "object",
-                    "properties": {
-                      "page_type": {
-                        "type": "string",
-                        "pattern": "^[a-z0-9-]+$"
-                      },
-                      "terms": {
-                        "maxItems": 20,
-                        "type": "array",
-                        "items": {
-                          "type": "string",
-                          "pattern": "^caelo:term\\/[0-9a-f-]{36}\\/[0-9a-f-]{36}$"
-                        }
-                      },
-                      "terms_mode": {
-                        "type": "string",
-                        "enum": [
-                          "any",
-                          "all"
-                        ]
-                      },
-                      "parent": {
-                        "type": "string",
-                        "pattern": "^caelo:page\\/[0-9a-f-]{36}$"
-                      },
-                      "exclude_current": {
-                        "type": "boolean"
-                      },
-                      "order": {
-                        "anyOf": [
-                          {
-                            "type": "string",
-                            "enum": [
-                              "published_desc",
-                              "published_asc",
-                              "title_asc"
-                            ]
-                          },
-                          {
-                            "type": "string",
-                            "pattern": "^prop_(?:desc|asc):[a-z][a-z0-9_]{0,63}$"
-                          }
-                        ]
-                      },
-                      "limit": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": 50
-                      }
-                    },
-                    "additionalProperties": false
-                  }
-                },
-                "required": [
-                  "kind",
-                  "editable",
-                  "defaults"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "system"
-                  },
-                  "name": {
+                  "terms_mode": {
                     "type": "string",
                     "enum": [
-                      "breadcrumbs",
-                      "children",
-                      "siblings",
-                      "page_terms",
-                      "term_pages"
+                      "any",
+                      "all"
                     ]
-                  }
-                },
-                "required": [
-                  "kind",
-                  "name"
-                ],
-                "additionalProperties": false
-              },
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "type": "string",
-                    "const": "plugin"
                   },
-                  "name": {
+                  "parent": {
                     "type": "string",
-                    "pattern": "^[a-z][a-z0-9_]{0,63}$"
+                    "pattern": "^caelo:page\\/[0-9a-f-]{36}$"
+                  },
+                  "exclude_current": {
+                    "type": "boolean"
+                  },
+                  "order": {
+                    "type": "string",
+                    "pattern": "^(?:published_desc|published_asc|title_asc|prop_(?:desc|asc):[a-z][a-z0-9_]{0,63})$"
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50
                   }
                 },
-                "required": [
-                  "kind",
-                  "name"
-                ],
-                "additionalProperties": false
+                "additionalProperties": false,
+                "description": "Required when `kind`: `query`."
+              },
+              "name": {
+                "type": "string",
+                "description": "`system`: `breadcrumbs`|`children`|`siblings`|`page_terms`|`term_pages`; `plugin`: pattern `^[a-z][a-z0-9_]{0,63}$`. Required when `kind`: `system`|`plugin`."
               }
-            ]
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
           },
           "value": {
-            "type": "object",
-            "propertyNames": {
-              "type": "string"
-            },
-            "additionalProperties": {}
+            "type": "object"
           },
           "vocabulary": {
             "type": "string"
@@ -9135,8 +8319,7 @@
           },
           "itemId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "node": {
             "type": "string",
@@ -9145,8 +8328,7 @@
           },
           "moduleId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           },
           "field": {
             "type": "string",
@@ -9155,8 +8337,7 @@
           },
           "contentInstanceId": {
             "type": "string",
-            "format": "uuid",
-            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            "format": "uuid"
           }
         },
         "additionalProperties": false
@@ -9217,460 +8398,101 @@
                   "type": "array",
                   "items": {
                     "type": "string",
-                    "format": "uuid",
-                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    "format": "uuid"
                   }
                 },
                 "defaultTemplate": {
                   "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  "format": "uuid"
                 },
                 "properties": {
                   "default": [],
                   "maxItems": 32,
                   "type": "array",
                   "items": {
-                    "oneOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "text"
-                          },
-                          "maxLength": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 2000
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9_]{0,63}$"
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "richtext"
-                          },
-                          "maxLength": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 20000
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
+                      "label": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "link"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
+                      "required": {
+                        "type": "boolean"
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "media"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
+                      "default": {},
+                      "ext": {
+                        "type": "object"
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "select"
-                          },
-                          "options": {
-                            "minItems": 1,
-                            "maxItems": 64,
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                            }
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type",
-                          "options"
-                        ],
-                        "additionalProperties": false
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "text",
+                          "richtext",
+                          "link",
+                          "media",
+                          "select",
+                          "boolean",
+                          "number",
+                          "date",
+                          "icon",
+                          "module",
+                          "term"
+                        ]
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "boolean"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
+                      "maxLength": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20000,
+                        "description": "`text` <= 2000, `richtext` <= 20000. For `type`: `text`|`richtext`."
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "number"
-                          },
-                          "min": {
-                            "type": "number"
-                          },
-                          "max": {
-                            "type": "number"
-                          }
+                      "options": {
+                        "minItems": 1,
+                        "maxItems": 64,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_]{0,63}$"
                         },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
+                        "description": "Required when `type`: `select`."
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "date"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
+                      "min": {
+                        "type": "number",
+                        "description": "For `type`: `number`."
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "icon"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
+                      "max": {
+                        "type": "number",
+                        "description": "For `type`: `number`."
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "module"
-                          },
-                          "accepts": {
-                            "maxItems": 32,
-                            "type": "array",
-                            "items": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            }
-                          }
+                      "accepts": {
+                        "maxItems": 32,
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9-]+$"
                         },
-                        "required": [
-                          "name",
-                          "label",
-                          "type"
-                        ],
-                        "additionalProperties": false
+                        "description": "For `type`: `module`."
                       },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "name": {
-                            "type": "string",
-                            "pattern": "^[a-z][a-z0-9_]{0,63}$"
-                          },
-                          "label": {
-                            "type": "string",
-                            "minLength": 1,
-                            "maxLength": 128
-                          },
-                          "required": {
-                            "type": "boolean"
-                          },
-                          "default": {},
-                          "ext": {
-                            "type": "object",
-                            "propertyNames": {
-                              "type": "string",
-                              "pattern": "^[a-z0-9-]+$"
-                            },
-                            "additionalProperties": {}
-                          },
-                          "type": {
-                            "type": "string",
-                            "const": "term"
-                          },
-                          "list": {
-                            "type": "string",
-                            "pattern": "^[a-z0-9-]+$"
-                          },
-                          "multiple": {
-                            "type": "boolean"
-                          }
-                        },
-                        "required": [
-                          "name",
-                          "label",
-                          "type",
-                          "list"
-                        ],
-                        "additionalProperties": false
+                      "list": {
+                        "type": "string",
+                        "pattern": "^[a-z0-9-]+$",
+                        "description": "Required when `type`: `term`."
+                      },
+                      "multiple": {
+                        "type": "boolean",
+                        "description": "For `type`: `term`."
                       }
-                    ]
+                    },
+                    "required": [
+                      "type",
+                      "name",
+                      "label"
+                    ],
+                    "additionalProperties": false
                   }
                 },
                 "vocabularies": {
@@ -9682,8 +8504,7 @@
                     "properties": {
                       "list": {
                         "type": "string",
-                        "format": "uuid",
-                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                        "format": "uuid"
                       },
                       "cardinality": {
                         "type": "string",
@@ -9705,8 +8526,7 @@
                 },
                 "expectedVersion": {
                   "type": "integer",
-                  "exclusiveMinimum": 0,
-                  "maximum": 9007199254740991
+                  "minimum": 1
                 }
               },
               "required": [

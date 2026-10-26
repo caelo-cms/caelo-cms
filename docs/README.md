@@ -27,6 +27,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 ## AI internals
 
 - [internal/tool-search.md](./internal/tool-search.md) — Anthropic Tool Search: the core tool set and deferred tools.
+- [internal/tool-schemas.md](./internal/tool-schemas.md) — the compact model-facing tool schema vs the strict Zod schema at dispatch, and its superset contract.
 - [internal/google-models.md](./internal/google-models.md) — Google chat and image model configuration.
 - [internal/plugin-author-previews.md](./internal/plugin-author-previews.md) — private plugin preview URLs.
 - [internal/plugin-images.md](./internal/plugin-images.md) — the `image_generation` plugin capability.

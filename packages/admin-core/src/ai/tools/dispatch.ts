@@ -24,6 +24,7 @@ import type { z } from "zod";
 import type { CredentialKind } from "../../ops/credential_handoffs.js";
 import type { Permission } from "../../permissions.js";
 import type { AIProvider } from "../provider.js";
+import { compactInputSchema } from "./compact-input-schema.js";
 import { generateInputSchema } from "./generate-input-schema.js";
 import { normalizeToolArgs } from "./normalize-args.js";
 import { liveToolNameFor, resolveToolCall } from "./retired-tools.js";
@@ -404,6 +405,8 @@ export interface ToolDefinitionWithHandler<I> {
    * the generated shape isn't what the provider needs (rare). Once
    * registered, the stored tool always carries a resolved `inputSchema`
    * (see `RegisteredTool`), so dispatch/catalogue read it unconditionally.
+   * Generated or hand-written, it is passed through `compactInputSchema`
+   * at registration, so the stored schema is the compact model-facing one.
    */
   readonly inputSchema?: ToolInputSchema;
   readonly handler: (ctx: ExecutionContext, input: I, toolCtx: ToolContext) => Promise<ToolResult>;
@@ -562,8 +565,15 @@ function describeProperties(inputSchema: ToolInputSchema): string[] {
   );
   return Object.entries(props).map(([key, raw]) => {
     const def = (raw ?? {}) as { type?: unknown; description?: unknown; enum?: unknown };
-    const type = typeof def.type === "string" ? def.type : "any";
-    const enums = Array.isArray(def.enum) ? ` (one of: ${def.enum.join(" | ")})` : "";
+    // A nullable field's type is a list (`["integer", "null"]`) after the
+    // model-facing compaction, and its enum then carries `null`.
+    const type =
+      typeof def.type === "string"
+        ? def.type
+        : Array.isArray(def.type)
+          ? def.type.join(" | ")
+          : "any";
+    const enums = Array.isArray(def.enum) ? ` (one of: ${def.enum.map(String).join(" | ")})` : "";
     const blurb =
       typeof def.description === "string" && def.description.length > 0
         ? ` — ${def.description.slice(0, 160)}`
@@ -690,7 +700,10 @@ export class ToolRegistry {
     // registration: use the hand-written value when present, otherwise
     // derive it from the Zod `schema`. This makes the Zod schema the single
     // source of truth for the common case while leaving an escape hatch.
-    const inputSchema = tool.inputSchema ?? generateInputSchema(tool.schema);
+    // Both then go through the model-facing compaction (flattened unions,
+    // no Zod artifacts): a wider, smaller schema for the provider, while
+    // the Zod parse at dispatch keeps validating exactly as strictly.
+    const inputSchema = compactInputSchema(tool.inputSchema ?? generateInputSchema(tool.schema));
     this.#tools.set(tool.name, {
       ...(tool as ToolDefinitionWithHandler<unknown>),
       inputSchema,
