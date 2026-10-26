@@ -76,6 +76,7 @@ export function externalPluginDefinition(opts: {
     ...(manifest.auditFindingsOperation
       ? { auditFindingsOperation: manifest.auditFindingsOperation }
       : {}),
+    ...(manifest.writeHintsOperation ? { writeHintsOperation: manifest.writeHintsOperation } : {}),
     ...(manifest.hasStaticRender
       ? { staticRender: invoke("$staticRender") as PluginDefinition["staticRender"] }
       : {}),

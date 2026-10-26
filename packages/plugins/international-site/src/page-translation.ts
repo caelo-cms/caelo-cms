@@ -19,7 +19,8 @@
  * contract the install's own model is held to.
  */
 
-import type { PluginAdminQuery, PluginAi } from "@caelo-cms/plugin-sdk";
+import type { ListTypeDef, PluginAdminQuery, PluginAi } from "@caelo-cms/plugin-sdk";
+import { applyStrings, type ChromeField, translatableStrings } from "./chrome.js";
 import type { LocaleRow, PageVariantRow } from "./index.js";
 import { basisOf } from "./stable-json.js";
 import {
@@ -30,6 +31,7 @@ import {
   type ContentSlot,
   type GlossaryEntry,
   type SlotAlignment,
+  slotKeyOf,
   stripJsonFence,
   type TranslationResultPayload,
   validateMetaDescription,
@@ -76,6 +78,17 @@ export type TranslatedSeoOutcome = "filled" | "unchanged" | "marked_stale" | "un
 export const SEO_STALE_NEXT_STEP =
   "The variant is live and already had a meta description, so the new translation did not overwrite it (SEO fill-once rule). It is now flagged as stale SEO. If the operator wants the translated description, re-optimize it explicitly with optimize_page_seo (seo-optimize skill).";
 
+/** The next steps a written translation leaves the AI, or undefined. */
+export function outcomeNextStep(o: PageTranslationOutcome): string | undefined {
+  const steps = [
+    ...(o.seo === "marked_stale" ? [SEO_STALE_NEXT_STEP] : []),
+    ...(o.sharedNested && o.sharedNested.length > 0
+      ? [`${SHARED_NESTED_NEXT_STEP} Placements: ${o.sharedNested.join("; ")}.`]
+      : []),
+  ];
+  return steps.length > 0 ? steps.join(" ") : undefined;
+}
+
 /** Everything one page translation is built from, up to the prompt. */
 export interface PreparedPageTranslation {
   readonly variantPageId: string;
@@ -90,6 +103,9 @@ export interface PreparedPageTranslation {
   readonly variantMetaDescription: string;
   readonly sourceSlots: readonly ContentSlot[];
   readonly variantSlots: readonly ContentSlot[];
+  /** Per slot key: what the write merges into (see {@link SlotBase}). */
+  readonly sourceBases: ReadonlyMap<string, SlotBase>;
+  readonly variantBases: ReadonlyMap<string, SlotBase>;
   readonly alignment: readonly SlotAlignment[];
   readonly glossary: readonly GlossaryEntry[];
   readonly styleGuide: string | null;
@@ -101,18 +117,222 @@ export interface PageTranslationOutcome {
   slotsApplied: number;
   titleApplied: boolean;
   seo: TranslatedSeoOutcome;
+  /**
+   * Nested content left untranslated because another page renders the
+   * same content instance (a variant created before nested content was
+   * copied): writing it would change that page too. Labels like
+   * `main #1 > cards[2]`.
+   */
+  sharedNested?: string[];
 }
 
-async function loadPlacements(deps: TranslationDeps, pageId: string): Promise<ContentSlot[]> {
-  const r = await deps.cms.call<{
-    placements: {
-      blockName: string;
-      position: number;
-      moduleSlug: string;
-      values: Record<string, unknown>;
-    }[];
-  }>("page_module_content.list_for_page", { pageId });
-  return r.placements;
+/** Told to the AI when nested content could not be translated in place. */
+export const SHARED_NESTED_NEXT_STEP =
+  "Some nested content of this page is still shared with another page (the source page), so it was not translated — writing it would change that page too. Give the page its own copy with fork_placement_content on each listed placement (it copies the nested content), then run translate_variant again.";
+
+/** A module field as `page_module_content.list_for_page` returns it. */
+interface PageField extends ChromeField {
+  readonly default?: unknown;
+}
+
+/** One piece of a page's content as core reads it: a placement or nested content. */
+interface ContentRead {
+  readonly moduleSlug: string;
+  readonly values: Record<string, unknown>;
+  readonly fields: readonly PageField[];
+}
+
+interface PlacementRead extends ContentRead {
+  readonly blockName: string;
+  readonly position: number;
+  readonly contentInstanceId: string;
+  readonly nested: readonly (ContentRead & {
+    readonly path: string;
+    readonly contentInstanceId: string;
+    readonly exclusive: boolean;
+  })[];
+}
+
+/**
+ * What the write needs of one slot beyond its text: the stored values
+ * the translation merges into, the fields (for defaults), and — for
+ * nested content — the instance and whether only this page renders it.
+ */
+export interface SlotBase {
+  readonly values: Readonly<Record<string, unknown>>;
+  readonly fields: readonly PageField[];
+  readonly nested?: { readonly contentInstanceId: string; readonly exclusive: boolean };
+}
+
+/** A page's content as translation slots, with the bases to write them back. */
+export interface PageSlots {
+  readonly slots: ContentSlot[];
+  readonly bases: Map<string, SlotBase>;
+}
+
+/**
+ * The values that render: stored values, and the default of every field
+ * the content stores no value for. The module extractor turns literal
+ * copy (button labels, form labels, menu entries) into such defaults —
+ * text a reader of the stored values alone never sees, so it would stay
+ * in the source language.
+ */
+export function effectiveValues(
+  fields: readonly PageField[],
+  values: Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...values };
+  for (const f of fields) {
+    if (out[f.name] === undefined && f.default !== undefined) {
+      out[f.name] = structuredClone(f.default);
+    }
+  }
+  return out;
+}
+
+/** The translatable strings of one piece of content, as a slot's path → text. */
+function slotTexts(
+  content: ContentRead,
+  listTypes: ReadonlyMap<string, ListTypeDef>,
+): Record<string, unknown> {
+  const strings = translatableStrings(
+    content.fields,
+    effectiveValues(content.fields, content.values),
+    // A page's own local lists belong to its translation: list-resolve
+    // translates by address only the instances a default-language page
+    // shares with other languages (./list-translation-ops.ts).
+    { listTypes, includeLists: true },
+  );
+  const out: Record<string, unknown> = Object.fromEntries(strings.map((t) => [t.path, t.text]));
+  // A stored string under a name the module declares no field for (a
+  // module authored before field schemas) is offered as text, as it
+  // always was; the declared fields say which values are NOT text.
+  const declared = new Set(content.fields.map((f) => f.name));
+  for (const [k, v] of Object.entries(content.values)) {
+    if (!declared.has(k) && typeof v === "string" && v.trim().length > 0) out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Every slot of a page — each placement and each nested content inside
+ * it — with the path → text record the translator sees.
+ */
+export function pageSlotsOf(
+  placements: readonly PlacementRead[],
+  listTypes: ReadonlyMap<string, ListTypeDef>,
+): PageSlots {
+  const slots: ContentSlot[] = [];
+  const bases = new Map<string, SlotBase>();
+  for (const p of placements) {
+    const slot: ContentSlot = {
+      blockName: p.blockName,
+      position: p.position,
+      moduleSlug: p.moduleSlug,
+      values: slotTexts(p, listTypes),
+    };
+    slots.push(slot);
+    bases.set(slotKeyOf(slot), { values: p.values, fields: p.fields });
+    for (const n of p.nested) {
+      const nested: ContentSlot = {
+        blockName: p.blockName,
+        position: p.position,
+        nestedPath: n.path,
+        moduleSlug: n.moduleSlug,
+        values: slotTexts(n, listTypes),
+      };
+      slots.push(nested);
+      bases.set(slotKeyOf(nested), {
+        values: n.values,
+        fields: n.fields,
+        nested: { contentInstanceId: n.contentInstanceId, exclusive: n.exclusive },
+      });
+    }
+  }
+  return { slots, bases };
+}
+
+async function loadPageSlots(
+  deps: TranslationDeps,
+  pageId: string,
+  listTypes: ReadonlyMap<string, ListTypeDef>,
+): Promise<PageSlots> {
+  const r = await deps.cms.call<{ placements: PlacementRead[] }>(
+    "page_module_content.list_for_page",
+    { pageId },
+  );
+  return pageSlotsOf(r.placements, listTypes);
+}
+
+async function loadListTypes(deps: TranslationDeps): Promise<Map<string, ListTypeDef>> {
+  const r = await deps.cms.call<{ listTypes: { slug: string; definition: ListTypeDef }[] }>(
+    "list_types.list",
+    {},
+  );
+  return new Map(r.listTypes.map((t) => [t.slug, t.definition]));
+}
+
+/**
+ * The values to write for one slot: the variant's stored values with the
+ * translated strings applied. A field the variant stores no value for
+ * starts from its default (that is the text the visitor saw). A list
+ * field takes the SOURCE's entries — the structure is the source's, the
+ * translation only supplies the language — keeping the variant's text of
+ * every entry it already has, so an update pass that re-translates one
+ * entry leaves the others as they were.
+ */
+export function translatedValues(
+  variant: SlotBase,
+  source: SlotBase,
+  strings: Readonly<Record<string, string>>,
+): Record<string, unknown> {
+  const base: Record<string, unknown> = structuredClone({ ...variant.values });
+  const sourceValues = effectiveValues(source.fields, source.values);
+  const variantValues = effectiveValues(variant.fields, variant.values);
+  const touched = new Set(Object.keys(strings).map((p) => p.split("[")[0] as string));
+  for (const field of touched) {
+    const def = variant.fields.find((f) => f.name === field);
+    if (def?.kind === "list") {
+      base[field] = keepEntryTexts(sourceValues[field], variantValues[field]);
+    } else if (base[field] === undefined) {
+      base[field] = structuredClone(variantValues[field]);
+    }
+  }
+  return applyStrings(base, strings);
+}
+
+interface Entry {
+  id?: unknown;
+  values?: Record<string, unknown>;
+  children?: unknown;
+}
+
+/** `source` list entries with the string values of same-id `variant` entries. */
+function keepEntryTexts(source: unknown, variant: unknown): unknown {
+  const textsById = new Map<string, Record<string, unknown>>();
+  const collect = (items: unknown) => {
+    if (!Array.isArray(items)) return;
+    for (const raw of items as Entry[]) {
+      if (raw && typeof raw.id === "string" && raw.values) textsById.set(raw.id, raw.values);
+      collect(raw?.children);
+    }
+  };
+  collect(variant);
+  const out = structuredClone(source);
+  const apply = (items: unknown) => {
+    if (!Array.isArray(items)) return;
+    for (const raw of items as Entry[]) {
+      const own = raw && typeof raw.id === "string" ? textsById.get(raw.id) : undefined;
+      if (own && raw.values) {
+        for (const [k, v] of Object.entries(own)) {
+          if (typeof v === "string" && typeof raw.values[k] === "string") raw.values[k] = v;
+        }
+      }
+      apply(raw?.children);
+    }
+  };
+  apply(out);
+  return out;
 }
 
 /** A page's stored meta description; "" when it has none. */
@@ -172,8 +392,11 @@ export async function preparePageTranslation(
 
   const sourceMetaDescription = await loadMetaDescription(deps, sourceRow.page_id);
   const variantMetaDescription = await loadMetaDescription(deps, args.variantPageId);
-  const sourceSlots = await loadPlacements(deps, sourceRow.page_id);
-  const variantSlots = await loadPlacements(deps, args.variantPageId);
+  const listTypes = await loadListTypes(deps);
+  const source = await loadPageSlots(deps, sourceRow.page_id, listTypes);
+  const variant = await loadPageSlots(deps, args.variantPageId, listTypes);
+  const sourceSlots = source.slots;
+  const variantSlots = variant.slots;
   const alignment = alignSlots(sourceSlots, variantSlots);
 
   // Glossary + style guide for the TARGET locale.
@@ -249,6 +472,8 @@ export async function preparePageTranslation(
     variantMetaDescription,
     sourceSlots,
     variantSlots,
+    sourceBases: source.bases,
+    variantBases: variant.bases,
     alignment,
     glossary,
     styleGuide,
@@ -338,39 +563,54 @@ export async function writePageTranslation(
 ): Promise<PageTranslationOutcome> {
   const { q, cms } = deps;
   const slotIndex = buildSlotIndex(p.sourceSlots);
-  const variantByKey = new Map(p.variantSlots.map((s) => [`${s.blockName}|${s.position}`, s]));
   let slotsApplied = 0;
-  for (const entry of payload.slots) {
+  const answered = payload.slots.flatMap((entry) => {
     const target = slotIndex.get(entry.slot);
-    if (!target) continue; // validateStructuralLock already refused these
-    const slot = { ...target, values: entry.values };
-    const current = variantByKey.get(`${slot.blockName}|${slot.position}`);
-    if (!current) continue; // full-mode 'added' slots have no variant placement — skip
-    const merged = { ...current.values, ...slot.values };
+    // validateStructuralLock already refused unknown ids.
+    return target ? [{ key: slotKeyOf(target), target, strings: entry.values }] : [];
+  });
+  // Placements first: a synced placement is forked, and the fork copies
+  // its nested content — whose new instances the nested writes need.
+  let forked = false;
+  for (const a of answered.filter((x) => x.target.nestedPath === undefined)) {
+    const current = p.variantBases.get(a.key);
+    const source = p.sourceBases.get(a.key);
+    if (!current || !source) continue; // full-mode 'added' slots have no variant placement — skip
+    const contentValues = translatedValues(current, source, a.strings);
+    const at = {
+      pageId: p.variantPageId,
+      blockName: a.target.blockName,
+      position: a.target.position,
+    };
     try {
-      await cms.call("page_module_content.set", {
-        pageId: p.variantPageId,
-        blockName: slot.blockName,
-        position: slot.position,
-        contentValues: merged,
-      });
+      await cms.call("page_module_content.set", { ...at, contentValues });
     } catch (e) {
       const msg = (e as Error).message;
       if (!/synced/i.test(msg)) throw e;
       // A synced placement is shared with other pages — a translation
       // is by definition page-private, so fork first, then write.
-      await cms.call("placement.fork_content", {
-        pageId: p.variantPageId,
-        blockName: slot.blockName,
-        position: slot.position,
-      });
-      await cms.call("page_module_content.set", {
-        pageId: p.variantPageId,
-        blockName: slot.blockName,
-        position: slot.position,
-        contentValues: merged,
-      });
+      await cms.call("placement.fork_content", at);
+      await cms.call("page_module_content.set", { ...at, contentValues });
+      forked = true;
     }
+    slotsApplied += 1;
+  }
+  const nestedBases = forked
+    ? (await loadPageSlots(deps, p.variantPageId, await loadListTypes(deps))).bases
+    : p.variantBases;
+  const sharedNested: string[] = [];
+  for (const a of answered.filter((x) => x.target.nestedPath !== undefined)) {
+    const current = nestedBases.get(a.key);
+    const source = p.sourceBases.get(a.key);
+    if (!current?.nested || !source) continue;
+    if (!current.nested.exclusive) {
+      sharedNested.push(`${a.target.blockName} #${a.target.position} > ${a.target.nestedPath}`);
+      continue;
+    }
+    await cms.call("content_instances.set_values", {
+      id: current.nested.contentInstanceId,
+      values: translatedValues(current, source, a.strings),
+    });
     slotsApplied += 1;
   }
   let titleApplied = false;
@@ -386,8 +626,13 @@ export async function writePageTranslation(
     );
     seo = applied.outcome;
   }
-  await q.update("page_variants", p.variantRowId, { translation_status: "up_to_date" });
-  return { mode: p.mode, slotsApplied, titleApplied, seo };
+  // A page with shared nested content is not up to date: part of it is
+  // still in the source language.
+  if (sharedNested.length === 0) {
+    await q.update("page_variants", p.variantRowId, { translation_status: "up_to_date" });
+    return { mode: p.mode, slotsApplied, titleApplied, seo };
+  }
+  return { mode: p.mode, slotsApplied, titleApplied, seo, sharedNested };
 }
 
 /**

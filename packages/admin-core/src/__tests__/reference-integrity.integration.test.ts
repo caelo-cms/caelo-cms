@@ -361,6 +361,7 @@ describe("reference integrity — Stage gate", () => {
       build: {
         baseUrl: "http://staging.invalid",
         probe: async () => ({ found: true, status: 200 }),
+        text: async () => null,
       },
     });
     const finding = findings.find(

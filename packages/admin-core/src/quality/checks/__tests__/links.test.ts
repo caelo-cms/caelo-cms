@@ -87,6 +87,9 @@ function buildWith(files: readonly string[]): StagedBuild & { probed: string[] }
       probed.push(path);
       return served.has(path) ? { found: true, status: 200 } : { found: false, status: 404 };
     },
+    async text(path) {
+      throw new Error(`the links check does not read files (asked for ${path})`);
+    },
   };
 }
 
@@ -560,6 +563,9 @@ describe("createLinksCheck", () => {
       baseUrl: BASE,
       probe: async () => {
         throw new Error("staging answered 502 for /media/x.webp");
+      },
+      text: async () => {
+        throw new Error("staging answered 502");
       },
     };
     const about = page(2, "/about", '<img src="/media/x.webp" alt="">');

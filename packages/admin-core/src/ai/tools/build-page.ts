@@ -29,6 +29,7 @@ import {
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
 } from "./_module-js-contract.js";
+import { pluginWriteHintsSuffix, storedModuleWrites } from "./_plugin-write-hints.js";
 import { stageReadinessSuffix } from "./_stage-readiness.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -406,6 +407,10 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       });
       note(i, suffix);
     }
+    const pluginHints = await pluginWriteHintsSuffix(
+      ctx,
+      await storedModuleWrites(ctx, toolCtx, mintedIds),
+    );
     const moduleNotes = [...notesByIndex.entries()]
       .sort(([a], [b]) => a - b)
       .flatMap(([i, texts]) => texts.map((t) => `\n${label(i)}: ${t}`))
@@ -423,7 +428,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       ok: true,
       content:
         `page ${value.pageId}${value.createdPage ? " created" : ""} — ${value.placements.length} module(s) placed (${mintedCount} minted, ${reusedCount} reused) in one transaction.\n` +
-        `${lines.join("\n")}${moduleNotes}${extractedHint}${missingMetaHint}${ignoredHint}${reusedHint}${metaNote}${readiness}`,
+        `${lines.join("\n")}${moduleNotes}${pluginHints}${extractedHint}${missingMetaHint}${ignoredHint}${reusedHint}${metaNote}${readiness}`,
       value,
     };
   },

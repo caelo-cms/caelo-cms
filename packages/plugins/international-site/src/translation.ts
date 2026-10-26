@@ -20,18 +20,26 @@
 
 import {
   slotIdOf,
+  slotKeyOf,
   translationContractOf,
   translationContractText,
 } from "./translation-contract.js";
 
-export { slotIdOf };
+export { slotIdOf, slotKeyOf };
 
 export interface ContentSlot {
   blockName: string;
   position: number;
+  /**
+   * Nested content inside the placement (a module / module-list value):
+   * its path from the placement (`cards[2]`, `hero>cta`). Absent for the
+   * placement's own content.
+   */
+  nestedPath?: string;
   moduleSlug: string;
-  /** Field → value. Only string values are sent for translation;
-   *  non-strings (numbers, lists of refs) pass through untouched. */
+  /** Path → value. Only string values are sent for translation;
+   *  non-strings pass through untouched. A path is a field name, or
+   *  `field[<entry id>].<key>` for the text of a local list entry. */
   values: Record<string, unknown>;
 }
 
@@ -46,11 +54,29 @@ export type SlotAlignment =
       kind: "aligned";
       blockName: string;
       position: number;
+      nestedPath?: string;
       source: ContentSlot;
       variant: ContentSlot;
     }
-  | { kind: "added"; blockName: string; position: number; source: ContentSlot }
-  | { kind: "removed"; blockName: string; position: number; variant: ContentSlot };
+  | {
+      kind: "added";
+      blockName: string;
+      position: number;
+      nestedPath?: string;
+      source: ContentSlot;
+    }
+  | {
+      kind: "removed";
+      blockName: string;
+      position: number;
+      nestedPath?: string;
+      variant: ContentSlot;
+    };
+
+/** The nested path of a slot, as an optional property (absent for a placement). */
+function nestedOf(s: ContentSlot): { nestedPath?: string } {
+  return s.nestedPath === undefined ? {} : { nestedPath: s.nestedPath };
+}
 
 /**
  * Align source and variant slots by (blockName, position) — the §7.5
@@ -64,36 +90,42 @@ export function alignSlots(
 ): SlotAlignment[] {
   const out: SlotAlignment[] = [];
   const variantBy = new Map<string, ContentSlot>();
-  for (const v of variant) variantBy.set(`${v.blockName}|${v.position}`, v);
-  const sourceKeys = new Set(source.map((s) => `${s.blockName}|${s.position}`));
+  for (const v of variant) variantBy.set(slotKeyOf(v), v);
+  const sourceKeys = new Set(source.map(slotKeyOf));
   for (const s of source) {
-    const v = variantBy.get(`${s.blockName}|${s.position}`);
-    if (v) {
-      out.push({
-        kind: "aligned",
-        blockName: s.blockName,
-        position: s.position,
-        source: s,
-        variant: v,
-      });
-    } else {
-      out.push({ kind: "added", blockName: s.blockName, position: s.position, source: s });
-    }
+    const v = variantBy.get(slotKeyOf(s));
+    const where = { blockName: s.blockName, position: s.position, ...nestedOf(s) };
+    if (v) out.push({ kind: "aligned", ...where, source: s, variant: v });
+    else out.push({ kind: "added", ...where, source: s });
   }
   for (const v of variant) {
-    if (!sourceKeys.has(`${v.blockName}|${v.position}`)) {
-      out.push({ kind: "removed", blockName: v.blockName, position: v.position, variant: v });
+    if (!sourceKeys.has(slotKeyOf(v))) {
+      out.push({
+        kind: "removed",
+        blockName: v.blockName,
+        position: v.position,
+        ...nestedOf(v),
+        variant: v,
+      });
     }
   }
   return out;
 }
 
-/** id → (blockName, position) for the slots offered to the translator. */
-export function buildSlotIndex(
-  slots: readonly ContentSlot[],
-): Map<string, { blockName: string; position: number }> {
+/** Where an offered slot sits: its placement and, for nested content, its path. */
+export interface SlotTarget {
+  readonly blockName: string;
+  readonly position: number;
+  readonly nestedPath?: string;
+}
+
+/** id → slot target for the slots offered to the translator. */
+export function buildSlotIndex(slots: readonly ContentSlot[]): Map<string, SlotTarget> {
   return new Map(
-    slots.map((s, i) => [slotIdOf(i), { blockName: s.blockName, position: s.position }]),
+    slots.map((s, i) => [
+      slotIdOf(i),
+      { blockName: s.blockName, position: s.position, ...nestedOf(s) },
+    ]),
   );
 }
 
@@ -153,10 +185,11 @@ function renderSlots(
       // The id leads; the module slug is context only. Anything the
       // model might mistake for an identifier has to come after the
       // one thing it is asked to copy.
+      const inside = s.nestedPath === undefined ? "" : `, nested at ${s.nestedPath}`;
       const heading =
         id === null
-          ? `### (no slot id — not present on the source page; module ${s.moduleSlug}, block ${s.blockName})`
-          : `### Slot ${id} (module ${s.moduleSlug}, block ${s.blockName})`;
+          ? `### (no slot id — not present on the source page; module ${s.moduleSlug}, block ${s.blockName}${inside})`
+          : `### Slot ${id} (module ${s.moduleSlug}, block ${s.blockName}${inside})`;
       return [heading, ...(fields.length > 0 ? fields : ["(no translatable string fields)"])].join(
         "\n",
       );
@@ -272,9 +305,7 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
       : metaDescriptionLines(input.variantMetaDescription)),
     "",
     renderSlots(input.variantSlots, (slot) => {
-      const i = input.sourceSlots.findIndex(
-        (src) => src.blockName === slot.blockName && src.position === slot.position,
-      );
+      const i = input.sourceSlots.findIndex((src) => slotKeyOf(src) === slotKeyOf(slot));
       return i === -1 ? null : slotIdOf(i);
     }),
     "",
@@ -285,15 +316,15 @@ export function buildUpdateTranslationPrompt(input: UpdatePromptInput): {
   if (added.length === 0 && removed.length === 0) {
     userLines.push("(structures are aligned — every slot exists in both languages)");
   }
+  const at = (a: SlotAlignment) =>
+    `block=${a.blockName} position=${a.position}${a.nestedPath === undefined ? "" : ` nested=${a.nestedPath}`}`;
   for (const a of added) {
     userLines.push(
-      `### ADDED in source — block=${a.blockName} position=${a.position} (exists only on the source page; realign via create_variant before translating)`,
+      `### ADDED in source — ${at(a)} (exists only on the source page; realign via create_variant before translating)`,
     );
   }
   for (const r of removed) {
-    userLines.push(
-      `### REMOVED from source — block=${r.blockName} position=${r.position} (exists only on the translation)`,
-    );
+    userLines.push(`### REMOVED from source — ${at(r)} (exists only on the translation)`);
   }
   return { system, user: userLines.join("\n") };
 }
@@ -361,19 +392,15 @@ export function validateStructuralLock(
   payload: TranslationResultPayload,
   alignment: readonly SlotAlignment[],
   mode: "full" | "update",
-  slotIndex: ReadonlyMap<string, { blockName: string; position: number }>,
+  slotIndex: ReadonlyMap<string, SlotTarget>,
 ): void {
   const keyOf = (id: string): string | null => {
     const t = slotIndex.get(id);
-    return t ? `${t.blockName}|${t.position}` : null;
+    return t ? slotKeyOf(t) : null;
   };
-  const alignedKeys = new Set(
-    alignment.filter((a) => a.kind === "aligned").map((a) => `${a.blockName}|${a.position}`),
-  );
+  const alignedKeys = new Set(alignment.filter((a) => a.kind === "aligned").map(slotKeyOf));
   const sourceKeys = new Set(
-    alignment
-      .filter((a) => a.kind === "aligned" || a.kind === "added")
-      .map((a) => `${a.blockName}|${a.position}`),
+    alignment.filter((a) => a.kind === "aligned" || a.kind === "added").map(slotKeyOf),
   );
   const seen = new Set<string>();
   for (const slot of payload.slots) {

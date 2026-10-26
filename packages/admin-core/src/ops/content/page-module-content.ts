@@ -22,6 +22,16 @@ import {
   loadPageLayoutStateWithBranchOverlay,
 } from "../../snapshots/index.js";
 import { setContentInstanceValuesOp } from "./content-instances.js";
+import { loadNestedContent, placementFieldsOf } from "./page-content-tree.js";
+
+/** A module field as `list_for_page` returns it (see page-content-tree.ts). */
+const placementFieldSchema = z.object({
+  name: z.string(),
+  kind: z.string(),
+  default: z.unknown().optional(),
+  listType: z.string().optional(),
+  bind: z.string().optional(),
+});
 
 const pageModuleContentRowSchema = z.object({
   id: z.string(),
@@ -289,6 +299,10 @@ export const setPageModuleContentManyOp = defineOperation({
  * (from the bound content_instance) + module slug, ordered by (blockName, position) — deterministic and identical to the preview composer's per-block ordering, though template/layout slot layout decides actual on-page visual order.
  * The read surface the international-site translator builds its
  * whole-page prompt from; open to plugin actors like the other reads.
+ *
+ * `fields` (with defaults) and `nested` (./page-content-tree.ts) carry
+ * the text the stored values alone miss: copy that renders from a field
+ * default, and the content of nested modules.
  */
 export const listPageModuleContentOp = withHumanisedLinks(
   defineOperation({
@@ -303,6 +317,18 @@ export const listPageModuleContentOp = withHumanisedLinks(
           position: z.number().int().nonnegative(),
           moduleSlug: z.string(),
           values: z.record(z.string(), z.unknown()),
+          contentInstanceId: z.string(),
+          fields: z.array(placementFieldSchema),
+          nested: z.array(
+            z.object({
+              path: z.string(),
+              contentInstanceId: z.string(),
+              moduleSlug: z.string(),
+              fields: z.array(placementFieldSchema),
+              values: z.record(z.string(), z.unknown()),
+              exclusive: z.boolean(),
+            }),
+          ),
         }),
       ),
     }),
@@ -329,14 +355,22 @@ export const listPageModuleContentOp = withHumanisedLinks(
       const moduleIds = [...new Set(placed.map((p) => p.moduleId))];
       const instanceIds = [...new Set(placed.map((p) => p.contentInstanceId))];
       const moduleRows = (await tx.execute(sql`
-        SELECT id::text AS id, slug, deleted_at FROM modules
+        SELECT id::text AS id, slug, fields, deleted_at FROM modules
         WHERE id IN (${sql.join(
           moduleIds.map((id) => sql`${id}::uuid`),
           sql`, `,
         )})
-      `)) as unknown as { id: string; slug: string; deleted_at: string | Date | null }[];
+      `)) as unknown as {
+        id: string;
+        slug: string;
+        fields: unknown;
+        deleted_at: string | Date | null;
+      }[];
       const modules = new Map(
-        moduleRows.map((m) => [m.id, { slug: m.slug, deleted: m.deleted_at !== null }]),
+        moduleRows.map((m) => [
+          m.id,
+          { slug: m.slug, fields: placementFieldsOf(m.fields), deleted: m.deleted_at !== null },
+        ]),
       );
       const instanceRows = (await tx.execute(sql`
         SELECT id::text AS id, "values" FROM content_instances
@@ -356,7 +390,11 @@ export const listPageModuleContentOp = withHumanisedLinks(
       );
       if (branchId) {
         for (const [id, state] of await loadBranchedModuleStates(tx, branchId, moduleIds)) {
-          modules.set(id, { slug: state.slug, deleted: state.deletedAt !== null });
+          modules.set(id, {
+            slug: state.slug,
+            fields: placementFieldsOf(state.fields),
+            deleted: state.deletedAt !== null,
+          });
         }
         for (const [id, state] of await loadContentInstanceBranchStates(
           tx,
@@ -366,18 +404,32 @@ export const listPageModuleContentOp = withHumanisedLinks(
           values.set(id, state.values);
         }
       }
+      const live = placed.flatMap((p) => {
+        const m = modules.get(p.moduleId);
+        if (!m || m.deleted) return [];
+        const v = values.get(p.contentInstanceId);
+        if (v === undefined) {
+          throw new Error(
+            `page_module_content.list_for_page: placement ${p.blockName}#${p.position} of page ${input.pageId} binds content_instance ${p.contentInstanceId}, which does not exist`,
+          );
+        }
+        return [{ p, m, v, key: `${p.blockName}|${p.position}` }];
+      });
+      const nested = await loadNestedContent(
+        tx,
+        branchId,
+        live.map((l) => ({ key: l.key, contentInstanceId: l.p.contentInstanceId, values: l.v })),
+      );
       return ok({
-        placements: placed.flatMap((p) => {
-          const m = modules.get(p.moduleId);
-          if (!m || m.deleted) return [];
-          const v = values.get(p.contentInstanceId);
-          if (v === undefined) {
-            throw new Error(
-              `page_module_content.list_for_page: placement ${p.blockName}#${p.position} of page ${input.pageId} binds content_instance ${p.contentInstanceId}, which does not exist`,
-            );
-          }
-          return [{ blockName: p.blockName, position: p.position, moduleSlug: m.slug, values: v }];
-        }),
+        placements: live.map(({ p, m, v, key }) => ({
+          blockName: p.blockName,
+          position: p.position,
+          moduleSlug: m.slug,
+          values: v,
+          contentInstanceId: p.contentInstanceId,
+          fields: m.fields,
+          nested: nested.get(key) ?? [],
+        })),
       });
     },
   }),
