@@ -4,19 +4,43 @@ import { execute } from "@caelo-cms/query-api";
 import { error, fail, redirect } from "@sveltejs/kit";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission } from "#lib/server/guards.js";
+import {
+  jsonField,
+  loadPagePicks,
+  loadPageTypes,
+  loadVocabularies,
+  runWrite,
+  versionField,
+  writeFailure,
+} from "#lib/server/lists.js";
 import { getQueryContext } from "#lib/server/query.js";
 import type { Actions, PageServerLoad } from "./$types";
 
 export const load: PageServerLoad = async ({ params, locals }) => {
   const { adapter, registry } = getQueryContext();
-  const [pageResult, modulesResult, templatesResult, pagesResult] = await Promise.all([
+  const [
+    pageResult,
+    modulesResult,
+    templatesResult,
+    pagesResult,
+    pageTypes,
+    vocabularies,
+    pagePicks,
+  ] = await Promise.all([
     execute(registry, adapter, locals.ctx, "pages.get_with_modules", { pageId: params.id }),
     execute(registry, adapter, locals.ctx, "modules.list", {}),
     execute(registry, adapter, locals.ctx, "templates.list", {}),
     execute(registry, adapter, locals.ctx, "pages.list", {}),
+    // Epic #1107 — page type, properties and terms in the page settings.
+    loadPageTypes(locals.ctx),
+    loadVocabularies(locals.ctx),
+    loadPagePicks(locals.ctx),
   ]);
   if (!pageResult.ok) throw error(404, "Page not found");
   return {
+    pageTypes,
+    vocabularies,
+    pagePicks,
     page: (pageResult.value as { page: unknown }).page,
     // Epic #690 — the parent picker's candidates (the tree helpers drop
     // this page, its subtree and the homepage).
@@ -156,6 +180,34 @@ export const actions: Actions = {
       return fail(400, { error: "Could not save page layout." });
     }
     return { ok: true };
+  },
+
+  /**
+   * Epic #1107 — page type, template, properties and terms in one
+   * `pages.update`, which checks them against the (new) type.
+   */
+  setPageType: async ({ params, request, locals }) => {
+    requirePermission(locals, "content.write");
+    const form = await request.formData();
+    await assertCsrfToken(form, locals);
+    const properties = jsonField<Record<string, unknown>>(form, "properties");
+    const terms = jsonField<string[]>(form, "terms");
+    const pageType = String(form.get("pageType") ?? "");
+    const templateId = String(form.get("templateId") ?? "");
+    if (!properties || !terms || !pageType || !templateId) {
+      return fail(400, { error: "The page type settings could not be read — reload and retry." });
+    }
+    const expectedVersion = versionField(form);
+    const r = await runWrite(locals.ctx, "pages.update", {
+      pageId: params.id,
+      pageType,
+      templateId,
+      properties,
+      terms,
+      ...(expectedVersion !== undefined ? { expectedVersion } : {}),
+    });
+    if (!r.ok) return writeFailure(r.message);
+    return { ok: "Page type saved." };
   },
 
   delete: async ({ params, request, locals }) => {

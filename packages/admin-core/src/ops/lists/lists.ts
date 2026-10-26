@@ -251,7 +251,31 @@ async function writeList(
   }
   const id = args.found?.id ?? crypto.randomUUID();
   const live = args.found && args.found.state.deletedAt === null ? args.found : null;
-  const validated = validateListItems(type.def, args.items);
+  // Reads humanise references (lists.get shows `/about`, `/_caelo/media/hero`),
+  // but a media value and a query's `parent` validate only as references.
+  // So links become references BEFORE validation, which keeps a
+  // read-modify-write round trip of lists.get lossless (epic #724) for the
+  // AI and the editor alike. Input that is not even entry-shaped skips this
+  // and gets validation's own message.
+  let input: unknown = args.items;
+  let pending: Extract<
+    Awaited<ReturnType<typeof canonicaliseItemsForWrite>>,
+    { ok: true }
+  >["pending"] = null;
+  const shaped = z.array(listItemInputSchema).safeParse(args.items);
+  if (shaped.success) {
+    const canon = await canonicaliseItemsForWrite(
+      tx,
+      ctx,
+      type.def,
+      shaped.data as ListItem[],
+      live?.state.items,
+    );
+    if (!canon.ok) return { ok: false, message: `${args.at}: ${canon.message}` };
+    input = canon.items;
+    pending = canon.pending;
+  }
+  const validated = validateListItems(type.def, input);
   if (validated.issues.length > 0) {
     return {
       ok: false,
@@ -262,21 +286,13 @@ async function writeList(
   if (refIssues.length > 0) {
     return { ok: false, message: `${args.at}: ${describeIssues(refIssues)}.` };
   }
-  const canon = await canonicaliseItemsForWrite(
-    tx,
-    ctx,
-    type.def,
-    validated.items,
-    live?.state.items,
-  );
-  if (!canon.ok) return { ok: false, message: `${args.at}: ${canon.message}` };
   const state: ListState = {
     schemaVersion: 1,
     slug: args.slug,
     name: args.name,
     purpose: args.purpose,
     listTypeId: type.id,
-    items: canon.items,
+    items: validated.items,
     version: (args.found?.state.version ?? 0) + 1,
     deletedAt: null,
   };
@@ -289,7 +305,7 @@ async function writeList(
   );
   // Links to pages the chat's import run will still build stay literal;
   // the run's finalisation (imports.resolve_links) rewrites this list.
-  await recordPendingImportLinks(tx, canon.pending, { kind: "list", id });
+  await recordPendingImportLinks(tx, pending, { kind: "list", id });
   return { ok: true, id, state };
 }
 
