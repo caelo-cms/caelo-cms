@@ -468,7 +468,9 @@ test("an English page shows the English footer, its German counterpart the Germa
 
     const en = await request.get(`${BASE}/edit/preview/${s.enPageId}`, { headers });
     expect(en.status()).toBe(200);
-    const enHtml = await en.text();
+    // List entries carry their edit marker (epic #1107); the links are what this checks.
+    const unstamp = (html: string) => html.replace(/ data-caelo-list-item="[^"]*"/g, "");
+    const enHtml = unstamp(await en.text());
     expect(enHtml).toContain('<p class="tag">Made with care</p>');
     // References render in the default deploy target's URL style; the
     // e2e stack keeps the column default (`directory` → trailing slash).
@@ -476,7 +478,7 @@ test("an English page shows the English footer, its German counterpart the Germa
 
     const de = await request.get(`${BASE}/edit/preview/${s.dePageId}`, { headers });
     expect(de.status()).toBe(200);
-    const deHtml = await de.text();
+    const deHtml = unstamp(await de.text());
     expect(deHtml).toContain('<p class="tag">Mit Sorgfalt gemacht</p>');
     expect(deHtml).toMatch(new RegExp(`<a href="/de/${PFX}-ueber/?">Über uns</a>`));
     expect(deHtml).not.toContain("Made with care");
