@@ -272,8 +272,10 @@ export function formatBreakdownSection(rows: ScenarioSummary[]): string[] {
   const lines: string[] = [];
   lines.push("### Input-token breakdown (per scenario attempt)");
   lines.push("");
-  lines.push("| Scenario | Loops | Input | Static/call (est) | History end (est) | Thresholds |");
-  lines.push("| --- | --- | --- | --- | --- | --- |");
+  lines.push(
+    "| Scenario | Loops | Input | First call (real) | Static/call (est) | History end (est) | Thresholds |",
+  );
+  lines.push("| --- | --- | --- | --- | --- | --- | --- |");
   const attemptNo = new Map<string, number>();
   for (const r of rows) {
     const n = (attemptNo.get(r.scenario) ?? 0) + 1;
@@ -281,20 +283,21 @@ export function formatBreakdownSection(rows: ScenarioSummary[]): string[] {
     const name = n === 1 ? r.scenario : `${r.scenario} (attempt ${n})`;
     const a = r.attribution;
     const staticCall = a ? k(a.staticPerCallTokens) : "—";
+    const firstCall = a && a.firstCallInputTokens > 0 ? k(a.firstCallInputTokens) : "—";
     const histEnd = a ? k(a.historyEndTokens) : "—";
     const status =
       Array.isArray(r.violations) && r.violations.length > 0
         ? `**breached:** ${r.violations.map((v) => v.message).join("; ")}`
         : "ok";
     lines.push(
-      `| ${name} | ${r.loops} | ${k(r.inputTokens)} | ${staticCall} | ${histEnd} | ${status} |`,
+      `| ${name} | ${r.loops} | ${k(r.inputTokens)} | ${firstCall} | ${staticCall} | ${histEnd} | ${status} |`,
     );
   }
   lines.push("");
   const warnings = buildThresholdWarnings(rows);
   if (warnings.length > 0) {
     lines.push(
-      `**⚠️ ${warnings.length} attempt(s) breached token/loop thresholds** — visible above and as run annotations, even if a retry turned the check green (issue #432).`,
+      `**⚠️ ${warnings.length} attempt(s) breached token/loop thresholds** — visible above and as run annotations; a breach fails the run (no retry).`,
     );
     lines.push("");
   }
@@ -320,6 +323,11 @@ interface BugReport {
   blockedTask: boolean;
   status: string;
   source: string;
+  /** Epic #901 forwarding: `queued`, `sent`, `failed`, `local_only` ("" on older captures). */
+  forwardingState: string;
+  /** The GitHub issue the bug intake filed or matched, once known. */
+  upstreamIssueUrl: string | null;
+  forwardError: string | null;
 }
 
 /** Rendered rows are capped so a pathological run can't blow GitHub's 65k comment limit. */
@@ -378,6 +386,9 @@ export function parseBugReports(raw: string): BugReport[] | null {
       blockedTask: row.blockedTask === true,
       status: str(row.status),
       source: str(row.source),
+      forwardingState: str(row.forwardingState),
+      upstreamIssueUrl: strOrNull(row.upstreamIssueUrl),
+      forwardError: strOrNull(row.forwardError),
     };
   });
 }
@@ -464,7 +475,12 @@ function fenceFor(body: string): string {
 /** Ledger issue for a report, or a loud "new" — the rows bug-gate.ts fails on. */
 function issueCell(b: BugReport): string {
   const known = findKnownBug(b);
-  return known ? `#${known.issue}` : "**new**";
+  if (known) return `#${known.issue}`;
+  // Epic #901 — a new report forwarded by the run carries the intake's issue.
+  const m = b.upstreamIssueUrl?.match(/\/issues\/(\d+)$/);
+  if (m) return `**new** #${m[1]}`;
+  if (b.forwardingState === "sent") return "**new** (issue pending)";
+  return "**new**";
 }
 
 /**

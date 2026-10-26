@@ -19,6 +19,7 @@ import { z } from "zod";
 import { deletePageTypesManyOp, upsertPageTypesManyOp } from "../../ops/lists/page-types.js";
 import { describeError } from "./_describe-error.js";
 import { makeOpTool, toolNamesIn } from "./_list-tool-kit.js";
+import { UPSERT_PAGE_TYPES_JSON_SCHEMA } from "./_list-tool-schemas.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listPageTypesInput = z
@@ -64,7 +65,7 @@ function describePageType(t: PageTypeRow): string {
 export const listPageTypesTool: ToolDefinitionWithHandler<ListPageTypesInput> = {
   name: "list_page_types",
   description:
-    "The page types of this site — what each page IS (e.g. `page`, `news`, `product`): purpose, page count, allowed templates (ids) and default template, properties (`*` = required) and vocabularies (categories / tags lists whose terms its pages carry). " +
+    "The page types of this site — what each page IS (e.g. `content`, `news`, `product`): purpose, page count, allowed templates (ids) and default template, properties (`*` = required) and vocabularies (categories / tags lists whose terms its pages carry). " +
     "Read it before build_page / update_pages_many so a new article gets `pageType: 'news'` (and its properties and terms), and before writing a page query (`page_type` filters on the slug). Pass `slug` for one type with sample pages. " +
     "A new KIND of content (a blog, a job board, products) is a new page type: upsert_page_types_many.",
   schema: listPageTypesInput,
@@ -110,6 +111,7 @@ export const upsertPageTypesManyTool = makeOpTool({
     "Each: `slug`, `name`, `purpose`, `templates` (template ids from list_templates, at least one; create one with create_template pageType first when none fits), `defaultTemplate` (one of them), `properties` (fields every page of the type carries, e.g. {name:'author', type:'text', label:'Author'}, {name:'event_date', type:'date', label:'Date'}; no `module` fields), `vocabularies` ([{list: <vocabulary list id from list_lists>, cardinality:'one'|'many', required?}]). " +
     "Order for 'news with categories': upsert_lists_many (a `categories` list) → create_template (pageType 'news') or reuse a template → upsert_page_types_many → build_page / update_pages_many with pageType, properties, terms. " +
     "Changing a type that pages use re-checks them: a new property's default is written into them; dropping a template they use is refused (move them first); dropping a property or vocabulary they hold values for needs `dropValues: true` (only with the operator's agreement). Pass `expectedVersion` from list_page_types.",
+  inputSchema: UPSERT_PAGE_TYPES_JSON_SCHEMA,
   opName: "page_types.upsert_many",
   input: upsertPageTypesManyOp.input,
   format: (value) =>

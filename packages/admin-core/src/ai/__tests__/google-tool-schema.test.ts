@@ -128,10 +128,10 @@ test("tool results resolve canonical SDK call names without rebuilding history",
   );
 });
 
-test("list tools send their recursive entry shape ($defs + $ref) on the Google wire", async () => {
-  // Epic #1107: a list's entries nest (a menu entry's children, a mega
-  // menu's columns). The tools declare that as one recursive definition
-  // instead of a fixed depth, so it must reach Google intact.
+test("list tools send their compact schemas intact on the Google wire", async () => {
+  // Epic #1107: the list write tools send hand-written compact schemas
+  // (every catalogue tool counts toward each call's input, PR #1143); the
+  // nested entry tree is a described object the op's Zod schema validates.
   const names = ["upsert_lists_many", "patch_list_items_many", "upsert_list_types_many"];
   const tools = createDefaultToolRegistry()
     .catalogue()
@@ -161,14 +161,9 @@ test("list tools send their recursive entry shape ($defs + $ref) on the Google w
   }[];
   const upsert = declarations.find((d) => d.name === "upsert_lists_many");
   const schema = upsert?.parametersJsonSchema as {
-    $defs: Record<string, { properties: { children: { items: { $ref: string } } } }>;
-    properties: { lists: { items: { properties: { items: { items: { $ref: string } } } } } };
+    properties: { lists: { items: { properties: { items: { type: string } } } } };
   };
-  const ref = schema.properties.lists.items.properties.items.items.$ref;
-  expect(ref).toMatch(/^#\/\$defs\//);
-  const def = schema.$defs[ref.replace("#/$defs/", "")];
-  // The entry refers to itself for its children: recursion, not a depth cap.
-  expect(def?.properties.children.items.$ref).toBe(ref);
+  expect(schema.properties.lists.items.properties.items.type).toBe("array");
   function check(node: unknown) {
     if (!node || typeof node !== "object") return;
     for (const [key, value] of Object.entries(node)) {

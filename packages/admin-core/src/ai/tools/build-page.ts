@@ -65,7 +65,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           type: "string",
           pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
           description:
-            "What the page IS — a page type slug from list_page_types (e.g. 'news' for an article, 'page' for a plain page). Set it whenever the site has more than one type: page queries ('latest news', 'articles in this category') find pages by it. Omitted: the type that lists templateId, else the site's default type.",
+            "What the page IS — a page type slug list_page_types shows for this site (e.g. 'news' for an article): page queries ('latest news', 'articles in this category') find pages by it. Omit it for an ordinary page — it then gets the type that lists templateId, else the site's default type. Never guess a slug.",
         },
         properties: {
           type: "object",
@@ -133,7 +133,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           },
           ref: {
             type: "string",
-            pattern: "^[a-z][a-z0-9_-]{0,31}$",
+            pattern: "^[A-Za-z][A-Za-z0-9_-]{0,31}$",
             description:
               'Local handle: another entry\'s module/module-list field value (or moduleId) {"$ref": "<ref>"} resolves to this entry\'s {moduleId, contentInstanceId}. Array order does not matter — referenced entries are created first automatically.',
           },
@@ -226,7 +226,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
   name: "build_page",
   description:
     "Build a WHOLE page in ONE call: the page (create new via `page: {slug, title}` or target existing via `page: {pageId}`) plus the FULL ordered module list — each entry places one module into a template block, top to bottom (on an existing page entries append; an entry's optional `position` — 'top' or an index, as in add_module — inserts it instead). ONE transaction: any invalid entry aborts the whole call (the error names `modules[i]` and the failing field) and nothing is written. " +
-    "This is THE page-creation tool: when creating, set `page.pageType` (list_page_types — an article is `news`, not a plain page) with its `properties` / `terms`, and pass `page.metaDescription` (and `status:'published'` for a page that belongs on the site) — a Stage refuses published pages without a description, and builds only published ones; the result says when something still blocks a Stage. `modules: []` (empty) creates an intentionally empty page shell; a populated `modules` array builds the whole page in one transaction. **Prefer it over add_module / create_content_instances chains whenever a page needs more than one module** — one build_page call replaces that whole round-trip chain (§11 bulk-first). Use add_module (target='page') only for a single incremental module on an existing page. " +
+    "This is THE page-creation tool: when creating a typed page (an article is `news`), name its `page.pageType` from list_page_types with its `properties` / `terms` (an ordinary page omits pageType and gets the site's default type), and pass `page.metaDescription` (and `status:'published'` for a page that belongs on the site) — a Stage refuses published pages without a description, and builds only published ones; the result says when something still blocks a Stage. `modules: []` (empty) creates an intentionally empty page shell; a populated `modules` array builds the whole page in one transaction. **Prefer it over add_module / create_content_instances chains whenever a page needs more than one module** — one build_page call replaces that whole round-trip chain (§11 bulk-first). Use add_module (target='page') only for a single incremental module on an existing page. " +
     "**Per module, two modes** (same contract as add_module): pass `moduleId` to place an EXISTING module from `list_modules` (reuse first — shared modules keep pages consistent), or `displayName` + `html` (+ required `description`, `kind`, explicit `fields[]`) to mint a new one. Field names are semantic snake_case (`hero_title`, `primary_cta_href`); repeating content is ONE `list` field (entries of a list type, iterated with `{{#field}}…{{/field}}`) or a `module-list`, never numbered scalars. A `list` field is local (entries in `content.values`, e.g. `{features:[{node:'text', values:{text:'Fast'}}]}`), shared (bind 'shared', value or field `list` = caelo:list/<id> — menus, footer links) or a source (bind 'source': a page query such as the latest news, breadcrumbs; `content.values` may override the knobs the source marks editable). " +
     "**Per module, `content` fills the placement**: `{source:'inline', values:{hero_title:'…'}}` for page-local content (the routine case); `{source:'shared', purpose:'…', values:{…}}` to mint a REUSABLE instance other pages can bind (synced by default); `{source:'existing', contentInstanceId}` to bind a row from list_content_instances. Omit `content` for an empty private instance you fill later. " +
     "Typical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`. " +

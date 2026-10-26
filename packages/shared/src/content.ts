@@ -105,7 +105,9 @@ export const TEMPLATE_CSS_MAX = 128 * 1024;
  *   — a template without a single slot, so it had no blocks at all.
  * Refusing at the write boundary with the fix turns a broken render the
  * AI only notices from a screenshot into one corrected call (CLAUDE.md
- * §2, §11; same reasoning as the CDATA guard below).
+ * §2, §11; same reasoning as the CDATA guard below). AI tool arguments
+ * never reach this in that shape: `sourceTextArg` decodes both encodings
+ * first (`source-text-transport.ts`); this guards every other writer.
  */
 export function jsonEncodedCodeMessage(field: string, value: string): string | null {
   const t = value.trim();

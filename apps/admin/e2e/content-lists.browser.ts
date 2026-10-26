@@ -270,11 +270,20 @@ test("edit a menu: add, nest, reorder, save", async ({ page }) => {
   await page.mouse.down();
   await page.mouse.move(from.x + 10, from.y + from.height / 2 - 5, { steps: 5 });
   await page.mouse.move(to.x + 10, to.y + 2, { steps: 15 });
-  // Release only once the placeholder sits first on the top level.
-  await expect(page.locator("ul[aria-label='Entries'] > li").first()).toHaveAttribute(
-    "data-entry-id",
-    docsId,
-  );
+  // svelte-dnd-action places the placeholder from the rows' rectangles at
+  // each pointermove. When the last move lands while the rows are still in
+  // their FLIP animation, it measured mid-flight rectangles and nothing
+  // re-evaluates once they settle — the placeholder stays where it was
+  // (Playwright smoke on PR #1143 head 941091866). So keep nudging the
+  // pointer (1 px) until the placeholder sits first on the top level, and
+  // release only then.
+  const firstTop = page.locator("ul[aria-label='Entries'] > li").first();
+  for (let i = 0; i < 40; i++) {
+    if ((await firstTop.getAttribute("data-entry-id")) === docsId) break;
+    await page.waitForTimeout(50);
+    await page.mouse.move(to.x + 10, to.y + 2 - (i % 2), { steps: 1 });
+  }
+  await expect(firstTop).toHaveAttribute("data-entry-id", docsId);
   await page.mouse.up();
   await expect(page.getByTestId("save-list")).toBeEnabled();
   await save(page, "save-list");

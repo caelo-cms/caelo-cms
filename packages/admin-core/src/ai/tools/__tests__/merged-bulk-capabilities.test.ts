@@ -342,3 +342,19 @@ describe("create_content_instances — guard refusals stay refusals", () => {
     expect((res as { refusal?: true }).refusal).toBe(true);
   });
 });
+
+// e2e-livedit run 40351690739 — `{moduleId}` alone reached the op and came
+// back as a bare "module not found". The merged tool refuses it up front.
+describe("update_modules_many refuses an item that changes nothing", () => {
+  const ID = "11111111-1111-4111-8111-111111111111";
+  it("names what to pass; a real change parses", () => {
+    for (const item of [{ moduleId: ID }, { moduleId: ID, bindThemeLiterals: false }]) {
+      const r = updateModulesManyTool.schema.safeParse({ items: [item] });
+      expect(r.success).toBe(false);
+      if (!r.success) expect(r.error.issues[0]?.message).toContain("this item changes nothing");
+    }
+    expect(
+      updateModulesManyTool.schema.safeParse({ items: [{ moduleId: ID, kind: "hero" }] }).success,
+    ).toBe(true);
+  });
+});
