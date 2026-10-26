@@ -198,6 +198,8 @@ function recordingToolCtx(calls: { op: string; input: unknown }[]): ToolContext 
   registerAdminOps(registry);
   const adapter = {
     runOperation: async (op: { name: string }, _ctx: unknown, input: unknown) => {
+      // #1157 — the redirect tools read where the saved redirects are live.
+      if (op.name === "redirects.sync_status") return ok({ targets: [] });
       calls.push({ op: op.name, input });
       return ok({ results: [{}], count: 1 });
     },
