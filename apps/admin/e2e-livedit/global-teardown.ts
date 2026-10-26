@@ -13,6 +13,7 @@
 import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runBun } from "../e2e/_seed.js";
 import type { ScenarioSummary } from "./livedit-metrics.js";
 import { buildThresholdWarnings, formatReport, metricsBySession } from "./livedit-metrics.js";
 
@@ -154,7 +155,42 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * With bug forwarding on (global-setup), wait until the admin's forwarding
+ * worker (one send per minute) has delivered every queued report to the
+ * bug intake, before the admin is stopped — a report filed in the last
+ * minute would otherwise never leave. Bounded: whatever is still queued
+ * after the deadline shows up as not forwarded in the bug gate.
+ */
+const DRAIN_BUG_FORWARDING_SCRIPT = `
+  import { SQL } from "bun";
+  const sql = new SQL(process.env.ADMIN_DATABASE_URL);
+  const queued = async () => {
+    const [r] = await sql.begin(async (tx) => {
+      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
+      return await tx\`SELECT count(*)::int AS n FROM ai_bug_reports WHERE forwarding_state = 'queued'\`;
+    });
+    return r.n;
+  };
+  const deadline = Date.now() + 180_000;
+  let n = await queued();
+  while (n > 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 5_000));
+    n = await queued();
+  }
+  console.log(\`[e2e-livedit] bug forwarding drained: \${n} report(s) still queued\`);
+  await sql.end();
+`;
+
 export default async function globalTeardown(): Promise<void> {
+  if (process.env.CAELO_E2E_FORWARD_BUGS === "1") {
+    try {
+      runBun(DRAIN_BUG_FORWARDING_SCRIPT);
+    } catch (e) {
+      console.error("[e2e-livedit] bug forwarding drain failed:", (e as Error).message);
+    }
+  }
+
   // Emit the token/cache metrics artifact before tearing the admin down.
   try {
     writeMetricsArtifact();

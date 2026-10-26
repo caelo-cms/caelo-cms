@@ -96,6 +96,33 @@ describe("megaMenuFacts", () => {
     expect(f.text).toContain("company");
   });
 
+  it("counts columns nested under one trigger entry, not the trigger itself", () => {
+    const snap = megaSnap("shared");
+    const list = snap.lists[0];
+    if (!list) throw new Error("fixture has no list");
+    const nested = {
+      ...snap,
+      lists: [
+        {
+          ...list,
+          items: [
+            {
+              node: "column",
+              values: { heading: "Menu" },
+              children: [
+                column("Products"),
+                column("Solutions"),
+                column("Company"),
+                { node: "news" },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(megaMenuFacts(nested).columnCount).toBe(3);
+  });
+
   it("a local header list is no shared menu", () => {
     expect(megaMenuFacts(megaSnap("local")).listId).toBeNull();
   });
