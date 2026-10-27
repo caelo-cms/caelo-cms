@@ -48,9 +48,8 @@ export const listSnapshotsTool = makeListReadTool<
 >({
   name: "list_snapshots",
   description:
-    "List the site's edit history (snapshots), newest first: id, when, what kind of change, how many modules/templates/pages it touched. " +
-    "Filter to one module / page / template, or page backwards with `before` (ISO time). " +
-    "Use to find the snapshotId a propose_revert_* tool needs, or to answer 'what changed on this page lately?'. Inspect one with get_snapshot.",
+    "List edit history (snapshots), newest first: id, time, change kind, entities touched. " +
+    "USE FOR: the snapshotId a `propose_revert_*` needs; 'what changed here lately?'. Inspect one -> `get_snapshot`.",
   opName: "snapshots.list",
   input: snapshotFilters,
   buildOpInput: (input) => {
@@ -93,8 +92,8 @@ function statePreview(state: unknown): string {
 export const getSnapshotTool = makeReadTool({
   name: "get_snapshot",
   description:
-    "Inspect one snapshot: its description, author and chat, and the state it recorded for each module, template, page and page layout it touched (labels + a truncated state preview). " +
-    "Use before proposing a revert to confirm the snapshot holds the version the operator means. Find ids with list_snapshots.",
+    "Inspect one snapshot: description, author, chat + recorded state per touched entity (truncated). " +
+    "Use before a revert proposal to confirm it holds the version meant. Ids: `list_snapshots`.",
   opName: "snapshots.get_with_entities",
   input: z.object({ snapshotId: uuid }).strict(),
   // Full entity states can be large; the formatted preview is what the model needs.
@@ -127,8 +126,8 @@ export const getSnapshotTool = makeReadTool({
 export const getModuleImpactTool = makeReadTool({
   name: "get_module_impact",
   description:
-    "Blast radius of editing one module: every live page that places it (page slug, template, block) plus a severity (low / medium / high) and the reasons. " +
-    "Use BEFORE editing a module that may be shared (header, footer, CTA) to tell the operator what else changes, or to decide whether to fork_placement_content instead.",
+    "Blast radius of editing one module: every live page placing it + severity and reasons. " +
+    "Use BEFORE editing a possibly shared module (header, footer, CTA) to tell the operator what else changes, or to pick `fork_placement_content` instead.",
   opName: "snapshots.module_impact",
   input: z.object({ moduleId: uuid }).strict(),
   format: (value) => {
@@ -152,7 +151,7 @@ const unpublishedInput = z
       .boolean()
       .optional()
       .describe(
-        "true = every open chat's unstaged changes and held entities (all editors), not only this chat's.",
+        "true = EVERY open chat's unstaged changes + held entities (all editors): what is open across chats, or before touching something another chat may hold.",
       ),
   })
   .strict();
@@ -209,9 +208,8 @@ export const listUnpublishedChangesTool: ToolDefinitionWithHandler<
 > = {
   name: "list_unpublished_changes",
   description:
-    "List what THIS chat session changed that is not published yet — pages (SEO included, marked `· SEO`), site-wide pieces (modules, templates, layouts, theme) and lists — split into not-yet-staged and already staged. " +
-    "Use before telling the operator the work is ready to publish, to summarise what publishing will ship, or to check an edit landed on the branch. " +
-    "With allChats: true it lists EVERY open chat's unstaged changes and the entities each holds (all editors) — use it when the operator asks what is still open across chats, or before touching something another chat may be working on.",
+    "List what THIS chat changed that is not published yet (pages — SEO included, marked `· SEO` — modules, templates, layouts, theme, lists), split unstaged | staged. " +
+    "Use before saying work is ready to publish, to summarise what publishing ships, or to check an edit landed.",
   schema: unpublishedInput,
   inputSchema: z.toJSONSchema(unpublishedInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {

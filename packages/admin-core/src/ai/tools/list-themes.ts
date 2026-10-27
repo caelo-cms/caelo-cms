@@ -17,9 +17,7 @@ export const listThemesTool = makeListReadTool<
 >({
   name: "list_themes",
   description:
-    "List every theme with UUID, slug, display name, and active flag (TOON rows). " +
-    "Standard list params: `filter`, `limit`/`offset`, `full: true`. " +
-    "propose_activate_theme requires the UUID listed here.",
+    "List themes (TOON rows): UUID (needed by `propose_activate_theme`), slug, display name, active flag.",
   opName: "themes.list",
   input: listThemesInput,
   label: "themes",

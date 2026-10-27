@@ -79,7 +79,7 @@ export const aiBudgetCellInput = z
       .int()
       .nonnegative()
       .nullable()
-      .describe("Cap in microcents (1e-8 USD): $10 = 1000000000. null = unlimited."),
+      .describe("Microcents (1e-8 USD): $10 = 1000000000; null = unlimited."),
     warnAtPct: z
       .number()
       .min(0)

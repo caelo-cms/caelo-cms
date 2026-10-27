@@ -21,6 +21,7 @@ import type { z } from "zod";
 import { z as zod } from "zod";
 import { describeError } from "./_describe-error.js";
 import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
+import { generateInputSchema } from "./generate-input-schema.js";
 
 export interface MakeReadToolArgs<I> {
   readonly name: string;
@@ -60,8 +61,9 @@ export function makeReadTool<I>(args: MakeReadToolArgs<I>): ToolDefinitionWithHa
     description: args.description,
     schema: args.input,
     // Single source of truth: the wire JSON Schema is generated from the
-    // Zod schema — no hand-maintained duplicate to drift.
-    inputSchema: zod.toJSONSchema(args.input) as Record<string, unknown>,
+    // Zod schema — no hand-maintained duplicate to drift. `io: "input"`
+    // (inside generateInputSchema) keeps defaulted fields optional.
+    inputSchema: generateInputSchema(args.input),
     handler: async (ctx, input, toolCtx) => {
       const opInput = args.buildOpInput ? args.buildOpInput(input, ctx, toolCtx) : input;
       const execCtx = args.runAsOperator && toolCtx.humanCtx ? toolCtx.humanCtx : ctx;
@@ -90,23 +92,10 @@ const LIST_CHAR_CAP = 6000;
  * tool's domain input by `makeListReadTool`.
  */
 export const listParamsSchema = zod.object({
-  filter: zod
-    .string()
-    .max(200)
-    .optional()
-    .describe("Case-insensitive substring filter applied across all output columns."),
-  limit: zod
-    .number()
-    .int()
-    .min(1)
-    .max(500)
-    .optional()
-    .describe(`Max rows to return (default ${LIST_DEFAULT_LIMIT}).`),
-  offset: zod.number().int().min(0).optional().describe("Rows to skip (pagination)."),
-  full: zod
-    .boolean()
-    .optional()
-    .describe("true disables truncation entirely: all rows, no char cap."),
+  filter: zod.string().max(200).optional().describe("Case-insensitive substring over all columns."),
+  limit: zod.number().int().min(1).max(500).optional().describe(`Default ${LIST_DEFAULT_LIMIT}.`),
+  offset: zod.number().int().min(0).optional(),
+  full: zod.boolean().optional().describe("true = all rows, no truncation."),
 });
 export type ListParams = zod.infer<typeof listParamsSchema>;
 
@@ -257,6 +246,12 @@ export interface MakeListReadToolArgs<I extends Record<string, unknown>, R> {
    * list, or after `emptyMessage`; null adds nothing.
    */
   readonly appendix?: (value: unknown) => string | null;
+  /**
+   * Replaces the generic `filter` / `limit` descriptions when the op does
+   * something else with them (a server-side search, another default page
+   * size), so the model is told what actually happens.
+   */
+  readonly listParamDescriptions?: { readonly filter?: string; readonly limit?: string };
 }
 
 /**
@@ -266,12 +261,19 @@ export interface MakeListReadToolArgs<I extends Record<string, unknown>, R> {
 export function makeListReadTool<I extends Record<string, unknown>, R>(
   args: MakeListReadToolArgs<I, R>,
 ): ToolDefinitionWithHandler<I & ListParams> {
-  const inputSchema = args.input.extend(listParamsSchema.shape);
+  const overrides = args.listParamDescriptions;
+  const inputSchema = args.input.extend({
+    ...listParamsSchema.shape,
+    ...(overrides?.filter
+      ? { filter: listParamsSchema.shape.filter.describe(overrides.filter) }
+      : {}),
+    ...(overrides?.limit ? { limit: listParamsSchema.shape.limit.describe(overrides.limit) } : {}),
+  });
   return {
     name: args.name,
     description: args.description,
     schema: inputSchema as unknown as zod.ZodType<I & ListParams>,
-    inputSchema: zod.toJSONSchema(inputSchema) as Record<string, unknown>,
+    inputSchema: generateInputSchema(inputSchema),
     handler: async (ctx, input, toolCtx) => {
       const { filter: _f, limit: _l, offset: _o, full: _fu, ...domain } = input;
       const built = args.buildOpInput ? args.buildOpInput(input, ctx, toolCtx) : domain;

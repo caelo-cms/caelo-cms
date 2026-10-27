@@ -17,9 +17,8 @@ export const bulkDeleteRedirectsTool: ToolDefinitionWithHandler<
 > = {
   name: "bulk_delete_redirects",
   description:
-    "Delete redirects in one transaction by EXACTLY ONE of `redirectIds` | `fromPaths` | `matches` (substring of fromPath). " +
-    "Run `find_redirects` first and tell the operator the count.\n" +
-    "`matches` is capped at 10 rows for you (a substring match's blast radius is hard to predict; every deleted 301 strands inbound links): over the cap the call is REJECTED, nothing deleted -> list with `find_redirects`, show the operator, delete the confirmed ones by `redirectIds` (uncapped).\n" +
+    "Delete redirects in one transaction by EXACTLY ONE of `redirectIds`, `fromPaths`, `matches` (one redirect = one-item array). Run `find_redirects` FIRST and tell the user the count.\n" +
+    "`matches` (substring) is capped at 10 rows for you (every deleted 301 strands an inbound link): more -> REJECTED, nothing deleted; list them with `find_redirects`, show the operator, delete the confirmed ones by `redirectIds` (uncapped).\n" +
     "Gone from the live site when the call returns (pushed to hosting, no build); the result says so per target.",
   schema: bulkDeleteRedirectsToolInput,
   inputSchema: {

@@ -29,8 +29,7 @@ const noInput = z.object({}).strict();
 export const getPublishGateTool = makeReadTool<Record<string, never>>({
   name: "get_publish_gate",
   description:
-    "Check whether Publish live is open for the current staged build, and if not why and what to do next (quality problems to fix — the target is 100 and zero findings — or, if truly unfixable, to hand to the operator as a decision; a failed check to retry; a check still running). " +
-    "Call before telling the operator they can publish. For the findings themselves use get_quality_audit.",
+    "Is Publish live open for the staged build? If not: why + next step (fix quality problems — target 100, zero findings — or hand truly unfixable ones to the operator as a decision; retry a failed check; wait for a running one). Call before telling the operator they can publish. Findings -> `get_quality_audit`.",
   opName: "quality_audits.gate_status",
   input: noInput,
   buildOpInput: () => ({}),
@@ -51,8 +50,7 @@ export const getPublishGateTool = makeReadTool<Record<string, never>>({
 export const retryQualityAuditTool: ToolDefinitionWithHandler<Record<string, never>> = {
   name: "retry_quality_audit",
   description:
-    "Re-run the quality check of the current staged build when it FAILED (browser, timeout, staging unreachable) or never ran. It changes nothing on the site. " +
-    "Do not use it to re-check after fixes — fixes reach staging only through a new Stage, which audits by itself.",
+    "Re-run the staged build's quality check when it FAILED (browser, timeout, staging unreachable) or never ran; changes nothing. Not for re-checking fixes — those need a new Stage, which audits itself.",
   schema: noInput,
   inputSchema: z.toJSONSchema(noInput) as Record<string, unknown>,
   handler: async (ctx, _input, toolCtx) => {
@@ -83,13 +81,13 @@ export const acceptQualityFindingsTool = makeProposeTool<AcceptInput>({
   // good enough" — what truly cannot be fixed goes to the operator as ONE
   // decision per group of findings; the operator approves or rejects it.
   when:
-    'Hand the operator a decision on quality findings that truly CANNOT be fixed, or record the acceptance the operator explicitly asked for ("accept it", "leave the contrast as it is", "ship it anyway"). ' +
-    "The target is 100 in every Lighthouse category and zero findings: a score like 90 is NOT acceptable on its own, and anything you can still fix you fix (read the metrics in get_quality_audit; never run Lighthouse yourself). " +
-    "Use it on your own only after explaining WHY a finding cannot be fixed (a third-party embed, a brand colour the operator confirmed, a Caelo platform issue you reported with bug_report), and phrase it as the operator's choice, never as your recommendation. " +
-    'BULK: prefer `groups` — one problem across pages in one entry (`{ ruleId: "seo-check/description-missing" }` = every page it is open on; add `pagePaths` for a subset; a Lighthouse audit by `auditId`, a category below 100 by `category`). Use `items` only for single findings on named pages. Bundle every group of one decision into ONE call. ' +
-    "What is accepted is the value measured now (score, audit score, error count): a worse value blocks again, a better one tightens the acceptance. An acceptance applies ONLY to its pages. Check list_quality_acceptances first; never ask twice. " +
-    "Take auditRunId, page paths and audit / rule ids from get_quality_audit; the reason is the operator's or the plain fact why it cannot be fixed. " +
-    "Once approved, an acceptance counts at once — Publish live opens without a new Stage. Do NOT call stage_changes afterwards just to 'pick up' the acceptance: a Stage with nothing new still re-runs the whole quality check, which can report fresh findings and start another fix round.",
+    'Hand the operator a decision on quality findings that truly CANNOT be fixed, or record an acceptance they explicitly asked for ("accept it", "ship it anyway").\n' +
+    "CORE RULES:\n" +
+    "- Target = 100 per Lighthouse category + zero findings; 90 is NOT acceptable on its own. Fix what is fixable (metrics: `get_quality_audit`; never run Lighthouse yourself).\n" +
+    "- On your own only after explaining WHY it cannot be fixed (third-party embed, brand colour the operator confirmed, Caelo platform issue reported via `bug_report`); phrase it as the operator's choice, never your recommendation.\n" +
+    "- Check `list_quality_acceptances` first; never ask twice. Every group of one decision -> ONE call.\n" +
+    "- Accepts the value measured now (score, audit score, error count): worse blocks again, better tightens it. Applies ONLY to its pages.\n" +
+    "- Once approved it counts at once — Publish live opens without a new Stage. Do NOT call `stage_changes` to 'pick it up': a Stage with nothing new re-runs the whole check and can start another fix round.",
   schema: proposeAcceptInput,
   inputSchema: z.toJSONSchema(proposeAcceptInput) as Record<string, unknown>,
   summarize: (input, preview) =>
@@ -102,9 +100,7 @@ export const publishDespiteFailedAuditTool = makeProposeTool<PublishAnywayInput>
   toolName: "publish_despite_failed_audit",
   opName: "quality_audits.propose_publish_anyway",
   pendingQueuePath: "/settings/quality/pending",
-  when:
-    "Only when the editor explicitly wants to publish although the quality check FAILED to run (no result — not when it found problems): publishes the staged build live and records the editor's reason. " +
-    "Try retry_quality_audit first. Take auditRunId from get_publish_gate.",
+  when: "Publish the staged build live although its quality check FAILED to run (not when it found problems), recording the editor's reason. ONLY on the editor's explicit request, after `retry_quality_audit`. auditRunId: `get_publish_gate`.",
   schema: proposePublishAnywayInput,
   inputSchema: z.toJSONSchema(proposePublishAnywayInput) as Record<string, unknown>,
   summarize: (input) => `publish over the failed quality check: ${input.reason}`,

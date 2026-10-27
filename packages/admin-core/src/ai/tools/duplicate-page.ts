@@ -20,13 +20,8 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
 > = {
   name: "duplicate_page",
   description:
-    "Clone an existing page under a new slug. Modules are shared by reference (edits propagate to both pages). " +
-    "The copy sits next to the source (same parent page, so `/docs/a` copies to `/docs/<newSlug>`); pass `newParentPageId` to place it under another page, or null for the top level. " +
-    "Use when the user says 'make a copy of this page' or 'duplicate the about page'. " +
-    "If cloning to a different page-type via `targetTemplateId`, block names must align — if they don't, modules in " +
-    "unmatched blocks orphan immediately. Follow up with `repoint_page_template` to migrate or drop those orphans. " +
-    "The copy is the same kind of page: it keeps the source's page type, properties and terms (categories / tags); with a `targetTemplateId` of another page type it takes that type — change type, properties or terms afterwards with update_pages_many. " +
-    "Soft-deleted modules on the source are filtered out at clone time; the audit log surfaces the dropped count.",
+    "Clone a page under a new slug ('duplicate the about page'). Modules are shared by reference (edits hit both). The copy keeps the source's parent (`/docs/a` -> `/docs/<newSlug>`), page type, properties and terms (change later via `update_pages_many`); soft-deleted source modules are dropped. " +
+    "`targetTemplateId` of another page type -> the copy takes that type; block names must align, modules in unmatched blocks orphan -> fix with `repoint_page_template`.",
   schema: duplicatePageToolInput,
   inputSchema: {
     type: "object",
@@ -47,8 +42,7 @@ export const duplicatePageTool: ToolDefinitionWithHandler<
       newParentPageId: {
         type: ["string", "null"],
         format: "uuid",
-        description:
-          "Parent page for the copy; null = top level. Omit to keep the source's parent.",
+        description: "null = top level; omit = source's parent.",
       },
     },
   },

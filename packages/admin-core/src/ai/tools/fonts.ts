@@ -22,7 +22,7 @@ function compact(value: unknown): string {
 export const findFontsTool: ToolDefinitionWithHandler<z.infer<typeof fontFindInput>> = {
   name: "find_fonts",
   description:
-    "Find installed immutable font faces and Google Fonts catalog suggestions. Catalog entries are not installed files; acquire_font installs a complete licensed face. Use the same pinned id/sha256 for theme and plugin consumers.",
+    "Find installed immutable font faces + Google Fonts catalog suggestions. Catalog entries are not installed; `acquire_font` installs one. Theme and plugin consumers use the same pinned id/sha256.",
   schema: fontFindInput,
   async handler(ctx, input, toolCtx) {
     const result = await execute(toolCtx.registry, toolCtx.adapter, ctx, "fonts.find", input);
@@ -36,7 +36,7 @@ export const findFontsTool: ToolDefinitionWithHandler<z.infer<typeof fontFindInp
 export const inspectFontTool = makeReadTool({
   name: "inspect_font",
   description:
-    "Inspect a pinned font face: family, format, weight, axes, license, embedding restrictions and provenance. Missing or mismatched revisions fail.",
+    "Inspect a pinned font face: family, format, weight, axes, license, embedding limits, provenance. Fails on a missing or mismatched revision.",
   opName: "fonts.inspect",
   input: fontRef,
   format: compact,
@@ -45,7 +45,7 @@ export const inspectFontTool = makeReadTool({
 export const previewTypographyTool = makeReadTool({
   name: "preview_typography",
   description:
-    "Validate a pinned font for the actual specimen text, required web/document use and supported formats. Rejects missing glyphs or forbidden embedding. Open /design/fonts for the real loaded-face preview; does not send specimen text to a remote font provider.",
+    "Validate a pinned font against the specimen text, web/document use and formats; rejects missing glyphs or forbidden embedding. Sends no text to a remote font provider. Visual preview: /design/fonts.",
   opName: "fonts.resolve",
   input: fontResolveInput,
   format: (value) => `${compact(value)}\nReal font preview: /design/fonts`,
@@ -54,7 +54,7 @@ export const previewTypographyTool = makeReadTool({
 export const acquireFontTool: ToolDefinitionWithHandler<z.infer<typeof acquireFontInput>> = {
   name: "acquire_font",
   description:
-    "Import a complete Google Fonts face plus its actual Open Font License into Caelo's shared immutable library. Optional filename chooses an exact variant returned by list_font_variants. Revisions persist for restores and plugin exports; this does not assign or publish the font.",
+    "Install a complete Google Fonts face + its OFL license into Caelo's shared immutable font library (revisions kept for restores, plugin exports). Does not assign or publish it. `filename`: exact variant from `list_font_variants`.",
   schema: acquireFontInput,
   async handler(ctx, input, toolCtx) {
     try {
@@ -76,8 +76,7 @@ export const acquireFontTool: ToolDefinitionWithHandler<z.infer<typeof acquireFo
 const variantsInput = z.object({ family: acquireFontInput.shape.family }).strict();
 export const listFontVariantsTool: ToolDefinitionWithHandler<z.infer<typeof variantsInput>> = {
   name: "list_font_variants",
-  description:
-    "List complete Google Fonts file variants available for acquire_font (including italic and variable fonts).",
+  description: "List Google Fonts file variants (incl. italic, variable) for `acquire_font`.",
   schema: variantsInput,
   async handler(_ctx, input) {
     try {

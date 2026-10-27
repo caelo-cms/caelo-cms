@@ -46,8 +46,7 @@ export function formatUpdateRequest(r: PlatformUpdateRequest): string {
 export const listCaeloUpdatesTool = makeReadTool<{ limit?: number }>({
   name: "list_caelo_updates",
   description:
-    "History of Caelo update installs on this site (newest first): which version, who asked, and how it ended (installed, rolled back, failed, refused, or waiting for Cloud Shell). " +
-    "Use when the operator asks whether an update went through, why one failed, or what changed recently. For which version runs now and whether a newer one exists, use get_caelo_version. Read-only.",
+    "Caelo update install history, newest first (version, who asked, outcome). Use for: did an update go through, why it failed, what changed recently. Current/newest version -> `get_caelo_version`.",
   opName: "platform_updates.list",
   input: z.object({ limit: z.number().int().min(1).max(50).optional() }).strict(),
   format: (value) => {
@@ -62,8 +61,7 @@ export const listCaeloUpdatesTool = makeReadTool<{ limit?: number }>({
 export const getCaeloUpdateTool = makeReadTool<{ requestId?: string }>({
   name: "get_caelo_update",
   description:
-    "The step-by-step timeline of one Caelo update install (signature check, backup, migrations, roll, health check, rollback) — the most recent one when requestId is omitted. " +
-    "Use to explain what happened during an update or why it stopped; ids come from list_caelo_updates. Read-only.",
+    "Step-by-step timeline of one Caelo update install (signature check, backup, migrations, roll, health check, rollback); omit requestId = most recent (ids: `list_caelo_updates`). Use to explain what happened or why it stopped.",
   opName: "platform_updates.get",
   input: z.object({ requestId: z.string().uuid().optional() }).strict(),
   format: (value) => {
@@ -84,8 +82,7 @@ export const getCaeloUpdateTool = makeReadTool<{ requestId?: string }>({
 export const getCaeloUpdatePolicyTool = makeReadTool<Record<string, never>>({
   name: "get_caelo_update_policy",
   description:
-    "Whether Caelo updates install automatically on this site or the Owner is only notified (new releases, security fixes included, are always announced), and which kinds (security fixes, patch, minor; never major), the maintenance window, the soak periods, and whether automatic installs are paused (by the Owner, or after a failure). " +
-    "For what the scheduler last decided about the newest release and which update emails went out, use get_caelo_auto_update_status. Read-only.",
+    "Caelo auto-update policy: auto-install or notify only, which kinds (security, patch, minor; never major), maintenance window, soak periods, paused or not. Scheduler's last decision + update emails -> `get_caelo_auto_update_status`.",
   opName: "platform_update_policy.get",
   input: z.object({}).strict(),
   format: (value) => {
@@ -148,8 +145,7 @@ const ACTION_WORDS: Record<NonNullable<SchedulerStatus["lastAction"]>, string> =
 export const getCaeloAutoUpdateStatusTool = makeReadTool<Record<string, never>>({
   name: "get_caelo_auto_update_status",
   description:
-    "What Caelo's automatic-update scheduler last decided about the newest release (installing, waiting for the soak period or maintenance window, paused, or why it will not install it on its own) and the update emails sent to the Owner, with whether each was delivered. " +
-    "Use when the operator asks whether or when an update will install by itself, or why they did (not) get an update email. For the policy itself use get_caelo_update_policy. Read-only.",
+    "What the auto-update scheduler last decided about the newest release (installing, waiting for soak/window, paused, or why not) + update emails sent to the Owner and their delivery. Use for: will/when an update install by itself, why an update email did (not) arrive. Policy -> `get_caelo_update_policy`.",
   opName: "platform_updates.scheduler_status",
   input: z.object({}).strict(),
   format: (value) => {
@@ -199,8 +195,7 @@ export function formatUpdateAgent(agent: PlatformUpdateAgentStatus | null): stri
 export const getCaeloUpdateAgentTool = makeReadTool<Record<string, never>>({
   name: "get_caelo_update_agent",
   description:
-    "Self-hosted installs only: whether the update agent on the server is running, so the Owner can install Caelo updates from Settings → Updates — or what is wrong on the server (agent not set up, not running, cosign or Docker missing). " +
-    "Use when the operator asks why Install update is missing or why an update did not start on a self-hosted site. Read-only.",
+    "Self-hosted only: is the server's update agent running (needed to install updates from Settings → Updates), or what is wrong (not set up, not running, cosign/Docker missing). Use when Install update is missing or an update didn't start.",
   opName: "platform_updates.agent_status",
   input: z.object({}).strict(),
   format: (value) =>

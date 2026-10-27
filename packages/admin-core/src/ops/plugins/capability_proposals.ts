@@ -94,7 +94,12 @@ export const proposeRevokeCapabilityInput = z
     slug: z.string().min(1).max(120),
     capability: pluginCapability,
     /** Which version's grant: the running one (default) or a pending update's. */
-    target: z.enum(["running", "pending_update"]).default("running"),
+    target: z
+      .enum(["running", "pending_update"])
+      .default("running")
+      .describe(
+        "`running`: DISABLES the plugin; data kept, running again needs a new Owner approval. `pending_update`: abandons a not-yet-started update (must be staged + approved again).",
+      ),
     reason: z.string().min(1).max(500).optional(),
   })
   .strict();

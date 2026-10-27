@@ -11,13 +11,7 @@ import { makeReadTool } from "./_make-read-tool.js";
 
 const input = z
   .object({
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(500)
-      .optional()
-      .describe("Report at most this many assets, most-used first (default 100)."),
+    limit: z.number().int().min(1).max(500).optional().describe("Most-used first; default 100."),
   })
   .strict();
 
@@ -34,12 +28,8 @@ interface MissingAsset {
 export const listMissingMediaTool = makeReadTool<z.infer<typeof input>>({
   name: "list_missing_media",
   description:
-    "List media library assets whose stored image files are missing (the row exists, the bytes are gone — e.g. after media was lost from a cloud container's disk). " +
-    "Use when Stage/deploy fails with 'stored files of … media asset(s) are missing', or before publishing after such a failure. " +
-    "For each asset: if `source` is a URL it was imported from, restore it with import_media_from_urls on that URL (the same bytes refill the same asset, every page using it is fixed); " +
-    "otherwise ask the operator to re-upload the same file at /content/media (identical files reuse the asset). " +
-    "If the asset cannot be restored, take it off the pages that use it (media.list_usages) and delete it with delete_media_many. " +
-    "Not for missing derived variants of an existing file — that is regenerate_media_variants.",
+    "List media assets whose stored files are gone (row exists, bytes lost). Use when Stage/deploy fails with 'stored files of … media asset(s) are missing', or before publishing after such a failure. Missing derived variants of an existing file -> `regenerate_media_variants`.\n" +
+    "Per asset: `source` is a URL -> `import_media_from_urls` on it (same bytes refill the same asset, fixing every page); else ask the operator to re-upload the same file at /content/media (identical files reuse the asset). Unrestorable -> take it off its pages (`list_media_usages`), then `delete_media_many`.",
   opName: "media.list_missing_files",
   input,
   format: (value) => {

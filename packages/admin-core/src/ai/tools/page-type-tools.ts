@@ -24,12 +24,7 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 const listPageTypesInput = z
   .object({
-    slug: z
-      .string()
-      .min(1)
-      .max(64)
-      .optional()
-      .describe("One page type in detail, with sample pages."),
+    slug: z.string().min(1).max(64).optional().describe("One type in detail, with sample pages."),
     query: z.string().min(1).max(128).optional().describe("Free text over slug, name, purpose."),
   })
   .strict();
@@ -65,9 +60,8 @@ function describePageType(t: PageTypeRow): string {
 export const listPageTypesTool: ToolDefinitionWithHandler<ListPageTypesInput> = {
   name: "list_page_types",
   description:
-    "The page types of this site — what each page IS (e.g. `content`, `news`, `product`): purpose, page count, allowed templates (ids) and default template, properties (`*` = required) and vocabularies (categories / tags lists whose terms its pages carry). " +
-    "Read it before build_page / update_pages_many so a new article gets `pageType: 'news'` (and its properties and terms), and before writing a page query (`page_type` filters on the slug). Pass `slug` for one type with sample pages. " +
-    "A new KIND of content (a blog, a job board, products) is a new page type: upsert_page_types_many.",
+    "The site's page types, what each page IS (`content`, `news`, `product`): purpose, page count, allowed + default template ids, properties (`*` = required), vocabularies (categories/tags lists whose terms its pages carry). " +
+    'Read before `build_page` / `update_pages_many` (a new article gets `pageType:"news"` + its properties and terms) and before a page query (`page_type` filters on the slug). New KIND of content (blog, job board) -> `upsert_page_types_many`.',
   schema: listPageTypesInput,
   handler: async (ctx, input, toolCtx) => {
     if (input.slug !== undefined) {
@@ -107,10 +101,12 @@ export const listPageTypesTool: ToolDefinitionWithHandler<ListPageTypesInput> = 
 export const upsertPageTypesManyTool = makeOpTool({
   name: "upsert_page_types_many",
   description:
-    "Create or replace page types (1–50, one transaction) — when the operator starts a new kind of content ('I need a news section with categories', 'a job board'). " +
-    "Each: `slug`, `name`, `purpose`, `templates` (template ids from list_templates, at least one; create one with create_template pageType first when none fits), `defaultTemplate` (one of them), `properties` (fields every page of the type carries, e.g. {name:'author', type:'text', label:'Author'}, {name:'event_date', type:'date', label:'Date'}; no `module` fields), `vocabularies` ([{list: <vocabulary list id from list_lists>, cardinality:'one'|'many', required?}]). " +
-    "Order for 'news with categories': upsert_lists_many (a `categories` list) → create_template (pageType 'news') or reuse a template → upsert_page_types_many → build_page / update_pages_many with pageType, properties, terms. " +
-    "Changing a type that pages use re-checks them: a new property's default is written into them; dropping a template they use is refused (move them first); dropping a property or vocabulary they hold values for needs `dropValues: true` (only with the operator's agreement). Pass `expectedVersion` from list_page_types.",
+    "Create or replace page types in one transaction, when the operator starts a new kind of content ('a news section with categories', 'a job board').\n" +
+    "CORE RULES:\n" +
+    "- `templates`: ids from `list_templates`; none fits -> `create_template` with `pageType` first. `defaultTemplate` is one of them.\n" +
+    "- `properties`: fields every page of the type carries (e.g. `author` text, `event_date` date); no `module` fields. `vocabularies[].list`: list id from `list_lists`.\n" +
+    "- Order for 'news with categories': `upsert_lists_many` (a `categories` list) -> `create_template` (pageType `news`) or reuse one -> this -> `build_page`/`update_pages_many` with pageType, properties, terms.\n" +
+    "- Type in use: a new property's default is written into its pages; dropping a template they use is refused (move them first); dropping a property/vocabulary they hold values for needs `dropValues:true` (only with operator agreement). Pass `expectedVersion` from `list_page_types`.",
   inputSchema: UPSERT_PAGE_TYPES_JSON_SCHEMA,
   opName: "page_types.upsert_many",
   input: upsertPageTypesManyOp.input,
@@ -136,7 +132,7 @@ export const upsertPageTypesManyTool = makeOpTool({
 export const deletePageTypesManyTool = makeOpTool({
   name: "delete_page_types_many",
   description:
-    "Delete page types by slug (1–50). Refused while pages use the type (move them to another type with update_pages_many pageType first) and for the site's default page type. Undoable like every draft change.",
+    "Delete page types by slug. Refused for the site's default type and while pages use it (move them first: `update_pages_many` `pageType`). Undoable.",
   opName: "page_types.delete_many",
   input: deletePageTypesManyOp.input,
   format: (value) =>

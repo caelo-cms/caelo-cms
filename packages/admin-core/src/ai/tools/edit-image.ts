@@ -34,27 +34,35 @@ export const editImageTool: ToolDefinitionWithHandler<EditImageInput> = {
   name: "edit_image",
   usesInstallAi: true,
   description:
-    'Change an EXISTING image from the media library with a prompt ("make the sky dusk", "remove the logo") — the result is a NEW media asset linked to its source; the source is never modified. ' +
-    "`source` is a media id or slug (find_media). Optional `mask`: a PNG from the media library whose transparent area marks what may change — only on models that support masks; otherwise describe the region in the prompt. Optional `references` guide the look. " +
-    "Check get_image_capabilities first: whether the model can edit, mask support, reference limits. Requests outside them are refused before anything is paid. " +
-    "Each call reserves the image budget first; `ImageBudgetExceeded` means tell the operator instead of retrying. For a brand-new image use generate_image.",
+    'Edit an EXISTING library image by prompt ("make the sky dusk", "remove the logo") -> a NEW media asset linked to its source; the source is never modified. Brand-new image -> `generate_image`.\n' +
+    "- Check `get_image_capabilities` first (edit support, mask support, reference limits); requests outside them are refused before anything is paid.\n" +
+    "- Budget is reserved per call; `ImageBudgetExceeded` -> tell the operator, don't retry.",
   schema: editImageInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["source", "prompt"],
     properties: {
-      source: { type: "string" },
+      source: { type: "string", description: "Media id or slug (`find_media`)." },
       prompt: { type: "string" },
-      mask: { type: "string" },
-      references: { type: "array", items: { type: "string" }, maxItems: 15 },
+      mask: {
+        type: "string",
+        description:
+          "Library PNG whose transparent area marks what may change; mask-capable models only, else describe the region in `prompt`.",
+      },
+      references: {
+        type: "array",
+        items: { type: "string" },
+        maxItems: 15,
+        description: "Media ids/slugs guiding the look.",
+      },
       size: { type: "string", enum: ["1024x1024", "1792x1024", "1024x1792"] },
       quality: { type: "string", enum: ["standard", "hd"] },
       imageSize: {
         type: "string",
         enum: ["1K", "2K", "4K"],
         description:
-          "Native resolution. 2K / 4K only on models whose get_image_capabilities lists them; omit it otherwise. 1K is accepted on every model.",
+          "2K/4K only if `get_image_capabilities` lists them, else omit (1K works on every model).",
       },
       altText: { type: "string" },
     },

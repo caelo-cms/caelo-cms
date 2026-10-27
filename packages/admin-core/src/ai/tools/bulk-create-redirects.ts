@@ -17,8 +17,8 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
 > = {
   name: "bulk_create_redirects",
   description:
-    "Create redirects in one transaction — one call for 1..N (`items[]`): a single redirect (one-item array), a list ('/old-blog/* -> /blog/*' across many paths), a pasted CSV/table. `upsert:true` updates existing fromPath rows instead of skipping them.\n" +
-    "Live on the site when the call returns: pushed to hosting without a build or Publish live. The result says so per target and names redirects whose target page is not published yet (404 there until Publish live).",
+    "Create redirects in one tx: a single one, a list ('/old-blog/* -> /blog/*' across many paths), a pasted CSV/table. `upsert:true` updates existing fromPath rows instead of skipping them.\n" +
+    "Live when the call returns (pushed to hosting, no build or Publish live); the result says so per target and names redirects to pages not published yet (404 until Publish live).",
   schema: bulkCreateRedirectsToolInput,
   inputSchema: {
     type: "object",
@@ -40,7 +40,7 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
               minLength: 1,
               maxLength: 500,
               description:
-                "Path on this site starting with a single '/' (e.g. '/blog/new'); never a full URL or '//host' — external targets unsupported.",
+                "Path on this site, single leading '/' (e.g. '/blog/new'); never a full URL or '//host' (external targets unsupported).",
             },
             statusCode: { type: "integer", enum: [301, 302, 307, 308, 410], default: 301 },
           },

@@ -70,13 +70,14 @@ describe("build_page schema stays on the shared single sources (#106 discipline)
 
 describe("§11 bulk-first steering wording", () => {
   it("build_page tells the AI to prefer it over the singular chain", () => {
-    expect(buildPageTool.description).toContain("Prefer it over add_module");
+    expect(buildPageTool.description).toContain(
+      "never `add_module` / `create_content_instances` chains",
+    );
     expect(buildPageTool.description).toContain("ONE transaction");
   });
 
   it("add_module points multi-module work at build_page", () => {
-    expect(addModuleTool.description).toContain("build_page");
-    expect(addModuleTool.description).toContain("more than one module");
+    expect(addModuleTool.description).toContain("page needing >1 module -> `build_page`");
   });
 
   it("create_content_instances steers back to build_page for full assembly", () => {

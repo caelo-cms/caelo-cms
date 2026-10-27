@@ -25,12 +25,9 @@ export const repointPageTemplateTool: ToolDefinitionWithHandler<
 > = {
   name: "repoint_page_template",
   description:
-    "Re-point a page to a different template (page-type). Modules in matching block names migrate; " +
-    "modules in unmatched blocks are dropped or moved to a named block per `orphanDisposition`. " +
-    "If the change would drop modules, CONFIRM with the user before passing `{ kind: 'drop' }`. " +
-    "After the call, surface the returned `migratedBlocks` and `droppedModules` lists in your reply. " +
-    "Prefer `update_pages_many` when re-pointing > 1 page to the same template (note: it does NOT do block-migration; " +
-    "use this single-page tool when block-migration is needed, even repeated).",
+    "Re-point ONE page to another template with block migration: matching block names migrate; unmatched ones per `orphanDisposition`.\n" +
+    "DO NOT USE FOR: >1 page to one template without block migration -> `update_pages_many`.\n" +
+    'CORE RULES: modules would be dropped -> CONFIRM with the user before `{kind:"drop"}`. Relay the returned `migratedBlocks` + `droppedModules` in your reply.',
   schema: repointPageTemplateToolInput,
   inputSchema: {
     type: "object",

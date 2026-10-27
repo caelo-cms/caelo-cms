@@ -36,12 +36,13 @@ export const listContentInstancesTool = makeListReadTool<
   }
 >({
   name: "list_content_instances",
-  description:
-    "List content_instances — the values filling module placeholders (TOON rows: id, module, kind, slug, displayName, purpose, placements, parents), most-placed first. " +
-    "`purpose` says why a shared row exists: read it BEFORE minting a shared instance (create_content_instances) and reuse a row whose purpose and module fit. " +
-    "`placementCount` is the blast radius: >1 means SHARED, editing propagates to every bound page. Check BEFORE set_content_instance_values_many. " +
-    "`parents` counts instances that show this one inside a module / module-list field; an ORPHAN (safe to delete) has placements=0 AND parents=0. Both counts are as this chat's draft sees them. " +
-    "Narrow by `moduleId` / `slug` / `pageId` (instances used on one page), plus the standard list params: `filter`, `limit`/`offset`, `full: true`.",
+  description: [
+    "List content_instances — values filling module placeholders (TOON rows: id, module, kind, slug, displayName, purpose, placements, parents), most-placed first; counts as this chat's draft sees them.",
+    "- `purpose` = why a shared row exists: read it BEFORE minting (`create_content_instances`); reuse a row whose purpose + module fit.",
+    "- `placements` = blast radius: >1 = SHARED, edits propagate to every bound page -> check BEFORE `set_content_instance_values_many`.",
+    "- `parents` = instances showing this one in a `module`/`module-list` field. ORPHAN (safe to delete) = placements 0 AND parents 0.",
+    "Narrow by `moduleId` / `slug` / `pageId` (instances used on that page).",
+  ].join("\n"),
   opName: "content_instances.list",
   input: listContentInstancesInput,
   label: "content_instances",

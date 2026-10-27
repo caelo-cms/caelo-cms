@@ -23,13 +23,20 @@ import {
 } from "../../ops/lists/lists.js";
 import { previewListSourceOp } from "../../ops/lists/preview-source.js";
 import { promoteLocalListOp } from "../../ops/lists/promote-local.js";
-import { LISTS_ALIAS, makeOpTool } from "./_list-tool-kit.js";
+import { makeOpTool } from "./_list-tool-kit.js";
 import {
   PATCH_LIST_ITEMS_JSON_SCHEMA,
   PREVIEW_LIST_SOURCE_JSON_SCHEMA,
   UPSERT_LISTS_JSON_SCHEMA,
 } from "./_list-tool-schemas.js";
 import { makeListReadTool } from "./_make-read-tool.js";
+
+/**
+ * Operator words -> lists. Said once, in list_lists, where the AI looks for
+ * a menu: every catalogue tool counts toward each call's input.
+ */
+const MENUS_ARE_LISTS =
+  "Menus, nav, footer links, categories, tags = SHARED LISTS of a fitting type (menu, links, categories, tags, custom e.g. mega menu); no menu-specific tools. Shown by ONE module -> LOCAL (its `list` field); >1 place, site nav or a page vocabulary -> SHARED (`promote_local_list` converts).";
 
 interface ListUsageView {
   modules: { slug: string; field: string }[];
@@ -68,10 +75,9 @@ const listListsInput = (listListsOp.input as unknown as z.ZodObject<z.ZodRawShap
 export const listListsTool = makeListReadTool<Record<string, unknown>, ListSummaryRow>({
   name: "list_lists",
   description:
-    `The shared lists of this site (TOON rows): slug, type, role, entry count, purpose, which module fields bind it (module.field), placements, sample pages, vocabulary use (page types + tagged pages), last edit. ${LISTS_ALIAS} ` +
-    "Call it BEFORE creating a list — when the operator says 'add Careers to the menu', the header's list is here (usedBy shows the header module), so you patch it instead of minting a second menu. " +
-    "Filters: `type` (list type slug), `role` (navigation | vocabulary | content), `query` (free text over slug, name, purpose and entry text), plus the standard list params. " +
-    "Entries are in get_list; local lists (inside one module) are not listed here — list_modules shows them.",
+    "The site's SHARED lists (TOON rows): slug, type, role, entry count, purpose, binding module fields (module.field), placements, sample pages, vocabulary use, last edit. Entries -> `get_list`.\n" +
+    "Call BEFORE creating a list: 'add Careers to the menu' -> the header's list is here (usedBy = header module) -> patch it, never mint a second menu.\n" +
+    `${MENUS_ARE_LISTS} Local lists are not listed here -> \`list_modules\`.`,
   opName: "lists.list",
   input: listListsInput,
   label: "lists",
@@ -113,8 +119,7 @@ function renderItems(items: readonly ListItemInput[], depth: number, out: string
 export const getListTool = makeOpTool({
   name: "get_list",
   description:
-    "One shared list with its whole entry tree (by `slug` or `id`): every entry's id, node kind and values (links as paths), its version, and where the list is used. " +
-    "Read it before patch_list_items_many — patches address entries by id (`parentId` of 'Company' to add 'Careers' under it) — and pass `version` back as `expectedVersion`.",
+    "One shared list (by `slug` or `id`): entry tree (ids, node kinds, values, links as paths), `version`, usage. Read before `patch_list_items_many`: patches address entries by id (Careers under Company -> `parentId` = Company's id); pass `version` as `expectedVersion`.",
   opName: "lists.get",
   input: getListOp.input,
   format: (value) => {
@@ -136,11 +141,13 @@ export const getListTool = makeOpTool({
 export const upsertListsManyTool = makeOpTool({
   name: "upsert_lists_many",
   description:
-    `Create shared lists (menus, footer links, vocabularies), or replace a list's WHOLE entry tree (1–50 lists, one transaction). ` +
-    "Each list: `slug`, `name`, `purpose` (why it exists and where it shows — e.g. 'Main navigation in the site header'), `type` (list type slug from list_list_types), `items` (the entry tree) — nothing else: the tree is `items` (not `entries`), and the role comes from the type. " +
-    'An entry is {node, values, children?, query?}: `values` keyed by the node\'s fields (links as {"href": "/about"} or an external URL; terms as caelo:term/<listId>/<itemId>), `children` under nodes that allow them, `query` only on source nodes and only with the knobs that node\'s source lists in `editable` (e.g. {limit:5}) — page_type, order and the rest are fixed by the type\'s `defaults`; omit `query` to use them as they are. Keep the `id` of entries that already exist; omit it for new ones. ' +
-    'Example (type menu): [{"node":"entry","values":{"label":"Company","link":{"href":"/about"}},"children":[{"node":"entry","values":{"label":"Team","link":{"href":"/about/team"}}}]}]. ' +
-    "Links must name pages that exist (build them first). To change a few entries of an existing list prefer patch_list_items_many — a replace drops every entry you leave out. After creating a list, bind it: a module `list` field with bind 'shared' (add_module / update_modules_many), e.g. the header module on the layout.",
+    "Create shared lists (menus, footer links, vocabularies) or replace a list's WHOLE entry tree (one tx). A few entries -> `patch_list_items_many` (a replace drops every omitted entry).\n" +
+    "CORE RULES:\n" +
+    "- `purpose` = why + where it shows ('Main navigation in the site header'). The tree is `items` (not `entries`); the role comes from the type.\n" +
+    "- Entry: terms `caelo:term/<listId>/<itemId>`; `children` only under nodes allowing them; `query` only on source nodes, only knobs its source lists in `editable` (e.g. {limit:5}); omit = type `defaults`.\n" +
+    "- Links `{href}`: path of an EXISTING page (`list_pages`; else empty shell first: `build_page` with `modules: []`); `/`, `/#section` always valid; import-run pages rebuilt in this chat are kept for `resolve_import_links`; external = full `https://` URL.\n" +
+    '- E.g. (menu): [{"node":"entry","values":{"label":"Company","link":{"href":"/about"}},"children":[{"node":"entry","values":{"label":"Team","link":{"href":"/about/team"}}}]}]\n' +
+    "Then bind it: module `list` field `bind:'shared'`, `list:'caelo:list/<id>'` (`add_module` / `update_modules_many`), e.g. the layout header.",
   inputSchema: UPSERT_LISTS_JSON_SCHEMA,
   opName: "lists.upsert_many",
   input: upsertListsManyOp.input,
@@ -170,10 +177,9 @@ export const upsertListsManyTool = makeOpTool({
 export const patchListItemsManyTool = makeOpTool({
   name: "patch_list_items_many",
   description:
-    "Edit entries of shared lists by id — the routine way to maintain a menu, footer links or a vocabulary (1–50 lists, up to 200 patches each, one transaction). " +
-    "Patches: {op:'add', parentId?, position?, item:{node, values, children?}} (omit parentId for the top level, position to append), {op:'update', itemId, values} (merged; null removes a value), {op:'move', itemId, parentId?, position}, {op:'remove', itemId} (with its children). " +
-    "'Add Careers under Company' = get_list → one add patch with parentId = Company's id. Pass `expectedVersion` from get_list; a conflict means someone changed the list — re-read and redo. " +
-    "The result names the ids of added entries. Every page that shows the list updates with it — there is nothing to rewire.",
+    "Edit shared-list entries by id — the routine way to maintain a menu, footer links or a vocabulary (one tx). Every page showing the list updates; nothing to rewire. Result names added entry ids.\n" +
+    "`add`: omit `parentId` = top level, omit `position` = append. `update`: `values` merged, `null` removes a value. `remove`: drops its children too.\n" +
+    "'Add Careers under Company' = `get_list` -> one `add` with `parentId` = Company's id. Pass `expectedVersion` from `get_list`; conflict = list changed -> re-read, redo.",
   inputSchema: PATCH_LIST_ITEMS_JSON_SCHEMA,
   opName: "lists.patch_items_many",
   input: patchListItemsManyOp.input,
@@ -189,8 +195,7 @@ export const patchListItemsManyTool = makeOpTool({
 export const deleteListsManyTool = makeOpTool({
   name: "delete_lists_many",
   description:
-    "Delete shared lists by slug (1–50). Refused while a module field or placement still binds the list (the error names them) — rebind or remove those first. Undoable like every draft change. " +
-    "Do NOT use to remove entries (patch_list_items_many) or a list type (delete_list_types_many).",
+    "Delete shared lists by slug (undoable). Refused while a module field/placement binds one (error names them) -> rebind/remove first. Entries -> `patch_list_items_many`; list types -> `delete_list_types_many`.",
   opName: "lists.delete_many",
   input: deleteListsManyOp.input,
   format: (value) =>
@@ -200,9 +205,8 @@ export const deleteListsManyTool = makeOpTool({
 export const promoteLocalListTool = makeOpTool({
   name: "promote_local_list",
   description:
-    "Turn a module's LOCAL list into a SHARED list and bind the field to it, in one call — when a second place needs the same entries ('show the footer links in the mobile menu too', 'the editors should maintain these links without opening the module'). " +
-    "Input: `moduleId` + `field` (the module's `list` field), and the new list's `slug`, `name`, `purpose`. Refused when the module's placements show different entries (it names them) — then decide which entries the shared list keeps and use upsert_lists_many + update_modules_many instead. " +
-    "Result: the list id and its ref (caelo:list/<id>) for binding other modules.",
+    "Turn a module's LOCAL list into a SHARED list and bind the field to it, in one call — when a second place needs the same entries ('footer links in the mobile menu too', 'editors maintain these links without opening the module'). `field` = the module's `list` field. " +
+    "Refused when placements show different entries (names them) -> pick the entries to keep, use `upsert_lists_many` + `update_modules_many`. Returns list id + ref `caelo:list/<id>` for binding other modules.",
   opName: "lists.promote_local",
   input: promoteLocalListOp.input,
   format: (value) => {
@@ -214,9 +218,9 @@ export const promoteLocalListTool = makeOpTool({
 export const previewListSourceTool = makeOpTool({
   name: "preview_list_source",
   description:
-    "Show what a generated list returns for a page BEFORE you bind or save it: a page query ('the 3 latest news'), a system source (breadcrumbs, children, siblings, page_terms, term_pages) or a plugin source — the same resolver the preview and the build use, in this chat's draft view. " +
-    "Name the source ONE way (see the input schema). " +
-    "`pageId` = the page it renders on (needed for breadcrumbs / children / siblings / page_terms; a query leaves that page out by default). Only published pages appear. An empty result usually means the filter is wrong (page type slug, terms) or nothing is published yet.",
+    "Show what a generated list (page query, system or plugin source) returns for a page BEFORE binding/saving it; same resolver as preview + build, this chat's draft view. Only published pages appear; empty = wrong filter (page type slug, terms) or nothing published yet.\n" +
+    "E.g. `source`:{kind:'query', editable:['limit'], defaults:{page_type:'news', order:'published_desc', limit:3}}.\n" +
+    "`pageId` = page it renders on; needed for breadcrumbs/children/siblings/page_terms; a query excludes that page.",
   inputSchema: PREVIEW_LIST_SOURCE_JSON_SCHEMA,
   opName: "lists.preview_source",
   input: previewListSourceOp.input,

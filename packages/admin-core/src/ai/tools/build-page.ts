@@ -25,6 +25,7 @@ import {
   MODULE_META_JSON_SCHEMA_PROPS,
 } from "./_module-fields-schema.js";
 import {
+  MODULE_BIND_THEME_LITERALS_DESCRIPTION,
   MODULE_CSS_DESCRIPTION,
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
@@ -44,7 +45,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
       type: "object",
       additionalProperties: false,
       description:
-        "EITHER { pageId, metaDescription? } to build onto an existing page (modules are appended), OR { slug, title, metaDescription, shortTitle?, pageType?, properties?, terms?, templateId?, status?, parentPageId? } to create the page in the same call. Never both.",
+        "Existing: `{pageId, metaDescription?}` (modules append). New: `{slug, title, metaDescription, …}`. Never both.",
       properties: {
         pageId: { type: "string", format: "uuid" },
         slug: {
@@ -52,7 +53,7 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           minLength: 1,
           maxLength: 120,
           description:
-            "Lowercase letters, digits and hyphens only — never a path or a slash. The HOMEPAGE (served at `/`) uses slug 'home'.",
+            "Lowercase letters, digits, hyphens — no path or slash. HOMEPAGE (`/`) = `home`.",
         },
         title: { type: "string", minLength: 1, maxLength: 256 },
         shortTitle: {
@@ -60,57 +61,57 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           minLength: 1,
           maxLength: 256,
           description:
-            "The page's short label in breadcrumbs and navigation ('Pricing' for 'Pricing for teams of every size'). Omit when the title is already short — it is stored as the short title.",
+            "Short label in breadcrumbs and navigation ('Pricing' for 'Pricing for teams of every size'). Omit when the title is short: the title is stored as it.",
         },
         templateId: {
           type: "string",
           format: "uuid",
           description:
-            "Omit to take the page type's default template (or, without pageType, the site default).",
+            "Omit -> the page type's default template (without `pageType`: site default).",
         },
         pageType: {
           type: "string",
           pattern: "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
           description:
-            "What the page IS — a page type slug list_page_types shows for this site (e.g. 'news' for an article): page queries ('latest news', 'articles in this category') find pages by it. Omit it for an ordinary page — it then gets the type that lists templateId, else the site's default type. Never guess a slug.",
+            "What the page IS: a slug `list_page_types` shows for this site (e.g. `news` for an article); page queries ('latest news') find pages by it. Omit it for an ordinary page (gets the type listing `templateId`, else the site default). Never guess a slug.",
         },
         properties: {
           type: "object",
           additionalProperties: true,
           description:
-            "Values of the page type's properties (list_page_types shows them, `*` = required), e.g. {author:'Ada Lovelace', event_date:'2026-11-03'}.",
+            "Page type property values (`list_page_types`, `*` = required), e.g. `{author:'Ada Lovelace', event_date:'2026-11-03'}`.",
         },
         terms: {
           type: "array",
           maxItems: 100,
           items: { type: "string", pattern: "^caelo:term/[0-9a-f-]{36}/[0-9a-f-]{36}$" },
           description:
-            "The page's categories / tags: caelo:term/<listId>/<itemId> from the page type's vocabularies (get_list on the vocabulary shows the entry ids).",
+            "Categories/tags from the page type's vocabularies (`get_list` on the vocabulary shows entry ids).",
         },
         status: {
           type: "string",
           enum: ["draft", "published"],
           description:
-            "Only 'published' pages are built on staging. Omitted: published on a site with no published page yet, else draft. Pass 'published' for a page that belongs on the site now.",
+            "Only `published` pages build on staging. Omitted: published on a site with no published page yet, else draft.",
         },
         metaDescription: {
           type: "string",
           minLength: 1,
           maxLength: 320,
           description:
-            "The page's meta description (150–160 characters, written from the page's content; in a migration, the source page's). A Stage refuses a published page without one — pass it here so the page is Stage-ready from this call. Fill-once, same as autofill_page_seo_many: with pageId it is written only when the page has no description yet; an existing one is kept and the result says so.",
+            "150–160 chars, written from the page's content (migration: the source page's). Fill-once like `autofill_page_seo_many`: with `pageId` written only when the page has none; an existing one is kept (result says so).",
         },
         parentPageId: {
           type: "string",
           format: "uuid",
           description:
-            "Create the page UNDER this page: its URL becomes the parent's URL + '/' + slug (e.g. parent /seo-monitoring + slug 'alerts' → /seo-monitoring/alerts). Omit for a top-level page. Take the id from list_pages. To move an EXISTING page, use move_pages.",
+            "Create UNDER this page (`list_pages`): URL = parent URL + `/` + slug (e.g. `/seo-monitoring/alerts`). Omit for top level. Move existing pages via `move_pages`.",
         },
         importPageId: {
           type: "string",
           format: "uuid",
           description:
-            "When rebuilding a crawled page during a site migration, pass the source import_pages id. This links the built page to the crawl (so fidelity / inventory / media-migration checks resolve regardless of slug) AND makes the build idempotent — building the same importPageId twice rebuilds the SAME page, never a duplicate.",
+            "Site migration: the source `import_pages` id. Links the page to the crawl (fidelity/inventory/media checks resolve regardless of slug) and makes the build idempotent (same id rebuilds the SAME page, never a duplicate).",
         },
       },
     },
@@ -127,12 +128,11 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
             minLength: 1,
             maxLength: 80,
             description:
-              "Page-TEMPLATE block to place into (usually 'content'; the valid set: `# Current page` for the open page, list_templates `pageBlocks` otherwise). Never 'header' / 'footer': site chrome lives on the layout (add_module target='layout'). " +
-              'OMIT for a DETACHED nested-only module (requires `ref`; another entry embeds it via {"$ref": …}).',
+              "Page-TEMPLATE block — a slot, NOT a module `kind` (usually `content`; valid set: `# Current page` for the open page, `list_templates` `pageBlocks` otherwise; a mismatch error names it). Never `header`/`footer`. OMIT for a detached nested-only entry (requires `ref`).",
           },
           position: {
             description:
-              'Where in its block this entry lands: "top", "bottom" (default — entries append in array order, so a new page needs none) or a 0-based index. Same grammar as add_module. Not for detached entries.',
+              "Default bottom: entries append in array order (a new page needs none). `top` or 0-based index inserts. Not for detached entries.",
             oneOf: [
               { type: "string", enum: ["top", "bottom"] },
               { type: "integer", minimum: 0, maximum: 1000 },
@@ -142,11 +142,11 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
             type: "string",
             pattern: "^[A-Za-z][A-Za-z0-9_-]{0,31}$",
             description:
-              'Local handle: another entry\'s module/module-list field value (or moduleId) {"$ref": "<ref>"} resolves to this entry\'s {moduleId, contentInstanceId}. Array order does not matter — referenced entries are created first automatically.',
+              'Local handle: `{"$ref":"<ref>"}` in another entry\'s `module`/`module-list` field value or `moduleId` resolves to this entry\'s `{moduleId, contentInstanceId}`. Referenced entries are created first.',
           },
           moduleId: {
             description:
-              'EXISTING module UUID from list_modules — or {"$ref": "<handle>"} to RE-PLACE a module minted by another entry of THIS call (e.g. one card module, three placements; each entry still gets its own content).',
+              'EXISTING module (`list_modules`), or `{"$ref":"<handle>"}` to RE-PLACE a module minted by another entry of this call (e.g. one card module, three placements; each entry gets its own content).',
             oneOf: [
               { type: "string", format: "uuid" },
               {
@@ -173,14 +173,12 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
           fields: MODULE_FIELDS_JSON_SCHEMA,
           bindThemeLiterals: {
             type: "boolean",
-            description:
-              "Rewrite CSS literals that equal a theme token value into var(--…). DEFAULT true — omit it. Pass false only to keep a deliberate off-palette literal.",
+            description: MODULE_BIND_THEME_LITERALS_DESCRIPTION,
           },
           content: {
             description:
-              "The placement's content. Omit for an empty private instance. " +
-              "source='inline' → page-local values; source='shared' → mint a REUSABLE instance (purpose required) bound synced; " +
-              "source='existing' → bind an instance from list_content_instances.",
+              "Omit for an empty private instance to fill later. `inline` -> page-local values (routine); `shared` -> mint a REUSABLE instance other pages can bind (synced by default); `existing` -> bind an instance from `list_content_instances`. " +
+              "`values` keyed by field name: local `list` -> entries (`[{node:'text', values:{text:'Fast'}}]`); shared `list` -> `caelo:list/<id>`; source field -> its editable knobs; nested `module`/`module-list` -> `{\"$ref\":\"<ref>\"}` | `{moduleId, contentInstanceId}`.",
             oneOf: [
               {
                 type: "object",
@@ -231,22 +229,22 @@ export function buildPageValues(input: BuildPageInput): Record<string, unknown>[
 
 export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
   name: "build_page",
-  description:
-    "Build a WHOLE page in ONE call: the page (create new via `page: {slug, title}` or target existing via `page: {pageId}`) plus the FULL ordered module list — each entry places one module into a template block, top to bottom (on an existing page entries append; an entry's optional `position` — 'top' or an index, as in add_module — inserts it instead). ONE transaction: any invalid entry aborts the whole call (the error names `modules[i]` and the failing field) and nothing is written. " +
-    "This is THE page-creation tool: when creating a typed page (an article is `news`), name its `page.pageType` from list_page_types with its `properties` / `terms` (an ordinary page omits pageType and gets the site's default type), and pass `page.metaDescription` (and `status:'published'` for a page that belongs on the site) — a Stage refuses published pages without a description, and builds only published ones; the result says when something still blocks a Stage. `modules: []` (empty) creates an intentionally empty page shell; a populated `modules` array builds the whole page in one transaction. **Prefer it over add_module / create_content_instances chains whenever a page needs more than one module** — one build_page call replaces that whole round-trip chain (§11 bulk-first). Use add_module (target='page') only for a single incremental module on an existing page. " +
-    "**Per module, two modes** (same contract as add_module): pass `moduleId` to place an EXISTING module from `list_modules` (reuse first — shared modules keep pages consistent), or `displayName` + `html` (+ required `description`, `kind`, explicit `fields[]`) to mint a new one. Field names are semantic snake_case (`hero_title`, `primary_cta_href`); repeating content is ONE `list` field (entries of a list type, iterated with `{{#field}}…{{/field}}`) or a `module-list`, never numbered scalars. A `list` field is local (entries in `content.values`, e.g. `{features:[{node:'text', values:{text:'Fast'}}]}`), shared (bind 'shared', value or field `list` = caelo:list/<id> — menus, footer links) or a source (bind 'source': a page query such as the latest news, breadcrumbs; `content.values` may override the knobs the source marks editable). " +
-    "**Per module, `content` fills the placement**: `{source:'inline', values:{hero_title:'…'}}` for page-local content (the routine case); `{source:'shared', purpose:'…', values:{…}}` to mint a REUSABLE instance other pages can bind (synced by default); `{source:'existing', contentInstanceId}` to bind a row from list_content_instances. Omit `content` for an empty private instance you fill later. " +
-    "Typical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`. " +
-    "**Nested modules in the SAME call**: give the inner module `ref` and NO blockName (detached — minted + content-bound but not placed), then reference it from the outer module's `module`/`module-list` field value as `{\"$ref\": \"<ref>\"}` — the server resolves it to the real {moduleId, contentInstanceId}, in any array order. Example: `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]` — the whole nested composition is ONE call, never an add_module → remove_module_from → create_content_instances chain. " +
-    "For site-wide chrome (header/footer) use add_module (target='layout') — chrome is layout-owned and never rides in a page body. " +
-    // 2026-07 — STATIC on purpose (prompt-cache): the per-turn describe/
-    // describeSchema hooks embedded the focused page's block names into
-    // the tool definition, busting Anthropic's tools-prefix cache on
-    // every page switch. The same facts live in the volatile `# Current
-    // page` block, and a blockName mismatch returns a structured error
-    // naming the valid set (recover-don't-punt).
-    "Each entry's `blockName` must be a block on the page's template — `# Current page` lists them for the open page, list_templates (`pageBlocks`) for any template; a mismatch error names the valid set. A block name is a template slot, NOT a module `kind`. With zero templates on the site, bootstrap first (create_layout → create_template)." +
+  // STATIC on purpose (prompt-cache): no per-turn block names here — the
+  // `# Current page` note carries them and a blockName mismatch returns a
+  // structured error naming the valid set.
+  description: [
+    "Build a WHOLE page in ONE transaction: create (`page:{slug, title}`) or target existing (`page:{pageId}`) + the full ordered module list (each entry places one module into a template block, top to bottom; on an existing page entries append). Any invalid entry aborts everything (error names `modules[i]` + failing field); nothing is written.",
+    "USE FOR: every page creation (THE page-creation tool); any page needing >1 module — never `add_module` / `create_content_instances` chains. `modules: []` = intentionally empty page shell.",
+    "DO NOT USE FOR: one incremental module on an existing page -> `add_module` (target `page`); site chrome header/footer -> `add_module` (target `layout`; chrome never rides in a page body).",
+    "CORE RULES:",
+    '- Creating: typed page -> `page.pageType` (+ `properties`/`terms`; an ordinary page omits pageType); always `page.metaDescription`, and `status:"published"` for a page that belongs on the site — a Stage refuses published pages without a description and builds only published ones; the result says what still blocks a Stage.',
+    "- Per module, two modes: `moduleId` places an EXISTING module (`list_modules`; reuse first — shared modules keep pages consistent), or mint with `displayName` + `html` + `description` + `kind` + explicit `fields[]` (all required).",
+    "- Pair `{{field_name}}` placeholders in `html` with `fields[]` in semantic snake_case (`hero_title`, `primary_cta_href`); never heuristic names (`cta2label2`) or numbered scalars (`label1`..`label10` -> ONE `list` field or a `module-list`).",
+    "- Nested modules in the SAME call: inner entry gets `ref` and NO `blockName` (detached: minted + content-bound, not placed); the outer module's `module`/`module-list` field value references it as `{\"$ref\":\"<ref>\"}`, any array order. Never an `add_module` -> `remove_module_from` -> `create_content_instances` chain. E.g. `modules:[{ref:'btn', displayName:'Button', html:'<button>{{label}}</button>', fields:[…], content:{source:'inline', values:{label:'Go'}}}, {blockName:'content', displayName:'CTA', html:'<section>{{>cta}}</section>', fields:[{name:'cta', kind:'module', label:'CTA', allowedModuleTypes:['button']}], content:{source:'inline', values:{cta:{'$ref':'btn'}}}}]`",
+    "- Zero templates on the site -> bootstrap first (`create_layout` -> `create_template`).",
     INTERNAL_LINK_CONTRACT,
+    "Typical call: `{page:{slug:'pricing', title:'Pricing', status:'published', metaDescription:'…'}, modules:[{blockName:'content', displayName:'Pricing Hero', kind:'hero', description:'…', html:'<section><h1>{{hero_title}}</h1></section>', fields:[{name:'hero_title', kind:'text', label:'Hero title'}], content:{source:'inline', values:{hero_title:'Fair pricing'}}}, …]}`",
+  ].join("\n"),
   schema: buildPageInputSchema,
   inputSchema: BUILD_PAGE_INPUT_SCHEMA,
   handler: async (ctx, input, toolCtx) => {

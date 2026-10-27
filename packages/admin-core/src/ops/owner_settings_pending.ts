@@ -90,7 +90,7 @@ const proposedBudgetCell = aiBudgetCellInput.extend({
     .min(0)
     .max(1)
     .optional()
-    .describe("Fraction of the cap at which the chat warns. Omit to keep the current threshold."),
+    .describe("Fraction of the cap at which the chat warns; omit = keep current."),
 });
 
 export const proposeAiBudgetInput = z
@@ -134,7 +134,7 @@ export const proposeTranslationModelInput = z
       .max(128)
       .nullable()
       .describe(
-        "Model id from the active provider's catalogue (list_ai_providers shows the choices), or null for 'same as the chat model'.",
+        "Catalogue id from `list_ai_providers`, exactly (smaller 'fast' model = cheaper); null = same as chat model (default).",
       ),
   })
   .strict();

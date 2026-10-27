@@ -66,10 +66,10 @@ export type InspectPageRenderInput = z.infer<typeof inspectInput>;
 export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderInput> = {
   name: "inspect_page_render",
   description:
-    "Inspect a rendered page's HTML/CSS cascade. By DEFAULT returns a SLIM SUMMARY — the module list (moduleId, slug, kind, byte sizes), the layout/template/theme sizes, and slot status — NOT the full markup. " +
-    "For the VISUAL impression prefer `screenshot_page` (usually more telling than raw HTML). Reach for THIS when you need the actual rule behind a layout/CSS issue the screenshot can't explain. " +
-    'Then drill in with `target`: `"composed"` (final HTML the browser parses) | `"layout"` | `"template"` | `"theme"` (that layer\'s html+css / tokens) | a `moduleId` from the summary (that module\'s html+css). Pass `search` to grep the composed HTML for just the slices you need — cheaper than pulling the whole document. ' +
-    "By default this renders THIS chat's branch preview (your pending edits included). Pass `chatBranchId` only to inspect a DIFFERENT branch, or omit-and-run outside a chat to see the published version.",
+    "Inspect a rendered page's HTML/CSS cascade; default = slim summary (modules with moduleId/slug/kind/sizes, layer sizes, slot status).\n" +
+    "USE FOR: the actual rule behind a layout/CSS issue a screenshot can't explain.\n" +
+    "DO NOT USE FOR: the visual impression -> `screenshot_page`.\n" +
+    "Renders this chat's branch preview (pending edits included); outside a chat -> published version.",
   schema: inspectInput,
   inputSchema: {
     type: "object",
@@ -81,17 +81,17 @@ export const inspectPageRenderTool: ToolDefinitionWithHandler<InspectPageRenderI
         type: "string",
         format: "uuid",
         description:
-          "Optional override. Defaults to the current chat's branch, so you normally omit it. Set it only to inspect another branch's staged edits — only branches the operator may see work (the shared draft, their own chats' branches); another editor's experiment answers 'branch not found'.",
+          "Omit (= this chat's branch). Only for another branch the operator may see: shared draft or their own chats; other editors' experiments -> 'branch not found'.",
       },
       target: {
         type: "string",
         description:
-          'Omit for the slim summary. Else "composed" | "layout" | "template" | "theme", or a moduleId from the summary, to get that one part\'s full HTML+CSS.',
+          "Omit = summary. `composed` (final HTML) | `layout` | `template` | `theme` (that layer's html+css / tokens) | a moduleId from the summary (its html+css).",
       },
       search: {
         type: "string",
         description:
-          "Substring to grep in the composed HTML — returns only the matching slices with context instead of the whole document.",
+          "Grep the composed HTML: returns only matching slices with context (cheaper than the whole document).",
       },
     },
   },

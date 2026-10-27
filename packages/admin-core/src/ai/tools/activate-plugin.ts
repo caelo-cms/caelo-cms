@@ -31,19 +31,22 @@ export const activatePluginTool = makeProposeTool<ActivatePluginInput>({
   afterApply: "load-activated-plugin",
   pendingQueuePath: "/settings/plugins/pending",
   when:
-    "Activate an installed-but-inactive plugin so its tools and skills become usable. " +
-    "Use when the operator asks for something you have no tool for AND list_plugins (or the installed-plugins note) shows a plugin that provides it — say what it will enable and propose the activation in the same turn, rather than telling the operator to go find a settings screen. " +
-    "Do NOT use it speculatively: activating runs code, claims URL slots, and starts background workers. Propose only what the operator's request actually needs. " +
-    "After approval the plugin loads immediately, but its tools reach you on your NEXT turn — this turn's tool list was fixed before the approval, so finish this turn by telling the operator what you will do next rather than calling the new tools. " +
-    "Inputs: slug (from list_plugins), and reason — one line on why, shown to the operator on the approval card.",
+    "Activate an installed-but-inactive plugin so its tools + skills become usable.\n" +
+    "USE FOR: a request no current tool covers while `list_plugins` (or the installed-plugins note) shows a plugin providing it -> say what it enables + propose in the same turn; never send the operator to a settings screen.\n" +
+    "DO NOT USE speculatively: activating runs code, claims URL slots, starts workers; propose only what the request needs.\n" +
+    "After approval it loads at once, but its tools reach you NEXT turn -> end this turn saying what you will do next; don't call them yet.",
   schema: activatePluginInput,
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: ["slug"],
     properties: {
-      slug: { type: "string", maxLength: 120 },
-      reason: { type: "string", maxLength: 500 },
+      slug: { type: "string", maxLength: 120, description: "From `list_plugins`." },
+      reason: {
+        type: "string",
+        maxLength: 500,
+        description: "One line why; shown on the approval card.",
+      },
     },
   },
   summarize: (input, preview) => {

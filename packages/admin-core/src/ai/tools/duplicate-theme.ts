@@ -34,12 +34,7 @@ type DuplicateThemeToolInput = z.infer<typeof duplicateThemeToolInput>;
 export const duplicateThemeTool: ToolDefinitionWithHandler<DuplicateThemeToolInput> = {
   name: "duplicate_theme",
   description:
-    "Clone an existing theme into a new (inactive) variant. Copies tokens + asset FKs " +
-    "verbatim; the new theme has `is_active=false` so activation goes through " +
-    "`propose_activate_theme`. Use when the operator wants a brand variant of the current " +
-    "theme without enumerating tokens. For brand variants WITHOUT a source theme to clone, " +
-    "use `propose_create_theme({slug, displayName, description, tokens})` and compose the " +
-    "token document yourself instead.",
+    "Clone a theme into a new inactive variant (tokens + asset bindings copied verbatim; activate via `propose_activate_theme`) — a brand variant without enumerating tokens. No source to clone -> `propose_create_theme` with a token document you compose.",
   schema: duplicateThemeToolInput,
   inputSchema: {
     type: "object",

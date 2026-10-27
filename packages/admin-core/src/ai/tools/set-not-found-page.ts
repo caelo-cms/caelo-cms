@@ -13,11 +13,12 @@ import type { ToolDefinitionWithHandler } from "./dispatch.js";
 export const setNotFoundPageTool: ToolDefinitionWithHandler<SetNotFoundPageToolInput> = {
   name: "set_not_found_page",
   description:
-    "Designate the site's 404 page: the page visitors see when they open a URL that does not exist (broken link, typo, removed page). " +
-    "Use when the operator asks for an error / 'page not found' page, or agrees when you offer one because the site status says the 404 page is not designated (offer it at the end of your turn; never build it unprompted inside another request). " +
-    "Build the page first like any other page (build_page with the site's normal template, so header, footer and theme apply; e.g. a short 'Page not found' message, a link back to the homepage and the main sections), PUBLISH it (set_pages_status_many), then call this with its id. " +
-    "Publishing ships it as /404.html, served for every unknown URL with HTTP status 404 — it is NOT reachable at its own slug, is noindex and stays out of the sitemap. " +
-    "Exactly ONE 404 page per site; calling this replaces the previous one. The homepage cannot be the 404 page. Pass pageId null to remove the designation (the hosting provider's generic error page returns).",
+    "Designate the site's 404 page (shown for every nonexistent URL).\n" +
+    "USE WHEN the operator asks for an error/'page not found' page, or accepts your offer because the site status says no 404 page is designated (offer at the end of your turn; never build it unprompted inside another request).\n" +
+    "CORE RULES:\n" +
+    "- Build it like any page (`build_page`, the site's normal template so header/footer/theme apply; e.g. short 'Page not found' + links to homepage and main sections) -> PUBLISH (`set_pages_status_many`) -> call this with its id.\n" +
+    "- Ships as /404.html with HTTP 404 for every unknown URL; NOT reachable at its own slug, noindex, not in the sitemap.\n" +
+    "- ONE per site (replaces the previous); not the homepage.",
   schema: setNotFoundPageToolInput,
   inputSchema: {
     type: "object",
@@ -27,7 +28,8 @@ export const setNotFoundPageTool: ToolDefinitionWithHandler<SetNotFoundPageToolI
       pageId: {
         type: ["string", "null"],
         format: "uuid",
-        description: "The page to use for unknown URLs, or null to clear the designation.",
+        description:
+          "null clears the designation (the hosting provider's generic error page returns).",
       },
     },
   },

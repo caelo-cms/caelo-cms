@@ -14,8 +14,7 @@ import { makeBulkTool } from "./_make-bulk-tool.js";
 export const setMediaSourceManyTool = makeBulkTool({
   name: "set_media_source_many",
   description: [
-    "Record assets' provenance (source URL, AI provider/model, or upload) + licence if the operator states one — one call for 1..N assets (`items[]`), one all-or-nothing transaction.",
-    "Use after importing/generating media or when told a licence. Per item only the passed fields change.",
+    "Record assets' provenance (`sourceDetail` = source URL or AI provider/model) + licence (only one the operator states), all-or-nothing. Use after importing/generating media or when told a licence. Only passed fields change.",
   ].join("\n"),
   itemInputSchema: setMediaSourceToolInput,
   itemJsonSchema: {

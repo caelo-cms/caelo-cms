@@ -885,25 +885,23 @@ export function summarize(results: SubagentInvocationResult[]): string {
   return lines.join("\n\n");
 }
 
+/** `expectedReturnShape` contract, shared by both spawn tools' schemas. */
+const RETURN_SHAPE_DESCRIPTION =
+  "Payload submitted via `submit_result`: `verdict` {pass, issues, suggestions?} for QA/audit/review | `tree` {tree, rationale?} for sitemap/nav/IA | " +
+  '`rebuild` {pages:[{pageId?, slug?, status:"rebuilt"|"skipped"|"failed", notes?}], contentNotes?, skipped?:[{item, reason}], summary?} for migration page rebuilds (only this summary enters your context) | ' +
+  "`freeform` {text} or plain text (can't fail validation; pick when unsure or for prose).";
+
+/** `tier` contract, shared by both spawn tools' schemas. */
+const TIER_DESCRIPTION =
+  "OMIT (= this chat's model, always safe). `mid` = pattern application (page from an established design); `small` = mechanical bulk content fill. " +
+  "Only if the install has tiers configured, else the call fails loudly and NOTHING spawns. Never name tiers/models to the operator.";
+
 export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput> = {
   name: "spawn_subagent",
   description:
-    "Spawn ONE subagent for a bounded, multi-step BUILD task that deserves its own isolated context — e.g. rebuilding one page cluster during a migration. It gets its own context window + tool catalogue + the skill its task wording matches best. " +
-    "Use spawn_subagents (plural) for SEVERAL independent build parcels at once. Not for your own reasoning or research, and not to review your own work — do those yourself. " +
-    "BLOCKS until the subagent finishes. Returns the subagent's parsed result + cost + duration. " +
-    "The subagent starts with a FRESH context — it knows NOTHING about this chat. Its `task` must be fully self-contained (ids, facts, fetch instructions, return-shape contract). It works on THIS chat's preview branch, so its edits show up in this chat's preview/publish/undo. " +
-    "TOOL ACCESS: by default the subagent gets the full tool catalogue minus the spawn tools (it CAN write). Pass `allowedToolNames` (AI tool names, e.g. list_pages, update_modules_many) to narrow it, e.g. to read-only tools for review tasks. " +
-    "DO NOT use for one-line edits or quick lookups — use a regular tool. Subagents earn their cost when work is multi-step + needs an isolated reasoning context. " +
-    // v0.2.68 — explicit return-shape schemas. Run #10 D2 — the child
-    // now delivers its result via a `submit_result` tool call (the
-    // submit instruction is appended to the task automatically); the
-    // shapes below describe the payload it must submit.
-    "RETURN-SHAPE CONTRACT — the subagent delivers its result by calling its `submit_result` tool with a payload matching `expectedReturnShape` (the submit instruction is appended to your task automatically; your task should still explain the fields' semantics): " +
-    '"verdict" → {pass: boolean, issues: (string|object)[], suggestions?: string[]}. Use for QA / audit / review tasks ("does X meet Y criteria?"). ' +
-    '"tree" → {tree: any[], rationale?: string}. Use for hierarchical-structure tasks (sitemap, nav tree, IA outline). ' +
-    '"rebuild" → {pages: [{pageId?: uuid, slug?: string, status: "rebuilt"|"skipped"|"failed", notes?: string}], contentNotes?: string[], skipped?: [{item: string, reason: string}], summary?: string}. Use for migration page-rebuild tasks — the compact per-page summary is all that enters your context. ' +
-    '"freeform" → {text: "..."} or plain text (auto-wrapped). Use when the response is prose / narrative without a fixed structure. ' +
-    "When in doubt, pick `freeform` — validation can't fail. Pick `verdict`, `tree`, or `rebuild` when you want a machine-checkable structure back.",
+    "Spawn ONE subagent (own context, tool catalogue, auto-matched skill) for a bounded multi-step BUILD task, e.g. rebuilding one page cluster in a migration. BLOCKS; returns parsed result + cost + duration.\n" +
+    "DO NOT USE FOR: one-line edits/lookups (regular tool) | your own reasoning, research or self-review (do it yourself) | several independent parcels -> `spawn_subagents`.\n" +
+    "CORE RULES: starts FRESH, knows nothing of this chat -> `task` fully self-contained. Writes on THIS chat's branch (edits join its preview/publish/undo).",
   schema: spawnSubagentToolInput,
   inputSchema: {
     type: "object",
@@ -916,32 +914,31 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
         minLength: 1,
         maxLength: 8000,
         description:
-          "Self-contained brief (ids, facts, fetch instructions). The submit_result instruction for the chosen expectedReturnShape is appended automatically — describe the CONTENT you want in each result field.",
+          "Self-contained brief (ids, facts, fetch instructions). The `submit_result` instruction is appended automatically; describe the CONTENT of each result field.",
       },
-      allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
+      allowedToolNames: {
+        type: "array",
+        items: { type: "string", maxLength: 120 },
+        description:
+          "Default: full catalogue minus spawn tools (can write). Narrow with AI tool names, e.g. read-only tools for reviews.",
+      },
       expectedReturnShape: {
         type: "string",
         // Run #8 R2a — derived from the shared Zod enum so the provider
         // schema can never drift from what the validator accepts.
         enum: [...EXPECTED_RETURN_SHAPES],
-        description:
-          "Payload shape the subagent submits via submit_result: verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or plain text. PICK FREEFORM for prose results.",
+        description: RETURN_SHAPE_DESCRIPTION,
       },
       maxCostMicrocents: {
         type: "integer",
         minimum: 0,
-        description:
-          "Per-spawn cost cap in microcents (1e8 = $1). USUALLY OMIT — the runtime derives the right cap from the approved run budget (issue #304). Set only for a deliberate tighter/looser bound.",
+        description: "1e8 = $1. Usually OMIT (derived from the approved run budget).",
       },
       timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
       tier: {
         type: "string",
         enum: [...SUBAGENT_MODEL_TIERS],
-        description:
-          'Model tier for this child. OMIT (= "inherit") to run at this chat\'s model — the default and always safe. ' +
-          '"mid" = pattern-application work (building a page from an established design); "small" = mechanical bulk work (filling known patterns with content). ' +
-          "Only pass mid/small when this install has model tiers configured — an unconfigured tier fails loudly with recovery steps and NOTHING is spawned. " +
-          "Never name tiers or models to the operator; they see only that work is being done.",
+        description: TIER_DESCRIPTION,
       },
       activePageId: { type: "string", format: "uuid" },
     },
@@ -995,30 +992,14 @@ export const spawnSubagentTool: ToolDefinitionWithHandler<SpawnSubagentToolInput
 export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInput> = {
   name: "spawn_subagents",
   description:
-    "Spawn MULTIPLE subagents that run CONCURRENTLY. Each gets its own context window + auto-engaged skill (matcher fires inside each subagent based on its task wording). This tool BLOCKS until all finish and returns ONE bundled result. " +
-    "Use this when work splits into independent parcels that can run at the same time — e.g. building 3 unrelated modules at once, or the big one: a site migration where each of N pages gets its OWN per-page AI pass, all in flight together instead of one-at-a-time. Not for your own reasoning and not to review your own work. " +
-    "Returns ONE bundled tool result with each subagent's parsed result + cost + duration + a batch cost roll-up, keeping the prompt-cache prefix clean. Each subagent starts FRESH (self-contained task required) and gets the full catalogue minus the spawn tools unless narrowed via allowedToolNames. " +
-    // issue #268 — disjoint-work contract. All siblings write to the
-    // SAME shared preview branch and the entity-lock system keys on the
-    // branch's session, so siblings do NOT lock each other out (they all
-    // resolve to the parent session and are all permitted). Per-sibling
-    // sub-leasing is the #264 lease work, not this PR — so for now
-    // disjointness is the caller's contract, with no lock backstop.
-    "DISJOINT-WORK CONTRACT (MANDATORY for WRITE batches): the subagents run at the same time on the SAME preview branch. They do NOT lock each other out — the entity lock is per-branch, and all siblings share this chat's branch — so two subagents writing the SAME module is a silent lost update (last writer wins), not a clean error. Therefore each spec MUST target a DISJOINT set of entities: give each subagent its own page (or its own non-overlapping page batch), and put any shared chrome (header/footer/nav) in exactly ONE dedicated spec. Never let two siblings touch the same module/page. " +
-    `Concurrency: up to ${SUBAGENT_MAX_BATCH} specs per call; at most ${SUBAGENT_MAX_PARALLEL} run at once (the rest queue and drain as slots free). ` +
-    // issue #304 — budget-derived caps + partial-completion contract.
-    "BUDGET: per-child and batch cost caps are derived automatically from the run's approved cost budget — OMIT maxCostMicrocents unless you have a deliberate reason. A child that approaches its cap finishes its current page and returns a PARTIAL result (completed pages are saved); this tool automatically re-dispatches the remainder in follow-up waves while budget remains, so you do NOT need to retry partial children yourself. If the run's cost ceiling is reached, dispatch stops cleanly and the result says how the operator resumes. Live n-of-m progress streams to the operator while the batch runs. " +
-    // issue #306 — tier routing + escalation contract.
-    'MODEL TIERS (issue #306, opt-in per install): each spec may set tier "mid" (pattern-application, e.g. building a page type from an approved design) or "small" (mechanical bulk content-fill into existing patterns). Default "inherit" runs at this chat\'s model. Unconfigured tiers fail the call loudly — nothing spawns. A tiered rebuild child that hits work needing NEW build decisions reports those pages as needs_escalation with a reason; this tool re-dispatches exactly those pages one capability step up automatically (one hop max), so mixed batches are safe. Never surface tier or model names to the operator. ' +
-    // v0.2.68 / run #10 D2 — same return-shape guidance as
-    // spawn_subagent: results arrive via each child's submit_result
-    // tool call (instruction auto-appended to each task).
-    "RETURN-SHAPE CONTRACT (per subagent) — each subagent delivers its result via its `submit_result` tool, matching its `expectedReturnShape` (the submit instruction is appended to each task automatically): " +
-    '"verdict" → {pass: boolean, issues: (string|object)[], suggestions?: string[]}; ' +
-    '"tree" → {tree: any[], rationale?: string}; ' +
-    '"rebuild" → {pages: [{pageId?, slug?, status: "rebuilt"|"skipped"|"failed", notes?}], contentNotes?: string[], skipped?: [{item, reason}], summary?: string}; ' +
-    '"freeform" → {text: string} or raw text. ' +
-    "When in doubt, pick `freeform` per-subagent.",
+    "Spawn several subagents CONCURRENTLY (each: own context, catalogue minus spawn tools, auto-matched skill). BLOCKS until all finish; returns ONE bundled result (per-child result + cost + duration, batch roll-up); n-of-m progress streams to the operator.\n" +
+    "USE FOR: independent parcels at once, e.g. 3 unrelated modules, or a migration with one AI pass per page.\n" +
+    "DO NOT USE FOR: your own reasoning or self-review | one task -> `spawn_subagent`.\n" +
+    "CORE RULES:\n" +
+    "- Each child starts FRESH -> self-contained `task`.\n" +
+    "- DISJOINT WRITES (MANDATORY): children share THIS chat's branch with no locks between them; two writing the same module/page = silent lost update. Give each its own page (or non-overlapping batch); shared chrome (header/footer/nav) in exactly ONE spec.\n" +
+    `- At most ${SUBAGENT_MAX_PARALLEL} run at once; the rest queue.\n` +
+    "- BUDGET: child + batch caps derive from the approved run budget. A child near its cap returns PARTIAL (finished pages saved); the remainder is re-dispatched automatically while budget remains, never retry partials yourself. At the run's cost ceiling dispatch stops; the result says how the operator resumes.",
   schema: spawnSubagentsToolInput,
   inputSchema: {
     type: "object",
@@ -1042,31 +1023,30 @@ export const spawnSubagentsTool: ToolDefinitionWithHandler<SpawnSubagentsToolInp
               minLength: 1,
               maxLength: 8000,
               description:
-                "Self-contained brief (ids, facts, fetch instructions). The submit_result instruction for the chosen expectedReturnShape is appended automatically.",
+                "Self-contained brief (ids, facts, fetch instructions). The `submit_result` instruction is appended automatically.",
             },
-            allowedToolNames: { type: "array", items: { type: "string", maxLength: 120 } },
+            allowedToolNames: {
+              type: "array",
+              items: { type: "string", maxLength: 120 },
+              description:
+                "Narrow the catalogue with AI tool names (default: all minus spawn tools).",
+            },
             expectedReturnShape: {
               type: "string",
               // Run #8 R2a — derived from the shared Zod enum (see above).
               enum: [...EXPECTED_RETURN_SHAPES],
-              description:
-                "Payload shape the subagent submits via submit_result: verdict={pass:boolean, issues:array, suggestions?:array}; tree={tree:array, rationale?:string}; rebuild={pages:array, contentNotes?:array, skipped?:array, summary?:string}; freeform={text:string} or plain text. PICK FREEFORM for prose results.",
+              description: RETURN_SHAPE_DESCRIPTION,
             },
             maxCostMicrocents: {
               type: "integer",
               minimum: 0,
-              description:
-                "Per-spawn cost cap in microcents (1e8 = $1). USUALLY OMIT — the runtime derives the right cap from the approved run budget (issue #304).",
+              description: "1e8 = $1. Usually OMIT (derived from the approved run budget).",
             },
             timeoutMs: { type: "integer", minimum: 1000, maximum: 600000 },
             tier: {
               type: "string",
               enum: [...SUBAGENT_MODEL_TIERS],
-              description:
-                'Model tier for this child. OMIT (= "inherit") to run at this chat\'s model — the default and always safe. ' +
-                '"mid" = pattern-application (building a page type from an established design); "small" = mechanical bulk content-fill into known patterns. ' +
-                "Only pass mid/small when this install has model tiers configured — an unconfigured tier fails the whole call loudly and NOTHING is spawned. " +
-                "A small/mid rebuild child that hits work needing NEW build decisions reports those pages as needs_escalation and this tool automatically re-dispatches them one tier up (bounded to one hop). Never name tiers or models to the operator.",
+              description: `${TIER_DESCRIPTION} A mid/small rebuild child needing NEW build decisions reports pages \`needs_escalation\`; they are re-dispatched one tier up automatically (one hop), so mixed batches are safe.`,
             },
             activePageId: { type: "string", format: "uuid" },
           },

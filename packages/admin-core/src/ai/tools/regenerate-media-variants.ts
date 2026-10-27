@@ -17,15 +17,9 @@ export const regenerateMediaVariantsTool: ToolDefinitionWithHandler<
 > = {
   name: "regenerate_media_variants",
   description:
-    "Re-run the image pipeline for media assets whose derived WebP variants are missing, and persist " +
-    "any variant that can be produced. Use when a Stage/deploy fails with 'media references unresolved " +
-    "(asset/variant pairs missing)' — pass the asset ids from that error as assetIds, or allMissing: true " +
-    "to sweep the whole library. Additive only: existing variants are never touched. " +
-    "Read each result: status 'regenerated' lists the new variants; 'skipped' explains why the variant " +
-    "can NEVER exist (source narrower than the breakpoint, animated GIF, non-raster) — in that case " +
-    "edit the module HTML to use the result's bestUrl (find referencing modules via media.list_usages) " +
-    "and do not retry regeneration. " +
-    "Do NOT use this to create crops or resize images for layout reasons.",
+    "Re-run the image pipeline for assets missing derived WebP variants; additive (existing variants untouched).\n" +
+    "USE FOR: Stage/deploy fails with 'media references unresolved (asset/variant pairs missing)'. NOT for crops or layout resizes.\n" +
+    "Result per asset: 'regenerated' lists new variants; 'skipped' = variant can NEVER exist (source narrower than breakpoint, animated GIF, non-raster) -> point the module HTML at the result's `bestUrl` (modules via `list_media_usages`), don't retry.",
   schema: regenerateMediaVariantsToolInput,
   inputSchema: {
     type: "object",
@@ -36,7 +30,7 @@ export const regenerateMediaVariantsTool: ToolDefinitionWithHandler<
         items: { type: "string", format: "uuid" },
         minItems: 1,
         maxItems: 100,
-        description: "Asset ids to regenerate (take them from the deploy error message).",
+        description: "From the deploy error.",
       },
       allMissing: {
         type: "boolean",

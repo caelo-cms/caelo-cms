@@ -343,8 +343,9 @@ describe("cleanup_import_run — Owner-approval gated", () => {
     expect(r.content).toContain("built pages kept");
   });
 
-  it("states the two-step contract", () => {
-    expect(cleanupImportRunTool.description).toContain("TWO-STEP");
+  it("states the approval contract", () => {
+    expect(cleanupImportRunTool.description).toContain("APPROVAL-GATED");
+    expect(cleanupImportRunTool.description).toContain("Do not claim cleanup before that");
   });
 });
 

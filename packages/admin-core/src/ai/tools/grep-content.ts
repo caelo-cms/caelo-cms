@@ -24,11 +24,15 @@ import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 const grepContentInput = z
   .object({
-    pattern: z.string().min(1).max(500),
+    pattern: z
+      .string()
+      .min(1)
+      .max(500)
+      .describe("Literal substring, or JS regex with `isRegex:true`."),
     /** Restrict to one entity kind; omit to search every kind. */
     entityKind: z.enum(CONTENT_ENTITY_KINDS).optional(),
     /** Restrict to one body field (html/css/js); omit to search all. */
-    field: z.string().min(1).max(32).optional(),
+    field: z.string().min(1).max(32).optional().describe("`html` | `css` | `js`."),
     isRegex: z.boolean().optional(),
     ignoreCase: z.boolean().optional(),
     /** Max matching lines to return across all entities (default 100). */
@@ -87,10 +91,7 @@ async function grepKind(
 export const grepContentTool: ToolDefinitionWithHandler<GrepContentInput> = {
   name: "grep_content",
   description:
-    "Search every module, template and layout body for a string or regex — find WHERE to edit before calling edit_content. " +
-    "Pass `pattern` (literal substring, or a JS regex with `isRegex:true`), optional `ignoreCase`, and narrow with `entityKind` and/or `field` (html/css/js). " +
-    "Returns matching lines as `<kind> <slug> (<id>) <field>:<lineNo>: <text>` so you can jump straight to read_content + edit_content on the right entity. " +
-    "Use when the operator says 'change X everywhere it appears' or you need to locate a class / string across the catalog.",
+    "Search all module, template and layout bodies for a string or regex — find WHERE to edit before `read_content` + `edit_content` ('change X everywhere', locate a class/string). Result lines: `<kind> <slug> (<id>) <field>:<lineNo>: <text>`.",
   schema: grepContentInput,
   inputSchema: z.toJSONSchema(grepContentInput) as Record<string, unknown>,
   handler: async (ctx, input, toolCtx) => {

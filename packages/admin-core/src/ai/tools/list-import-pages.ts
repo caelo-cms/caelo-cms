@@ -54,7 +54,11 @@ interface ListResult {
 export const listImportPagesTool: ToolDefinitionWithHandler<Input> = {
   name: "list_import_pages",
   description:
-    "List a crawl run's status and its pages WITH their staging import_pages ids — the id every per-page import tool takes. Use it (1) to POLL a run after the operator approves propose_site_import: while `status: crawling` wait and re-check, continue at `ready_for_review`; (2) BEFORE rebuilding, to get each page's `importPageId` — pass it to get_import_page (read the source), build_page's page.importPageId (links the build so verification and the run report resolve it), check_page_content_inventory, get_import_page_screenshot, and add_import_page_notes; (3) to find one page by url/slug via `search`, or only the not-yet-rebuilt ones via `status: 'pending'` (`accepted` = linked to a built CMS page). Returns id, source url, proposed slug/title, rebuild status, and the built page id when linked — never the crawled HTML (get_import_page returns the content). Do not guess or reuse ids from other runs.",
+    "List a crawl run's status + its pages with `importPageId` (the id every per-page import tool takes), source url, proposed slug/title, rebuild status, built page id — never crawled HTML (-> `get_import_page`).\n" +
+    "USE FOR:\n" +
+    "- Polling after the operator approves `propose_site_import`: run `crawling` -> wait, re-check; continue at `ready_for_review`.\n" +
+    "- Before rebuilding: `importPageId` for `get_import_page`, `build_page` `page.importPageId` (links the build for verification + run report), `check_page_content_inventory`, `get_import_page_screenshot`, `add_import_page_notes`.\n" +
+    "Never guess or reuse ids from other runs.",
   schema: input,
   inputSchema: {
     type: "object",
@@ -64,26 +68,27 @@ export const listImportPagesTool: ToolDefinitionWithHandler<Input> = {
       runId: {
         type: "string",
         format: "uuid",
-        description: "The crawl run id from propose_site_import's approval.",
+        description: "From `propose_site_import`'s approval.",
       },
       status: {
         type: "string",
         enum: ["pending", "accepted", "rejected"],
         description:
-          "Only pages in this rebuild state. pending = not yet rebuilt; accepted = linked to a built CMS page; rejected = operator declined it.",
+          "`pending` not yet rebuilt | `accepted` linked to a built page | `rejected` declined by the operator.",
       },
       search: {
         type: "string",
         minLength: 1,
         maxLength: 200,
-        description: "Case-insensitive substring match over source url, proposed slug, and title.",
+        description:
+          "Find a page: case-insensitive substring over source url, proposed slug, title.",
       },
       limit: {
         type: "integer",
         minimum: 1,
         maximum: 500,
         description:
-          "Maximum rows returned (default 200, max 500). Raise it for crawls over 200 pages — the result names the matched total, so a shortfall is visible.",
+          "Default 200. Raise for crawls >200 pages; the result names the matched total.",
       },
     },
   },

@@ -31,12 +31,8 @@ type Input = z.infer<typeof inputSchema>;
 export const cancelProposalTool: ToolDefinitionWithHandler<Input> = {
   name: "cancel_proposal",
   description:
-    "Cancel a pending proposal that you (the AI) queued earlier in this conversation but no longer want applied. " +
-    "Use when you realized the proposal was wrong, or the user said 'never mind'. " +
-    "ONLY works on proposals you queued — you cannot cancel proposals from the operator's own work or other AI sessions. " +
-    "If the proposal was already approved/rejected, the tool returns an error explaining that. " +
-    "Provide an optional `reason` (≤500 chars) for the audit log. " +
-    "After cancelling, tell the user the proposal is withdrawn — it will no longer appear in /settings/pending.",
+    "Withdraw a pending proposal YOU queued in this conversation (it was wrong, or the user said 'never mind'). " +
+    "Refused for others' proposals and already approved/rejected ones. Then tell the user it is withdrawn.",
   schema: inputSchema,
   inputSchema: {
     type: "object",
@@ -44,7 +40,7 @@ export const cancelProposalTool: ToolDefinitionWithHandler<Input> = {
     required: ["proposalId"],
     properties: {
       proposalId: { type: "string", format: "uuid" },
-      reason: { type: "string", minLength: 1, maxLength: 500 },
+      reason: { type: "string", minLength: 1, maxLength: 500, description: "For the audit log." },
     },
   },
   handler: async (ctx, input, toolCtx) => {

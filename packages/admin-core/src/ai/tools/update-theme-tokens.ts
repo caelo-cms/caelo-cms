@@ -32,31 +32,45 @@ import type { ToolContext, ToolDefinitionWithHandler } from "./dispatch.js";
 
 const setThemeTokensToolInput = z
   .object({
-    /** Optional — defaults to the active theme. */
     themeSlug: z
       .string()
       .min(1)
       .max(120)
       .regex(/^[a-z0-9][a-z0-9-]*$/)
-      .optional(),
-    /** Loose-name → value map. Server normalizes to canonical paths. */
-    fontBindings: z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,79}$/), fontRef).optional(),
-    /** Role → variation-axis override for its pinned font file; null resets to the default. */
+      .optional()
+      .describe("Omit = active theme."),
+    fontBindings: z
+      .record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,79}$/), fontRef)
+      .optional()
+      .describe(
+        "Pin exact font files per role (e.g. `body`, `heading`) with `{id, sha256}` from `find_fonts`/`acquire_font`.",
+      ),
     fontAxes: z
       .record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9-]{0,79}$/), fontAxisPolicy.nullable())
-      .optional(),
-    set: z.record(z.string(), z.unknown()).optional(),
-    /** A (partial) DTCG document; every `{$value}` leaf joins `set` at its path. */
+      .optional()
+      .describe(
+        'Which part of a pinned VARIABLE font visitors download, per role, e.g. `{heading:{opsz:"full"}}`, `{body:{wght:{min:400,max:700}}}`; `null` resets a role. ' +
+          'Per axis: "full" = whole range | `{min,max}` clamps | number pins. Policy belongs to the font FILE -> applies to every role using it. ' +
+          "Default (usually right): wght clamped to the weights the site renders, other axes pinned to the font default (~halves Inter's download). " +
+          'Trade-offs: pinned opsz renders large headings in the text optical size (heavier, less refined) -> `{opsz:"full"}` to keep optical sizes; a wght range excluding a used weight renders that text at the nearest kept weight. ' +
+          'Read current policy + byte sizes first via `get_theme(as:"font-delivery")`. Axes/values the font lacks are rejected with its real ranges.',
+      ),
+    set: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .describe(
+        "Add/replace tokens by loose name (`primaryColor`, `fontHeading`, `spacingLg`) or canonical path; value rules under `tokens`. " +
+          "Ambiguous bare name -> `UnknownTokenName` with did-you-mean -> retry with the canonical path.",
+      ),
     tokens: z
       .union([z.record(z.string(), z.unknown()), z.string()])
       .optional()
       .describe(
-        "A (partial) DTCG token document, the same shape get_theme shows and propose_create_theme takes " +
-          "(`{color: {primary: {$value: '#4338ca', $description: '…'}}, typography: {…}}`). Every `{$value}` leaf " +
-          "is upserted at its path — use it to write a whole composed palette in one call. Loose names go in `set`.",
+        "(Partial) DTCG document in the `get_theme`/`propose_create_theme` shape (`{color:{primary:{$value:'#4338ca', $description:'…'}}, typography:{…}}`); " +
+          "every `{$value}` leaf is upserted at its path -> a whole composed palette in one call. Rules for values via `tokens` or `set`: " +
+          `${TOKEN_SHAPE_HINTS} ${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS} ${TYPOGRAPHY_COMPOSITION_HINTS}`,
       ),
-    /** Canonical DTCG paths to drop. */
-    remove: z.array(z.string()).optional(),
+    remove: z.array(z.string()).optional().describe("Canonical paths to drop."),
   })
   .strict();
 type SetThemeTokensToolInput = z.infer<typeof setThemeTokensToolInput>;
@@ -121,27 +135,8 @@ export function mergeTokenDocumentIntoSet(
 export const updateThemeTokensTool: ToolDefinitionWithHandler<SetThemeTokensToolInput> = {
   name: "set_theme_tokens",
   description:
-    "Update theme tokens for one theme. Accepts loose names (`primaryColor`, `fontHeading`, " +
-    "`spacingLg`) — server normalizes to canonical paths and returns what was written. " +
-    "Use fontBindings: {body: {id, sha256}, heading: {id, sha256}} from find_fonts/acquire_font to pin exact font files. " +
-    "Use fontAxes to change which part of a pinned VARIABLE font visitors download, e.g. " +
-    '`fontAxes: {heading: {opsz: "full"}}` or `{body: {wght: {min: 400, max: 700}}}`; `null` resets a role to the default. ' +
-    'Per axis: "full" keeps the font\'s whole range, {min,max} clamps it, a number pins it. ' +
-    "The policy belongs to the font FILE, so it applies to every role using that file. " +
-    "Default without an override (usually right, no action needed): wght clamped to the weights the site can render, " +
-    "every other axis pinned to the font's default — this roughly halves Inter's download. Trade-offs: pinning opsz " +
-    "makes large headings render with the text optical size (a visibly heavier, less refined display cut) — use " +
-    '{opsz: "full"} when the operator wants optical sizes kept; a wght range that excludes a weight the site uses makes ' +
-    "that text render at the nearest kept weight. Read the current effective policy and byte sizes first with " +
-    'get_theme(as: "font-delivery"). Axis tags or values the font does not have are rejected with its real ranges. ' +
-    "Pass `set` to add/replace tokens (loose names or canonical paths), or `tokens` with a (partial) DTCG " +
-    "document in the get_theme / propose_create_theme shape to write a whole composed palette at once; `remove` drops tokens. Works with the active theme " +
-    "by default; pass `themeSlug` to target a specific theme. For a complete theme " +
-    "replacement, use `set_theme_tokens` with all desired tokens (it's an upsert per token, " +
-    "not per-theme). When ambiguous (a bare name with no value-shape signal) the tool " +
-    "returns `UnknownTokenName` with did-you-mean suggestions; retry with the canonical " +
-    "path. " +
-    `${TOKEN_SHAPE_HINTS} ${SPACING_RHYTHM_HINTS} ${TOKEN_ROLE_HINTS} ${TYPOGRAPHY_COMPOSITION_HINTS}`,
+    "Update tokens of one theme: upsert per token (a complete replacement = pass every desired token); names are normalized to canonical paths and the result shows what was written.\n" +
+    "DO NOT USE FOR: a new theme -> `propose_create_theme`.",
   schema: setThemeTokensToolInput,
   // issue #251 (WS5) — inputSchema derived from `schema` at registration.
   handler: async (ctx, input, toolCtx) => {

@@ -26,10 +26,7 @@ type ExportThemeToolInput = z.infer<typeof exportThemeToolInput>;
 export const exportThemeTool: ToolDefinitionWithHandler<ExportThemeToolInput> = {
   name: "export_theme",
   description:
-    "Export a theme as a DTCG JSON document. Output round-trips through `import_theme` " +
-    "byte-for-byte and is consumable by Figma Tokens Studio / Style Dictionary / any " +
-    "DTCG-compatible tool. Use when the operator asks to save a theme to disk or share it " +
-    "with a designer.",
+    "Export a theme as DTCG JSON (round-trips byte-for-byte via `import_theme`; works in Figma Tokens Studio, Style Dictionary, any DTCG tool). Use to save a theme to disk or share it with a designer.",
   schema: exportThemeToolInput,
   inputSchema: {
     type: "object",

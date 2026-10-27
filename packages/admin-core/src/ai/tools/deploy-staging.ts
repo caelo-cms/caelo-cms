@@ -29,9 +29,7 @@ const deployStagingInput = z
       .min(1)
       .max(80)
       .optional()
-      .describe(
-        "Name of the staging target to rebuild. Omit it when the site has one staging target (the usual case).",
-      ),
+      .describe("Omit when the site has one staging target (usual)."),
   })
   .strict();
 
@@ -54,11 +52,9 @@ interface TriggerResult {
 export const deployStagingTool: ToolDefinitionWithHandler<DeployStagingInput> = {
   name: "deploy_staging",
   description:
-    "Rebuild the STAGING site (noindex, never visitor-facing) from what is currently published, and return the build's run id, page/file counts and preview URL. " +
-    "Use it when staging has to reflect the published site: before `propose_deploy_promote` when staging has no successful build yet (or an outdated one), after fixing a failed build (e.g. after `regenerate_media_variants`), or when the operator asks to refresh staging. " +
-    "It builds PUBLISHED content only — this chat's unpublished preview changes are not in the build until the operator publishes them, so never tell the operator their pending edits are on staging. " +
-    "Production is not reachable here: to go live, call `propose_deploy_promote` (staging → production) and let the operator approve. " +
-    "A failed build returns the generator's error — fix the named cause and call again; do not retry unchanged.",
+    "Rebuild the STAGING site (noindex, never visitor-facing) from PUBLISHED content; returns run id, page/file counts, preview URL.\n" +
+    "USE FOR: before `propose_deploy_promote` when staging has no (or an outdated) successful build | after fixing a failed build (e.g. `regenerate_media_variants`) | operator asks to refresh staging.\n" +
+    "CORE RULES: this chat's unpublished changes are NOT in the build until published; never tell the operator pending edits are on staging. Production isn't reachable here: go live via `propose_deploy_promote`. Failed build -> fix the generator's named cause, then call again; never retry unchanged.",
   schema: deployStagingInput,
   handler: async (ctx, input, toolCtx) => {
     const listed = await execute(toolCtx.registry, toolCtx.adapter, ctx, "deploy.list_targets", {});

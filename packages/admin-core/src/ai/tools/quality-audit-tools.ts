@@ -38,11 +38,7 @@ type AcceptanceRow = z.infer<(typeof listAcceptancesOp)["output"]>["acceptances"
 
 const getAuditInput = z
   .object({
-    auditRunId: z
-      .string()
-      .uuid()
-      .optional()
-      .describe("A specific audit run (from list_quality_audits)."),
+    auditRunId: z.string().uuid().optional().describe("From `list_quality_audits`."),
     deployRunId: z
       .string()
       .uuid()
@@ -53,7 +49,7 @@ const getAuditInput = z
       .uuid()
       .optional()
       .describe(
-        "Only this page's section (scores, metrics, problems); the run summary and site-wide checks stay.",
+        "Only this page's section (id from `list_pages`); run summary + site-wide checks stay.",
       ),
   })
   .strict();
@@ -251,13 +247,15 @@ export function formatAudit(value: unknown, input: { pageId?: string } = {}): st
 const readQualityAuditTool = makeReadTool<z.infer<typeof getAuditInput>>({
   name: "get_quality_audit",
   description:
-    "Read the quality check of the staged site: the page checks plugins add (such as SEO checks; when an active plugin adds any) that read EVERY page on every Stage, plus a Lighthouse audit (Performance, Accessibility, Best Practices, SEO; mobile) when the Stage changed how pages render. " +
-    "With no arguments: the newest audit of THIS chat's Stages. Shows per page the scores (the target is 100 in every category), the Performance metrics behind the Performance score (FCP, LCP, TBT, CLS, Speed Index: the best run's value with Lighthouse's rating, plus the LCP element, the LCP breakdown and the elements that shifted with their causes), every problem with its Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `meta-description`, `render-blocking-insight`) and the elements it flagged (CSS selector, HTML snippet, why — e.g. the measured contrast and colours), every page-check problem with its rule id (`<check>/<rule>`, e.g. `seo-check/title-missing` — rule ids contain a slash) and a fix hint naming the tool to use, site-wide findings, non-blocking warnings and hints, and infrastructure errors. " +
-    "THE TARGET IS 100 IN EVERY CATEGORY AND ZERO FINDINGS: every category below 100, every scored Lighthouse audit below a perfect score, and every page-check error is a PROBLEM that blocks Publish live. A score like 90 is NOT acceptable on its own — keep fixing until 100 wherever achievable. Problems an editor accepted are marked ACCEPTED and do not block (a worse value than accepted blocks again). Warnings and hints never block. Use this after a Stage to see what to fix; use list_quality_acceptances to see what editors already accepted. " +
-    "To make a page faster, read its metrics here and fix the worst one in the module that renders the named element, then Stage again and re-read — repeat until Performance is 100. Use this instead of running Lighthouse yourself: the audit runs against the real staged build, which no other URL serves. Only what truly cannot be fixed goes to the operator, as one decision per group (accept_quality_findings with groups), with the reason why. " +
-    "A finding marked CAELO PLATFORM (back/forward cache, caching of Caelo's own files, server response, compression, redirects) is decided by Caelo's hosting/build setup, not by the site: report it with bug_report and never edit the site for it; it blocks until Caelo fixes it or the operator decides to accept it. " +
-    "Without an open operator chat (Power-MCP) a call on a queued or running audit waits for its result (up to ~50 s; call again if it is still running). " +
-    "Typical input: {}, { auditRunId }, or { pageId } to read only one page's section (from list_pages).",
+    "Read the staged site's quality check: plugin page checks (when an active plugin adds any, e.g. SEO) reading EVERY page on every Stage, plus a mobile Lighthouse audit (Performance, Accessibility, Best Practices, SEO) when the Stage changed how pages render. No args = newest audit of THIS chat's Stages.\n" +
+    "Returns per page: scores; Performance metrics (FCP, LCP, TBT, CLS, Speed Index: best run + Lighthouse rating; LCP element + breakdown; shifted elements + causes); each problem's Lighthouse audit id (e.g. `image-alt`, `color-contrast`, `render-blocking-insight`) + flagged elements (selector, HTML snippet, why, e.g. measured contrast); each page-check problem's rule id `<check>/<rule>` (contains a slash, e.g. `seo-check/title-missing`) + fix hint naming the tool. Plus site-wide findings, non-blocking warnings/hints, infrastructure errors.\n" +
+    "USE FOR: after a Stage, what to fix. Already accepted -> `list_quality_acceptances`. Never run Lighthouse yourself: the audit runs on the real staged build (no other URL serves it).\n" +
+    "CORE RULES:\n" +
+    "- TARGET 100 IN EVERY CATEGORY + ZERO FINDINGS: every category <100, every scored Lighthouse audit below perfect, every page-check error BLOCKS Publish live. 90 is NOT acceptable — fix until 100 wherever achievable. ACCEPTED problems don't block (a worse value than accepted blocks again). Warnings/hints never block.\n" +
+    "- Speed: fix the worst metric in the module rendering the named element, Stage again, re-read — repeat until Performance 100.\n" +
+    "- Only the truly unfixable goes to the operator: one decision per group (`accept_quality_findings` with `groups`) + the reason.\n" +
+    "- CAELO PLATFORM findings (back/forward cache, caching of Caelo's own files, server response, compression, redirects) come from Caelo's hosting/build: report via `bug_report`, never edit the site for them; they block until Caelo fixes it or the operator accepts.\n" +
+    "- Without an open operator chat (Power-MCP) a call on a queued/running audit waits up to ~50 s; call again if still running.",
   opName: "quality_audits.get",
   input: getAuditInput,
   // `pageId` filters the formatted result; the op reads whole audits.
@@ -351,9 +349,8 @@ function formatLastMetrics(pages: NonNullable<StageValue["lastMetrics"]>): strin
 export const checkStageAuditTool = makeReadTool<z.infer<typeof checkStageInput>>({
   name: "check_stage_audit",
   description:
-    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (Plugin page checks, when any is active, read every page on EVERY Stage regardless.) " +
-    "Lighthouse runs for: new or changed module html/css/js, layout / template / theme changes, new pages, plugin configuration. Not for: only text and field values, placing or moving existing modules, SEO texts, redirects. " +
-    "Lists the deciding changes and the pages the check would cover, plus the last measured Performance metrics (FCP, LCP, TBT, CLS, Speed Index; LCP element, layout shifts) of those pages and the homepage — the starting point for a speed fix (the target is Performance 100). Use this instead of running Lighthouse yourself: the audit runs against the real staged build. Takes no input (uses the current chat).",
+    "Before suggesting a Stage: will THIS chat's pending changes trigger a Lighthouse audit, and why? (Active plugin page checks read every page on EVERY Stage regardless.) Lighthouse runs for new/changed module html/css/js, layout/template/theme changes, new pages, plugin config — not for only text/field values, placing/moving existing modules, SEO texts, redirects. " +
+    "Returns the deciding changes, covered pages, and last Performance metrics (FCP, LCP, TBT, CLS, Speed Index; LCP element, layout shifts) of those pages + homepage — the start for a speed fix (target Performance 100). Never run Lighthouse yourself: the audit runs on the real staged build.",
   opName: "quality_audits.classify_stage",
   input: checkStageInput,
   // Outside a chat (Power-MCP without a session) the op's own validation
@@ -382,8 +379,8 @@ const listAuditsInput = z
     status: z
       .enum(["queued", "running", "passed", "problems", "errored", "skipped", "superseded"])
       .optional()
-      .describe("Only runs that ended (or stand) in this status."),
-    thisChatOnly: z.boolean().optional().describe("true: only audits of this chat's Stages."),
+      .describe("Current or final status."),
+    thisChatOnly: z.boolean().optional().describe("Only this chat's Stages."),
   })
   .strict();
 
@@ -393,10 +390,10 @@ export const listQualityAuditsTool = makeListReadTool<
 >({
   name: "list_quality_audits",
   description:
-    "List recent quality audits of staging deploys, newest first (TOON rows: id, status, problems, pages, deployRunId, reasons, created). " +
-    "Use to find an audit id for get_quality_audit, or to check whether the last Stage's audit is still running. Optional `status`, `thisChatOnly`; `filter`/`limit`/`offset`/`full` as usual.",
+    "List recent quality audits of staging deploys, newest first. Find an audit id for `get_quality_audit` or check whether the last Stage's audit still runs.",
   opName: "quality_audits.list",
   input: listAuditsInput,
+  listParamDescriptions: { limit: "Default 20." },
   buildOpInput: (input, _ctx, toolCtx) => ({
     ...(input.status ? { status: input.status } : {}),
     ...(input.thisChatOnly && toolCtx.chatSessionId
@@ -421,7 +418,7 @@ export const listQualityAuditsTool = makeListReadTool<
 const listAcceptancesInput = z
   .object({
     pageId: z.string().uuid().optional().describe("Only this page's acceptances."),
-    includeRevoked: z.boolean().optional().describe("Also show acceptances the Owner revoked."),
+    includeRevoked: z.boolean().optional().describe("Include Owner-revoked ones."),
   })
   .strict();
 
@@ -431,9 +428,8 @@ export const listQualityAcceptancesTool = makeListReadTool<
 >({
   name: "list_quality_acceptances",
   description:
-    "List quality findings, category scores below 100 and page-check rules editors accepted (TOON rows: page, kind, auditId, category, acceptedScore, acceptedCount, reason, acceptedAt, revoked). " +
-    "An acceptance applies ONLY to its page (page `site-wide` = a site-wide page-check rule): the same finding on another page is still a problem there. It records the value accepted — a `score` acceptance the category score, a `finding` acceptance the audit's score in points (acceptedScore), a `check` acceptance up to acceptedCount errors of its rule (auditId holds the rule id) — and a worse value blocks again. Check this before asking the operator to decide on something again. " +
-    "`filter` searches the audit/rule id, reason and page path server-side; optional `pageId`, `includeRevoked`.",
+    "List accepted quality findings, category scores <100 and page-check rules. Check before asking the operator to decide something again. " +
+    "An acceptance applies ONLY to its page (`site-wide` = site-wide page-check rule). It records the accepted value — `score`: category score; `finding`: audit score in points (acceptedScore); `check`: up to acceptedCount errors of its rule (auditId = rule id); a worse value blocks again. `filter` searches audit/rule id, reason, page path.",
   opName: "quality_acceptances.list",
   input: listAcceptancesInput,
   buildOpInput: (input) => ({

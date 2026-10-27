@@ -186,12 +186,12 @@ export function describeBugForwarding(state: BugForwardingState): string {
 export const bugReportTool: ToolDefinitionWithHandler<BugReportToolInput> = {
   name: "bug_report",
   description:
-    "File a bug report against Caelo ITSELF when a tool or surface behaves contrary to its documented contract — e.g. a tool result contradicts persisted state, a screenshot/render ignores a parameter, an error fires on input the description says is valid. " +
-    "This is for defects in the SYSTEM, not for your own mistakes (wrong arguments, misread state) and not for content/design issues on the site being built. " +
-    "Report only after a concrete failure you observed — a tool returned something wrong or broke the task. Never call it as a stand-in for another tool: when the tool you need is not in your tool list, search for it instead. " +
-    "Report ONCE per distinct defect (do not re-file the same bug in one session), then CONTINUE the task via a workaround when one exists. Only when the bug genuinely blocks the task: file with blockedTask=true, tell the operator in one sentence what is blocked, and stop that line of work instead of retrying into the same wall. " +
-    "`whatHappened` = what you observed (include the exact tool + arguments); `expected` = what the tool's contract promised; `evidence` = the result excerpt that proves it. " +
-    "The result says where the report went (stored on this site only, or sent to the Caelo team) — tell the operator exactly that and never claim the Caelo team was notified unless the result says it was sent.",
+    "File a bug against Caelo ITSELF when a tool/surface contradicts its documented contract (result contradicts persisted state, render ignores a parameter, error on input the description calls valid).\n" +
+    "DO NOT USE FOR: your own mistakes (wrong args, misread state); the site's content/design; a stand-in for a tool missing from your list — search for it instead.\n" +
+    "CORE RULES:\n" +
+    "- Only after a concrete observed failure. ONCE per distinct defect per session, then CONTINUE via a workaround if one exists.\n" +
+    "- Truly blocked: `blockedTask=true`, tell the operator in one sentence what is blocked, stop that line of work (no retrying into the same wall).\n" +
+    "- The result says where it went (this site only, or sent to the Caelo team) — tell the operator exactly that; never claim the team was notified unless it says sent.",
   schema: bugReportToolInput,
   inputSchema: {
     type: "object",
@@ -208,28 +208,28 @@ export const bugReportTool: ToolDefinitionWithHandler<BugReportToolInput> = {
         type: "string",
         minLength: MIN_REPORT_TEXT,
         maxLength: 4000,
-        description: "What you observed, incl. the exact tool + arguments used.",
+        description: "Observed behaviour incl. the exact tool + arguments.",
       },
       expected: {
         type: "string",
         minLength: MIN_REPORT_TEXT,
         maxLength: 4000,
-        description: "What the tool's description / the system's contract promised instead.",
+        description: "What the tool description / system contract promised.",
       },
       suspectedTool: { type: "string", maxLength: 200 },
       evidence: {
         type: "string",
         maxLength: 8000,
-        description: "Result/render excerpt that shows the mismatch.",
+        description: "Result/render excerpt proving the mismatch.",
       },
       severity: {
         type: "string",
         enum: ["blocking", "degraded", "cosmetic"],
-        description: "blocking = no workaround; degraded = worked around; cosmetic = noise only.",
+        description: "blocking = no workaround | degraded = worked around | cosmetic = noise only.",
       },
       blockedTask: {
         type: "boolean",
-        description: "true ONLY when you had to abandon the current task because of this bug.",
+        description: "true ONLY if you abandoned the current task because of this bug.",
       },
     },
   },

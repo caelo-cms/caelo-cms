@@ -25,10 +25,13 @@ export const findRedirectsTool = makeListReadTool<
 >({
   name: "find_redirects",
   description:
-    "Search redirects (TOON rows: fromPath, toPath, status). `filter` matches fromPath/toPath server-side across the whole table; optional `statusCode`; `limit`/`offset`/`full` as usual. " +
-    "Use as a pre-flight check before `bulk_delete_redirects` so the user sees what will be removed.",
+    "Search redirects (TOON rows: fromPath, toPath, status). Pre-flight before `bulk_delete_redirects` so the user sees what goes.",
   opName: "redirects.list",
   input: findRedirectsInput,
+  listParamDescriptions: {
+    filter: "Substring of fromPath / toPath, searched across the whole table.",
+    limit: "Default 50, max 200.",
+  },
   buildOpInput: (
     input: { statusCode?: number; filter?: string; limit?: number; full?: boolean },
     _ctx: ExecutionContext,

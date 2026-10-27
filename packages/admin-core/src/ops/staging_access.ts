@@ -76,27 +76,25 @@ export const stagingAccessFields = z
     cookieEnabled: z
       .boolean()
       .describe(
-        'Admin users reach staging through the admin\'s "Open staging" (a signed session cookie, no password).',
+        'Admin users reach staging via the admin\'s "Open staging" (session cookie, no password).',
       ),
     basicAuthEnabled: z
       .boolean()
-      .describe(
-        "Crawlers/tools log in with generated basic-auth credentials (user basicAuthUser + a generated password).",
-      ),
+      .describe("Crawlers/tools log in as basicAuthUser with a password generated on approval."),
     basicAuthUser: z
       .string()
       .regex(/^[A-Za-z0-9._-]{1,64}$/, "letters, digits, '.', '_' or '-', at most 64")
       .describe("Basic-auth user name crawlers send."),
     headerEnabled: z
       .boolean()
-      .describe("Crawlers/tools send a generated secret value in the request header headerName."),
+      .describe("Crawlers/tools send a generated secret value in header headerName."),
     headerName: z
       .string()
       .regex(/^[A-Za-z0-9-]{1,64}$/, "a header name: letters, digits and '-'")
       .refine((h) => !RESERVED_HEADERS.has(h.toLowerCase()), {
         message: "pick a custom header name (e.g. X-Caelo-Staging-Key), not a standard one",
       })
-      .describe(`Name of the secret request header (default ${DEFAULT_STAGING_HEADER_NAME}).`),
+      .describe(`Default ${DEFAULT_STAGING_HEADER_NAME}.`),
     ipAllowlist: z
       .array(
         z
@@ -107,9 +105,7 @@ export const stagingAccessFields = z
           }),
       )
       .max(50)
-      .describe(
-        "Client addresses/CIDRs let in without credentials (e.g. a crawler's static egress IP).",
-      ),
+      .describe("Addresses/CIDRs let in without credentials (e.g. a crawler's static egress IP)."),
   })
   .strict();
 

@@ -22,10 +22,8 @@ export const listLayoutsTool = makeListReadTool<
 >({
   name: "list_layouts",
   description:
-    'List every layout with UUID, slug, display name, and its LAYOUT blocks INCLUDING the chrome modules placed in each (`header(main-menu)|content|footer(site-footer)`). One read answers "is module X already on the layout?". ' +
-    "Layout blocks are site chrome: place a header / footer / nav into them ONCE for every page with add_module target='layout'. They are NOT build_page blockNames — a page places into its TEMPLATE's blocks (list_templates `pageBlocks`, usually just `content`); the layout's `content` block is where the template renders. " +
-    "Standard list params: `filter`, `limit`/`offset`, `full: true`. " +
-    "Use when you need a layout UUID or slug (e.g. right after an Owner approved a layout-create proposal). DO NOT ask the operator to paste a UUID.",
+    'Layouts: UUID, slug, display name, blocks with the chrome modules placed in each (`header(main-menu)|content|footer(site-footer)`) — answers "is module X already on the layout?". Use for a layout UUID/slug (e.g. after a layout-create approval); never ask the operator to paste one.\n' +
+    "Layout blocks = site chrome: place header/footer/nav ONCE for every page via `add_module` target='layout'. NOT `build_page` blockNames — pages place into their TEMPLATE's blocks (`list_templates` `pageBlocks`, usually `content`); the layout's `content` block is where the template renders.",
   opName: "layouts.list",
   input: listLayoutsInput,
   label: "layouts",

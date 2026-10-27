@@ -33,10 +33,8 @@ export const proposeDeployPromoteTool = makeProposeTool<Input>({
   opName: "deploy.propose_promote",
   pendingQueuePath: "/settings/deployments/pending",
   when:
-    "Propose promoting one deploy target's latest succeeded build into another target (typically staging → production). " +
-    "The preview carries sourceBuildId, pageCount, fileCount — restate them to the operator. " +
-    "Use when the operator says 'ship to production', 'go live', 'promote staging'. " +
-    "The fromTarget needs at least one succeeded build — call `deploy_staging` first if it has none or is outdated.",
+    "Propose promoting one target's latest succeeded build into another (typically staging -> production): 'ship to production', 'go live', 'promote staging'. " +
+    "`fromTarget` needs a succeeded build; none or outdated -> `deploy_staging` first. Restate the preview's sourceBuildId, pageCount, fileCount to the operator.",
   schema: inputSchema,
   inputSchema: {
     type: "object",
@@ -68,9 +66,7 @@ export const proposeDeployRollbackTool = makeProposeTool<RollbackInput>({
   toolName: "propose_deploy_rollback",
   opName: "deploy.propose_rollback",
   pendingQueuePath: "/settings/deployments/pending",
-  when:
-    "Propose rolling back one deploy target to its previous succeeded build. " +
-    "Use when the operator says 'roll back', 'revert prod', 'undo last deploy'.",
+  when: "Propose rolling a deploy target back to its previous succeeded build ('roll back', 'revert prod', 'undo last deploy').",
   schema: rollbackInputSchema,
   inputSchema: {
     type: "object",

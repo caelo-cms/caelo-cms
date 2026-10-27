@@ -21,11 +21,9 @@ export const setPagesStatusManyTool: ToolDefinitionWithHandler<
 > = {
   name: "set_pages_status_many",
   description:
-    "Flip page status to 'draft' or 'published' — the ONE status tool, for 1 page or 200 (pass a single-item `pageIds` array for one page; there is no separate set_page_status tool). " +
-    "Use for 'publish this page', 'publish all drafts', 'draft these four pages', or any status flip. " +
-    "Drafts are LIVE-EDIT ONLY — they're visible in the editor but NOT shipped to Stage or Production; only 'published' pages reach deployed environments. " +
-    "Status is sticky — other edits in this chat (title, slug, modules) preserve it; only this tool or the top-bar toggle in /edit changes it. " +
-    "One transaction. Ids that don't match a live page (deleted / wrong id) are SKIPPED, not an error; the result's `updatedCount` reports how many actually flipped — compare it to the number of ids you passed to detect skips. It fails only if NONE matched.",
+    "Set page status for 1..N pages — the only status tool ('publish this page', 'draft these four').\n" +
+    "CORE RULES: drafts are editor-only, never shipped to Stage/Production. Status is sticky: other edits keep it. " +
+    "Unknown/deleted ids are SKIPPED: compare result `updatedCount` to ids passed; fails only if NONE matched.",
   schema: setPagesStatusManyToolInput,
   inputSchema: {
     type: "object",

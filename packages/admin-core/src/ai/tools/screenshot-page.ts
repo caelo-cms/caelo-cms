@@ -174,13 +174,13 @@ async function captureServerSide(
 export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> = {
   name: "screenshot_page",
   description:
-    "Capture a screenshot of the rendered page (the image comes back WITHIN this same turn — keep working and analyse it on your next step, do NOT end your turn to wait for it). Use for the GROSS visual impression — 'does the hero feel crowded?', 'is the color/imagery right?', 'what's the overall layout impression?'. " +
-    "Works on EVERY surface: in an interactive chat the operator's browser captures (html2canvas on their exact viewport); without an attached browser (MCP, background sends, subagent turns) the server renders the branch preview in real headless Chromium instead — the result text names which backend ran. " +
-    "FIDELITY LIMIT (browser-captured results only) — html2canvas is an APPROXIMATION, not a real browser render. It reliably mis-renders TWO things: (1) fine text spacing — words can show large irregular gaps that look like broken text-align:justify, and (2) flex-wrap — wrapping rows can stack one-item-per-line. These are html2canvas artifacts, NOT real CSS bugs. If a browser-captured screenshot shows justified-looking word gaps or single-column flex stacking, DO NOT edit CSS or file a bug from the screenshot alone — confirm against `inspect_page_render` first. Server-rendered results are real Chromium output and carry no such artifacts. " +
-    "DESKTOP IS NOT ONE WIDTH — type sized with vw/clamp() wraps differently per width, so a headline that sits on 3 lines at 1280px can take 4 at 1740px. In an interactive chat, desktop captures the operator's live preview size (the result states the size and whose view it is); omit `width` for that capture. For typography/layout reviews ALSO capture a second desktop width via `width` (1280 when the operator's view is wider, 1920 when it is narrower) and make the design hold at both. When the operator reports a wrap or break you don't see, re-capture without `width` before concluding it is fine. " +
-    "ALWAYS call this after composing a page or making structural/styling changes — desktop AND mobile viewports — and fix real issues the screenshot reveals BEFORE telling the operator you're done (max two review rounds; skip for content-only edits). " +
-    "For ANY spacing/layout/CSS question (word gaps, flex stacking, white halo around the header, wrong colors, broken layout) prefer `inspect_page_render` — its summary then `target`/`search` give the composed HTML and each CSS layer separately, the accurate source of truth for spacing + layout. " +
-    "Pass `selector` (CSS selector) to capture a SINGLE element instead of the whole page — right choice when checking one module (a footer, a hero) instead of the page. By default the capture shows THIS chat's branch preview (your pending edits included); pass `chatBranchId` only to capture a different branch. The image is available to you in this turn only, not persisted across the chat.",
+    "Screenshot a rendered Caelo page of this chat's branch preview (pending edits included). The image returns WITHIN this turn — analyse it next step, do NOT end the turn to wait; not persisted across the chat.\n" +
+    "USE FOR: gross visual impression (crowded hero? colors/imagery? overall layout?).\n" +
+    "DO NOT USE FOR: spacing/layout/CSS questions (word gaps, flex stacking, white halo around the header, wrong colors, broken layout) -> `inspect_page_render` (summary, then `target`/`search`: composed HTML + each CSS layer, the source of truth).\n" +
+    "CORE RULES:\n" +
+    "- ALWAYS call after composing a page or structural/styling changes — desktop AND mobile — and fix real issues BEFORE telling the operator you're done (max two review rounds; skip for content-only edits).\n" +
+    "- Backend: interactive chat -> operator's browser (html2canvas, their exact viewport); no attached browser (MCP, background sends, subagents) -> real headless Chromium on the server. Result names the backend.\n" +
+    "- html2canvas is an APPROXIMATION that mis-renders (1) fine text spacing (irregular word gaps like broken justify) and (2) flex-wrap (one item per line). Artifacts, NOT CSS bugs: never edit CSS or file a bug from a browser-captured screenshot alone — confirm with `inspect_page_render`. Chromium renders have no such artifacts.",
   schema: screenshotInput,
   inputSchema: {
     type: "object",
@@ -192,27 +192,27 @@ export const screenshotPageTool: ToolDefinitionWithHandler<ScreenshotPageInput> 
         type: "string",
         format: "uuid",
         description:
-          "Optional override. Defaults to the current chat's branch, so you normally omit it. Set it only to capture another branch's staged edits — only branches the operator may see work (the shared draft, their own chats' branches); another editor's experiment answers 'branch not found'.",
+          "Omit (defaults to this chat's branch). Set only for another branch: the shared draft or the operator's own chats' branches; other editors' experiments -> 'branch not found'.",
       },
       viewport: {
         type: "string",
         enum: ["desktop", "tablet", "mobile"],
         description:
-          "Optional viewport. desktop (default) captures at the operator's live preview size in an interactive chat (falls back to the 1280x800 preset when no preview is open or on the server-side renderer); tablet = 768x1024, mobile = 375x812.",
+          "desktop (default) = operator's live preview size in interactive chat (result states size + whose view), else 1280x800; tablet = 768x1024; mobile = 375x812.",
       },
       width: {
         type: "integer",
         minimum: 320,
         maximum: 3840,
         description:
-          "Optional layout width in CSS px — overrides the viewport's width (height stays the viewport's). Use it to check a SECOND desktop width on purpose (e.g. 1280 and 1920), not for the first capture: omitting it shows you the operator's own view.",
+          "Overrides the viewport width (CSS px; height unchanged). Omit on the first capture (= operator's view). Desktop is not one width: vw/clamp() type wraps differently (3 lines at 1280px, 4 at 1740px) -> for typography/layout reviews ALSO capture a second width (1280 if the operator's view is wider, 1920 if narrower); the design must hold at both. Operator reports a wrap/break you don't see -> re-capture without `width` before concluding it's fine.",
       },
       selector: {
         type: "string",
         minLength: 1,
         maxLength: 300,
         description:
-          "Optional CSS selector — capture ONLY the first matching element instead of the full page (e.g. '[data-caelo-module-id=\"<uuid>\"]', 'footer.caelo-layout-footer'). Use when verifying or debugging a single module; cheaper to analyse than a full page. Fails loudly if nothing matches.",
+          "CSS selector: capture only the first match (e.g. '[data-caelo-module-id=\"<uuid>\"]', 'footer.caelo-layout-footer') — cheaper when checking one module. Error if nothing matches.",
       },
     },
   },
