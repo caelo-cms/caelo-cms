@@ -482,33 +482,37 @@ secondary guard — local pass is the primary one.
 
 ## When it runs
 
-Each full run costs real money (~$5–7; measured 2026-10-20..26: $907 for
+Each full run costs real money (~$5–15; measured 2026-10-20..26: $907 for
 183 paid runs on 95 PR branches, 92% of the input tokens cache reads — the
-money is in run count × scenario count). The `plan` job of
-`.github/workflows/e2e-livedit.yml` decides what a run executes; the paid
-`Real-AI live-edit scenario` job runs only what it picked.
+money is in run count × scenario count). The target is ~$55/week. The
+`plan` job of `.github/workflows/e2e-livedit.yml` decides what a run
+executes; the paid `Real-AI live-edit scenario` job runs only what it picked.
 
 | Trigger | What runs |
 |---|---|
-| PR, nothing AI-relevant changed (UI-only, docs, CI outside this suite, provisioning, tests…) | nothing — the check passes as skipped |
-| PR with AI-relevant changes | the core (`homepage`) + every scenario whose paths match a changed file |
-| PR that changes the harness (this suite's lib/helpers/fixtures/global setup, its Playwright config, the workflow, `docker-compose.yml`, the provider preflight) | every CI scenario |
+| PR without the label `real-ai` or `real-ai-full` | nothing — the check passes as skipped; if the change is AI-relevant, the sticky PR comment lists the scenarios that would run and how to opt in |
+| PR with the label `real-ai`, nothing AI-relevant changed (UI-only, docs, CI outside this suite, provisioning, tests…) | nothing — the check passes as skipped |
+| PR with the label `real-ai` and AI-relevant changes | the core (`homepage`) + every scenario whose paths match a changed file (a harness change: every CI scenario) |
 | PR with the label `real-ai-full` | every CI scenario |
+| Adding `real-ai` / `real-ai-full` to a PR | starts the run (`labeled` event) |
+| Adding any other label | keeps the commit's previous Real-AI verdict: green or none stays a skip, a red result stays red |
 | Draft PR | nothing until it is marked ready for review |
-| Release gate (`release-cut` → dispatch on `release-gate/<sha>`) | every CI scenario, no budget limit |
-| Manual `gh workflow run e2e-livedit.yml --ref <branch>` | every CI scenario, no budget limit |
+| Release gate (`release-cut` → dispatch on `release-gate/<sha>`) | every CI scenario whose covered files or the harness changed since its last green on main, or whose last green is older than 7 days; the rest carry over. Never budget-limited |
+| Manual `gh workflow run e2e-livedit.yml --ref <branch>` | every CI scenario; skipped when the weekly budget is used up, unless dispatched with `-f override_budget=true` |
 
-Main gets no run per push: a squash merge re-runs code its PR already ran.
-`release-cut` runs the full suite once on the exact `main` commit it
+Main gets no run per push: a squash merge re-runs code its PR already ran
+(if it ran). `release-cut` runs the gate once on the exact `main` commit it
 releases and refuses to cut unless it is green. Trade-off: a regression
-that only appears when two PRs combine on main surfaces at the next
-release cut, not at merge time.
+that only appears when two PRs combine on main — or one in a PR nobody
+labelled — surfaces at the next release cut, not at merge time.
 
-**Force the full suite on a PR:** add the label `real-ai-full`, then
-re-run the workflow (Actions → E2E Live Edit → Re-run all jobs) or push.
-Or dispatch it on the branch: `gh workflow run e2e-livedit.yml --ref
-<branch>` (the dispatched run reports the same check on the branch's head
-commit and ignores the budget).
+**Run the suite on a PR:** add the label `real-ai` (the selected
+scenarios) or `real-ai-full` (everything); the run starts on its own. Later
+pushes to a labelled PR run again (re-running only what is red or whose
+covered files changed). Or dispatch it on the branch: `gh workflow run
+e2e-livedit.yml --ref <branch>` (a full run; it reports the same check on
+the branch's head commit and respects the budget unless `-f
+override_budget=true`).
 
 ### Scenario selection (`scenario-paths.ts`)
 
@@ -554,7 +558,7 @@ To run a subset locally: `CAELO_LIVEDIT_SCENARIOS=scenario-consent.browser.ts,sc
 
 ### Follow-up pushes: keep what is green
 
-After the bug gate passed, each run records the scenarios it left green
+On a labelled PR, after the bug gate passed, each run records the scenarios it left green
 as `{id, key}` (artifact `e2e-livedit-scenario-greens-<run_id>-<attempt>`,
 30 days) — also when another scenario failed, so the next push re-runs
 only what was red. A scenario's **key** is a SHA-256 over what the PR
@@ -567,13 +571,52 @@ paid job is skipped (passing).
 
 Main moving on does not change a key — only the PR's own changes do. That
 is the same trade-off as for main itself (combinations are caught at the
-release gate, which always runs everything); keying on the whole tested
+release gate, below); keying on the whole tested
 tree would re-run the core on nearly every push, because main changes AI
 files several times a day. Nothing is recorded when the bug gate failed
 (new bugs cannot be pinned to one scenario), so the next push re-runs the
 whole selection. The `e2e-livedit-green-tree-<tree>` artifact that
 `release-cut` reuses is written only by a run that executed **every** CI
 scenario and passed.
+
+### Release gate: per-scenario reuse on main
+
+Every scenario a release gate (or a manual dispatch on `main`) **ran and
+passed** is recorded on the `e2e-livedit-ledger` branch as
+`greens/<scenario>_<UTC time>_<commit sha>_<run_id>-<attempt>.json`
+(`lib/main-greens.ts`; only the newest record per scenario is kept; nothing
+is recorded when the bug gate failed). The next gate's plan reads that
+directory (one listing), fetches each green commit and diffs its tree
+against the gated commit (`git diff --name-only <green> HEAD`). Per CI
+scenario it **runs** when:
+
+- it has no record (a new scenario, a record name that does not parse);
+- its last green is older than **7 days** — the safety net against
+  provider / model drift: the code did not change, the model behind it may
+  have;
+- its green commit cannot be fetched or diffed;
+- the diff touches the harness, a file the scenario covers (its paths, its
+  spec; for the core every AI-relevant file), or an AI-relevant file no CI
+  scenario maps (the manifest test keeps that empty; the gate runs rather
+  than trusts).
+
+Files in `NO_REAL_AI_COVERAGE`, tests and docs never trigger a run.
+Otherwise the scenario **carries over**; the plan summary names the green
+each carried scenario rests on. A carried scenario is not re-recorded, so
+the 7-day net always measures the last *real* run. When every scenario
+carries over, the paid job still runs (and succeeds) without its paid
+steps, so `release-cut` reads a green AI job.
+
+Why the ledger branch and not the `e2e-livedit-scenario-greens-*`
+artifacts the PR reuse reads: the gate needs the newest green per scenario
+across all earlier gate runs. From artifacts that is a run listing plus a
+zip download per run, and artifacts expire after 30 days; the branch is one
+directory listing. The commit sha in the record is what makes the diff
+computable.
+
+`release-cut` still reuses an earlier green AI job on the same commit, and a
+full PR run whose tested tree equals the commit's tree
+(`e2e-livedit-green-tree-<tree>`), before it dispatches a gate run at all.
 
 ### Cheap checks first, no cancelled paid runs
 
@@ -596,24 +639,33 @@ before any paid step.
 
 ### Weekly budget
 
-Every run that reached the provider writes one file to the
-`e2e-livedit-ledger` branch: `runs/<UTC time>_<run_id>-<attempt>_<microcents>.json`
-(the run's `ai-cost.json`; 1 USD = 1e8 microcents; entries older than 9
-days are pruned). The plan job sums the trailing 7 days from one
-directory listing (`lib/budget.ts`) — the `e2e-livedit-cost-<run_id>`
-artifacts stay the durable 90-day record, but summing them takes one zip
-download per run, more than a job's API budget. When the sum reaches the
-repo variable `E2E_LIVEDIT_WEEKLY_BUDGET_USD` (default **$250**), PR runs
-skip with a passing, annotated check and the sticky PR comment says
-"Real-AI weekly budget used: $X of $Y — runs on release gate / manual
-dispatch only". The release gate and a manual dispatch always run (and
-count). Every run's PR comment shows the spend-vs-budget line.
+Every run that reached the provider — PR, release gate, manual dispatch —
+writes one file to the `e2e-livedit-ledger` branch:
+`runs/<UTC time>_<run_id>-<attempt>_<microcents>.json` (the run's
+`ai-cost.json`; 1 USD = 1e8 microcents; entries older than 9 days are
+pruned; `lib/ledger-commit.sh` writes both this and the release gate's
+`greens/`). The plan job sums the trailing 7 days from one directory
+listing (`lib/budget.ts`) — the `e2e-livedit-cost-<run_id>` artifacts stay
+the durable 90-day record, but summing them takes one zip download per run,
+more than a job's API budget. When the sum reaches the repo variable
+`E2E_LIVEDIT_WEEKLY_BUDGET_USD` (set to **55**; default $250 when unset):
+
+- PR runs skip with a passing, annotated check and the sticky PR comment
+  says "Real-AI weekly budget used: $X of $Y";
+- a manual dispatch skips too, unless it was dispatched with
+  `override_budget: true` (`gh workflow run e2e-livedit.yml --ref <branch>
+  -f override_budget=true`);
+- the release gate always runs — a release is never blocked by budget —
+  and its spend counts like any other.
+
+Every run's PR comment shows the spend-vs-budget line.
 
 The paid job reads the ledger a second time, right before the provider
-preflight (step `budget-recheck`): the plan's reading predates its CI wait
-(up to 65 min) and the per-PR queue, and other PRs' runs can spend the rest
-of the week in between. Over budget there, the job skips every paid step
-and ends green with the same annotation and comment.
+preflight (step `paid`): the plan's reading predates its CI wait (up to 65
+min) and the per-PR queue, and other runs can spend the rest of the week in
+between. Over budget there (PR runs and dispatches without the override),
+the job skips every paid step and ends green with the same annotation and
+comment. The same step ends a release gate that carried every scenario over.
 
 The sticky PR comment is one comment per PR (marker
 `<!-- e2e-livedit-sticky -->`), edited by every run

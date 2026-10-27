@@ -11,8 +11,10 @@
  *
  * The plan job sums the trailing 7 days and, when the total is over the
  * weekly budget (repo variable `E2E_LIVEDIT_WEEKLY_BUDGET_USD`, default
- * {@link DEFAULT_WEEKLY_BUDGET_USD}), PR runs skip with a passing check; the
- * release gate and a manual dispatch always run. Why a ledger branch and not
+ * {@link DEFAULT_WEEKLY_BUDGET_USD}), PR runs and manual dispatches skip with
+ * a passing check (a dispatch with `override_budget` runs anyway); the release
+ * gate always runs. Every kind of run is recorded, so the sum is all spend.
+ * Why a ledger branch and not
  * the existing `e2e-livedit-cost-<run_id>` artifacts: summing those means one
  * listing plus one zip download per run (~400 API calls for a week), more
  * than GITHUB_TOKEN's hourly budget allows per plan job.
@@ -117,7 +119,7 @@ export function budgetVerdict(spentMicrocents: number, budgetUsd: number): Budge
   const spentUsd = spentMicrocents / MICROCENTS_PER_USD;
   const over = spentUsd >= budgetUsd;
   const line = over
-    ? `Real-AI weekly budget used: $${spentUsd.toFixed(2)} of $${budgetUsd.toFixed(2)} (trailing ${WINDOW_DAYS} days) — runs on release gate / manual dispatch only.`
+    ? `Real-AI weekly budget used: $${spentUsd.toFixed(2)} of $${budgetUsd.toFixed(2)} (trailing ${WINDOW_DAYS} days) — runs on the release gate (or a dispatch with override_budget) only.`
     : `Real-AI weekly budget: $${spentUsd.toFixed(2)} of $${budgetUsd.toFixed(2)} used (trailing ${WINDOW_DAYS} days).`;
   return { over, spentUsd, budgetUsd, line };
 }
