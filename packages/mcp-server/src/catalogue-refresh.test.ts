@@ -26,6 +26,13 @@ const NEW_TOOL = {
   gated: true,
 };
 
+const ACTIVATE_TOOL = {
+  name: "activate_plugin",
+  description: "APPROVAL-GATED",
+  inputSchema: { type: "object" },
+  gated: true,
+};
+
 describe("catalogueSignature / resolveCatalogueMaxAgeMs", () => {
   it("ignores order and notices any change a client sees", () => {
     expect(catalogueSignature([OLD_TOOL, NEW_TOOL])).toBe(catalogueSignature([NEW_TOOL, OLD_TOOL]));
@@ -64,8 +71,31 @@ describe("tool list changes reach the client", () => {
             resumed: true,
           });
         }
+        if (path === "/api/mcp/approval") {
+          return Response.json({
+            proposalId: "p1",
+            domain: "plugins",
+            toolName: "activate_plugin",
+            summary: "Activate consent-manager",
+            outcome: "applied",
+            detail: null,
+            decidedAt: "2026-10-26T20:00:00.000Z",
+          });
+        }
         if (path === "/api/mcp/tool") {
           const body = (await req.json()) as { toolName: string };
+          if (body.toolName === "activate_plugin") {
+            // The operator approves; the plugin's tools join the catalogue.
+            tools = [OLD_TOOL, ACTIVATE_TOOL, NEW_TOOL];
+            return Response.json({
+              ok: true,
+              content: "queued",
+              requestId: "r",
+              toolCallId: "c",
+              cached: false,
+              approval: { proposalId: "p1", domain: "plugins" },
+            });
+          }
           return Response.json({
             ok: true,
             content: `ran ${body.toolName}`,
@@ -159,6 +189,21 @@ describe("tool list changes reach the client", () => {
 
     const unknown = await client.callTool({ name: "no_such_tool", arguments: {} });
     expect(unknown.isError).toBe(true);
+    await client.close();
+  });
+
+  // #1122 — an approved activation re-reads at once and announces the new
+  // list, however fresh the cached one was; the client used to keep its
+  // old list until the operator reconnected.
+  it("announces the new tools right after an approved plugin activation", async () => {
+    tools = [OLD_TOOL, ACTIVATE_TOOL];
+    const { client, changed } = await connect(60_000);
+    await client.callTool({ name: "caelo_open_session", arguments: {} });
+    await client.callTool({ name: "activate_plugin", arguments: { slug: "consent-manager" } });
+    const deadline = Date.now() + 1000;
+    while (changed() === 0 && Date.now() < deadline) await Bun.sleep(10);
+    expect(changed()).toBe(1);
+    expect((await client.listTools()).tools.some((t) => t.name === NEW_TOOL.name)).toBe(true);
     await client.close();
   });
 });

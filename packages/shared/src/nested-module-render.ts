@@ -542,5 +542,40 @@ export function collectNestedRefs(values: Readonly<Record<string, unknown>>): Ne
   return refs;
 }
 
+/**
+ * A copy of `values` in which every nested-module reference
+ * {@link collectNestedRefs} finds points at `remap(contentInstanceId)`.
+ * Walks exactly the shapes the collector walks, so every ref the collector
+ * reports is the ref this rewrites; everything else is copied unchanged.
+ * Deep copies (`pages.duplicate`, `placement.fork_content`) use it to point
+ * a copied parent at its copied children instead of the source's.
+ *
+ * @param remap the new instance id for a source id. It should throw for an
+ *   id it has no copy for: keeping the source id would leave the copy
+ *   sharing nested content with the original.
+ */
+export function rewriteNestedRefs(
+  values: Readonly<Record<string, unknown>>,
+  remap: (contentInstanceId: string) => string,
+): Record<string, unknown> {
+  const visitAll = (v: object, depth: number): unknown =>
+    Array.isArray(v)
+      ? v.map((el) => visit(el, depth))
+      : Object.fromEntries(Object.entries(v).map(([k, el]) => [k, visit(el, depth)]));
+  const visit = (v: unknown, depth: number): unknown => {
+    if (depth > MAX_COLLECT_DEPTH || typeof v !== "object" || v === null) return v;
+    if (isNestedRef(v)) return { ...v, contentInstanceId: remap(v.contentInstanceId) };
+    if (Array.isArray(v)) return v.map((el) => visit(el, depth + 1));
+    const entry = v as { values?: unknown; children?: unknown };
+    const out: Record<string, unknown> = { ...(v as Record<string, unknown>) };
+    if (typeof entry.values === "object" && entry.values !== null) {
+      out.values = visitAll(entry.values, depth + 1);
+    }
+    if (Array.isArray(entry.children)) out.children = visit(entry.children, depth + 1);
+    return out;
+  };
+  return visitAll(values, 0) as Record<string, unknown>;
+}
+
 /** Bound for {@link collectNestedRefs}: list depth (8) × two levels per entry, plus slack. */
 const MAX_COLLECT_DEPTH = 24;

@@ -13,7 +13,11 @@
 export { externalArtifactDigest } from "@caelo-cms/plugin-sandbox";
 export type { ContentVariantPage, ContentVariantPlacement } from "@caelo-cms/plugin-sdk";
 export { pluginManifest } from "@caelo-cms/plugin-sdk";
-export { auditFindingContributors, collectPluginAuditFindings } from "./audit-findings.js";
+export {
+  type AuditPageFactsReader,
+  auditFindingContributors,
+  collectPluginAuditFindings,
+} from "./audit-findings.js";
 export { type BakedDataPlugin, bakedDataPlugin, bakedDataVisitorTrigger } from "./baked-data.js";
 export { bakedDataPageIds, MAX_BAKED_PAGES_PER_CALL } from "./baked-data-pages.js";
 export {
@@ -230,3 +234,8 @@ export {
   type VisitorConsentRule,
   visitorConsentGranted,
 } from "./visitor-consent.js";
+export {
+  collectPluginWriteHints,
+  type PluginWriteHintsResult,
+  writeHintContributors,
+} from "./write-hints.js";

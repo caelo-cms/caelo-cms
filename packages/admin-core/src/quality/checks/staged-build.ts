@@ -77,5 +77,32 @@ export function stagedBuildAt(
         `staging answered ${status} for ${path} — neither served nor missing; Stage again, and if it persists check the staging host`,
       );
     },
+    async text(path: string): Promise<string | null> {
+      if (!path.startsWith("/") || path.startsWith("//")) {
+        throw new Error(`read path must be root-relative, got ${JSON.stringify(path)}`);
+      }
+      let res: Response;
+      try {
+        res = await fetcher(`${base}${path}`, {
+          redirect: "follow",
+          signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+        });
+      } catch (e) {
+        throw new Error(
+          `staging did not answer for ${path}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      if (MISSING_STATUSES.has(res.status)) {
+        await res.body?.cancel();
+        return null;
+      }
+      if (res.status < 200 || res.status >= 300) {
+        await res.body?.cancel();
+        throw new Error(
+          `staging answered ${res.status} for ${path} — neither served nor missing; Stage again, and if it persists check the staging host`,
+        );
+      }
+      return res.text();
+    },
   };
 }

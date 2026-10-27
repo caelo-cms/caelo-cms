@@ -156,6 +156,12 @@ export async function startAdminMcpServer(opts: StartAdminOpts): Promise<void> {
           timeoutMs: resolveTimeoutMs(30_000),
         }),
       uploadImages: (args) => uploadImages(target, args),
+      // #1122 — re-read now; refreshCatalogue notifies over stdio itself
+      // when the list changed, so the surface sends nothing more.
+      catalogueMayHaveChanged: async () => {
+        await refreshCatalogue();
+        return false;
+      },
     },
     {
       serverVersion: ownVersion(),
