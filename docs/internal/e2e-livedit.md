@@ -176,6 +176,16 @@ share (~48k of ~53k est per call), so **loop count is the input-token
 lever** — every extra loop re-reads the whole context (from the cache,
 at a tenth of the fresh price).
 
+Cost is driven less by reads than the ~90 % hit rate suggests: a cache
+write costs 12.5x a read. The report's `CACHE:` line names the two
+avoidable write/extra-pass classes per scenario: later turns of a chat
+whose first call re-wrote the history instead of reading it (and whether
+the tool list changed at that turn — the tool list is the front of the
+cached prefix, so it must stay identical on every turn of a chat), and
+calls that ran a provider-side tool search with the input they took
+beyond the call before them (each search is one more model pass over the
+context plus the loaded definitions as uncached input).
+
 **Thresholds** (`THRESHOLDS` in `lib/metrics-core.ts`) gate the homepage
 scenario on **new input** (cache writes + uncached input: what a run
 adds to the context and pays for in full) and **loops**. Total input is
