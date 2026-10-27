@@ -13,8 +13,9 @@
   import { Input } from "#lib/components/ui/input/index.js";
 
   let { data, form } = $props();
-  let signupOpen = $state(data.config.signupOpen);
-  let passwordMinLength = $state(data.config.passwordMinLength);
+  // #854 — no config, no form: a failed read shows only its error.
+  let signupOpen = $state(data.config?.signupOpen ?? false);
+  let passwordMinLength = $state(data.config?.passwordMinLength ?? 0);
 </script>
 
 <div class="space-y-6">
@@ -39,11 +40,12 @@
     <div class="rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-700 dark:bg-red-950 dark:text-red-300">Could not load config: {data.error}</div>
   {/if}
 
+  {#if data.config}
   <Card>
     <CardHeader>
       <CardTitle>Auth config (singleton)</CardTitle>
       <CardDescription>
-        Last updated {data.config.updatedAt ? new Date(data.config.updatedAt).toLocaleString() : "never (defaults shown)"}
+        Last updated {data.config.updatedAt ? new Date(data.config.updatedAt).toLocaleString() : "never"}
       </CardDescription>
     </CardHeader>
     <CardContent>
@@ -62,6 +64,7 @@
       </form>
     </CardContent>
   </Card>
+  {/if}
 
   <Card>
     <CardHeader>

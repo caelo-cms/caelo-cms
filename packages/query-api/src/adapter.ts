@@ -24,11 +24,11 @@ const SQL = (globalThis as { Bun?: { SQL: new (url: string, options?: PoolOption
 
 import { sql } from "drizzle-orm";
 import { type BunSQLDatabase, drizzle } from "drizzle-orm/bun-sql";
-import { recordAudit } from "./audit.js";
+import { recordAudit, SYSTEM_ACTOR_ID } from "./audit.js";
 import { branchNotFound, firstInvisibleBranch, namedBranches } from "./branch-access.js";
 import { extractPgFields, isRlsDenial, OperationAbortError, type QueryError } from "./errors.js";
 import type { OperationDefinition, TransactionRunner } from "./operation.js";
-import { provisionPluginSchemaInTx } from "./plugin-schema-provision.js";
+import { type ProvisionOutcome, provisionPluginSchemaInTx } from "./plugin-schema-provision.js";
 import {
   collectPostCommitEffects,
   type PostCommitEffect,
@@ -670,14 +670,22 @@ export class DatabaseAdapter {
       throw new Error(`provisionPluginPublicSchema: pluginId "${opts.pluginId}" is not a UUID`);
     }
     if (!this.#skipVerify) await this.verifyRoles();
-    await this.#public.transaction(async (tx) => {
+    const outcome = await this.#public.transaction(async (tx) => {
       // The emitted SQL is constructed entirely from validated identifiers
       // (slug regex `^[a-z][a-z0-9-]*$`, table names regex `^[a-z_][a-z0-9_]*$`)
       // and the plugin id is a UUID column from cms_admin.plugins, never user-provided
       // text. `quoteIdent` in plugin-sandbox/src/schema.ts throws on any
       // identifier that doesn't match the safe pattern.
-      await provisionPluginSchemaInTx(tx, "provisionPluginPublicSchema", opts);
+      return provisionPluginSchemaInTx(tx, "provisionPluginPublicSchema", opts);
     });
+    if (outcome.droppedColumns.length > 0) {
+      // cms_public has no audit log; the drop is recorded on the admin side.
+      const admin = this.#adminDb("provisionPluginPublicSchema");
+      await admin.transaction(async (tx) => {
+        await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
+        await auditDroppedColumns(tx, "cms_public", opts.pluginId, outcome);
+      });
+    }
   }
 
   /**
@@ -707,7 +715,10 @@ export class DatabaseAdapter {
     const admin = this.#adminDb("provisionPluginAdminSchema");
     if (!this.#skipVerify) await this.verifyRoles();
     await admin.transaction(async (tx) => {
-      await provisionPluginSchemaInTx(tx, "provisionPluginAdminSchema", opts);
+      const outcome = await provisionPluginSchemaInTx(tx, "provisionPluginAdminSchema", opts);
+      if (outcome.droppedColumns.length > 0) {
+        await auditDroppedColumns(tx, "cms_admin", opts.pluginId, outcome);
+      }
     });
   }
 
@@ -754,4 +765,24 @@ export class DatabaseAdapter {
   get public(): BunSQLDatabase {
     return this.#public;
   }
+}
+
+/**
+ * #1146 — one audit row per provisioning that dropped columns a new plugin
+ * version no longer declares (the data in them is gone for good).
+ */
+async function auditDroppedColumns(
+  tx: TransactionRunner,
+  database: "cms_admin" | "cms_public",
+  pluginId: string,
+  outcome: ProvisionOutcome,
+): Promise<void> {
+  await recordAudit(tx, {
+    actorId: SYSTEM_ACTOR_ID,
+    operation: "plugins.schema_drop_columns",
+    input: { database, schema: outcome.schemaName, columns: outcome.droppedColumns },
+    succeeded: true,
+    entityId: pluginId,
+    resultSummary: `${database}.${outcome.schemaName}: dropped ${outcome.droppedColumns.join(", ")}`,
+  });
 }

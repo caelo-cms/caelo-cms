@@ -53,6 +53,7 @@ import {
 import { execute } from "@caelo-cms/query-api";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { runActivationSerialized } from "./activation-lock.js";
 import { makePluginContext } from "./capabilities.js";
 import {
   hostSystemActorId,
@@ -1155,10 +1156,9 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
 
   // #389 — provision the plugin's OWN cms_admin schema (release-signed
   // only; the validator rejects runtime-authored adminSchema and
-  // requires the cms_admin_schema capability). ADD COLUMN IF NOT EXISTS
-  // in the emitted DDL makes a version bump with new columns an
-  // additive evolution; destructive changes are drop-and-recreate
-  // (pre-1.0, #393 uninstall drops the schema).
+  // requires the cms_admin_schema capability). The emitted DDL adds the
+  // columns a version bump declares and drops the ones it no longer
+  // declares (#1146, pre-1.0; audited), host caelo_ columns untouched.
   if (def.adminSchema && Object.keys(def.adminSchema).length > 0) {
     const emitted = adminSchemaFromSpec({
       pluginId,
@@ -1204,14 +1204,18 @@ async function registerLoadedPlugin(opts: RegisterOpts): Promise<RegisterOutcome
   }
 
   // Create-time defaults, on main, before anything can read them.
-  if (def.onActivate) {
+  const onActivate = def.onActivate;
+  if (onActivate) {
     const ctx = await makePluginContext({
       plugin: lp,
       infra: opts.infra,
       invocation: { origin: "system", actorId: hostSystemActorId() },
     });
     try {
-      await def.onActivate(ctx);
+      // #1144 — one activation of this plugin at a time across processes.
+      await runActivationSerialized(opts.infra, opts.systemActorId, def.slug, async () => {
+        await onActivate(ctx);
+      });
     } catch (e) {
       loadedPlugins.unload(def.slug);
       throw new PluginLoadError(

@@ -22,11 +22,27 @@
  *      transaction, so a rolled-back provisioning leaves no record behind.
  *
  * A changed spec (new column, new table, a different plugin id in the RLS
- * policies) changes the digest, so additive evolution still runs.
+ * policies) changes the digest, so evolution still runs: added columns are
+ * created and columns the spec no longer declares are dropped (#1146) and
+ * returned, so the adapter audits the drop.
  */
 
 import { createHash } from "node:crypto";
 import { type SQL, sql } from "drizzle-orm";
+
+/**
+ * The setting the emitted drop blocks record dropped columns in. Mirrors
+ * `DROPPED_COLUMNS_SETTING` of plugin-sandbox's schema emitter (query-api
+ * does not depend on the sandbox package).
+ */
+const DROPPED_COLUMNS_SETTING = "caelo.plugin_dropped_columns";
+
+/** What one provisioning did. */
+export interface ProvisionOutcome {
+  readonly schemaName: string;
+  /** `<table>.<column>` of every column dropped because the spec no longer declares it (#1146). */
+  readonly droppedColumns: readonly string[];
+}
 
 /** The slice of a drizzle transaction this module needs. */
 interface DdlTx {
@@ -63,7 +79,7 @@ export async function provisionPluginSchemaInTx(
   tx: DdlTx,
   caller: string,
   opts: { pluginId: string; sql: string },
-): Promise<void> {
+): Promise<ProvisionOutcome> {
   const schemaName = provisionedSchemaName(caller, opts.sql);
   const digest = createHash("sha256").update(opts.sql).digest("hex");
   await tx.execute(sql.raw("SELECT set_config('caelo.actor_kind', 'system', true)"));
@@ -76,12 +92,21 @@ export async function provisionPluginSchemaInTx(
     WHERE schema_name = ${schemaName} AND sql_digest = ${digest}
       AND to_regnamespace(${schemaName}) IS NOT NULL
   `)) as unknown[];
-  if (recorded.length > 0) return;
+  if (recorded.length > 0) return { schemaName, droppedColumns: [] };
   await tx.execute(sql.raw(opts.sql));
+  // #1146 — the emitted DDL drops columns the spec no longer declares and
+  // lists them in this transaction-local setting (plugin-sandbox schema.ts).
+  const dropped = (await tx.execute(
+    sql.raw(`SELECT coalesce(current_setting('${DROPPED_COLUMNS_SETTING}', true), '') AS v`),
+  )) as unknown as Array<{ v: string }>;
   await tx.execute(sql`
     INSERT INTO plugin_schema_provisions (schema_name, sql_digest)
     VALUES (${schemaName}, ${digest})
     ON CONFLICT (schema_name) DO UPDATE
       SET sql_digest = EXCLUDED.sql_digest, provisioned_at = now()
   `);
+  return {
+    schemaName,
+    droppedColumns: (dropped[0]?.v ?? "").split(",").filter((c) => c.length > 0),
+  };
 }
