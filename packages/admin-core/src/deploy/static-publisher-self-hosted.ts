@@ -18,7 +18,17 @@
  */
 
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  type FileHandle,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
 
@@ -157,13 +167,7 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     await mkdir(buildDir, { recursive: true });
     await copyTreeExcept(live.localBuildDir, buildDir, []);
     for (const [path, body] of files) {
-      const file = insideBuild(buildDir, path);
-      if (!existsSync(file)) {
-        throw new Error(
-          `self-hosted publisher: ${path} is not a file of the live build — a plugin-data build only replaces files the build has`,
-        );
-      }
-      await writeFile(file, body);
+      await overwriteExistingFile(insideBuild(buildDir, path), path, body);
     }
     const currentDir = join(dirname(dirname(live.localBuildDir)), "current");
     await mkdir(currentDir, { recursive: true });
@@ -199,6 +203,32 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     };
   },
 };
+
+/**
+ * Replaces the contents of a file the build already has. Opening with `r+`
+ * (no create flag) makes "the file exists" and "write it" one step, so a
+ * path the live build lacks fails here instead of being created between a
+ * check and the write.
+ */
+async function overwriteExistingFile(file: string, path: string, body: Buffer): Promise<void> {
+  let handle: FileHandle;
+  try {
+    handle = await open(file, "r+");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(
+        `self-hosted publisher: ${path} is not a file of the live build — a plugin-data build only replaces files the build has`,
+      );
+    }
+    throw err;
+  }
+  try {
+    await handle.truncate(0);
+    await handle.writeFile(body);
+  } finally {
+    await handle.close();
+  }
+}
 
 /** `path` under `dir`, refusing anything that would leave it. */
 function insideBuild(dir: string, path: string): string {
