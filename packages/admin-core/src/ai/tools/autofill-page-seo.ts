@@ -23,6 +23,7 @@ export const autofillPageSeoManyTool = makeBulkTool({
     "CORE RULES:",
     "- Write each from that page's actual content, 150–160 chars for a human reading a search result: read all core texts with ONE `get_page_seo({pageIds})`, never by rendering pages; or carry over the source page's description when migrating. Title 50–60 chars via `update_pages_many`.",
     "- Fill-once: the same text again = no-op (the result says so); a DIFFERENT text for a filled page returns AlreadyAutofilled with the stored text and aborts the whole batch -> leave such pages out.",
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
   ].join("\n"),
   itemInputSchema: autofillPageSeoToolInput,
   itemJsonSchema: {

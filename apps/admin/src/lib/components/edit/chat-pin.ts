@@ -37,3 +37,26 @@ export function unpinChatParam(url: URL, pinnedChatId: string | null): void {
     url.searchParams.delete("chat");
   }
 }
+
+/**
+ * #1156 — the URL a refresh of the live editor loads: the editor's chat
+ * pinned (see {@link pinChatParam}) and `?page=` following the page the
+ * editor shows. The preview can switch pages on the client (an AI tool
+ * result naming another page); the server load reads `?page=`, so without
+ * this the refreshed data (the page's SEO, its chats) stayed on the old
+ * page while the preview showed the new one.
+ *
+ * @returns the URL, whether this call pinned the chat, and whether the URL
+ *   changed at all (unchanged = a plain refresh of the current URL).
+ */
+export function editorRefreshUrl(
+  href: string,
+  chatId: string,
+  pageId: string | null,
+): { url: URL; pinned: boolean; changed: boolean } {
+  const url = new URL(href);
+  const repaged = pageId !== null && url.searchParams.get("page") !== pageId;
+  if (repaged) url.searchParams.set("page", pageId);
+  const pinned = pinChatParam(url, chatId);
+  return { url, pinned, changed: repaged || pinned };
+}

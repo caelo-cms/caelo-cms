@@ -7,6 +7,7 @@ import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
 import { applyListEntityRow, type ListSnapshotEntity } from "../../lists/store.js";
+import { applyPageSeoState } from "../../seo/page-seo.js";
 import {
   emitSnapshot,
   loadModuleState,
@@ -207,6 +208,8 @@ export const revertSiteOp = defineOperation({
         WHERE id = ${r.entity_id}::uuid
       `);
       await replacePageTerms(tx, r.entity_id, t.terms);
+      // #1156 — SEO is part of the page's state (absent on older snapshots).
+      if (t.seo) await applyPageSeoState(tx, r.entity_id, t.seo, ctx.actorId);
     }
     // Restored slugs / parents move URLs (subtrees included): recompose
     // and give every moved URL its 301.
@@ -305,7 +308,11 @@ export const revertSiteOp = defineOperation({
     const newPages = await Promise.all(
       parsedPages.map(async (r) => ({
         pageId: r.entity_id,
-        state: (await loadPageState(tx, r.entity_id)) ?? r.state,
+        state: await (async () => {
+          const loaded = await loadPageState(tx, r.entity_id);
+          // #1156 — the restored SEO is part of what this revert wrote.
+          return loaded ? { ...loaded, ...(r.state.seo ? { seo: r.state.seo } : {}) } : r.state;
+        })(),
       })),
     );
     const newLayouts = await Promise.all(

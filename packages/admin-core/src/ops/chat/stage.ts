@@ -148,7 +148,8 @@ export async function loadPendingChanges(
      AND m.entity_id::text = l.entity_id
   `)) as unknown as Row[];
 
-  // page snapshots — page metadata edits.
+  // page snapshots — page metadata edits, SEO included (#1156: marked so
+  // the operator sees an SEO change waiting for Stage).
   const pageRows = (await tx.execute(sql`
     WITH latest AS (
       SELECT DISTINCT ON (ps.page_id) ps.page_id::text AS entity_id
@@ -156,11 +157,17 @@ export async function loadPendingChanges(
       JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
       WHERE ${window}
       ORDER BY ps.page_id, ss.created_at DESC
+    ),
+    seo AS (
+      SELECT DISTINCT ps.page_id::text AS entity_id
+      FROM page_snapshots ps
+      JOIN site_snapshots ss ON ss.id = ps.site_snapshot_id
+      WHERE ${window} AND ss.op_kind LIKE 'pages_seo.%'
     )
     SELECT
       l.entity_id,
       COALESCE(p.title, p.slug) AS label,
-      p.current_path AS detail,
+      (p.current_path || CASE WHEN l.entity_id IN (SELECT entity_id FROM seo) THEN ' · SEO' ELSE '' END) AS detail,
       COALESCE(m.stage_state, 'pending') AS stage_state
     FROM latest l
     LEFT JOIN pages p ON p.id::text = l.entity_id

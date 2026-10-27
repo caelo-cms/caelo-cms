@@ -24,9 +24,10 @@
   import { ArrowLeft, GitCompareArrows, MousePointerClick } from "lucide-svelte";
   import CaeloMascot from "#lib/components/CaeloMascot.svelte";
   import { onMount } from "svelte";
-  import { pinChatParam, unpinChatParam } from "#lib/components/edit/chat-pin.js";
+  import { editorRefreshUrl, unpinChatParam } from "#lib/components/edit/chat-pin.js";
   import CrossChatBanner from "#lib/components/edit/CrossChatBanner.svelte";
   import DiffPanel from "#lib/components/edit/DiffPanel.svelte";
+  import PageSeoInfo from "#lib/components/edit/PageSeoInfo.svelte";
   import PluginPreview from "#lib/components/edit/PluginPreview.svelte";
   import { localPluginPreview, previewFromResult } from "#lib/components/edit/plugin-preview.js";
   import type { PluginPreviewSelection } from "@caelo-cms/shared";
@@ -361,14 +362,16 @@
    * #965 — re-run the server load without letting it pick another chat
    * (`chat-pin.ts` says why). The id is the chat this editor wrote into
    * `?chat=`, so a page switch drops only that, never a chat the operator
-   * picked in the overlay since.
+   * picked in the overlay since. `?page=` follows the page the preview
+   * shows (#1156): an AI tool result can switch it on the client, and the
+   * load's page-bound data (its SEO info) must follow.
    */
   let pinnedChatId: string | null = null;
   function refreshPinned(): Promise<void> {
-    const url = new URL(window.location.href);
-    if (!pinChatParam(url, data.activeChat.id)) return refreshAll();
-    pinnedChatId = data.activeChat.id;
-    return goto(url.toString(), { replace: true, reset: false, refreshAll: true });
+    const r = editorRefreshUrl(window.location.href, data.activeChat.id, activePageId || null);
+    if (!r.changed) return refreshAll();
+    if (r.pinned) pinnedChatId = data.activeChat.id;
+    return goto(r.url.toString(), { replace: true, reset: false, refreshAll: true });
   }
 
   /** The editor's URL for a page switch: without the chat this editor pinned. */
@@ -667,7 +670,14 @@
 
   <div class={pluginPreviewUrl ? "flex min-h-0 flex-1 flex-col md:flex-row" : "contents"}>
   <!-- Full-bleed iframe -->
-  <div class="min-h-0 flex-1">
+  <div class="relative min-h-0 flex-1">
+    <!-- #1156 — head values (title, description, OG) never show in the
+         preview; the corner info opens them, pending changes marked. -->
+    <!-- Only while the loaded SEO is the shown page's: a client-side page
+         switch hides it until the refresh (?page= follows) brings that page's. -->
+    {#if !pluginPreviewUrl && previewSrc && data.pageSeo && data.activePageId === activePageId}
+      <PageSeoInfo info={data.pageSeo} />
+    {/if}
     {#if pluginPreviewUrl}
       <PluginPreview url={pluginPreviewUrl} chatSessionId={data.activeChat.id} onSelection={(selection) => { previewSelection = selection; }} onContext={(context) => { previewContext = context; }} onDocument={openPluginPreview} />
     {:else if previewSrc}

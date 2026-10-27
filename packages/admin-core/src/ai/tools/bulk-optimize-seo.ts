@@ -22,6 +22,7 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
     "USE FOR: ONLY when the user explicitly asks to optimize/rewrite SEO and gives context (keywords, intent shift, branding).",
     "DO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; an exact user-dictated value -> `set_page_seo_many`.",
     "Read current descriptions + core text with ONE `get_page_seo({pageIds})` first.",
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
   ].join("\n"),
   schema: bulkOptimizeSeoToolInput,
   inputSchema: {
@@ -62,7 +63,7 @@ export const bulkOptimizeSeoTool: ToolDefinitionWithHandler<
     }
     return {
       ok: true,
-      content: `SEO optimized on ${(r.value as { updated: number }).updated} page(s)`,
+      content: `SEO optimized on ${(r.value as { updated: number }).updated} page(s) in this chat's draft — live after Stage + Publish live`,
     };
   },
 };

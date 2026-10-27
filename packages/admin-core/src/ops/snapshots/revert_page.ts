@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../../audit.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
+import { applyPageSeoState } from "../../seo/page-seo.js";
 import {
   emitSnapshot,
   loadPageLayoutState,
@@ -86,6 +87,8 @@ export const revertPageOp = defineOperation({
       `);
       // Epic #1107 — the page's terms are part of its state.
       await replacePageTerms(tx, input.pageId, target.terms);
+      // #1156 — SEO is part of the page's state (absent on older snapshots).
+      if (target.seo) await applyPageSeoState(tx, input.pageId, target.seo, ctx.actorId);
       // A restored slug / parent moves the page's URL and its subtree's.
       const recomputed = await recomputeCurrentPathsWithMoves(
         tx,
@@ -184,7 +187,13 @@ export const revertPageOp = defineOperation({
     });
 
     // Emit fresh snapshot capturing whichever side(s) were restored.
-    const newPageState = await loadPageState(tx, input.pageId);
+    const loadedPageState = await loadPageState(tx, input.pageId);
+    // #1156 — the restored SEO is part of what this revert wrote.
+    const restoredSeo = pageRows[0]
+      ? parseAndUpgradePageState(parseSnapshotState(pageRows[0].state)).seo
+      : undefined;
+    const newPageState =
+      loadedPageState && restoredSeo ? { ...loadedPageState, seo: restoredSeo } : loadedPageState;
     const newLayoutState = layoutRows[0] ? await loadPageLayoutState(tx, input.pageId) : null;
     const entities: import("../../snapshots/index.js").SnapshotEntity[] = [];
     if (newPageState) entities.push({ kind: "page", entityId: input.pageId, state: newPageState });
