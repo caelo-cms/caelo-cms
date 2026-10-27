@@ -47,6 +47,7 @@ const UPLOAD = "https://upload.test/";
 const SITE = "test-site";
 const SITE_BASE_URL = "https://www.example.com";
 const DAY_MS = 24 * 60 * 60 * 1000;
+const LIVE_ORIGIN = `https://${SITE}.web.app/`;
 
 interface HeaderEntry {
   glob?: string;
@@ -73,6 +74,8 @@ class FakeFirebase {
   deletedChannels: string[] = [];
   /** When each channel expires, as the live API keeps it (#969). */
   lifetimes = new FakeChannelLifetimes();
+  /** Live-channel paths that answer 503, as a transient Hosting failure would (#1155). */
+  failLiveReads = new Set<string>();
   /** Channels whose DELETE answers 503, as a transient API failure would. */
   failDelete = new Set<string>();
   private seq = 0;
@@ -110,6 +113,16 @@ class FakeFirebase {
     const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200 });
     const parsed = init?.body && typeof init.body === "string" ? JSON.parse(init.body) : {};
 
+    // #1155 — the live channel serves the live version's files.
+    if (url.startsWith(LIVE_ORIGIN)) {
+      const key = `/${url.slice(LIVE_ORIGIN.length)}`;
+      if (this.failLiveReads.has(key)) return new Response("", { status: 503 });
+      const name = this.live[0];
+      const v = name ? this.versions.get(name.split("/").pop() ?? "") : undefined;
+      const hash = v?.files[key];
+      const gz = hash ? this.blobs.get(hash) : undefined;
+      return gz ? new Response(gunzipSync(gz)) : new Response("", { status: 404 });
+    }
     if (url.startsWith(UPLOAD)) {
       const sha = url.split("/").pop() ?? "";
       this.blobs.set(sha, Buffer.from(init?.body as Uint8Array));
@@ -180,6 +193,9 @@ class FakeFirebase {
       this.lifetimes.forget(channel[1]!);
       return new Response("", { status: 200 });
     }
+    if (method === "GET" && channel?.[1] === "live") {
+      return json({ name: `sites/${SITE}/channels/live`, url: LIVE_ORIGIN.slice(0, -1) });
+    }
     if (method === "GET" && channel) {
       if (!this.channels.has(channel[1]!)) {
         return new Response(JSON.stringify({ error: "not found" }), { status: 404 });
@@ -203,6 +219,9 @@ class FakeFirebase {
         name: `sites/${SITE}/channels/${channelId}`,
         url: `https://${SITE}--${channelId}.web.app`,
       });
+    }
+    if (method === "GET" && channelReleases?.[1] === "live") {
+      return json({ releases: this.live.map((name) => ({ name: "r", version: { name } })) });
     }
     if (channelReleases) {
       const m = channelReleases;
@@ -711,5 +730,90 @@ describe("withSecurityHeaders", () => {
     // Idempotent: a config that already has them is left as it is.
     const once = withSecurityHeaders(config);
     expect(withSecurityHeaders(once)).toEqual(once);
+  });
+});
+
+describe("firebaseHostingPublisher — plugin-data release (#1155)", () => {
+  async function publishLive() {
+    const { firebaseHostingPublisher } = await import("../static-publisher-firebase.js");
+    await firebaseHostingPublisher.publishStaging({ buildDir, runId: "run-1", target: STAGING });
+    const promoted = await firebaseHostingPublisher.promoteToProduction({
+      sourceRunId: "run-1",
+      sourceBuildDir: buildDir,
+      fromTarget: STAGING,
+      toTarget: PRODUCTION,
+      siteBaseUrl: SITE_BASE_URL,
+    });
+    const live = { runId: "p1", buildId: "run-1", location: promoted.location, localBuildDir: "" };
+    return { publisher: firebaseHostingPublisher, live };
+  }
+
+  it("reads the live files and releases the live version with only the given files replaced", async () => {
+    const { publisher, live } = await publishLive();
+    const before = fake.liveVersion();
+    const read = await publisher.readLiveFiles({
+      target: PRODUCTION,
+      live,
+      paths: ["about/index.html", "missing.html"],
+    });
+    expect(read.get("about/index.html")?.toString("utf8")).toBe(PAGE_HTML);
+    expect(read.get("missing.html")).toBeNull();
+
+    const baked = "<html><body>about + a new comment</body></html>";
+    const summary = await publisher.publishPluginData({
+      target: PRODUCTION,
+      live,
+      runId: "pd-1",
+      files: new Map([["about/index.html", Buffer.from(baked)]]),
+    });
+    const after = fake.liveVersion();
+    expect(summary.location).toBe(fake.live[0]!);
+    expect(summary.destinationBuildId).toBe("pd-1");
+    expect(summary.uploadedCount).toBe(1);
+    expect(after.status).toBe("FINALIZED");
+    // Config verbatim: headers, rewrites, redirects.
+    expect(after.config).toEqual(before.config);
+    // Every file by the same hash, except the replaced one.
+    const { "/about/index.html": changed, ...rest } = after.files;
+    const { "/about/index.html": was, ...restBefore } = before.files;
+    expect(rest).toEqual(restBefore);
+    expect(changed).not.toBe(was);
+    expect(fake.fileBody(after, "/about/index.html")).toBe(baked);
+  });
+
+  it("refuses a file the live version does not have", async () => {
+    const { publisher, live } = await publishLive();
+    await expect(
+      publisher.publishPluginData({
+        target: PRODUCTION,
+        live,
+        runId: "pd-1",
+        files: new Map([["new-page/index.html", Buffer.from("x")]]),
+      }),
+    ).rejects.toThrow(/not a file of the live version/);
+  });
+
+  it("refuses when the live channel serves a release no run recorded", async () => {
+    const { publisher, live } = await publishLive();
+    fake.live.unshift(fake.versionName("released-elsewhere"));
+    await expect(
+      publisher.publishPluginData({
+        target: PRODUCTION,
+        live,
+        runId: "pd-1",
+        files: new Map([["about/index.html", Buffer.from("x")]]),
+      }),
+    ).rejects.toThrow(/released outside Caelo/);
+    await expect(
+      publisher.readLiveFiles({ target: PRODUCTION, live, paths: ["about/index.html"] }),
+    ).rejects.toThrow(/released outside Caelo/);
+  });
+
+  it("a transient read failure throws instead of reading as an absent page", async () => {
+    const { publisher, live } = await publishLive();
+    fake.failLiveReads.add("/about/index.html");
+    await expect(
+      publisher.readLiveFiles({ target: PRODUCTION, live, paths: ["about/index.html"] }),
+    ).rejects.toThrow(/HTTP 503/);
   });
 });

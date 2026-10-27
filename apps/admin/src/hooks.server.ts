@@ -47,6 +47,7 @@ import {
   startBugForwardingWorker,
   startChatImageGcWorker,
   startDomainEventGcWorker,
+  startPluginDataBuildWorker,
   startProposalGcWorker,
   startPublicProjectionPublisher,
   startQualityAuditWorker,
@@ -439,7 +440,10 @@ function bootstrapBugForwarding(): void {
 // Maintenance loops that lived in the redeploy orchestrator until the
 // automatic redeploy was removed (#1154): the hourly login rate-limit GC,
 // the six-hourly staging-preview keep-alive (#969) and the site-import
-// crawl worker (P14). Nothing here builds or publishes production.
+// crawl worker (P14). None of them builds or publishes production. The
+// plugin-data tick (#1155) republishes the LIVE build with fresher plugin
+// data in plugin-owned regions only — nothing a human did not publish; its
+// cadence moves to the scheduler tick with #1140.
 let maintenanceBootstrapped = false;
 function bootstrapMaintenanceWorkers(): void {
   if (maintenanceBootstrapped) return;
@@ -450,6 +454,7 @@ function bootstrapMaintenanceWorkers(): void {
   // issue #198 — hand the importer worker the media storage so crawl
   // screenshots persist (review side-by-sides + parity references).
   startSiteImportWorker({ adapter, registry, screenshotStorage: getMediaStorage() });
+  startPluginDataBuildWorker({ adapter, registry });
 }
 
 // P21 ship 5 — release-check sidecar. Polls GitHub Releases once

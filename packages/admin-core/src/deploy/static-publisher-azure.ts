@@ -37,4 +37,10 @@ export const azureStaticPublisher: StaticPublisher = {
   async rollback() {
     throw new Error(NOT_IMPLEMENTED);
   },
+  async readLiveFiles() {
+    throw new Error(NOT_IMPLEMENTED);
+  },
+  async publishPluginData() {
+    throw new Error(NOT_IMPLEMENTED);
+  },
 };
