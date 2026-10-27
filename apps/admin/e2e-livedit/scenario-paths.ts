@@ -141,6 +141,9 @@ export const SCENARIOS: readonly ScenarioCoverage[] = [
       `${A}/ops/stage_readiness.ts`,
       `${A}/ops/site_defaults*.ts`,
       `${A}/ops/seo*.ts`,
+      // Page SEO rides the chat's draft through Stage (#1156): autofill before
+      // the first Stage, the staged read, the publish.
+      `${A}/seo/**`,
       `${A}/ops/skills/**`,
       `${A}/ops/subagents/**`,
       `${A}/ops/ai/**`,
@@ -397,6 +400,9 @@ export const NO_REAL_AI_COVERAGE: readonly string[] = [
   // No scenario reaches these ops: redirects, provider setup, theme import,
   // revert proposals, proposal cancel, background GC loops.
   `${A}/ops/redirects.ts`,
+  // Saved redirects sync to the hosting provider on save (#1157).
+  `${A}/ops/redirect_sync.ts`,
+  `${A}/redirect-sync-worker.ts`,
   `${SHARED}/redirect-plan.ts`,
   `${SHARED}/redirect-target.ts`,
   `${A}/ops/ai_providers_pending.ts`,
