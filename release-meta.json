@@ -1,0 +1,9 @@
+{
+  "version": "0.11.1",
+  "security": false,
+  "advisories": [],
+  "acknowledgeContractMigrations": true,
+  "acknowledgeInfraNeutral": true,
+  "lastContractVersion": "0.11.1",
+  "ownerAction": "Nothing to do before installing; afterwards the live site is no longer rebuilt automatically (the auto-redeploy setting is gone), so changes, including approved comments and ratings, reach production only when someone clicks Publish live."
+}

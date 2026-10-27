@@ -1,5 +1,5 @@
 {
-  "version": "0.0.0",
+  "version": "0.11.1",
   "tools": [
     {
       "name": "read_content",
@@ -4665,7 +4665,7 @@
               "type": "string",
               "maxLength": 120
             },
-            "description": "AI tool names (e.g. `update_modules_many`, `list_pages`) the workflow calls -> list every one. PRELOAD HINTS (loaded up front, no tool-search round-trip), NOT a restriction. Query-API op names (`pages.list`) are rejected."
+            "description": "AI tool names (e.g. `update_modules_many`, `list_pages`) the workflow calls -> list every one. load_skill names them for loading; NOT a restriction. Query-API op names (`pages.list`) are rejected."
           },
           "hints": {
             "type": "object",
