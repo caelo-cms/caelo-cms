@@ -640,6 +640,7 @@ describe("#397 — context-aware translation", () => {
     });
     aiScript.push(() => ({
       title: "Preise",
+      shortTitle: "Preise",
       slots: [
         { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo Welt</p>" }) },
         { slot: "s1", values: fields({ heading: "Jetzt testen", submit_label: "Demo anfragen" }) },
