@@ -2,7 +2,7 @@
 
 /**
  * #399 — the plugin-shipped skills (translate-page, add-language,
- * localize-slugs): live the moment the plugin is, bodies
+ * localize-slugs, international-qa): live the moment the plugin is, bodies
  * carry the load-bearing behavioural contracts, and a re-boot never
  * demotes a skill the Owner activated.
  */
@@ -19,7 +19,7 @@ const PUBLIC_URL = process.env.PUBLIC_ADMIN_DATABASE_URL;
 if (!ADMIN_URL || !PUBLIC_URL) throw new Error("DB URLs required");
 
 const SYSTEM_ACTOR_ID = "00000000-0000-0000-0000-00000000ffff";
-const SKILL_SLUGS = ["translate-page", "add-language", "localize-slugs"];
+const SKILL_SLUGS = ["translate-page", "add-language", "localize-slugs", "international-qa"];
 
 let adapter: DatabaseAdapter;
 let registry: OperationRegistry;
@@ -92,7 +92,7 @@ async function loadSkillRows(): Promise<Map<string, SkillRow>> {
 }
 
 describe("#399 — plugin-shipped i18n skills", () => {
-  it("registers all three ACTIVE, attributed to the plugin, with the load-bearing contracts in the bodies", async () => {
+  it("registers all of them ACTIVE, attributed to the plugin, with the load-bearing contracts in the bodies", async () => {
     const skills = await loadSkillRows();
     expect([...skills.keys()].sort()).toEqual([...SKILL_SLUGS].sort());
     for (const slug of SKILL_SLUGS) {
@@ -120,6 +120,13 @@ describe("#399 — plugin-shipped i18n skills", () => {
     expect(addLang?.body).toContain("TWO-APPROVAL");
     expect(addLang?.body).toContain("propose_url_migration");
     expect(addLang?.body).toContain("clean 404, never a fallback");
+
+    const qa = skills.get("international-qa");
+    // The audit's fix contract: the switch comes from language_links, and
+    // nothing short of a clean report is the stopping point.
+    expect(qa?.body).toContain("{{#language_links}}");
+    expect(qa?.body).toContain("never 'good enough'");
+    expect(qa?.body).toContain("fork_placement_content");
 
     const slugs = skills.get("localize-slugs");
     expect(slugs?.body).toContain("NEVER derived from matching slugs");

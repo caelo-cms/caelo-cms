@@ -56,9 +56,6 @@ interface BudgetRow {
 }
 interface GatewayRow {
   gateway_max_body_bytes: number;
-  auto_redeploy_enabled: boolean;
-  auto_redeploy_debounce_ms: number;
-  auto_redeploy_op_kinds: string[];
   captcha_provider: string;
   captcha_pow_target_prefix: string;
 }
@@ -107,8 +104,7 @@ beforeAll(async () => {
     savedBudgets =
       (await tx`SELECT scope, operation_type, cap_microcents::text AS cap_microcents, warn_at_pct::text AS warn_at_pct FROM ai_budgets`) as BudgetRow[];
     const g = (await tx`
-      SELECT gateway_max_body_bytes, auto_redeploy_enabled, auto_redeploy_debounce_ms,
-             auto_redeploy_op_kinds, captcha_provider, captcha_pow_target_prefix
+      SELECT gateway_max_body_bytes, captcha_provider, captcha_pow_target_prefix
       FROM site_settings WHERE id = 1`) as GatewayRow[];
     savedGateway = g[0];
   });
@@ -130,9 +126,6 @@ afterAll(async () => {
     if (g) {
       await tx`UPDATE site_settings SET
         gateway_max_body_bytes = ${g.gateway_max_body_bytes},
-        auto_redeploy_enabled = ${g.auto_redeploy_enabled},
-        auto_redeploy_debounce_ms = ${g.auto_redeploy_debounce_ms},
-        auto_redeploy_op_kinds = ${tx.array(g.auto_redeploy_op_kinds ?? [], "text")},
         captcha_provider = ${g.captcha_provider},
         captcha_pow_target_prefix = ${g.captcha_pow_target_prefix}
         WHERE id = 1`;
@@ -424,15 +417,22 @@ describe("owner_settings — AI pricing", () => {
 });
 
 describe("owner_settings — gateway settings", () => {
-  it("refuses deploy.trigger and no-op patches at propose time", async () => {
-    const loop = await execute(
-      registry,
-      adapter,
-      AI,
-      "owner_settings.propose_set_gateway_settings",
-      { autoRedeployOpKinds: ["deploy.trigger"] },
-    );
-    expect(loop.ok).toBe(false);
+  it("refuses the removed auto-redeploy fields and no-op patches at propose time", async () => {
+    // #1154 — the automatic redeploy is gone; its knobs are not settings any more.
+    for (const field of [
+      { autoRedeployEnabled: true },
+      { autoRedeployDebounceMs: 45_000 },
+      { autoRedeployOpKinds: ["pages.update"] },
+    ]) {
+      const removed = await execute(
+        registry,
+        adapter,
+        AI,
+        "owner_settings.propose_set_gateway_settings",
+        field,
+      );
+      expect(removed.ok).toBe(false);
+    }
     const current = value<{ settings: { maxBodyBytes: number } }>(
       await execute(registry, adapter, OWNER, "gateway.get_settings", {}),
     );
@@ -451,6 +451,7 @@ describe("owner_settings — gateway settings", () => {
     const before = value<{ settings: Record<string, unknown> }>(
       await execute(registry, adapter, OWNER, "gateway.get_settings", {}),
     ).settings;
+    expect(Object.keys(before).filter((k) => k.startsWith("autoRedeploy"))).toEqual([]);
     const newCaptcha = before.captchaProvider === "off" ? "pow" : "off";
     const proposed = value<{ proposalId: string; preview: { changes: Record<string, unknown> } }>(
       await execute(registry, adapter, AI, "owner_settings.propose_set_gateway_settings", {
@@ -485,7 +486,7 @@ describe("owner_settings — queue plumbing", () => {
   it("shows in the cross-domain inbox; Owner reject + AI cancel both close it", async () => {
     const a = value<{ proposalId: string }>(
       await execute(registry, adapter, AI, "owner_settings.propose_set_gateway_settings", {
-        autoRedeployDebounceMs: 45_000,
+        maxBodyBytes: 45_000,
       }),
     );
     const inbox = value<{
@@ -507,7 +508,7 @@ describe("owner_settings — queue plumbing", () => {
 
     const b = value<{ proposalId: string }>(
       await execute(registry, adapter, AI, "owner_settings.propose_set_gateway_settings", {
-        autoRedeployDebounceMs: 46_000,
+        maxBodyBytes: 46_000,
       }),
     );
     const cancelled = value<{ domain: string }>(
@@ -582,27 +583,5 @@ describe("Owner panel writes (regressions fixed alongside the gate)", () => {
       warnAtPct: 0.8,
     });
     expect((r as { error?: { kind: string } }).error?.kind).toBe("ActorScopeRejected");
-  });
-
-  it("gateway.set_settings saves a non-empty autoRedeployOpKinds list", async () => {
-    // The text[] column used to receive a drizzle-expanded row constructor
-    // and Postgres rejected every save with a non-empty list.
-    const {
-      cookieSecretSet: _c,
-      updatedAt: _u,
-      ...full
-    } = value<{
-      settings: Record<string, unknown>;
-    }>(await execute(registry, adapter, OWNER, "gateway.get_settings", {})).settings;
-    value(
-      await execute(registry, adapter, OWNER, "gateway.set_settings", {
-        ...full,
-        autoRedeployOpKinds: ["pages.update", "media.publish"],
-      }),
-    );
-    const after = value<{ settings: { autoRedeployOpKinds: string[] } }>(
-      await execute(registry, adapter, OWNER, "gateway.get_settings", {}),
-    ).settings;
-    expect(after.autoRedeployOpKinds).toEqual(["pages.update", "media.publish"]);
   });
 });

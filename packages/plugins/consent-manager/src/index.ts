@@ -315,10 +315,18 @@ const DEFAULT_PLACEHOLDER_SLUG = "consent-placeholder";
  * Write the create-time defaults — the one settings row and the default
  * categories — when they are missing. Runs from `onActivate`, on main:
  * render and visitor calls cannot write private storage, so the read
- * helpers below never seed (CMS_REQUIREMENTS §14.7).
+ * helpers below never seed (CMS_REQUIREMENTS §14.7). The host serializes
+ * activations (#1144), so the check-then-insert below cannot race; an
+ * install seeded twice before that collapses here to one settings row and
+ * one category per key (the oldest of each), so its next build passes the
+ * duplicate-id check of list sources.
  */
 async function seedDefaults(q: PluginAdminQuery): Promise<void> {
-  const settings = await q.list("settings", { limit: 1 });
+  const settings = await q.list<string, { id: string }>("settings", {
+    orderBy: "created_at",
+    orderDir: "asc",
+    limit: 1000,
+  });
   if (settings.length === 0) {
     await q.insert("settings", {
       policy_version: 1,
@@ -326,7 +334,13 @@ async function seedDefaults(q: PluginAdminQuery): Promise<void> {
       placeholder_module_slug: DEFAULT_PLACEHOLDER_SLUG,
     });
   }
-  const categories = await q.list("categories", { limit: 1 });
+  for (const extra of settings.slice(1)) await q.delete("settings", extra.id);
+
+  const categories = await q.list<string, { id: string; key: string }>("categories", {
+    orderBy: "created_at",
+    orderDir: "asc",
+    limit: 1000,
+  });
   if (categories.length === 0) {
     for (const c of DEFAULT_CATEGORIES) {
       await q.insert("categories", {
@@ -337,6 +351,12 @@ async function seedDefaults(q: PluginAdminQuery): Promise<void> {
         position: c.position,
       });
     }
+    return;
+  }
+  const seen = new Set<string>();
+  for (const c of categories) {
+    if (seen.has(c.key)) await q.delete("categories", c.id);
+    else seen.add(c.key);
   }
 }
 

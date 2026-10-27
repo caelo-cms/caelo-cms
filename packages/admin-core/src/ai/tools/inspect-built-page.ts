@@ -106,6 +106,8 @@ export const inspectBuiltPageTool: ToolDefinitionWithHandler<InspectBuiltPageInp
     if (input.target === "staging" && !runId) {
       const runsR = await execute(toolCtx.registry, toolCtx.adapter, ctx, "deploy.list_runs", {
         limit: 50,
+        // #1155 — plugin-data builds must not push Stages out of the window.
+        buildKind: "site",
       });
       if (runsR.ok) {
         const runs = (runsR.value as { runs: { id: string; targetName: string; status: string }[] })

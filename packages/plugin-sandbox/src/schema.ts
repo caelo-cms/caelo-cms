@@ -94,6 +94,7 @@ function emitCreateTable(
         ([name, spec]) =>
           `ALTER TABLE ${fqTable} ADD COLUMN IF NOT EXISTS ${emitColumnDef(name, spec)};`,
       ),
+    dropUndeclaredColumns(schemaName, tableName, Object.keys(columns)),
     `ALTER TABLE ${fqTable} ENABLE ROW LEVEL SECURITY;`,
     `ALTER TABLE ${fqTable} FORCE  ROW LEVEL SECURITY;`,
     `DROP POLICY IF EXISTS ${quoteIdent(policyName)} ON ${fqTable};`,
@@ -102,6 +103,49 @@ function emitCreateTable(
     `  WITH CHECK (current_setting('caelo.plugin_id', true) = '${pluginId}');`,
     grantStatement("cms_public", "SELECT, INSERT, UPDATE, DELETE", fqTable, "public_role"),
     grantStatement("cms_public", "SELECT, INSERT, UPDATE, DELETE", fqTable, "admin_role"),
+  ].join("\n");
+}
+
+/**
+ * The GUC the drop blocks append `<table>.<column>` entries to, so the
+ * provisioning transaction can audit what it dropped
+ * (`provisionPluginSchemaInTx`). Transaction-local.
+ */
+export const DROPPED_COLUMNS_SETTING = "caelo.plugin_dropped_columns";
+
+/**
+ * #1146 — drop the columns of a plugin table its spec no longer declares.
+ *
+ * Provisioning only ever added columns, so a column a new plugin version
+ * removed stayed on every install with its old values: three columns that
+ * held visitor ids outlived the purpose they were collected for (#1145).
+ * Pre-1.0, destructive schema changes are allowed (CLAUDE.md §2). The
+ * row id and every host-owned `caelo_` column are never touched; each
+ * dropped column is recorded in {@link DROPPED_COLUMNS_SETTING} for the
+ * audit row.
+ */
+function dropUndeclaredColumns(schemaName: string, tableName: string, declared: string[]): string {
+  const keep = [...new Set(["id", ...declared])].map((c) => `'${quoteIdent(c).slice(1, -1)}'`);
+  const schema = `'${quoteIdent(schemaName).slice(1, -1)}'`;
+  const table = `'${quoteIdent(tableName).slice(1, -1)}'`;
+  return [
+    "DO $caelo_drop$",
+    "DECLARE",
+    "  col text;",
+    `  dropped text := coalesce(current_setting('${DROPPED_COLUMNS_SETTING}', true), '');`,
+    "BEGIN",
+    "  FOR col IN",
+    "    SELECT column_name FROM information_schema.columns",
+    `     WHERE table_schema = ${schema} AND table_name = ${table}`,
+    "       AND column_name NOT LIKE 'caelo\\_%'",
+    `       AND column_name <> ALL (ARRAY[${keep.join(", ")}]::text[])`,
+    "  LOOP",
+    `    EXECUTE format('ALTER TABLE %I.%I DROP COLUMN %I', ${schema}, ${table}, col);`,
+    `    dropped := dropped || ${table} || '.' || col || ',';`,
+    "  END LOOP;",
+    `  PERFORM set_config('${DROPPED_COLUMNS_SETTING}', dropped, true);`,
+    "END",
+    "$caelo_drop$;",
   ].join("\n");
 }
 
@@ -220,8 +264,8 @@ export const ADMIN_REF_ALLOWLIST: ReadonlySet<string> = new Set([
  *   - `ref:<table>[:cascade]` columns become uuid FKs onto allowlisted
  *     core tables;
  *   - columns are additionally emitted as `ADD COLUMN IF NOT EXISTS`
- *     so a version bump with NEW columns evolves an existing table
- *     (additive-only pre-1.0; destructive change = drop + recreate).
+ *     so a version bump with NEW columns evolves an existing table, and
+ *     columns it no longer declares are dropped (#1146; both emitters).
  * Same per-plugin RLS shape: FORCE + policy on caelo.plugin_id.
  */
 /** Host-owned columns every private-zone plugin table carries. */
@@ -296,6 +340,7 @@ export function adminSchemaFromSpec(opts: {
         // Additive evolution: no-ops on a fresh table, adds newly
         // declared columns on an existing one.
         ...evolveStmts,
+        dropUndeclaredColumns(schemaName, tableName, Object.keys(columns)),
         `ALTER TABLE ${fqTable} ENABLE ROW LEVEL SECURITY;`,
         `ALTER TABLE ${fqTable} FORCE  ROW LEVEL SECURITY;`,
         `DROP POLICY IF EXISTS ${quoteIdent(policyName)} ON ${fqTable};`,

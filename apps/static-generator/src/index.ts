@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
+// #1155 — the marked plugin bake regions a plugin-data build rewrites.
+export {
+  type BakeRegion,
+  bakeRegion,
+  findBakeRegions,
+  neutralizeBakeMarkers,
+  replaceBakeRegions,
+} from "./bake-regions.js";
 // issue #150 — theme web-font resolver (see fonts-resolver.ts header
 // for why it lives here). admin-core re-exports this surface.
 // #592 — the build's content-variants pass (resolution + loud refusal).

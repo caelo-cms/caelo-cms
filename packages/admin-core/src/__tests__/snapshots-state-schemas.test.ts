@@ -132,11 +132,29 @@ describe("parseAndUpgradeTemplateState", () => {
 });
 
 describe("parseAndUpgradePageState", () => {
+  it("refuses a snapshot without a short title (0358 backfilled every one)", () => {
+    expect(() =>
+      parseAndUpgradePageState({
+        schemaVersion: 1,
+        slug: "home",
+        title: "Home",
+        templateId: "11111111-1111-4111-8111-111111111111",
+        status: "draft",
+        version: 0,
+        deletedAt: null,
+        pageTypeId: "22222222-2222-4222-8222-222222222222",
+        properties: {},
+        terms: [],
+      }),
+    ).toThrow(SnapshotSchemaError);
+  });
+
   it("accepts a v1 payload", () => {
     const r = parseAndUpgradePageState({
       schemaVersion: 1,
       slug: "home",
       title: "Home",
+      shortTitle: "Home",
       templateId: "11111111-1111-4111-8111-111111111111",
       status: "draft",
       version: 0,
@@ -169,6 +187,7 @@ describe("parseAndUpgradePageState", () => {
         schemaVersion: 1,
         slug: "home",
         title: "Home",
+        shortTitle: "Home",
         templateId: "not-a-uuid",
         status: "draft",
         version: 0,

@@ -19,6 +19,8 @@ export interface DeployRunSummary {
   status: string;
   finishedAt: string | null;
   buildId: string | null;
+  /** #1155 — `plugin_data` runs republish the live build with fresher plugin data only. */
+  buildKind: "site" | "plugin_data";
 }
 
 /** One finished build: when it finished. */
@@ -52,8 +54,16 @@ export function siteStateFrom(
   pages: ReadonlyArray<{ status: string }>,
   runs: ReadonlyArray<DeployRunSummary>,
 ): SiteState {
+  // A plugin-data build (#1155) changes no content: what is "live" for
+  // this summary is the build a human published, which it built on.
   const newest = (targetName: string): DeployRunSummary | undefined =>
-    runs.find((r) => r.targetName === targetName && r.status === "succeeded" && r.finishedAt);
+    runs.find(
+      (r) =>
+        r.targetName === targetName &&
+        r.status === "succeeded" &&
+        r.finishedAt &&
+        r.buildKind !== "plugin_data",
+    );
   const staged = newest("staging");
   const production = newest("production");
   const asBuild = (r: DeployRunSummary | undefined): FinishedBuild | null =>

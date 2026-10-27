@@ -620,15 +620,137 @@ export const pluginAuditFinding = z
 
 export type PluginAuditFinding = z.infer<typeof pluginAuditFinding>;
 
-/** What an `auditFindingsOperation` returns. */
+/** Most page ids in one requested fact batch (see {@link pluginAuditFindings}). */
+export const MAX_AUDIT_FACT_BATCH_PAGES = 200;
+
+/**
+ * What an `auditFindingsOperation` returns.
+ *
+ * `factBatches` (answer to the first call only): the pages whose
+ * {@link PluginAuditPageFacts} the plugin wants to read, grouped as it
+ * needs them side by side (a page and its language versions in one
+ * batch). Core then calls the operation once per batch with `facts`, and
+ * files the findings of every call. A plugin that needs no facts omits it.
+ */
 export const pluginAuditFindings = z
-  .object({ findings: z.array(pluginAuditFinding).max(499) })
+  .object({
+    findings: z.array(pluginAuditFinding).max(499),
+    factBatches: z
+      .array(z.array(z.string().uuid()).min(1).max(MAX_AUDIT_FACT_BATCH_PAGES))
+      .max(5_000)
+      .optional(),
+  })
   .strict();
+
+/** A URL as a staged page carries it, resolved against the site. */
+export interface PluginAuditUrl {
+  /** The attribute value as the page carries it (entities decoded). */
+  readonly href: string;
+  /**
+   * The site path it names (`/de/preise`, no query, no trailing slash
+   * except the root) when it is a page URL on one of the site's own
+   * hosts; null for external URLs, `mailto:`, fragments and the like.
+   */
+  readonly path: string | null;
+}
+
+/**
+ * What core read from one staged page — the rendered HTML as Publish
+ * live ships it — for plugins that check the build. Core extracts it
+ * (the plugin sandbox has no HTML parser), so every plugin reads the
+ * same facts the same way. Long pages are cut: `truncated` says so.
+ */
+export interface PluginAuditPageFacts {
+  readonly pageId: string;
+  readonly path: string;
+  /** `<html lang>`, or null when absent. */
+  readonly lang: string | null;
+  readonly title: string | null;
+  readonly metaDescription: string | null;
+  /** `<link rel="canonical">`. */
+  readonly canonical: PluginAuditUrl | null;
+  /** `<meta name="robots">` content, lower-case. */
+  readonly robots: string | null;
+  /** `og:locale`, and every `og:locale:alternate`. */
+  readonly ogLocale: string | null;
+  readonly ogLocaleAlternates: readonly string[];
+  /** `<link rel="alternate" hreflang>` in the head, in document order. */
+  readonly alternates: readonly (PluginAuditUrl & { readonly hreflang: string })[];
+  /**
+   * The page's `<xhtml:link>` alternates in the staged `sitemap.xml`;
+   * `null` when the sitemap has no `<url>` for the page, `"no-sitemap"`
+   * when the build ships none.
+   */
+  readonly sitemapAlternates:
+    | readonly (PluginAuditUrl & { readonly hreflang: string })[]
+    | null
+    | "no-sitemap";
+  /** Every `<a href>` of the body. */
+  readonly links: readonly (PluginAuditUrl & {
+    readonly hreflang: string | null;
+    /** The visible link text (or its `aria-label` / `title`), whitespace-collapsed. */
+    readonly text: string;
+    /** The module root it sits in (`data-caelo-module-id`), if any. */
+    readonly moduleId: string | null;
+    /** The list entry it sits in (`data-caelo-list-item`), if any. */
+    readonly listItem: string | null;
+    /** Baked plugin output it sits in (`data-caelo-plugin`), if any. */
+    readonly pluginSlug: string | null;
+  })[];
+  /**
+   * The visible text of the body, one entry per text run (and per
+   * visible attribute: `alt`, `placeholder`, `aria-label`, `title`, the
+   * `value` of a button input), whitespace-collapsed, scripts and styles
+   * left out.
+   */
+  readonly texts: readonly {
+    readonly text: string;
+    readonly moduleId: string | null;
+    readonly listItem: string | null;
+    readonly pluginSlug: string | null;
+    /** `text` for a text run, else the attribute (`alt`, `placeholder`, …). */
+    readonly source: string;
+  }[];
+  readonly truncated: boolean;
+}
 
 /** What an `auditFindingsOperation` is called with: the staged build's pages. */
 export interface PluginAuditFindingsArgs {
   readonly pages: readonly { readonly pageId: string; readonly path: string }[];
+  /**
+   * Present on the calls that answer a `factBatches` request: the facts
+   * of one batch's pages, in the order requested.
+   */
+  readonly facts?: readonly PluginAuditPageFacts[];
 }
+
+/**
+ * One write a plugin's `writeHintsOperation` is shown: module markup the
+ * AI wrote (with the module's fields), or content values it stored.
+ */
+export type PluginWrite =
+  | {
+      readonly kind: "module";
+      readonly moduleId: string | null;
+      readonly html: string;
+      /** The module's fields as stored (name, kind, default, …). */
+      readonly fields: readonly Readonly<Record<string, unknown>>[];
+    }
+  | {
+      readonly kind: "values";
+      readonly moduleId: string | null;
+      readonly values: Readonly<Record<string, unknown>>;
+    };
+
+/** What a `writeHintsOperation` is called with. */
+export interface PluginWriteHintsArgs {
+  readonly writes: readonly PluginWrite[];
+}
+
+/** What a `writeHintsOperation` returns: sentences for the AI, at most five. */
+export const pluginWriteHints = z
+  .object({ hints: z.array(z.string().min(1).max(600)).max(5) })
+  .strict();
 
 /** A plugin slug as a reference to another plugin (same shape as `pluginManifest.slug`). */
 const pluginSlugRef = z
@@ -716,6 +838,41 @@ export interface DeclaredConsentPurpose {
   }>;
 }
 
+/**
+ * #1155 — where a baked-data trigger finds the pages it changed: a key of
+ * the operation's arguments or of its result, holding one page id or a
+ * list of them.
+ */
+export const bakedDataPageIds = z
+  .object({
+    from: z.enum(["args", "result"]),
+    key: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,63}$/),
+  })
+  .strict();
+
+/** One operation whose success changes what `staticRender` bakes. */
+export const bakedDataTrigger = z
+  .object({
+    operation: z.string().min(1).max(120),
+    pageIds: bakedDataPageIds,
+  })
+  .strict();
+
+/**
+ * #1155 — see `PluginDefinition.bakedData`. Data only, no capability: it
+ * asks the host to refresh this plugin's own bakes, nothing else.
+ */
+export const pluginBakedData = z
+  .object({
+    /** What is baked, in a sentence the Owner and the AI read. */
+    description: z.string().trim().min(1).max(300),
+    triggers: z.array(bakedDataTrigger).min(1).max(20),
+  })
+  .strict();
+
+/** A plugin's baked-data declaration (`PluginDefinition.bakedData`). */
+export type PluginBakedData = z.infer<typeof pluginBakedData>;
+
 export const pluginManifest = z
   .object({
     // ≤ 55: the plugin's schema is `plugin_<slug>`, and Postgres silently
@@ -779,6 +936,10 @@ export const pluginManifest = z
      *  name one of `operations`. Needs no capability: it reads like a
      *  render and only adds findings to the Stage audit. */
     auditFindingsOperation: z.string().min(1).max(120).optional(),
+    /** See `PluginDefinition.writeHintsOperation`. Must name one of
+     *  `operations`. Needs no capability: it reads like a render and only
+     *  adds sentences to the AI's tool result. */
+    writeHintsOperation: z.string().min(1).max(120).optional(),
     /** Grants this plugin asks for. A request grants nothing: the Owner
      *  approves each one for this exact artifact (CMS_REQUIREMENTS §14.5). */
     requestedCapabilities: z.array(pluginCapability).optional(),
@@ -841,6 +1002,8 @@ export const pluginManifest = z
     /** See `PluginDefinition.consentPurposes`. Data only — no capability:
      *  a declaration asks the visitor, it never grants anything. */
     consentPurposes: z.array(pluginConsentPurpose).max(20).optional(),
+    /** See `PluginDefinition.bakedData` (#1155). */
+    bakedData: pluginBakedData.optional(),
   })
   .strict()
   .superRefine((m, ctx) => {
@@ -928,6 +1091,34 @@ export const pluginManifest = z
         code: "custom",
         path: ["auditFindingsOperation"],
         message: `auditFindingsOperation "${m.auditFindingsOperation}" is not one of the plugin's operations`,
+      });
+    }
+    // #1155 — a plugin-data build refreshes `staticRender` output, so a
+    // declaration without one bakes nothing, and a trigger must be an
+    // operation the plugin has.
+    if (m.bakedData) {
+      if (!m.hasStaticRender) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["bakedData"],
+          message: "bakedData needs a staticRender: it declares when that output goes stale",
+        });
+      }
+      for (const [i, t] of m.bakedData.triggers.entries()) {
+        if (!m.operations.includes(t.operation)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["bakedData", "triggers", i, "operation"],
+            message: `bakedData trigger "${t.operation}" is not one of the plugin's operations`,
+          });
+        }
+      }
+    }
+    if (m.writeHintsOperation !== undefined && !m.operations.includes(m.writeHintsOperation)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["writeHintsOperation"],
+        message: `writeHintsOperation "${m.writeHintsOperation}" is not one of the plugin's operations`,
       });
     }
     // #635 — the projection can only name what private storage declares.
@@ -1913,6 +2104,12 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * failing call or a malformed answer fails the audit loudly (no
    * silent "no findings").
    *
+   * A plugin that checks the rendered pages asks for their facts: the
+   * first call's answer names `factBatches` (page ids, grouped), and core
+   * calls the operation again once per batch with `facts`
+   * ({@link PluginAuditPageFacts}). Findings of every call land in the
+   * report; an identical finding from two calls is filed once.
+   *
    * @example
    *   audit_findings: async (_ctx, { pages }) => ({
    *     findings: [{
@@ -1923,6 +2120,25 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    *   }),
    */
   readonly auditFindingsOperation?: string;
+  /**
+   * Hints on the AI's writes: an operation in `operations` taking
+   * {@link PluginWriteHintsArgs} (the module markup or content values
+   * the AI just wrote) and returning `{hints: string[]}` (see
+   * {@link pluginWriteHints}). Core calls it after a successful module or
+   * content write by the AI, as a render (read-only) invocation on the
+   * main line, and appends the hints to the tool result — so a mistake
+   * the plugin knows about is fixed in the same turn, before a Stage
+   * audit has to find it. A failing call fails loudly in the tool result;
+   * the write itself already happened.
+   *
+   * @example
+   *   write_hints: async (_ctx, { writes }) => ({
+   *     hints: writes.some((w) => w.kind === "module" && w.html.includes('href="/en/'))
+   *       ? ["The link to /en/ is fixed: use the language_links list source instead."]
+   *       : [],
+   *   }),
+   */
+  readonly writeHintsOperation?: string;
   /**
    * Epic #1107 — the I/O half of `listSources`: an operation in
    * `operations` taking `{pageIds: string[], pageUrlStyle: PageUrlStyle}`
@@ -1968,6 +2184,35 @@ export interface PluginDefinition<C extends PluginContext = PluginContext> {
    * runtime-installed plugins: no plugin ships admin UI code.
    */
   readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
+  /**
+   * #1155 — this plugin's `staticRender` bakes visitor data (comments,
+   * ratings, …) into pages, and these operations change it. CMS_REQUIREMENTS
+   * §6.1: an approved item is served at once by the Web Component's delta
+   * fetch; the host then batches the pages the triggers name and runs ONE
+   * plugin-data build per tick, which re-renders only this plugin's bake
+   * regions in the files of the build that is live, so the HTML carries the
+   * item and the delta feed's `since` moves past it. Nothing but those
+   * regions changes: no draft, staged or unpublished edit goes live.
+   *
+   * A trigger is an operation in `operations`. After it succeeds, the host
+   * reads the page id(s) from `pageIds` — a key of the arguments (`args`) or
+   * of the result (`result`) holding a page id or a list of them. For an
+   * operation in `publicOperations` (a visitor call), the gateway records
+   * the one page id with its op event and the admin treats it as an
+   * untrusted hint: it counts only for a declared trigger of an active
+   * plugin and a page that exists. A region is refreshed only while the
+   * running plugin version is the one that rendered it.
+   *
+   * @example
+   *   bakedData: {
+   *     description: "Approved comments, baked into the page they belong to.",
+   *     triggers: [
+   *       { operation: "moderate", pageIds: { from: "result", key: "pageId" } },
+   *       { operation: "bulk_moderate", pageIds: { from: "result", key: "pageIds" } },
+   *     ],
+   *   },
+   */
+  readonly bakedData?: PluginBakedData;
 }
 
 /**
@@ -2012,6 +2257,7 @@ export function manifestFromDefinition(def: {
   readonly contentVariantsOperation?: string;
   readonly linkResolveOperation?: string;
   readonly auditFindingsOperation?: string;
+  readonly writeHintsOperation?: string;
   readonly requestedCapabilities?: ReadonlyArray<PluginCapability>;
   readonly capabilityReasons?: PluginManifest["capabilityReasons"];
   readonly capabilityConstraints?: PluginManifest["capabilityConstraints"];
@@ -2022,6 +2268,7 @@ export function manifestFromDefinition(def: {
   readonly adminPanels?: ReadonlyArray<PluginAdminPanel>;
   readonly requiresPlugins?: ReadonlyArray<string>;
   readonly consentPurposes?: ReadonlyArray<PluginConsentPurpose>;
+  readonly bakedData?: PluginBakedData;
 }): PluginManifest {
   return pluginManifest.parse({
     slug: def.slug,
@@ -2050,6 +2297,7 @@ export function manifestFromDefinition(def: {
     hasLinkResolve: Boolean(def.linkResolveOperation),
     hasListResolve: Boolean(def.listResolveOperation),
     ...(def.auditFindingsOperation ? { auditFindingsOperation: def.auditFindingsOperation } : {}),
+    ...(def.writeHintsOperation ? { writeHintsOperation: def.writeHintsOperation } : {}),
     ...(def.requestedCapabilities ? { requestedCapabilities: [...def.requestedCapabilities] } : {}),
     ...(def.capabilityReasons ? { capabilityReasons: def.capabilityReasons } : {}),
     ...(def.capabilityConstraints ? { capabilityConstraints: def.capabilityConstraints } : {}),
@@ -2073,6 +2321,17 @@ export function manifestFromDefinition(def: {
             ...p,
             cookies: p.cookies.map((c) => ({ ...c })),
           })),
+        }
+      : {}),
+    ...(def.bakedData
+      ? {
+          bakedData: {
+            description: def.bakedData.description,
+            triggers: def.bakedData.triggers.map((t) => ({
+              operation: t.operation,
+              pageIds: { ...t.pageIds },
+            })),
+          },
         }
       : {}),
   });

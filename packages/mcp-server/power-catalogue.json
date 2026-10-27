@@ -258,10 +258,11 @@
                 "minLength": 1,
                 "maxLength": 256
               },
-              "name": {
+              "shortTitle": {
                 "type": "string",
                 "minLength": 1,
-                "maxLength": 256
+                "maxLength": 256,
+                "description": "Short label in breadcrumbs and navigation ('Pricing' for 'Pricing for teams of every size'). Omit when the title is short: the title is stored as it."
               },
               "templateId": {
                 "type": "string",
@@ -1052,7 +1053,7 @@
     },
     {
       "name": "list_pages",
-      "description": "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. Use for any page UUID/path; never ask the operator to paste a UUID.",
+      "description": "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, short title (breadcrumb/navigation label), page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. Use for any page UUID/path; never ask the operator to paste a UUID.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -2916,15 +2917,16 @@
             "minLength": 1,
             "maxLength": 120
           },
-          "newName": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 256
-          },
           "newTitle": {
             "type": "string",
             "minLength": 1,
             "maxLength": 256
+          },
+          "newShortTitle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "The copy's breadcrumb / navigation label. Omitted: newTitle when given, else the source's short title."
           },
           "targetTemplateId": {
             "type": "string",
@@ -3403,7 +3405,7 @@
     },
     {
       "name": "set_page_seo_many",
-      "description": "Set pages' SEO fields to exact values, all-or-nothing. ONLY on explicit user instruction (e.g. 'set the home meta description to X').\nDO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; keyword re-optimization -> `bulk_optimize_seo`; side effect of content edits (never touch SEO then).",
+      "description": "Set pages' SEO fields to exact values, all-or-nothing. ONLY on explicit user instruction (e.g. 'set the home meta description to X').\nDO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; keyword re-optimization -> `bulk_optimize_seo`; side effect of content edits (never touch SEO then).\nWrites this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -3470,7 +3472,7 @@
     },
     {
       "name": "autofill_page_seo_many",
-      "description": "Write pages' FIRST meta description (+ optional og:image), one transaction. A Stage refuses pages without one -> run after building, before Staging.\nDO NOT USE FOR: pages created with `build_page` -> pass `page.metaDescription` there; changing a filled description -> `bulk_optimize_seo` (only when the user asks) or `set_page_seo_many` (exact user-dictated value).\nCORE RULES:\n- Write each from the page's actual content, 150–160 chars for a human reading a search result: read core texts with ONE `get_page_seo({pageIds})`, never by rendering; or carry over the source description when migrating. Title 50–60 chars via `update_pages_many`.\n- Fill-once: same text again = no-op; a DIFFERENT text for a filled page (AlreadyAutofilled) aborts the whole batch -> leave such pages out.",
+      "description": "Write pages' FIRST meta description (+ optional og:image), one transaction. A Stage refuses pages without one -> run after building, before Staging.\nDO NOT USE FOR: pages created with `build_page` -> pass `page.metaDescription` there; changing a filled description -> `bulk_optimize_seo` (only when the user asks) or `set_page_seo_many` (exact user-dictated value).\nCORE RULES:\n- Write each from the page's actual content, 150–160 chars for a human reading a search result: read core texts with ONE `get_page_seo({pageIds})`, never by rendering; or carry over the source description when migrating. Title 50–60 chars via `update_pages_many`.\n- Fill-once: same text again = no-op; a DIFFERENT text for a filled page (AlreadyAutofilled) aborts the whole batch -> leave such pages out.\nWrites this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4131,7 +4133,7 @@
     },
     {
       "name": "bulk_optimize_seo",
-      "description": "Re-optimize meta descriptions (+ og:image) of 1..N pages, all-or-nothing, regardless of fill state.\nUSE FOR: ONLY an explicit user request to optimize/rewrite SEO with context (keywords, intent, branding).\nDO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; exact dictated value -> `set_page_seo_many`.\nFirst read current descriptions + core text with ONE `get_page_seo({pageIds})`.",
+      "description": "Re-optimize meta descriptions (+ og:image) of 1..N pages, all-or-nothing, regardless of fill state.\nUSE FOR: ONLY an explicit user request to optimize/rewrite SEO with context (keywords, intent, branding).\nDO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; exact dictated value -> `set_page_seo_many`.\nFirst read current descriptions + core text with ONE `get_page_seo({pageIds})`.\nWrites this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4235,7 +4237,7 @@
     },
     {
       "name": "update_pages_many",
-      "description": "Edit metadata of 1..N pages — the ONLY tool for it: rename, retitle, reslug, status, template, page type, properties, terms.\nDO NOT USE FOR: nesting under another page / back to top level -> `move_pages`; SEO -> `set_page_seo_many`; modules -> `update_modules_many`.\nCORE RULES:\n- THREE independent identifiers, never substitute one for another: `name`, `title`, `slug`. Operator says only 'rename' -> ASK which (usually `name`).\n- Changing `slug` moves the page's URL AND every nested page's URL; a 301 from each old URL is created in the same transaction. On-site links (menus, link lists, modules, content) follow automatically — do not update them. A slug change moving 10+ URLs (page + subtree) pauses for one Owner click in chat.\n- Items apply independently: per-item failures (not found, version conflict) are reported, the rest applies.\n\nOver MCP: when this call needs the operator's approval, it queues an approval card in their Caelo admin (Live Edit chat and the pending-approvals page) and returns the outcome once they decide — tell them to approve the card; never ask them to paste a prompt into the Caelo chat.",
+      "description": "Edit metadata of 1..N pages — the ONLY tool for it: rename, retitle, reslug, status, template, page type, properties, terms.\nDO NOT USE FOR: nesting under another page / back to top level -> `move_pages`; SEO -> `set_page_seo_many`; modules -> `update_modules_many`.\nCORE RULES:\n- THREE independent identifiers, never substitute one for another: `title` (HTML <title>), `shortTitle` (label in breadcrumbs, menus, page picker; translated with the page), `slug` (URL). 'Rename this page' = `title` + `shortTitle`; the URL only when the operator asks.\n- Changing `slug` moves the page's URL AND every nested page's URL; a 301 from each old URL is created in the same transaction. On-site links (menus, link lists, modules, content) follow automatically — do not update them. A slug change moving 10+ URLs (page + subtree) pauses for one Owner click in chat.\n- Items apply independently: per-item failures (not found, version conflict) are reported, the rest applies.\n\nOver MCP: when this call needs the operator's approval, it queues an approval card in their Caelo admin (Live Edit chat and the pending-approvals page) and returns the outcome once they decide — tell them to approve the card; never ask them to paste a prompt into the Caelo chat.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4262,17 +4264,17 @@
                   "type": "integer",
                   "minimum": 0
                 },
-                "name": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256,
-                  "description": "Internal editor label (page picker / breadcrumbs); not public."
-                },
                 "title": {
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 256,
                   "description": "HTML `<title>`: browser tab + search results."
+                },
+                "shortTitle": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "description": "Short public label in breadcrumbs, navigation and the page picker. Every trail showing the page follows it."
                 },
                 "slug": {
                   "type": "string",
@@ -5769,7 +5771,7 @@
     },
     {
       "name": "get_gateway_settings",
-      "description": "Read public API gateway settings (captcha, proof-of-work, max body, auto-redeploy). Use before `propose_set_gateway_settings`.",
+      "description": "Read public API gateway settings (captcha, proof-of-work, max body). Use before `propose_set_gateway_settings`.",
       "inputSchema": {
         "type": "object",
         "properties": {},
@@ -5937,7 +5939,7 @@
     },
     {
       "name": "propose_set_gateway_settings",
-      "description": "Propose public API gateway settings: captcha / proof-of-work on visitor writes (forms, comments, signups), max body size, auto-redeploy.\nDO NOT USE FOR: per-plugin rate limits -> `tune_rate_limit`.\nCORE RULES: read current values (`get_gateway_settings`), send ONLY what changes (rest kept); fails if nothing would change.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
+      "description": "Propose public API gateway settings: captcha / proof-of-work on visitor writes (forms, comments, signups) and max body size.\nDO NOT USE FOR: per-plugin rate limits -> `tune_rate_limit`.\nCORE RULES: read current values (`get_gateway_settings`), send ONLY what changes (rest kept); fails if nothing would change.\nAPPROVAL-GATED: pauses for the operator's in-chat Approve/Reject before anything changes; do not claim it is live until approved.\n\nOver MCP: call this tool yourself — it works here. The call queues an approval card in the operator's Caelo admin (their Live Edit chat and the pending-approvals page), waits for their Approve/Reject and returns the outcome (if the wait times out, continue with caelo_await_approval). Tell the operator you requested it and that they approve the card in Caelo; never ask them to paste a prompt into the Caelo chat to run it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -5946,26 +5948,6 @@
             "minimum": 512,
             "maximum": 1048576,
             "description": "Largest public POST body, bytes."
-          },
-          "autoRedeployEnabled": {
-            "type": "boolean",
-            "description": "Rebuild + publish production automatically after publishable writes."
-          },
-          "autoRedeployDebounceMs": {
-            "type": "integer",
-            "minimum": 1000,
-            "maximum": 600000,
-            "description": "Quiet period after the last publishable write before auto-redeploy fires."
-          },
-          "autoRedeployOpKinds": {
-            "maxItems": 50,
-            "type": "array",
-            "items": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 120
-            },
-            "description": "Audit op names counting as publishable writes (e.g. a plugin's visitor-write op). Never 'deploy.trigger'."
           },
           "captchaProvider": {
             "type": "string",
@@ -7224,7 +7206,7 @@
     },
     {
       "name": "list_unpublished_changes",
-      "description": "List what THIS chat changed that is not published yet (pages, modules, templates, layouts, theme, lists), split unstaged | staged. Use before saying work is ready to publish, to summarise what publishing ships, or to check an edit landed.",
+      "description": "List what THIS chat changed that is not published yet (pages — SEO included, marked `· SEO` — modules, templates, layouts, theme, lists), split unstaged | staged. Use before saying work is ready to publish, to summarise what publishing ships, or to check an edit landed.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -7309,7 +7291,7 @@
     },
     {
       "name": "get_page_seo",
-      "description": "Read pages' stored SEO fields (meta description, OG image, canonical, noindex, sitemap, autofill/optimize times) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars).\nUSE FOR: reading before writing/optimizing descriptions — ALL pages in one call, then ONE `autofill_page_seo_many` (first description) or `bulk_optimize_seo`/`set_page_seo_many`.\nDO NOT USE `inspect_page_render`/`screenshot_page` for this (layout/visual only). No SEO row -> `autofill_page_seo_many` fills it.",
+      "description": "Read pages' stored SEO fields (meta description, OG image, canonical, noindex, sitemap, autofill/optimize times) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars). A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live.\nUSE FOR: reading before writing/optimizing descriptions — ALL pages in one call, then ONE `autofill_page_seo_many` (first description) or `bulk_optimize_seo`/`set_page_seo_many`.\nDO NOT USE `inspect_page_render`/`screenshot_page` for this (layout/visual only). No SEO row -> `autofill_page_seo_many` fills it.",
       "inputSchema": {
         "type": "object",
         "properties": {

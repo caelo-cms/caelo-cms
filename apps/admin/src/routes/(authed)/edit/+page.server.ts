@@ -12,6 +12,7 @@ import {
 } from "#lib/components/edit/use-overlay-layout.svelte.js";
 import { assertCsrfToken } from "#lib/server/csrf.js";
 import { requirePermission, requireUser } from "#lib/server/guards.js";
+import { loadPageSeoInfo } from "#lib/server/page-seo-info.js";
 import { pluginWorkflowSuggestions } from "#lib/server/plugin-workflows.js";
 import { getQueryContext } from "#lib/server/query.js";
 import { describeStagedBuild } from "#lib/server/stage-result.js";
@@ -281,6 +282,19 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     activePageId = activePage?.id ?? null;
   }
 
+  // #1156 — the active page's SEO in this chat's view, for the editor's SEO
+  // info (head values never show in the preview). Pending = changed in the
+  // draft against main; `pages` from the first, main-only pass gives main's
+  // title (absent = the page was created in the draft).
+  const mainPages = pagesR.ok ? (pagesR.value as { pages: PageRow[] }).pages : [];
+  const pageSeo = activePage
+    ? await loadPageSeoInfo(
+        ctxWithBranch,
+        activePage,
+        mainPages.find((p) => p.id === activePage?.id)?.title ?? null,
+      )
+    : null;
+
   // Load the chat's messages + the modules list (powers the chip picker
   // inside the embedded ChatPanel).
   let messages: ChatMessage[] = [];
@@ -431,8 +445,11 @@ export const load: PageServerLoad = async ({ locals, url }) => {
     null;
   let productionMatchesStaging: boolean | null = null;
   try {
+    // #1155 — site builds only: plugin-data builds run every tick and
+    // would push the last Stage and Publish live out of the window.
     const recentR = await execute(registry, adapter, locals.ctx, "deploy.list_runs", {
       limit: 20,
+      buildKind: "site",
     });
     if (recentR.ok) {
       const v = recentR.value as {
@@ -522,6 +539,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       currentPath: p.currentPath,
     })),
     activePageId,
+    /** #1156 — the active page's SEO for the editor's SEO info, or null without a page. */
+    pageSeo,
     activeChat,
     /** #1102 — why the `?chat=` in the URL was not opened, or null. */
     chatNotice,

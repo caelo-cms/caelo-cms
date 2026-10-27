@@ -58,6 +58,8 @@ const SYSTEM: ExecutionContext = {
   actorKind: "system",
   requestId: "stage-scale-bench",
 };
+/** #1154 — production is built and published only for a human. */
+const PUBLISHER: ExecutionContext = { ...SYSTEM, actorKind: "human" };
 
 /** Firebase Hosting as far as Stage + Publish live use it; keeps blobs by hash only. */
 class FakeFirebase {
@@ -150,6 +152,13 @@ const restore: (() => Promise<void>)[] = [];
 async function ok<T>(op: string, input: unknown): Promise<T> {
   const r = await execute(registry, adapter, SYSTEM, op, input);
   if (!r.ok) throw new Error(`${op} failed: ${JSON.stringify(r.error)}`);
+  return r.value as T;
+}
+
+/** Publish live (staging → production) as a human. */
+async function publish<T>(input: Record<string, unknown>): Promise<T> {
+  const r = await execute(registry, adapter, PUBLISHER, "deploy.promote", input);
+  if (!r.ok) throw new Error(`deploy.promote failed: ${JSON.stringify(r.error)}`);
   return r.value as T;
 }
 
@@ -368,7 +377,7 @@ describe("#1003 Stage / Publish live scaling", () => {
           }
         }
         const t = performance.now();
-        const promoted = await ok<{ toRunId: string }>("deploy.promote", {
+        const promoted = await publish<{ toRunId: string }>({
           fromTarget: "staging",
           toTarget: "production",
           repoRoot: root,

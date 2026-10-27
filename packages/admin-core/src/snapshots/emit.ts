@@ -91,7 +91,12 @@ export type SnapshotOpKind =
   | "lists.delete_many"
   | "lists.promote_local"
   | "page_types.upsert_many"
-  | "page_types.delete_many";
+  | "page_types.delete_many"
+  // #1156 — page SEO writes ride the page snapshot (0375).
+  | "pages_seo.set"
+  | "pages_seo.autofill"
+  | "pages_seo.optimize"
+  | "pages_seo.apply_translation";
 
 export type SnapshotEntity =
   | { readonly kind: "module"; readonly entityId: string; readonly state: ModuleState }

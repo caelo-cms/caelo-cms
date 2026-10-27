@@ -218,6 +218,8 @@ function adminBackend(
     fetchApprovalOutcome: (proposalId) =>
       runOp<ApprovalOutcome>("mcp.get_approval_outcome", credential, { proposalId }),
     uploadImages: uploadImagesFor(credential),
+    // #1122 — every list is live; the surface announces the change.
+    catalogueMayHaveChanged: async () => true,
   };
 }
 
@@ -297,7 +299,8 @@ export async function handleRemoteMcpRequest(
           serverVersion: CAELO_VERSION,
           uploadImagesTool: REMOTE_UPLOAD_IMAGES_TOOL,
           approvalWaitMs: () => DEFAULT_APPROVAL_WAIT_MS,
-          listChanged: false,
+          // #1122 — announced on the stream of the call that changed it.
+          listChanged: true,
         });
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

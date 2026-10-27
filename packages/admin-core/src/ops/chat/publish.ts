@@ -36,6 +36,7 @@ import { pendingSnapshotSql } from "../../draft.js";
 import { replacePageTerms } from "../../lists/page-terms.js";
 import { applyListEntityRow } from "../../lists/store.js";
 import { releaseChatLocks } from "../../locks.js";
+import { applyPageSeoState } from "../../seo/page-seo.js";
 import {
   emitSnapshot,
   parseAndUpgradeListState,
@@ -50,12 +51,6 @@ import {
   SnapshotSchemaError,
 } from "../../snapshots/index.js";
 import { jsonbParam } from "../../sql-helpers.js";
-import {
-  AI_MERGE_BUSY_MESSAGE,
-  enterAiMerge,
-  isAiInitiated,
-  recordAiStageHold,
-} from "../../stage/ai-stage-hold.js";
 import { refreshLivePathsAfterMerge } from "../content/current-path.js";
 import { stageReferenceGate } from "../content/link-integrity.js";
 import { applyMediaUsageDelta } from "../content/media-usage.js";
@@ -787,13 +782,13 @@ export async function mergeWindowToMain(
       // v0.9.0 — pages.create now branches; merge UPSERTs the live row
       // AND clears chat_branch_id to graduate to main.
       await tx.execute(sql`
-        INSERT INTO pages (id, slug, name, title, template_id, status, deleted_at, version, chat_branch_id, parent_page_id,
+        INSERT INTO pages (id, slug, title, short_title, template_id, status, deleted_at, version, chat_branch_id, parent_page_id,
                            page_type_id, properties)
         VALUES (
           ${e.entityId}::uuid,
           ${e.state.slug},
           ${e.state.title},
-          ${e.state.title},
+          ${e.state.shortTitle},
           ${e.state.templateId}::uuid,
           ${e.state.status},
           ${e.state.deletedAt ? sql`now()` : sql`NULL`},
@@ -809,6 +804,7 @@ export async function mergeWindowToMain(
           -- keep the live one rather than invent a value.
           parent_page_id = ${e.state.parentPageId === undefined ? sql`pages.parent_page_id` : sql`EXCLUDED.parent_page_id`},
           title          = EXCLUDED.title,
+          short_title    = EXCLUDED.short_title,
           template_id    = EXCLUDED.template_id,
           page_type_id   = EXCLUDED.page_type_id,
           properties     = EXCLUDED.properties,
@@ -819,6 +815,9 @@ export async function mergeWindowToMain(
           updated_at     = now()
       `);
       await replacePageTerms(tx, e.entityId, e.state.terms);
+      // #1156 — the page's SEO travels with it, when this branch wrote it
+      // (absent otherwise: the live row stays as it is).
+      if (e.state.seo) await applyPageSeoState(tx, e.entityId, e.state.seo, ctx.actorId);
     } else if (e.kind === "pageLayout") {
       // v0.12.0 — page_modules now carries content_instance_id (NOT NULL)
       // and sync_mode. Producers (pages.set_modules) write the placement
@@ -1278,21 +1277,14 @@ const chatMergeToMainInput = chatPublishInput.extend({
    * …", the Stage flow classifies again).
    */
   headerIds: z.array(z.string().uuid()).max(20000).optional(),
-  /**
-   * Issue #620 Part B — the AI initiated this Stage (stage_changes runs the
-   * flow with the operator's context): opens the production hold. Asking
-   * for a hold only ever restricts, so any caller may set it.
-   */
-  aiInitiated: z.boolean().optional(),
 });
 
 export const mergeChatToMainOp = defineOperation({
   name: "chat.merge_to_main",
   // Issue #620 Part B — the AI may Stage (stage_changes runs this op as
-  // the AI). Staging is not public, snapshots stay revertable (§11.A
-  // routine test), and an AI merge opens a production hold in this same
-  // transaction, so it can never reach production without a human Publish
-  // live (stage/ai-stage-hold.ts).
+  // the AI). Staging is not public and snapshots stay revertable (§11.A
+  // routine test). Production is built only by a human Publish live
+  // (#1154: deploy.trigger / promote refuse every non-human production build).
   actorScope: ["human", "ai", "system"],
   database: "cms_admin",
   input: chatMergeToMainInput,
@@ -1316,15 +1308,7 @@ export const mergeChatToMainOp = defineOperation({
     mergedHeaderIds: z.array(z.string()),
   }),
   handler: async (ctx, input, tx) => {
-    const ai = isAiInitiated(ctx, input.aiInitiated);
-    if (ai && !(await enterAiMerge(tx))) {
-      return err({
-        kind: "HandlerError",
-        operation: "chat.merge_to_main",
-        message: AI_MERGE_BUSY_MESSAGE,
-      });
-    }
-    const { headerIds: fixedHeaderIds, aiInitiated: _ai, ...publishInput } = input;
+    const { headerIds: fixedHeaderIds, ...publishInput } = input;
     const merged = await mergeBranchSnapshotsToMain(
       tx,
       ctx,
@@ -1356,10 +1340,6 @@ export const mergeChatToMainOp = defineOperation({
         message: "could not read merge timestamp",
       });
     }
-
-    // Even a merge of nothing: the AI still triggers the staging build an
-    // automatic publish would promote.
-    if (ai) await recordAiStageHold(tx, ctx, [input.chatSessionId]);
 
     if (!input.deferConsume) {
       await markBranchStaged(

@@ -208,7 +208,7 @@ export const listUnpublishedChangesTool: ToolDefinitionWithHandler<
 > = {
   name: "list_unpublished_changes",
   description:
-    "List what THIS chat changed that is not published yet (pages, modules, templates, layouts, theme, lists), split unstaged | staged. " +
+    "List what THIS chat changed that is not published yet (pages — SEO included, marked `· SEO` — modules, templates, layouts, theme, lists), split unstaged | staged. " +
     "Use before saying work is ready to publish, to summarise what publishing ships, or to check an edit landed.",
   schema: unpublishedInput,
   inputSchema: z.toJSONSchema(unpublishedInput) as Record<string, unknown>,

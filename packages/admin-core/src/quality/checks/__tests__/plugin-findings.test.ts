@@ -12,11 +12,12 @@ import type { PluginAuditFinding } from "@caelo-cms/plugin-sdk";
 import type { StagedPage } from "../check.js";
 import {
   createPluginAuditCheck,
+  fileOnce,
   type PluginAuditSource,
   withPluginAuditChecks,
 } from "../plugin-findings.js";
 import { CheckRegistry } from "../registry.js";
-import { runFindingChecks } from "../runner.js";
+import { MAX_FINDINGS_PER_CALL, runFindingChecks } from "../runner.js";
 import { NO_PROBE_BUILD } from "./fixtures/test-checks.js";
 
 const PAGE = "00000000-0000-4000-8000-000000000001";
@@ -32,6 +33,7 @@ function source(
   return {
     asked,
     contributors: () => Object.keys(answers),
+    siteUrls: async () => ["https://example.com"],
     async findings(slug, p) {
       asked.push({ slug, pages: p });
       const a = answers[slug];
@@ -112,5 +114,64 @@ describe("plugin audit contributions (epic #1107)", () => {
     expect(out.errors.map((e) => e.checkId)).toEqual(["plugin.broken", "plugin.stray"]);
     expect(out.errors[0]?.message).toContain("storage unreachable");
     expect(out.errors[1]?.message).toContain("not a page of the staged build");
+  });
+
+  it("reads the facts of the pages a plugin asks for, and the staged sitemap once", async () => {
+    const html = `<html lang="de"><body><a href="/en/" hreflang="en">English</a></body></html>`;
+    const twoPages: StagedPage[] = [
+      { pageId: PAGE, path: "/docs", url: "http://s.test/docs/", html },
+      { pageId: OTHER, path: "/en/docs", url: "http://s.test/en/docs/", html: "<html></html>" },
+    ];
+    const read: string[] = [];
+    const build = {
+      ...NO_PROBE_BUILD,
+      text: async (path: string) => {
+        read.push(path);
+        return null;
+      },
+    };
+    const src: PluginAuditSource = {
+      contributors: () => ["international-site"],
+      siteUrls: async () => [],
+      async findings(_slug, _pages, facts) {
+        const [a] = await facts([PAGE]);
+        const [b] = await facts([OTHER]);
+        return [
+          {
+            rule: "seen",
+            severity: "info",
+            message: `Seen: ${a?.lang} ${a?.links[0]?.path} ${b?.sitemapAlternates}`,
+          },
+        ];
+      },
+    };
+    const registry = withPluginAuditChecks(new CheckRegistry(), src);
+    const out = await runFindingChecks(registry.findingChecks(), twoPages, build);
+    expect(out.errors).toEqual([]);
+    expect(out.findings.map((f) => f.message)).toEqual(["Seen: de /en no-sitemap"]);
+    expect(read).toEqual(["/sitemap.xml"]);
+  });
+
+  it("files a finding two fact batches report once, and caps a flood with a note", () => {
+    const shared: PluginAuditFinding = {
+      rule: "hardcoded-language-link",
+      severity: "error",
+      message: "Hardcoded language link: the footer link English → /en/ is fixed.",
+    };
+    expect(fileOnce("plugin.international-site", [shared, shared, MISSING])).toHaveLength(2);
+
+    const flood: PluginAuditFinding[] = Array.from(
+      { length: MAX_FINDINGS_PER_CALL + 10 },
+      (_, i) => ({
+        rule: "content-mixed-language",
+        severity: i === MAX_FINDINGS_PER_CALL + 9 ? "error" : "warning",
+        message: `Untranslated text: example ${i}.`,
+      }),
+    );
+    const filed = fileOnce("plugin.international-site", flood);
+    expect(filed).toHaveLength(MAX_FINDINGS_PER_CALL);
+    // The error survives the cut; the note says what was left out.
+    expect(filed[0]?.severity).toBe("error");
+    expect(filed.at(-1)?.ruleId).toBe("plugin.international-site/limit-reached");
   });
 });

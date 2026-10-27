@@ -18,6 +18,7 @@ import { defineOperation, type TransactionRunner } from "@caelo-cms/query-api";
 import { err, ok, PAGE_URL_STYLES, type PageUrlStyle } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import { pageSeoViewSql } from "../../seo/page-seo.js";
 import { renderScopeOf } from "./current-path.js";
 
 /**
@@ -78,7 +79,7 @@ export const resolvePublicUrlsOp = defineOperation({
     const rows = (await tx.execute(sql`
       SELECT p.id::text AS id, p.slug, p.current_path, s.canonical_url
       FROM pages p
-      LEFT JOIN pages_seo s ON s.page_id = p.id
+      LEFT JOIN ${pageSeoViewSql(ctx.chatBranchId, input.pageIds)} s ON s.page_id = p.id
       WHERE p.id IN (${idList}) AND p.deleted_at IS NULL AND ${branchFilter}
     `)) as unknown as {
       id: string;

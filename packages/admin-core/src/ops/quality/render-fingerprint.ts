@@ -8,7 +8,7 @@
  * starts: one hash per rendering-relevant entity (module code, templates,
  * layouts with their chrome modules, the active theme, active plugins, and
  * each live page's template). A direct production build (Ops "Trigger
- * build", the automatic redeploy) bakes main as it is NOW, so the gate
+ * build", Owner-initiated) bakes main as it is NOW, so the gate
  * compares the two: any audit-worthy difference — the same rules a chat
  * Stage is classified by (`classifyStageChanges`) — means production would
  * ship unchecked rendering, and the build has to go through a Stage.

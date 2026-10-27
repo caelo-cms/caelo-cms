@@ -16,6 +16,7 @@ export const setPageSeoManyTool = makeBulkTool({
   description: [
     "Set pages' SEO fields to exact values, all-or-nothing. ONLY on explicit user instruction (e.g. 'set the home meta description to X').",
     "DO NOT USE FOR: first-publish fill -> `autofill_page_seo_many`; keyword re-optimization -> `bulk_optimize_seo`; side effect of content edits (never touch SEO then).",
+    "Writes this chat's draft: live only after Stage + the operator's Publish live (undo drops it).",
   ].join("\n"),
   itemInputSchema: setPageSeoToolInput,
   itemJsonSchema: {

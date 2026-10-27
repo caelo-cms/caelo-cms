@@ -103,10 +103,14 @@ test("#1107: mega menu with three columns + latest news, shared by header and fo
   const after = snapshotListModel({ toolsSince: followUpAt });
   const menu = after.lists.find((l) => l.id === facts.listId);
   expect(menu, "the menu list disappeared after the follow-up").toBeDefined();
-  const company = (menu?.items ?? []).find((it) =>
-    JSON.stringify(it.values ?? {})
-      .toLowerCase()
-      .includes("company"),
+  // Any depth: a mega menu may hang its columns under one trigger entry
+  // (e2e-livedit run 40375950739 patched Company correctly and failed here).
+  const company = flattenItems(menu?.items ?? []).find(
+    (it) =>
+      (it.children ?? []).length > 0 &&
+      JSON.stringify(it.values ?? {})
+        .toLowerCase()
+        .includes("company"),
   );
   expect(company, "the Company column is gone").toBeDefined();
   expect(

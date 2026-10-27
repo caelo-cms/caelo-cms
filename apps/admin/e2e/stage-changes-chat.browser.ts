@@ -11,8 +11,7 @@
  * and never saw it.
  *
  * Asserted: the tool got past the chat selection and the merge (its result
- * is the Stage's own outcome — the build may or may not run in this stack),
- * and the merge opened the AI production hold for exactly this chat.
+ * is the Stage's own outcome — the build may or may not run in this stack).
  */
 
 import { expect, test } from "@playwright/test";
@@ -29,7 +28,6 @@ const ts = Date.now();
 const PROVIDER = `stage-changes-${ts}`;
 const BASE = "http://localhost:4173";
 const REPLY = `Staged for your review ${ts}.`;
-const startedAt = new Date().toISOString();
 
 test.beforeAll(() => {
   clearLoginRateBucket();
@@ -38,26 +36,9 @@ test.beforeAll(() => {
 
 test.afterAll(async () => {
   await clearTestProvider(BASE, PROVIDER);
-  // An open AI hold would stop every later spec's automatic publish.
-  runBunInline(
-    `
-    import { SQL } from "bun";
-    const c = new SQL(process.env.ADMIN_DATABASE_URL);
-    await c.begin(async (tx) => {
-      await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
-      await tx\`UPDATE ai_stage_holds SET released_at = now()
-               WHERE released_at IS NULL AND created_at >= \${process.env.STARTED_AT}::timestamptz\`;
-    });
-    await c.end();
-    `,
-    { STARTED_AT: startedAt },
-  );
 });
 
-test("the AI stages from the browser chat and the Stage opens the production hold", async ({
-  context,
-  page,
-}) => {
+test("the AI stages from the browser chat", async ({ context, page }) => {
   await registerTestProvider(BASE, PROVIDER, [
     [
       {
@@ -95,25 +76,20 @@ test("the AI stages from the browser chat and the Stage opens the production hol
     await c.begin(async (tx) => {
       await tx.unsafe("SET LOCAL caelo.actor_kind = 'system'");
       const tool = await tx\`
-        SELECT m.chat_session_id::text AS chat, m.content
+        SELECT m.content
         FROM chat_messages m
         WHERE m.role = 'tool' AND m.tool_call_id = \${process.env.TOOL_CALL_ID}
         ORDER BY m.created_at DESC LIMIT 1\`;
-      const chat = tool[0]?.chat ?? null;
-      const holds = chat === null ? [] : await tx\`
-        SELECT count(*)::int AS n FROM ai_stage_holds
-        WHERE \${chat}::uuid = ANY(chat_session_ids) AND released_at IS NULL\`;
-      payload = JSON.stringify({ content: tool[0]?.content ?? null, holds: holds[0]?.n ?? 0 });
+      payload = JSON.stringify({ content: tool[0]?.content ?? null });
     });
     await c.end();
     process.stdout.write(payload);
     `,
     { TOOL_CALL_ID: `tu_stage_${ts}` },
   );
-  const { content, holds } = JSON.parse(out) as { content: string | null; holds: number };
+  const { content } = JSON.parse(out) as { content: string | null };
   expect(content, "the stage_changes tool result was not recorded").not.toBeNull();
   // Past selection and merge: the result is the Stage's own outcome.
   expect(content).not.toContain("not one of your open chats");
   expect(content).toMatch(/Staging rebuilt|Staged \d+ change|Stage failed \(deploy\)/);
-  expect(holds).toBe(1);
 });

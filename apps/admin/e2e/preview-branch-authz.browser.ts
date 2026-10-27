@@ -61,7 +61,7 @@ test.beforeAll(() => {
         RETURNING id::text AS id\`;
       const ci = await tx\`INSERT INTO content_instances (module_id, "values") VALUES (\${mod[0].id}::uuid, '{}'::jsonb) RETURNING id::text AS id\`;
       const page = await tx\`
-        INSERT INTO pages (slug, name, title, template_id)
+        INSERT INTO pages (slug, short_title, title, template_id)
         VALUES (\${tag + "-page"}, 'E2E 569', 'E2E 569', \${tpl[0].id}::uuid)
         RETURNING id::text AS id\`;
       await tx\`INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode)

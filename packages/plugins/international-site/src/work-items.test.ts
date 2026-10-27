@@ -129,6 +129,7 @@ function world() {
             pages: Object.entries(titles).map(([id, title]) => ({
               id,
               title,
+              shortTitle: title,
               currentPath: id === DE ? "/de/pricing" : "/pricing",
               pageType: "page",
               properties: {},
@@ -173,7 +174,16 @@ function world() {
           return { seo: m ? { metaDescription: m } : null } as O;
         }
         case "page_module_content.list_for_page":
-          return { placements: structuredClone(placements[i.pageId as string] ?? []) } as O;
+          // Core's read: every placement with its module's fields (text
+          // fields here, no defaults) and no nested content.
+          return {
+            placements: structuredClone(placements[i.pageId as string] ?? []).map((p, n) => ({
+              ...p,
+              contentInstanceId: `ci-${String(i.pageId)}-${n}`,
+              fields: Object.keys(p.values).map((name) => ({ name, kind: "text" })),
+              nested: [],
+            })),
+          } as O;
         case "pages.list_shared_content":
           return {
             layoutPlacements: [
@@ -253,6 +263,7 @@ const op = (name: string) => {
 
 const PAGE_ANSWER = {
   title: "Preise",
+  shortTitle: "Preise",
   metaDescription: "Faire Tarife für jedes Team",
   slots: [{ slot: "s0", values: [{ field: "hero_title", value: "Hallo" }] }],
 };
@@ -299,6 +310,7 @@ describe("delegated translate_variant", () => {
         targetLocale: "de",
         targetLocaleDisplayName: "German",
         sourceTitle: "Pricing",
+        sourceShortTitle: "Pricing",
         sourceMetaDescription: "Fair plans for every team",
         sourceSlots: w.placements[SRC] as Placement[],
         glossary: [],

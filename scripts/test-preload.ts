@@ -79,6 +79,7 @@
 
 import { beforeAll, setDefaultTimeout } from "bun:test";
 import { SQL } from "bun";
+import { SEED_SITE_TEXTS_LIST_SQL } from "../packages/migrations/src/seed-site-texts.ts";
 
 // Bound every DatabaseAdapter constructed during the test run. This preload
 // runs before any test module builds an adapter, so all ~83 inline
@@ -126,6 +127,10 @@ export const ADMIN_PRESERVE: ReadonlySet<string> = new Set([
   // Seed-bearing since 0271 (#696 Phase 5): the auto-update scheduler's
   // lease + status singleton.
   "platform_update_scheduler",
+  // Seed-bearing since 0371 (#1155): the plugin-data tick's state
+  // singleton. Tests that change it reset it themselves
+  // (plugin-data-build.integration.test.ts).
+  "plugin_data_build_state",
   "rate_limit_profiles",
   "release_check_cache",
   "role_permissions",
@@ -237,6 +242,10 @@ async function resetDatabase(url: string, preserve: ReadonlySet<string>): Promis
       // seeded rows in `actors` / `themes` alive.
       for (const t of deleteTargets) {
         await tx.unsafe(`DELETE FROM "${t}"`);
+      }
+      // Seed rows inside a churn table: put them back like a fresh install.
+      if (allTables.some((t) => t.tablename === "lists")) {
+        await tx.unsafe(SEED_SITE_TEXTS_LIST_SQL);
       }
     });
   } finally {

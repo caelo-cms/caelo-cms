@@ -1026,7 +1026,7 @@ export const updatePageCaptureOp = defineOperation({
 /**
  * issue #423 — bulk capture persistence for the crawl-time ground truth.
  * The crawler captures screenshot + computed-style tokens in the SAME
- * render session that yields each page's HTML; the orchestrator's batch
+ * render session that yields each page's HTML; the crawl worker's batch
  * flush lands them here in ONE call per batch (CLAUDE.md §11 bulk-first),
  * keyed by the run's UNIQUE(run_id, source_url) so no import_pages id is
  * needed at write time. Returns the resolved ids so the caller can attach
@@ -1055,7 +1055,7 @@ export const setPageCapturesByUrlOp = defineOperation({
             })
             .strict()
             // A bare sourceUrl would COALESCE both columns to themselves —
-            // a silent no-op UPDATE that hides an orchestrator bug (§2).
+            // a silent no-op UPDATE that hides a crawl-worker bug (§2).
             .refine(
               (c) => c.screenshotObjectKey !== undefined || c.sampledDesignTokens !== undefined,
               {
@@ -1542,7 +1542,6 @@ async function acceptImportedPage(
       page: {
         slug: r.proposed_slug,
         title,
-        name: title,
         status: "draft",
         importPageId: input.importPageId,
         ...(input.templateId ? { templateId: input.templateId } : {}),
@@ -1641,7 +1640,7 @@ export const acceptImportedPagesOp = defineOperation({
 });
 
 // issue #247 — `screenshot_missing` / `design_tokens_missing` are
-// SYSTEM-written by the orchestrator's ground-truth capture pass (a
+// SYSTEM-written by the crawl worker's ground-truth capture pass (a
 // page without a source screenshot is UNVERIFIED, loudly — CLAUDE.md §2
 // no-fallbacks). The AI-facing add_import_page_notes tool deliberately
 // keeps the original five: the model reports content findings, it never

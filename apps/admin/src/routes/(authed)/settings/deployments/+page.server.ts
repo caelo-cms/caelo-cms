@@ -61,6 +61,7 @@ export const load: PageServerLoad = async ({ locals }) => {
               errorMessage: string | null;
               buildId: string | null;
               progress: { pagesDone: number; pagesTotal: number } | null;
+              buildKind: "site" | "plugin_data";
             }[];
           }
         ).runs

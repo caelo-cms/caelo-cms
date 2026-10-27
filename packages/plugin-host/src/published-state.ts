@@ -277,10 +277,11 @@ function compareValues(a: unknown, b: unknown): number {
 
 /**
  * The gateway's plugin op audit (#635): one row per successful visitor
- * call, in cms_public. The redeploy orchestrator reads it back as an
- * UNTRUSTED hint for per-page rebuilds; the operator's audit trail of
- * authoring actions stays in cms_admin, where the public side cannot
- * forge rows (#763 L7).
+ * call, in cms_public. The admin reads it back only for the plugin-data
+ * build (#1155), and treats every row as an UNTRUSTED hint: a page id
+ * counts only for a declared baked-data trigger of a plugin the admin runs
+ * and a page that exists (admin-core `plugin-data/visitor-hints.ts`). The operator's audit trail of authoring actions
+ * stays in cms_admin, where the public side cannot forge rows (#763 L7).
  */
 export async function emitPublicPluginOpEvent(
   infra: PluginHostInfra,
@@ -290,6 +291,8 @@ export async function emitPublicPluginOpEvent(
     readonly operation: string;
     readonly inputHash: string;
     readonly entityId: string | null;
+    /** #1155 — the page a declared baked-data trigger named (an untrusted hint for the admin). */
+    readonly pageId: string | null;
   },
 ): Promise<void> {
   await infra.adapter.withPublicTransaction(
@@ -301,9 +304,11 @@ export async function emitPublicPluginOpEvent(
     },
     async (tx) => {
       await tx.execute(sql`
-        INSERT INTO gateway_plugin_op_events (plugin_id, operation, input_hash, succeeded, entity_id)
+        INSERT INTO gateway_plugin_op_events (plugin_id, operation, input_hash, succeeded, entity_id,
+                                              page_id)
         VALUES (${args.pluginId}::uuid, ${args.operation}, ${args.inputHash}, true,
-                ${args.entityId === null ? null : sql`${args.entityId}::uuid`})
+                ${args.entityId === null ? null : sql`${args.entityId}::uuid`},
+                ${args.pageId === null ? null : sql`${args.pageId}::uuid`})
       `);
     },
   );

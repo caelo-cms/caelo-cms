@@ -46,6 +46,7 @@ import {
   type PluginAi,
   type PluginContextTier1,
   type PluginEvents,
+  type PluginWrite,
   z,
 } from "@caelo-cms/plugin-sdk";
 import {
@@ -56,6 +57,7 @@ import {
   pageWorkItem,
   WORK_ITEM_NEXT_STEP,
 } from "./apply-translations.js";
+import { auditFindings } from "./audit.js";
 import {
   type ChromeDeps,
   chromeStatus,
@@ -82,12 +84,15 @@ import {
 } from "./list-translation-ops.js";
 import {
   type GlossaryRow,
+  outcomeNextStep,
   pageTranslationBasis,
   preparePageTranslation,
   SEO_STALE_NEXT_STEP,
+  SHARED_NESTED_NEXT_STEP,
   type StyleGuideRow,
   translateVariantPage,
 } from "./page-translation.js";
+import { writeHints } from "./write-hints.js";
 
 /**
  * The serving target's page URL style core hands every render-time
@@ -95,6 +100,31 @@ import {
  * must fail here, not build URLs in a guessed style.
  */
 const renderUrlArgs = z.object({ pageUrlStyle: z.enum(["directory", "no-extension"]) });
+
+/** What core's write-hints hook passes (plugin-sdk `PluginWriteHintsArgs`). */
+const writeHintsArgs = z
+  .object({
+    writes: z.array(
+      z.union([
+        z
+          .object({
+            kind: z.literal("module"),
+            moduleId: z.string().nullable(),
+            html: z.string(),
+            fields: z.array(z.record(z.string(), z.unknown())),
+          })
+          .strict(),
+        z
+          .object({
+            kind: z.literal("values"),
+            moduleId: z.string().nullable(),
+            values: z.record(z.string(), z.unknown()),
+          })
+          .strict(),
+      ]),
+    ),
+  })
+  .strict();
 
 function pageUrlStyleOf(args: unknown): PageUrlStyle {
   return renderUrlArgs.parse(args).pageUrlStyle;
@@ -932,38 +962,38 @@ export default definePlugin<PluginContextTier1>({
       setListItemVisibility(await chromeDepsOf(ctx), args),
 
     /**
-     * Epic #1107 — this plugin's Stage-audit contribution (core's
+     * This plugin's Stage-audit contribution (core's
      * `auditFindingsOperation` hook, docs/quality-checks.md "Plugin
-     * contributions"): list texts missing in a language and entries
-     * hidden because their link target has no version in it. Read-only,
-     * main line. Findings are site-wide (a list shows on many pages), so
-     * none names a page.
+     * contributions"): the first call answers the site rules and the
+     * list-translation findings and asks for the facts of every staged
+     * page; each fact batch is then checked for hreflang, canonical,
+     * language links, page language and untranslated text (./audit.ts).
+     * Read-only, main line.
      */
-    audit_findings: async (ctx, args) => {
-      z.object({ pages: z.array(z.object({ pageId: z.string(), path: z.string() })) })
-        .strict()
-        .parse(args);
-      const deps = await chromeDepsOf(ctx);
-      const found = listFindings(deps, await loadListTranslationState(deps));
+    audit_findings: async (ctx, args) => auditFindings(await chromeDepsOf(ctx), args),
+
+    /**
+     * Core's `writeHintsOperation` hook: a module or content write by the
+     * AI that hardcodes a link into another language gets a hint in the
+     * same tool result (./write-hints.ts). Read-only, the writing chat's
+     * scope.
+     */
+    write_hints: async (ctx, args) => {
+      const { writes } = writeHintsArgs.parse(args);
+      const q = adminQueryOf(ctx);
+      const reg = await refreshLocaleCache(q, ctx);
+      if (reg.rows.length < 2) return { hints: [] };
+      const variants = (await listAll(q, "page_variants")) as PageVariantRow[];
       return {
-        findings: found.slice(0, 499).map((f) => ({
-          rule:
-            f.code === "list-link-variant-missing"
-              ? "list-link-target-missing"
-              : f.code === "page-property-missing"
-                ? "page-property-translation-missing"
-                : "list-translation-missing",
-          severity: "warning" as const,
-          message:
-            `${f.code === "list-link-variant-missing" ? "Link target has no version" : "Translation missing"}: ${f.message}`.slice(
-              0,
-              1000,
-            ),
-          fix: {
-            tool: f.code === "list-link-variant-missing" ? "create_variant" : "translate_chrome",
-            hint: f.nextStep.slice(0, 500),
+        hints: writeHints(
+          {
+            locales: reg.byCode,
+            prefixDefaultLocale: reg.prefixDefaultLocale,
+            variants,
+            siteHomePageId: await siteHomePageId(cmsOf(ctx)),
           },
-        })),
+          writes as PluginWrite[],
+        ),
       };
     },
 
@@ -1472,7 +1502,8 @@ export default definePlugin<PluginContextTier1>({
       }
       const ai = aiOf(ctx);
       const result = await translateVariantPage(await chromeDepsOf(ctx), ai, parsed);
-      return result.seo === "marked_stale" ? { ...result, nextStep: SEO_STALE_NEXT_STEP } : result;
+      const nextStep = outcomeNextStep(result);
+      return nextStep ? { ...result, nextStep } : result;
     },
 
     /**
@@ -1491,6 +1522,7 @@ export default definePlugin<PluginContextTier1>({
       const deps = await chromeDepsOf(ctx);
       const translated: string[] = [];
       const seoStale: string[] = [];
+      const sharedNested: string[] = [];
       const failed: Array<{ pageId: string; error: string }> = [];
       let paused = false;
       for (const row of stale) {
@@ -1498,6 +1530,8 @@ export default definePlugin<PluginContextTier1>({
           const r = await translateVariantPage(deps, aiOf(ctx), { variantPageId: row.page_id });
           translated.push(row.page_id);
           if (r.seo === "marked_stale") seoStale.push(row.page_id);
+          if (r.sharedNested)
+            sharedNested.push(...r.sharedNested.map((n) => `${row.page_id}: ${n}`));
         } catch (e) {
           const msg = (e as Error).message;
           if (msg.startsWith("PluginAiCapExceeded:")) {
@@ -1538,13 +1572,22 @@ export default definePlugin<PluginContextTier1>({
         remaining: stale.length - translated.length - failed.length,
         /** Live variants whose SEO was kept and flagged stale (#591). */
         seoStale,
+        /** Nested content left untranslated because another page shares it. */
+        sharedNested,
         ...(paused
           ? {
               nextStep:
                 "The plugin's 24h AI budget is exhausted. Tell the operator; if they want the cap raised, propose_set_plugin_ai_cost_cap with the amount they name (the Owner approves), then re-run translate_all_stale.",
             }
-          : seoStale.length > 0
-            ? { nextStep: SEO_STALE_NEXT_STEP }
+          : seoStale.length > 0 || sharedNested.length > 0
+            ? {
+                nextStep: [
+                  ...(seoStale.length > 0 ? [SEO_STALE_NEXT_STEP] : []),
+                  ...(sharedNested.length > 0
+                    ? [`${SHARED_NESTED_NEXT_STEP} Placements: ${sharedNested.join("; ")}.`]
+                    : []),
+                ].join(" "),
+              }
             : {}),
       };
     },
@@ -2143,6 +2186,7 @@ export default definePlugin<PluginContextTier1>({
   listExt: { field: LIST_EXT_FIELD_SCHEMA },
   listResolveOperation: "list_resolve",
   auditFindingsOperation: "audit_findings",
+  writeHintsOperation: "write_hints",
   contributionsOperation: "head_contributions",
   contentVariantsOperation: "content_variants",
   linkResolveOperation: "link_resolve",
@@ -2165,7 +2209,7 @@ export default definePlugin<PluginContextTier1>({
         "Flow:",
         "1. Call intl_status FIRST. It answers every 'is X translated / what is missing' question.",
         "2. If the target-language counterpart does not exist yet: create_variant with a LOCALIZED slug ('preise' for 'pricing', not 'pricing-de'). For the site's HOME page (intl_status marks it `isSiteHome: true`) omit the slug entirely — its counterpart is the locale root ('/de') and has no URL segment; every other page needs a slug. The draft still carries the source language.",
-        "3. Call translate_variant on the counterpart. It translates the WHOLE page in one context-aware pass — title and every content field — honouring the site glossary and style guide. Never translate field-by-field yourself, and never edit shared module HTML to translate it: module code is shared across pages, content lives in per-page values.",
+        "3. Call translate_variant on the counterpart. It translates the WHOLE page in one context-aware pass — title, every content field, the texts modules show from their field defaults (buttons, form labels, menu entries), the page's own lists and nested content — honouring the site glossary and style guide. Never translate field-by-field yourself, and never edit shared module HTML to translate it: module code is shared across pages, content lives in per-page values. If the result names nested content shared with another page, fork_placement_content on that placement and translate again.",
         "4. The result stays a DRAFT. Summarise what was translated and let the operator review before publishing.",
         "5. When intl_status shows stale variants (source pages changed after translation), prefer ONE translate_all_stale call over repeated translate_variant calls.",
         "",
@@ -2202,6 +2246,47 @@ export default definePlugin<PluginContextTier1>({
           "multilingual",
           "mehrsprachig",
           "international",
+        ],
+      },
+    },
+    {
+      slug: "international-qa",
+      displayName: "Fix language findings",
+      description:
+        "How to fix the international-site findings of a Stage audit (plugin.international-site/…): language links, hreflang, page language and untranslated text.",
+      body: [
+        "You are fixing the language findings of a Stage audit on a multilingual Caelo site (rules plugin.international-site/<rule>). Every error blocks Publish live; warnings are fixed too — the target is a report without findings, never 'good enough'. Fix, Stage again, and repeat until nothing is left. What you cannot fix goes to the operator as one decision (they can accept a finding per rule in the audit).",
+        "",
+        "Language links:",
+        '- hardcoded-language-link / switcher-to-home: a language switch built from fixed links. Replace it in the named module (update_modules_many) with the language_links list source: `<nav>{{#language_links}}<a href="{{href}}" hreflang="{{locale}}"{{#is_current}} aria-current="page"{{/is_current}}>{{label}}</a>{{/language_links}}</nav>`. It lists exactly the published versions of the current page, so it never leads to a 404. Never link another language\'s page by a page link either: page links follow the language of the page they are on.',
+        "- switcher-missing: place such a module in the layout (add_module, target layout) — one placement covers every page.",
+        "- cross-locale-content-link: link the page itself, not the literal path of another language's page.",
+        "",
+        "hreflang, canonical, sitemap (the plugin writes them from the language groups):",
+        "- hreflang-self-missing / hreflang-missing-version / hreflang-not-reciprocal / hreflang-target-broken: the language group is wrong or a version is not published. Check intl_status; relink with link_page_variants, unlink a wrong page with unlink_page_variants, or publish the missing version.",
+        "- hreflang-target-not-indexable / canonical-cross-locale: a version has noindex or a canonical override pointing elsewhere. Every language version is indexable and canonical to itself (set_page_seo_many).",
+        "- hreflang-invalid-code: fix the language codes with set_locales (approval-gated; en-GB, not en-UK).",
+        "- sitemap-alternates-mismatch: a Caelo bug — report it with bug_report.",
+        "",
+        "Page language and text:",
+        "- html-lang-mismatch: the page is in the wrong language group, or not in one; fix the group (link_page_variants).",
+        "- content-wrong-language / content-mixed-language / alt-untranslated / seo-untranslated: run translate_variant on the version. It translates every placement, the texts modules show from their field defaults (buttons, form labels, menu entries) and nested content. If its result says nested content is shared with another page, fork_placement_content on that placement first, then translate again. A brand or product name that is the same in every language belongs in the glossary with itself as the translation (set_glossary_term) — then it is no finding.",
+        "- chrome-untranslated / chrome-translation-stale: translate_chrome for that language.",
+        "- translation-stale: one translate_all_stale call.",
+        "- glossary-violation: translate_variant again (the glossary is part of every call).",
+        "- locale-empty / locale-home-missing: create and translate the language's pages, home page first (create_variant without slug for the home), or remove the language with set_locales.",
+        "- variant-group-broken: intl_status shows the group; unlink the page that does not belong.",
+        "- locale-format, slug-untranslated, og-locale-mismatch, coverage: hints. Fix them when the operator wants the page fully localized (skill localize-slugs for slugs).",
+      ].join("\n"),
+      autoEngagementHints: {
+        keywords: [
+          "international-site",
+          "hreflang",
+          "language switch",
+          "sprachwechsel",
+          "language link",
+          "untranslated",
+          "nicht übersetzt",
         ],
       },
     },

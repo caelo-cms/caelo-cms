@@ -126,7 +126,7 @@ beforeAll(async () => {
   for (const slug of [PAGE_SLUG, SHARED_PAGE_SLUG, SHARED_TWIN_SLUG]) {
     const { pageId: id } = await must<{ pageId: string }>("pages.create", {
       slug,
-      name: slug,
+      shortTitle: slug,
       title: slug,
       templateId,
     });

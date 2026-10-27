@@ -23,6 +23,7 @@ interface ListedPage {
   parentPageId: string | null;
   depth: number;
   title: string;
+  shortTitle: string;
   status?: string;
   templateId: string;
   pageType: string;
@@ -31,7 +32,7 @@ interface ListedPage {
 export const listPagesTool = makeListReadTool<z.infer<typeof listPagesInput>, ListedPage>({
   name: "list_pages",
   description:
-    "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. Use for any page UUID/path; never ask the operator to paste a UUID.",
+    "List pages (TOON rows): path, UUID, slug, parent UUID, depth (1 = top level), title, short title (breadcrumb/navigation label), page type (what the page IS, e.g. `news`; `list_page_types`), template UUID. URL = parent URL + '/' + slug. Inside a chat, paths show its pending moves. Use for any page UUID/path; never ask the operator to paste a UUID.",
   opName: "pages.list",
   input: listPagesInput,
   label: "pages",
@@ -43,6 +44,7 @@ export const listPagesTool = makeListReadTool<z.infer<typeof listPagesInput>, Li
     { key: "parentId", value: (p) => p.parentPageId ?? "" },
     { key: "depth", value: (p) => String(p.depth) },
     { key: "title", value: (p) => p.title },
+    { key: "shortTitle", value: (p) => p.shortTitle },
     { key: "pageType", value: (p) => p.pageType },
     { key: "templateId", value: (p) => p.templateId },
   ],

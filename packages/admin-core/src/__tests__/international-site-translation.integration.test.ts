@@ -122,6 +122,9 @@ async function cleanup(): Promise<void> {
     );
     await tx.unsafe("DELETE FROM plugins WHERE slug = 'international-site'");
     await tx.unsafe("DELETE FROM pages WHERE slug LIKE 't397-%'");
+    await tx.unsafe(
+      "DELETE FROM content_instances WHERE module_id IN (SELECT id FROM modules WHERE slug LIKE 't397-%')",
+    );
     await tx.unsafe("DELETE FROM modules WHERE slug LIKE 't397-%'");
     await tx.unsafe("DELETE FROM templates WHERE slug LIKE 't397-%'");
     await tx.unsafe("DELETE FROM layouts WHERE slug LIKE 't397-%'");
@@ -224,6 +227,7 @@ describe("#397 — context-aware translation", () => {
     // --- Structural-lock refusal: a response inventing a slot never lands.
     aiScript.push(() => ({
       title: "Preise",
+      shortTitle: "Preise",
       slots: [
         { slot: "s0", values: fields({ headline: "Willkommen" }) },
         // An id that was never offered — the module slug is what a
@@ -244,6 +248,7 @@ describe("#397 — context-aware translation", () => {
     // --- Full-mode translation.
     aiScript.push(() => ({
       title: "Preise",
+      shortTitle: "Tarife",
       slots: [
         {
           slot: "s0",
@@ -265,11 +270,16 @@ describe("#397 — context-aware translation", () => {
     expect(prompt?.system).toContain('"world" → "Welt" (greeting)');
     expect(prompt?.system).toContain("Use informal du.");
     expect(prompt?.user).toContain("Title: Pricing");
+    expect(prompt?.user).toContain("Short title: Pricing");
     expect(prompt?.user).toContain("<p>Hello <b>world</b></p>");
     // The source has no meta description, so the request neither asks
     // for one nor lets the model return one — the live failures were the
     // model answering an invented description, or "" for "none".
-    expect(Object.keys(prompt?.jsonSchema.properties ?? {})).toEqual(["title", "slots"]);
+    expect(Object.keys(prompt?.jsonSchema.properties ?? {})).toEqual([
+      "title",
+      "shortTitle",
+      "slots",
+    ]);
     expect(prompt?.system).not.toMatch(/meta ?description/i);
     expect(prompt?.user).not.toMatch(/meta ?description/i);
     // #593 — declared as a translation call, so the host can route it to
@@ -289,15 +299,17 @@ describe("#397 — context-aware translation", () => {
     const applied = await sqlSystem(
       async (tx) =>
         (await tx.unsafe(
-          `SELECT p.title, ci."values"->>'headline' AS headline, ci."values"->>'body_html' AS body
+          `SELECT p.title, p.short_title, ci."values"->>'headline' AS headline, ci."values"->>'body_html' AS body
            FROM pages p
            JOIN page_modules pm ON pm.page_id = p.id
            JOIN content_instances ci ON ci.id = pm.content_instance_id
            WHERE p.id = '${variant.pageId}'`,
-        )) as { title: string; headline: string; body: string }[],
+        )) as { title: string; short_title: string; headline: string; body: string }[],
     );
     expect(applied[0]).toEqual({
       title: "Preise",
+      // #1142 — the breadcrumb label is translated with the page.
+      short_title: "Tarife",
       headline: "Willkommen",
       body: "<p>Hallo <b>Welt</b></p>",
     });
@@ -346,6 +358,7 @@ describe("#397 — context-aware translation", () => {
     // --- Bulk pass in UPDATE mode (variant already differs from source).
     aiScript.push(() => ({
       title: "Preise v2",
+      shortTitle: "Preise v2",
       slots: [{ slot: "s0", values: fields({ headline: "Willkommen v2" }) }],
     }));
     const bulk = await op<{ translated: number; paused: boolean; remaining: number }>(
@@ -420,6 +433,7 @@ describe("#397 — context-aware translation", () => {
     };
     const translation = (meta: string) => () => ({
       title: "Preise",
+      shortTitle: "Preise",
       metaDescription: meta,
       slots: [
         { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo</p>" }) },
@@ -557,6 +571,7 @@ describe("#397 — context-aware translation", () => {
     // The correctly named call translates the variant.
     aiScript.push(() => ({
       title: "Preise",
+      shortTitle: "Preise",
       slots: [
         { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo Welt</p>" }) },
       ],
@@ -564,5 +579,113 @@ describe("#397 — context-aware translation", () => {
     const translated = await asToolCall({ variantPageId: variant.pageId });
     if (!translated.ok) throw new Error(translated.error.message);
     expect((translated.value as { slotsApplied: number }).slotsApplied).toBe(1);
+  }, 60_000);
+
+  it("a new variant gets its own nested content, and translation reaches default texts and nested modules", async () => {
+    const sourceId = await seedSourcePage("-nested");
+    await op("set_locales", {
+      locales: [
+        { code: "en", displayName: "English", urlStrategy: "none", isDefault: true },
+        { code: "de", displayName: "Deutsch", urlStrategy: "subdirectory", isDefault: false },
+      ],
+    });
+    // A form whose button label renders from the field default (what the
+    // module extractor makes of literal markup), and a card list whose
+    // cards are nested modules.
+    const ids = await sqlSystem(async (tx) => {
+      const form = (await tx.unsafe(
+        `INSERT INTO modules (slug, display_name, type, kind, html, fields)
+         VALUES ('t397-nested-form', 'Form', 't397-nested-form', 'content',
+                 '<form><h2>{{heading}}</h2><button>{{submit_label}}</button></form>',
+                 '[{"name":"heading","kind":"text"},{"name":"submit_label","kind":"text","default":"Request a demo"}]'::jsonb)
+         RETURNING id::text AS id`,
+      )) as { id: string }[];
+      const card = (await tx.unsafe(
+        `INSERT INTO modules (slug, display_name, type, kind, html, fields)
+         VALUES ('t397-nested-card', 'Card', 't397-nested-card', 'content', '<h3>{{card_title}}</h3>',
+                 '[{"name":"card_title","kind":"text"}]'::jsonb)
+         RETURNING id::text AS id`,
+      )) as { id: string }[];
+      const cards = (await tx.unsafe(
+        `INSERT INTO modules (slug, display_name, type, kind, html, fields)
+         VALUES ('t397-nested-cards', 'Cards', 't397-nested-cards', 'content', '<div>{{#cards}}{{/cards}}</div>',
+                 '[{"name":"cards","kind":"module-list"}]'::jsonb)
+         RETURNING id::text AS id`,
+      )) as { id: string }[];
+      const formCi = (await tx.unsafe(
+        `INSERT INTO content_instances (module_id, "values") VALUES ('${form[0]?.id}', '{"heading":"Try it"}')
+         RETURNING id::text AS id`,
+      )) as { id: string }[];
+      const cardCi = (await tx.unsafe(
+        `INSERT INTO content_instances (module_id, "values") VALUES ('${card[0]?.id}', '{"card_title":"Fast setup"}')
+         RETURNING id::text AS id`,
+      )) as { id: string }[];
+      const cardsCi = (await tx.unsafe(
+        `INSERT INTO content_instances (module_id, "values")
+         VALUES ('${cards[0]?.id}', '{"cards":[{"moduleId":"${card[0]?.id}","contentInstanceId":"${cardCi[0]?.id}"}]}')
+         RETURNING id::text AS id`,
+      )) as { id: string }[];
+      await tx.unsafe(
+        `INSERT INTO page_modules (page_id, block_name, position, module_id, content_instance_id, sync_mode) VALUES
+           ('${sourceId}', 'main', 1, '${form[0]?.id}', '${formCi[0]?.id}', 'unsynced'),
+           ('${sourceId}', 'main', 2, '${cards[0]?.id}', '${cardsCi[0]?.id}', 'unsynced')`,
+      );
+      return { sourceCard: cardCi[0]?.id as string };
+    });
+
+    const variant = await op<{ pageId: string }>("create_variant", {
+      sourcePageId: sourceId,
+      localeCode: "de",
+      slug: "t397-nested-preise",
+    });
+    aiScript.push(() => ({
+      title: "Preise",
+      shortTitle: "Preise",
+      slots: [
+        { slot: "s0", values: fields({ headline: "Willkommen", body_html: "<p>Hallo Welt</p>" }) },
+        { slot: "s1", values: fields({ heading: "Jetzt testen", submit_label: "Demo anfragen" }) },
+        { slot: "s2", values: [] },
+        { slot: "s3", values: fields({ card_title: "Schnell eingerichtet" }) },
+      ],
+    }));
+    const result = await op<{ slotsApplied: number; sharedNested?: string[] }>(
+      "translate_variant",
+      { variantPageId: variant.pageId },
+    );
+    expect(result.sharedNested).toBeUndefined();
+    // The default text and the nested card were offered to the translator.
+    const prompt = aiCalls.at(-1);
+    expect(prompt?.user).toContain("Request a demo");
+    expect(prompt?.user).toContain("nested at cards[0]");
+    expect(prompt?.user).toContain("Fast setup");
+
+    const values = async (pageId: string) =>
+      sqlSystem(
+        async (tx) =>
+          (await tx.unsafe(
+            `SELECT pm.position, ci.id::text AS id, ci."values" AS values FROM page_modules pm
+             JOIN content_instances ci ON ci.id = pm.content_instance_id
+             WHERE pm.page_id = '${pageId}' ORDER BY pm.position`,
+          )) as { position: number; id: string; values: Record<string, unknown> }[],
+      );
+    const v = await values(variant.pageId);
+    expect(v[1]?.values).toEqual({ heading: "Jetzt testen", submit_label: "Demo anfragen" });
+    const nestedRef = (v[2]?.values.cards as { contentInstanceId: string }[] | undefined)?.[0];
+    // The variant's card is its own copy, translated; the source's is untouched.
+    expect(nestedRef?.contentInstanceId).not.toBe(ids.sourceCard);
+    const cards = await sqlSystem(
+      async (tx) =>
+        (await tx.unsafe(
+          `SELECT id::text AS id, "values" AS values FROM content_instances
+           WHERE id IN ('${nestedRef?.contentInstanceId}', '${ids.sourceCard}')`,
+        )) as { id: string; values: Record<string, unknown> }[],
+    );
+    const byId = new Map(cards.map((c) => [c.id, c.values]));
+    expect(byId.get(nestedRef?.contentInstanceId ?? "")).toEqual({
+      card_title: "Schnell eingerichtet",
+    });
+    expect(byId.get(ids.sourceCard)).toEqual({ card_title: "Fast setup" });
+    const s = await values(sourceId);
+    expect(s[1]?.values).toEqual({ heading: "Try it" });
   }, 60_000);
 });

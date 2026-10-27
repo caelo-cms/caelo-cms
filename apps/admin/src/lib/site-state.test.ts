@@ -9,6 +9,7 @@ const run = (over: Partial<DeployRunSummary>): DeployRunSummary => ({
   status: "succeeded",
   finishedAt: "2026-10-15T10:00:00.000Z",
   buildId: null,
+  buildKind: "site",
   ...over,
 });
 
@@ -53,5 +54,18 @@ describe("siteStateFrom", () => {
     const s = siteStateFrom([], [run({ id: "p1", targetName: "production", buildId: "x" })]);
     expect(s.live?.runId).toBe("p1");
     expect(s.liveMatchesPreview).toBeNull();
+  });
+
+  it("looks past a plugin-data build to the build a human published (#1155)", () => {
+    const s = siteStateFrom(
+      [],
+      [
+        run({ id: "pd1", targetName: "production", buildId: "pd1", buildKind: "plugin_data" }),
+        run({ id: "p1", targetName: "production", buildId: "s1" }),
+        run({ id: "s1" }),
+      ],
+    );
+    expect(s.live?.runId).toBe("p1");
+    expect(s.liveMatchesPreview).toBe(true);
   });
 });

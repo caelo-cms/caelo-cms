@@ -20,8 +20,8 @@
  *   - an update of a variant that has one → it is required and nullable:
  *     `null` says "the existing one still fits", never an empty string.
  *
- * The title follows the same rule (required in full mode, nullable in
- * update mode). Slot values are `[{field, value}]` pairs, not a free-form
+ * The title and the short title (#1142, the breadcrumb label) follow the
+ * same rule (required in full mode, nullable in update mode). Slot values are `[{field, value}]` pairs, not a free-form
  * record: structured-output decoders (Anthropic's) force
  * `additionalProperties: false` on every object, which would turn a
  * record into an object that can hold nothing.
@@ -45,6 +45,20 @@ import type { ContentSlot, SlotAlignment, TranslationResultPayload } from "./tra
  */
 export function slotIdOf(index: number): string {
   return `s${index}`;
+}
+
+/**
+ * The identity of a slot across the source and its translation: the
+ * placement (block + position) and, for nested content, its path.
+ */
+export function slotKeyOf(s: {
+  readonly blockName: string;
+  readonly position: number;
+  readonly nestedPath?: string;
+}): string {
+  return s.nestedPath === undefined
+    ? `${s.blockName}|${s.position}`
+    : `${s.blockName}|${s.position}|${s.nestedPath}`;
 }
 
 /** `pages_seo.meta_description` hard cap (shared/seo.ts). */
@@ -72,11 +86,9 @@ export function translationContractOf(input: {
   sourceMetaDescription: string;
   variantMetaDescription: string;
 }): TranslationContract {
-  const alignedKeys = new Set(
-    input.alignment.filter((a) => a.kind === "aligned").map((a) => `${a.blockName}|${a.position}`),
-  );
+  const alignedKeys = new Set(input.alignment.filter((a) => a.kind === "aligned").map(slotKeyOf));
   const slotIds = input.sourceSlots.flatMap((s, i) =>
-    input.mode === "full" || alignedKeys.has(`${s.blockName}|${s.position}`) ? [slotIdOf(i)] : [],
+    input.mode === "full" || alignedKeys.has(slotKeyOf(s)) ? [slotIdOf(i)] : [],
   );
   const fieldNames = [
     ...new Set(
@@ -103,6 +115,12 @@ function stringEnum(values: readonly string[]): Record<string, unknown> {
 /** The JSON Schema `ctx.ai.generateObject` constrains the answer to. */
 export function translationJsonSchema(c: TranslationContract): Record<string, unknown> {
   const titleText = { type: "string", minLength: 1, description: "The translated page title." };
+  const shortTitleText = {
+    type: "string",
+    minLength: 1,
+    maxLength: 256,
+    description: "The translated short title: the page's label in breadcrumbs and menus.",
+  };
   const meta = {
     type: "string",
     minLength: 1,
@@ -117,6 +135,13 @@ export function translationJsonSchema(c: TranslationContract): Record<string, un
         : {
             anyOf: [titleText, { type: "null" }],
             description: "The re-translated title, or null when the existing one still fits.",
+          },
+    shortTitle:
+      c.mode === "full"
+        ? shortTitleText
+        : {
+            anyOf: [shortTitleText, { type: "null" }],
+            description: "The re-translated short title, or null when the existing one still fits.",
           },
     slots: {
       type: "array",
@@ -147,7 +172,7 @@ export function translationJsonSchema(c: TranslationContract): Record<string, un
       },
     },
   };
-  const required = ["title", "slots"];
+  const required = ["title", "shortTitle", "slots"];
   if (c.metaDescription === "required") {
     properties.metaDescription = meta;
     required.push("metaDescription");
@@ -164,9 +189,11 @@ export function translationJsonSchema(c: TranslationContract): Record<string, un
 /** The Zod mirror of {@link translationJsonSchema} — every answer passes it. */
 export function translationAnswerSchema(c: TranslationContract) {
   const title = z.string().min(1);
+  const shortTitle = z.string().trim().min(1).max(256);
   const meta = z.string().min(1).max(SEO_DESCRIPTION_HARD_MAX);
   const base = {
     title: c.mode === "full" ? title : title.nullable(),
+    shortTitle: c.mode === "full" ? shortTitle : shortTitle.nullable(),
     slots: z.array(
       z
         .object({
@@ -212,6 +239,7 @@ export function toTranslationPayload(answer: TranslationAnswer): TranslationResu
       : null;
   return {
     ...(answer.title !== null ? { title: answer.title } : {}),
+    ...(answer.shortTitle !== null ? { shortTitle: answer.shortTitle } : {}),
     ...(metaDescription !== null ? { metaDescription } : {}),
     slots,
   };
@@ -221,8 +249,8 @@ export function toTranslationPayload(answer: TranslationAnswer): TranslationResu
 export function translationContractText(c: TranslationContract): string {
   const title =
     c.mode === "full"
-      ? '"title": "<translated page title>"'
-      : '"title": "<re-translated page title>" or null when the existing title still fits';
+      ? '"title": "<translated page title>", "shortTitle": "<translated short title — the page\'s label in breadcrumbs and menus, as short as the source\'s>"'
+      : '"title": "<re-translated page title>" or null when the existing title still fits, "shortTitle": "<re-translated short title>" or null when the existing one still fits';
   const meta =
     c.metaDescription === "required"
       ? ', "metaDescription": "<translated meta description — a search-result snippet in the target language, at most 320 characters, aim for 160>"'

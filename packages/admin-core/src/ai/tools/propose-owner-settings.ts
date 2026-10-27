@@ -68,7 +68,7 @@ export const proposeSetGatewaySettingsTool = makeProposeTool({
   opName: "owner_settings.propose_set_gateway_settings",
   pendingQueuePath: PENDING_QUEUE,
   when:
-    "Propose public API gateway settings: captcha / proof-of-work on visitor writes (forms, comments, signups), max body size, auto-redeploy.\n" +
+    "Propose public API gateway settings: captcha / proof-of-work on visitor writes (forms, comments, signups) and max body size.\n" +
     "DO NOT USE FOR: per-plugin rate limits -> `tune_rate_limit`.\n" +
     "CORE RULES: read current values (`get_gateway_settings`), send ONLY what changes (rest kept); fails if nothing would change.",
   schema: proposeGatewaySettingsInput,
@@ -162,7 +162,7 @@ export const listAiPricingTool = makeReadTool({
 export const getGatewaySettingsTool = makeReadTool({
   name: "get_gateway_settings",
   description:
-    "Read public API gateway settings (captcha, proof-of-work, max body, auto-redeploy). Use before `propose_set_gateway_settings`.",
+    "Read public API gateway settings (captcha, proof-of-work, max body). Use before `propose_set_gateway_settings`.",
   opName: "gateway.get_settings",
   input: noInput,
   format: (value) => {

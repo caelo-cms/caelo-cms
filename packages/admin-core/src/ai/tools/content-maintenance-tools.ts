@@ -65,6 +65,9 @@ function formatSeoPage(p: SeoPage): string {
         `noindex: ${seo.noindex}`,
         `sitemap: changefreq ${seo.changefreq}, priority ${seo.priority}`,
         `autofilledAt: ${seo.autofilledAt ?? "never"}; optimizedAt: ${seo.optimizedAt ?? "never"}`,
+        ...(seo.pendingFields.length > 0
+          ? [`pending (not staged): ${seo.pendingFields.join(", ")}`]
+          : []),
       ]
     : ["No SEO row for this page yet — autofill_page_seo_many fills it before first publish."];
   const textHead = p.contentTextTruncated
@@ -95,7 +98,7 @@ const getPageSeoInput = z
 export const getPageSeoTool = makeReadTool({
   name: "get_page_seo",
   description:
-    "Read pages' stored SEO fields (meta description, OG image, canonical, noindex, sitemap, autofill/optimize times) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars).\n" +
+    "Read pages' stored SEO fields (meta description, OG image, canonical, noindex, sitemap, autofill/optimize times) AND core text (plain text of own content blocks, no header/footer chrome, this chat's draft, ~1500 chars). A 'pending (not staged)' line names SEO fields this chat changed: live only after Stage + Publish live.\n" +
     "USE FOR: reading before writing/optimizing descriptions — ALL pages in one call, then ONE `autofill_page_seo_many` (first description) or `bulk_optimize_seo`/`set_page_seo_many`.\n" +
     "DO NOT USE `inspect_page_render`/`screenshot_page` for this (layout/visual only). No SEO row -> `autofill_page_seo_many` fills it.",
   opName: "pages_seo.get_many",

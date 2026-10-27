@@ -30,6 +30,7 @@ import {
   MODULE_HTML_DESCRIPTION,
   MODULE_JS_CONTRACT,
 } from "./_module-js-contract.js";
+import { pluginWriteHintsSuffix, storedModuleWrites } from "./_plugin-write-hints.js";
 import { stageReadinessSuffix } from "./_stage-readiness.js";
 import { bindCssToTheme } from "./_theme-binding.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
@@ -55,7 +56,13 @@ const BUILD_PAGE_INPUT_SCHEMA: Record<string, unknown> = {
             "Lowercase letters, digits, hyphens — no path or slash. HOMEPAGE (`/`) = `home`.",
         },
         title: { type: "string", minLength: 1, maxLength: 256 },
-        name: { type: "string", minLength: 1, maxLength: 256 },
+        shortTitle: {
+          type: "string",
+          minLength: 1,
+          maxLength: 256,
+          description:
+            "Short label in breadcrumbs and navigation ('Pricing' for 'Pricing for teams of every size'). Omit when the title is short: the title is stored as it.",
+        },
         templateId: {
           type: "string",
           format: "uuid",
@@ -404,6 +411,10 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       });
       note(i, suffix);
     }
+    const pluginHints = await pluginWriteHintsSuffix(
+      ctx,
+      await storedModuleWrites(ctx, toolCtx, mintedIds),
+    );
     const moduleNotes = [...notesByIndex.entries()]
       .sort(([a], [b]) => a - b)
       .flatMap(([i, texts]) => texts.map((t) => `\n${label(i)}: ${t}`))
@@ -421,7 +432,7 @@ export const buildPageTool: ToolDefinitionWithHandler<BuildPageInput> = {
       ok: true,
       content:
         `page ${value.pageId}${value.createdPage ? " created" : ""} — ${value.placements.length} module(s) placed (${mintedCount} minted, ${reusedCount} reused) in one transaction.\n` +
-        `${lines.join("\n")}${moduleNotes}${extractedHint}${missingMetaHint}${ignoredHint}${reusedHint}${metaNote}${readiness}`,
+        `${lines.join("\n")}${moduleNotes}${pluginHints}${extractedHint}${missingMetaHint}${ignoredHint}${reusedHint}${metaNote}${readiness}`,
       value,
     };
   },
