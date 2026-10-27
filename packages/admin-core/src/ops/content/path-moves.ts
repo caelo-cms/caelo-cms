@@ -29,6 +29,7 @@
 import type { TransactionRunner } from "@caelo-cms/query-api";
 import type { ExecutionContext } from "@caelo-cms/shared";
 import { sql } from "drizzle-orm";
+import { requestRedirectSync } from "../../deploy/redirect-sync.js";
 import { createRedirectOp } from "../redirects.js";
 import type { PathMove } from "./current-path.js";
 
@@ -95,5 +96,9 @@ export async function applyPathMoveEffects(
     redirectsCreated += 1;
   }
 
+  // #1157 — the deletes and chain updates above changed the redirects table
+  // too. Requested after them, like every redirects write (row locks first,
+  // then the sync state), so a concurrent redirect save cannot deadlock.
+  await requestRedirectSync(tx, ctx);
   return { redirectsCreated };
 }

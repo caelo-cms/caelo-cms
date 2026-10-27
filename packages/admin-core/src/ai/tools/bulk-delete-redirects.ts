@@ -9,6 +9,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { bulkDeleteRedirectsToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { redirectSyncNote } from "./_redirect-sync-note.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const bulkDeleteRedirectsTool: ToolDefinitionWithHandler<
@@ -17,7 +18,8 @@ export const bulkDeleteRedirectsTool: ToolDefinitionWithHandler<
   name: "bulk_delete_redirects",
   description:
     "Delete redirects in one transaction by EXACTLY ONE of `redirectIds`, `fromPaths`, `matches` (one redirect = one-item array). Run `find_redirects` FIRST and tell the user the count.\n" +
-    "`matches` (substring) is capped at 10 rows for you (every deleted 301 strands an inbound link): more -> REJECTED, nothing deleted; list them with `find_redirects`, show the operator, delete the confirmed ones by `redirectIds` (uncapped).",
+    "`matches` (substring) is capped at 10 rows for you (every deleted 301 strands an inbound link): more -> REJECTED, nothing deleted; list them with `find_redirects`, show the operator, delete the confirmed ones by `redirectIds` (uncapped).\n" +
+    "Gone from the live site when the call returns (pushed to hosting, no build); the result says so per target.",
   schema: bulkDeleteRedirectsToolInput,
   inputSchema: {
     type: "object",
@@ -43,7 +45,7 @@ export const bulkDeleteRedirectsTool: ToolDefinitionWithHandler<
     }
     return {
       ok: true,
-      content: `redirects deleted: ${(r.value as { deleted: number }).deleted}`,
+      content: `redirects deleted: ${(r.value as { deleted: number }).deleted}\n${await redirectSyncNote(ctx, toolCtx)}`,
     };
   },
 };

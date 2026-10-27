@@ -151,6 +151,7 @@ export {
   configurePluginUninstallFinalizer,
   type PluginUninstallFinalizer,
 } from "./ops/plugins/uninstall.js";
+export type { RedirectSyncTargetStatus } from "./ops/redirect_sync.js";
 export * from "./ops/roles.js";
 // Issue #806 — remote MCP: the credential an /api/mcp/remote/* request
 // carries into the mcp.* ops, and its request-time resolution.
@@ -224,6 +225,7 @@ export { kickQualityAuditWorker, startQualityAuditWorker } from "./quality/audit
 export * from "./rate-limit.js";
 // #1154 — the admin's login rate-limit GC (formerly in the redeploy orchestrator).
 export { startRateLimitGcWorker } from "./rate-limit-gc-worker.js";
+export { startRedirectSyncWorker, stopRedirectSyncWorker } from "./redirect-sync-worker.js";
 export * from "./register.js";
 export { startReleaseCheckWorker, stopReleaseCheckWorker } from "./release-check-worker.js";
 // #914 — Settings → Google sign-in: the install's one Google OAuth client

@@ -361,6 +361,17 @@ describe("P6 deploy.trigger", () => {
       const out = built.value as { runId: string; pageCount: number };
       expect(out.pageCount).toBeGreaterThanOrEqual(1);
       expect(existsSync(join(testRoot, "output", "staging", "builds", out.runId))).toBe(true);
+      // #1157 — the Stage re-synced the redirects onto the build it now serves.
+      const resynced = await asSystemQuery(
+        (tx) =>
+          tx`SELECT r.status FROM redirect_syncs r JOIN deploy_targets t ON t.id = r.target_id
+             WHERE t.name = 'staging' AND r.trigger = 'build' AND r.served_run_id = ${out.runId}::uuid` as unknown as Promise<
+            { status: string }[]
+          >,
+      );
+      expect(resynced.map((r) => r.status)).toEqual([
+        expect.stringMatching(/^(applied|unchanged)$/),
+      ]);
 
       const prod = await tools.dispatch("deploy_staging", { targetName: "production" }, AI, {
         adapter,

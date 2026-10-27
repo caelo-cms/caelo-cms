@@ -4047,7 +4047,7 @@
     },
     {
       "name": "bulk_create_redirects",
-      "description": "Create redirects in one tx: a single one, a list ('/old-blog/* -> /blog/*' across many paths), a pasted CSV/table. `upsert:true` updates existing fromPath rows instead of skipping them.",
+      "description": "Create redirects in one tx: a single one, a list ('/old-blog/* -> /blog/*' across many paths), a pasted CSV/table. `upsert:true` updates existing fromPath rows instead of skipping them.\nLive when the call returns (pushed to hosting, no build or Publish live); the result says so per target and names redirects to pages not published yet (404 until Publish live).",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -4101,7 +4101,7 @@
     },
     {
       "name": "bulk_delete_redirects",
-      "description": "Delete redirects in one transaction by EXACTLY ONE of `redirectIds`, `fromPaths`, `matches` (one redirect = one-item array). Run `find_redirects` FIRST and tell the user the count.\n`matches` (substring) is capped at 10 rows for you (every deleted 301 strands an inbound link): more -> REJECTED, nothing deleted; list them with `find_redirects`, show the operator, delete the confirmed ones by `redirectIds` (uncapped).",
+      "description": "Delete redirects in one transaction by EXACTLY ONE of `redirectIds`, `fromPaths`, `matches` (one redirect = one-item array). Run `find_redirects` FIRST and tell the user the count.\n`matches` (substring) is capped at 10 rows for you (every deleted 301 strands an inbound link): more -> REJECTED, nothing deleted; list them with `find_redirects`, show the operator, delete the confirmed ones by `redirectIds` (uncapped).\nGone from the live site when the call returns (pushed to hosting, no build); the result says so per target.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,

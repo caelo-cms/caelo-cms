@@ -12,9 +12,14 @@
  * routing-manifest patched; rollback re-syncs an archived build into
  * `current/`.
  *
- * #587 — nothing to do for redirects here: the Caddy container reloads
- * itself when a sync changes a build's `_redirects.caddy` import
+ * #587 — publishing needs nothing extra for redirects: the Caddy container
+ * reloads itself when a sync changes a build's `_redirects.caddy` import
  * (caddy-redirects.ts in @caelo-cms/provisioning).
+ *
+ * #1157 — a saved redirect goes live without a build: `syncRedirects`
+ * rewrites the redirect files in the target's `current/` directory against
+ * the files that directory serves, and the same reload loop picks the
+ * snippet up within a few seconds.
  */
 
 import { existsSync } from "node:fs";
@@ -25,12 +30,20 @@ import {
   open,
   readdir,
   readFile,
+  rename,
   rm,
   stat,
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import type { PromoteSummary, PublishSummary, StaticPublisher } from "./static-publisher.js";
+import { CADDY_REDIRECTS_FILE, emitCaddyRedirects, formatRedirectsFile } from "@caelo-cms/shared";
+import { planRedirectSync } from "./redirect-sync-plan.js";
+import type {
+  PromoteSummary,
+  PublishSummary,
+  RedirectSyncResult,
+  StaticPublisher,
+} from "./static-publisher.js";
 
 export const selfHostedStaticPublisher: StaticPublisher = {
   servesCurrentDir: true,
@@ -142,6 +155,44 @@ export const selfHostedStaticPublisher: StaticPublisher = {
     return summary;
   },
 
+  async syncRedirects({ target, rows, outputRoot }): Promise<RedirectSyncResult> {
+    const currentDir = resolve(outputRoot, target.outDir, "current");
+    const served = await listFiles(currentDir);
+    if (served.size === 0) {
+      throw new Error(
+        `selfHostedStaticPublisher.syncRedirects: ${currentDir} serves no files, so the redirects cannot be checked against a published build. ${target.env === "production" ? "Publish live" : "Stage"} first; the redirects go out with it.`,
+      );
+    }
+    const sync = planRedirectSync(rows, target.pageUrlStyle ?? "directory", served);
+    const snippet = emitCaddyRedirects(sync.plan);
+    const table = formatRedirectsFile(rows);
+    const files: readonly (readonly [string, string])[] = [
+      ["_redirects", table],
+      ["_redirects.cloudflare", table],
+      // Last: the Caddy reload loop watches this one.
+      [CADDY_REDIRECTS_FILE, snippet],
+    ];
+    let changed = false;
+    for (const [name, body] of files) {
+      const path = join(currentDir, name);
+      const existing = await readFile(path, "utf8").catch(() => null);
+      if (existing === body) continue;
+      // Write-then-rename: the reload loop must never read a half-written snippet.
+      const tmp = join(currentDir, `.${name}.${process.pid}.tmp`);
+      await writeFile(tmp, body, "utf8");
+      await rename(tmp, path);
+      changed = true;
+    }
+    return {
+      outcome: changed ? "applied" : "unchanged",
+      redirectCount: sync.redirectCount,
+      goneCount: sync.goneCount,
+      shadowedCount: sync.shadowedCount,
+      unservedTargets: sync.unservedTargets,
+      location: `${target.outDir}/current/${CADDY_REDIRECTS_FILE}`,
+    };
+  },
+
   async readLiveFiles({ live, paths }) {
     const out = new Map<string, Buffer | null>();
     for (const path of paths) {
@@ -251,6 +302,21 @@ function parseJsonOrNull(raw: string): unknown {
 function basename(p: string): string {
   const i = p.lastIndexOf("/");
   return i === -1 ? p : p.slice(i + 1);
+}
+
+/** Every file below `dir`, relative and `/`-separated; empty when `dir` is missing. */
+async function listFiles(dir: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  const walk = async (rel: string): Promise<void> => {
+    const entries = await readdir(join(dir, rel), { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) await walk(childRel);
+      else out.add(childRel);
+    }
+  };
+  await walk("");
+  return out;
 }
 
 async function countFiles(dir: string): Promise<number> {

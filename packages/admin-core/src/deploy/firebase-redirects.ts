@@ -30,7 +30,12 @@
  * visitors and crawlers that second hop.
  */
 
-import { buildRedirectPlan, parseRedirectsFile, type RedirectStatusCode } from "@caelo-cms/shared";
+import {
+  buildRedirectPlan,
+  parseRedirectsFile,
+  type RedirectPlan,
+  type RedirectStatusCode,
+} from "@caelo-cms/shared";
 
 /** One entry of a Hosting version's `config.redirects` (REST shape). */
 export interface FirebaseRedirect {
@@ -65,11 +70,22 @@ export function firebaseRedirectsFromFile(
   pageUrlStyle: "directory" | "no-extension",
   servedFiles: ReadonlySet<string>,
 ): FirebaseRedirect[] {
-  const plan = buildRedirectPlan({
-    rows: parseRedirectsFile(redirectsFile),
-    pageUrlStyle,
-    servedFiles,
-  });
+  return firebaseRedirectsFromPlan(
+    buildRedirectPlan({
+      rows: parseRedirectsFile(redirectsFile),
+      pageUrlStyle,
+      servedFiles,
+    }),
+  );
+}
+
+/**
+ * The Hosting redirect rules of a redirect plan (see
+ * {@link firebaseRedirectsFromFile} for why 410 rows are left out). Also used
+ * by the redirect sync on save (#1157), which builds the plan from the table
+ * against the live version's files.
+ */
+export function firebaseRedirectsFromPlan(plan: RedirectPlan): FirebaseRedirect[] {
   return plan.redirects.map((r) => ({
     // The plan lists `/old` and `/old/`, or a single path (the root, a
     // file-like path); one anchored regex covers them.
@@ -80,4 +96,27 @@ export function firebaseRedirectsFromFile(
     location: r.location,
     statusCode: r.statusCode,
   }));
+}
+
+/**
+ * True when a version's `config.redirects` (as the REST API returns it)
+ * already equals `next`, field by field and in order — the sync then
+ * creates no release. Order matters: Hosting applies the first match.
+ */
+export function sameFirebaseRedirects(
+  current: readonly unknown[] | undefined,
+  next: readonly FirebaseRedirect[],
+): boolean {
+  const canonical = (r: unknown): string => {
+    const o = (r ?? {}) as Record<string, unknown>;
+    return JSON.stringify([
+      o.regex ?? null,
+      o.glob ?? null,
+      o.location ?? null,
+      Number(o.statusCode),
+    ]);
+  };
+  const a = (current ?? []).map(canonical);
+  const b = next.map(canonical);
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }

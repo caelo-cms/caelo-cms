@@ -9,6 +9,7 @@
 import { execute } from "@caelo-cms/query-api";
 import { bulkCreateRedirectsToolInput } from "@caelo-cms/shared";
 import { describeError } from "./_describe-error.js";
+import { redirectSyncNote } from "./_redirect-sync-note.js";
 import type { ToolDefinitionWithHandler } from "./dispatch.js";
 
 export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
@@ -16,7 +17,8 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
 > = {
   name: "bulk_create_redirects",
   description:
-    "Create redirects in one tx: a single one, a list ('/old-blog/* -> /blog/*' across many paths), a pasted CSV/table. `upsert:true` updates existing fromPath rows instead of skipping them.",
+    "Create redirects in one tx: a single one, a list ('/old-blog/* -> /blog/*' across many paths), a pasted CSV/table. `upsert:true` updates existing fromPath rows instead of skipping them.\n" +
+    "Live when the call returns (pushed to hosting, no build or Publish live); the result says so per target and names redirects to pages not published yet (404 until Publish live).",
   schema: bulkCreateRedirectsToolInput,
   inputSchema: {
     type: "object",
@@ -58,7 +60,7 @@ export const bulkCreateRedirectsTool: ToolDefinitionWithHandler<
     const v = r.value as { created: number; updated: number; skipped: number };
     return {
       ok: true,
-      content: `redirects: created=${v.created}, updated=${v.updated}, skipped=${v.skipped}`,
+      content: `redirects: created=${v.created}, updated=${v.updated}, skipped=${v.skipped}\n${await redirectSyncNote(ctx, toolCtx)}`,
     };
   },
 };

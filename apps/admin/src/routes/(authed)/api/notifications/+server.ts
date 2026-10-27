@@ -16,7 +16,7 @@ export const GET: RequestHandler = async ({ locals }) => {
   const res = await execute(registry, adapter, locals.ctx, "notifications.aggregate", {});
   if (!res.ok) {
     return json(
-      { pendingProposals: 0, failedDeploys: 0, staleBranches: 0, total: 0 },
+      { pendingProposals: 0, failedDeploys: 0, staleBranches: 0, failedRedirectSyncs: 0, total: 0 },
       { status: 200 },
     );
   }

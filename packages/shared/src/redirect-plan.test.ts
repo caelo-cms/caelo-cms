@@ -11,6 +11,7 @@ import {
   formatRedirectsFile,
   parseRedirectsFile,
   type RedirectTableRow,
+  redirectsToUnservedPaths,
 } from "./redirect-plan.js";
 
 const NO_FILES: ReadonlySet<string> = new Set();
@@ -139,5 +140,29 @@ describe("buildRedirectPlan", () => {
     const rows = [row("/z", "/1"), row("/a", "/2")];
     expect(plan(rows).redirects.map((r) => r.fromPath)).toEqual(["/z", "/a"]);
     expect(plan(rows)).toEqual(plan([...rows]));
+  });
+});
+
+describe("redirectsToUnservedPaths (#1157)", () => {
+  const served = new Set(["index.html", "live/index.html", "doc.pdf"]);
+  it("reports redirects whose target the build does not serve, nothing else", () => {
+    const p = plan(
+      [
+        row("/a", "/live"),
+        row("/b", "/draft-page"),
+        row("/c", "/doc.pdf"),
+        row("/d", "/missing.pdf"),
+        row("/e", "/api/forms/x"),
+        row("/f", "/live?ref=1"),
+        row("/g", "/"),
+      ],
+      served,
+    );
+    expect(redirectsToUnservedPaths(p, served).map((r) => r.fromPath)).toEqual(["/b", "/d"]);
+  });
+
+  it("judges a chain by its final hop", () => {
+    const p = plan([row("/x", "/y"), row("/y", "/live")], served);
+    expect(redirectsToUnservedPaths(p, served)).toEqual([]);
   });
 });
