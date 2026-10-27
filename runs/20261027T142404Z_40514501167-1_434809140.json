@@ -1,0 +1,1 @@
+{"totalMicrocents" : 434809140, "calls" : 12, "inputTokens" : 6062288, "outputTokens" : 85003, "cachedTokens" : 5679123, "unpricedCalls" : 0, "byModel" : [{"model":"claude-sonnet-5","calls":12,"microcents":434809140}]}
