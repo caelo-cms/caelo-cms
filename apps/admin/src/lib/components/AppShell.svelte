@@ -11,6 +11,7 @@
     LayoutDashboard,
     ListTree,
     LogOut,
+    Menu,
     Moon,
     Package,
     Palette,
@@ -30,6 +31,12 @@
   import RunningAgentsIndicator from "#lib/components/agents/RunningAgentsIndicator.svelte";
   import { Button } from "#lib/components/ui/button/index.js";
   import { Separator } from "#lib/components/ui/separator/index.js";
+  import {
+    Sheet,
+    SheetContent,
+    SheetDescription,
+    SheetTitle,
+  } from "#lib/components/ui/sheet/index.js";
   import {
     activeNavHref,
     CONTENT_GROUP_ID,
@@ -141,6 +148,14 @@
     pluginsOpen || nav.plugins.some((l) => l.href === activeHref),
   );
 
+  // Phones (below `md`) have no sidebar: the same navigation opens in a
+  // sheet from the header's menu button, and closes once a link navigates.
+  let mobileNavOpen = $state(false);
+  $effect(() => {
+    void page.url.pathname;
+    mobileNavOpen = false;
+  });
+
   const linkClass = (active: boolean) =>
     cn(
       "flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors motion-reduce:transition-none",
@@ -187,14 +202,8 @@
   <Icon class="size-4" />
 {/snippet}
 
-<div class="flex min-h-screen w-full">
-  <aside class="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r bg-card md:flex">
-    <div class="flex h-14 items-center border-b px-4">
-      <a href="/" class="flex items-center gap-2 font-semibold" aria-label="Caelo CMS — Dashboard">
-        <CaeloMark variant="open" size={28} />
-        <span class="text-base tracking-tight">Caelo</span>
-      </a>
-    </div>
+{#snippet mainNav(instance: "desktop" | "mobile")}
+  {@const idPrefix = instance === "mobile" ? "m-" : ""}
     <nav aria-label="Main navigation" class="flex-1 space-y-1 overflow-y-auto px-2 py-4">
       {#if nav.liveEdit}
         <!-- Stretched link: the whole button is clickable, but the link's
@@ -209,14 +218,14 @@
           <a
             href={nav.liveEdit.href}
             aria-current={activeHref === nav.liveEdit.href ? "page" : undefined}
-            aria-describedby="nav-live-edit-description"
+            aria-describedby="{idPrefix}nav-live-edit-description"
             data-testid="nav-live-edit"
             class="flex items-center gap-3 text-sm font-semibold outline-none after:absolute after:inset-0 after:rounded-md"
           >
             {@render navIcon(nav.liveEdit.icon)}
             {nav.liveEdit.label}
           </a>
-          <span id="nav-live-edit-description" class="pl-7 text-xs text-primary-foreground/80"
+          <span id="{idPrefix}nav-live-edit-description" class="pl-7 text-xs text-primary-foreground/80"
             >{nav.liveEdit.description}</span
           >
         </div>
@@ -234,7 +243,7 @@
           type="button"
           class="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground motion-reduce:transition-none"
           aria-expanded={contentExpanded}
-          aria-controls="nav-group-{CONTENT_GROUP_ID}"
+          aria-controls="{idPrefix}nav-group-{CONTENT_GROUP_ID}"
           onclick={toggleContent}
         >
           {@render navIcon("content")}
@@ -246,7 +255,7 @@
             )}
           />
         </button>
-        <div id="nav-group-{CONTENT_GROUP_ID}" class="space-y-1 pl-4" hidden={!contentExpanded}>
+        <div id="{idPrefix}nav-group-{CONTENT_GROUP_ID}" class="space-y-1 pl-4" hidden={!contentExpanded}>
           {#each nav.content as item (item.href)}
             <a
               href={item.href}
@@ -264,7 +273,7 @@
           type="button"
           class="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground motion-reduce:transition-none"
           aria-expanded={pluginsExpanded}
-          aria-controls="nav-group-{PLUGINS_GROUP_ID}"
+          aria-controls="{idPrefix}nav-group-{PLUGINS_GROUP_ID}"
           data-testid="nav-plugins"
           onclick={togglePlugins}
         >
@@ -277,7 +286,7 @@
             )}
           />
         </button>
-        <div id="nav-group-{PLUGINS_GROUP_ID}" class="space-y-1 pl-4" hidden={!pluginsExpanded}>
+        <div id="{idPrefix}nav-group-{PLUGINS_GROUP_ID}" class="space-y-1 pl-4" hidden={!pluginsExpanded}>
           {#each nav.plugins as item (item.href)}
             {@const PanelIcon = PANEL_ICONS[item.icon]}
             <a
@@ -302,6 +311,9 @@
         </a>
       {/if}
     </nav>
+{/snippet}
+
+{#snippet accountBlock()}
     <Separator />
     <div class="flex flex-col gap-1 p-2 text-sm">
       {#if userEmail}
@@ -327,33 +339,56 @@
         </Button>
       </form>
     </div>
+{/snippet}
+
+<div class="flex min-h-screen w-full">
+  <aside class="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r bg-card md:flex">
+    <div class="flex h-14 items-center border-b px-4">
+      <a href="/" class="flex items-center gap-2 font-semibold" aria-label="Caelo CMS — Dashboard">
+        <CaeloMark variant="open" size={28} />
+        <span class="text-base tracking-tight">Caelo</span>
+      </a>
+    </div>
+    {@render mainNav("desktop")}
+    {@render accountBlock()}
   </aside>
 
-  <div class="flex w-full flex-1 flex-col">
+  <div class="flex w-full min-w-0 flex-1 flex-col">
     <header
-      class="sticky top-0 z-30 flex h-14 items-center gap-4 border-b bg-background/95 px-4 backdrop-blur md:px-6"
+      class="sticky top-0 z-30 flex h-14 items-center gap-2 border-b bg-background/95 px-2 backdrop-blur sm:gap-4 sm:px-4 md:px-6"
     >
-      <nav aria-label="Breadcrumb" class="flex items-center gap-2 text-sm">
+      <Button
+        variant="ghost"
+        size="icon"
+        class="size-10 shrink-0 md:hidden"
+        aria-label="Open menu"
+        aria-expanded={mobileNavOpen}
+        data-testid="mobile-nav-trigger"
+        onclick={() => (mobileNavOpen = true)}
+      >
+        <Menu class="size-5" />
+      </Button>
+      <nav aria-label="Breadcrumb" class="flex min-w-0 items-center gap-2 overflow-hidden text-sm">
         {#if breadcrumbCrumbs.length === 0}
           <span class="font-medium">Dashboard</span>
         {:else}
           {#each breadcrumbCrumbs as crumb, i (crumb.href)}
-            {#if i > 0}<span class="text-muted-foreground">/</span>{/if}
+            {#if i > 0}<span class="hidden text-muted-foreground sm:inline">/</span>{/if}
             {#if i === breadcrumbCrumbs.length - 1}
-              <span class="font-medium">{crumb.label}</span>
+              <span class="truncate font-medium">{crumb.label}</span>
             {:else}
               <a
                 href={crumb.href}
-                class="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                class="hidden shrink-0 text-muted-foreground underline-offset-4 hover:text-foreground hover:underline sm:inline"
                 >{crumb.label}</a
               >
             {/if}
           {/each}
         {/if}
       </nav>
-      <div class="ml-auto flex items-center gap-2">
+      <div class="ml-auto flex shrink-0 items-center gap-1 sm:gap-2">
         {#if aiSpend7d}
-          <span class="text-xs text-muted-foreground" title="AI spend, last 7 days">
+          <span class="hidden text-xs text-muted-foreground sm:inline" title="AI spend, last 7 days">
             AI · {aiSpend7d.display} / 7d
           </span>
         {/if}
@@ -368,7 +403,21 @@
         </Button>
       </div>
     </header>
-    <main class="flex-1">
+    <Sheet bind:open={mobileNavOpen}>
+      <SheetContent side="left" class="flex w-72 flex-col gap-0 p-0" data-testid="mobile-nav">
+        <div class="flex h-14 items-center border-b px-4">
+          <a href="/" class="flex items-center gap-2 font-semibold" aria-label="Caelo CMS — Dashboard">
+            <CaeloMark variant="open" size={28} />
+            <span class="text-base tracking-tight">Caelo</span>
+          </a>
+        </div>
+        <SheetTitle class="sr-only">Menu</SheetTitle>
+        <SheetDescription class="sr-only">Main navigation</SheetDescription>
+        {@render mainNav("mobile")}
+        {@render accountBlock()}
+      </SheetContent>
+    </Sheet>
+    <main class="min-w-0 flex-1">
       <div class="mx-auto w-full max-w-7xl px-4 py-6 md:px-6 md:py-8">
         {@render children?.()}
       </div>

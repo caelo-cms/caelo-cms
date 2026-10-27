@@ -505,9 +505,12 @@
   </div>
 
   <!-- Slim toolbar — wordmark + URL + page picker + back-to-admin. No
-       sidebar, no breadcrumbs, no admin chrome. -->
+       sidebar, no breadcrumbs, no admin chrome. On phones it wraps: the
+       page picker takes its own row and the desktop-only readouts (URL,
+       AI spend, side-by-side Diff) step aside; the chat overlay starts
+       below whatever height it measures (toolbarHeight). -->
   <header
-    class="z-30 flex h-11 shrink-0 items-center gap-3 border-b bg-background px-3 text-sm"
+    class="z-30 flex min-h-11 shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-b bg-background px-3 py-1.5 text-sm"
     data-testid="edit-toolbar"
     bind:clientHeight={toolbarHeight}
   >
@@ -519,9 +522,9 @@
       <ArrowLeft class="size-4" />
       <span class="font-semibold">Caelo</span>
     </a>
-    <span class="text-muted-foreground/50">/</span>
+    <span class="hidden text-muted-foreground/50 sm:inline">/</span>
     <code
-      class="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
+      class="hidden max-w-[40vw] truncate rounded bg-muted px-1.5 py-0.5 text-xs text-foreground sm:inline"
       data-testid="edit-url"
     >{pluginPreviewUrl ? "Preview" : urlText}</code>
     {#if pluginPreviewUrl}<button type="button" class="underline" onclick={closePluginPreview}>Website preview</button>{/if}
@@ -534,7 +537,7 @@
          alignment when spend is absent (op error → null). -->
     {#if data.aiSpend7d}
       <span
-        class="ml-auto text-xs text-muted-foreground"
+        class="ml-auto hidden text-xs text-muted-foreground md:inline"
         title="AI spend, last 7 days"
         data-testid="edit-ai-spend"
       >AI · {aiSpendDisplay} / 7d</span>
@@ -588,7 +591,7 @@
       aria-pressed={diffOpen}
       disabled={!!pluginPreviewUrl || !activePage || !data.activeChat}
       class={cn(
-        "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors motion-reduce:transition-none",
+        "hidden items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors motion-reduce:transition-none md:inline-flex",
         diffOpen
           ? "border-link bg-link/10 text-link hover:bg-link/15"
           : "border-border bg-background text-foreground hover:bg-accent",
@@ -602,7 +605,7 @@
       Diff
     </button>
     {#if !pluginPreviewUrl && data.pages.length > 0}
-      <div class="w-64">
+      <div class="order-last w-full sm:order-none sm:w-64" data-testid="edit-page-picker">
         <Combobox
           items={data.pages.map((p) => ({
             value: p.id,
