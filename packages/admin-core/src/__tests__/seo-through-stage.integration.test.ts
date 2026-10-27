@@ -358,4 +358,34 @@ describe("#1156 page SEO goes through Stage", () => {
     expect((await pendingPages(exp.id)).map((x) => x.entityId)).toEqual([p]);
     expect(await pendingPages(d.id)).toEqual([]);
   });
+  it("serializes SEO writes outside a chat, so concurrent field writes compose", async () => {
+    const p = await page("concurrent");
+    for (let round = 0; round < 5; round++) {
+      await op(SYS, "pages_seo.set", { pageId: p, noindex: false, metaDescription: "base" });
+      await Promise.all([
+        op(SYS, "pages_seo.set", { pageId: p, noindex: true }),
+        op(SYS, "pages_seo.optimize", { pageId: p, metaDescription: `optimized ${round}` }),
+      ]);
+      expect(await seo(SYS, p)).toMatchObject({
+        noindex: true,
+        metaDescription: `optimized ${round}`,
+      });
+    }
+  });
+
+  it("refuses an OG image that is not a library image, in a chat and outside one", async () => {
+    const p = await page("og");
+    const a = await chat("OG image");
+    const missing = "00000000-0000-4000-8000-0000000000aa";
+    for (const ctx of [a.ctx, SYS]) {
+      const r = await execute(registry, adapter, ctx, "pages_seo.set", {
+        pageId: p,
+        ogImageAssetId: missing,
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(JSON.stringify(r.error)).toContain("find_media");
+    }
+    expect(await pendingPages(a.id)).toEqual([]);
+    expect(await seo(a.ctx, p)).toBeNull();
+  });
 });

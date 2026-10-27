@@ -14,6 +14,7 @@
 
 import { OperationAbortError, type QueryError, type TransactionRunner } from "@caelo-cms/query-api";
 import { type ExecutionContext, err, ok, type Result } from "@caelo-cms/shared";
+import { sql } from "drizzle-orm";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 import {
   emitSnapshot,
@@ -84,17 +85,25 @@ export async function openPageSeoWrite(
   if (!before.ok) return before;
   const early = refuse?.(before.value);
   if (early) return err(early);
-  if (!ctx.chatBranchId) return before;
-  const lock = await checkAndAcquireEntityLock(tx, {
-    kind: "page",
-    entityId: pageId,
-    chatBranchId: ctx.chatBranchId,
-    holderKey: ctx.chatTaskId,
-  });
-  if (!lock.permitted) {
-    return err(await entityWriteBlockedError(tx, operation, "page", pageId, lock));
+  if (ctx.chatBranchId) {
+    const lock = await checkAndAcquireEntityLock(tx, {
+      kind: "page",
+      entityId: pageId,
+      chatBranchId: ctx.chatBranchId,
+      holderKey: ctx.chatTaskId,
+    });
+    if (!lock.permitted) {
+      return err(await entityWriteBlockedError(tx, operation, "page", pageId, lock));
+    }
+  } else {
+    // Outside a chat the write replaces the whole live row from what it
+    // read: serialize writers of this page's SEO on the page row, so two
+    // concurrent writes (a panel noindex + a system optimize) compose
+    // instead of the later one dropping the earlier one's fields.
+    await tx.execute(sql`SELECT 1 FROM pages WHERE id = ${pageId}::uuid FOR UPDATE`);
   }
-  // Read again under the lock (a takeover may have moved a change here).
+  // Read again under the lock (a takeover, or the write we waited for,
+  // may have changed the state).
   const opened = await peekPageSeo(ctx, tx, operation, pageId);
   const late = opened.ok ? refuse?.(opened.value) : opened.error;
   if (late) throw new OperationAbortError(late);
@@ -119,6 +128,16 @@ export async function commitPageSeoWrites(
   description: string,
 ): Promise<void> {
   if (writes.length === 0) return;
+  await assertOgImagesUsable(
+    tx,
+    writes
+      .filter(
+        (w) =>
+          w.next.ogImageAssetId !== null &&
+          w.next.ogImageAssetId !== w.opened.current.ogImageAssetId,
+      )
+      .map((w) => w.next.ogImageAssetId as string),
+  );
   const entities: SnapshotEntity[] = [];
   for (const { opened, next } of writes) {
     if (ctx.chatBranchId) {
@@ -141,5 +160,38 @@ export async function commitPageSeoWrites(
     chatTaskId: ctx.chatTaskId ?? null,
     chatBranchId: ctx.chatBranchId ?? null,
     entities,
+  });
+}
+
+/**
+ * A new OG image must be a library image that can ship on a page. The live
+ * row's foreign key checked existence only when SEO was written live; a
+ * chat's SEO now lands in snapshot JSON, so the check happens here, for
+ * both paths, before anything is written (thrown: the write and any lock
+ * takeover roll back). Soft-deleted assets are refused too — a page would
+ * render no og:image for them.
+ */
+async function assertOgImagesUsable(
+  tx: TransactionRunner,
+  assetIds: readonly string[],
+): Promise<void> {
+  if (assetIds.length === 0) return;
+  const unique = [...new Set(assetIds)];
+  const rows = (await tx.execute(sql`
+    SELECT id::text AS id FROM media_assets
+    WHERE id IN (${sql.join(
+      unique.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    )}) AND deleted_at IS NULL AND visibility = 'library'
+  `)) as unknown as { id: string }[];
+  const found = new Set(rows.map((r) => r.id));
+  const bad = unique.filter((id) => !found.has(id));
+  if (bad.length === 0) return;
+  throw new OperationAbortError({
+    kind: "HandlerError",
+    operation: "pages_seo",
+    message:
+      `ogImageAssetId ${bad.join(", ")} is not a usable library image (unknown, deleted, or a generation reference) — ` +
+      "nothing was written. Take the id of an image from find_media (or import one with import_media_from_urls), or pass null to remove the OG image, and call again.",
   });
 }
