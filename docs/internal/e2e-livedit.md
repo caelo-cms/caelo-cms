@@ -650,6 +650,33 @@ A plan that finds the PR moved on after the CI wait skips, and a paid job
 that starts for a commit that is no longer the PR head cancels its own run
 before any paid step.
 
+**Two runs of the same commit.** A push and a `real-ai-full` label seconds
+apart start two runs for one commit (PR #1182: runs 40514501167 and
+40514501647). Both plans finish before either paid job does, so both plan
+the same scenarios, and the second paid job — queued behind the first by
+the concurrency group — used to pay for them again. The plan therefore
+records the runs that were already complete when it read the greens
+(`consultedRuns` in `plan.json`). Once the paid job holds the slot, its
+step "Guard — results recorded while this run waited" lists the paid jobs
+of the other runs of the same commit, and `lib/plan.ts after-wait`
+(`replanAfterWait`) decides from those that finished since the plan:
+
+- one ended red (failure, timeout, …) → this job **fails** without running
+  anything and leaves that run's PR comment in place. The earlier run's
+  failures (a red scenario or the run-level bug gate) stand for the commit;
+  a duplicate must not re-roll them into a green check. Re-run that run, or
+  push a fix.
+- otherwise their recorded greens carry over (same `{id, key}` rule as a
+  follow-up push), `plan.json` and the summary are rewritten so the run
+  records them again, and only the rest runs. With nothing left the job
+  succeeds without paid steps, like a plan whose every scenario is already
+  green. A narrowed run never writes the `green-tree` artifact.
+
+Cancelled and skipped jobs carry no verdict and are ignored, and so are
+runs the plan already consulted: adding a label on purpose after a red run
+still re-runs the red scenarios, as before. A listing that cannot be read
+warns and runs the plan unchanged.
+
 ### Weekly budget
 
 Every run that reached the provider — PR, release gate, manual dispatch —

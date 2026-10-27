@@ -157,7 +157,7 @@ describe("e2e-livedit.yml — main runs once per release, gated in release-cut",
     // tree — a partial PR run proves nothing about the others, and a run the
     // budget stopped before the suite proves nothing at all.
     const fullAndRan =
-      "success() && needs.plan.outputs.full == 'true' && steps.suite.outcome == 'success'";
+      "success() && needs.plan.outputs.full == 'true' && steps.dedupe.outputs.dropped != 'true' && steps.suite.outcome == 'success'";
     expect(record?.if).toBe(fullAndRan);
     expect(record?.run ?? "").toContain("git rev-parse 'HEAD^{tree}'");
     expect(upload?.if).toBe(fullAndRan);
@@ -290,8 +290,10 @@ describe("e2e-livedit.yml — plan, budget, CI wait, no cancelled paid runs", ()
 
   it("L6: runs the planned specs; records greens only past the bug gate", () => {
     const suite = aiSteps.find((s) => s.id === "suite");
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
-    expect(suite?.env?.CAELO_LIVEDIT_SCENARIOS).toBe("${{ needs.plan.outputs.scenarios }}");
+    expect(suite?.env?.CAELO_LIVEDIT_SCENARIOS).toBe(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
+      "${{ steps.dedupe.outputs.scenarios || needs.plan.outputs.scenarios }}",
+    );
     const record = aiSteps.find((s) => s.id === "greens");
     expect(record?.if).toBe(
       "always() && steps.suite.outcome != 'skipped' && steps.bug-gate.outcome == 'success'",
@@ -360,6 +362,53 @@ describe("e2e-livedit.yml — plan, budget, CI wait, no cancelled paid runs", ()
     const tree = aiSteps.filter((s) => (s.name ?? "").includes("tested tree"));
     expect(tree.length).toBe(2);
     for (const s of tree) expect(s.if).toContain("steps.suite.outcome == 'success'");
+  });
+
+  it("L14: a duplicate run of the same commit re-reads the other runs once it holds the slot", () => {
+    // The plan lists every run complete when it read the greens.
+    const select = planSteps.find((s) => s.id === "select")?.run ?? "";
+    expect(select).toContain('> "$OUT/consulted.txt"');
+    expect(select).toContain('--consulted "$OUT/consulted.txt"');
+    // After the stale guard (so after the concurrency wait), before the
+    // paid guard and every paid step.
+    const idx = (id: string) => aiSteps.findIndex((s) => s.id === id);
+    const dedupe = aiSteps[idx("dedupe")];
+    expect(idx("dedupe")).toBeGreaterThan(idx("stale"));
+    expect(idx("dedupe")).toBeLessThan(idx("paid"));
+    expect(idx("dedupe")).toBeLessThan(idx("provider-preflight"));
+    expect(dedupe?.if).toBe("github.event_name == 'pull_request'");
+    expect(dedupe?.env?.JOB_NAME).toBe(ai?.name);
+    const run = dedupe?.run ?? "";
+    // Same commit, other runs, the paid job's latest attempt.
+    expect(run).toContain("runs?event=pull_request&head_sha=$HEAD_SHA");
+    expect(run).toContain("select(.id != $RUN_ID)");
+    expect(run).toContain("jobs?filter=latest");
+    // Greens only from a green job the plan did not consult.
+    expect(run).toContain(String.raw`[ "$job" = "$(printf 'completed\tsuccess')" ] || continue`);
+    expect(run).toContain("e2e-livedit-scenario-greens-");
+    expect(run).toContain("plan.ts after-wait");
+    // The narrowed plan is the one recorded from.
+    expect(run).toContain('--out "$PLAN_DIR/plan.json"');
+    const record = aiSteps.find((s) => s.id === "greens")?.run ?? "";
+    expect(record).toContain("--plan apps/admin/test-results/livedit/plan/plan.json");
+    expect(dedupe?.env?.PLAN_DIR).toBe("apps/admin/test-results/livedit/plan");
+    // blocked fails the job; stop reaches the paid guard's stop.
+    expect(run).toMatch(/blocked\)[\s\S]*?exit 1 ;;/);
+    expect(run).toContain('echo "stop=true" >> "$GITHUB_OUTPUT"');
+    const paid = aiSteps[idx("paid")];
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
+    expect(paid?.env?.DEDUPE_STOP).toBe("${{ steps.dedupe.outputs.stop }}");
+    expect((paid?.run ?? "").indexOf('if [ "$DEDUPE_STOP" = "true" ]; then')).toBeLessThan(
+      (paid?.run ?? "").indexOf('if [ "$PAID" = "false" ]; then'),
+    );
+    // A narrowed run never records the tested tree for release-cut.
+    const tree = aiSteps.filter((s) => (s.name ?? "").includes("tested tree"));
+    for (const s of tree) expect(s.if).toContain("steps.dedupe.outputs.dropped != 'true'");
+    // The red run's comment stays.
+    const comment = aiSteps.find((s) => (s.name ?? "").startsWith("Push screenshots"));
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal GitHub Actions expression we match against
+    expect(comment?.env?.DEDUPE).toBe("${{ steps.dedupe.outputs.verdict }}");
+    expect(comment?.run ?? "").toContain('if [ "$DEDUPE" = "blocked" ]; then exit 0; fi');
   });
 
   it("L10: PRs run only with an opt-in label; the plan posts the opt-in comment", () => {

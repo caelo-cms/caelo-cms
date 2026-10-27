@@ -49,6 +49,13 @@ name: E2E Live Edit (real AI)
 #     already paid for): job-level concurrency queues the newest one and
 #     GitHub drops the older pending one; a job that starts for a commit that
 #     is no longer the PR head cancels itself before spending.
+#   - Two runs of the SAME commit (a push and a label seconds apart) both
+#     plan before either paid job ends; the second queues behind the first.
+#     Once it holds the slot it re-reads what the first left (plan.json
+#     consultedRuns, lib/plan.ts replanAfterWait): its greens carry over and
+#     nothing left to run passes without paid steps; a red first run FAILS
+#     the second — the commit's failures stand, a duplicate never re-rolls
+#     them green.
 #   - The release gate (release-cut dispatches this workflow on
 #     release-gate/<sha>) re-runs only the scenarios whose covered files (or
 #     the harness) changed since that scenario's last green on main, or
@@ -253,8 +260,13 @@ jobs:
           gh api "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" --paginate \
             --jq '.[] | .filename, (.previous_filename // empty)' > "$OUT/changed.txt"
           # Greens recorded by this PR's earlier runs (newest 15 completed).
-          for id in $(gh api "repos/$REPO/actions/workflows/e2e-livedit.yml/runs?event=pull_request&branch=$HEAD_REF&per_page=50" \
-            --jq "[.workflow_runs[] | select(.head_repository.full_name == \"$HEAD_REPO\" and .id != $RUN_ID and .status == \"completed\")] | .[0:15][] | .id"); do
+          # Every run complete at this point is listed in the plan
+          # (consultedRuns): the paid job treats a run of this commit that is
+          # NOT listed as news that arrived while it waited (lib/plan.ts
+          # replanAfterWait).
+          gh api "repos/$REPO/actions/workflows/e2e-livedit.yml/runs?event=pull_request&branch=$HEAD_REF&per_page=50" \
+            --jq "[.workflow_runs[] | select(.head_repository.full_name == \"$HEAD_REPO\" and .id != $RUN_ID and .status == \"completed\")][] | .id" > "$OUT/consulted.txt"
+          for id in $(head -n 15 "$OUT/consulted.txt"); do
             for aid in $(gh api "repos/$REPO/actions/runs/$id/artifacts?per_page=100" \
               --jq '.artifacts[] | select(.expired == false and (.name | startswith("e2e-livedit-scenario-greens-"))) | .id'); do
               if gh api "repos/$REPO/actions/artifacts/$aid/zip" > "$OUT/$aid.zip"; then
@@ -263,7 +275,7 @@ jobs:
             done
           done
           bun run apps/admin/e2e-livedit/lib/plan.ts plan --mode pr --changed "$OUT/changed.txt" \
-            --greens "$OUT/greens" --labels "$labels" --out "$OUT/plan.json" \
+            --greens "$OUT/greens" --consulted "$OUT/consulted.txt" --labels "$labels" --out "$OUT/plan.json" \
             --comment "$OUT/opt-in-comment.md" > "$OUT/summary.md"
           cat "$OUT/summary.md"
 
@@ -523,7 +535,92 @@ jobs:
           name: e2e-livedit-plan-${{ github.run_id }}
           path: apps/admin/test-results/livedit/plan
 
-      # The last stop before paid work. (1) A release gate whose scenarios
+      # Two runs can plan the same commit before either paid job finishes —
+      # a push and a `real-ai-full` label seconds apart (PR #1182: runs
+      # 40514501167 + 40514501647 both planned the full suite). The job-level
+      # concurrency queues the second behind the first, and the plan's
+      # per-scenario reuse was computed before that wait, so the second paid
+      # for the identical commit again. Now that this job holds the slot,
+      # read the paid jobs of the OTHER runs of this commit that finished
+      # after the plan looked (plan.json consultedRuns) — lib/plan.ts
+      # replanAfterWait decides:
+      #   - one ended red → this job FAILS: its failures stand for the commit;
+      #     a duplicate must not re-roll them green (re-run that run instead);
+      #   - their greens carry over; nothing left to run → no paid step and a
+      #     passing, annotated check (what a plan whose every scenario is
+      #     already green gives), otherwise only the rest runs.
+      # A listing that cannot be read changes nothing (warns; the run pays
+      # as before this guard existed).
+      - name: Guard — results recorded while this run waited
+        id: dedupe
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_ID: ${{ github.run_id }}
+          JOB_NAME: Real-AI live-edit scenario
+          PLAN_DIR: apps/admin/test-results/livedit/plan
+        run: |
+          set -uo pipefail
+          dir=$(mktemp -d)
+          mkdir -p "$dir/greens"
+          : > "$dir/jobs.tsv"
+          if ! ids=$(gh api "repos/$REPO/actions/workflows/e2e-livedit.yml/runs?event=pull_request&head_sha=$HEAD_SHA&per_page=100" \
+              --jq ".workflow_runs[] | select(.id != $RUN_ID) | .id"); then
+            echo "::warning title=Real-AI duplicate check::could not list the other runs of ${HEAD_SHA:0:7}; running the plan as it stands."
+            exit 0
+          fi
+          for id in $ids; do
+            if ! job=$(gh api "repos/$REPO/actions/runs/$id/jobs?filter=latest&per_page=100" \
+                --jq ".jobs[] | select(.name == \"$JOB_NAME\") | [.status, (.conclusion // \"\")] | @tsv"); then
+              echo "::warning title=Real-AI duplicate check::could not read run $id; running the plan as it stands."
+              exit 0
+            fi
+            [ -n "$job" ] || continue
+            printf '%s\t%s\n' "$id" "$job" >> "$dir/jobs.tsv"
+            # Greens only from a green job the plan did not consult.
+            [ "$job" = "$(printf 'completed\tsuccess')" ] || continue
+            jq -e --argjson id "$id" '(.consultedRuns // []) | index($id) != null' "$PLAN_DIR/plan.json" > /dev/null && continue
+            for aid in $(gh api "repos/$REPO/actions/runs/$id/artifacts?per_page=100" \
+              --jq '.artifacts[] | select(.expired == false and (.name | startswith("e2e-livedit-scenario-greens-"))) | .id'); do
+              if gh api "repos/$REPO/actions/artifacts/$aid/zip" > "$dir/$aid.zip"; then
+                unzip -o -q "$dir/$aid.zip" -d "$dir/greens/$aid" || true
+              fi
+            done
+          done
+          if ! v=$(bun run apps/admin/e2e-livedit/lib/plan.ts after-wait --plan "$PLAN_DIR/plan.json" \
+              --jobs "$dir/jobs.tsv" --greens "$dir/greens" --out "$PLAN_DIR/plan.json" \
+              --summary "$PLAN_DIR/summary.md"); then
+            echo "::error title=Real-AI duplicate check::re-planning after the wait failed — see the log; re-run the workflow."
+            exit 1
+          fi
+          verdict=$(jq -r .verdict <<<"$v")
+          reason=$(jq -r .reason <<<"$v")
+          dropped=$(jq -r '.dropped | length > 0' <<<"$v")
+          {
+            echo "verdict=$verdict"
+            echo "dropped=$dropped"
+            echo "scenarios=$(jq -r .scenarios <<<"$v")"
+          } >> "$GITHUB_OUTPUT"
+          case "$verdict" in
+            blocked)
+              { echo "### Real-AI suite not run: earlier run on this commit"; echo "$reason"; } >> "$GITHUB_STEP_SUMMARY"
+              echo "::error title=Real-AI suite blocked::$reason"
+              exit 1 ;;
+            stop)
+              {
+                echo "### Real-AI suite: nothing left to run"
+                cat "$PLAN_DIR/summary.md" 2>/dev/null || true
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "::notice title=Real-AI suite carried over::$reason"
+              echo "stop=true" >> "$GITHUB_OUTPUT" ;;
+            *)
+              if [ "$dropped" = "true" ]; then echo "::notice title=Real-AI plan narrowed::$reason"; fi ;;
+          esac
+
+      # The last stop before paid work. (0) The duplicate check above left
+      # nothing to run: stop, green. (1) A release gate whose scenarios
       # all carried over (plan output `paid` false) ends here, green: the
       # greens it rests on are newer than 7 days and nothing they cover
       # changed. (2) The plan read the budget before its CI wait (up to 65
@@ -544,8 +641,13 @@ jobs:
           KIND: ${{ needs.plan.outputs.kind }}
           PAID: ${{ needs.plan.outputs.paid }}
           OVERRIDE_BUDGET: ${{ github.event.inputs.override_budget }}
+          DEDUPE_STOP: ${{ steps.dedupe.outputs.stop }}
         run: |
           set -euo pipefail
+          if [ "$DEDUPE_STOP" = "true" ]; then
+            echo "stop=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$PAID" = "false" ]; then
             {
               echo "### Real-AI suite: nothing to run"
@@ -659,8 +761,10 @@ jobs:
         id: suite
         env:
           # The planner's selection (comma-separated spec files); empty runs
-          # every spec. playwright.livedit.config.ts validates it.
-          CAELO_LIVEDIT_SCENARIOS: ${{ needs.plan.outputs.scenarios }}
+          # every spec. playwright.livedit.config.ts validates it. The
+          # duplicate check's narrowed list wins when it dropped scenarios
+          # (then it is never empty).
+          CAELO_LIVEDIT_SCENARIOS: ${{ steps.dedupe.outputs.scenarios || needs.plan.outputs.scenarios }}
           ANTHROPIC_API_KEY_E2E: ${{ secrets.ANTHROPIC_API_KEY_E2E }}
           # Optional: enables scenario-image-gen (real Nano Banana image
           # generation). Absent ⇒ that scenario skips itself. Add the secret
@@ -877,14 +981,14 @@ jobs:
       # scenarios it did not run.
       - name: Record the tested tree (green only)
         id: green-tree
-        if: success() && needs.plan.outputs.full == 'true' && steps.suite.outcome == 'success'
+        if: success() && needs.plan.outputs.full == 'true' && steps.dedupe.outputs.dropped != 'true' && steps.suite.outcome == 'success'
         run: |
           mkdir -p "$RUNNER_TEMP/green-tree"
           tree=$(git rev-parse 'HEAD^{tree}')
           echo "$tree" > "$RUNNER_TEMP/green-tree/tree.txt"
           echo "tree=$tree" >> "$GITHUB_OUTPUT"
       - name: Upload the tested tree (green only)
-        if: success() && needs.plan.outputs.full == 'true' && steps.suite.outcome == 'success'
+        if: success() && needs.plan.outputs.full == 'true' && steps.dedupe.outputs.dropped != 'true' && steps.suite.outcome == 'success'
         uses: actions/upload-artifact@v7
         with:
           name: e2e-livedit-green-tree-${{ steps.green-tree.outputs.tree }}
@@ -1022,6 +1126,7 @@ jobs:
           SUPERSEDED: ${{ steps.stale.outputs.superseded }}
           PLAN_REASON: ${{ needs.plan.outputs.reason }}
           CARRY: ${{ needs.plan.outputs.carry }}
+          DEDUPE: ${{ steps.dedupe.outputs.verdict }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -1033,6 +1138,10 @@ jobs:
           # An unrelated label kept the commit's red verdict: the comment of
           # the run that produced it (screenshots, errors) stays.
           if [ -n "$CARRY" ]; then exit 0; fi
+
+          # A run of this commit that finished red while this one waited
+          # keeps its verdict — and its comment.
+          if [ "$DEDUPE" = "blocked" ]; then exit 0; fi
 
           # The plan said "do not run" (CI red, plan failed): say why.
           if [ "$GUARD_OUTCOME" = "failure" ]; then
