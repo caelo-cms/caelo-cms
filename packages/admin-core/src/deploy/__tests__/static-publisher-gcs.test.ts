@@ -854,6 +854,77 @@ describe("gcsStaticPublisher — live objects the build no longer contains", () 
   });
 });
 
+describe("gcsStaticPublisher.syncRedirects — on save, no build (#1157)", () => {
+  async function seedLive(files: Record<string, string>): Promise<void> {
+    for (const [key, body] of Object.entries(files)) {
+      await staticBucket.file(key).save(Buffer.from(body), { contentType: "text/html" });
+    }
+  }
+
+  it("writes the table into the URL map against the live bucket's files", async () => {
+    await seedLive({
+      "index.html": "home",
+      "en/about/index.html": "about",
+      "_state/last-build-manifest.json": "{}",
+    });
+    const gcsStaticPublisher = await publisher();
+    const result = await gcsStaticPublisher.syncRedirects({
+      target: PROD_TARGET,
+      rows: [
+        { fromPath: "/old", toPath: "/en/about", statusCode: 301 },
+        // The live build serves this path: the live page wins.
+        { fromPath: "/en/about", toPath: "/elsewhere", statusCode: 301 },
+        { fromPath: "/promo", toPath: "/not-yet-published", statusCode: 302 },
+      ],
+      servedRunId: "run-live",
+      outputRoot: "/unused",
+    });
+    expect(result).toMatchObject({
+      outcome: "applied",
+      redirectCount: 2,
+      shadowedCount: 1,
+      unservedTargets: [{ fromPath: "/promo", location: "/not-yet-published/" }],
+    });
+    expect(urlMapUpdates).toHaveLength(1);
+    const paths = urlMapUpdates[0]?.pathMatchers?.[0]?.pathRules?.map((r) => r.paths);
+    expect(paths).toEqual([["/api/*"], ["/old", "/old/"], ["/promo", "/promo/"]]);
+
+    // The same table again writes nothing.
+    const again = await gcsStaticPublisher.syncRedirects({
+      target: PROD_TARGET,
+      rows: [
+        { fromPath: "/old", toPath: "/en/about", statusCode: 301 },
+        { fromPath: "/en/about", toPath: "/elsewhere", statusCode: 301 },
+        { fromPath: "/promo", toPath: "/not-yet-published", statusCode: 302 },
+      ],
+      servedRunId: "run-live",
+      outputRoot: "/unused",
+    });
+    expect(again.outcome).toBe("unchanged");
+    expect(urlMapUpdates).toHaveLength(1);
+  });
+
+  it("staging serves no redirects on gcp; an empty live bucket fails loudly", async () => {
+    const gcsStaticPublisher = await publisher();
+    const staging = await gcsStaticPublisher.syncRedirects({
+      target: TARGET,
+      rows: [{ fromPath: "/old", toPath: "/new", statusCode: 301 }],
+      servedRunId: "run-s",
+      outputRoot: "/unused",
+    });
+    expect(staging.outcome).toBe("not-served");
+    await expect(
+      gcsStaticPublisher.syncRedirects({
+        target: PROD_TARGET,
+        rows: [{ fromPath: "/old", toPath: "/new", statusCode: 301 }],
+        servedRunId: "run-live",
+        outputRoot: "/unused",
+      }),
+    ).rejects.toThrow(/live bucket .* is empty.*Publish live first/);
+    expect(urlMapUpdates).toEqual([]);
+  });
+});
+
 describe("gcsStaticPublisher — plugin-data release (#1155)", () => {
   async function publishLive() {
     await writeFile(

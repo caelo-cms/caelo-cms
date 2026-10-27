@@ -449,6 +449,7 @@ import {
 } from "./ops/quality/pending.js";
 import { getAuditOp, listAcceptancesOp, listAuditsOp } from "./ops/quality/read.js";
 import { recordAuditResultOp } from "./ops/quality/record-result.js";
+import { redirectSyncStatusOp, syncRedirectsProviderOp } from "./ops/redirect_sync.js";
 import {
   createRedirectOp,
   createRedirectsManyOp,
@@ -1024,6 +1025,9 @@ export function registerAdminOps(registry: OperationRegistry): void {
   registry.register(deleteRedirectOp);
   registry.register(createRedirectsManyOp);
   registry.register(deleteRedirectsManyOp);
+  // #1157 — redirects sync to the hosting provider on save, no build.
+  registry.register(syncRedirectsProviderOp);
+  registry.register(redirectSyncStatusOp);
   // Epic #724 rollout E — literal links → references, report, revert.
   registry.register(migrateLinksToReferencesOp);
   registry.register(getLinkMigrationReportOp);

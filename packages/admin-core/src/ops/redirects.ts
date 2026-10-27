@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * P6.7.5 — minimal redirect store. Auto-populated when a page slug
- * changes (`change_page_slug`) or a page is deleted with
- * `disposition='redirect'`. Every build carries the table and each
- * provider serves it at the edge (#587, redirect-plan.ts in
- * @caelo-cms/shared); the SvelteKit hooks fall back to the table on a
- * 404 so smoke / dev environments respect the redirect without a
- * serving layer in front.
- *
- * Future polish (P8): add a UI to edit / disable / delete; sitemap +
- * canonical-URL surface for SEO; bulk import.
+ * P6.7.5 — the redirect store. Auto-populated when a page slug changes
+ * (`change_page_slug`) or a page is deleted with `disposition='redirect'`.
+ * Each provider serves the table at the edge (#587, redirect-plan.ts in
+ * @caelo-cms/shared). #1157 — every write pushes it to the provider right
+ * after its commit, without a build (`requestRedirectSync`,
+ * deploy/redirect-sync.ts); every build carries it too. The SvelteKit hooks
+ * fall back to the table on a 404 so smoke / dev environments respect the
+ * redirect without a serving layer in front.
  */
 
 import { defineOperation } from "@caelo-cms/query-api";
@@ -18,6 +16,7 @@ import { err, ok, redirectTargetIssue, redirectTargetPathSchema } from "@caelo-c
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { recordAudit } from "../audit.js";
+import { requestRedirectSync } from "../deploy/redirect-sync.js";
 import { checkAndAcquireEntityLock, entityWriteBlockedError } from "../locks.js";
 
 const redirectRow = z.object({
@@ -84,6 +83,7 @@ export const createRedirectOp = defineOperation({
     if (!id) {
       return err({ kind: "HandlerError", operation: "redirects.create", message: "no id" });
     }
+    await requestRedirectSync(tx, ctx);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -222,6 +222,7 @@ export const deleteRedirectOp = defineOperation({
       );
     }
     await tx.execute(sql`DELETE FROM redirects WHERE id = ${input.redirectId}::uuid`);
+    await requestRedirectSync(tx, ctx);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -306,6 +307,7 @@ export const createRedirectsManyOp = defineOperation({
         created += 1;
       }
     }
+    if (created + updated > 0) await requestRedirectSync(tx, ctx);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,
@@ -417,6 +419,7 @@ export const deleteRedirectsManyOp = defineOperation({
       `)) as unknown as { exists: number }[];
       deleted += r.length;
     }
+    if (deleted > 0) await requestRedirectSync(tx, ctx);
     await recordAudit(tx, {
       actorId: ctx.actorId,
       requestId: ctx.requestId,

@@ -68,13 +68,15 @@ import { describeError } from "../ai/tools/_describe-error.js";
 import { recordAuditFromCtx, SYSTEM_ACTOR_ID } from "../audit.js";
 import { holdDeployRun } from "../deploy/deploy-run-lock.js";
 import { lockLiveReleases } from "../deploy/live-release-lock.js";
+import { resolveOutputRoot } from "../deploy/output-root.js";
 import { activePluginProblems } from "../deploy/plugin-problems.js";
+import { syncRedirectsInTx } from "../deploy/redirect-sync.js";
 import {
   type LiveBuildRef,
   loadStaticPublisher,
   type StaticPublisher,
 } from "../deploy/static-publisher.js";
-import { getDeployBridge, resolveOutputRoot } from "../ops/deploy.js";
+import { getDeployBridge } from "../ops/deploy.js";
 import { uuidList } from "../ops/quality/_shared.js";
 import { jsonbParam } from "../sql-helpers.js";
 
@@ -596,6 +598,15 @@ export const buildPluginDataOp = defineOperation({
                  phase_timings = ${jsonbParam(timer.phases())}
            WHERE id = ${runId}::uuid
         `);
+        // #1157 — the release starts from the live build's files, which
+        // carry the redirects of that build's time (self-hosted copies its
+        // archive over `current/`); redirects saved since must stay live.
+        // A failed push is recorded and retried, never fails this release.
+        await syncRedirectsInTx(tx, ctx, {
+          trigger: "publish",
+          targetIds: [t.id],
+          outputRoot: root,
+        });
       } catch (e) {
         const message = `publishing plugin data failed: ${e instanceof Error ? e.message : String(e)}`;
         await tx.execute(sql`

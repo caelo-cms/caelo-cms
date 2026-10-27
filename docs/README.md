@@ -9,6 +9,7 @@ Start with [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system overview) and [`CLAUD
 ## Architecture and patterns
 
 - [propose-execute-pattern.md](./propose-execute-pattern.md) — the apply + audit engine behind human-approved (gated) AI tools, and how to gate a new domain (CLAUDE.md §11.A).
+- [dev/redirects-and-settings-sync.md](./dev/redirects-and-settings-sync.md) — redirects sync to the hosting provider on save (no build), per provider; which global settings live at the provider and which go live with Publish live (#1157).
 - [internal-links.md](./internal-links.md) — internal links as page references: write-time canonicalisation, render-time resolution, and why a move rewrites no link (epic #724).
 - [lists.md](./lists.md) — lists, list types, page types and sources: the field system, template syntax, resolver, plugin translation hooks and the AI surface (epic #1107).
 - [module-type-and-composition.md](./module-type-and-composition.md) — the module `type` column and which modules may fill a nested slot.
