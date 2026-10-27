@@ -246,8 +246,38 @@ export interface InputAttribution {
   estCoveragePct: number;
 }
 
+/**
+ * A later turn of a chat whose first call did not read the chat's history
+ * from the prompt cache (read < half of what the chat's previous call
+ * sent), so the provider re-wrote it at the cache-write price — 12.5x a
+ * read. The usual cause is a changed prefix: the tool list sits at its
+ * very front, so `toolListChanged` (the turn's tool-catalogue estimate
+ * differs from the previous turn's) names the culprit when it is that.
+ */
+export interface TurnStartMiss {
+  turnNo: number;
+  session: string;
+  /** Tokens the turn's first call wrote to the cache. */
+  rewrittenTokens: number;
+  toolListChanged: boolean;
+}
+
+/** Prompt-cache health of a scenario: the two avoidable cost classes. */
+export interface CacheBreakdown {
+  turnStartMisses: TurnStartMiss[];
+  /** Calls that ran a provider-side tool search (each is one more model pass). */
+  toolSearchCalls: number;
+  /**
+   * Input those calls took beyond the call before them: the extra pass
+   * over the context (cache reads) plus the loaded definitions (uncached).
+   */
+  toolSearchExtraTokens: number;
+}
+
 export interface ScenarioMetrics {
   turns: TurnMetrics[];
+  /** Prompt-cache health; see {@link CacheBreakdown}. */
+  cache: CacheBreakdown;
   totals: Totals;
   cacheHitPct: number;
   freshPct: number;
@@ -337,6 +367,44 @@ function buildAttribution(turns: TurnMetrics[], totals: Totals): InputAttributio
   };
 }
 
+function cacheBreakdown(turns: readonly TurnMetrics[]): CacheBreakdown {
+  const turnStartMisses: TurnStartMiss[] = [];
+  const last = new Map<string, { inCall: number; catalogue: number | undefined }>();
+  let toolSearchCalls = 0;
+  let toolSearchExtraTokens = 0;
+  for (const t of turns) {
+    const prev = last.get(t.session);
+    const first = t.rows[0];
+    if (prev && first && first.cacheRead < prev.inCall / 2) {
+      const catalogue = t.split?.toolCatalogueTokens;
+      turnStartMisses.push({
+        turnNo: t.turnNo,
+        session: t.session,
+        rewrittenTokens: first.cacheWrite,
+        toolListChanged:
+          catalogue !== undefined && prev.catalogue !== undefined && catalogue !== prev.catalogue,
+      });
+    }
+    let before = prev?.inCall ?? 0;
+    for (const r of t.rows) {
+      if (r.serverToolCalls > 0) {
+        toolSearchCalls++;
+        toolSearchExtraTokens += Math.max(0, r.cacheRead - before) + r.freshIn;
+      } else {
+        before = r.inCall;
+      }
+    }
+    const end = t.rows.at(-1);
+    if (end) {
+      last.set(t.session, {
+        inCall: end.inCall,
+        catalogue: t.split?.toolCatalogueTokens ?? prev?.catalogue,
+      });
+    }
+  }
+  return { turnStartMisses, toolSearchCalls, toolSearchExtraTokens };
+}
+
 /**
  * Aggregate parsed rows into per-turn metrics. Turns split on a loop-counter
  * reset (each `runToolLoop` invocation restarts at 0), preserving chronological
@@ -391,6 +459,7 @@ export function aggregate(
 
   return {
     turns,
+    cache: cacheBreakdown(turns),
     totals,
     cacheHitPct: pct(totals.cacheRead, totals.inCall),
     freshPct: pct(totals.freshIn, totals.inCall),
@@ -443,14 +512,15 @@ const usd = (n: number): string => `$${n.toFixed(3)}`;
  * Rough $ rates for a per-scenario cost ESTIMATE. The authoritative total
  * is the `ai_calls` aggregation the CI already emits (`e2e-livedit-cost`);
  * this is a readable per-scenario breakdown alongside the tokens.
- * Token rates: Claude Sonnet-5 intro ($/1M). Image: Nano Banana
+ * Token rates: Claude Sonnet-5 standard pricing ($/1M, the `ai_pricing`
+ * row in force since 2026-09-01, migration 0186). Image: Nano Banana
  * (gemini-2.5-flash-image) $/image. Update if the livedit model changes.
  */
 export const RATES = {
-  freshInPerM: 2,
-  cacheReadPerM: 0.2,
-  cacheWritePerM: 2.5,
-  outPerM: 10,
+  freshInPerM: 3,
+  cacheReadPerM: 0.3,
+  cacheWritePerM: 3.75,
+  outPerM: 15,
   imagePerCall: 0.039,
 };
 
@@ -498,6 +568,17 @@ export function formatAttribution(m: ScenarioMetrics): string[] {
   ];
 }
 
+/** One line on the avoidable cache costs: turn-start misses and tool-search passes. */
+export function formatCache(c: CacheBreakdown): string {
+  const rewritten = c.turnStartMisses.reduce((a, m) => a + m.rewrittenTokens, 0);
+  const byToolList = c.turnStartMisses.filter((m) => m.toolListChanged).length;
+  return (
+    `CACHE: ${c.turnStartMisses.length} later turn(s) started with a cache miss ` +
+    `(${k(rewritten)} re-written; tool list changed in ${byToolList}) | ` +
+    `${c.toolSearchCalls} tool-search call(s), ${k(c.toolSearchExtraTokens)} extra input`
+  );
+}
+
 /** Human-readable per-turn/loop table + attribution + per-tool breakdown for one scenario. */
 export function formatReport(title: string, m: ScenarioMetrics): string {
   const out: string[] = [`### ${title}`];
@@ -534,6 +615,7 @@ export function formatReport(title: string, m: ScenarioMetrics): string {
       `read=${k(T.cacheRead)} (${m.cacheHitPct}%) write=${k(T.cacheWrite)} ` +
       `fresh=${k(T.freshIn)} (${m.freshPct}%) out=${k(T.out)}`,
     ...formatAttribution(m),
+    formatCache(m.cache),
     `COST (est): chat=${usd(c.chat)} + image=${usd(c.image)} (${c.imageCalls} img) = ${usd(c.total)}` +
       `  [authoritative total: CI ai_calls aggregation]`,
   );
