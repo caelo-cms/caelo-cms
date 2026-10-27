@@ -8,7 +8,7 @@
    * through the shared redirect plan (#587, @caelo-cms/shared).
    * #1157 — a save puts the table live on the hosting right away (no
    * build); the "Live on your hosting" card shows each target's state
-   * and a push that failed, with "Try again".
+   * and a push that failed, with "Try again now" for that target.
    */
 
   import { confirmSubmit } from "#lib/confirm.svelte.js";
@@ -52,8 +52,6 @@
     if (t.last.status === "not-served") return { label: "No redirects on this host", tone: "muted" };
     return { label: "Live", tone: "ok" };
   }
-
-  const anyBehind = $derived(data.syncTargets.some((t) => !t.inSync));
 </script>
 
 <div class="space-y-6">
@@ -107,6 +105,14 @@
               {/if}
             </p>
           {/if}
+          {#if !t.inSync}
+            <!-- Per target: retrying one never retries another that is still backing off. -->
+            <form method="post" action="?/sync">
+              <input type="hidden" name="_csrf" value={data.csrfToken} />
+              <input type="hidden" name="targetId" value={t.targetId} />
+              <Button type="submit" size="sm" variant="outline">Try again now</Button>
+            </form>
+          {/if}
           {#if t.inSync && t.last && t.last.unservedTargets.length > 0}
             <p class="text-muted-foreground">
               Waiting for Publish live:
@@ -123,12 +129,6 @@
           {/if}
         </div>
       {/each}
-      {#if anyBehind}
-        <form method="post" action="?/sync">
-          <input type="hidden" name="_csrf" value={data.csrfToken} />
-          <Button type="submit" size="sm" variant="outline">Try again now</Button>
-        </form>
-      {/if}
     </CardContent>
   </Card>
 

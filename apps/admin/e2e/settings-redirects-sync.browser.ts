@@ -4,14 +4,16 @@
  * #1157 — saved redirects go live on the hosting without a build, and a push
  * that failed is never silent. Pins:
  *   - Settings → Redirects shows, per target, whether the saved redirects are
- *     live; a failed push shows its error, the automatic retry and "Try again
- *     now";
+ *     live; a failed push shows its error, the automatic retry and that
+ *     target's "Try again now";
  *   - the notification bell names it and links to Settings → Redirects.
  *
  * The failure is seeded as the sync leaves it (target behind, last error,
  * a failed attempt in the history): the suite's stack has no hosting to fail
- * against on demand. The test shares the install's sync state rows, so it
- * resets them before and after.
+ * against on demand. The spec owns only the production target's sync state
+ * (it resets it before and after) and asserts only production's row: specs
+ * running in parallel seed staging runs with no build on disk, so staging's
+ * row may show a real failure at any time.
  */
 
 import { expect, type Page, test } from "@playwright/test";
@@ -63,7 +65,7 @@ test.describe("Redirects live on the hosting (#1157)", () => {
     await expect(production).toContainText("Not live — push failed");
     await expect(production).toContainText("E2E: the URL-map update failed");
     await expect(production).toContainText("Retried automatically");
-    await expect(card.getByRole("button", { name: "Try again now" })).toBeVisible();
+    await expect(production.getByRole("button", { name: "Try again now" })).toBeVisible();
 
     // The count is part of the bell's name once it is hydrated and polled.
     await page.getByRole("button", { name: /^Notifications, \S+ pending$/ }).click();
@@ -72,12 +74,32 @@ test.describe("Redirects live on the hosting (#1157)", () => {
     await expect(notice).toHaveAttribute("href", "/settings/redirects");
   });
 
+  test("Try again now retries that target and clears the failure", async ({ page }) => {
+    fixture("fail");
+    await login(page);
+    await page.goto("/settings/redirects");
+    const production = page
+      .getByTestId("redirect-sync-status")
+      .locator('[data-testid="redirect-sync-target"][data-env="production"]');
+    await production.getByRole("button", { name: "Try again now" }).click();
+    // Production in the suite's stack has no build that cannot be served,
+    // so the retry succeeds ("Live" or "Nothing published yet").
+    await expect(page.getByText("Redirects are live on your hosting.").first()).toBeVisible();
+    await expect(production).not.toContainText("push failed");
+    await expect(production.getByRole("button", { name: "Try again now" })).toHaveCount(0);
+  });
+
   test("in sync, no failure and no retry button", async ({ page }) => {
     fixture("reset");
     await login(page);
     await page.goto("/settings/redirects");
-    const card = page.getByTestId("redirect-sync-status");
-    await expect(card.locator('[data-env="production"]')).not.toContainText("push failed");
-    await expect(card.getByRole("button", { name: "Try again now" })).toHaveCount(0);
+    // Only production's state is this spec's: other specs seed staging runs
+    // without a build on disk, so staging may genuinely be failing meanwhile.
+    const production = page
+      .getByTestId("redirect-sync-status")
+      .locator('[data-testid="redirect-sync-target"][data-env="production"]');
+    await expect(production).toBeVisible();
+    await expect(production).not.toContainText("push failed");
+    await expect(production.getByRole("button", { name: "Try again now" })).toHaveCount(0);
   });
 });

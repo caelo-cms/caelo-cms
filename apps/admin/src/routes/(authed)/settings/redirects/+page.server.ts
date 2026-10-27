@@ -69,8 +69,11 @@ export const actions: Actions = {
     const { adapter, registry } = getQueryContext();
     const form = await request.formData();
     await assertCsrfToken(form, locals);
+    const targetId = String(form.get("targetId") ?? "");
+    if (!/^[0-9a-f-]{36}$/i.test(targetId)) return fail(400, { error: "targetId missing" });
     const r = await execute(registry, adapter, locals.ctx, "redirects.sync_provider", {
       trigger: "manual",
+      targetIds: [targetId],
     });
     if (!r.ok) {
       const message =
