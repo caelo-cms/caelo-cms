@@ -74,7 +74,7 @@ describe("budget verdict", () => {
     const over = budgetVerdict(50 * FIVE_USD, 250);
     expect(over.over).toBe(true);
     expect(over.line).toBe(
-      "Real-AI weekly budget used: $250.00 of $250.00 (trailing 7 days) — runs on release gate / manual dispatch only.",
+      "Real-AI weekly budget used: $250.00 of $250.00 (trailing 7 days) — runs on the release gate (or a dispatch with override_budget) only.",
     );
     const under = budgetVerdict(10 * FIVE_USD, 250);
     expect(under.over).toBe(false);

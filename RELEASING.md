@@ -22,11 +22,16 @@ is at that moment, **main stays open for merges the whole time**, and
 1. The real-AI live-edit suite (`e2e-livedit.yml`) must be green on that
    main commit. Main gets no real-AI run per push, so the cut dispatches
    one on `release-gate/<sha>` (a branch pinned to the commit, deleted
-   afterwards) and waits for it (about 25 minutes, ~$5–7 of API spend:
-   the release gate always runs the full suite and ignores the weekly
-   real-AI budget); a green full run from an earlier attempt on the same
-   commit, or a PR run that ran every scenario on the same tree, is
-   reused. A red run stops the cut; fix main and re-run release-cut.
+   afterwards) and waits for it. That run re-runs only the scenarios
+   whose covered files (or the suite's harness) changed since their last
+   green on main, or whose last green is older than 7 days, and carries
+   the rest over (up to ~25 minutes and ~$5–15 of API spend when
+   everything runs, a few minutes and no API spend when everything
+   carries over). It is never stopped by the weekly real-AI budget, but
+   its spend counts toward it. A green run from an earlier attempt on the
+   same commit, or a PR run that ran every scenario on the same tree, is
+   reused without a dispatch. A red run stops the cut; fix main and
+   re-run release-cut (the re-run repeats only what was not green).
 2. `scripts/release.ts` writes the release commit on top of it and tags
    it `vX.Y.Z`. The version it bumps from is the newest stable tag.
 3. Before anything is pushed, the cut checks that commit: it may change

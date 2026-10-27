@@ -18,9 +18,12 @@ import {
   isAiRelevant,
   isHarness,
   MAX_CLASSIFIABLE_FILES,
+  OPT_IN_LABELS,
+  optInComment,
   passedSpecFiles,
   planRun,
   planSummary,
+  SELECTED_LABEL,
   SPEC_DIR,
   scenarioFiles,
   scenarioKeys,
@@ -221,9 +224,10 @@ describe("scenarioKeys", () => {
 describe("planRun", () => {
   const keys = new Map(ciScenarios().map((s) => [s.id, `k-${s.id}`] as const));
   const consent = ["packages/plugins/consent-manager/src/index.ts"];
+  const labels = [SELECTED_LABEL];
 
   it("runs what the selection picked when nothing is green yet", () => {
-    const p = planRun({ mode: "pr", changed: consent, keys, greens: [] });
+    const p = planRun({ mode: "pr", changed: consent, labels, keys, greens: [] });
     expect(p.mode).toBe("run");
     expect([...p.run].sort()).toEqual(["consent", "homepage"]);
     expect(p.full).toBe(false);
@@ -233,6 +237,7 @@ describe("planRun", () => {
     const p = planRun({
       mode: "pr",
       changed: consent,
+      labels,
       keys,
       greens: [
         { id: "homepage", key: "k-homepage" },
@@ -247,6 +252,7 @@ describe("planRun", () => {
     const p = planRun({
       mode: "pr",
       changed: consent,
+      labels,
       keys,
       greens: [
         { id: "homepage", key: "k-homepage" },
@@ -257,7 +263,7 @@ describe("planRun", () => {
     expect(p.reason).toContain("already passed");
   });
 
-  it("runs the full suite on the release gate / a manual dispatch, reusing nothing", () => {
+  it("runs the full suite on a manual dispatch, reusing nothing", () => {
     const p = planRun({
       mode: "full",
       changed: [],
@@ -271,8 +277,61 @@ describe("planRun", () => {
     expect(scenarioFiles(p.run, p.full)).toBe("");
   });
 
+  it("runs nothing on a PR without an opt-in label, and says what would run", () => {
+    const p = planRun({
+      mode: "pr",
+      changed: consent,
+      keys,
+      greens: [{ id: "homepage", key: "k-homepage" }],
+    });
+    expect(p.mode).toBe("skip");
+    expect(p.run).toEqual([]);
+    expect(p.wouldRun).toEqual(["consent"]);
+    expect(p.reason).toContain("`real-ai`");
+    expect(planSummary(p)).toContain("Would run: `consent`");
+    const comment = optInComment(p) ?? "";
+    expect(comment.startsWith("<!-- e2e-livedit-sticky -->")).toBe(true);
+    expect(comment).toContain("`consent`");
+    for (const l of OPT_IN_LABELS) expect(comment).toContain(`\`${l}\``);
+    // An unrelated label opts nothing in.
+    expect(planRun({ mode: "pr", changed: consent, labels: ["bug"], keys, greens: [] }).mode).toBe(
+      "skip",
+    );
+  });
+
+  it("posts no opt-in comment when nothing would run anyway", () => {
+    const docs = planRun({ mode: "pr", changed: ["README.md"], keys, greens: [] });
+    expect(docs.mode).toBe("skip");
+    expect(optInComment(docs)).toBeNull();
+    const allGreen = planRun({
+      mode: "pr",
+      changed: consent,
+      keys,
+      greens: [
+        { id: "homepage", key: "k-homepage" },
+        { id: "consent", key: "k-consent" },
+      ],
+    });
+    expect(allGreen.reason).toContain("already passed");
+    expect(optInComment(allGreen)).toBeNull();
+  });
+
+  it("`real-ai` runs the selection, `real-ai-full` every scenario", () => {
+    const sel = planRun({ mode: "pr", changed: consent, labels: ["real-ai"], keys, greens: [] });
+    expect([...sel.run].sort()).toEqual(["consent", "homepage"]);
+    const full = planRun({
+      mode: "pr",
+      changed: consent,
+      labels: [FULL_SUITE_LABEL],
+      keys,
+      greens: [],
+    });
+    expect(full.full).toBe(true);
+    expect(full.run.length).toBe(ciScenarios().length);
+  });
+
   it("names the spec files of a partial run", () => {
-    const p = planRun({ mode: "pr", changed: consent, keys, greens: [] });
+    const p = planRun({ mode: "pr", changed: consent, labels, keys, greens: [] });
     expect(scenarioFiles(p.run, p.full).split(",").sort()).toEqual([
       "scenario-consent.browser.ts",
       "scenario-homepage.browser.ts",

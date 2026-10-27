@@ -8,7 +8,9 @@
 # commit back:
 #
 #   1. Gate: the real-AI suite must be green on that main commit X (main
-#      gets no real-AI run per push; a green run on X is reused).
+#      gets no real-AI run per push; a green run on X is reused, and the
+#      gate run re-runs only the scenarios whose inputs changed since their
+#      last green on main).
 #   2. scripts/release.ts writes the release commit R on top of X (version
 #      stamps, changelog, catalogue, release declaration; main itself is
 #      stamped with the unreleased marker 0.0.0) and tags it vX.Y.Z. The
@@ -180,23 +182,41 @@ jobs:
         # to this commit: main stays open during the cut, so a dispatch on
         # main could run a newer commit than the one being released. A
         # workflow_dispatch made with GITHUB_TOKEN does trigger the target
-        # workflow.
+        # workflow. That run reuses per-scenario greens (lib/main-greens.ts):
+        # it runs only the scenarios whose covered files or the harness
+        # changed since their last green on main, or whose green is older
+        # than 7 days, and carries the rest; when everything carries over its
+        # AI job succeeds without paid steps. It is exempt from the weekly
+        # budget (a release is never blocked by spend) but its spend counts.
         timeout-minutes: 75
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           WORKFLOW_FILE: e2e-livedit.yml
           JOB_NAME: Real-AI live-edit scenario
+          # The paid suite step of that job (ai_job_ok below).
+          SUITE_STEP: Run e2e-livedit (Scenario 1)
         run: |
           set -euo pipefail
           SHA=$(git rev-parse HEAD)
           # Prints the id of a finished e2e-livedit run on $SHA whose AI job
           # succeeded; fails when there is none. A green workflow is not
-          # enough (its AI job may have been skipped by a cost gate).
+          # enough (its AI job may have been skipped by a cost gate), and a
+          # green AI job is not either: a manual dispatch the weekly budget
+          # stopped inside the job ends green without running a scenario. So
+          # the job's suite step must have succeeded — except on an earlier
+          # release-gate run of this very commit, which is never
+          # budget-stopped and whose suite step is skipped only when every
+          # scenario carried over from a green on main (lib/main-greens.ts).
           ai_job_ok() {
             for id in $(gh api "repos/$REPO/actions/workflows/$WORKFLOW_FILE/runs?head_sha=$SHA&status=success&per_page=50" --jq '.workflow_runs[].id'); do
-              ok=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" \
-                --jq "[.jobs[] | select(.name == \"$JOB_NAME\" and .conclusion == \"success\")] | length")
+              branch=$(gh api "repos/$REPO/actions/runs/$id" --jq .head_branch) || continue
+              if [ "$branch" = "release-gate/$SHA" ]; then
+                filter="select(.name == \"$JOB_NAME\" and .conclusion == \"success\")"
+              else
+                filter="select(.name == \"$JOB_NAME\" and .conclusion == \"success\" and ([.steps[]? | select(.name == \"$SUITE_STEP\" and .conclusion == \"success\")] | length > 0))"
+              fi
+              ok=$(gh api "repos/$REPO/actions/runs/$id/jobs?per_page=100" --jq "[.jobs[] | $filter] | length")
               if [ "$ok" -gt 0 ]; then echo "$id"; return 0; fi
             done
             return 1
