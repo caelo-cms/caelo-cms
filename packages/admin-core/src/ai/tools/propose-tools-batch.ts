@@ -62,8 +62,8 @@ export const proposeLayoutUpdateTool = makeProposeTool({
     .object({
       layoutId: uuid,
       displayName: z.string().min(1).max(200).optional(),
-      html: sourceTextArg(z.string().max(50_000)).optional(),
-      css: sourceTextArg(z.string().max(50_000)).optional(),
+      html: sourceTextArg(z.string().max(50_000), "html").optional(),
+      css: sourceTextArg(z.string().max(50_000), "css").optional(),
       blocks: z
         .array(
           z.object({
@@ -531,8 +531,8 @@ export const proposeTemplateUpdateTool = makeProposeTool({
     .object({
       templateId: uuid,
       displayName: z.string().min(1).max(200).optional(),
-      html: sourceTextArg(z.string()).optional(),
-      css: sourceTextArg(z.string()).optional(),
+      html: sourceTextArg(z.string(), "html").optional(),
+      css: sourceTextArg(z.string(), "css").optional(),
       layoutId: uuid.optional(),
       pageType: pageTypeSlugSchema.optional(),
       blocks: z

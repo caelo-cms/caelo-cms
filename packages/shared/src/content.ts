@@ -11,6 +11,7 @@
  */
 
 import { z } from "zod";
+import { hasEscapedLineBreaks } from "./escaped-line-breaks.js";
 import { listItemInputSchema } from "./lists/items.js";
 import { LIST_MAX_ITEMS, sourceDefSchema } from "./lists/list-type.js";
 import { LIST_REF_RE } from "./lists/refs.js";
@@ -126,12 +127,32 @@ export function htmlEscapedMarkupMessage(field: string, value: string): string |
   return `${field} is HTML-escaped (&lt;…&gt; instead of <…>) — send the markup itself, unescaped.`;
 }
 
-const noCorruptMarkup = (field: string) => (value: string, ctx: z.RefinementCtx) => {
-  const message = jsonEncodedCodeMessage(field, value) ?? htmlEscapedMarkupMessage(field, value);
+/**
+ * See {@link jsonEncodedCodeMessage}: source whose line breaks arrived as
+ * literal `\n` sequences (`hasEscapedLineBreaks`) — the page shows the
+ * `\n` text and the CSS rules after it break. AI tool arguments are decoded
+ * first (`decodeEscapedLineBreaks`); this guards every other writer. Module
+ * js is checked by parsing it (admin-core `module-js-syntax.ts`), which
+ * catches this and every other syntax error.
+ */
+export function escapedLineBreaksMessage(field: "html" | "css", value: string): string | null {
+  if (!hasEscapedLineBreaks(value, field)) return null;
+  return `${field} has its line breaks escaped (literal \\n sequences, no real line break) — send the ${field} with real line breaks.`;
+}
+
+const noCorruptMarkup = (field: "html") => (value: string, ctx: z.RefinementCtx) => {
+  const message =
+    jsonEncodedCodeMessage(field, value) ??
+    htmlEscapedMarkupMessage(field, value) ??
+    escapedLineBreaksMessage(field, value);
   if (message) ctx.addIssue({ code: "custom", message });
 };
 const noJsonEncodedCode = (field: string) => (value: string, ctx: z.RefinementCtx) => {
   const message = jsonEncodedCodeMessage(field, value);
+  if (message) ctx.addIssue({ code: "custom", message });
+};
+const noCorruptCss = (value: string, ctx: z.RefinementCtx) => {
+  const message = jsonEncodedCodeMessage("css", value) ?? escapedLineBreaksMessage("css", value);
   if (message) ctx.addIssue({ code: "custom", message });
 };
 
@@ -168,7 +189,7 @@ const moduleCss = z
   .string()
   .max(MODULE_CSS_MAX, `css exceeds ${MODULE_CSS_MAX} bytes`)
   .refine(noCdata, cdataMessage("css"))
-  .superRefine(noJsonEncodedCode("css"));
+  .superRefine(noCorruptCss);
 const moduleJs = z
   .string()
   .max(MODULE_JS_MAX, `js exceeds ${MODULE_JS_MAX} bytes`)

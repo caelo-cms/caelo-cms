@@ -27,7 +27,13 @@ const systemCtx: ExecutionContext = {
   requestId: "content-modules-test",
 };
 
-const SLUGS = ["p3-mod-hero", "p3-mod-card", "p3-mod-nav", "p3-mod-cdata"] as const;
+const SLUGS = [
+  "p3-mod-hero",
+  "p3-mod-card",
+  "p3-mod-nav",
+  "p3-mod-cdata",
+  "p3-mod-js-syntax",
+] as const;
 
 async function wipe(url: string): Promise<void> {
   const sql = new SQL(url);
@@ -159,6 +165,53 @@ describe("modules CRUD", () => {
     const html2 = (got2.value as { module: { html: string } }).module.html;
     expect(html2).not.toContain("]]>");
     expect(html2).toContain("Footer");
+  });
+
+  // e2e-livedit run 40532297620 — a footer module's js was stored with a
+  // literal backslash-n for every line break; the page's shared module
+  // <script> threw `SyntaxError: Invalid or unexpected token` on every view.
+  // Every writer (the op itself, not only the AI tool boundary) now refuses
+  // js that does not parse, on create and on update.
+  it("refuses module js that does not parse, on create and update", async () => {
+    const brokenJs =
+      "(function () {\\n  document.querySelectorAll('.site-footer__year').forEach(function (el) {\\n    el.textContent = new Date().getFullYear();\\n  });\\n})();";
+    const refused = await execute(registry, adapter, systemCtx, "modules.create", {
+      slug: SLUGS[4],
+      displayName: "Site footer",
+      html: '<footer class="site-footer"><span class="site-footer__year"></span></footer>',
+      fields: [],
+      js: brokenJs,
+    });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect((refused.error as { message?: string }).message).toContain("not valid JavaScript");
+
+    const created = await execute(registry, adapter, systemCtx, "modules.create", {
+      slug: SLUGS[4],
+      displayName: "Site footer",
+      html: '<footer class="site-footer"><span class="site-footer__year"></span></footer>',
+      js: brokenJs.replaceAll("\\n", "\n"),
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const moduleId = (created.value as { moduleId: string }).moduleId;
+
+    const upd = await execute(registry, adapter, systemCtx, "modules.update", {
+      moduleId,
+      js: brokenJs,
+    });
+    expect(upd.ok).toBe(false);
+    const many = await execute(registry, adapter, systemCtx, "modules.update_many", {
+      updates: [{ moduleId, js: "const = 1;" }],
+    });
+    expect(many.ok).toBe(true);
+    if (!many.ok) return;
+    expect((many.value as { failed: { message: string }[] }).failed[0]?.message).toContain(
+      "line 1, column 7",
+    );
+    const got = await execute(registry, adapter, systemCtx, "modules.get", { moduleId });
+    if (!got.ok) return;
+    expect((got.value as { module: { js: string } }).module.js).toContain("\n  document");
   });
 
   it("rejects duplicate slug", async () => {

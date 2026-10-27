@@ -6,7 +6,9 @@
  *
  * The model sometimes encodes a long markup string as a whole before it
  * sends it: as a CDATA section (`unwrapCdataEnvelope`), as a JSON string
- * literal (`"<footer class=\"x\">…"`), or HTML-escaped (`&lt;main&gt;…`).
+ * literal (`"<footer class=\"x\">…"`), HTML-escaped (`&lt;main&gt;…`), or
+ * with its line breaks string-escaped (`{\n  color: red;\n}`, see
+ * `escaped-line-breaks.ts`).
  * Each is an encoding of a value the caller did supply, never content:
  * a JSON string literal is not valid markup, CSS or JS as a whole, and
  * markup without a single `<` but with `&lt;tag` has no element at all.
@@ -19,6 +21,7 @@
  * a fallback for missing data (CLAUDE.md §2).
  */
 
+import { decodeEscapedLineBreaks, type SourceLanguage } from "./escaped-line-breaks.js";
 import { unwrapCdataEnvelope } from "./strip-cdata.js";
 
 /**
@@ -64,7 +67,15 @@ export function decodeHtmlEscapedSource(value: unknown): unknown {
     .replace(/&amp;/g, "&");
 }
 
-/** Every whole-value transport encoding, outermost first. */
-export function decodeSourceTextTransport(value: unknown): unknown {
-  return decodeHtmlEscapedSource(decodeJsonEncodedSource(unwrapCdataEnvelope(value)));
+/**
+ * Every whole-value transport encoding, outermost first.
+ *
+ * @param language - the grammar of the value; escaped line breaks are only
+ *   decoded where they cannot belong to a literal of it.
+ */
+export function decodeSourceTextTransport(value: unknown, language: SourceLanguage): unknown {
+  return decodeEscapedLineBreaks(
+    decodeHtmlEscapedSource(decodeJsonEncodedSource(unwrapCdataEnvelope(value))),
+    language,
+  );
 }
