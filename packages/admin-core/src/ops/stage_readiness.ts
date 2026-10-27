@@ -16,6 +16,7 @@ import {
   type StageReadinessPage,
   stageReadinessSchema,
 } from "../deploy/stage-readiness.js";
+import { pageSeoViewSql } from "../seo/page-seo.js";
 import { listPagesOp } from "./content/pages.js";
 
 export const stageReadinessOp = defineOperation({
@@ -36,17 +37,17 @@ export const stageReadinessOp = defineOperation({
         pages: { id: string; title: string; currentPath: string; status: "draft" | "published" }[];
       }
     ).pages;
-    // pages_seo is not branch-scoped: a description written in a chat is
-    // stored on the page's row at once (ops/seo.ts).
+    // #1156 — the description in the same view: one the chat wrote is
+    // pending on its branch and counts, as the Stage merges it first.
     const described = new Set<string>();
     if (pages.length > 0) {
-      const ids = sql.join(
-        pages.map((p) => sql`${p.id}::uuid`),
-        sql`, `,
-      );
       const rows = (await tx.execute(sql`
-        SELECT page_id::text AS page_id FROM pages_seo
-        WHERE page_id IN (${ids}) AND btrim(coalesce(meta_description, '')) <> ''
+        SELECT s.page_id::text AS page_id
+        FROM ${pageSeoViewSql(
+          ctx.chatBranchId,
+          pages.map((p) => p.id),
+        )} s
+        WHERE btrim(coalesce(s.meta_description, '')) <> ''
       `)) as unknown as { page_id: string }[];
       for (const r of rows) described.add(r.page_id);
     }

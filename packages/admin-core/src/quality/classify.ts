@@ -17,7 +17,8 @@
  * - field values (headlines, text, links) — content instances;
  * - an existing, unchanged module placed or moved — page placements;
  * - page metadata (title, slug), navigation lists, deletions;
- * - SEO texts and redirects (not branch-scoped, so never in the list).
+ * - SEO texts (a page change, like a title edit) and redirects (not
+ *   branch-scoped, so never in the list).
  *
  * The first Stage of a site and plugin activations are decided by the
  * `quality_audits.enqueue` op from install-wide state, not from the branch.

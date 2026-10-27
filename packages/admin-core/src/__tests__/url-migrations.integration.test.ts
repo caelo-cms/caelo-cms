@@ -126,7 +126,7 @@ async function seedPage(slug: string): Promise<string> {
     )) as { id: string }[];
     await adoptTemplateIntoDefaultPageType(tx, tpl[0]?.id ?? "");
     const pg = (await tx.unsafe(
-      `INSERT INTO pages (slug, name, title, template_id, status)
+      `INSERT INTO pages (slug, short_title, title, template_id, status)
        VALUES ('${slug}', 'P', 'P', '${tpl[0]?.id}', 'published')
        RETURNING id::text AS id, current_path`,
     )) as { id: string; current_path: string }[];

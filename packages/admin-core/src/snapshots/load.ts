@@ -138,7 +138,7 @@ export async function loadPageState(
   pageId: string,
 ): Promise<PageState | null> {
   const rows = (await tx.execute(sql`
-    SELECT slug, title, template_id, status, version, deleted_at,
+    SELECT slug, title, short_title, template_id, status, version, deleted_at,
            parent_page_id::text AS parent_page_id, page_type_id::text AS page_type_id,
            properties
     FROM pages WHERE id = ${pageId}::uuid LIMIT 1
@@ -146,6 +146,7 @@ export async function loadPageState(
     parent_page_id: string | null;
     slug: string;
     title: string;
+    short_title: string;
     template_id: string;
     status: "draft" | "published";
     version: number | string;
@@ -165,6 +166,7 @@ export async function loadPageState(
     schemaVersion: 1,
     slug: r.slug,
     title: r.title,
+    shortTitle: r.short_title,
     templateId: r.template_id,
     status: r.status,
     version: typeof r.version === "string" ? Number.parseInt(r.version, 10) : r.version,

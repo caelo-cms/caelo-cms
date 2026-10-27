@@ -60,6 +60,7 @@
     currentPath: string;
     parentPageId: string | null;
     title: string;
+    shortTitle: string;
     status: "draft" | "published";
     templateId: string;
     pageType: string;
@@ -226,6 +227,21 @@
         <div class="space-y-2">
           <Label for="title">Title</Label>
           <Input id="title" name="title" type="text" value={page.title} required />
+        </div>
+        <div class="space-y-2">
+          <Label for="shortTitle">Short title</Label>
+          <Input
+            id="shortTitle"
+            name="shortTitle"
+            type="text"
+            value={page.shortTitle}
+            maxlength={256}
+            required
+            aria-describedby="shortTitle-help"
+          />
+          <p id="shortTitle-help" class="text-xs text-muted-foreground">
+            The page's label in breadcrumbs and menus.
+          </p>
         </div>
         <div class="space-y-2">
           <Label for="status">Status</Label>

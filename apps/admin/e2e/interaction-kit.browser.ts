@@ -111,6 +111,7 @@ const lists = createListRenderContext({
   pages: new Map(),
   media: new Map(),
   siteLanguage: "en",
+  homePageId: null,
 }).forPage(null);
 
 /** The composed page; `repeat` places the tabs module a second time. */

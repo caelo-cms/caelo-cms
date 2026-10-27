@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "bun:test";
 import {
+  breadcrumbJsonLdItems,
   checkPublicSiteBaseUrl,
   injectSeoIntoHead,
   renderSeoHead,
@@ -400,5 +401,62 @@ describe("checkPublicSiteBaseUrl", () => {
         if (!r.ok) expect(r.message).toContain("bind address");
       }
     }
+  });
+});
+
+describe("BreadcrumbList JSON-LD (#1142)", () => {
+  const base = {
+    title: "Team",
+    metaDescription: "",
+    canonical: "https://example.com/about/team/",
+    noindex: false,
+    ogImageUrl: null,
+    organization: {},
+  };
+  const ldBlocks = (head: string): unknown[] =>
+    [...head.matchAll(/<script type="application\/ld\+json">(.*?)<\/script>/g)].map((m) =>
+      JSON.parse(m[1] as string),
+    );
+
+  it("lists the trail with positions, short titles and public URLs", () => {
+    const head = renderSeoHead({
+      ...base,
+      breadcrumbs: [
+        { name: "Start", url: "https://example.com/" },
+        { name: "About </script>", url: "https://example.com/about/" },
+        { name: "Team", url: "https://example.com/about/team/" },
+      ],
+    });
+    expect(head).not.toContain("About </script>");
+    expect(ldBlocks(head)[1]).toEqual({
+      "@context": "https://schema.org",
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Start", item: "https://example.com/" },
+        {
+          "@type": "ListItem",
+          position: 2,
+          name: "About </script>",
+          item: "https://example.com/about/",
+        },
+        { "@type": "ListItem", position: 3, name: "Team", item: "https://example.com/about/team/" },
+      ],
+    });
+  });
+
+  it("emits no BreadcrumbList without a trail", () => {
+    expect(ldBlocks(renderSeoHead(base))).toHaveLength(1);
+    expect(ldBlocks(renderSeoHead({ ...base, breadcrumbs: [] }))).toHaveLength(1);
+  });
+
+  it("builds items from the trail, leaving out pages without a public URL", () => {
+    const known: Record<string, { name: string; url: string }> = {
+      home: { name: "Start", url: "https://example.com/" },
+      team: { name: "Team", url: "https://example.com/about/team/" },
+    };
+    expect(
+      breadcrumbJsonLdItems(["home", "draft-parent", "team"], (id) => known[id] ?? null),
+    ).toEqual([known.home, known.team]);
+    expect(breadcrumbJsonLdItems(null, () => null)).toEqual([]);
   });
 });

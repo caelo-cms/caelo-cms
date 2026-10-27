@@ -39,6 +39,7 @@ const lists = createListRenderContext({
   pages: new Map(),
   media: new Map(),
   siteLanguage: "en",
+  homePageId: null,
 }).forPage(null);
 const uid = (n: number) => `00000000-0000-4000-9000-${String(n).padStart(12, "0")}`;
 const links = (...ls: [string, string][]) =>

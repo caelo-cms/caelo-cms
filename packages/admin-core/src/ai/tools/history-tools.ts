@@ -209,7 +209,7 @@ export const listUnpublishedChangesTool: ToolDefinitionWithHandler<
 > = {
   name: "list_unpublished_changes",
   description:
-    "List what THIS chat session changed that is not published yet — pages, site-wide pieces (modules, templates, layouts, theme) and lists — split into not-yet-staged and already staged. " +
+    "List what THIS chat session changed that is not published yet — pages (SEO included, marked `· SEO`), site-wide pieces (modules, templates, layouts, theme) and lists — split into not-yet-staged and already staged. " +
     "Use before telling the operator the work is ready to publish, to summarise what publishing will ship, or to check an edit landed on the branch. " +
     "With allChats: true it lists EVERY open chat's unstaged changes and the entities each holds (all editors) — use it when the operator asks what is still open across chats, or before touching something another chat may be working on.",
   schema: unpublishedInput,

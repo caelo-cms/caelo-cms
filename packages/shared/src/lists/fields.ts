@@ -50,6 +50,7 @@ export const LIST_RESERVED_NAMES: ReadonlySet<string> = new Set([
   "last",
   "items",
   "page",
+  "site_text",
   "recurse",
 ]);
 const RESERVED_PREFIXES = ["is_", "has_", "count_"] as const;
